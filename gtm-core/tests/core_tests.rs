@@ -394,14 +394,12 @@ fn queue_action_json_roundtrip() {
         QueueAction::List,
         QueueAction::Clear,
         QueueAction::Add {
-            path: "/m/s.mp3".into(),
+            paths: vec!["/m/s.mp3".into()],
             position: None,
         },
-        QueueAction::AddMany {
+        QueueAction::Add {
             paths: vec!["/a.mp3".into(), "/b.mp3".into()],
-        },
-        QueueAction::AddFolder {
-            path: "/music".into(),
+            position: Some(2),
         },
     ];
     for action in &actions {

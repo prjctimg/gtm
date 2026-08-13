@@ -1,5 +1,8 @@
 # Release pipeline — builds gtm + gtmd for Linux (x86_64, ARM), macOS, and Android (Termux).
 #
+# Linux builds run on Ubuntu 22.04 (glibc 2.35) so the released binaries run on
+# any system with glibc >= 2.35 (covers Debian 12 / Ubuntu 22.04 and later).
+#
 # Pipeline:
 #
 #   tag job         → derive tag/version; force-point tag at the build commit
@@ -8,17 +11,16 @@
 #   build job       → for each OS/arch:
 #     │                1. cargo build --release (or cargo-ndk for Android)
 #     │                2. Generate manpages (pandoc) + completions (release-gen)
-#     │                3. Package archives:
-#     │                   gtm-full-{platform}.tar.gz  (gtm + gtmd + man + completions)
-#     │                   gtmd-{platform}.tar.gz      (gtmd + daemon manpages + service)
-#     │                4. Build .deb packages:
-#     │                   gtm-full_{version}_{arch}.deb (gtm + gtmd + service, Linux)
-#     │                   gtmd_{version}_{arch}.deb
-#     │                   gtm_{version}_{arch}.deb       (Termux, PulseAudio backend)
+#     │                3. Package a single per-platform archive:
+#     │                   gtm-full-{platform}.tar.gz  (gtm + gtmd + man + completions + service)
+#     │                4. Build the gtm-full .deb (Linux): both binaries + docs,
+#     │                   deps resolved via dpkg-shlibdeps on the build host.
+#     │                   Termux gets its own gtm_{version}_aarch64.deb.
 #     │                5. Upload build artifacts
 #     │
 #     ▼
-#   release job     → create/update GitHub Release with all archives + debs + manpages
+#   release job     → create/update GitHub Release: one archive per platform,
+#                     one docs archive (man + completions), and the .debs.
 #
 name: Release
 
@@ -99,9 +101,9 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-22.04
             platform: x86_64-linux
-          - os: ubuntu-24.04-arm
+          - os: ubuntu-22.04-arm
             platform: aarch64-linux
           - os: macos-latest
             platform: aarch64-darwin
@@ -191,7 +193,8 @@ jobs:
         run: |
           cd target/release
           platform="${{ matrix.platform }}"
-          # gtm-full: gtm + gtmd binaries + completions + all manpages
+          # Single per-platform archive: gtm + gtmd binaries, all manpages,
+          # all completions, and the systemd service (flat layout).
           tar czf "gtm-full-${platform}.tar.gz" \
             "gtm-${platform}" \
             "gtmd-${platform}" \
@@ -207,22 +210,8 @@ jobs:
             ../../artifacts/completions/_gtmd \
             ../../artifacts/completions/gtmd.fish \
             ../../artifacts/completions/gtmd.ps1 \
-            ../../artifacts/completions/gtmd.elv
-          # gtmd: daemon binary + daemon manpages + systemd service
-          tar czf "gtmd-${platform}.tar.gz" \
-            "gtmd-${platform}" \
-            ../../artifacts/man/gtmd.1 \
-            ../../artifacts/man/gtmd-ipc.1 \
+            ../../artifacts/completions/gtmd.elv \
             ../../dist/gtmd.service
-          # gtm: TUI+CLI binary only + gtm manpage + gtm completions
-          tar czf "gtm-${platform}.tar.gz" \
-            "gtm-${platform}" \
-            ../../artifacts/man/gtm.1 \
-            ../../artifacts/completions/gtm.bash \
-            ../../artifacts/completions/_gtm \
-            ../../artifacts/completions/gtm.fish \
-            ../../artifacts/completions/gtm.ps1 \
-            ../../artifacts/completions/gtm.elv
 
       - name: Create Android archive
         if: matrix.platform == 'aarch64-android'
@@ -231,23 +220,19 @@ jobs:
           tar czf gtm-full-aarch64-android.tar.gz \
             gtm-aarch64-android \
             gtmd-aarch64-android
-          tar czf gtmd-aarch64-android.tar.gz \
-            gtmd-aarch64-android
 
       - name: Install cargo-deb and build Debian packages (Linux only)
         if: startsWith(matrix.os, 'ubuntu') && matrix.platform != 'aarch64-android'
         run: |
-          cargo install cargo-deb
-          for pkg in gtmd gtm; do
-            mkdir -p "$pkg/deb-assets/man" "$pkg/deb-assets/completions"
-            cp -r artifacts/man/* "$pkg/deb-assets/man/"
-            cp -r artifacts/completions/* "$pkg/deb-assets/completions/"
-          done
+          cargo install cargo-deb --locked --version 3.7.0
+          mkdir -p gtm/deb-assets/man gtm/deb-assets/completions
+          cp -r artifacts/man/* gtm/deb-assets/man/
+          cp -r artifacts/completions/* gtm/deb-assets/completions/
           cp target/release/gtmd gtm/deb-assets/gtmd
           cp dist/gtmd.service gtm/deb-assets/
-          cp dist/gtmd.service gtmd/deb-assets/
+          # Single combined package: auto-adds the gtm binary ("$auto"), the
+          # gtmd binary is a staged asset, plus manpages/completions/service.
           cargo deb --package gtm
-          cargo deb --package gtmd
           arch="$(dpkg --print-architecture)"
           version="${{ needs.tag.outputs.version }}"
           for deb in target/debian/gtm-full_*.deb; do
@@ -256,15 +241,7 @@ jobs:
               mv "$deb" "$dest"
             fi
           done
-          for deb in target/debian/gtmd_*.deb; do
-            dest="target/debian/gtmd_${version}-1_${arch}.deb"
-            if [ "$deb" != "$dest" ]; then
-              mv "$deb" "$dest"
-            fi
-          done
-          for pkg in gtmd gtm; do
-            rm -rf "$pkg/deb-assets"
-          done
+          rm -rf gtm/deb-assets
 
       - name: Build Termux .deb packages
         if: matrix.platform == 'aarch64-android'
@@ -292,10 +269,7 @@ jobs:
           name: artifacts-${{ matrix.platform }}
           path: |
             target/release/gtm-full-*
-            target/release/gtmd-*
-            target/release/gtm-*
             target/aarch64-linux-android/release/gtm-full-*
-            target/aarch64-linux-android/release/gtmd-*
             target/debian/*.deb
             ./*.deb
 
@@ -326,7 +300,14 @@ jobs:
       - name: Collect release files
         run: |
           echo "=== Release artifacts ==="
-          find . -type f \( -name "gtm-full-*" -o -name "gtmd-*" -o -name "*.deb" -o -path "*/man/*" -o -path "*/completions/*" \) | sort
+          find . -type f \( -name "gtm-full-*" -o -name "*.deb" -o -path "*/man/*" -o -path "*/completions/*" \) | sort
+
+      - name: Bundle docs archive (manpages + completions)
+        run: |
+          mkdir -p gtm-docs/man gtm-docs/completions
+          cp -r man/* gtm-docs/man/
+          cp -r completions/* gtm-docs/completions/
+          tar czf gtm-docs.tar.gz -C gtm-docs .
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -337,12 +318,7 @@ jobs:
           files: |
             target/release/gtm-full-*-linux
             target/release/gtm-full-*-darwin
-            target/release/gtmd-*-linux
-            target/release/gtmd-*-darwin
-            target/release/*.tar.gz
             target/aarch64-linux-android/release/gtm-full-*
-            target/aarch64-linux-android/release/gtmd-*
-            man/*
-            completions/*
+            gtm-docs.tar.gz
             target/debian/*.deb
             ./*.deb

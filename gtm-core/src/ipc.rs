@@ -30,14 +30,8 @@ pub enum QueueAction {
         to: u64,
     },
     Add {
-        path: String,
-        position: Option<u64>,
-    },
-    AddMany {
         paths: Vec<String>,
-    },
-    AddFolder {
-        path: String,
+        position: Option<u64>,
     },
     Set {
         paths: Vec<String>,
@@ -801,10 +795,7 @@ pub enum DaemonEvent {
     #[serde(rename = "metadata_changed")]
     MetadataChanged { detail: String },
     #[serde(rename = "queue_changed")]
-    QueueChanged {
-        queue: Vec<TrackInfo>,
-        cursor: u64,
-    },
+    QueueChanged { queue: Vec<TrackInfo>, cursor: u64 },
     #[serde(rename = "queue_index_changed")]
     QueueIndexChanged { index: u64 },
     #[serde(rename = "repeat_mode_changed")]

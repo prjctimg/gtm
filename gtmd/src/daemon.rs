@@ -70,7 +70,9 @@ use crate::config::AudioBackendKind;
 use gtm_audio::PulseAudioMixer;
 use gtm_audio::{AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
 use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, QueueAction, WireReq, PROTOCOL_VERSION};
-use gtm_core::state::{DaemonState, EqPreset, PlaybackStatus, RepeatMode, ReverbConfig, SavedState};
+use gtm_core::state::{
+    DaemonState, EqPreset, PlaybackStatus, RepeatMode, ReverbConfig, SavedState,
+};
 use gtm_core::track::TrackInfo;
 use gtm_core::wire;
 use gtm_core::CoreError;
@@ -132,10 +134,7 @@ impl HealthTracker {
 /// (through user queue entries, then into the default list).
 enum HistoryEntry {
     User(TrackInfo),
-    Default {
-        index: usize,
-        track: TrackInfo,
-    },
+    Default { index: usize, track: TrackInfo },
 }
 
 struct DaemonInner {
@@ -145,7 +144,7 @@ struct DaemonInner {
     event_tx: broadcast::Sender<DaemonEvent>,
     cover_cache: tokio::sync::Mutex<Option<CoverCache>>,
     lyrics_manager: Option<LyricsManager>,
-    youtube: tokio::sync::Mutex<YoutubeManager>,
+    youtube: Arc<tokio::sync::Mutex<YoutubeManager>>,
     spotify: tokio::sync::Mutex<SpotifyManager>,
     crossfade_loaded_for: tokio::sync::Mutex<Option<String>>,
     sleep_cancel: Arc<AtomicBool>,
@@ -203,9 +202,7 @@ impl Daemon {
             match std::fs::remove_file(socket_path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    return Err(CoreError::Daemon(format!("remove stale socket: {e}")))
-                }
+                Err(e) => return Err(CoreError::Daemon(format!("remove stale socket: {e}"))),
             }
         }
 
@@ -221,9 +218,7 @@ impl Daemon {
             match std::fs::remove_file(pulse_path) {
                 Ok(()) => {}
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    return Err(CoreError::Daemon(format!("remove stale pulse socket: {e}")))
-                }
+                Err(e) => return Err(CoreError::Daemon(format!("remove stale pulse socket: {e}"))),
             }
         }
         let pulse_listener = UnixListener::bind(pulse_path)
@@ -257,7 +252,7 @@ impl Daemon {
             event_tx,
             cover_cache: tokio::sync::Mutex::new(Some(CoverCache::new(cache_dir))),
             lyrics_manager: Some(LyricsManager::new()),
-            youtube: tokio::sync::Mutex::new(YoutubeManager::new()),
+            youtube: Arc::new(tokio::sync::Mutex::new(YoutubeManager::new())),
             spotify: tokio::sync::Mutex::new(SpotifyManager::new(config_dir)),
             crossfade_loaded_for: tokio::sync::Mutex::new(None),
             sleep_cancel: Arc::new(AtomicBool::new(false)),
@@ -782,7 +777,9 @@ impl Daemon {
             DaemonReq::Prev => Self::cmd_prev(inner).await,
             DaemonReq::Seek { position_secs } => Self::cmd_seek(inner, *position_secs).await,
             DaemonReq::SetVolume { volume } => Self::cmd_set_volume(inner, *volume).await,
-            DaemonReq::SetMasterVolume { volume } => Self::cmd_set_master_volume(inner, *volume).await,
+            DaemonReq::SetMasterVolume { volume } => {
+                Self::cmd_set_master_volume(inner, *volume).await
+            }
             DaemonReq::GetVolume => Self::cmd_get_volume(inner).await,
             DaemonReq::ToggleShuffle => Self::cmd_toggle_shuffle(inner).await,
             DaemonReq::CycleRepeat { mode } => Self::cmd_cycle_repeat(inner, *mode).await,
@@ -1253,8 +1250,11 @@ impl Daemon {
         let actual = inner.mixer.lock().await.current_position();
         *inner.crossfade_loaded_for.lock().await = None;
         match Self::step_next(inner).await {
-            Ok(Some(next)) => {
+            Ok(Some(mut next)) => {
                 let dur = inner.mixer.lock().await.duration();
+                // Stamp the real duration onto the TrackInfo so the queued
+                // track's metadata isn't left at 0 after a crossfade.
+                next.duration = dur;
                 {
                     let mut state = inner.state.write().await;
                     state.status = PlaybackStatus::Playing;
@@ -1460,7 +1460,9 @@ impl Daemon {
                             ..Default::default()
                         };
                         if let Ok(tracks) = lib.list_tracks() {
-                            if let Some(matched) = tracks.iter().find(|t| path_owned.contains(&t.path) || t.path.contains(&path_owned)) {
+                            if let Some(matched) = tracks.iter().find(|t| {
+                                path_owned.contains(&t.path) || t.path.contains(&path_owned)
+                            }) {
                                 fallback.id = matched.id;
                                 fallback.title = matched.title.clone();
                                 fallback.artist = matched.artist.clone();
@@ -1470,7 +1472,7 @@ impl Daemon {
                             }
                         }
                         fallback
-                    },
+                    }
                 }
             } else {
                 gtm_core::track::TrackInfo {
@@ -1766,7 +1768,10 @@ impl Daemon {
         Ok(DaemonRes::Ok)
     }
 
-    async fn cmd_set_master_volume(inner: &DaemonInner, volume: u8) -> Result<DaemonRes, CoreError> {
+    async fn cmd_set_master_volume(
+        inner: &DaemonInner,
+        volume: u8,
+    ) -> Result<DaemonRes, CoreError> {
         let vol = volume.min(100);
         inner.mixer.lock().await.set_master_volume(vol)?;
         let mut state = inner.state.write().await;
@@ -2078,9 +2083,7 @@ impl Daemon {
     ///  ├── Clear      → clear queue, push QueueChanged
     ///  ├── Remove(i)  → remove at index, push QueueChanged
     ///  ├── Move(f,t)  → move from→to, push QueueChanged
-    ///  ├── Add(path)  → add single track, auto-play if empty
-    ///  ├── AddMany    → add multiple, auto-play first
-    ///  ├── AddFolder  → scan folder, add all audio files, auto-play first
+    ///  ├── Add(paths) → expand files/dirs, add tracks, auto-play if empty
     ///  └── Set        → replace entire queue
     /// ```
     async fn cmd_queue(inner: &DaemonInner, action: &QueueAction) -> Result<DaemonRes, CoreError> {
@@ -2119,52 +2122,22 @@ impl Daemon {
                 Self::save_state(inner);
                 Ok(DaemonRes::Ok)
             }
-            QueueAction::Add { path, position } => {
-                let was_empty = {
-                    let mut state = inner.state.write().await;
-                    state.fallback_disabled = false;
-                    let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
-                    queue::queue_add(&mut state, path, *position);
-                    drop(state);
-                    w
+            QueueAction::Add { paths, position } => {
+                let expanded = match queue::expand_paths(paths) {
+                    Ok(files) => files,
+                    Err(e) => return Ok(DaemonRes::Error { message: e }),
                 };
-                if was_empty {
-                    let _ = Self::cmd_play(inner, path, 0.0, false).await;
-                }
-                Self::push_queue_state(inner).await;
-                Self::save_state(inner);
-                Ok(DaemonRes::Ok)
-            }
-            QueueAction::AddMany { paths } => {
-                let first_path = paths[0].clone();
-                let was_empty = {
-                    let mut state = inner.state.write().await;
-                    state.fallback_disabled = false;
-                    let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
-                    queue::queue_add_many(&mut state, paths);
-                    drop(state);
-                    w
-                };
-                if was_empty {
-                    let _ = Self::cmd_play(inner, &first_path, 0.0, false).await;
-                }
-                Self::push_queue_state(inner).await;
-                Self::save_state(inner);
-                Ok(DaemonRes::Ok)
-            }
-            QueueAction::AddFolder { path } => {
-                let paths = queue::scan_audio_files(path);
-                if paths.is_empty() {
+                if expanded.is_empty() {
                     return Ok(DaemonRes::Error {
-                        message: "no audio files found in folder".into(),
+                        message: "no audio files found".into(),
                     });
                 }
-                let first_path = paths[0].clone();
+                let first_path = expanded[0].clone();
                 let was_empty = {
                     let mut state = inner.state.write().await;
                     state.fallback_disabled = false;
                     let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
-                    queue::queue_add_many(&mut state, &paths);
+                    queue::queue_add_many(&mut state, &expanded, *position);
                     drop(state);
                     w
                 };
@@ -2566,16 +2539,20 @@ impl Daemon {
         filter: Option<gtm_core::state::YTFilter>,
     ) -> Result<DaemonRes, CoreError> {
         inner.health.yt_search_count.fetch_add(1, Ordering::Relaxed);
-        match inner.youtube.lock().await.search(query, filter).await {
-            Ok(()) => Ok(DaemonRes::Ok),
-            Err(e) => {
-                inner
-                    .health
-                    .yt_search_errors
-                    .fetch_add(1, Ordering::Relaxed);
-                Ok(DaemonRes::Error { message: e })
+        // Run the yt-dlp search on a background task so the IPC request returns
+        // immediately instead of blocking the client's 5s response timeout.
+        // Results are picked up via `cmd_yt_search_poll` once the task finishes.
+        let yt = inner.youtube.clone();
+        let health = inner.health.clone();
+        let query = query.to_string();
+        tokio::spawn(async move {
+            let mut guard = yt.lock().await;
+            if let Err(e) = guard.search(&query, filter).await {
+                health.yt_search_errors.fetch_add(1, Ordering::Relaxed);
+                warn!("yt search failed: {e}");
             }
-        }
+        });
+        Ok(DaemonRes::Ok)
     }
 
     async fn cmd_yt_search_poll(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
@@ -2791,15 +2768,15 @@ impl Daemon {
             .fetch_add(1, Ordering::Relaxed);
         let current = {
             let state = inner.state.read().await;
-            if let Some(ref t) = state.current_track {
-                if t.id == track_id {
+            state.current_track.as_ref().and_then(|t| {
+                let id_matches = t.id == track_id;
+                let path_matches = path.as_deref().map_or(false, |p| t.path == p);
+                if id_matches || path_matches {
                     Some(t.clone())
                 } else {
                     None
                 }
-            } else {
-                None
-            }
+            })
         };
         let track = match current {
             Some(t) => t,
@@ -2835,7 +2812,7 @@ impl Daemon {
         }
 
         if let Some(ref manager) = inner.lyrics_manager {
-            let lyrics = tokio::time::timeout(Duration::from_secs(5), manager.get_lyrics(&track))
+            let lyrics = tokio::time::timeout(Duration::from_secs(4), manager.get_lyrics(&track))
                 .await
                 .ok()
                 .flatten();
@@ -2852,7 +2829,7 @@ impl Daemon {
     ) -> Result<DaemonRes, CoreError> {
         if let Some(ref manager) = inner.lyrics_manager {
             let lyrics =
-                tokio::time::timeout(Duration::from_secs(5), manager.search(artist, title))
+                tokio::time::timeout(Duration::from_secs(4), manager.search(artist, title))
                     .await
                     .ok()
                     .flatten();

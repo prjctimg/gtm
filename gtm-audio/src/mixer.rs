@@ -384,7 +384,8 @@ impl AudioMixer {
 
         let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
         self.active().stop();
-        self.active().set_volume(vol * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0));
+        self.active()
+            .set_volume(vol * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0));
 
         // Probe duration
         let dur = Self::probe_duration(path)?;
@@ -427,7 +428,8 @@ impl AudioMixer {
 
         let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
         self.active().stop();
-        self.active().set_volume(vol * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0));
+        self.active()
+            .set_volume(vol * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0));
 
         if let Some(ref dur) = source.total_duration() {
             *self.duration.lock().unwrap() = dur.as_secs_f64();
@@ -489,13 +491,15 @@ impl AudioMixer {
             self.active().play();
             // Restore volume — the sink was faded to 0 during the pause fade-out.
             let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
-            self.active().set_volume(vol * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0));
+            self.active()
+                .set_volume(vol * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0));
         }
         if self.pending_pause {
             self.pending_pause = false;
             self.pause_fade_start = None;
             let vol = self.stored_volume.min(100) as f32 / 100.0;
-            self.active().set_volume(vol * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0));
+            self.active()
+                .set_volume(vol * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0));
         }
         *self.start_time.lock().unwrap() = Some(Instant::now());
         self.playing.store(true, Ordering::SeqCst);
@@ -535,7 +539,8 @@ impl AudioMixer {
     }
 
     fn effective_vol_ratio(&self, volume: u8) -> f32 {
-        (volume.min(100) as f32 / 100.0) * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0)
+        (volume.min(100) as f32 / 100.0)
+            * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0)
     }
 
     pub fn set_volume(&mut self, volume: u8) -> AudioResult<()> {
@@ -738,7 +743,8 @@ impl AudioMixer {
                 self.playing.store(false, Ordering::SeqCst);
             } else {
                 let progress = elapsed / FADE_MS;
-                let start = (self.stored_volume.min(100) as f32 / 100.0) * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0);
+                let start = (self.stored_volume.min(100) as f32 / 100.0)
+                    * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0);
                 let target = start * (1.0 - progress as f32);
                 self.active().set_volume(target);
             }

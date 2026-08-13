@@ -9,15 +9,13 @@ use std::path::PathBuf;
 use clap::Parser;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AudioBackendKind {
     #[default]
     Rodio,
     #[cfg(feature = "pulseaudio")]
     PulseAudio,
 }
-
 
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
@@ -38,13 +36,13 @@ pub struct DaemonConfig {
 #[derive(Parser, Debug)]
 #[command(name = "gtmd", about = "GTM background audio daemon")]
 pub struct DaemonArgs {
-    #[arg(long, help = "Unix socket path")]
+    #[arg(long, help = "Unix socket path", value_hint = clap::ValueHint::AnyPath)]
     pub socket: Option<String>,
 
-    #[arg(long, help = "Library database path")]
+    #[arg(long, help = "Library database path", value_hint = clap::ValueHint::FilePath)]
     pub library: Option<String>,
 
-    #[arg(long, help = "Config directory path")]
+    #[arg(long, help = "Config directory path", value_hint = clap::ValueHint::DirPath)]
     pub config: Option<String>,
 
     #[arg(short, long, help = "Enable verbose logging")]
@@ -53,7 +51,7 @@ pub struct DaemonArgs {
     #[arg(long, help = "Test mode (ephemeral socket, no daemonize)")]
     pub test_mode: bool,
 
-    #[arg(long, help = "Audio backend (rodio, pulseaudio)")]
+    #[arg(long, help = "Audio backend", value_parser = ["rodio", "pulseaudio"])]
     pub backend: Option<String>,
 }
 

@@ -91,10 +91,22 @@ fn insert_at(state: &mut DaemonState, track: TrackInfo, pos: usize) {
 /// current entry); `Some(pos)` inserts at an explicit merged-view index.
 /// Returns the created TrackInfo.
 pub fn queue_add(state: &mut DaemonState, path: &str, position: Option<u64>) -> TrackInfo {
-    let track = resolve_track(path);
-    let track_clone = track.clone();
+    let mut added = queue_add_many(state, &[path.to_string()], position);
+    added
+        .pop()
+        .expect("queue_add_many returns one entry per path")
+}
+
+/// Add multiple tracks as a batch.  The whole batch is queued to play next
+/// (after the current entry) unless `position` is given, preserving order.
+pub fn queue_add_many(
+    state: &mut DaemonState,
+    paths: &[String],
+    position: Option<u64>,
+) -> Vec<TrackInfo> {
+    let mut added = Vec::with_capacity(paths.len());
     let len = state.queue.len() + state.default_list.len();
-    let pos = match position {
+    let insert_pos = match position {
         Some(p) => (p as usize).min(len),
         None => {
             if state.queue.is_empty() {
@@ -104,15 +116,6 @@ pub fn queue_add(state: &mut DaemonState, path: &str, position: Option<u64>) -> 
             }
         }
     };
-    insert_at(state, track, pos);
-    track_clone
-}
-
-/// Add multiple tracks as a batch.  The whole batch is queued to play next
-/// (after the current entry), preserving order.
-pub fn queue_add_many(state: &mut DaemonState, paths: &[String]) -> Vec<TrackInfo> {
-    let mut added = Vec::with_capacity(paths.len());
-    let insert_pos = if state.queue.is_empty() { 0 } else { 1 };
     for (i, path) in paths.iter().enumerate() {
         let track = resolve_track(path);
         let track_clone = track.clone();
@@ -189,20 +192,42 @@ pub fn queue_clear(state: &mut DaemonState) {
 
 const AUDIO_EXTENSIONS: &[&str] = &["mp3", "flac", "ogg", "wav", "m4a", "aac", "opus", "wma"];
 
+fn is_audio_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase())
+        .is_some_and(|ext| AUDIO_EXTENSIONS.contains(&ext.as_str()))
+}
+
+/// Expand a list of user-supplied paths into concrete audio files. A path
+/// that resolves to a directory is scanned recursively; an existing file is
+/// kept only if it has an audio extension. Missing paths are queued as-is
+/// (playback reports the failure), preserving the historical tolerant
+/// behaviour for paths that may not exist yet.
+pub fn expand_paths(paths: &[String]) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for path in paths {
+        let p = Path::new(path);
+        if p.is_dir() {
+            out.extend(scan_audio_files(path));
+        } else if p.is_file() {
+            if !is_audio_file(p) {
+                return Err(format!("not an audio file: {path}"));
+            }
+            out.push(path.clone());
+        } else {
+            out.push(path.clone());
+        }
+    }
+    Ok(out)
+}
+
 pub fn scan_audio_files(path: &str) -> Vec<String> {
     let mut paths = Vec::new();
     let dir = std::path::Path::new(path);
     if !dir.is_dir() {
-        if dir.is_file() {
-            if let Some(ext) = dir
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_lowercase())
-            {
-                if AUDIO_EXTENSIONS.contains(&ext.as_str()) {
-                    paths.push(path.to_string());
-                }
-            }
+        if dir.is_file() && is_audio_file(dir) {
+            paths.push(path.to_string());
         }
         return paths;
     }
@@ -214,15 +239,8 @@ pub fn scan_audio_files(path: &str) -> Vec<String> {
         if !entry.file_type().is_file() {
             continue;
         }
-        if let Some(ext) = entry
-            .path()
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_lowercase())
-        {
-            if AUDIO_EXTENSIONS.contains(&ext.as_str()) {
-                paths.push(entry.path().to_string_lossy().to_string());
-            }
+        if is_audio_file(entry.path()) {
+            paths.push(entry.path().to_string_lossy().to_string());
         }
     }
     paths

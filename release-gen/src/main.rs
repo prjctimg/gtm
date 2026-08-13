@@ -19,8 +19,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Play a track at an optional start position
     Play {
+        /// Path to the audio file
+        #[arg(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         path: String,
+        #[arg(value_name = "SECONDS")]
         start_pos: Option<f64>,
     },
     PlayPause,
@@ -35,24 +39,36 @@ enum Command {
         volume: u8,
     },
     Shuffle,
+    /// Cycle or set the repeat mode
     Repeat {
+        #[arg(value_name = "MODE", value_parser = ["off", "one", "all"])]
         mode: String,
     },
     Mute,
+    /// Toggle crossfade between tracks
     Crossfade {
+        #[arg(
+            value_name = "ENABLED",
+            action = clap::ArgAction::Set,
+            value_parser = clap::builder::BoolishValueParser::new()
+        )]
         enabled: bool,
         duration_secs: Option<u8>,
     },
+    /// Show the current queue
     Queue,
+    /// Add one or more files or folders to the queue
+    ///
+    /// Directories are scanned recursively for audio files. Without a
+    /// position the tracks are queued to play next.
     QueueAdd {
-        path: String,
-        position: Option<u64>,
-    },
-    QueueAddMany {
+        /// File or folder paths to add
+        #[arg(value_name = "PATH", value_hint = clap::ValueHint::AnyPath, num_args = 1..)]
         paths: Vec<String>,
-    },
-    QueueAddFolder {
-        path: String,
+
+        /// Insert at this merged-view index instead of "play next"
+        #[arg(long, value_name = "INDEX")]
+        position: Option<u64>,
     },
     QueueRemove {
         index: u64,
@@ -62,11 +78,17 @@ enum Command {
         to: u64,
     },
     QueueClear,
+    /// Replace the queue with a set of tracks
     QueueSet {
+        #[arg(value_name = "PATH", value_hint = clap::ValueHint::AnyPath, num_args = 1..)]
         paths: Vec<String>,
+        /// Merged-view index of the entry to start playback at
+        #[arg(long, value_name = "INDEX")]
         start_idx: u64,
     },
+    /// Scan a directory for tracks
     Scan {
+        #[arg(value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
         path: String,
     },
     Tracks {
@@ -84,7 +106,9 @@ enum Command {
         playlist_id: i64,
         track_ids: Vec<i64>,
     },
+    /// Import an M3U playlist file
     ImportM3u {
+        #[arg(value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         path: String,
     },
     Recent {
@@ -103,7 +127,9 @@ enum Command {
     },
     YtPoll,
     YtCancel,
+    /// Resolve a stream URL for playback
     YtResolve {
+        #[arg(value_hint = clap::ValueHint::Url)]
         url: String,
     },
     Search {
@@ -118,17 +144,17 @@ enum Command {
 #[derive(Parser, Debug)]
 #[command(name = "gtmd")]
 struct DaemonArgs {
-    #[arg(long, help = "Unix socket path")]
+    #[arg(long, help = "Unix socket path", value_hint = clap::ValueHint::AnyPath)]
     socket: Option<String>,
-    #[arg(long, help = "Library database path")]
+    #[arg(long, help = "Library database path", value_hint = clap::ValueHint::FilePath)]
     library: Option<String>,
-    #[arg(long, help = "Config directory path")]
+    #[arg(long, help = "Config directory path", value_hint = clap::ValueHint::DirPath)]
     config: Option<String>,
     #[arg(short, long, help = "Enable verbose logging")]
     verbose: bool,
     #[arg(long, help = "Test mode (ephemeral socket, no daemonize)")]
     test_mode: bool,
-    #[arg(long, help = "Audio backend (rodio)")]
+    #[arg(long, help = "Audio backend", value_parser = ["rodio", "pulseaudio"])]
     backend: Option<String>,
 }
 

@@ -339,9 +339,16 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Quit daemon — Q
+            // Quit daemon — Q / Ctrl+Q
             (
                 KeyCode::Char('Q').into(),
+                BoundCommand {
+                    action: KeyboardAction::QuitDaemon,
+                    contexts: vec![KeyContext::Global, KeyContext::Normal],
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
                 BoundCommand {
                     action: KeyboardAction::QuitDaemon,
                     contexts: vec![KeyContext::Global, KeyContext::Normal],

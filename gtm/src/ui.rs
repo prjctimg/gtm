@@ -257,7 +257,7 @@ fn render_help_bar(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let text = if app.terminal_cols < 60 {
         " [Space] Play  [n] Next  [p] Prev  [+/-] Vol  [:] Cmd  [q] Quit "
     } else {
-        " [Space] Play/Pause  [n/N] Next  [p/P] Prev  [+/-] Volume  [s] Stop  [:] Command Palette  [q] Quit "
+        " [Space] Play/Pause  [n/N] Next  [p/P] Prev  [+/-] Volume  [s] Stop  [:] Command Palette  [q] Quit  [Q/Ctrl+Q] Quit daemon "
     };
     let para = Paragraph::new(text).style(Style::default().fg(app.theme.fg_dim));
     f.render_widget(para, area);
@@ -387,7 +387,9 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let np_height: u16 = if is_narrow { 5 } else { 8 };
 
     let lib_width: u16 = if is_narrow {
-        (app.terminal_cols / 3).max(12).min(area.width.saturating_sub(2))
+        (app.terminal_cols / 3)
+            .max(12)
+            .min(area.width.saturating_sub(2))
     } else {
         28u16.min(area.width.saturating_sub(2))
     };
@@ -548,7 +550,14 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 }
 
                 // Row 3: Progress bar + timestamps
-                let dur = track.duration;
+                // Prefer the daemon-reported duration: queued/foreign tracks
+                // carry duration 0 in their TrackInfo until played, so the
+                // panel must not show "0:00" when the real duration is known.
+                let dur = if app.state.duration > 0.0 {
+                    app.state.duration
+                } else {
+                    track.duration
+                };
                 let pos = app.display_position;
                 let pos_str = format_duration(pos as u64);
                 let dur_str = format_duration(dur as u64);
@@ -822,37 +831,33 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             )));
             (lines, " 0 tracks | 0h 0m ".to_string())
         } else {
-        for (i, track) in filtered[app.list_scroll..end].iter().enumerate() {
-            let real_i = app.list_scroll + i;
-            let is_current = app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
-            let is_sel = real_i == sel && !left_focus;
-            let label = if track.artist.is_empty() {
-                track.title.clone()
-            } else {
-                format!("{}  {}", track.artist, track.title)
-            };
-            let avail = pane_w.saturating_sub(2);
-            let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
-            let prefix = if is_current {
-                "> "
-            } else {
-                "  "
-            };
-            let row = format!("{}{}", prefix, display_label);
-            let style = if is_current {
-                Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD)
-            } else if is_sel {
-                Style::default()
-                    .fg(app.theme.selection_fg)
-                    .bg(app.theme.selection_bg)
-            } else {
-                Style::default()
-            };
-            lines.push(Line::from(Span::styled(row, style)));
-        }
-        (lines, st_line)
+            for (i, track) in filtered[app.list_scroll..end].iter().enumerate() {
+                let real_i = app.list_scroll + i;
+                let is_current = app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
+                let is_sel = real_i == sel && !left_focus;
+                let label = if track.artist.is_empty() {
+                    track.title.clone()
+                } else {
+                    format!("{}  {}", track.artist, track.title)
+                };
+                let avail = pane_w.saturating_sub(2);
+                let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
+                let prefix = if is_current { "> " } else { "  " };
+                let row = format!("{}{}", prefix, display_label);
+                let style = if is_current {
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD)
+                } else if is_sel {
+                    Style::default()
+                        .fg(app.theme.selection_fg)
+                        .bg(app.theme.selection_bg)
+                } else {
+                    Style::default()
+                };
+                lines.push(Line::from(Span::styled(row, style)));
+            }
+            (lines, st_line)
         }
     } else if app.library_category == 2 {
         // Albums browse
@@ -1022,11 +1027,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             };
             let avail = pane_w.saturating_sub(2);
             let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
-            let prefix = if is_current {
-                "> "
-            } else {
-                "  "
-            };
+            let prefix = if is_current { "> " } else { "  " };
             let row = format!("{}{}", prefix, display_label);
             let style = if is_current {
                 Style::default()
@@ -1473,11 +1474,7 @@ fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let track = &app.queue_cache[i];
         let is_current = i == app.queue_cursor;
         let is_sel = i == sel;
-        let prefix = if is_current {
-            ">"
-        } else {
-            " "
-        };
+        let prefix = if is_current { ">" } else { " " };
         let num_str = format!("{}{:02}", prefix, i + 1);
         let dur = format_duration_short(track.duration as u64);
         let label = if track.artist.is_empty() {
@@ -1649,10 +1646,20 @@ fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let scroll_end = (scroll_start + visible).min(total);
 
     let mut lines: Vec<Line> = vec![search_line];
-    for (i, track) in filtered.iter().enumerate().take(scroll_end).skip(scroll_start) {
+    for (i, track) in filtered
+        .iter()
+        .enumerate()
+        .take(scroll_end)
+        .skip(scroll_start)
+    {
         let prefix = if i == sel { " > " } else { "   " };
         let dur = format_duration(track.duration as u64);
-        let content = format!("{prefix}{} - {} [{}]", track.artist, track.title, dur);
+        let artist = if track.artist.is_empty() {
+            String::new()
+        } else {
+            format!("{} - ", track.artist)
+        };
+        let content = format!("{prefix}{artist}{} [{}]", track.title, dur);
         let style = if i == sel {
             Style::default()
                 .fg(app.theme.selection_fg)
@@ -1678,6 +1685,19 @@ fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     match app.input_mode {
         InputMode::Normal => {
+            // A committed library filter (from `/`) stays active; keep the
+            // query visible so the user knows the list is filtered. Esc clears.
+            if !app.search_query.is_empty() {
+                f.render_widget(
+                    Paragraph::new(format!(" > {}  [Esc] clear filter", app.search_query)).style(
+                        Style::default()
+                            .fg(app.theme.fg_bright)
+                            .bg(app.theme.border),
+                    ),
+                    area,
+                );
+                return;
+            }
             // During tab transitions, preserve the last footer render to avoid
             // visual jumps from stale state becoming momentarily visible.
             if app.footer_cache.suppress_refresh {
@@ -2116,7 +2136,7 @@ fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         ("key", "   Esc / q      Close"),
     ];
 
-    let filtered: Vec<( &str, &str)> = if query.is_empty() {
+    let filtered: Vec<(&str, &str)> = if query.is_empty() {
         help_lines.iter().map(|(t, l)| (*t, *l)).collect()
     } else {
         let q = query.to_lowercase();
@@ -2147,7 +2167,12 @@ fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     ));
     lines.push(title);
 
-    for (i, (kind, line)) in filtered.iter().enumerate().take(scroll_end).skip(scroll_start) {
+    for (i, (kind, line)) in filtered
+        .iter()
+        .enumerate()
+        .take(scroll_end)
+        .skip(scroll_start)
+    {
         let is_sel = i == sel;
         let style = if is_sel {
             Style::default()
@@ -2167,9 +2192,13 @@ fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(para, area);
 
     let footer = if !query.is_empty() {
-        format!(" /{}  [Esc] Close  ? Toggle  gg/G Top/Bottom  0/$ First/Last  n/N Next/Prev", query)
+        format!(
+            " /{}  [Esc] Close  ? Toggle  gg/G Top/Bottom  0/$ First/Last  n/N Next/Prev",
+            query
+        )
     } else {
-        "[Esc] Close  ? Toggle  gg/G Top/Bottom  0/$ First/Last  / Search  n/N Next/Prev".to_string()
+        "[Esc] Close  ? Toggle  gg/G Top/Bottom  0/$ First/Last  / Search  n/N Next/Prev"
+            .to_string()
     };
     picker_help(f, area, &footer, app);
 }
@@ -2324,7 +2353,8 @@ pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("\u{1f507} Mute Toggle", "m"),
     ("\u{1f501} Repeat", "r"),
     ("\u{1f500} Shuffle", "S"),
-    ("\u{23f9} Quit", "Q"),
+    ("\u{23f9} Quit", "q"),
+    ("\u{23f9} Quit Daemon", "Q/Ctrl+Q"),
     ("\u{2192} Tab Cycle", "Tab"),
     ("\u{1f3b5} Library", "1"),
     ("\u{2699} Settings", "2"),
@@ -2412,7 +2442,12 @@ fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
         .min(inner.width.saturating_sub(8) as usize);
 
     let mut lines: Vec<Line> = vec![search_line];
-    for (i, ((name, key), _score)) in filtered.iter().enumerate().take(scroll_end).skip(scroll_start) {
+    for (i, ((name, key), _score)) in filtered
+        .iter()
+        .enumerate()
+        .take(scroll_end)
+        .skip(scroll_start)
+    {
         let prefix = if i == sel { " > " } else { "   " };
         let style = if i == sel {
             Style::default()
@@ -2542,14 +2577,16 @@ fn render_sound_effects_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
     let reverb_on = app.state.reverb.enabled;
 
-    let items = [format!("Playback Speed:  {:.1}x", app.playback_speed),
+    let items = [
+        format!("Playback Speed:  {:.1}x", app.playback_speed),
         format!("Reverb:          {}", if reverb_on { "ON" } else { "OFF" }),
         format!(
             "Crossfade:       {}",
             if crossfade_on { "ON" } else { "OFF" }
         ),
         format!("Crossfade Dur:   {}s", crossfade_dur),
-        format!("EQ Preset:       {}", app.state.eq_preset.label())];
+        format!("EQ Preset:       {}", app.state.eq_preset.label()),
+    ];
 
     let sel = app
         .pickers

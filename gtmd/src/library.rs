@@ -158,11 +158,7 @@ impl Library {
         Ok(())
     }
 
-    pub fn update_metadata(
-        &self,
-        id: i64,
-        patch: &MetadataPatch,
-    ) -> Result<(), String> {
+    pub fn update_metadata(&self, id: i64, patch: &MetadataPatch) -> Result<(), String> {
         let mut sets = Vec::new();
         if patch.title.is_some() {
             sets.push("title = ?2");
@@ -607,9 +603,10 @@ fn extract_metadata(path: &str, cache_dir: Option<&str>) -> Result<(Metadata, St
                     | Some(StandardTag::ReleaseYear(n))
                     | Some(StandardTag::OriginalReleaseYear(n))
                     | Some(StandardTag::OriginalRecordingYear(n))
-                        if year.is_none() => {
-                            year = Some(*n as i32);
-                        }
+                        if year.is_none() =>
+                    {
+                        year = Some(*n as i32);
+                    }
                     _ => {}
                 }
             }

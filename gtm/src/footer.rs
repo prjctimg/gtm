@@ -387,13 +387,17 @@ fn render_playback(app: &App) -> String {
 }
 
 fn render_title(app: &App) -> Option<String> {
-    let raw = app.state.current_track.as_ref().map_or_else(String::new, |t| {
-        if t.artist.is_empty() {
-            t.title.clone()
-        } else {
-            format!("{} \u{2013} {}", t.artist, t.title)
-        }
-    });
+    let raw = app
+        .state
+        .current_track
+        .as_ref()
+        .map_or_else(String::new, |t| {
+            if t.artist.is_empty() {
+                t.title.clone()
+            } else {
+                format!("{} \u{2013} {}", t.artist, t.title)
+            }
+        });
     if raw.is_empty() {
         return None;
     }
@@ -455,7 +459,11 @@ fn render_sleep_timer(app: &App) -> Option<String> {
 fn render_progress(app: &App) -> Option<String> {
     let track = app.state.current_track.as_ref()?;
     let pos = app.display_position as u64;
-    let dur = track.duration as u64;
+    let dur = if app.state.duration > 0.0 {
+        app.state.duration as u64
+    } else {
+        track.duration as u64
+    };
     if dur == 0 {
         return None;
     }
@@ -560,7 +568,10 @@ fn render_device(app: &App) -> Option<String> {
     let total_dur: u64 = app.tracks_cache.iter().map(|t| t.duration as u64).sum();
     let hours = total_dur / 3600;
     let mins = (total_dur % 3600) / 60;
-    Some(format!("{} tracks \u{2022} {}h{}m", track_count, hours, mins))
+    Some(format!(
+        "{} tracks \u{2022} {}h{}m",
+        track_count, hours, mins
+    ))
 }
 
 #[cfg(test)]

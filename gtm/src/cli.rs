@@ -53,8 +53,12 @@ pub struct Args {
 
 #[derive(Subcommand)]
 pub enum CliCommand {
+    /// Play a track at an optional start position
     Play {
+        /// Path to the audio file
+        #[arg(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         path: String,
+        #[arg(value_name = "SECONDS")]
         start_pos: Option<f64>,
     },
     PlayPause,
@@ -69,24 +73,36 @@ pub enum CliCommand {
         volume: u8,
     },
     Shuffle,
+    /// Cycle or set the repeat mode
     Repeat {
+        #[arg(value_name = "MODE", value_parser = ["off", "one", "all"])]
         mode: String,
     },
     Mute,
+    /// Toggle crossfade between tracks
     Crossfade {
+        #[arg(
+            value_name = "ENABLED",
+            action = clap::ArgAction::Set,
+            value_parser = clap::builder::BoolishValueParser::new()
+        )]
         enabled: bool,
         duration_secs: Option<u8>,
     },
+    /// Show the current queue
     Queue,
+    /// Add one or more files or folders to the queue
+    ///
+    /// Directories are scanned recursively for audio files. Without a
+    /// position the tracks are queued to play next.
     QueueAdd {
-        path: String,
-        position: Option<u64>,
-    },
-    QueueAddMany {
+        /// File or folder paths to add
+        #[arg(value_name = "PATH", value_hint = clap::ValueHint::AnyPath, num_args = 1..)]
         paths: Vec<String>,
-    },
-    QueueAddFolder {
-        path: String,
+
+        /// Insert at this merged-view index instead of "play next"
+        #[arg(long, value_name = "INDEX")]
+        position: Option<u64>,
     },
     QueueRemove {
         index: u64,
@@ -96,11 +112,17 @@ pub enum CliCommand {
         to: u64,
     },
     QueueClear,
+    /// Replace the queue with a set of tracks
     QueueSet {
+        #[arg(value_name = "PATH", value_hint = clap::ValueHint::AnyPath, num_args = 1..)]
         paths: Vec<String>,
+        /// Merged-view index of the entry to start playback at
+        #[arg(long, value_name = "INDEX")]
         start_idx: u64,
     },
+    /// Scan a directory for tracks
     Scan {
+        #[arg(value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
         path: String,
     },
     Tracks {
@@ -118,11 +140,15 @@ pub enum CliCommand {
         playlist_id: i64,
         track_ids: Vec<i64>,
     },
+    /// Import an M3U playlist file
     ImportM3u {
+        #[arg(value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         path: String,
     },
+    /// Export a playlist to an M3U file
     ExportM3u {
         playlist_id: i64,
+        #[arg(value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         path: String,
     },
     Recent {
@@ -141,7 +167,9 @@ pub enum CliCommand {
     },
     YtPoll,
     YtCancel,
+    /// Resolve a stream URL for playback
     YtResolve {
+        #[arg(value_hint = clap::ValueHint::Url)]
         url: String,
     },
     /// Fetch lyrics for an "Artist - Title" query via lrclib
@@ -250,18 +278,8 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
                     Ok(format!("{res:?}"))
                 }
             }
-            CliCommand::QueueAdd { path, position } => client
-                .queue_add(path, *position)
-                .await
-                .map(|()| "ok".to_string())
-                .map_err(|e| e.to_string()),
-            CliCommand::QueueAddMany { paths } => client
-                .queue_add_many(paths.clone())
-                .await
-                .map(|()| "ok".to_string())
-                .map_err(|e| e.to_string()),
-            CliCommand::QueueAddFolder { path } => client
-                .queue_add_dir(path)
+            CliCommand::QueueAdd { paths, position } => client
+                .queue_add_many(paths.clone(), *position)
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),

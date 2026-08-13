@@ -537,7 +537,10 @@ mod tests {
 
     #[test]
     fn parse_color_accepts_hash_hex() {
-        assert_eq!(parse_color("#7aa2f7").unwrap(), Color::Rgb(0x7a, 0xa2, 0xf7));
+        assert_eq!(
+            parse_color("#7aa2f7").unwrap(),
+            Color::Rgb(0x7a, 0xa2, 0xf7)
+        );
         assert_eq!(parse_color("7aa2f7").unwrap(), Color::Rgb(0x7a, 0xa2, 0xf7));
     }
 

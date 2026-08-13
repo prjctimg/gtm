@@ -22,8 +22,7 @@ pub enum CoreError {
     Timeout,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum Easing {
     #[default]
     Linear,
@@ -49,9 +48,7 @@ impl Easing {
     }
 }
 
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum LoudnessMode {
     #[default]
     Off,
@@ -59,7 +56,6 @@ pub enum LoudnessMode {
     Album,
     Auto,
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -69,7 +65,6 @@ pub enum DynamicMode {
     Off,
     On,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DynamicModeConfig {
@@ -99,8 +94,7 @@ impl Default for DynamicModeConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ScrobbleConfig {
     pub enabled: bool,
     pub api_key: Option<String>,
@@ -108,7 +102,6 @@ pub struct ScrobbleConfig {
     pub min_play_secs: Option<u32>,
     pub min_play_pct: Option<f32>,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrossfadeConfig {
@@ -455,8 +448,7 @@ impl SavedState {
             std::fs::create_dir_all(parent)?;
         }
         let tmp = path.with_extension("json.tmp");
-        let json = serde_json::to_string_pretty(self)
-            .map_err(std::io::Error::other)?;
+        let json = serde_json::to_string_pretty(self).map_err(std::io::Error::other)?;
         std::fs::write(&tmp, json)?;
         std::fs::rename(&tmp, path)?;
         Ok(())

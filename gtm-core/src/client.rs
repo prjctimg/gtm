@@ -404,23 +404,18 @@ impl DaemonClient {
     pub async fn queue_add(&self, path: &str, position: Option<u64>) -> Result<()> {
         self.send_ok(DaemonReq::Queue {
             action: QueueAction::Add {
-                path: path.into(),
+                paths: vec![path.into()],
                 position,
             },
         })
         .await
     }
 
-    pub async fn queue_add_many(&self, paths: Vec<String>) -> Result<()> {
+    /// Add one or more paths (files or directories, auto-detected by the
+    /// daemon) to the queue, optionally at a merged-view position.
+    pub async fn queue_add_many(&self, paths: Vec<String>, position: Option<u64>) -> Result<()> {
         self.send_ok(DaemonReq::Queue {
-            action: QueueAction::AddMany { paths },
-        })
-        .await
-    }
-
-    pub async fn queue_add_dir(&self, path: &str) -> Result<()> {
-        self.send_ok(DaemonReq::Queue {
-            action: QueueAction::AddFolder { path: path.into() },
+            action: QueueAction::Add { paths, position },
         })
         .await
     }
@@ -482,9 +477,7 @@ impl DaemonClient {
 
     pub async fn library_get_playlist_tracks(&self, playlist_id: i64) -> Result<DaemonRes> {
         self.send_raw(DaemonReq::Library {
-            action: LibraryAction::GetPlaylistTracks {
-                id: playlist_id,
-            },
+            action: LibraryAction::GetPlaylistTracks { id: playlist_id },
         })
         .await
     }
@@ -576,11 +569,7 @@ impl DaemonClient {
         .await
     }
 
-    pub async fn library_update_metadata(
-        &self,
-        track_id: i64,
-        patch: MetadataPatch,
-    ) -> Result<()> {
+    pub async fn library_update_metadata(&self, track_id: i64, patch: MetadataPatch) -> Result<()> {
         self.send_ok(DaemonReq::Library {
             action: LibraryAction::UpdateMetadata { track_id, patch },
         })
@@ -682,7 +671,11 @@ impl DaemonClient {
         }
     }
 
-    pub async fn get_lyrics(&self, track_id: i64, path: Option<&str>) -> Result<Option<track::LrcData>> {
+    pub async fn get_lyrics(
+        &self,
+        track_id: i64,
+        path: Option<&str>,
+    ) -> Result<Option<track::LrcData>> {
         let res = self
             .send_raw(DaemonReq::GetLyrics {
                 track_id,

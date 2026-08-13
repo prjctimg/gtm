@@ -217,7 +217,7 @@ async fn test_queue_add_and_list() {
         &mut writer,
         &DaemonReq::Queue {
             action: QueueAction::Add {
-                path: "/tmp/test.opus".into(),
+                paths: vec!["/tmp/test.opus".into()],
                 position: None,
             },
         },
@@ -261,7 +261,7 @@ async fn test_queue_add_multiple() {
             &mut writer,
             &DaemonReq::Queue {
                 action: QueueAction::Add {
-                    path: path.to_string(),
+                    paths: vec![path.to_string()],
                     position: None,
                 },
             },
@@ -311,7 +311,7 @@ async fn test_queue_remove() {
             &mut writer,
             &DaemonReq::Queue {
                 action: QueueAction::Add {
-                    path: path.to_string(),
+                    paths: vec![path.to_string()],
                     position: None,
                 },
             },
@@ -363,7 +363,7 @@ async fn test_queue_clear() {
         &mut writer,
         &DaemonReq::Queue {
             action: QueueAction::Add {
-                path: "/tmp/z.opus".into(),
+                paths: vec!["/tmp/z.opus".into()],
                 position: None,
             },
         },

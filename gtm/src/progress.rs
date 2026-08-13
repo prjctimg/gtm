@@ -6,8 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ProgressStyle {
     #[default]
     Braille,
@@ -18,7 +17,6 @@ pub enum ProgressStyle {
     Blocks,
     Gradient,
 }
-
 
 impl ProgressStyle {
     pub fn all() -> &'static [ProgressStyle] {

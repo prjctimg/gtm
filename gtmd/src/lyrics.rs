@@ -89,6 +89,12 @@ impl LyricsManager {
             return Some(lrc);
         }
 
+        // lrclib's exact lookup requires an artist; tracks with missing tags
+        // (e.g. queued/foreign files) fall back to a title-only search.
+        if track.artist.is_empty() {
+            return self.fetch_lrclib_search_title(&track.title).await;
+        }
+
         if let Some(lrc) = self.fetch_lrclib_exact(track).await {
             return Some(lrc);
         }
@@ -166,6 +172,30 @@ impl LyricsManager {
             if artist_name == track.artist.to_lowercase()
                 && track_name == track.title.to_lowercase()
             {
+                return parse_lrclib_response(result);
+            }
+        }
+        results.first().and_then(parse_lrclib_response)
+    }
+
+    /// Search lrclib by title alone, preferring an exact track-name match and
+    /// otherwise accepting the top hit.  Used when the artist is unknown.
+    async fn fetch_lrclib_search_title(&self, title: &str) -> Option<LrcData> {
+        if title.is_empty() {
+            return None;
+        }
+        let url = format!("{}/search?q={}", LRCLIB_API, urlencoding(title));
+
+        let resp = self.client.get(&url).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+
+        let results: Vec<serde_json::Value> = resp.json().await.ok()?;
+        let q = title.to_lowercase();
+        for result in &results {
+            let track_name = result.get("trackName")?.as_str()?.to_lowercase();
+            if track_name == q {
                 return parse_lrclib_response(result);
             }
         }
