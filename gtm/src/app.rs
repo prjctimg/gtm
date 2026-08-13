@@ -1092,6 +1092,13 @@ impl App {
                         // here, to avoid an extra IPC call every second.
                         let _ = ipc_tx2.send(IpcResult::RefreshDone(state, None, None));
                     }
+                    // Also refresh queue to recover from initial background
+                    // spawn failures that leave queue_cache empty.
+                    if let Ok(DaemonRes::QueueState { tracks, cursor, .. }) =
+                        client2.queue_list().await
+                    {
+                        let _ = ipc_tx2.send(IpcResult::Queue(tracks, cursor as usize));
+                    }
                 });
             }
             TuiCommand::RefreshPlaylists => {

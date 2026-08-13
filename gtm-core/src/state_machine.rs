@@ -250,6 +250,31 @@ impl DaemonState {
             DaemonEvent::EqEnabledChanged { enabled } => {
                 self.eq_enabled = *enabled;
             }
+            DaemonEvent::CrossfadeChanged {
+                enabled,
+                duration_secs,
+            } => {
+                self.crossfade = if *enabled {
+                    let easing = self
+                        .crossfade
+                        .as_ref()
+                        .map(|c| c.easing)
+                        .unwrap_or_default();
+                    Some(CrossfadeConfig {
+                        enabled: true,
+                        duration_secs: *duration_secs,
+                        easing,
+                    })
+                } else {
+                    None
+                };
+            }
+            DaemonEvent::ReverbChanged { enabled, room_size } => {
+                self.reverb = crate::state::ReverbConfig {
+                    enabled: *enabled,
+                    room_size: *room_size,
+                };
+            }
             DaemonEvent::EqPresetChanged { preset } => {
                 self.eq_preset = preset.clone();
             }

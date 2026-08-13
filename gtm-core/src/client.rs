@@ -41,7 +41,7 @@ impl DaemonClient {
     pub async fn connect(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_owned();
         let mut last_err = None;
-        for i in 0..5 {
+        for i in 0..10 {
             match UnixStream::connect(&path).await {
                 Ok(stream) => {
                     let (reader, writer) = stream.into_split();
@@ -87,12 +87,14 @@ impl DaemonClient {
                 }
                 Err(e) => {
                     last_err = Some(e);
-                    tokio::time::sleep(Duration::from_millis(30 * (i + 1))).await;
+                    // Exponential backoff: 50ms, 100ms, 150ms, ... up to 500ms
+                    let delay = (50 * (i + 1)).min(500);
+                    tokio::time::sleep(Duration::from_millis(delay)).await;
                 }
             }
         }
         Err(CoreError::Daemon(format!(
-            "connect to {} failed after 5 retries: {}",
+            "connect to {} failed after 10 retries: {}",
             path.display(),
             last_err.map(|e| e.to_string()).unwrap_or_default()
         )))
@@ -549,7 +551,7 @@ struct IpcWorker {
     next_id: u64,
 }
 
-const MAX_CONSECUTIVE_FAILURES: u32 = 3;
+const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 
 impl IpcWorker {
     async fn run(mut self) {
@@ -557,11 +559,11 @@ impl IpcWorker {
         loop {
             // Health check: only force reconnect after MAX_CONSECUTIVE_FAILURES
             // timeouts, to tolerate brief daemon stalls during prev/next.
-            if self.last_event_time.elapsed() > Duration::from_secs(10) {
+            if self.last_event_time.elapsed() > Duration::from_secs(30) {
                 self.consecutive_failures += 1;
                 if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
                     crate::log::log(&format!(
-                        "IPC worker: no events for 10s ({} consecutive), forcing reconnect",
+                        "IPC worker: no events for 30s ({} consecutive), forcing reconnect",
                         self.consecutive_failures
                     ));
                     self.fail_all_pending("daemon not responding");
@@ -569,7 +571,7 @@ impl IpcWorker {
                     self.consecutive_failures = 0;
                 } else {
                     crate::log::log(&format!(
-                        "IPC worker: no events for 10s ({}/{} failures), waiting",
+                        "IPC worker: no events for 30s ({}/{} failures), waiting",
                         self.consecutive_failures, MAX_CONSECUTIVE_FAILURES
                     ));
                 }
@@ -717,41 +719,61 @@ impl IpcWorker {
 /// Background reader task for the dedicated pulse socket.
 ///
 /// Continuously reads bincode-encoded DaemonEvent frames from the pulse
-/// socket and pushes them into the shared event queue.
+/// socket and pushes them into the shared event queue. Reconnects
+/// automatically on failure with exponential backoff.
 async fn pulse_reader(pulse_path: &std::path::Path, events: Arc<Mutex<Vec<DaemonEvent>>>) {
-    let stream = match UnixStream::connect(pulse_path).await {
-        Ok(s) => s,
-        Err(e) => {
-            crate::log::log(&format!("pulse connect failed: {e}"));
-            return;
-        }
-    };
-    let mut reader = stream;
     let mut buf = Vec::with_capacity(4096);
+    let mut attempt = 0u32;
     loop {
-        let mut tmp = [0u8; 4096];
-        let n = match reader.read(&mut tmp).await {
-            Ok(0) => break,
-            Ok(n) => n,
+        let stream = match UnixStream::connect(pulse_path).await {
+            Ok(s) => s,
             Err(e) => {
-                crate::log::log(&format!("pulse read error: {e}"));
-                break;
+                attempt += 1;
+                if attempt > 30 {
+                    crate::log::log(&format!(
+                        "pulse: giving up after {attempt} reconnect attempts"
+                    ));
+                    return;
+                }
+                crate::log::log(&format!(
+                    "pulse connect attempt {attempt} failed: {e}"
+                ));
+                tokio::time::sleep(Duration::from_millis((200 * attempt.min(30)) as u64)).await;
+                continue;
             }
         };
-        buf.extend_from_slice(&tmp[..n]);
+        attempt = 0;
+        buf.clear();
+        let mut reader = stream;
         loop {
-            let (frame, consumed) = match wire::decode(&buf) {
-                Ok(Some((f, c))) => (f, c),
-                Ok(None) => break,
+            let mut tmp = [0u8; 4096];
+            let n = match reader.read(&mut tmp).await {
+                Ok(0) => {
+                    crate::log::log("pulse: connection closed, reconnecting");
+                    break;
+                }
+                Ok(n) => n,
                 Err(e) => {
-                    crate::log::log(&format!("pulse decode error: {e}"));
-                    buf.clear();
+                    crate::log::log(&format!("pulse read error: {e}, reconnecting"));
                     break;
                 }
             };
-            buf.drain(..consumed as usize);
-            let mut evs = events.lock().await;
-            evs.extend(frame.events);
+            buf.extend_from_slice(&tmp[..n]);
+            loop {
+                let (frame, consumed) = match wire::decode(&buf) {
+                    Ok(Some((f, c))) => (f, c),
+                    Ok(None) => break,
+                    Err(e) => {
+                        crate::log::log(&format!("pulse decode error: {e}"));
+                        buf.clear();
+                        break;
+                    }
+                };
+                buf.drain(..consumed as usize);
+                let mut evs = events.lock().await;
+                evs.extend(frame.events);
+            }
         }
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }

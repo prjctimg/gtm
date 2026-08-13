@@ -66,6 +66,7 @@ pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>>
 }
 
 async fn ensure_daemon_running(socket_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    // If socket exists, try a quick ping to check if daemon is alive
     if socket_path.exists() {
         if let Ok(mut stream) = tokio::net::UnixStream::connect(socket_path).await {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -84,6 +85,8 @@ async fn ensure_daemon_running(socket_path: &std::path::Path) -> Result<(), Box<
                 }
             }
         }
+        // Socket exists but daemon is dead/stale — remove it
+        let _ = std::fs::remove_file(socket_path);
     }
 
     if let Some(parent) = socket_path.parent() {
@@ -104,6 +107,35 @@ async fn ensure_daemon_running(socket_path: &std::path::Path) -> Result<(), Box<
         let _ = child.wait();
     });
 
+    // Wait for the daemon socket to appear (cold start can take a while
+    // for audio backend init + library scan).
+    for _ in 0..120 {
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        if socket_path.exists() {
+            // Socket exists — try a ping to confirm daemon is responsive
+            if let Ok(mut stream) = tokio::net::UnixStream::connect(socket_path).await {
+                use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                let ping = serde_json::to_string(&gtm_core::ipc::WireReq {
+                    id: 0,
+                    req: gtm_core::ipc::DaemonReq::Ping,
+                })? + "\n";
+                let _ = stream.write_all(ping.as_bytes()).await;
+                let mut buf = [0u8; 256];
+                if let Ok(Ok(n)) = tokio::time::timeout(
+                    std::time::Duration::from_millis(500),
+                    stream.read(&mut buf),
+                ).await {
+                    if n > 0 {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
+    // Daemon didn't become ready in time — let App::new handle the connection
+    // error with its own retries. The TUI will show an empty state and the
+    // daemon may still come up.
     Ok(())
 }
 
