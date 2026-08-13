@@ -109,32 +109,52 @@ impl WireEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "event")]
 pub enum DaemonEvent {
+    #[serde(rename = "playback_started")]
     PlaybackStarted {
         track: TrackInfo,
         auto_advanced: bool,
         time_pos: f64,
         duration: f64,
     },
+    #[serde(rename = "playback_paused")]
     PlaybackPaused { time_pos: f64 },
+    #[serde(rename = "playback_stopped")]
     PlaybackStopped,
+    #[serde(rename = "track_ended")]
     TrackEnded,
+    #[serde(rename = "position_changed")]
     PositionChanged { time_pos: f64 },
+    #[serde(rename = "duration_changed")]
     DurationChanged { duration: f64 },
+    #[serde(rename = "volume_changed")]
     VolumeChanged { volume: u8 },
+    #[serde(rename = "metadata_changed")]
     MetadataChanged { event: String },
+    #[serde(rename = "queue_changed")]
     QueueChanged { queue: Vec<TrackInfo>, cursor: u128 },
+    #[serde(rename = "queue_index_changed")]
     QueueIndexChanged { index: u128 },
+    #[serde(rename = "repeat_mode_changed")]
     RepeatModeChanged { mode: RepeatMode },
+    #[serde(rename = "shuffle_changed")]
     ShuffleChanged { enabled: bool },
+    #[serde(rename = "crossfade_changed")]
     CrossfadeChanged { enabled: bool, duration_secs: u8 },
+    #[serde(rename = "sleep_timer_tick")]
     SleepTimerTick { remaining_secs: u32 },
+    #[serde(rename = "sleep_timer_expired")]
     SleepTimerExpired,
+    #[serde(rename = "eq_preset_changed")]
     EqPresetChanged { preset: state::EqPreset },
+    #[serde(rename = "eq_enabled_changed")]
     EqEnabledChanged { enabled: bool },
+    #[serde(rename = "reverb_changed")]
     ReverbChanged { enabled: bool, room_size: f32 },
+    #[serde(rename = "custom")]
     Custom { name: String, data: HashMap<String, String> },
+    #[serde(rename = "heartbeat")]
     Heartbeat,
 }
 
