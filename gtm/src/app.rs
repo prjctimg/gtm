@@ -13,7 +13,7 @@ use base64::Engine;
 
 use crate::keymap::{default_keybindings, KeyContext, KeyboardAction};
 use crate::overlay::{OverlayCtx, OverlayId, OverlayManager};
-use crate::theme::AppTheme;
+use crate::theme::{AppTheme, THEMES};
 use crate::ui;
 
 pub const NUM_SETTINGS_CATEGORIES: usize = 5;
@@ -65,6 +65,7 @@ pub struct App {
     pub library_category: usize,
     pub library_pane_focus: bool,
     pub settings_category: usize,
+    pub settings_pane_focus: bool,
     pub settings_option_scroll: usize,
     pub tracks_cache: Vec<TrackInfo>,
     pub queue_cache: Vec<TrackInfo>,
@@ -85,6 +86,8 @@ pub struct App {
     pub cmd_rx: mpsc::Receiver<TuiCommand>,
     cmd_tx: mpsc::Sender<TuiCommand>,
     keybindings: crate::keymap::Keybindings,
+    pub theme_index: usize,
+    pub show_tag_popup: bool,
 }
 
 #[allow(dead_code)]
@@ -134,6 +137,7 @@ impl App {
             library_category: 0,
             library_pane_focus: false,
             settings_category: 0,
+            settings_pane_focus: false,
             settings_option_scroll: 0,
             tracks_cache: Vec::new(),
             queue_cache: Vec::new(),
@@ -154,6 +158,8 @@ impl App {
             cmd_rx,
             cmd_tx,
             keybindings,
+            theme_index: 0,
+            show_tag_popup: false,
         })
     }
 
@@ -475,14 +481,17 @@ impl App {
             InputMode::Normal => {
                 match self.keybindings.dispatch(key, KeyContext::Normal) {
                     Some(KeyboardAction::Quit) => return false,
+                    Some(KeyboardAction::QuitDaemon) => {
+                        let _ = self.client.quit().await;
+                        return false;
+                    }
                     Some(KeyboardAction::NextTab) => {
-                        // In Library/Settings tabs, Tab toggles pane focus first
                         match self.current_tab {
                             Tab::Library => {
                                 self.library_pane_focus = !self.library_pane_focus;
                             }
                             Tab::Settings => {
-                                self.settings_category = (self.settings_category + 1) % NUM_SETTINGS_CATEGORIES;
+                                self.settings_pane_focus = !self.settings_pane_focus;
                             }
                             _ => {
                                 self.current_tab = match self.current_tab {
@@ -499,7 +508,7 @@ impl App {
                                 self.library_pane_focus = !self.library_pane_focus;
                             }
                             Tab::Settings => {
-                                self.settings_category = self.settings_category.saturating_sub(1);
+                                self.settings_pane_focus = !self.settings_pane_focus;
                             }
                             _ => {
                                 self.current_tab = Tab::Settings;
@@ -521,11 +530,7 @@ impl App {
                                 let _ = tx.send(TuiCommand::Pause).await;
                             }
                             PlaybackStatus::Paused => {
-                                if let Some(ref t) = self.state.current_track {
-                                    let _ = tx
-                                        .send(TuiCommand::Play(t.path.clone()))
-                                        .await;
-                                }
+                                let _ = tx.send(TuiCommand::PlayPause).await;
                             }
                             PlaybackStatus::Stopped => {
                                 if !self.queue_cache.is_empty() {
@@ -545,7 +550,11 @@ impl App {
                         let tx = self.cmd_tx();
                         let _ = tx.send(TuiCommand::Prev).await;
                     }
-                    Some(KeyboardAction::VolumeUp) | Some(KeyboardAction::SeekForward) => {
+                    Some(KeyboardAction::Stop) => {
+                        let tx = self.cmd_tx();
+                        let _ = tx.send(TuiCommand::Stop).await;
+                    }
+                    Some(KeyboardAction::VolumeUp) => {
                         let new_vol = (self.state.volume + 5).min(100);
                         if new_vol > 85 {
                             self.pending_volume = Some(new_vol);
@@ -556,11 +565,21 @@ impl App {
                             self.notify(format!("Volume: {}%", new_vol), NotificationKind::Info);
                         }
                     }
-                    Some(KeyboardAction::VolumeDown) | Some(KeyboardAction::SeekBackward) => {
+                    Some(KeyboardAction::VolumeDown) => {
                         let tx = self.cmd_tx();
                         let new_vol = self.state.volume.saturating_sub(5);
                         let _ = tx.send(TuiCommand::SetVolume(new_vol)).await;
                         self.notify(format!("Volume: {}%", new_vol), NotificationKind::Info);
+                    }
+                    Some(KeyboardAction::SeekForward) => {
+                        let tx = self.cmd_tx();
+                        let pos = self.display_position + 5.0;
+                        let _ = tx.send(TuiCommand::Seek(pos)).await;
+                    }
+                    Some(KeyboardAction::SeekBackward) => {
+                        let tx = self.cmd_tx();
+                        let pos = (self.display_position - 5.0).max(0.0);
+                        let _ = tx.send(TuiCommand::Seek(pos)).await;
                     }
                     Some(KeyboardAction::ToggleMute) => {
                         let tx = self.cmd_tx();
@@ -590,6 +609,32 @@ impl App {
                             self.notify("Shuffle ON", NotificationKind::Info);
                         }
                     }
+                    Some(KeyboardAction::ToggleFavourite) => {
+                        if let Some(ref track) = self.state.current_track {
+                            let tx = self.cmd_tx();
+                            let _ = tx.send(TuiCommand::AddFavourite(track.id)).await;
+                            self.notify("Favourite toggled", NotificationKind::Info);
+                        }
+                    }
+                    Some(KeyboardAction::ClearQueue) => {
+                        let tx = self.cmd_tx();
+                        let _ = tx.send(TuiCommand::QueueClear).await;
+                        self.notify("Queue cleared", NotificationKind::Info);
+                    }
+                    Some(KeyboardAction::FocusLeft) => {
+                        match self.current_tab {
+                            Tab::Library => self.library_pane_focus = true,
+                            Tab::Settings => self.settings_pane_focus = true,
+                            _ => {}
+                        }
+                    }
+                    Some(KeyboardAction::FocusRight) => {
+                        match self.current_tab {
+                            Tab::Library => self.library_pane_focus = false,
+                            Tab::Settings => self.settings_pane_focus = false,
+                            _ => {}
+                        }
+                    }
                     Some(KeyboardAction::EnterFilter) => {
                         self.input_mode = InputMode::Searching;
                     }
@@ -597,17 +642,29 @@ impl App {
                         self.input_mode = InputMode::Command;
                     }
                     Some(KeyboardAction::MoveUp) => {
-                        if self.current_tab == Tab::Library && self.library_pane_focus {
-                            self.library_category = self.library_category.saturating_sub(1);
-                        } else {
-                            self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                        match self.current_tab {
+                            Tab::Library if self.library_pane_focus => {
+                                self.library_category = self.library_category.saturating_sub(1);
+                            }
+                            Tab::Settings if self.settings_pane_focus => {
+                                self.settings_category = self.settings_category.saturating_sub(1);
+                            }
+                            _ => {
+                                self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                            }
                         }
                     }
                     Some(KeyboardAction::MoveDown) => {
-                        if self.current_tab == Tab::Library && self.library_pane_focus {
-                            self.library_category = (self.library_category + 1).min(LIBRARY_CATEGORIES.len() - 1);
-                        } else {
-                            self.scroll_offset += 1;
+                        match self.current_tab {
+                            Tab::Library if self.library_pane_focus => {
+                                self.library_category = (self.library_category + 1).min(LIBRARY_CATEGORIES.len() - 1);
+                            }
+                            Tab::Settings if self.settings_pane_focus => {
+                                self.settings_category = (self.settings_category + 1).min(NUM_SETTINGS_CATEGORIES.saturating_sub(1));
+                            }
+                            _ => {
+                                self.scroll_offset += 1;
+                            }
                         }
                     }
                     Some(KeyboardAction::Select) => {
@@ -616,10 +673,17 @@ impl App {
                                 // Left pane: move focus to right pane
                                 self.library_pane_focus = false;
                             } else {
-                                // Right pane: play selected track
+                                // Right pane: set queue context then play
                                 if self.scroll_offset < self.tracks_cache.len() {
-                                    let path = self.tracks_cache[self.scroll_offset].path.clone();
+                                    let idx = self.scroll_offset;
+                                    let paths: Vec<String> = self.tracks_cache
+                                        .iter()
+                                        .map(|t| t.path.clone())
+                                        .collect();
+                                    let path = paths[idx].clone();
                                     let tx = self.cmd_tx();
+                                    // Set queue to library tracks for next/prev navigation
+                                    let _ = self.client.queue_set(paths, idx as u128).await;
                                     let _ = tx.send(TuiCommand::Play(path)).await;
                                 }
                             }
@@ -628,7 +692,16 @@ impl App {
                     Some(KeyboardAction::Delete) => {}
                     None => {
                         match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => return false,
+                            KeyCode::Char('q') | KeyCode::Esc => {
+                                if self.show_tag_popup {
+                                    self.show_tag_popup = false;
+                                } else {
+                                    return false;
+                                }
+                            }
+                            KeyCode::Char('t') => {
+                                self.show_tag_popup = !self.show_tag_popup;
+                            }
                             KeyCode::Char('c') if self.current_tab == Tab::Settings => {
                                 // Toggle crossfade in Settings tab
                                 let enabled = !self.state.crossfade
@@ -748,6 +821,9 @@ impl App {
                             self.overlays.close_top();
                         }
                         OverlayId::ThemePicker => {
+                            let idx = top.selected.min(THEMES.len().saturating_sub(1));
+                            self.theme = (THEMES[idx].builder)();
+                            self.theme_index = idx;
                             self.overlays.close_top();
                         }
                         OverlayId::SoundEffects => {

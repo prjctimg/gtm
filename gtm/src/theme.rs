@@ -1,6 +1,7 @@
 use ratatui::style::Color;
 
 /// Central theme — all UI colors flow through here.
+#[derive(Clone, Copy)]
 pub struct AppTheme {
     pub overlay_bg: Color,
     pub fg: Color,
@@ -54,7 +55,7 @@ fn cyberdeck() -> AppTheme {
     AppTheme {
         overlay_bg: hex(0x141313),
         fg: hex(0xe5e2e1),
-        fg_dim: hex(0x353434),
+        fg_dim: hex(0x6e6d6d),
         fg_bright: hex(0xc4c7c7),
         accent: hex(0x00e639),
         error: hex(0xffb4ab),
@@ -263,3 +264,104 @@ fn ayu_dark() -> AppTheme {
         sidebar_active_border: hex(0xff8f40),
     }
 }
+
+/// Ayu Light
+#[allow(dead_code)]
+fn ayu_light() -> AppTheme {
+    AppTheme {
+        overlay_bg: hex(0xfafafa),
+        fg: hex(0x5c6166),
+        fg_dim: hex(0xa0a0a0),
+        fg_bright: hex(0x1a1f29),
+        accent: hex(0xff8a3c),
+        error: hex(0xf51818),
+        warning: hex(0xf07100),
+        success: hex(0x7bac3e),
+        selection_fg: hex(0xfafafa),
+        selection_bg: hex(0xff8a3c),
+        border: hex(0xd7dae0),
+        border_active: hex(0xff8a3c),
+        volume_low: hex(0x7bac3e),
+        volume_medium: hex(0xf07100),
+        volume_high: hex(0xf51818),
+        tab_active_fg: hex(0xfafafa),
+        tab_active_bg: hex(0xff8a3c),
+        tab_inactive_fg: hex(0xff8a3c),
+        tab_bar_bg: hex(0xfafafa),
+        sidebar_active_border: hex(0xff8a3c),
+    }
+}
+
+/// Gruvbox Light
+#[allow(dead_code)]
+fn gruvbox_light() -> AppTheme {
+    AppTheme {
+        overlay_bg: hex(0xfbf1c7),
+        fg: hex(0x3c3836),
+        fg_dim: hex(0x928374),
+        fg_bright: hex(0x282828),
+        accent: hex(0x458588),
+        error: hex(0x9d0006),
+        warning: hex(0xd65d0e),
+        success: hex(0x98971a),
+        selection_fg: hex(0xfbf1c7),
+        selection_bg: hex(0x458588),
+        border: hex(0xbdae93),
+        border_active: hex(0x458588),
+        volume_low: hex(0x98971a),
+        volume_medium: hex(0xd65d0e),
+        volume_high: hex(0x9d0006),
+        tab_active_fg: hex(0xfbf1c7),
+        tab_active_bg: hex(0x458588),
+        tab_inactive_fg: hex(0x458588),
+        tab_bar_bg: hex(0xfbf1c7),
+        sidebar_active_border: hex(0x458588),
+    }
+}
+
+/// Tokyonight Day
+#[allow(dead_code)]
+fn tokyonight_day() -> AppTheme {
+    AppTheme {
+        overlay_bg: hex(0xe1e2e7),
+        fg: hex(0x3760bf),
+        fg_dim: hex(0xa1a6c5),
+        fg_bright: hex(0x1a1b26),
+        accent: hex(0x2e7de9),
+        error: hex(0xf52a65),
+        warning: hex(0xb15c00),
+        success: hex(0x587539),
+        selection_fg: hex(0xe1e2e7),
+        selection_bg: hex(0x2e7de9),
+        border: hex(0xa1a6c5),
+        border_active: hex(0x2e7de9),
+        volume_low: hex(0x587539),
+        volume_medium: hex(0xb15c00),
+        volume_high: hex(0xf52a65),
+        tab_active_fg: hex(0xe1e2e7),
+        tab_active_bg: hex(0x2e7de9),
+        tab_inactive_fg: hex(0x2e7de9),
+        tab_bar_bg: hex(0xe1e2e7),
+        sidebar_active_border: hex(0x2e7de9),
+    }
+}
+
+/// Theme registry — name + constructor
+pub struct ThemeEntry {
+    pub name: &'static str,
+    pub builder: fn() -> AppTheme,
+}
+
+pub const THEMES: &[ThemeEntry] = &[
+    ThemeEntry { name: "Cyberdeck", builder: cyberdeck },
+    ThemeEntry { name: "Catppuccin Mocha", builder: catppuccin_mocha },
+    ThemeEntry { name: "Catppuccin Macchiato", builder: catppuccin_macchiato },
+    ThemeEntry { name: "Catppuccin Frappe", builder: catppuccin_frappe },
+    ThemeEntry { name: "Catppuccin Latte", builder: catppuccin_latte },
+    ThemeEntry { name: "Tokyonight Night", builder: tokyonight_night },
+    ThemeEntry { name: "Tokyonight Day", builder: tokyonight_day },
+    ThemeEntry { name: "Gruvbox Dark", builder: gruvbox_dark },
+    ThemeEntry { name: "Gruvbox Light", builder: gruvbox_light },
+    ThemeEntry { name: "Ayu Dark", builder: ayu_dark },
+    ThemeEntry { name: "Ayu Light", builder: ayu_light },
+];

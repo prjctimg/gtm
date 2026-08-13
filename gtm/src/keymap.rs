@@ -71,6 +71,7 @@ pub enum KeyboardAction {
     PlayPause,
     Next,
     Prev,
+    Stop,
     VolumeUp,
     VolumeDown,
     SeekForward,
@@ -78,15 +79,22 @@ pub enum KeyboardAction {
     ToggleShuffle,
     CycleRepeat,
     ToggleMute,
+    ToggleFavourite,
+
+    // Queue
+    ClearQueue,
 
     // Overlay triggers
     OpenOverlay(OverlayId),
 
     // Navigation
     Back,
+    FocusLeft,
+    FocusRight,
 
     // Meta
     Quit,
+    QuitDaemon,
     ReloadConfig,
     ToggleHelp,
     Custom(String),
@@ -251,7 +259,7 @@ pub fn default_keybindings() -> Keybindings {
                     description: "Move down",
                 },
             ),
-            // Playback — space, n, p
+            // Playback — space, n, p, Ctrl+N/P, s (stop)
             (
                 KeyCode::Char(' ').into(),
                 BoundCommand {
@@ -274,6 +282,30 @@ pub fn default_keybindings() -> Keybindings {
                     action: KeyboardAction::Prev,
                     contexts: vec![KeyContext::Global, KeyContext::Normal],
                     description: "Previous track",
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+                BoundCommand {
+                    action: KeyboardAction::Next,
+                    contexts: vec![KeyContext::Global, KeyContext::Normal],
+                    description: "Next track",
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+                BoundCommand {
+                    action: KeyboardAction::Prev,
+                    contexts: vec![KeyContext::Global, KeyContext::Normal],
+                    description: "Previous track",
+                },
+            ),
+            (
+                KeyCode::Char('s').into(),
+                BoundCommand {
+                    action: KeyboardAction::Stop,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Stop playback",
                 },
             ),
             // Volume — +, =, -
@@ -310,7 +342,51 @@ pub fn default_keybindings() -> Keybindings {
                     description: "Toggle mute",
                 },
             ),
-            // Repeat — r
+            // Quit daemon — Q
+            (
+                KeyCode::Char('Q').into(),
+                BoundCommand {
+                    action: KeyboardAction::QuitDaemon,
+                    contexts: vec![KeyContext::Global, KeyContext::Normal],
+                    description: "Quit and stop daemon",
+                },
+            ),
+            // Favourite — F
+            (
+                KeyCode::Char('F').into(),
+                BoundCommand {
+                    action: KeyboardAction::ToggleFavourite,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Toggle favourite",
+                },
+            ),
+            // Clear queue — D
+            (
+                KeyCode::Char('D').into(),
+                BoundCommand {
+                    action: KeyboardAction::ClearQueue,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Clear queue",
+                },
+            ),
+            // Focus navigation — H, L
+            (
+                KeyCode::Char('h').into(),
+                BoundCommand {
+                    action: KeyboardAction::FocusLeft,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Focus left pane",
+                },
+            ),
+            (
+                KeyCode::Char('l').into(),
+                BoundCommand {
+                    action: KeyboardAction::FocusRight,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Focus right pane",
+                },
+            ),
+            // Repeat — r, Shift+R
             (
                 KeyCode::Char('r').into(),
                 BoundCommand {
@@ -319,7 +395,15 @@ pub fn default_keybindings() -> Keybindings {
                     description: "Cycle repeat",
                 },
             ),
-            // Shuffle — s
+            (
+                KeyCode::Char('R').into(),
+                BoundCommand {
+                    action: KeyboardAction::CycleRepeat,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Cycle repeat",
+                },
+            ),
+            // Shuffle — s, Shift+S
             (
                 KeyCode::Char('s').into(),
                 BoundCommand {
@@ -328,9 +412,17 @@ pub fn default_keybindings() -> Keybindings {
                     description: "Toggle shuffle",
                 },
             ),
-            // Seek — left/right arrows
             (
-                KeyCode::Right.into(),
+                KeyCode::Char('S').into(),
+                BoundCommand {
+                    action: KeyboardAction::ToggleShuffle,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Toggle shuffle",
+                },
+            ),
+            // Seek — comma/period
+            (
+                KeyCode::Char('.').into(),
                 BoundCommand {
                     action: KeyboardAction::SeekForward,
                     contexts: vec![KeyContext::Normal],
@@ -338,16 +430,24 @@ pub fn default_keybindings() -> Keybindings {
                 },
             ),
             (
-                KeyCode::Left.into(),
+                KeyCode::Char(',').into(),
                 BoundCommand {
                     action: KeyboardAction::SeekBackward,
                     contexts: vec![KeyContext::Normal],
                     description: "Seek backward",
                 },
             ),
-            // Filter mode — /
+            // Filter mode — /, Ctrl+F
             (
                 KeyCode::Char('/').into(),
+                BoundCommand {
+                    action: KeyboardAction::EnterFilter,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Enter filter mode",
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
                 BoundCommand {
                     action: KeyboardAction::EnterFilter,
                     contexts: vec![KeyContext::Normal],
