@@ -13,10 +13,10 @@ can be picked up and completed in a later session.
 | [`02-ui-redesign.md`](./02-ui-redesign.md) — borderless TUI structural redesign | Done |
 | [`03-command-palette.md`](./03-command-palette.md) — command palette reliability and coverage | Done |
 | [`04-theming.md`](./04-theming.md) — secondary/tertiary accents, footer colors, monochromatic, gradient fill | Done |
-| [`05-notifications.md`](./05-notifications.md) — floating notifications and vertical volume window | Planned |
+| [`05-notifications.md`](./05-notifications.md) — floating notifications and vertical volume window | Done |
 | [`06-improvements.md`](./06-improvements.md) — UI improvements, help text, CLI logging, READMEs | Done |
 | [`07-cli-logging.md`](./07-cli-logging.md) — verbose CLI output, --stream flag | Done |
-| [`08-toml-config.md`](./08-toml-config.md) — TOML configuration format migration | Planned |
+| [`08-toml-config.md`](./08-toml-config.md) — TOML configuration format migration | Done |
 | [`09-bugs.md`](./09-bugs.md) — crossfade, track title, master volume fixes | Done |
 
 ## Committed decisions

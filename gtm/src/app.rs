@@ -38,17 +38,17 @@ fn prefs_path() -> std::path::PathBuf {
         });
     let dir = config.join("gtm");
     let _ = std::fs::create_dir_all(&dir);
-    dir.join("prefs.json")
+    dir.join("config.toml")
 }
 
 /// Return the config file path, creating the config directory and a
-/// default (pretty-printed) `prefs.json` if it does not exist yet. Used by
+/// default (pretty-printed) `config.toml` if it does not exist yet. Used by
 /// the `gtm config` CLI command to give the editor a valid starting point.
 pub(crate) fn ensure_prefs_file() -> std::path::PathBuf {
     let path = prefs_path();
     if !path.exists() {
-        if let Ok(s) = serde_json::to_string_pretty(&Prefs::default()) {
-            let _ = std::fs::write(&path, format!("{s}\n"));
+        if let Ok(toml_s) = toml::to_string_pretty(&Prefs::default()) {
+            let _ = std::fs::write(&path, format!("{toml_s}\n"));
         }
     }
     path
@@ -113,61 +113,14 @@ impl Default for Prefs {
 
 fn load_prefs() -> Prefs {
     let path = prefs_path();
-    let Ok(s) = std::fs::read_to_string(path) else {
+    let Ok(s) = std::fs::read_to_string(&path) else {
         return Prefs::default();
     };
-    if let Ok(p) = serde_json::from_str::<Prefs>(&s) {
-        return p;
-    }
-    // Legacy v2 format: { theme_index: usize, footer_preset: usize, ... }
-    #[derive(serde::Deserialize)]
-    struct OldPrefs {
-        #[serde(default)]
-        theme_index: Option<usize>,
-        #[serde(default)]
-        transparent_bg: bool,
-        #[serde(default)]
-        footer_preset: Option<usize>,
-        #[serde(default)]
-        progress_style: crate::progress::ProgressStyle,
-        #[serde(default)]
-        design: Design,
-    }
-    if let Ok(old) = serde_json::from_str::<OldPrefs>(&s) {
-        return Prefs {
-            theme_name: old
-                .theme_index
-                .and_then(|i| {
-                    crate::theme::builtin_themes()
-                        .get(i)
-                        .map(|t| t.name.to_string())
-                })
-                .unwrap_or_else(default_theme_name),
-            transparent_bg: old.transparent_bg,
-            footer_preset_name: old
-                .footer_preset
-                .and_then(|i| footer::presets().get(i).map(|p| p.name.to_string()))
-                .unwrap_or_else(default_footer_preset_name),
-            progress_style: old.progress_style,
-            design: old.design,
-            visualizer_preset: crate::visualizer::VisualizerPreset::default(),
-        };
-    }
-    // Legacy v1 format: bare integer theme_index.
-    if let Ok(idx) = serde_json::from_str::<usize>(&s) {
-        return Prefs {
-            theme_name: crate::theme::builtin_themes()
-                .get(idx)
-                .map(|t| t.name.to_string())
-                .unwrap_or_else(default_theme_name),
-            ..Default::default()
-        };
-    }
-    Prefs::default()
+    toml::from_str::<Prefs>(&s).unwrap_or_default()
 }
 
 fn save_prefs(prefs: &Prefs) {
-    if let Ok(s) = serde_json::to_string(prefs) {
+    if let Ok(s) = toml::to_string(prefs) {
         let _ = std::fs::write(prefs_path(), s);
     }
 }

@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.1.6] – 2026-08-12
+
+### Added
+- **Preset keybindings**: `Alt+T` cycles themes, `Alt+X` toggles crossfade, `Alt+P` cycles progress style (replaces plain `P`)
+- **Theme accents**: `secondary_accent` and `tertiary_accent` fields on `AppTheme` with values for all 12 built-in themes
+- **Theme picker swatches**: color blocks in the theme picker showing each theme's accent color
+- **Floating notifications**: notification overlay rendered as a floating panel in the bottom-right corner
+- **CLI verbose mode**: `-v`/`--verbose` flag for contextual output on `next`, `prev`, `volume`
+- **CLI streaming status**: `gtm status --stream` polls and displays elapsed time continuously
+- **TOML config**: user preferences now stored as `~/.config/gtm/config.toml` instead of `prefs.json`
+- **Version handling**: `--version`/`-V` prints version only; `-vv` includes copyright notice
+- **gtm crate README**: added per-crate README for the TUI/CLI frontend
+
+### Fixed
+- **Crossfade prev/next with >2 tracks**: clear crossfade state before starting a new crossfade in `cmd_next`
+
+### Changed
+- Footer module colors now use theme `secondary_accent`/`tertiary_accent` per section
+- Command palette has 45+ entries covering all TUI actions
+- All 12 iteration specs verified and marked complete
+
 ## [0.1.5] – 2026-08-11
 
 ### Added

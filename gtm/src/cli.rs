@@ -709,7 +709,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
     }
 }
 
-/// Open the config file (`~/.config/gtm/prefs.json`) in the user's default
+/// Open the config file (`~/.config/gtm/config.toml`) in the user's default
 /// editor, creating it with defaults if it does not exist yet.
 ///
 /// Editor resolution order: `$VISUAL` → `$EDITOR` → first installed editor

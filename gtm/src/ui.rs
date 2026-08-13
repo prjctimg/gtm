@@ -192,26 +192,27 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
         .split(area);
 
     render_tabs(f, chunks[0], app);
-    render_notifications(f, chunks[1], app);
-    render_content(f, chunks[2], app);
-    render_footer(f, chunks[3], app);
+    render_content(f, chunks[1], app);
+    render_footer(f, chunks[2], app);
 
     // Track info popup on Library tab
     if app.current_tab == Tab::Library && app.track_popup_visible && !app.pickers.is_open() {
-        render_track_popup(f, chunks[2], app);
+        render_track_popup(f, chunks[1], app);
     }
 
     // Render pickers on top of everything
     if app.pickers.is_open() {
         render_picker(f, area, app);
     }
+
+    // Floating notification overlay (rendered last, on top of everything)
+    render_notification_overlay(f, area, app);
 
     // Health check panel overlay
     if app.show_health_panel {
@@ -251,18 +252,56 @@ fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(para, area);
 }
 
-fn render_notifications(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    if let Some(n) = app.notifications.last() {
-        let color = match n.kind {
-            crate::app::NotificationKind::Info => app.theme.accent,
-            crate::app::NotificationKind::Success => app.theme.success,
-            crate::app::NotificationKind::Warning => app.theme.warning,
-            crate::app::NotificationKind::Error => app.theme.error,
-        };
-        let text = format!(" {} ", n.message);
-        let para = Paragraph::new(text).style(Style::default().fg(app.theme.fg_bright).bg(color));
-        f.render_widget(para, area);
+/// Floating notification overlay rendered in the bottom-right corner.
+fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let Some(n) = app.notifications.last() else {
+        return;
+    };
+    // Don't show notifications when a picker is open (pickers have their own panels)
+    if app.pickers.is_open() {
+        return;
     }
+
+    let color = match n.kind {
+        crate::app::NotificationKind::Info => app.theme.accent,
+        crate::app::NotificationKind::Success => app.theme.success,
+        crate::app::NotificationKind::Warning => app.theme.warning,
+        crate::app::NotificationKind::Error => app.theme.error,
+    };
+
+    let text = format!(" {} ", n.message);
+    let para = Paragraph::new(text).style(Style::default().fg(app.theme.fg_bright).bg(color));
+
+    // Position in bottom-right corner with padding
+    let notif_width = (app.notifications.last().map_or(0, |n| n.message.len()) as u16 + 4)
+        .min(area.width / 2)
+        .max(10);
+    let notif_height = 1u16;
+    let x = area.x + area.width.saturating_sub(notif_width + 1);
+    let y = area.y + area.height.saturating_sub(notif_height + 2);
+
+    let notif_area = Rect {
+        x,
+        y,
+        width: notif_width,
+        height: notif_height,
+    };
+
+    // Render background + border
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(color))
+        .style(Style::default().bg(app.theme.elevated_bg));
+    f.render_widget(block, notif_area);
+
+    // Render text inside
+    let inner = Rect {
+        x: notif_area.x + 1,
+        y: notif_area.y + 1,
+        width: notif_area.width.saturating_sub(2),
+        height: notif_area.height,
+    };
+    f.render_widget(para, inner);
 }
 
 // ─── Content Area ───
