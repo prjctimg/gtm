@@ -25,12 +25,12 @@
 //!    Normal  — main view mode (tab, cursor, volume)
 //!    List    — when a list widget has focus (j/k, enter)
 //!    Filter  — typing a search query
-//!    Overlay — modal overlay is open
+//!    Picker — modal picker is open
 //! ```
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::overlay::OverlayId;
+use crate::picker::PickerId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
@@ -89,7 +89,7 @@ pub enum KeyboardAction {
     ClearQueue,
 
     // Overlay triggers
-    OpenOverlay(OverlayId),
+    OpenOverlay(PickerId),
 
     // Navigation
     Back,
@@ -233,7 +233,7 @@ pub fn default_keybindings() -> Keybindings {
             (
                 KeyCode::Char(':').into(),
                 BoundCommand {
-                    action: KeyboardAction::OpenOverlay(OverlayId::CommandPalette),
+                    action: KeyboardAction::OpenOverlay(PickerId::CommandPalette),
                     contexts: vec![KeyContext::Normal],
                     description: "Open command palette",
                 },
@@ -524,81 +524,81 @@ pub fn default_keybindings() -> Keybindings {
             (
                 KeyEvent::new(KeyCode::Char('q'), KeyModifiers::ALT),
                 BoundCommand {
-                    action: KeyboardAction::OpenOverlay(OverlayId::Queue),
+                    action: KeyboardAction::OpenOverlay(PickerId::Queue),
                     contexts: vec![KeyContext::Normal],
-                    description: "Queue overlay",
+                    description: "Queue picker",
                 },
             ),
             (
                 KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT),
                 BoundCommand {
-                    action: KeyboardAction::OpenOverlay(OverlayId::YTSearch),
+                    action: KeyboardAction::OpenOverlay(PickerId::YTSearch),
                     contexts: vec![KeyContext::Normal],
-                    description: "YouTube Search overlay",
+                    description: "YouTube Search picker",
                 },
             ),
             (
                 KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
                 BoundCommand {
-                    action: KeyboardAction::OpenOverlay(OverlayId::SearchLibrary),
+                    action: KeyboardAction::OpenOverlay(PickerId::SearchLibrary),
                     contexts: vec![KeyContext::Normal],
-                    description: "Search Library overlay",
+                    description: "Search Library picker",
                 },
             ),
             (
                 KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT),
                 BoundCommand {
-                    action: KeyboardAction::OpenOverlay(OverlayId::About),
+                    action: KeyboardAction::OpenOverlay(PickerId::About),
                     contexts: vec![KeyContext::Normal],
-                    description: "About overlay",
+                    description: "About picker",
                 },
             ),
             (
                 KeyEvent::new(KeyCode::Char('z'), KeyModifiers::ALT),
                 BoundCommand {
-                    action: KeyboardAction::OpenOverlay(OverlayId::SleepTimer),
+                    action: KeyboardAction::OpenOverlay(PickerId::SleepTimer),
                     contexts: vec![KeyContext::Normal],
-                    description: "Sleep Timer overlay",
+                    description: "Sleep Timer picker",
                 },
             ),
             (
                 KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT),
                 BoundCommand {
-                    action: KeyboardAction::OpenOverlay(OverlayId::ThemePicker),
+                    action: KeyboardAction::OpenOverlay(PickerId::ThemePicker),
                     contexts: vec![KeyContext::Normal],
-                    description: "Theme Picker overlay",
+                    description: "Theme Picker picker",
                 },
             ),
             (
                 KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT),
                 BoundCommand {
-                    action: KeyboardAction::OpenOverlay(OverlayId::Equalizer),
+                    action: KeyboardAction::OpenOverlay(PickerId::Equalizer),
                     contexts: vec![KeyContext::Normal],
-                    description: "Equalizer overlay",
+                    description: "Equalizer picker",
                 },
             ),
             (
                 KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT),
                 BoundCommand {
-                    action: KeyboardAction::OpenOverlay(OverlayId::CommandPalette),
+                    action: KeyboardAction::OpenOverlay(PickerId::CommandPalette),
                     contexts: vec![KeyContext::Normal],
-                    description: "Command Palette overlay",
+                    description: "Command Palette picker",
                 },
             ),
             (
                 KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT),
                 BoundCommand {
-                    action: KeyboardAction::OpenOverlay(OverlayId::SpotifySearch),
+                    action: KeyboardAction::OpenOverlay(PickerId::SpotifySearch),
                     contexts: vec![KeyContext::Normal],
-                    description: "Spotify Search overlay",
+                    description: "Spotify Search picker",
                 },
             ),
             (
                 KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT),
                 BoundCommand {
-                    action: KeyboardAction::OpenOverlay(OverlayId::SoundEffects),
+                    action: KeyboardAction::OpenOverlay(PickerId::SoundEffects),
                     contexts: vec![KeyContext::Normal],
-                    description: "Sound Effects overlay",
+                    description: "Sound Effects picker",
                 },
             ),
             // Footer preset cycling — Alt+F

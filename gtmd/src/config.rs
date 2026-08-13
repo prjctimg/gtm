@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AudioBackendKind {
     Rodio,
+    #[cfg(feature = "pulseaudio")]
+    PulseAudio,
 }
 
 impl Default for AudioBackendKind {
@@ -53,7 +55,7 @@ pub struct DaemonArgs {
     #[arg(long, help = "Test mode (ephemeral socket, no daemonize)")]
     pub test_mode: bool,
 
-    #[arg(long, help = "Audio backend (rodio)")]
+    #[arg(long, help = "Audio backend (rodio, pulseaudio)")]
     pub backend: Option<String>,
 }
 
@@ -119,8 +121,11 @@ impl DaemonConfig {
             Some(data_dir.join("gtmd.log"))
         };
 
-        let _unused_backend = args.backend.as_deref();
-        let audio_backend = AudioBackendKind::Rodio;
+        let audio_backend = match args.backend.as_deref() {
+            #[cfg(feature = "pulseaudio")]
+            Some("pulseaudio") => AudioBackendKind::PulseAudio,
+            _ => AudioBackendKind::Rodio,
+        };
 
         // Default library paths: data_dir/audio and user's Music directory
         let mut library_paths = vec![data_dir.join("audio")];

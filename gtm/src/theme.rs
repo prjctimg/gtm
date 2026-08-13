@@ -11,7 +11,7 @@ use ratatui::style::Color;
 #[derive(Clone, Copy)]
 pub struct AppTheme {
     pub bg: Color,
-    pub overlay_bg: Color,
+    pub picker_bg: Color,
     pub fg: Color,
     pub fg_dim: Color,
     pub fg_bright: Color,
@@ -62,7 +62,7 @@ fn hex(c: u32) -> Color {
 fn chadrula() -> AppTheme {
     AppTheme {
         bg: hex(0x24283b),
-        overlay_bg: hex(0x1f2335),
+        picker_bg: hex(0x1f2335),
         fg: hex(0xc0caf5),
         fg_dim: hex(0x565f89),
         fg_bright: hex(0xe0e6ff),
@@ -92,7 +92,7 @@ fn chadrula() -> AppTheme {
 fn one_dark() -> AppTheme {
     AppTheme {
         bg: hex(0x282c34),
-        overlay_bg: hex(0x21252b),
+        picker_bg: hex(0x21252b),
         fg: hex(0xabb2bf),
         fg_dim: hex(0x5c6370),
         fg_bright: hex(0xe6e6e6),
@@ -122,7 +122,7 @@ fn one_dark() -> AppTheme {
 fn tokyonight() -> AppTheme {
     AppTheme {
         bg: hex(0x1a1b26),
-        overlay_bg: hex(0x16161e),
+        picker_bg: hex(0x16161e),
         fg: hex(0xa9b1d6),
         fg_dim: hex(0x565f89),
         fg_bright: hex(0xc0caf5),
@@ -152,7 +152,7 @@ fn tokyonight() -> AppTheme {
 fn catppuccin_mocha() -> AppTheme {
     AppTheme {
         bg: hex(0x1e1e2e),
-        overlay_bg: hex(0x181825),
+        picker_bg: hex(0x181825),
         fg: hex(0xcdd6f4),
         fg_dim: hex(0x6c7086),
         fg_bright: hex(0xf5f5ff),
@@ -182,7 +182,7 @@ fn catppuccin_mocha() -> AppTheme {
 fn gruvbox_dark() -> AppTheme {
     AppTheme {
         bg: hex(0x282828),
-        overlay_bg: hex(0x1d2021),
+        picker_bg: hex(0x1d2021),
         fg: hex(0xebdbb2),
         fg_dim: hex(0x928374),
         fg_bright: hex(0xfbf1c7),
@@ -212,7 +212,7 @@ fn gruvbox_dark() -> AppTheme {
 fn nord() -> AppTheme {
     AppTheme {
         bg: hex(0x2e3440),
-        overlay_bg: hex(0x2b303b),
+        picker_bg: hex(0x2b303b),
         fg: hex(0xd8dee9),
         fg_dim: hex(0x4c566a),
         fg_bright: hex(0xeceff4),
@@ -242,7 +242,7 @@ fn nord() -> AppTheme {
 fn rose_pine() -> AppTheme {
     AppTheme {
         bg: hex(0x191724),
-        overlay_bg: hex(0x11111b),
+        picker_bg: hex(0x11111b),
         fg: hex(0xe0def4),
         fg_dim: hex(0x6e6a86),
         fg_bright: hex(0xf0edf6),
@@ -272,7 +272,7 @@ fn rose_pine() -> AppTheme {
 fn everforest() -> AppTheme {
     AppTheme {
         bg: hex(0x2d353b),
-        overlay_bg: hex(0x273036),
+        picker_bg: hex(0x273036),
         fg: hex(0xd3c6aa),
         fg_dim: hex(0x7a8478),
         fg_bright: hex(0xeae4c9),
@@ -302,7 +302,7 @@ fn everforest() -> AppTheme {
 fn kanagawa() -> AppTheme {
     AppTheme {
         bg: hex(0x1f1f28),
-        overlay_bg: hex(0x181820),
+        picker_bg: hex(0x181820),
         fg: hex(0xdcd7ba),
         fg_dim: hex(0x727169),
         fg_bright: hex(0xc8c0b3),
@@ -332,7 +332,7 @@ fn kanagawa() -> AppTheme {
 fn catppuccin_latte() -> AppTheme {
     AppTheme {
         bg: hex(0xeff1f5),
-        overlay_bg: hex(0xe6e9ef),
+        picker_bg: hex(0xe6e9ef),
         fg: hex(0x4c4f69),
         fg_dim: hex(0x9ca0b0),
         fg_bright: hex(0x1e1e2e),
@@ -362,7 +362,7 @@ fn catppuccin_latte() -> AppTheme {
 fn tokyonight_storm() -> AppTheme {
     AppTheme {
         bg: hex(0x24283b),
-        overlay_bg: hex(0x1f2335),
+        picker_bg: hex(0x1f2335),
         fg: hex(0xa9b1d6),
         fg_dim: hex(0x565f89),
         fg_bright: hex(0xc0caf5),
@@ -392,7 +392,7 @@ fn tokyonight_storm() -> AppTheme {
 fn kanagawa_lotus() -> AppTheme {
     AppTheme {
         bg: hex(0xf2ecbc),
-        overlay_bg: hex(0xeae4c9),
+        picker_bg: hex(0xeae4c9),
         fg: hex(0x545464),
         fg_dim: hex(0x949494),
         fg_bright: hex(0x434343),

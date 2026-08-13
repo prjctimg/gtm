@@ -32,6 +32,7 @@ cargo test --workspace
 ### Feature flags
 
 - `gtmd` — `mpris` (default): enables the MPRIS D-Bus interface
+- `gtmd` — `pulseaudio`: enables PulseAudio audio backend (for Android/Termux)
 - `gtm-core` — `debug-fail`: enables debug/test failure injection
 
 ## Install
@@ -74,6 +75,41 @@ sudo rpm -i ~/rpmbuild/RPMS/*/gtm-*.rpm
 nix build
 ./result/bin/gtmd
 ```
+
+### Termux (Android)
+
+**Prerequisites:**
+- Termux from [F-Droid](https://f-droid.org/packages/com.termux/) (Play Store version is outdated)
+- PulseAudio: `pkg install pulseaudio`
+- Start PulseAudio: `pulseaudio --start --exit-idle-time=-1`
+
+**From release:**
+
+Download `gtm-full-aarch64-android.tar.gz` from the [latest release](https://github.com/prjctimg/gtm-rs/releases/latest) and extract:
+
+```bash
+tar xzf gtm-full-aarch64-android.tar.gz -C $PREFIX/bin/
+```
+
+**From source (on-device):**
+
+```bash
+pkg install rust binutils
+CARGO_INCREMENTAL=0 cargo build --release --no-default-features --features pulseaudio
+termux-elf-cleaner target/release/gtmd target/release/gtm
+install -Dm 0755 target/release/gtmd $PREFIX/bin/gtmd
+install -Dm 0755 target/release/gtm  $PREFIX/bin/gtm
+```
+
+**Cross-compilation from desktop:**
+
+```bash
+cargo install cargo-ndk
+rustup target add aarch64-linux-android
+cargo ndk -t arm64-v8a -p 27 build --release --no-default-features --features pulseaudio
+```
+
+For detailed setup, troubleshooting, and background playback configuration, see [`docs/termux.md`](docs/termux.md).
 
 ### Systemd user service
 

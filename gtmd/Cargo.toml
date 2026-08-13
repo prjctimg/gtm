@@ -29,6 +29,7 @@ dirs = "5"
 [features]
 default = ["mpris"]
 mpris = ["gtm-mpris"]
+pulseaudio = ["gtm-audio/pulseaudio"]
 
 [package.metadata.deb]
 maintainer = "prjctimg <prjctimg@outlook.com>"

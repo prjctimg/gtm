@@ -12,10 +12,16 @@ pub mod ring_buffer;
 pub mod rodio;
 pub mod symphonia;
 
+#[cfg(feature = "pulseaudio")]
+pub mod pulse_mixer;
+
 pub use backend::{AudioBackend, AudioError, AudioEvent, AudioResult};
 pub use eq::{EqGains, EqSource, ReverbSource};
 pub use mixer::{AudioMixer, Mixer};
 pub use null_mixer::NullMixer;
 pub use ring_buffer::{DecodeControl, RingBufferSource};
+
+#[cfg(feature = "pulseaudio")]
+pub use pulse_mixer::PulseAudioMixer;
 
 pub mod mixer;

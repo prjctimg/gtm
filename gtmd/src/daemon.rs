@@ -62,6 +62,10 @@ use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{error, info, warn};
 
 use gtm_audio::{AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
+#[cfg(feature = "pulseaudio")]
+use gtm_audio::PulseAudioMixer;
+#[cfg(feature = "pulseaudio")]
+use crate::config::AudioBackendKind;
 use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, QueueAction, WireReq, WireRes};
 use gtm_core::state::{DaemonState, EqPreset, PlaybackStatus, ReverbConfig};
 use gtm_core::wire;
@@ -105,10 +109,7 @@ impl Daemon {
         let mixer: Box<dyn Mixer> = if config.test_mode {
             Box::new(NullMixer::new())
         } else {
-            Box::new(
-                AudioMixer::new()
-                    .map_err(|e| CoreError::Daemon(format!("audio mixer init: {e}")))?,
-            )
+            Self::init_mixer(&config)?
         };
 
         let socket_path = Path::new(&config.socket_path);
@@ -161,6 +162,32 @@ impl Daemon {
             req_rx,
             next_client_id: 0,
         })
+    }
+
+    #[cfg(feature = "pulseaudio")]
+    fn init_mixer(config: &DaemonConfig) -> Result<Box<dyn Mixer>, CoreError> {
+        if config.audio_backend == AudioBackendKind::PulseAudio {
+            match PulseAudioMixer::new() {
+                Ok(m) => Ok(Box::new(m)),
+                Err(e) => {
+                    warn!("PulseAudio init failed ({e}), falling back to rodio");
+                    AudioMixer::new()
+                        .map(|m| Box::new(m) as Box<dyn Mixer>)
+                        .map_err(|e| CoreError::Daemon(format!("audio mixer init: {e}")))
+                }
+            }
+        } else {
+            AudioMixer::new()
+                .map(|m| Box::new(m) as Box<dyn Mixer>)
+                .map_err(|e| CoreError::Daemon(format!("audio mixer init: {e}")))
+        }
+    }
+
+    #[cfg(not(feature = "pulseaudio"))]
+    fn init_mixer(_config: &DaemonConfig) -> Result<Box<dyn Mixer>, CoreError> {
+        AudioMixer::new()
+            .map(|m| Box::new(m) as Box<dyn Mixer>)
+            .map_err(|e| CoreError::Daemon(format!("audio mixer init: {e}")))
     }
 
     /// Main daemon event loop — multiplexes three sources:

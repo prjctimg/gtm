@@ -11,14 +11,18 @@
 #   make completions – generate shell completions
 #   make install  – install binaries to $(DESTDIR)$(PREFIX)/bin
 #   make rpm      – build RPM (requires rpmbuild)
+#   make termux       – cross-compile for Android (aarch64, requires cargo-ndk + NDK)
+#   make termux-elf   – strip unsupported ELF sections (requires termux-elf-cleaner)
+#   make deb-termux   – build Termux .deb package (requires termux-create-package)
 
 PREFIX ?= /usr/local
 DESTDIR ?=
 BINDIR ?= $(PREFIX)/bin
 MANDIR ?= $(PREFIX)/share/man
 COMPLETIONSDIR ?= $(PREFIX)/share/bash-completion/completions
+ANDROID_API ?= 27
 
-.PHONY: all release test check clean deb man completions install rpm
+.PHONY: all release test check clean deb man completions install rpm termux termux-elf termux-clean deb-termux
 
 all:
 	cargo build
@@ -72,3 +76,31 @@ rpm: release
 		--exclude=target --exclude=.git \
 		.
 	rpmbuild -tb /tmp/gtmd-0.1.0.tar.gz
+
+# ── Android / Termux targets ──────────────────────────────────────────
+
+# Cross-compile for Android aarch64 (requires cargo-ndk + Android NDK)
+termux:
+	@command -v cargo-ndk >/dev/null 2>&1 || { echo "cargo-ndk not found. Install with: cargo install cargo-ndk"; exit 1; }
+	CARGO_INCREMENTAL=0 cargo ndk -t arm64-v8a -p $(ANDROID_API) \
+		build --release --no-default-features --features pulseaudio
+
+# Strip unsupported ELF sections for Android
+termux-elf:
+	@command -v termux-elf-cleaner >/dev/null 2>&1 || \
+		{ echo "Install termux-elf-cleaner: pip install termux-elf-cleaner"; exit 1; }
+	termux-elf-cleaner target/aarch64-linux-android/release/gtmd
+	termux-elf-cleaner target/aarch64-linux-android/release/gtm
+
+# Full cross-compile + ELF clean pipeline
+termux-release: termux termux-elf
+
+# Clean Android build artifacts
+termux-clean:
+	rm -rf target/aarch64-linux-android/ target/armv7-linux-androideabi/
+
+# Build Termux .deb package (requires termux-create-package)
+deb-termux: termux termux-elf
+	@command -v termux-create-package >/dev/null 2>&1 || \
+		{ echo "termux-create-package not found. Install via Termux: pkg install termux-tools"; exit 1; }
+	./scripts/build-termux-deb.sh

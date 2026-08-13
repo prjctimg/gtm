@@ -216,10 +216,13 @@ impl EqPreset {
             Self::HipHop  => [4.0, 4.0, 3.0, 2.0, 1.0, 1.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, 2.0, 2.0, 2.0],
             Self::Latin   => [3.0, 3.0, 2.0, 1.0, 0.0, 0.0, -1.0, -1.0, -1.0, 0.0, 1.0, 2.0, 2.0, 3.0, 3.0],
             Self::Acoustic => [3.0, 3.0, 2.0, 2.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 1.0],
-            Self::Podcast => [-2.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0],
+            // Podcast: speech-optimized — low-cut rumble, narrow presence boost, de-ess, air
+            Self::Podcast => [-4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 3.0, 1.0, 2.0, 3.0, 3.0, 2.0],
             Self::Dance   => [4.0, 4.0, 4.0, 3.0, 2.0, 0.0, 0.0, -1.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0],
-            Self::Headphones => [2.0, 1.0, 0.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, 2.0, 3.0, 3.0, 2.0, 1.0, 0.0],
-            Self::Speaker => [-1.0, -1.0, 0.0, 1.0, 2.0, 3.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -2.0, -1.0, -1.0],
+            // Headphones: compensate closed-back — sub-bass warmth, presence dip, air shelf
+            Self::Headphones => [3.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 3.0],
+            // Speaker: desktop speakers — cut unplayable sub-bass, boost presence, add clarity
+            Self::Speaker => [-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 3.0, 3.0, 2.0, 1.0, 0.0, 1.0, 2.0, 1.0],
             Self::Custom(gains) => *gains,
         }
     }

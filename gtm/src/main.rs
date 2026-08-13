@@ -24,7 +24,7 @@ mod app;
 mod cli;
 mod footer;
 mod keymap;
-mod overlay;
+mod picker;
 mod progress;
 mod theme;
 mod ui;

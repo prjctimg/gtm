@@ -1,0 +1,9 @@
+# Android NDK linker configuration for cross-compilation.
+# These are used by cargo-ndk and for non-NDK-aware tooling.
+# API level 27 = Android 8.1 (minimum for AAudio support).
+
+[target.aarch64-linux-android]
+linker = "aarch64-linux-android27-clang"
+
+[target.armv7-linux-androideabi]
+linker = "armv7a-linux-androideabi27-clang"

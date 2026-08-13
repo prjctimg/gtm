@@ -23,7 +23,7 @@ use base64::Engine;
 
 use crate::footer;
 use crate::keymap::{default_keybindings, KeyContext, KeyboardAction};
-use crate::overlay::{OverlayCtx, OverlayId, OverlayManager};
+use crate::picker::{PickerCtx, PickerId, PickerManager};
 use crate::theme::{AppTheme, THEMES};
 use crate::ui;
 
@@ -141,7 +141,7 @@ pub struct App {
     pub yt_search_debounce: Option<std::time::Instant>,
     pub pending_volume: Option<u8>,
     pub pending_delete: Option<(i64, String)>,
-    pub overlays: OverlayManager,
+    pub pickers: PickerManager,
     pub sleep_timer_remaining: Option<u64>,
     pub sleep_timer_minutes: u32,
     pub sleep_timer_input_mode: bool,
@@ -296,7 +296,7 @@ impl App {
             pending_delete: None,
             yt_search_loading: false,
             yt_search_debounce: None,
-            overlays: OverlayManager::new(),
+            pickers: PickerManager::new(),
             sleep_timer_remaining: None,
             sleep_timer_minutes: 30,
             sleep_timer_input_mode: false,
@@ -370,15 +370,15 @@ impl App {
     }
 
     #[allow(dead_code)]
-    pub fn overlay_ctx(&self) -> OverlayCtx<'_> {
-        OverlayCtx {
+    pub fn picker_ctx(&self) -> PickerCtx<'_> {
+        PickerCtx {
             state: &self.state,
             tracks_cache: &self.tracks_cache,
             queue_cache: &self.queue_cache,
             queue_cursor: self.queue_cursor,
             yt_results_cache: &self.yt_results_cache,
             playlist_cache: &self.playlist_cache,
-            op: &self.overlays,
+            op: &self.pickers,
         }
     }
 
@@ -632,8 +632,8 @@ impl App {
             if let Some(deadline) = self.yt_search_debounce {
                 if now >= deadline {
                     self.yt_search_debounce = None;
-                    if let Some(top) = self.overlays.top() {
-                        if top.id == OverlayId::YTSearch && !top.query.is_empty() {
+                    if let Some(top) = self.pickers.top() {
+                        if top.id == PickerId::YTSearch && !top.query.is_empty() {
                             let q = top.query.clone();
                             let tx = self.cmd_tx();
                             let _ = tx.send(TuiCommand::YtSearch(q)).await;
@@ -1117,7 +1117,7 @@ impl App {
                         let _ = ipc_tx2.send(IpcResult::RefreshDone(state, cover, cover_tid.or(track_id)));
                     }
                 });
-                // Auto-poll YT search results while overlay is active
+                // Auto-poll YT search results while picker is active
                 let ipc_tx3 = self.ipc_tx.clone();
                 tokio::spawn(async move {
                     if let Ok(DaemonRes::YtSearchResults { results, .. }) = client.yt_search_poll().await {
@@ -1216,12 +1216,12 @@ impl App {
         self.last_action_name = Some((name.to_string(), std::time::Instant::now() + std::time::Duration::from_secs(3)));
     }
 
-    fn clamp_overlay_selection(&mut self) {
-        if let Some(top) = self.overlays.top_mut() {
+    fn clamp_picker_selection(&mut self) {
+        if let Some(top) = self.pickers.top_mut() {
             let max = match top.id {
-                OverlayId::Queue => self.queue_cache.len().saturating_sub(1),
-                OverlayId::YTSearch => self.yt_results_cache.len().saturating_sub(1),
-                OverlayId::SearchLibrary => {
+                PickerId::Queue => self.queue_cache.len().saturating_sub(1),
+                PickerId::YTSearch => self.yt_results_cache.len().saturating_sub(1),
+                PickerId::SearchLibrary => {
                     let q = top.query.to_lowercase();
                     if q.is_empty() {
                         self.tracks_cache.len()
@@ -1232,7 +1232,7 @@ impl App {
                         }).count()
                     }.saturating_sub(1)
                 }
-                OverlayId::Equalizer => {
+                PickerId::Equalizer => {
                     let presets = [
                         gtm_core::state::EqPreset::Flat,
                         gtm_core::state::EqPreset::Pop,
@@ -1252,8 +1252,8 @@ impl App {
                     ];
                     presets.len().saturating_sub(1)
                 }
-                OverlayId::SleepTimer => 4,
-                OverlayId::ThemePicker => {
+                PickerId::SleepTimer => 4,
+                PickerId::ThemePicker => {
                     let q = top.query.to_lowercase();
                     if q.is_empty() {
                         THEMES.len()
@@ -1270,7 +1270,7 @@ impl App {
                         }).count()
                     }.saturating_sub(1)
                 }
-                OverlayId::CommandPalette => {
+                PickerId::CommandPalette => {
                     let commands = crate::ui::COMMAND_PALETTE_COMMANDS;
                     let q = top.query.to_lowercase();
                     if q.is_empty() {
@@ -1299,16 +1299,16 @@ impl App {
         if key.code != KeyCode::Char('g') {
             self.pending_motion = None;
         }
-        // If an overlay is open, Esc closes it; keys pass through to overlay
-        if self.overlays.is_open() {
+        // If an picker is open, Esc closes it; keys pass through to picker
+        if self.pickers.is_open() {
             return match key.code {
                 KeyCode::Esc => {
-                    self.overlays.close_top();
+                    self.pickers.close_top();
                     true
                 }
                 _ => {
-                    // Pass key to overlay handler
-                    self.handle_overlay_key(key).await;
+                    // Pass key to picker handler
+                    self.handle_picker_key(key).await;
                     true
                 }
             };
@@ -1464,11 +1464,11 @@ impl App {
                         self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::OpenOverlay(id)) => {
-                        self.overlays.open(id);
+                        self.pickers.open(id);
                         self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::ToggleHelp) => {
-                        self.overlays.open(OverlayId::Help);
+                        self.pickers.open(PickerId::Help);
                         self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::HideHelpBar) => {
@@ -1915,7 +1915,7 @@ impl App {
                             };
                             if !indices.is_empty() {
                                 self.pending_playlist_track_ids = indices;
-                                self.overlays.open(OverlayId::PlaylistSelect);
+                                self.pickers.open(PickerId::PlaylistSelect);
                             }
                         }
                     }
@@ -1972,7 +1972,7 @@ impl App {
                                     track_num.map_or(String::new(), |n| n.to_string()),
                                 ];
                                 self.metadata_field_idx = 0;
-                                self.overlays.open(OverlayId::EditMetadata);
+                                self.pickers.open(PickerId::EditMetadata);
                             }
                         }
                     }
@@ -2056,10 +2056,10 @@ impl App {
         true
     }
 
-    async fn handle_overlay_key(&mut self, key: event::KeyEvent) {
+    async fn handle_picker_key(&mut self, key: event::KeyEvent) {
         let tx = self.cmd_tx();
 
-        if matches!(self.overlays.top().map(|o| o.id), Some(OverlayId::SleepTimer)) {
+        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::SleepTimer)) {
             if self.sleep_timer_input_mode {
                 match key.code {
                     KeyCode::Esc => {
@@ -2085,7 +2085,7 @@ impl App {
                     self.sleep_timer_minutes = 30;
                     self.sleep_timer_input_mode = false;
                     self.sleep_timer_input_buf.clear();
-                    self.overlays.close_top();
+                    self.pickers.close_top();
                     return;
                 }
                 KeyCode::Char('h') | KeyCode::Left => {
@@ -2109,7 +2109,7 @@ impl App {
                     self.sleep_timer_remaining = Some(mins as u64);
                     self.send_high(TuiCommand::SetSleepTimer(mins));
                     self.notify(&format!("Sleep timer set: {} min", mins), NotificationKind::Info);
-                    self.overlays.close_top();
+                    self.pickers.close_top();
                     return;
                 }
                 KeyCode::Char('i') => {
@@ -2125,7 +2125,7 @@ impl App {
                 }
                 KeyCode::Up | KeyCode::Char('j') => {
                     let quick_opts = [5u32, 10, 15, 30, 60, 90, 120];
-                    if let Some(top) = self.overlays.top_mut() {
+                    if let Some(top) = self.pickers.top_mut() {
                         top.selected = (top.selected + 1) % quick_opts.len();
                         self.sleep_timer_minutes = quick_opts[top.selected];
                     }
@@ -2133,7 +2133,7 @@ impl App {
                 }
                 KeyCode::Down | KeyCode::Char('k') => {
                     let quick_opts = [5u32, 10, 15, 30, 60, 90, 120];
-                    if let Some(top) = self.overlays.top_mut() {
+                    if let Some(top) = self.pickers.top_mut() {
                         top.selected = if top.selected == 0 { quick_opts.len() - 1 } else { top.selected - 1 };
                         self.sleep_timer_minutes = quick_opts[top.selected];
                     }
@@ -2146,17 +2146,17 @@ impl App {
 
         match key.code {
             KeyCode::Esc => {
-                if let Some(top) = self.overlays.top() {
-                    if top.id == OverlayId::SleepTimer {
+                if let Some(top) = self.pickers.top() {
+                    if top.id == PickerId::SleepTimer {
                         self.sleep_timer_remaining = None;
                     }
                 }
-                self.overlays.close_top();
+                self.pickers.close_top();
             }
             // Queue move up/down (Ctrl+K/J) must come before plain k/j
             KeyCode::Char('k') if key.modifiers == KeyModifiers::CONTROL => {
-                if let Some(top) = self.overlays.top() {
-                    if top.id == OverlayId::Queue && !self.queue_cache.is_empty() {
+                if let Some(top) = self.pickers.top() {
+                    if top.id == PickerId::Queue && !self.queue_cache.is_empty() {
                         let idx = top.selected.min(self.queue_cache.len() - 1);
                         if idx > 0 {
                             let _ = tx.send(TuiCommand::QueueMove(idx as u128, idx.saturating_sub(1) as u128)).await;
@@ -2166,8 +2166,8 @@ impl App {
                 }
             }
             KeyCode::Char('j') if key.modifiers == KeyModifiers::CONTROL => {
-                if let Some(top) = self.overlays.top() {
-                    if top.id == OverlayId::Queue && !self.queue_cache.is_empty() {
+                if let Some(top) = self.pickers.top() {
+                    if top.id == PickerId::Queue && !self.queue_cache.is_empty() {
                         let idx = top.selected.min(self.queue_cache.len() - 1);
                         if idx < self.queue_cache.len() - 1 {
                             let _ = tx.send(TuiCommand::QueueMove(idx as u128, (idx + 1) as u128)).await;
@@ -2177,8 +2177,8 @@ impl App {
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                let has_input = matches!(self.overlays.top().map(|o| o.id), Some(OverlayId::YTSearch) | Some(OverlayId::SearchLibrary) | Some(OverlayId::CommandPalette));
-                let is_metadata = matches!(self.overlays.top().map(|o| o.id), Some(OverlayId::EditMetadata));
+                let has_input = matches!(self.pickers.top().map(|o| o.id), Some(PickerId::YTSearch) | Some(PickerId::SearchLibrary) | Some(PickerId::CommandPalette));
+                let is_metadata = matches!(self.pickers.top().map(|o| o.id), Some(PickerId::EditMetadata));
                 if is_metadata {
                     if self.metadata_field_idx > 0 {
                         self.metadata_field_idx -= 1;
@@ -2187,26 +2187,26 @@ impl App {
                 }
                 if has_input && key.code != KeyCode::Up {
                     // Add 'k' to the query instead of navigating
-                    if let Some(top) = self.overlays.top_mut() {
+                    if let Some(top) = self.pickers.top_mut() {
                         top.query.push('k');
                     }
                     return;
                 }
-                if let Some(top) = self.overlays.top_mut() {
+                if let Some(top) = self.pickers.top_mut() {
                     top.selected = top.selected.saturating_sub(1);
-                    if top.id == OverlayId::ThemePicker {
+                    if top.id == PickerId::ThemePicker {
                         let idx = top.selected.min(THEMES.len().saturating_sub(1));
                         self.theme = (THEMES[idx].builder)();
                         self.theme_index = idx;
                         save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, progress_style: self.progress_style });
                     }
                 }
-                self.clamp_overlay_selection();
+                self.clamp_picker_selection();
                 self.apply_eq_on_navigation().await;
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                let has_input = matches!(self.overlays.top().map(|o| o.id), Some(OverlayId::YTSearch) | Some(OverlayId::SearchLibrary) | Some(OverlayId::CommandPalette));
-                let is_metadata = matches!(self.overlays.top().map(|o| o.id), Some(OverlayId::EditMetadata));
+                let has_input = matches!(self.pickers.top().map(|o| o.id), Some(PickerId::YTSearch) | Some(PickerId::SearchLibrary) | Some(PickerId::CommandPalette));
+                let is_metadata = matches!(self.pickers.top().map(|o| o.id), Some(PickerId::EditMetadata));
                 if is_metadata {
                     if self.metadata_field_idx < 6 {
                         self.metadata_field_idx += 1;
@@ -2215,25 +2215,25 @@ impl App {
                 }
                 if has_input && key.code != KeyCode::Down {
                     // Add 'j' to the query instead of navigating
-                    if let Some(top) = self.overlays.top_mut() {
+                    if let Some(top) = self.pickers.top_mut() {
                         top.query.push('j');
                     }
                     return;
                 }
-                if let Some(top) = self.overlays.top_mut() {
+                if let Some(top) = self.pickers.top_mut() {
                     top.selected += 1;
-                    if top.id == OverlayId::ThemePicker {
+                    if top.id == PickerId::ThemePicker {
                         let idx = top.selected.min(THEMES.len().saturating_sub(1));
                         self.theme = (THEMES[idx].builder)();
                         self.theme_index = idx;
                         save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, progress_style: self.progress_style });
                     }
                 }
-                self.clamp_overlay_selection();
+                self.clamp_picker_selection();
                 self.apply_eq_on_navigation().await;
             }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if matches!(self.overlays.top().map(|o| o.id), Some(OverlayId::EditMetadata)) {
+                if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::EditMetadata)) {
                     if let Some(track_id) = self.metadata_edit_track_id {
                         let title = self.metadata_fields[0].clone();
                         let artist = self.metadata_fields[1].clone();
@@ -2254,21 +2254,21 @@ impl App {
                         });
                         self.metadata_edit_track_id = None;
                     }
-                    self.overlays.close_top();
+                    self.pickers.close_top();
                 }
             }
             KeyCode::Enter => {
-                // Dispatch based on overlay type
-                if let Some(top) = self.overlays.top() {
+                // Dispatch based on picker type
+                if let Some(top) = self.pickers.top() {
                     match top.id {
-                        OverlayId::Queue => {
+                        PickerId::Queue => {
                             if !self.queue_cache.is_empty() {
                                 let idx = top.selected.min(self.queue_cache.len() - 1);
                                 let path = self.queue_cache[idx].path.clone();
                                 self.send_high(TuiCommand::Play(path));
                             }
                         }
-                        OverlayId::YTSearch => {
+                        PickerId::YTSearch => {
                             if top.query.is_empty() {
                                 // Start search
                             } else if !self.yt_results_cache.is_empty() {
@@ -2276,7 +2276,7 @@ impl App {
                                 if self.yt_results_cache[idx].is_playlist {
                                     // Playlist drill-down: search using the playlist URL
                                     let url = self.yt_results_cache[idx].url.clone();
-                                    if let Some(top) = self.overlays.top_mut() {
+                                    if let Some(top) = self.pickers.top_mut() {
                                         top.query = url;
                                     }
                                     let query = self.yt_results_cache[idx].url.clone();
@@ -2292,10 +2292,10 @@ impl App {
                                 let _ = tx.send(TuiCommand::RefreshYt).await;
                             }
                         }
-                        OverlayId::SleepTimer => {
+                        PickerId::SleepTimer => {
                             // Handled by early return above
                         }
-                        OverlayId::CommandPalette => {
+                        PickerId::CommandPalette => {
                             let commands = crate::ui::COMMAND_PALETTE_COMMANDS;
                             let query = top.query.to_lowercase();
                             let filtered: Vec<&(&str, &str)> = if query.is_empty() {
@@ -2352,25 +2352,25 @@ impl App {
                                 } else if label.starts_with("settings") {
                                     self.current_tab = Tab::Settings;
                                 } else if label.starts_with("queue") {
-                                    self.overlays.open(OverlayId::Queue);
+                                    self.pickers.open(PickerId::Queue);
                                 } else if label.starts_with("youtube") {
-                                    self.overlays.open(OverlayId::YTSearch);
+                                    self.pickers.open(PickerId::YTSearch);
                                 } else if label.starts_with("search lib") {
-                                    self.overlays.open(OverlayId::SearchLibrary);
+                                    self.pickers.open(PickerId::SearchLibrary);
                                 } else if label.starts_with("eq") {
-                                    self.overlays.open(OverlayId::Equalizer);
+                                    self.pickers.open(PickerId::Equalizer);
                                 } else if label.starts_with("sleeptimer") {
-                                    self.overlays.open(OverlayId::SleepTimer);
+                                    self.pickers.open(PickerId::SleepTimer);
                                 } else if label.starts_with("themepicker") {
-                                    self.overlays.open_with_selection(OverlayId::ThemePicker, self.theme_index);
+                                    self.pickers.open_with_selection(PickerId::ThemePicker, self.theme_index);
                                 } else if label.starts_with("sound fx") {
-                                    self.overlays.open(OverlayId::SoundEffects);
+                                    self.pickers.open(PickerId::SoundEffects);
                                 } else if label.starts_with("about") {
-                                    self.overlays.open(OverlayId::About);
+                                    self.pickers.open(PickerId::About);
                                 } else if label.starts_with("search") {
-                                    self.overlays.open(OverlayId::SearchLibrary);
+                                    self.pickers.open(PickerId::SearchLibrary);
                                 } else if label.starts_with("spotify") {
-                                    self.overlays.open(OverlayId::SpotifySearch);
+                                    self.pickers.open(PickerId::SpotifySearch);
                                 } else if label.starts_with("fetch lyrics") {
                                     self.show_lyrics = true;
                                     self.send_high(TuiCommand::FetchLyrics);
@@ -2383,9 +2383,9 @@ impl App {
                                     self.notify(&format!("Visualizer: {}", state), crate::app::NotificationKind::Info);
                                 }
                             }
-                            self.overlays.close_top();
+                            self.pickers.close_top();
                         }
-                        OverlayId::Equalizer => {
+                        PickerId::Equalizer => {
                             // Apply selected EQ preset
                             let presets = [
                                 gtm_core::state::EqPreset::Flat,
@@ -2407,16 +2407,16 @@ impl App {
                             let idx = top.selected.min(presets.len() - 1);
                             let c = self.client.clone();
                             tokio::spawn(async move { let _ = c.set_eq_preset(presets[idx]).await; });
-                            self.overlays.close_top();
+                            self.pickers.close_top();
                         }
-                        OverlayId::ThemePicker => {
+                        PickerId::ThemePicker => {
                             let idx = top.selected.min(THEMES.len().saturating_sub(1));
                             self.theme = (THEMES[idx].builder)();
                             self.theme_index = idx;
                             save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, progress_style: self.progress_style });
-                            self.overlays.close_top();
+                            self.pickers.close_top();
                         }
-                        OverlayId::SearchLibrary => {
+                        PickerId::SearchLibrary => {
                             let q = top.query.to_lowercase();
                             let filtered: Vec<&gtm_core::track::TrackInfo> = if q.is_empty() {
                                 self.tracks_cache.iter().collect()
@@ -2434,9 +2434,9 @@ impl App {
                                 let path = filtered[idx].path.clone();
                                 self.send_high(TuiCommand::Play(path));
                             }
-                            self.overlays.close_top();
+                            self.pickers.close_top();
                         }
-                        OverlayId::SoundEffects => {
+                        PickerId::SoundEffects => {
                             let sel = top.selected;
                             match sel {
                                 1 => {
@@ -2446,14 +2446,14 @@ impl App {
                                     self.state.reverb.enabled = new_enabled;
                                     let c = self.client.clone();
                                     tokio::spawn(async move { let _ = c.set_reverb(new_enabled, room_size).await; });
-                                    self.overlays.close_top();
+                                    self.pickers.close_top();
                                 }
                                 _ => {
-                                    self.overlays.close_top();
+                                    self.pickers.close_top();
                                 }
                             }
                         }
-                        OverlayId::EditMetadata => {
+                        PickerId::EditMetadata => {
                             if self.metadata_field_idx < 6 {
                                 self.metadata_field_idx += 1;
                             } else {
@@ -2477,7 +2477,7 @@ impl App {
                                     });
                                     self.metadata_edit_track_id = None;
                                 }
-                                self.overlays.close_top();
+                                self.pickers.close_top();
                             }
                         }
                         _ => {}
@@ -2486,7 +2486,7 @@ impl App {
             }
             KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
                 // YT search: download selected result
-                let idx = self.overlays.top().map_or(0, |o| o.selected.min(self.yt_results_cache.len().saturating_sub(1)));
+                let idx = self.pickers.top().map_or(0, |o| o.selected.min(self.yt_results_cache.len().saturating_sub(1)));
                 if !self.yt_results_cache.is_empty() {
                     let url = self.yt_results_cache[idx].url.clone();
                     let _ = tx.send(TuiCommand::YtDownload(url)).await;
@@ -2494,7 +2494,7 @@ impl App {
             }
             KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
                 // YT search: add selected result to queue
-                let idx = self.overlays.top().map_or(0, |o| o.selected.min(self.yt_results_cache.len().saturating_sub(1)));
+                let idx = self.pickers.top().map_or(0, |o| o.selected.min(self.yt_results_cache.len().saturating_sub(1)));
                 if !self.yt_results_cache.is_empty() {
                     let url = self.yt_results_cache[idx].url.clone();
                     if self.yt_results_cache[idx].is_playlist {
@@ -2505,11 +2505,11 @@ impl App {
                 }
             }
             KeyCode::Char(c) => {
-                if let Some(top) = self.overlays.top_mut() {
+                if let Some(top) = self.pickers.top_mut() {
                     match top.id {
-                        OverlayId::YTSearch | OverlayId::SearchLibrary | OverlayId::CommandPalette | OverlayId::ThemePicker => {
+                        PickerId::YTSearch | PickerId::SearchLibrary | PickerId::CommandPalette | PickerId::ThemePicker => {
                             top.query.push(c);
-                            if top.id == OverlayId::YTSearch {
+                            if top.id == PickerId::YTSearch {
                                 if c == ' ' {
                                     self.yt_results_cache.clear();
                                     self.yt_search_loading = false;
@@ -2517,7 +2517,7 @@ impl App {
                                 self.yt_search_debounce = Some(std::time::Instant::now() + Duration::from_millis(500));
                             }
                         }
-                        OverlayId::EditMetadata => {
+                        PickerId::EditMetadata => {
                             self.metadata_fields[self.metadata_field_idx].push(c);
                         }
                         _ => {}
@@ -2525,15 +2525,15 @@ impl App {
                 }
             }
             KeyCode::Tab => {
-                if let Some(top) = self.overlays.top() {
-                    if top.id == OverlayId::EditMetadata {
+                if let Some(top) = self.pickers.top() {
+                    if top.id == PickerId::EditMetadata {
                         self.metadata_field_idx = (self.metadata_field_idx + 1) % 7;
                     }
                 }
             }
             KeyCode::Backspace => {
-                if let Some(top) = self.overlays.top_mut() {
-                    if top.id == OverlayId::EditMetadata {
+                if let Some(top) = self.pickers.top_mut() {
+                    if top.id == PickerId::EditMetadata {
                         self.metadata_fields[self.metadata_field_idx].pop();
                     } else {
                         top.query.pop();
@@ -2545,8 +2545,8 @@ impl App {
     }
 
     async fn apply_eq_on_navigation(&mut self) {
-        if let Some(top) = self.overlays.top() {
-            if top.id == OverlayId::Equalizer {
+        if let Some(top) = self.pickers.top() {
+            if top.id == PickerId::Equalizer {
                 let presets = [
                     gtm_core::state::EqPreset::Flat,
                     gtm_core::state::EqPreset::Pop,
