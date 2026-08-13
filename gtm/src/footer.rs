@@ -15,6 +15,19 @@ use gtm_core::state::PlaybackStatus;
 
 use crate::app::App;
 
+/// Darken an RGB color by the given factor (0.0 = black, 1.0 = unchanged).
+/// Used to create readable background colors from bright accent colors.
+fn darken(c: Color, factor: f64) -> Color {
+    match c {
+        Color::Rgb(r, g, b) => Color::Rgb(
+            (r as f64 * factor) as u8,
+            (g as f64 * factor) as u8,
+            (b as f64 * factor) as u8,
+        ),
+        _ => c,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FooterModule {
     Playback,
@@ -233,17 +246,22 @@ pub fn render(app: &App) -> Option<FooterRenderOutput> {
         .or_else(|| app.footer_presets.first())?;
 
     let is_playing = app.state.status == PlaybackStatus::Playing;
-    let status_bg = if is_playing {
-        app.theme.accent
+
+    // Each footer section gets a distinct background from the theme's accent
+    // colors, darkened for readability.  Left = accent (playing) or
+    // secondary_accent (paused); Middle = secondary_accent; Right = tertiary_accent.
+    let left_bg = if is_playing {
+        darken(app.theme.accent, 0.25)
     } else {
-        app.theme.fg_dim
+        darken(app.theme.secondary_accent, 0.25)
     };
-    let slot_bg = app.theme.fg_dim;
+    let middle_bg = darken(app.theme.secondary_accent, 0.20);
+    let right_bg = darken(app.theme.tertiary_accent, 0.20);
 
     let slots: [(&[FooterModule], Color); 3] = [
-        (&preset.left, status_bg),
-        (&preset.middle, slot_bg),
-        (&preset.right, slot_bg),
+        (&preset.left, left_bg),
+        (&preset.middle, middle_bg),
+        (&preset.right, right_bg),
     ];
 
     let mut out_groups: Vec<FooterGroup> = Vec::new();

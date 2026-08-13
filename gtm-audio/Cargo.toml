@@ -1,6 +1,6 @@
 [package]
 name = "gtm-audio"
-version = "0.1.5"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Audio playback backends (rodio/symphonia, optional PulseAudio) for the GTM music player"
@@ -15,7 +15,7 @@ default = []
 pulseaudio = ["dep:pulseaudio", "dep:tokio"]
 
 [dependencies]
-gtm-core = { path = "../gtm-core", version = "0.1.5" }
+gtm-core = { path = "../gtm-core", version = "0.1.7" }
 rodio = { version = "0.22", default-features = false, features = ["playback", "symphonia-all"] }
 symphonia = { version = "0.6", default-features = false, features = ["all-codecs", "all-formats", "all-meta"] }
 symphonia-adapter-libopus = "0.3"

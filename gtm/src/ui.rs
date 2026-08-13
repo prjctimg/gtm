@@ -252,56 +252,215 @@ fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(para, area);
 }
 
-/// Floating notification overlay rendered in the bottom-right corner.
-fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let Some(n) = app.notifications.last() else {
-        return;
-    };
+/// Easing: cubic ease-out for smooth deceleration.
+fn cubic_ease_out(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// Floating notification overlay rendered as stacked cards from the top-right.
+/// Each card has a 3-cell thick left border coloured by the notification kind,
+/// word-wrapped text, and a max width consistent with snacks.nvim design.
+fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     // Don't show notifications when a picker is open (pickers have their own panels)
     if app.pickers.is_open() {
         return;
     }
 
-    let color = match n.kind {
-        crate::app::NotificationKind::Info => app.theme.accent,
-        crate::app::NotificationKind::Success => app.theme.success,
-        crate::app::NotificationKind::Warning => app.theme.warning,
-        crate::app::NotificationKind::Error => app.theme.error,
-    };
+    let now = std::time::Instant::now();
 
-    let text = format!(" {} ", n.message);
-    let para = Paragraph::new(text).style(Style::default().fg(app.theme.fg_bright).bg(color));
+    // Advance animation progress for each notification.
+    let slide_duration_ms: f32 = 300.0;
+    for n in &mut app.notifications {
+        if n.animation_progress < 1.0 {
+            let elapsed = now
+                .duration_since(n.expires_at - std::time::Duration::from_secs(4))
+                .as_millis() as f32;
+            n.animation_progress = (elapsed / slide_duration_ms).min(1.0);
+        }
+    }
 
-    // Position in bottom-right corner with padding
-    let notif_width = (app.notifications.last().map_or(0, |n| n.message.len()) as u16 + 4)
-        .min(area.width / 2)
-        .max(10);
-    let notif_height = 1u16;
-    let x = area.x + area.width.saturating_sub(notif_width + 1);
-    let y = area.y + area.height.saturating_sub(notif_height + 2);
+    // Remove expired notifications.
+    app.notifications.retain(|n| n.expires_at > now);
 
-    let notif_area = Rect {
-        x,
-        y,
-        width: notif_width,
-        height: notif_height,
-    };
+    // Separate volume and regular notifications.
+    let mut regular: Vec<_> = app.notifications.iter().filter(|n| !n.is_volume).collect();
+    let volume: Vec<_> = app.notifications.iter().filter(|n| n.is_volume).collect();
 
-    // Render background + border
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(color))
-        .style(Style::default().bg(app.theme.elevated_bg));
-    f.render_widget(block, notif_area);
+    // Stack regular notifications from top-right, max 5 visible.
+    regular.truncate(5);
 
-    // Render text inside
-    let inner = Rect {
-        x: notif_area.x + 1,
-        y: notif_area.y + 1,
-        width: notif_area.width.saturating_sub(2),
-        height: notif_area.height,
-    };
-    f.render_widget(para, inner);
+    let max_notif_width = 55u16;
+    let padding = 2u16;
+    let gap = 1u16;
+    let border_w = 3u16;
+
+    let mut y_offset = area.y + padding;
+
+    for n in regular.iter() {
+        let color = match n.kind {
+            crate::app::NotificationKind::Info => app.theme.accent,
+            crate::app::NotificationKind::Success => app.theme.success,
+            crate::app::NotificationKind::Warning => app.theme.warning,
+            crate::app::NotificationKind::Error => app.theme.error,
+        };
+
+        // Wrap text to fit within max width minus border and padding.
+        let text_area_w = max_notif_width.saturating_sub(border_w + padding * 2);
+        let wrapped = wrap_text(&n.message, text_area_w as usize);
+        let line_count = wrapped.len() as u16;
+        let card_h = line_count + padding * 2;
+
+        // Check if card fits in remaining area.
+        if y_offset + card_h > area.y + area.height {
+            break;
+        }
+
+        // Slide-in from right: start off-screen, animate to final position.
+        let progress = cubic_ease_out(n.animation_progress);
+        let final_x = area.x + area.width.saturating_sub(max_notif_width + padding);
+        let start_x = area.x + area.width;
+        let x = (start_x as f32 + (final_x as f32 - start_x as f32) * progress) as u16;
+
+        let card_area = Rect {
+            x,
+            y: y_offset,
+            width: max_notif_width,
+            height: card_h,
+        };
+
+        // Background
+        f.render_widget(
+            Block::default().style(Style::default().bg(app.theme.elevated_bg)),
+            card_area,
+        );
+
+        // 3-cell thick left border in kind colour
+        let border_area = Rect {
+            x: card_area.x,
+            y: card_area.y,
+            width: border_w,
+            height: card_area.height,
+        };
+        f.render_widget(
+            Block::default().style(Style::default().bg(color)),
+            border_area,
+        );
+
+        // Text area (right of border)
+        let text_area = Rect {
+            x: card_area.x + border_w,
+            y: card_area.y,
+            width: card_area.width.saturating_sub(border_w),
+            height: card_area.height,
+        };
+
+        // Render wrapped lines
+        let inner = Rect {
+            x: text_area.x + padding,
+            y: text_area.y + padding,
+            width: text_area.width.saturating_sub(padding * 2),
+            height: text_area.height.saturating_sub(padding * 2),
+        };
+        let para =
+            Paragraph::new(wrapped.join("\n")).style(Style::default().fg(app.theme.fg_bright));
+        f.render_widget(para, inner);
+
+        // Rounded corners via border overlay (top-right, bottom-right)
+        // We'll use simple block borders for the overall card.
+        let block = Block::default()
+            .borders(Borders::TOP | Borders::BOTTOM | Borders::RIGHT)
+            .border_style(Style::default().fg(color))
+            .style(Style::default().bg(app.theme.elevated_bg));
+        f.render_widget(block, card_area);
+
+        y_offset += card_h + gap;
+    }
+
+    // Volume notifications: vertical bar on the far right edge
+    for n in volume.iter() {
+        if y_offset + 12 > area.y + area.height {
+            break;
+        }
+
+        let progress = cubic_ease_out(n.animation_progress);
+        let bar_h = 10u16;
+        let bar_w = 5u16;
+
+        let final_x = area.x + area.width.saturating_sub(bar_w + padding);
+        let start_x = area.x + area.width;
+        let x = (start_x as f32 + (final_x as f32 - start_x as f32) * progress) as u16;
+
+        let bar_area = Rect {
+            x,
+            y: y_offset,
+            width: bar_w,
+            height: bar_h + 2,
+        };
+
+        // Background
+        f.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(app.theme.border))
+                .style(Style::default().bg(app.theme.elevated_bg)),
+            bar_area,
+        );
+
+        // Fill bar (bottom-up, respecting theme volume colors)
+        let fill_h = ((n.volume_value as f64 / 100.0) * bar_h as f64) as u16;
+        if fill_h > 0 {
+            let fill_area = Rect {
+                x: bar_area.x + 1,
+                y: bar_area.y + 1 + (bar_h - fill_h),
+                width: bar_w.saturating_sub(2),
+                height: fill_h,
+            };
+            let vol_color = app.theme.volume_color(n.volume_value);
+            f.render_widget(
+                Block::default().style(Style::default().bg(vol_color)),
+                fill_area,
+            );
+        }
+
+        // Percentage label below bar
+        let label_area = Rect {
+            x: bar_area.x,
+            y: bar_area.y + bar_h + 1,
+            width: bar_w,
+            height: 1,
+        };
+        let label = Paragraph::new(format!("{:>3}%", n.volume_value))
+            .style(Style::default().fg(app.theme.fg_bright));
+        f.render_widget(label, label_area);
+
+        y_offset += bar_h + 2 + gap;
+    }
+}
+
+/// Wrap text to fit within `max_chars` per line, breaking at spaces when possible.
+fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
+    if max_chars == 0 {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    for word in text.split(' ') {
+        if current.len() + word.len() + 1 > max_chars && !current.is_empty() {
+            lines.push(std::mem::take(&mut current));
+        }
+        if !current.is_empty() {
+            current.push(' ');
+        }
+        current.push_str(word);
+    }
+    if !current.is_empty() {
+        lines.push(current);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
 }
 
 // ─── Content Area ───
@@ -326,11 +485,7 @@ fn render_footer_help(f: &mut ratatui::Frame, area: Rect, app: &App) {
     if app.current_tab != Tab::Library || app.pickers.is_open() || app.hide_help_bar {
         return;
     }
-    let text = if app.terminal_cols < 60 {
-        " [Space] Play  [n] Next  [p] Prev  [+/-] Vol  [:] Cmd  [q] Quit "
-    } else {
-        " [Space] Play/Pause  [n/N] Next  [p/P] Prev  [+/-] Volume  [s] Stop  [:] Command Palette  [q] Quit  [Q/Ctrl+Q] Quit daemon "
-    };
+    let text = " [Space] Play  [n] Next  [p] Prev  [+/-] Vol  [:] Cmd  [q] Quit ";
     let para = Paragraph::new(text)
         .alignment(Alignment::Right)
         .style(Style::default().fg(app.theme.fg_dim).bg(app.theme.border));
@@ -666,7 +821,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     // ── Now Playing section ──
     {
         // Borderless pane: bold header + muted separator, content below.
-        let np_inner = render_pane_header(f, np_area, app, "NOW PLAYING", false, true, false);
+        let np_inner = render_pane_header(f, np_area, app, "Now Playing", false, true, false);
         fill_pane(f, np_inner, app);
 
         // Clone the current track out of the app state so the render calls
@@ -716,7 +871,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     track.title.clone()
                 };
                 let display_artist = if track.artist.is_empty() {
-                    "Unknown"
+                    " "
                 } else {
                     &track.artist
                 };
@@ -800,10 +955,11 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 };
                 let bar_width =
                     (bar_row.width.saturating_sub(ts_str.len() as u16 + 2) as usize).min(40);
-                let bar = render_progress_variant(ratio, bar_width, app);
-                let bar_with_ts = format!("{} {}", bar, ts_str);
-                let bar_para =
-                    Paragraph::new(bar_with_ts).style(Style::default().fg(app.theme.accent));
+                let bar_spans = render_progress_variant_styled(ratio, bar_width, app);
+                let mut line_spans = bar_spans;
+                line_spans.push(Span::raw(" "));
+                line_spans.push(Span::raw(ts_str));
+                let bar_para = Paragraph::new(Line::from(line_spans));
                 f.render_widget(bar_para, bar_row);
             } else {
                 // Terminal too narrow for cover — just show info text
@@ -858,10 +1014,11 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 let ts_str = format!("{} / {}", pos_str, dur_str);
                 let bar_width =
                     (inner.width.saturating_sub(ts_str.len() as u16 + 2) as usize).min(40);
-                let bar = render_progress_variant(ratio, bar_width, app);
-                let bar_with_ts = format!("{} {}", bar, ts_str);
-                let bar_para =
-                    Paragraph::new(bar_with_ts).style(Style::default().fg(app.theme.accent));
+                let bar_spans = render_progress_variant_styled(ratio, bar_width, app);
+                let mut line_spans = bar_spans;
+                line_spans.push(Span::raw(" "));
+                line_spans.push(Span::raw(ts_str));
+                let bar_para = Paragraph::new(Line::from(line_spans));
                 let bar_area = Rect {
                     x: inner.x,
                     y: inner.y + row_offset,
@@ -887,7 +1044,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 vis_a.width,
             );
             let vis_header = Paragraph::new(Line::from(Span::styled(
-                " VISUALIZER ",
+                " ",
                 Style::default()
                     .fg(app.theme.fg_dim)
                     .add_modifier(Modifier::BOLD),
@@ -926,6 +1083,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             let icon = lib_icons.get(i).unwrap_or(&" ");
             let count = match *cat {
                 "All Tracks" => app.tracks_cache.len(),
+
                 "Albums" => app.unique_albums().len(),
                 "Artists" => app.unique_artists().len(),
                 "Playlists" => app.playlist_cache.len(),
@@ -953,7 +1111,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         })
         .collect();
 
-    let left_inner = render_pane_header(f, panes[0], app, "LIBRARY", left_focus, false, false);
+    let left_inner = render_pane_header(f, panes[0], app, " ", left_focus, false, false);
     fill_pane(f, left_inner, app);
     f.render_widget(List::new(left_items), left_inner);
 
@@ -1346,7 +1504,7 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    let left_inner = render_pane_header(f, panes[0], app, "SETTINGS", settings_focus, false, false);
+    let left_inner = render_pane_header(f, panes[0], app, " ", settings_focus, false, false);
     fill_pane(f, left_inner, app);
     f.render_widget(List::new(left_items), left_inner);
 
@@ -1553,7 +1711,7 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         (3, 2) => lines.push(Line::from(Span::styled(" Sync Covers: Download missing cover art from Deezer for all library tracks.", Style::default().fg(app.theme.fg_dim)))),
         (3, 3) => lines.push(Line::from(Span::styled(" Sync Lyrics: Fetch and save lyrics files alongside all library tracks.", Style::default().fg(app.theme.fg_dim)))),
         (3, 4) => lines.push(Line::from(Span::styled(" Sync Metadata: Resolve unreliable track metadata via Deezer and embed clean tags (title, artist, album, genre, year, track, cover) into the files.", Style::default().fg(app.theme.fg_dim)))),
-        (3, 5) => lines.push(Line::from(Span::styled(" Footer Preset: Press Enter to cycle. Also toggled via Alt+F. Add or override presets in ~/.config/gtm/footer.toml.", Style::default().fg(app.theme.fg_dim)))),
+        (3, 5) => lines.push(Line::from(Span::styled(" Footer Preset: Press Enter to cycle. Also available via the Command Palette. Add or override presets in ~/.config/gtm/footer.toml.", Style::default().fg(app.theme.fg_dim)))),
         (3, 6) => lines.push(Line::from(Span::styled(" Visualizer Preset: Press Enter to cycle (Braille, Blocks, Mirror, Gradient, Spectrum). Also toggled via Alt+V.", Style::default().fg(app.theme.fg_dim)))),
         (4, 0) => lines.push(Line::from(Span::styled(" Spotify: Integration status for the linked account.", Style::default().fg(app.theme.fg_dim)))),
         (4, 1) => lines.push(Line::from(Span::styled(" Account: Display name of the linked Spotify user.", Style::default().fg(app.theme.fg_dim)))),
@@ -2039,6 +2197,23 @@ pub fn render_progress_variant(ratio: f64, width: usize, app: &App) -> String {
     crate::progress::render_progress(ratio, width, app.progress_style)
 }
 
+/// Render the progress bar as styled spans (supports per-character coloring
+/// for the `TrueGradient` style).
+pub fn render_progress_variant_styled<'a>(
+    ratio: f64,
+    width: usize,
+    app: &App,
+) -> Vec<ratatui::text::Span<'a>> {
+    crate::progress::render_progress_styled(
+        ratio,
+        width,
+        app.progress_style,
+        app.theme.accent,
+        app.theme.secondary_accent,
+        app.theme.tertiary_accent,
+    )
+}
+
 /// Time-synced lyrics pane on the right side of the library view.
 fn render_lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let inner = render_pane_header(f, area, app, "LYRICS", app.lyrics_pane_focus, false, true);
@@ -2434,7 +2609,6 @@ fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         ("key", "   S            Toggle shuffle"),
         ("key", "   r / R        Cycle repeat"),
         ("key", "   :            Command palette"),
-        ("key", "   Alt+F        Cycle footer preset"),
         ("", ""),
         ("topic", "Help"),
         ("key", "   ?            Toggle this help"),
@@ -2679,8 +2853,8 @@ pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("\u{270e} Edit Metadata", "e"),
     ("\u{2753} Toggle Help", "?"),
     ("\u{1f6ab} Hide Help Bar", "Ctrl+H"),
-    ("\u{1f4cf} Footer Preset", "Alt+F"),
-    ("\u{25c9} Cycle Design", "Alt+D"),
+    ("\u{1f4cf} Footer Preset", "\u{2014}"),
+    ("\u{25c9} Cycle Design", "\u{2014}"),
     ("\u{1fa7a} Health Check", ":"),
 ];
 
@@ -3105,7 +3279,7 @@ fn render_playlist_select_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
     picker_help(f, inner, help_text, app);
 }
 
-fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
+fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let block = picker_panel(app, " Edit Metadata ");
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -3119,13 +3293,25 @@ fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         "Year",
         "Track #",
     ];
-    let chunks = Layout::default()
+
+    // Reserve a right column for the cover preview (bottom-right corner feel).
+    const COVER_W: u16 = 14;
+    let vchunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(field_names.len() as u16 * 2 + 1),
-            Constraint::Min(0),
-        ])
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(inner);
+    let content = vchunks[0];
+    let cover_col_w = if content.width > COVER_W + 2 {
+        COVER_W
+    } else {
+        0
+    };
+    let hchunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Min(0), Constraint::Length(cover_col_w)])
+        .split(content);
+    let list_area = hchunks[0];
+    let cover_area = hchunks[1];
 
     let mut lines: Vec<Line> = Vec::new();
     for (i, name) in field_names.iter().enumerate() {
@@ -3146,11 +3332,34 @@ fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
 
     let para = Paragraph::new(lines);
-    f.render_widget(para, chunks[0]);
+    f.render_widget(para, list_area);
 
-    let help_text =
-        " [j/k] Navigate fields  [Tab] Next  [Enter] Next/Save  [Ctrl+Enter] Save  [Esc] Cancel";
-    picker_help(f, chunks[1], help_text, app);
+    // Cover preview pinned to the bottom of the right column.
+    if cover_area.width > 0 {
+        let cover_h = 6u16.min(cover_area.height);
+        let c_area = Rect {
+            x: cover_area.x,
+            y: cover_area.y + cover_area.height.saturating_sub(cover_h),
+            width: cover_area.width,
+            height: cover_h,
+        };
+        if let Some(ref mut protocol) = app.metadata_cover_stateful {
+            let image = StatefulImage::new();
+            f.render_stateful_widget(image, c_area, protocol);
+        } else if let Some(ref cover_bytes) = app.metadata_cover {
+            render_cover_block(f, c_area, cover_bytes);
+        } else {
+            let placeholder = Paragraph::new(Line::from(Span::styled(
+                " \u{266b} no cover ",
+                Style::default().fg(app.theme.fg_dim),
+            )))
+            .alignment(Alignment::Center);
+            f.render_widget(placeholder, c_area);
+        }
+    }
+
+    let help_text = " [j/k] Fields  [Ctrl+S] Sync Cover  [Tab] Next  [Enter] Save  [Esc] Cancel";
+    picker_help(f, vchunks[1], help_text, app);
 }
 
 fn render_health_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {

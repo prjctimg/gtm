@@ -37,6 +37,10 @@ pub struct AppTheme {
     pub volume_medium: Color,
     pub volume_high: Color,
     pub sidebar_active_border: Color,
+    /// When true, all accent colors derive from `accent` with brightness
+    /// variations.  The footer and progress bars use this to create a
+    /// cohesive single-hue appearance.
+    pub monochromatic: bool,
 }
 
 impl AppTheme {
@@ -109,6 +113,7 @@ fn chadrula() -> AppTheme {
         volume_medium: hex(0xe0af68),
         volume_high: hex(0xf7768e),
         sidebar_active_border: hex(0x7aa2f7),
+        monochromatic: false,
     }
 }
 
@@ -137,6 +142,7 @@ fn one_dark() -> AppTheme {
         volume_medium: hex(0xe5c07b),
         volume_high: hex(0xe06c75),
         sidebar_active_border: hex(0x61afef),
+        monochromatic: false,
     }
 }
 
@@ -165,6 +171,7 @@ fn tokyonight() -> AppTheme {
         volume_medium: hex(0xff9e64),
         volume_high: hex(0xf7768e),
         sidebar_active_border: hex(0x7aa2f7),
+        monochromatic: false,
     }
 }
 
@@ -204,6 +211,7 @@ fn catppuccin_mocha() -> AppTheme {
         volume_medium: hex(0xfab387),
         volume_high: hex(0xf38ba8),
         sidebar_active_border: hex(0x89b4fa),
+        monochromatic: false,
     }
 }
 
@@ -232,6 +240,7 @@ fn gruvbox_dark() -> AppTheme {
         volume_medium: hex(0xfe8019),
         volume_high: hex(0xfb4934),
         sidebar_active_border: hex(0xd3869b),
+        monochromatic: false,
     }
 }
 
@@ -260,6 +269,7 @@ fn nord() -> AppTheme {
         volume_medium: hex(0xd08770),
         volume_high: hex(0xbf616a),
         sidebar_active_border: hex(0x88c0d0),
+        monochromatic: false,
     }
 }
 
@@ -288,6 +298,7 @@ fn rose_pine() -> AppTheme {
         volume_medium: hex(0xf6c177),
         volume_high: hex(0xeb6f92),
         sidebar_active_border: hex(0xc4a7e7),
+        monochromatic: false,
     }
 }
 
@@ -316,6 +327,7 @@ fn everforest() -> AppTheme {
         volume_medium: hex(0xe69875),
         volume_high: hex(0xe67e80),
         sidebar_active_border: hex(0xa7c080),
+        monochromatic: false,
     }
 }
 
@@ -344,6 +356,7 @@ fn kanagawa() -> AppTheme {
         volume_medium: hex(0xe6c384),
         volume_high: hex(0xc34043),
         sidebar_active_border: hex(0x7e9cd8),
+        monochromatic: false,
     }
 }
 
@@ -372,6 +385,7 @@ fn catppuccin_latte() -> AppTheme {
         volume_medium: hex(0xfe640b),
         volume_high: hex(0xd20f39),
         sidebar_active_border: hex(0x1e66f5),
+        monochromatic: false,
     }
 }
 
@@ -400,6 +414,7 @@ fn kanagawa_lotus() -> AppTheme {
         volume_medium: hex(0xb47e2b),
         volume_high: hex(0xc84053),
         sidebar_active_border: hex(0x2d6a9f),
+        monochromatic: false,
     }
 }
 
@@ -428,6 +443,38 @@ fn classic() -> AppTheme {
         volume_medium: hex(0xffaa00),
         volume_high: hex(0xff4444),
         sidebar_active_border: hex(0xff8800),
+        monochromatic: false,
+    }
+}
+
+/// Monochrome — single accent color (cyan) with brightness variations for a
+/// cohesive, understated look.
+fn monochrome() -> AppTheme {
+    let accent = hex(0x6ec6ca);
+    AppTheme {
+        bg: hex(0x1a1c20),
+        pane_bg: hex(0x1a1c20),
+        picker_bg: hex(0x15171b),
+        elevated_bg: hex(0x111214),
+        muted_border: hex(0x3a3c42),
+        fg: hex(0xd0d2d6),
+        fg_dim: hex(0x6e7078),
+        fg_bright: hex(0xffffff),
+        accent,
+        secondary_accent: accent,
+        tertiary_accent: accent,
+        error: hex(0xe06c75),
+        warning: hex(0xe0af68),
+        success: hex(0x98c379),
+        selection_fg: hex(0x1a1c20),
+        selection_bg: accent,
+        border: hex(0x3a3c42),
+        border_active: accent,
+        volume_low: hex(0x98c379),
+        volume_medium: hex(0xe0af68),
+        volume_high: hex(0xe06c75),
+        sidebar_active_border: accent,
+        monochromatic: true,
     }
 }
 
@@ -502,6 +549,11 @@ pub fn builtin_themes() -> &'static [ThemeEntry] {
                     light: true,
                     theme: kanagawa_lotus(),
                 },
+                ThemeEntry {
+                    name: Cow::Borrowed("Monochrome"),
+                    light: false,
+                    theme: monochrome(),
+                },
             ]
         })
         .as_slice()
@@ -558,6 +610,9 @@ struct UserThemeFile {
     volume_medium: String,
     volume_high: String,
     sidebar_active_border: String,
+    /// Optional; defaults to `false`.
+    #[serde(default)]
+    monochromatic: bool,
 }
 
 impl UserThemeFile {
@@ -599,6 +654,7 @@ impl UserThemeFile {
             volume_medium: parse_color(&self.volume_medium)?,
             volume_high: parse_color(&self.volume_high)?,
             sidebar_active_border: parse_color(&self.sidebar_active_border)?,
+            monochromatic: self.monochromatic,
         })
     }
 }

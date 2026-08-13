@@ -154,11 +154,26 @@ pub enum NotificationKind {
     Error,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlideDirection {
+    Left,
+    Right,
+}
+
 #[derive(Debug, Clone)]
 pub struct Notification {
     pub message: String,
     pub kind: NotificationKind,
     pub expires_at: std::time::Instant,
+    /// Direction the notification slides in from.
+    pub slide_direction: SlideDirection,
+    /// Whether this is a volume-change notification (vertical bar).
+    pub is_volume: bool,
+    /// Volume level (0–100) for volume notifications.
+    pub volume_value: u8,
+    /// Animation progress: 0.0 = just appeared, 1.0 = fully settled.
+    /// Managed by the animation system; not user-set.
+    pub animation_progress: f32,
 }
 
 pub struct App {
@@ -244,6 +259,10 @@ pub struct App {
     pub metadata_edit_track_id: Option<i64>,
     pub metadata_fields: [String; 7],
     pub metadata_field_idx: usize,
+    /// Cover art preview shown in the Edit Metadata floating window.
+    pub metadata_cover: Option<Vec<u8>>,
+    pub metadata_cover_stateful: Option<StatefulProtocol>,
+    pub metadata_cover_dirty: bool,
     pub pending_quit: bool,
     pub np_title_scroll: usize,
     /// Set on the first frame and on each track change; the render layer
@@ -275,6 +294,7 @@ enum IpcResult {
     RefreshDone(Box<DaemonState>, Option<Vec<u8>>, Option<i64>),
     CoverArt(Option<Vec<u8>>, Option<i64>),
     PopupCoverArt(Option<Vec<u8>>, i64),
+    MetadataCoverArt(Option<Vec<u8>>, i64),
     CoverPicker(Option<Picker>),
     Lyrics(Option<gtm_core::track::LrcData>),
     LibraryTracks(Vec<TrackInfo>),
@@ -485,6 +505,9 @@ impl App {
             metadata_edit_track_id: None,
             metadata_fields: Default::default(),
             metadata_field_idx: 0,
+            metadata_cover: None,
+            metadata_cover_stateful: None,
+            metadata_cover_dirty: false,
             pending_quit: false,
             np_title_scroll: 0,
             track_anim_trigger: false,
@@ -588,6 +611,7 @@ impl App {
     }
 
     /// Toggle crossfade on/off and persist.
+    #[allow(dead_code)]
     fn cycle_crossfade_type(&mut self) {
         let currently_enabled = self.state.crossfade.as_ref().is_some_and(|c| c.enabled);
         let new_enabled = !currently_enabled;
@@ -879,6 +903,10 @@ impl App {
                             message: msg,
                             kind,
                             expires_at: std::time::Instant::now() + Duration::from_secs(5),
+                            slide_direction: SlideDirection::Right,
+                            is_volume: false,
+                            volume_value: 0,
+                            animation_progress: 0.0,
                         });
                     }
                     IpcResult::Error(e) => {
@@ -888,6 +916,13 @@ impl App {
                         if !no_image_protocol() && self.track_popup_track_id == Some(track_id) {
                             self.track_popup_cover = cover;
                             self.sync_popup_cover_stateful();
+                        }
+                    }
+                    IpcResult::MetadataCoverArt(cover, track_id) => {
+                        if !no_image_protocol() && self.metadata_edit_track_id == Some(track_id) {
+                            self.metadata_cover = cover;
+                            self.sync_metadata_cover_stateful();
+                            self.metadata_cover_dirty = true;
                         }
                     }
                     IpcResult::CoverPicker(picker) => {
@@ -918,11 +953,8 @@ impl App {
                 self.handle_command(cmd);
             }
 
-            // Expire stale notifications
-            let now = std::time::Instant::now();
-            self.notifications.retain(|n| n.expires_at > now);
-
             // YT search debounce: auto-search 500ms after last keystroke
+            let now = std::time::Instant::now();
             if let Some(deadline) = self.yt_search_debounce {
                 if now >= deadline {
                     self.yt_search_debounce = None;
@@ -1018,9 +1050,11 @@ impl App {
                 || !self.notifications.is_empty()
                 || frame_count.is_multiple_of(10)
                 || self.cover_art_dirty
+                || self.metadata_cover_dirty
                 || self.track_anim_trigger
                 || self.anim_fx.is_running();
             self.cover_art_dirty = false;
+            self.metadata_cover_dirty = false;
             self.last_display_position = self.display_position;
 
             if force_render {
@@ -1095,6 +1129,27 @@ impl App {
             message: message.into(),
             kind,
             expires_at,
+            slide_direction: SlideDirection::Right,
+            is_volume: false,
+            volume_value: 0,
+            animation_progress: 0.0,
+        });
+    }
+
+    /// Show a volume-change notification (vertical floating bar).
+    pub fn notify_volume(&mut self, volume: u8) {
+        let expires_at = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        // Replace any existing volume notification
+        self.notifications
+            .retain(|n| !(n.is_volume && n.expires_at > std::time::Instant::now()));
+        self.notifications.push(Notification {
+            message: format!("Vol {}", volume),
+            kind: NotificationKind::Info,
+            expires_at,
+            slide_direction: SlideDirection::Right,
+            is_volume: true,
+            volume_value: volume,
+            animation_progress: 0.0,
         });
     }
 
@@ -1301,6 +1356,40 @@ impl App {
             }
             _ => self.popup_cover_stateful = None,
         }
+    }
+
+    /// (Re)build the stateful cover protocol for the Edit Metadata preview.
+    fn sync_metadata_cover_stateful(&mut self) {
+        match (&self.metadata_cover, &self.cover_picker) {
+            (Some(bytes), Some(picker)) => {
+                if let Ok(img) = image::load_from_memory(bytes) {
+                    self.metadata_cover_stateful = Some(picker.new_resize_protocol(img));
+                } else {
+                    self.metadata_cover_stateful = None;
+                }
+            }
+            _ => self.metadata_cover_stateful = None,
+        }
+    }
+
+    /// Fetch the cover art for the track currently being edited and stream it
+    /// to the `MetadataCoverArt` IPC channel so the preview can refresh.
+    fn fetch_metadata_cover(&self) {
+        let Some(track_id) = self.metadata_edit_track_id else {
+            return;
+        };
+        if no_image_protocol() {
+            return;
+        }
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            if let Ok(Some(b64)) = client.get_cover_art(track_id).await {
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
+                    let _ = ipc_tx.send(IpcResult::MetadataCoverArt(Some(bytes), track_id));
+                }
+            }
+        });
     }
 
     fn settings_options_for_category(&self) -> usize {
@@ -1869,7 +1958,6 @@ impl App {
             ("key", "   S            Toggle shuffle"),
             ("key", "   r / R        Cycle repeat"),
             ("key", "   :            Command palette"),
-            ("key", "   Alt+F        Cycle footer preset"),
             ("", ""),
             ("topic", "Help"),
             ("key", "   ?            Toggle this help"),
@@ -2096,13 +2184,13 @@ impl App {
                     Some(KeyboardAction::VolumeUp) => {
                         let new_vol = (self.state.volume + 5).min(100);
                         self.send_high(TuiCommand::SetVolume(new_vol));
-                        self.notify(format!("Volume: {}%", new_vol), NotificationKind::Info);
+                        self.notify_volume(new_vol);
                     }
                     Some(KeyboardAction::VolumeDown) => {
                         self.set_last_action("Volume Down");
                         let new_vol = self.state.volume.saturating_sub(5);
                         self.send_high(TuiCommand::SetVolume(new_vol));
-                        self.notify(format!("Volume: {}%", new_vol), NotificationKind::Info);
+                        self.notify_volume(new_vol);
                     }
                     Some(KeyboardAction::SeekForward) => {
                         self.set_last_action("Seek Forward");
@@ -2167,19 +2255,6 @@ impl App {
                         let _ = tx.send(TuiCommand::QueueClear).await;
                         self.notify("Queue cleared", NotificationKind::Info);
                     }
-                    Some(KeyboardAction::CycleFooterPreset) => {
-                        self.cycle_footer_preset();
-                    }
-                    Some(KeyboardAction::CycleProgressStyle) => {
-                        self.progress_style = self.progress_style.next();
-                        self.notify(
-                            format!("Progress: {}", self.progress_style.name()),
-                            NotificationKind::Info,
-                        );
-                    }
-                    Some(KeyboardAction::CycleDesign) => {
-                        self.cycle_design();
-                    }
                     Some(KeyboardAction::ToggleVisualizer) => {
                         self.visualizer.toggle();
                         let state = if self.visualizer.is_enabled() {
@@ -2189,19 +2264,8 @@ impl App {
                         };
                         self.notify(format!("Visualizer: {}", state), NotificationKind::Info);
                     }
-                    Some(KeyboardAction::CycleVisualizerPreset) => {
-                        self.visualizer.cycle_preset();
-                        save_prefs(&self.current_prefs());
-                        self.notify(
-                            format!("Visualizer: {}", self.visualizer.preset.name()),
-                            NotificationKind::Info,
-                        );
-                    }
                     Some(KeyboardAction::ToggleTheme) => {
                         self.toggle_theme();
-                    }
-                    Some(KeyboardAction::CycleCrossfadeType) => {
-                        self.cycle_crossfade_type();
                     }
                     Some(KeyboardAction::CheckHealth) => {
                         self.send_high(TuiCommand::CheckHealth);
@@ -2904,6 +2968,7 @@ impl App {
                                 ];
                                 self.metadata_field_idx = 0;
                                 self.pickers.open(PickerId::EditMetadata);
+                                self.fetch_metadata_cover();
                             }
                         }
                     }
@@ -3094,6 +3159,11 @@ impl App {
                     match top.id {
                         PickerId::SleepTimer => self.sleep_timer_remaining = None,
                         PickerId::SpotifySearch => self.spotify_token_input.clear(),
+                        PickerId::EditMetadata => {
+                            self.metadata_cover = None;
+                            self.metadata_cover_stateful = None;
+                            self.metadata_edit_track_id = None;
+                        }
                         _ => {}
                     }
                 }
@@ -3271,6 +3341,8 @@ impl App {
                                 NotificationKind::Success,
                             ));
                         });
+                        self.metadata_cover = None;
+                        self.metadata_cover_stateful = None;
                         self.metadata_edit_track_id = None;
                     }
                     self.pickers.close_top();
@@ -3644,6 +3716,7 @@ impl App {
                                             ];
                                             self.metadata_field_idx = 0;
                                             self.pickers.open(PickerId::EditMetadata);
+                                            self.fetch_metadata_cover();
                                         }
                                     }
                                 } else if label.starts_with("toggle help") {
@@ -3764,6 +3837,8 @@ impl App {
                                             NotificationKind::Success,
                                         ));
                                     });
+                                    self.metadata_cover = None;
+                                    self.metadata_cover_stateful = None;
                                     self.metadata_edit_track_id = None;
                                 }
                                 self.pickers.close_top();
@@ -3796,6 +3871,44 @@ impl App {
                         let _ = tx.send(TuiCommand::YtResolve(url)).await;
                     } else {
                         let _ = tx.send(TuiCommand::QueueAdd(url)).await;
+                    }
+                }
+            }
+            KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
+                // Edit Metadata: sync cover using the currently-entered metadata.
+                if top_id == Some(PickerId::EditMetadata) {
+                    if let Some(track_id) = self.metadata_edit_track_id {
+                        let title = self.metadata_fields[0].clone();
+                        let artist = self.metadata_fields[1].clone();
+                        let album = self.metadata_fields[2].clone();
+                        let genre = self.metadata_fields[4].clone();
+                        let year = self.metadata_fields[5].parse::<i32>().ok();
+                        let track_number = self.metadata_fields[6].parse::<i32>().ok();
+                        let client = self.client.clone();
+                        let ipc_tx = self.ipc_tx.clone();
+                        tokio::spawn(async move {
+                            let patch = gtm_core::MetadataPatch {
+                                title: Some(title),
+                                artist: Some(artist),
+                                album: Some(album),
+                                genre: Some(genre),
+                                year,
+                                track_number,
+                            };
+                            // Persist edited metadata first so the cover lookup
+                            // uses the updated artist/album/title.
+                            let _ = client.library_update_metadata(track_id, patch).await;
+                            if let Ok(Some(b64)) = client.get_cover_art(track_id).await {
+                                if let Ok(bytes) =
+                                    base64::engine::general_purpose::STANDARD.decode(&b64)
+                                {
+                                    let _ = ipc_tx
+                                        .send(IpcResult::MetadataCoverArt(Some(bytes), track_id));
+                                }
+                            }
+                        });
+                        self.metadata_cover_dirty = true;
+                        self.notify("Syncing cover…", NotificationKind::Info);
                     }
                 }
             }

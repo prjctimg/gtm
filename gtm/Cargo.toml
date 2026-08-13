@@ -1,6 +1,6 @@
 [package]
 name = "gtm"
-version = "0.1.5"
+version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "GTM music player client - TUI and CLI modes"
@@ -11,8 +11,8 @@ categories.workspace = true
 readme.workspace = true
 
 [dependencies]
-gtm-core = { path = "../gtm-core", version = "0.1.5" }
-gtm-audio = { path = "../gtm-audio", version = "0.1.5" }
+gtm-core = { path = "../gtm-core", version = "0.1.7" }
+gtm-audio = { path = "../gtm-audio", version = "0.1.7" }
 ratatui = "0.30"
 crossterm = "0.28"
 tachyonfx = "0.22"

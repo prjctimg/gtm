@@ -103,13 +103,8 @@ pub enum KeyboardAction {
     QuitDaemon,
     ToggleHelp,
     HideHelpBar,
-    CycleFooterPreset,
-    CycleProgressStyle,
-    CycleDesign,
     ToggleVisualizer,
-    CycleVisualizerPreset,
     ToggleTheme,
-    CycleCrossfadeType,
     CheckHealth,
 }
 
@@ -569,22 +564,6 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Footer preset cycling — Alt+F
-            (
-                KeyEvent::new(KeyCode::Char('F'), KeyModifiers::ALT),
-                BoundCommand {
-                    action: KeyboardAction::CycleFooterPreset,
-                    contexts: vec![KeyContext::Normal],
-                },
-            ),
-            // Design cycling — Alt+D
-            (
-                KeyEvent::new(KeyCode::Char('D'), KeyModifiers::ALT),
-                BoundCommand {
-                    action: KeyboardAction::CycleDesign,
-                    contexts: vec![KeyContext::Normal],
-                },
-            ),
             // Library motions — vim-style
             // v — toggle multiselect mode
             (
@@ -636,14 +615,6 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Alt+P — cycle progress style
-            (
-                KeyEvent::new(KeyCode::Char('P'), KeyModifiers::ALT),
-                BoundCommand {
-                    action: KeyboardAction::CycleProgressStyle,
-                    contexts: vec![KeyContext::Normal],
-                },
-            ),
             // Ctrl+V — toggle visualizer
             (
                 KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
@@ -652,27 +623,11 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Alt+V — cycle visualizer preset
-            (
-                KeyEvent::new(KeyCode::Char('V'), KeyModifiers::ALT),
-                BoundCommand {
-                    action: KeyboardAction::CycleVisualizerPreset,
-                    contexts: vec![KeyContext::Normal],
-                },
-            ),
             // Alt+T — cycle theme (dark/light variants)
             (
                 KeyEvent::new(KeyCode::Char('T'), KeyModifiers::ALT),
                 BoundCommand {
                     action: KeyboardAction::ToggleTheme,
-                    contexts: vec![KeyContext::Normal],
-                },
-            ),
-            // Alt+X — cycle crossfade type
-            (
-                KeyEvent::new(KeyCode::Char('X'), KeyModifiers::ALT),
-                BoundCommand {
-                    action: KeyboardAction::CycleCrossfadeType,
                     contexts: vec![KeyContext::Normal],
                 },
             ),
