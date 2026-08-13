@@ -131,6 +131,25 @@ impl DaemonConfig {
         let audio_backend = match args.backend.as_deref() {
             #[cfg(feature = "pulseaudio")]
             Some("pulseaudio") => AudioBackendKind::PulseAudio,
+            Some("rodio") => AudioBackendKind::Rodio,
+            // No explicit backend: on Termux, rodio/cpal cannot open an audio
+            // device, so default to PulseAudio when it is compiled in.
+            #[cfg(feature = "pulseaudio")]
+            _ if gtm_core::is_termux() => {
+                eprintln!(
+                    "gtmd: Termux detected — using the PulseAudio backend. \
+                     Ensure it is running: pulseaudio --start --exit-idle-time=-1"
+                );
+                AudioBackendKind::PulseAudio
+            }
+            #[cfg(not(feature = "pulseaudio"))]
+            _ if gtm_core::is_termux() => {
+                eprintln!(
+                    "gtmd: Termux detected but this build lacks the `pulseaudio` feature. \
+                     Rebuild with `--features pulseaudio` so audio can be output on Termux."
+                );
+                AudioBackendKind::Rodio
+            }
             _ => AudioBackendKind::Rodio,
         };
 

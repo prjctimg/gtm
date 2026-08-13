@@ -24,7 +24,7 @@ use base64::Engine;
 
 use crate::footer;
 use crate::keymap::{default_keybindings, KeyContext, KeyboardAction};
-use crate::picker::{PickerCtx, PickerId, PickerManager};
+use crate::picker::{PickerId, PickerManager};
 use crate::theme::{AppTheme, THEMES};
 use crate::ui;
 
@@ -108,16 +108,13 @@ pub fn no_image_protocol() -> bool {
 pub enum InputMode {
     Normal,
     Searching,
-    Command,
 }
 
 #[derive(Debug, Clone)]
 pub enum NotificationKind {
     Info,
-    #[allow(dead_code)]
     Success,
     Warning,
-    #[allow(dead_code)]
     Error,
 }
 
@@ -128,7 +125,6 @@ pub struct Notification {
     pub expires_at: std::time::Instant,
 }
 
-#[allow(dead_code)]
 pub struct App {
     pub theme: AppTheme,
     pub client: DaemonClient,
@@ -150,7 +146,6 @@ pub struct App {
     pub queue_cursor: usize,
     pub browse_detail: Option<String>,
     pub yt_results_cache: Vec<gtm_core::track::YTSearchResult>,
-    pub volume_input: String,
     pub playlist_cache: Vec<gtm_core::track::Playlist>,
     pub playlist_tracks_cache: Vec<TrackInfo>,
     pub spotify_status: Option<SpotifyStatus>,
@@ -158,7 +153,6 @@ pub struct App {
     pub spotify_playlist_tracks_cache: Vec<SpotifyTrack>,
     pub spotify_token_input: String,
     pub cookie_file: Option<String>,
-    pub status_message: Option<String>,
     pub notifications: Vec<Notification>,
     pub crossfade_duration: u8,
     pub yt_search_loading: bool,
@@ -191,7 +185,7 @@ pub struct App {
     pub footer_preset: usize,
     pub footer_title_scroll: usize,
     pub is_ready: bool,
-    last_queue_cursor: u128,
+    last_queue_cursor: u64,
     last_track_id_display: Option<i64>,
     prev_tab: Tab,
     prev_track_id: Option<i64>,
@@ -225,13 +219,11 @@ pub struct App {
     pub current_lyrics: Option<gtm_core::track::LrcData>,
     pub lyrics_scroll: usize,
     pub lyrics_fetching: bool,
-    last_lyrics_track_id: Option<i64>,
     pub show_lyrics: bool,
     pub show_health_panel: bool,
     pub health_report: Option<gtm_core::ipc::HealthReport>,
     pub hide_help_bar: bool,
     pub lyrics_manual_scroll: bool,
-    pub lyrics_last_scroll_time: std::time::Instant,
 }
 
 enum IpcResult {
@@ -253,7 +245,6 @@ enum IpcResult {
     SpotifyTracks(Vec<SpotifyTrack>),
 }
 
-#[allow(dead_code)]
 pub enum TuiCommand {
     Play(String),
     PlayPause,
@@ -270,8 +261,7 @@ pub enum TuiCommand {
     Crossfade(bool, u8),
     SetCrossfadeEasing(gtm_core::state::Easing),
     QueueAdd(String),
-    QueueRemove(u128),
-    QueueMove(u128, u128),
+    QueueMove(u64, u64),
     QueueClear,
     YtSearch(String),
     YtDownload(String),
@@ -279,11 +269,8 @@ pub enum TuiCommand {
     SetEqPreset(gtm_core::state::EqPreset),
     Search(String),
     AddFavourite(i64),
-    RemoveFavourite(i64),
     Refresh,
     RefreshLibrary,
-    RefreshQueue,
-    RefreshPlaylists,
     RefreshYt,
     RemoveTrack(i64),
     RemoveFromPlaylist(i64, i64),
@@ -331,7 +318,6 @@ impl App {
             queue_cursor: 0,
             browse_detail: None,
             yt_results_cache: Vec::new(),
-            volume_input: String::new(),
             playlist_cache: Vec::new(),
             playlist_tracks_cache: Vec::new(),
             spotify_status: None,
@@ -339,7 +325,6 @@ impl App {
             spotify_playlist_tracks_cache: Vec::new(),
             spotify_token_input: String::new(),
             cookie_file: None,
-            status_message: None,
             notifications: Vec::new(),
             crossfade_duration: 7,
             pending_delete: None,
@@ -404,13 +389,11 @@ impl App {
             current_lyrics: None,
             lyrics_scroll: 0,
             lyrics_fetching: false,
-            last_lyrics_track_id: None,
             show_lyrics: false,
             show_health_panel: false,
             health_report: None,
             hide_help_bar: false,
             lyrics_manual_scroll: false,
-            lyrics_last_scroll_time: std::time::Instant::now(),
         })
     }
 
@@ -420,19 +403,6 @@ impl App {
 
     pub fn send_high(&self, cmd: TuiCommand) {
         let _ = self.high_pri_cmd_tx.send(cmd);
-    }
-
-    #[allow(dead_code)]
-    pub fn picker_ctx(&self) -> PickerCtx<'_> {
-        PickerCtx {
-            state: &self.state,
-            tracks_cache: &self.tracks_cache,
-            queue_cache: &self.queue_cache,
-            queue_cursor: self.queue_cursor,
-            yt_results_cache: &self.yt_results_cache,
-            playlist_cache: &self.playlist_cache,
-            op: &self.pickers,
-        }
     }
 
     pub async fn run(
@@ -1123,13 +1093,6 @@ impl App {
                     }
                 });
             }
-            TuiCommand::QueueRemove(i) => {
-                tokio::spawn(async move {
-                    if let Err(e) = client.queue_rm(i).await {
-                        error_handler(e);
-                    }
-                });
-            }
             TuiCommand::QueueMove(from, to) => {
                 tokio::spawn(async move {
                     if let Err(e) = client.queue_move(from, to).await {
@@ -1286,13 +1249,6 @@ impl App {
                     }
                 });
             }
-            TuiCommand::RemoveFavourite(id) => {
-                tokio::spawn(async move {
-                    if let Err(e) = client.remove_favourite(id).await {
-                        error_handler(e);
-                    }
-                });
-            }
             TuiCommand::Refresh => {
                 let client2 = self.client.clone();
                 let ipc_tx2 = self.ipc_tx.clone();
@@ -1314,33 +1270,12 @@ impl App {
                     }
                 });
             }
-            TuiCommand::RefreshPlaylists => {
-                tokio::spawn(async move {
-                    if let Ok(DaemonRes::Playlists { playlists, .. }) =
-                        client.library_get_playlists().await
-                    {
-                        let _ = ipc_tx.send(IpcResult::Playlists(playlists));
-                    }
-                });
-            }
             TuiCommand::RefreshLibrary => {
                 tokio::spawn(async move {
                     if let Ok(DaemonRes::Tracks { tracks, .. }) =
                         client.library_get_tracks(None, None).await
                     {
                         let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
-                    }
-                });
-            }
-            TuiCommand::RefreshQueue => {
-                tokio::spawn(async move {
-                    if let Ok(DaemonRes::QueueState {
-                        queue: tracks,
-                        cursor,
-                        ..
-                    }) = client.queue_list().await
-                    {
-                        let _ = ipc_tx.send(IpcResult::Queue(tracks, cursor as usize));
                     }
                 });
             }
@@ -1580,29 +1515,6 @@ impl App {
                         }
                     }
                     self.search_query.clear();
-                }
-                KeyCode::Char(c) => {
-                    self.search_query.push(c);
-                }
-                KeyCode::Backspace => {
-                    self.search_query.pop();
-                }
-                _ => {}
-            },
-            InputMode::Command => match key.code {
-                KeyCode::Esc => {
-                    self.input_mode = InputMode::Normal;
-                }
-                KeyCode::Enter => {
-                    let cmd = self.search_query.clone().trim().to_lowercase();
-                    self.input_mode = InputMode::Normal;
-                    self.search_query.clear();
-                    if cmd == "quit" || cmd == "q" {
-                        return false;
-                    }
-                    if let Ok(vol) = cmd.parse::<u8>() {
-                        self.send_high(TuiCommand::SetVolume(vol));
-                    }
                 }
                 KeyCode::Char(c) => {
                     self.search_query.push(c);
@@ -1895,10 +1807,6 @@ impl App {
                         self.input_mode = InputMode::Searching;
                         self.dismiss_track_popup();
                     }
-                    Some(KeyboardAction::EnterCommand) => {
-                        self.input_mode = InputMode::Command;
-                        self.dismiss_track_popup();
-                    }
                     Some(KeyboardAction::MoveUp) => match self.current_tab {
                         Tab::Library if self.library_pane_focus => {
                             let new_cat = self.library_category.saturating_sub(1);
@@ -2014,7 +1922,7 @@ impl App {
                                         let path = paths[idx].clone();
                                         let c = self.client.clone();
                                         tokio::spawn(async move {
-                                            let _ = c.queue_set(paths, idx as u128).await;
+                                            let _ = c.queue_set(paths, idx as u64).await;
                                             let _ = c.play(&path, 0.0).await;
                                         });
                                     }
@@ -2090,7 +1998,7 @@ impl App {
                                     let path = paths[idx].clone();
                                     let c = self.client.clone();
                                     tokio::spawn(async move {
-                                        let _ = c.queue_set(paths, idx as u128).await;
+                                        let _ = c.queue_set(paths, idx as u64).await;
                                         let _ = c.play(&path, 0.0).await;
                                     });
                                 }
@@ -2420,20 +2328,6 @@ impl App {
                             self.notify(msg, NotificationKind::Info);
                         }
                     }
-                    Some(KeyboardAction::ToggleSelectAndAdvance) => {
-                        if self.multiselect_mode
-                            && self.current_tab == Tab::Library
-                            && !self.library_pane_focus
-                        {
-                            if self.selected_indices.contains(&self.scroll_offset) {
-                                self.selected_indices.remove(&self.scroll_offset);
-                            } else {
-                                self.selected_indices.insert(self.scroll_offset);
-                            }
-                            let max = self.filtered_tracks().len().saturating_sub(1);
-                            self.scroll_offset = (self.scroll_offset + 1).min(max);
-                        }
-                    }
                     Some(KeyboardAction::AddToQueue) => {
                         if self.current_tab == Tab::Library && !self.library_pane_focus {
                             let tracks = self.filtered_tracks();
@@ -2514,11 +2408,6 @@ impl App {
                                     NotificationKind::Info,
                                 );
                             }
-                        }
-                    }
-                    Some(KeyboardAction::JumpToStart) => {
-                        if self.current_tab == Tab::Library && !self.library_pane_focus {
-                            self.scroll_offset = 0;
                         }
                     }
                     Some(KeyboardAction::JumpToEnd) => {
@@ -2651,7 +2540,6 @@ impl App {
                             _ => {}
                         }
                     }
-                    _ => {}
                 }
             }
         }
@@ -2776,8 +2664,8 @@ impl App {
                         if idx > 0 {
                             let _ = tx
                                 .send(TuiCommand::QueueMove(
-                                    idx as u128,
-                                    idx.saturating_sub(1) as u128,
+                                    idx as u64,
+                                    idx.saturating_sub(1) as u64,
                                 ))
                                 .await;
                             self.fetch_queue().await;
@@ -2791,7 +2679,7 @@ impl App {
                         let idx = top.selected.min(self.queue_cache.len() - 1);
                         if idx < self.queue_cache.len() - 1 {
                             let _ = tx
-                                .send(TuiCommand::QueueMove(idx as u128, (idx + 1) as u128))
+                                .send(TuiCommand::QueueMove(idx as u64, (idx + 1) as u64))
                                 .await;
                             self.fetch_queue().await;
                         }

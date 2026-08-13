@@ -48,10 +48,10 @@ pub fn resolve_track(path: &str) -> TrackInfo {
 /// remaining default list.  The cursor marks the currently-playing entry:
 /// index 0 when a user entry is playing, otherwise the position in the
 /// default list.
-pub fn visible_queue(state: &DaemonState) -> (Vec<TrackInfo>, u128) {
+pub fn visible_queue(state: &DaemonState) -> (Vec<TrackInfo>, u64) {
     let mut merged = state.queue.clone();
     let cursor = if state.queue.is_empty() {
-        state.default_cursor.min(state.default_list.len()) as u128
+        state.default_cursor.min(state.default_list.len()) as u64
     } else {
         0
     };
@@ -90,7 +90,7 @@ fn insert_at(state: &mut DaemonState, track: TrackInfo, pos: usize) {
 /// Add a track.  `position == None` queues it to play next (right after the
 /// current entry); `Some(pos)` inserts at an explicit merged-view index.
 /// Returns the created TrackInfo.
-pub fn queue_add(state: &mut DaemonState, path: &str, position: Option<u128>) -> TrackInfo {
+pub fn queue_add(state: &mut DaemonState, path: &str, position: Option<u64>) -> TrackInfo {
     let track = resolve_track(path);
     let track_clone = track.clone();
     let len = state.queue.len() + state.default_list.len();
@@ -124,7 +124,7 @@ pub fn queue_add_many(state: &mut DaemonState, paths: &[String]) -> Vec<TrackInf
 
 /// Remove the entry at a merged-view index.  Returns the removed track, or
 /// None if the index is out of range.
-pub fn queue_remove(state: &mut DaemonState, index: u128) -> Option<TrackInfo> {
+pub fn queue_remove(state: &mut DaemonState, index: u64) -> Option<TrackInfo> {
     let (is_user, local) = split_index(state, index as usize)?;
     let removed = if is_user {
         state.queue.remove(local)
@@ -141,7 +141,7 @@ pub fn queue_remove(state: &mut DaemonState, index: u128) -> Option<TrackInfo> {
 
 /// Move an entry between merged-view indices.  Returns false if either index
 /// is out of range.
-pub fn queue_move(state: &mut DaemonState, from: u128, to: u128) -> bool {
+pub fn queue_move(state: &mut DaemonState, from: u64, to: u64) -> bool {
     let len = state.queue.len() + state.default_list.len();
     let (from, to) = (from as usize, to as usize);
     if from >= len || to >= len || from == to {
@@ -164,7 +164,7 @@ pub fn queue_move(state: &mut DaemonState, from: u128, to: u128) -> bool {
 }
 
 /// Replace the user queue with `paths` and drop the default-list session.
-pub fn queue_set(state: &mut DaemonState, paths: &[String], _start_idx: u128) -> Vec<TrackInfo> {
+pub fn queue_set(state: &mut DaemonState, paths: &[String], _start_idx: u64) -> Vec<TrackInfo> {
     let mut tracks = Vec::with_capacity(paths.len());
     for path in paths {
         tracks.push(resolve_track(path));

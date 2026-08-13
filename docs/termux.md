@@ -123,6 +123,8 @@ install -Dm 0755 target/release/gtm  $PREFIX/bin/gtm
 
 **Note**: `rustup` is not supported on Termux. Use `pkg install rust` instead.
 
+GTM auto-detects Termux (`$PREFIX`/`$TERMUX_VERSION`): when built with the `pulseaudio` feature it selects the PulseAudio backend automatically, so `--backend pulseaudio` is optional. If PulseAudio is not running the daemon fails with a clear message pointing at `pulseaudio --start --exit-idle-time=-1`.
+
 ### Cross-compilation from desktop
 
 ```bash

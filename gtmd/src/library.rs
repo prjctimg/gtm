@@ -310,7 +310,7 @@ impl Library {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     created_at: row.get(2)?,
-                    track_count: row.get::<_, i64>(3)? as u128,
+                    track_count: row.get::<_, i64>(3)? as u64,
                 })
             })
             .map_err(|e| format!("query: {e}"))?;
@@ -318,7 +318,7 @@ impl Library {
             .map_err(|e| format!("rows: {e}"))
     }
 
-    pub fn get_recent(&self, count: u128) -> Result<Vec<TrackInfo>, String> {
+    pub fn get_recent(&self, count: u64) -> Result<Vec<TrackInfo>, String> {
         let limit = if count > 0 { count as i64 } else { 50 };
         let mut stmt = self
             .conn
@@ -349,7 +349,7 @@ impl Library {
                     id: row.get(0)?,
                     name: row.get(1)?,
                     created_at: row.get(2)?,
-                    track_count: row.get::<_, i64>(3)? as u128,
+                    track_count: row.get::<_, i64>(3)? as u64,
                 })
             })
             .map_err(|e| format!("query: {e}"))?;

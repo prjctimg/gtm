@@ -17,7 +17,7 @@ pub mod validate;
 pub mod wire;
 
 pub use paths::{
-    resolve_command_socket, resolve_pid_file, resolve_pulse_socket, termux_music_dirs,
+    is_termux, resolve_command_socket, resolve_pid_file, resolve_pulse_socket, termux_music_dirs,
 };
 pub use spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 pub use state::{

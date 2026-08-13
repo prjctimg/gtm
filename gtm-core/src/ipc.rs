@@ -13,37 +13,7 @@ use std::collections::HashMap;
 
 /// Protocol version this implementation speaks. Matches `prjctimg/gtm.spec`
 /// `protocol.md` "Version Negotiation". Bumped only on breaking wire changes.
-pub const PROTOCOL_VERSION: u32 = 2;
-
-/// Serialization helpers for `u128` fields on wire enums.
-///
-/// `serde_json` cannot deserialize `u128` from numbers that pass through the
-/// content buffering used by internally-tagged enums ("u128 is not supported"),
-/// so wire enum fields use these helpers: numbers are carried as `u64` and
-/// widened to `u128`.
-mod u128_serde {
-    use serde::{Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S: Serializer>(v: &u128, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_u128(*v)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u128, D::Error> {
-        u64::deserialize(d).map(u128::from)
-    }
-}
-
-mod opt_u128_serde {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
-
-    pub fn serialize<S: Serializer>(v: &Option<u128>, s: S) -> Result<S::Ok, S::Error> {
-        v.serialize(s)
-    }
-
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u128>, D::Error> {
-        Ok(Option::<u64>::deserialize(d)?.map(u128::from))
-    }
-}
+pub const PROTOCOL_VERSION: u32 = 3;
 
 /// `/queue` sub-commands. Internally tagged via `action`, wire encoding is
 /// flat: `{"action":"add","path":"...","position":null}` per `commands.md`.
@@ -53,19 +23,15 @@ pub enum QueueAction {
     List,
     Clear,
     Remove {
-        #[serde(with = "u128_serde")]
-        index: u128,
+        index: u64,
     },
     Move {
-        #[serde(with = "u128_serde")]
-        from: u128,
-        #[serde(with = "u128_serde")]
-        to: u128,
+        from: u64,
+        to: u64,
     },
     Add {
         path: String,
-        #[serde(with = "opt_u128_serde")]
-        position: Option<u128>,
+        position: Option<u64>,
     },
     AddMany {
         paths: Vec<String>,
@@ -75,8 +41,7 @@ pub enum QueueAction {
     },
     Set {
         paths: Vec<String>,
-        #[serde(with = "u128_serde")]
-        start_idx: u128,
+        start_idx: u64,
     },
 }
 
@@ -113,8 +78,7 @@ pub enum LibraryAction {
         path: String,
     },
     GetRecent {
-        #[serde(with = "u128_serde")]
-        count: u128,
+        count: u64,
     },
     SyncCovers,
     SyncLyrics,
@@ -831,9 +795,12 @@ pub enum DaemonEvent {
     #[serde(rename = "metadata_changed")]
     MetadataChanged { detail: String },
     #[serde(rename = "queue_changed")]
-    QueueChanged { queue: Vec<TrackInfo>, cursor: u128 },
+    QueueChanged {
+        queue: Vec<TrackInfo>,
+        cursor: u64,
+    },
     #[serde(rename = "queue_index_changed")]
-    QueueIndexChanged { index: u128 },
+    QueueIndexChanged { index: u64 },
     #[serde(rename = "repeat_mode_changed")]
     RepeatModeChanged { mode: RepeatMode },
     #[serde(rename = "shuffle_changed")]
@@ -903,7 +870,7 @@ pub enum DaemonRes {
     },
     QueueState {
         queue: Vec<TrackInfo>,
-        cursor: u128,
+        cursor: u64,
     },
     Status {
         state: Box<DaemonState>,
@@ -1066,7 +1033,7 @@ impl DaemonRes {
             },
             "queue" => {
                 let queue = data.get("queue").cloned().unwrap_or(Value::Null);
-                let cursor = data.get("cursor").and_then(|c| c.as_u64()).unwrap_or(0) as u128;
+                let cursor = data.get("cursor").and_then(|c| c.as_u64()).unwrap_or(0);
                 match serde_json::from_value::<Vec<TrackInfo>>(queue) {
                     Ok(queue) => DaemonRes::QueueState { queue, cursor },
                     Err(_) => DaemonRes::Value { value: data },

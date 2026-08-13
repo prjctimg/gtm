@@ -285,6 +285,15 @@ impl Daemon {
             match PulseAudioMixer::new() {
                 Ok(m) => Ok(Box::new(m)),
                 Err(e) => {
+                    // On Termux, rodio/cpal cannot open a device, so falling
+                    // back to it is pointless — surface the actionable error.
+                    if gtm_core::is_termux() {
+                        return Err(CoreError::Daemon(format!(
+                            "PulseAudio init failed: {e}. On Termux start the server first: \
+                             `pulseaudio --start --exit-idle-time=-1` (export \
+                             PULSE_SERVER=127.0.0.1 if audio is routed over TCP)"
+                        )));
+                    }
                     warn!("PulseAudio init failed ({e}), falling back to rodio");
                     AudioMixer::new()
                         .map(|m| Box::new(m) as Box<dyn Mixer>)

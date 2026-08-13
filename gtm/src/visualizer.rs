@@ -7,45 +7,8 @@ use ratatui::widgets::Widget;
 
 use crate::theme::AppTheme;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
-pub enum VisualizerStyle {
-    Bars,
-    Dots,
-    Braille,
-    Wave,
-}
-
-#[allow(dead_code)]
-impl VisualizerStyle {
-    pub fn all() -> &'static [VisualizerStyle] {
-        &[
-            VisualizerStyle::Bars,
-            VisualizerStyle::Dots,
-            VisualizerStyle::Braille,
-            VisualizerStyle::Wave,
-        ]
-    }
-
-    pub fn name(&self) -> &'static str {
-        match self {
-            VisualizerStyle::Bars => "Bars",
-            VisualizerStyle::Dots => "Dots",
-            VisualizerStyle::Braille => "Braille",
-            VisualizerStyle::Wave => "Wave",
-        }
-    }
-
-    pub fn next(&self) -> Self {
-        let all = Self::all();
-        let idx = all.iter().position(|s| s == self).unwrap_or(0);
-        all[(idx + 1) % all.len()]
-    }
-}
-
 pub struct AudioVisualizer {
     pub enabled: bool,
-    pub style: VisualizerStyle,
     bars: Vec<f32>,
     target_bars: Vec<f32>,
     last_tick: Instant,
@@ -56,7 +19,6 @@ impl AudioVisualizer {
     pub fn new() -> Self {
         Self {
             enabled: false,
-            style: VisualizerStyle::Braille,
             bars: vec![0.0; 32],
             target_bars: vec![0.0; 32],
             last_tick: Instant::now(),
@@ -131,55 +93,7 @@ impl AudioVisualizer {
         let h = area.height as usize;
         let num_bars = w.min(self.bars.len());
 
-        let lines = match self.style {
-            VisualizerStyle::Bars => self.render_bars(num_bars, h, theme),
-            VisualizerStyle::Dots => self.render_dots(num_bars, h, theme),
-            VisualizerStyle::Braille => self.render_braille(num_bars, h, theme),
-            VisualizerStyle::Wave => self.render_wave(num_bars, h, theme),
-        };
-        Some(lines)
-    }
-
-    fn render_bars(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
-        let chars = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        for row in (0..height).rev() {
-            let mut spans: Vec<Span<'static>> = Vec::new();
-            let threshold = (row + 1) as f32 / height as f32;
-            for i in 0..num_bars {
-                let val = *self.bars.get(i).unwrap_or(&0.0);
-                if val >= threshold {
-                    let seg = ((val - threshold) * height as f32).min(1.0);
-                    let ci = (seg * (chars.len() - 1) as f32).round() as usize;
-                    let ch = chars[ci.min(chars.len() - 1)];
-                    let color = self.amplitude_color(val, theme);
-                    spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
-                } else {
-                    spans.push(Span::raw(" "));
-                }
-            }
-            lines.push(Line::from(spans));
-        }
-        Lines(lines)
-    }
-
-    fn render_dots(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        for row in (0..height).rev() {
-            let mut spans: Vec<Span<'static>> = Vec::new();
-            let threshold = (row + 1) as f32 / height as f32;
-            for i in 0..num_bars {
-                let val = *self.bars.get(i).unwrap_or(&0.0);
-                if val >= threshold {
-                    let color = self.amplitude_color(val, theme);
-                    spans.push(Span::styled("●", Style::default().fg(color)));
-                } else {
-                    spans.push(Span::raw(" "));
-                }
-            }
-            lines.push(Line::from(spans));
-        }
-        Lines(lines)
+        Some(self.render_braille(num_bars, h, theme))
     }
 
     fn render_braille(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
@@ -202,35 +116,6 @@ impl AudioVisualizer {
                         braille_empty.to_string(),
                         Style::default().fg(theme.bg),
                     ));
-                }
-            }
-            lines.push(Line::from(spans));
-        }
-        Lines(lines)
-    }
-
-    fn render_wave(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
-        let mid = height / 2;
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        for row in 0..height {
-            let mut spans: Vec<Span<'static>> = Vec::new();
-            let dist_from_mid = (row as isize - mid as isize).unsigned_abs() as f32;
-            for i in 0..num_bars {
-                let val = *self.bars.get(i).unwrap_or(&0.0);
-                let wave_pos = val * mid as f32;
-                if dist_from_mid <= wave_pos {
-                    let proximity = 1.0 - (dist_from_mid / wave_pos.max(1.0));
-                    let color = if proximity > 0.7 {
-                        theme.accent
-                    } else if proximity > 0.4 {
-                        theme.fg_bright
-                    } else {
-                        theme.fg_dim
-                    };
-                    let ch = if dist_from_mid < 0.5 { '━' } else { '─' };
-                    spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
-                } else {
-                    spans.push(Span::raw(" "));
                 }
             }
             lines.push(Line::from(spans));

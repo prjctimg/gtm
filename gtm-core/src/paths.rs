@@ -9,7 +9,7 @@ use std::path::PathBuf;
 /// Detect whether we are running inside Termux.
 ///
 /// Termux sets `$PREFIX` (always) and `$TERMUX_VERSION` (on newer versions).
-fn is_termux() -> bool {
+pub fn is_termux() -> bool {
     std::env::var("PREFIX").is_ok() || std::env::var("TERMUX_VERSION").is_ok()
 }
 

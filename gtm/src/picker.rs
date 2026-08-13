@@ -9,9 +9,6 @@
 //! Each picker is a self-contained UI module that renders on top of the
 //! current tab content with a semi-transparent background.
 
-use gtm_core::state::DaemonState;
-use gtm_core::track::{Playlist, TrackInfo, YTSearchResult};
-
 /// Every picker variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickerId {
@@ -35,8 +32,6 @@ pub struct Picker {
     pub id: PickerId,
     pub query: String,
     pub selected: usize,
-    #[allow(dead_code)]
-    pub scroll_offset: usize,
 }
 
 impl Picker {
@@ -45,7 +40,6 @@ impl Picker {
             id,
             query: String::new(),
             selected: 0,
-            scroll_offset: 0,
         }
     }
 }
@@ -53,16 +47,11 @@ impl Picker {
 /// Manages the stack of open pickers (LIFO).
 pub struct PickerManager {
     pub stack: Vec<Picker>,
-    #[allow(dead_code)]
-    pub opacity: f64,
 }
 
 impl PickerManager {
     pub fn new() -> Self {
-        Self {
-            stack: Vec::new(),
-            opacity: 0.9,
-        }
+        Self { stack: Vec::new() }
     }
 
     pub fn is_open(&self) -> bool {
@@ -94,43 +83,5 @@ impl PickerManager {
 
     pub fn close_top(&mut self) {
         self.stack.pop();
-    }
-
-    #[allow(dead_code)]
-    pub fn close_all(&mut self) {
-        self.stack.clear();
-    }
-}
-
-/// Data that pickers need to read from App.
-#[allow(dead_code)]
-pub struct PickerCtx<'a> {
-    pub state: &'a DaemonState,
-    pub tracks_cache: &'a [TrackInfo],
-    pub queue_cache: &'a [TrackInfo],
-    pub queue_cursor: usize,
-    pub yt_results_cache: &'a [YTSearchResult],
-    pub playlist_cache: &'a [Playlist],
-    pub op: &'a PickerManager,
-}
-
-impl PickerId {
-    #[allow(dead_code)]
-    pub fn title(&self) -> &'static str {
-        match self {
-            PickerId::Queue => "Queue",
-            PickerId::YTSearch => "YouTube Search",
-            PickerId::SearchLibrary => "Search Library",
-            PickerId::SpotifySearch => "Spotify Link Token",
-            PickerId::Equalizer => "Equalizer",
-            PickerId::CommandPalette => "Command Palette",
-            PickerId::About => "About",
-            PickerId::SleepTimer => "Sleep Timer",
-            PickerId::ThemePicker => "Theme",
-            PickerId::SoundEffects => "Sound Effects",
-            PickerId::Help => "Help",
-            PickerId::PlaylistSelect => "Add to Playlist",
-            PickerId::EditMetadata => "Edit Metadata",
-        }
     }
 }

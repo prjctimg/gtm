@@ -395,7 +395,7 @@ impl DaemonState {
     pub fn check_invariants(&self) {
         assert!(self.volume <= 100, "volume {} exceeds 100", self.volume);
         assert!(
-            self.queue.is_empty() || self.queue_cursor < self.queue.len() as u128,
+            self.queue.is_empty() || self.queue_cursor < self.queue.len() as u64,
             "queue_cursor {} out of bounds for queue len {}",
             self.queue_cursor,
             self.queue.len()

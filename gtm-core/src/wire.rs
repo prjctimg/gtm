@@ -18,7 +18,7 @@ pub fn encode(events: &[DaemonEvent]) -> Result<Vec<u8>, rmp_serde::encode::Erro
     Ok(out)
 }
 
-pub fn decode(buf: &[u8]) -> Result<Option<(Vec<DaemonEvent>, u128)>, rmp_serde::decode::Error> {
+pub fn decode(buf: &[u8]) -> Result<Option<(Vec<DaemonEvent>, usize)>, rmp_serde::decode::Error> {
     if buf.len() < 4 {
         return Ok(None);
     }
@@ -31,5 +31,5 @@ pub fn decode(buf: &[u8]) -> Result<Option<(Vec<DaemonEvent>, u128)>, rmp_serde:
 
     let mut deserializer = Deserializer::new(&buf[4..4 + total_len]);
     let events: Vec<DaemonEvent> = Deserialize::deserialize(&mut deserializer)?;
-    Ok(Some((events, (4 + total_len) as u128)))
+    Ok(Some((events, 4 + total_len)))
 }

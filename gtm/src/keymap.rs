@@ -33,18 +33,13 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use crate::picker::PickerId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum KeyContext {
     Global,
     Normal,
-    Filter,
-    Overlay,
     List,
-    MoveMode,
 }
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum KeyboardAction {
     // Tab switching
     NextTab,
@@ -60,16 +55,10 @@ pub enum KeyboardAction {
 
     // Selection / action
     Select,
-    EnqueueNext,
-    EnqueueEnd,
     Delete,
-    Move,
 
     // Filter
     EnterFilter,
-    EnterCommand,
-    ClearFilter,
-    Confirm,
 
     // Playback
     PlayPause,
@@ -101,33 +90,27 @@ pub enum KeyboardAction {
 
     // Library motions (vim-style)
     ToggleMultiselect,
-    ToggleSelectAndAdvance,
     AddToQueue,
     AddToPlaylist,
     DeleteFromList,
-    JumpToStart,
     JumpToEnd,
     EditMetadata,
 
     // Meta
     Quit,
     QuitDaemon,
-    ReloadConfig,
     ToggleHelp,
     HideHelpBar,
     CycleFooterPreset,
     CycleProgressStyle,
     ToggleVisualizer,
     CheckHealth,
-    Custom(String),
 }
 
 #[derive(Debug, Clone)]
 pub struct BoundCommand {
     pub action: KeyboardAction,
     pub contexts: Vec<KeyContext>,
-    #[allow(dead_code)]
-    pub description: &'static str,
 }
 
 #[derive(Debug, Clone)]
@@ -152,47 +135,6 @@ fn key_matches(event: &KeyEvent, binding: &KeyEvent) -> bool {
     event.code == binding.code && event.modifiers == binding.modifiers
 }
 
-/// Parse a key name string into a KeyEvent.  Used for configurability
-/// (e.g. from a config file) though currently only called from tests.
-#[allow(dead_code)]
-pub fn parse_keycode(name: &str) -> KeyEvent {
-    match name {
-        "tab" | "Tab" => KeyCode::Tab.into(),
-        "backtab" | "BackTab" => KeyCode::BackTab.into(),
-        "enter" | "Enter" => KeyCode::Enter.into(),
-        "esc" | "Escape" => KeyCode::Esc.into(),
-        "space" => KeyCode::Char(' ').into(),
-        "up" | "Up" => KeyCode::Up.into(),
-        "down" | "Down" => KeyCode::Down.into(),
-        "left" | "Left" => KeyCode::Left.into(),
-        "right" | "Right" => KeyCode::Right.into(),
-        "home" | "Home" => KeyCode::Home.into(),
-        "end" | "End" => KeyCode::End.into(),
-        "pageup" | "PageUp" => KeyCode::PageUp.into(),
-        "pagedown" | "PageDown" => KeyCode::PageDown.into(),
-        "delete" | "Del" => KeyCode::Delete.into(),
-        "backspace" | "BS" => KeyCode::Backspace.into(),
-        "f1" => KeyCode::F(1).into(),
-        "f2" => KeyCode::F(2).into(),
-        "f3" => KeyCode::F(3).into(),
-        "f4" => KeyCode::F(4).into(),
-        "f5" => KeyCode::F(5).into(),
-        "f6" => KeyCode::F(6).into(),
-        "f7" => KeyCode::F(7).into(),
-        "f8" => KeyCode::F(8).into(),
-        "f9" => KeyCode::F(9).into(),
-        "f10" => KeyCode::F(10).into(),
-        "f11" => KeyCode::F(11).into(),
-        "f12" => KeyCode::F(12).into(),
-        "ctrl-c" | "CtrlC" => KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
-        "ctrl-d" | "CtrlD" => KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
-        "ctrl-u" | "CtrlU" => KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
-        "ctrl-r" | "CtrlR" => KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
-        s if s.len() == 1 => KeyCode::Char(s.chars().next().unwrap()).into(),
-        _ => KeyCode::Char('?').into(),
-    }
-}
-
 /// Build the default set of key bindings.  Layered by context:
 ///
 ///   Global  — q (quit), ? (help), space (play/pause)
@@ -209,7 +151,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::Quit,
                     contexts: vec![KeyContext::Global, KeyContext::Normal],
-                    description: "Quit",
                 },
             ),
             // Global — ToggleHelp
@@ -218,7 +159,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::ToggleHelp,
                     contexts: vec![KeyContext::Global, KeyContext::Normal],
-                    description: "Toggle help",
                 },
             ),
             // Ctrl+H — hide/show help bar in library view
@@ -227,7 +167,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::HideHelpBar,
                     contexts: vec![KeyContext::Normal],
-                    description: "Toggle help bar",
                 },
             ),
             // Command palette (:)
@@ -236,7 +175,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::OpenOverlay(PickerId::CommandPalette),
                     contexts: vec![KeyContext::Normal],
-                    description: "Open command palette",
                 },
             ),
             // Tab switching — Tab / Shift-Tab
@@ -245,7 +183,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::NextTab,
                     contexts: vec![KeyContext::Normal],
-                    description: "Next tab",
                 },
             ),
             (
@@ -253,7 +190,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::PrevTab,
                     contexts: vec![KeyContext::Normal],
-                    description: "Previous tab",
                 },
             ),
             // Cursor — arrow keys
@@ -262,7 +198,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::MoveUp,
                     contexts: vec![KeyContext::List, KeyContext::Normal],
-                    description: "Move up",
                 },
             ),
             (
@@ -270,7 +205,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::MoveDown,
                     contexts: vec![KeyContext::List, KeyContext::Normal],
-                    description: "Move down",
                 },
             ),
             // Cursor — vim-style j/k
@@ -279,7 +213,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::MoveUp,
                     contexts: vec![KeyContext::List, KeyContext::Normal],
-                    description: "Move up",
                 },
             ),
             (
@@ -287,7 +220,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::MoveDown,
                     contexts: vec![KeyContext::List, KeyContext::Normal],
-                    description: "Move down",
                 },
             ),
             // Cursor — page up/down (PgUp/PgDn, Ctrl+U/Ctrl+D)
@@ -296,7 +228,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::PageUp,
                     contexts: vec![KeyContext::List, KeyContext::Normal],
-                    description: "Page up",
                 },
             ),
             (
@@ -304,7 +235,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::PageDown,
                     contexts: vec![KeyContext::List, KeyContext::Normal],
-                    description: "Page down",
                 },
             ),
             (
@@ -312,7 +242,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::PageUp,
                     contexts: vec![KeyContext::Normal],
-                    description: "Page up",
                 },
             ),
             (
@@ -320,7 +249,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::PageDown,
                     contexts: vec![KeyContext::Normal],
-                    description: "Page down",
                 },
             ),
             // Cursor — jump to top/bottom (Home/End)
@@ -329,7 +257,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::Top,
                     contexts: vec![KeyContext::List, KeyContext::Normal],
-                    description: "Jump to top",
                 },
             ),
             (
@@ -337,7 +264,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::Bottom,
                     contexts: vec![KeyContext::List, KeyContext::Normal],
-                    description: "Jump to bottom",
                 },
             ),
             // Playback — space, n, p, Ctrl+N/P, s (stop)
@@ -346,7 +272,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::PlayPause,
                     contexts: vec![KeyContext::Global, KeyContext::Normal],
-                    description: "Play / Pause",
                 },
             ),
             (
@@ -354,7 +279,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::Next,
                     contexts: vec![KeyContext::Global, KeyContext::Normal],
-                    description: "Next track",
                 },
             ),
             (
@@ -362,7 +286,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::Prev,
                     contexts: vec![KeyContext::Global, KeyContext::Normal],
-                    description: "Previous track",
                 },
             ),
             (
@@ -370,7 +293,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::Next,
                     contexts: vec![KeyContext::Global, KeyContext::Normal],
-                    description: "Next track",
                 },
             ),
             (
@@ -378,7 +300,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::Prev,
                     contexts: vec![KeyContext::Global, KeyContext::Normal],
-                    description: "Previous track",
                 },
             ),
             (
@@ -386,7 +307,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::Stop,
                     contexts: vec![KeyContext::Normal],
-                    description: "Stop playback",
                 },
             ),
             // Volume — +, =, -
@@ -395,7 +315,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::VolumeUp,
                     contexts: vec![KeyContext::Normal],
-                    description: "Volume up",
                 },
             ),
             (
@@ -403,7 +322,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::VolumeUp,
                     contexts: vec![KeyContext::Normal],
-                    description: "Volume up",
                 },
             ),
             (
@@ -411,7 +329,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::VolumeDown,
                     contexts: vec![KeyContext::Normal],
-                    description: "Volume down",
                 },
             ),
             // Mute — m
@@ -420,7 +337,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::ToggleMute,
                     contexts: vec![KeyContext::Normal],
-                    description: "Toggle mute",
                 },
             ),
             // Quit daemon — Q
@@ -429,7 +345,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::QuitDaemon,
                     contexts: vec![KeyContext::Global, KeyContext::Normal],
-                    description: "Quit and stop daemon",
                 },
             ),
             // Favourite — F
@@ -438,7 +353,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::ToggleFavourite,
                     contexts: vec![KeyContext::Normal],
-                    description: "Toggle favourite",
                 },
             ),
             // Clear queue — D
@@ -447,7 +361,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::ClearQueue,
                     contexts: vec![KeyContext::Normal],
-                    description: "Clear queue",
                 },
             ),
             // Focus navigation — [, ]
@@ -456,7 +369,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::FocusLeft,
                     contexts: vec![KeyContext::Normal],
-                    description: "Focus left pane",
                 },
             ),
             (
@@ -464,7 +376,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::FocusRight,
                     contexts: vec![KeyContext::Normal],
-                    description: "Focus right pane",
                 },
             ),
             // Lyrics — l
@@ -473,7 +384,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::FetchLyrics,
                     contexts: vec![KeyContext::Normal],
-                    description: "Fetch lyrics",
                 },
             ),
             // Repeat — r, Shift+R
@@ -482,7 +392,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::CycleRepeat,
                     contexts: vec![KeyContext::Normal],
-                    description: "Cycle repeat",
                 },
             ),
             (
@@ -490,7 +399,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::CycleRepeat,
                     contexts: vec![KeyContext::Normal],
-                    description: "Cycle repeat",
                 },
             ),
             // Shuffle — Shift+S only (s is reserved for Stop)
@@ -499,7 +407,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::ToggleShuffle,
                     contexts: vec![KeyContext::Normal],
-                    description: "Toggle shuffle",
                 },
             ),
             // Seek — comma/period
@@ -508,7 +415,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::SeekForward,
                     contexts: vec![KeyContext::Normal],
-                    description: "Seek forward",
                 },
             ),
             (
@@ -516,7 +422,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::SeekBackward,
                     contexts: vec![KeyContext::Normal],
-                    description: "Seek backward",
                 },
             ),
             // Filter mode — /, Ctrl+F
@@ -525,7 +430,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::EnterFilter,
                     contexts: vec![KeyContext::Normal],
-                    description: "Enter filter mode",
                 },
             ),
             (
@@ -533,7 +437,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::EnterFilter,
                     contexts: vec![KeyContext::Normal],
-                    description: "Enter filter mode",
                 },
             ),
             // Select — Enter
@@ -542,7 +445,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::Select,
                     contexts: vec![KeyContext::List, KeyContext::Normal],
-                    description: "Select item",
                 },
             ),
             // Back — Backspace (go back in library drill-down / move focus left)
@@ -551,7 +453,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::Back,
                     contexts: vec![KeyContext::Normal],
-                    description: "Go back",
                 },
             ),
             // Delete — Del / d (with confirmation)
@@ -560,7 +461,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::Delete,
                     contexts: vec![KeyContext::List, KeyContext::Normal],
-                    description: "Delete item",
                 },
             ),
             (
@@ -568,7 +468,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::Delete,
                     contexts: vec![KeyContext::List, KeyContext::Normal],
-                    description: "Delete item",
                 },
             ),
             // Overlay triggers — Alt+key
@@ -577,7 +476,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::OpenOverlay(PickerId::Queue),
                     contexts: vec![KeyContext::Normal],
-                    description: "Queue picker",
                 },
             ),
             (
@@ -585,7 +483,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::OpenOverlay(PickerId::YTSearch),
                     contexts: vec![KeyContext::Normal],
-                    description: "YouTube Search picker",
                 },
             ),
             (
@@ -593,7 +490,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::OpenOverlay(PickerId::SearchLibrary),
                     contexts: vec![KeyContext::Normal],
-                    description: "Search Library picker",
                 },
             ),
             (
@@ -601,7 +497,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::OpenOverlay(PickerId::About),
                     contexts: vec![KeyContext::Normal],
-                    description: "About picker",
                 },
             ),
             (
@@ -609,7 +504,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::OpenOverlay(PickerId::SleepTimer),
                     contexts: vec![KeyContext::Normal],
-                    description: "Sleep Timer picker",
                 },
             ),
             (
@@ -617,7 +511,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::OpenOverlay(PickerId::ThemePicker),
                     contexts: vec![KeyContext::Normal],
-                    description: "Theme Picker picker",
                 },
             ),
             (
@@ -625,7 +518,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::OpenOverlay(PickerId::Equalizer),
                     contexts: vec![KeyContext::Normal],
-                    description: "Equalizer picker",
                 },
             ),
             (
@@ -633,7 +525,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::OpenOverlay(PickerId::CommandPalette),
                     contexts: vec![KeyContext::Normal],
-                    description: "Command Palette picker",
                 },
             ),
             (
@@ -641,7 +532,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::OpenOverlay(PickerId::SpotifySearch),
                     contexts: vec![KeyContext::Normal],
-                    description: "Spotify Search picker",
                 },
             ),
             (
@@ -649,7 +539,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::OpenOverlay(PickerId::SoundEffects),
                     contexts: vec![KeyContext::Normal],
-                    description: "Sound Effects picker",
                 },
             ),
             // Footer preset cycling — Alt+F
@@ -658,7 +547,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::CycleFooterPreset,
                     contexts: vec![KeyContext::Normal],
-                    description: "Cycle footer preset",
                 },
             ),
             // Library motions — vim-style
@@ -668,7 +556,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::ToggleMultiselect,
                     contexts: vec![KeyContext::Normal],
-                    description: "Toggle multiselect mode",
                 },
             ),
             // a — add selected to queue
@@ -677,7 +564,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::AddToQueue,
                     contexts: vec![KeyContext::Normal],
-                    description: "Add to queue",
                 },
             ),
             // A (Shift) — add to playlist
@@ -686,7 +572,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::AddToPlaylist,
                     contexts: vec![KeyContext::Normal],
-                    description: "Add to playlist",
                 },
             ),
             // x — delete from list
@@ -695,7 +580,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::DeleteFromList,
                     contexts: vec![KeyContext::Normal],
-                    description: "Delete from list",
                 },
             ),
             // gg — jump to start (handled via pending_motion in app.rs)
@@ -706,7 +590,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::JumpToEnd,
                     contexts: vec![KeyContext::Normal],
-                    description: "Jump to end",
                 },
             ),
             // e — edit metadata
@@ -715,7 +598,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::EditMetadata,
                     contexts: vec![KeyContext::Normal],
-                    description: "Edit metadata",
                 },
             ),
             // P — cycle progress style
@@ -724,7 +606,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::CycleProgressStyle,
                     contexts: vec![KeyContext::Normal],
-                    description: "Cycle progress style",
                 },
             ),
             // Ctrl+V — toggle visualizer
@@ -733,7 +614,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::ToggleVisualizer,
                     contexts: vec![KeyContext::Normal],
-                    description: "Toggle visualizer",
                 },
             ),
             // : (colon) — health check (neovim-style)
@@ -742,7 +622,6 @@ pub fn default_keybindings() -> Keybindings {
                 BoundCommand {
                     action: KeyboardAction::CheckHealth,
                     contexts: vec![KeyContext::Normal],
-                    description: "Daemon health check",
                 },
             ),
         ],

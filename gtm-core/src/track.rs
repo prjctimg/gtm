@@ -37,7 +37,7 @@ pub struct Playlist {
     pub id: i64,
     pub name: String,
     pub created_at: String, // ISO 8601
-    pub track_count: u128,  // Is there a playlist with THIS much tracks 👀 ?
+    pub track_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -46,7 +46,7 @@ enum Command {
     Queue,
     QueueAdd {
         path: String,
-        position: Option<u128>,
+        position: Option<u64>,
     },
     QueueAddMany {
         paths: Vec<String>,
@@ -55,16 +55,16 @@ enum Command {
         path: String,
     },
     QueueRemove {
-        index: u128,
+        index: u64,
     },
     QueueMove {
-        from: u128,
-        to: u128,
+        from: u64,
+        to: u64,
     },
     QueueClear,
     QueueSet {
         paths: Vec<String>,
-        start_idx: u128,
+        start_idx: u64,
     },
     Scan {
         path: String,
@@ -88,7 +88,7 @@ enum Command {
         path: String,
     },
     Recent {
-        count: u128,
+        count: u64,
     },
     Favourites,
     FavouriteAdd {

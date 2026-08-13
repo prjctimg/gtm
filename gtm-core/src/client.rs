@@ -401,7 +401,7 @@ impl DaemonClient {
         .await
     }
 
-    pub async fn queue_add(&self, path: &str, position: Option<u128>) -> Result<()> {
+    pub async fn queue_add(&self, path: &str, position: Option<u64>) -> Result<()> {
         self.send_ok(DaemonReq::Queue {
             action: QueueAction::Add {
                 path: path.into(),
@@ -432,21 +432,21 @@ impl DaemonClient {
         .await
     }
 
-    pub async fn queue_rm(&self, index: u128) -> Result<()> {
+    pub async fn queue_rm(&self, index: u64) -> Result<()> {
         self.send_ok(DaemonReq::Queue {
             action: QueueAction::Remove { index },
         })
         .await
     }
 
-    pub async fn queue_move(&self, from: u128, to: u128) -> Result<()> {
+    pub async fn queue_move(&self, from: u64, to: u64) -> Result<()> {
         self.send_ok(DaemonReq::Queue {
             action: QueueAction::Move { from, to },
         })
         .await
     }
 
-    pub async fn queue_set(&self, paths: Vec<String>, start_idx: u128) -> Result<()> {
+    pub async fn queue_set(&self, paths: Vec<String>, start_idx: u64) -> Result<()> {
         self.send_ok(DaemonReq::Queue {
             action: QueueAction::Set { paths, start_idx },
         })
@@ -534,7 +534,7 @@ impl DaemonClient {
         .await
     }
 
-    pub async fn library_get_recent(&self, count: u128) -> Result<DaemonRes> {
+    pub async fn library_get_recent(&self, count: u64) -> Result<DaemonRes> {
         self.send_raw(DaemonReq::Library {
             action: LibraryAction::GetRecent { count },
         })
@@ -1156,7 +1156,7 @@ async fn pulse_reader(
                         break;
                     }
                 };
-                buf.drain(..consumed as usize);
+                buf.drain(..consumed);
                 if decoded.iter().any(|e| matches!(e, DaemonEvent::Heartbeat)) {
                     *last_heartbeat_at.lock().unwrap() = Instant::now();
                 }

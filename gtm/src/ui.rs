@@ -1721,16 +1721,6 @@ fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 area,
             );
         }
-        InputMode::Command => {
-            f.render_widget(
-                Paragraph::new(format!(" :{}_", app.search_query)).style(
-                    Style::default()
-                        .fg(app.theme.fg_bright)
-                        .bg(app.theme.border),
-                ),
-                area,
-            );
-        }
     }
 }
 
@@ -2718,36 +2708,8 @@ fn format_duration_short(secs: u64) -> String {
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /// Return a braille spinner character cycling by `frame` (incremented each tick).
-#[allow(dead_code)]
 pub fn braille_spinner(frame: usize) -> char {
     SPINNER_FRAMES[frame % SPINNER_FRAMES.len()]
-}
-
-/// Build a single-line progress bar string in bracket style:
-/// `[###########---------]` — `#` fill, `-` empty.
-/// `ratio` in [0.0, 1.0]; `width` in terminal columns (includes brackets).
-#[allow(dead_code)]
-fn render_progress_line(ratio: f64, width: usize) -> String {
-    let width = width.max(6);
-    let inner_w = width.saturating_sub(2);
-    let filled = (ratio.clamp(0.0, 1.0) * inner_w as f64).round() as usize;
-
-    let mut line = String::with_capacity(width);
-    line.push('[');
-    for i in 0..inner_w {
-        line.push(if i < filled { '#' } else { '-' });
-    }
-    line.push(']');
-    line
-}
-
-/// Volume label in bracket style.
-#[allow(dead_code)]
-fn volume_icon(volume: u8) -> &'static str {
-    match volume {
-        0 => "[MUTED]",
-        _ => "[VOL]",
-    }
 }
 
 /// Pick the foreground colour that has enough contrast against `bg`.
