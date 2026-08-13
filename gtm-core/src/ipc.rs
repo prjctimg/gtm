@@ -245,6 +245,11 @@ pub enum DaemonReq {
         track_id: i64,
     },
 
+    // ─── Lyrics ───
+    GetLyrics {
+        track_id: i64,
+    },
+
     // ─── System ───
     GetStatus,
     Ping,

@@ -75,7 +75,7 @@ pub const LIBRARY_CATEGORIES: &[&str] = &[
     "Artists",
     "Playlists",
     "Spotify",
-    "Downloads",
+    "YouTube",
 ];
 
 /// Returns true if the terminal doesn't support image protocols (Neovim, Zellij, etc.).
@@ -183,13 +183,21 @@ pub struct App {
     pub track_popup_visible: bool,
     pub track_popup_track_id: Option<i64>,
     pub track_popup_cover: Option<Vec<u8>>,
+    pub popup_cover_stateful: Option<StatefulProtocol>,
     last_popup_cover_fetch_id: Option<i64>,
+    pub current_lyrics: Option<gtm_core::track::LrcData>,
+    pub lyrics_scroll: usize,
+    last_lyrics_track_id: Option<i64>,
+    pub show_lyrics: bool,
+    pub lyrics_manual_scroll: bool,
+    pub lyrics_last_scroll_time: std::time::Instant,
 }
 
 enum IpcResult {
     RefreshDone(DaemonState, Option<Vec<u8>>, Option<i64>),
     CoverArt(Option<Vec<u8>>, Option<i64>),
     PopupCoverArt(Option<Vec<u8>>, i64),
+    Lyrics(Option<gtm_core::track::LrcData>),
     LibraryTracks(Vec<TrackInfo>),
     Playlists(Vec<Playlist>),
     Queue(Vec<TrackInfo>, usize),
@@ -231,6 +239,7 @@ pub enum TuiCommand {
     RefreshYt,
     RemoveTrack(i64),
     RemoveFromPlaylist(i64, i64),
+    FetchLyrics,
 }
 
 impl App {
@@ -319,7 +328,14 @@ impl App {
             track_popup_visible: false,
             track_popup_track_id: None,
             track_popup_cover: None,
+            popup_cover_stateful: None,
             last_popup_cover_fetch_id: None,
+            current_lyrics: None,
+            lyrics_scroll: 0,
+            last_lyrics_track_id: None,
+            show_lyrics: false,
+            lyrics_manual_scroll: false,
+            lyrics_last_scroll_time: std::time::Instant::now(),
         })
     }
 
@@ -443,6 +459,18 @@ impl App {
                         }
                     });
                 }
+                // Auto-fetch lyrics if lyrics pane is visible
+                if self.show_lyrics {
+                    let client3 = self.client.clone();
+                    let ipc_tx3 = self.ipc_tx.clone();
+                    self.current_lyrics = None;
+                    self.lyrics_scroll = 0;
+                    tokio::spawn(async move {
+                        if let Ok(lyrics) = client3.get_lyrics(tid).await {
+                            let _ = ipc_tx3.send(IpcResult::Lyrics(lyrics));
+                        }
+                    });
+                }
             }
 
             while let Ok(result) = self.ipc_rx.try_recv() {
@@ -496,7 +524,12 @@ impl App {
                     IpcResult::PopupCoverArt(cover, track_id) => {
                         if !no_image_protocol() && self.track_popup_track_id == Some(track_id) {
                             self.track_popup_cover = cover;
+                            self.sync_popup_cover_stateful();
                         }
+                    }
+                    IpcResult::Lyrics(lyrics) => {
+                        self.current_lyrics = lyrics;
+                        self.lyrics_scroll = 0;
                     }
                 }
             }
@@ -552,6 +585,27 @@ impl App {
             // EMA smoothing
             self.display_position = self.display_position * 0.85 + raw_pos * 0.15;
 
+            // Auto-scroll lyrics to current playback position
+            if !self.lyrics_manual_scroll
+                && self.show_lyrics
+                && self.state.status == PlaybackStatus::Playing
+            {
+                if let Some(ref lyrics) = self.current_lyrics {
+                    if !lyrics.lines.is_empty() {
+                        let pos = self.display_position;
+                        let mut current_idx = 0;
+                        for (i, line) in lyrics.lines.iter().enumerate() {
+                            if line.timestamp <= pos {
+                                current_idx = i;
+                            } else {
+                                break;
+                            }
+                        }
+                        self.lyrics_scroll = current_idx;
+                    }
+                }
+            }
+
             // Dirty-render: skip redraw if position hasn't changed meaningfully
             // to reduce CPU usage.  Always render every 10th frame as a safety net.
             let frame_count = self.frame_count.wrapping_add(1);
@@ -571,12 +625,13 @@ impl App {
             self.last_display_position = self.display_position;
 
             if force_render {
-                terminal.draw(|f| ui::render(f, &mut self))?;
-                self.suppress_footer_refresh = false;
+                if terminal.draw(|f| ui::render(f, &mut self)).is_ok() {
+                    self.suppress_footer_refresh = false;
+                }
             }
 
-            if event::poll(Duration::from_millis(16))? {
-                if let Event::Key(key) = event::read()? {
+            if event::poll(Duration::from_millis(16)).unwrap_or(false) {
+                if let Ok(Event::Key(key)) = event::read() {
                     if key.kind == KeyEventKind::Press {
                         if !self.handle_key(key).await || self.pending_quit {
                             break;
@@ -615,6 +670,7 @@ impl App {
             let current_tid = self.state.current_track.as_ref().map(|t| t.id);
             if current_tid == Some(tid) {
                 self.track_popup_cover = self.current_cover.clone();
+                self.sync_popup_cover_stateful();
                 self.last_popup_cover_fetch_id = None;
             } else if self.last_popup_cover_fetch_id != Some(tid) && !no_image_protocol() {
                 self.last_popup_cover_fetch_id = Some(tid);
@@ -642,6 +698,7 @@ impl App {
         self.track_popup_visible = false;
         self.track_popup_track_id = None;
         self.track_popup_cover = None;
+        self.popup_cover_stateful = None;
         self.last_popup_cover_fetch_id = None;
     }
 
@@ -666,6 +723,12 @@ impl App {
         }
         if self.library_category == 1 {
             tracks.retain(|t| t.favourite);
+        } else if self.library_category == 5 {
+            // Spotify: tracks from the spotify audio subdirectory
+            tracks.retain(|t| t.path.contains("/audio/spotify") || t.path.contains("\\audio\\spotify"));
+        } else if self.library_category == 6 {
+            // YouTube: tracks from the youtube audio subdirectory
+            tracks.retain(|t| t.path.contains("/audio/youtube") || t.path.contains("\\audio\\youtube"));
         }
         tracks
     }
@@ -731,6 +794,19 @@ impl App {
                 }
             }
             _ => self.cover_stateful = None,
+        }
+    }
+
+    fn sync_popup_cover_stateful(&mut self) {
+        match (&self.track_popup_cover, &self.cover_picker) {
+            (Some(bytes), Some(picker)) => {
+                if let Ok(img) = image::load_from_memory(bytes) {
+                    self.popup_cover_stateful = Some(picker.new_resize_protocol(img));
+                } else {
+                    self.popup_cover_stateful = None;
+                }
+            }
+            _ => self.popup_cover_stateful = None,
         }
     }
 
@@ -1044,6 +1120,17 @@ impl App {
                         if let Ok(DaemonRes::Playlists { playlists, .. }) = client.library_get_playlists().await {
                             let _ = ipc_tx.send(IpcResult::Playlists(playlists));
                         }
+                    }
+                });
+            }
+            TuiCommand::FetchLyrics => {
+                let track_id = self.state.current_track.as_ref().map(|t| t.id).unwrap_or(0);
+                if track_id == 0 { return; }
+                let client2 = self.client.clone();
+                let ipc_tx2 = self.ipc_tx.clone();
+                tokio::spawn(async move {
+                    if let Ok(lyrics) = client2.get_lyrics(track_id).await {
+                        let _ = ipc_tx2.send(IpcResult::Lyrics(lyrics));
                     }
                 });
             }
@@ -1411,6 +1498,13 @@ impl App {
                             Tab::Settings => self.settings_pane_focus = false,
                         }
                     }
+                    Some(KeyboardAction::FetchLyrics) => {
+                        self.show_lyrics = !self.show_lyrics;
+                        if self.show_lyrics && self.current_lyrics.is_none() {
+                            self.send_high(TuiCommand::FetchLyrics);
+                        }
+                        self.dismiss_track_popup();
+                    }
                     Some(KeyboardAction::EnterFilter) => {
                         self.input_mode = InputMode::Searching;
                         self.dismiss_track_popup();
@@ -1422,7 +1516,12 @@ impl App {
                     Some(KeyboardAction::MoveUp) => {
                         match self.current_tab {
                             Tab::Library if self.library_pane_focus => {
-                                self.library_category = self.library_category.saturating_sub(1);
+                                let new_cat = self.library_category.saturating_sub(1);
+                                if new_cat != self.library_category {
+                                    self.browse_detail = None;
+                                    self.scroll_offset = 0;
+                                }
+                                self.library_category = new_cat;
                             }
                             Tab::Settings if self.settings_pane_focus => {
                                 self.settings_category = self.settings_category.saturating_sub(1);
@@ -1439,7 +1538,12 @@ impl App {
                     Some(KeyboardAction::MoveDown) => {
                         match self.current_tab {
                             Tab::Library if self.library_pane_focus => {
-                                self.library_category = (self.library_category + 1).min(LIBRARY_CATEGORIES.len() - 1);
+                                let new_cat = (self.library_category + 1).min(LIBRARY_CATEGORIES.len() - 1);
+                                if new_cat != self.library_category {
+                                    self.browse_detail = None;
+                                    self.scroll_offset = 0;
+                                }
+                                self.library_category = new_cat;
                             }
                             Tab::Settings if self.settings_pane_focus => {
                                 self.settings_category = (self.settings_category + 1).min(NUM_SETTINGS_CATEGORIES.saturating_sub(1));
@@ -2033,6 +2137,9 @@ impl App {
                                     self.overlays.open(OverlayId::SearchLibrary);
                                 } else if label.starts_with("spotify") {
                                     self.overlays.open(OverlayId::SpotifySearch);
+                                } else if label.starts_with("fetch lyrics") {
+                                    self.show_lyrics = true;
+                                    self.send_high(TuiCommand::FetchLyrics);
                                 } else if label.starts_with("cmd palette") {
                                     // Already here — just close
                                 }

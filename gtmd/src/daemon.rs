@@ -69,6 +69,7 @@ use gtm_core::CoreError;
 use crate::config::DaemonConfig;
 use crate::cover_art::CoverCache;
 use crate::library::Library;
+use crate::lyrics::LyricsManager;
 use crate::queue;
 use crate::youtube::YoutubeManager;
 
@@ -84,6 +85,7 @@ pub struct Daemon {
     pub event_tx: broadcast::Sender<DaemonEvent>,
     pub library: Option<Library>,
     pub cover_cache: Option<CoverCache>,
+    pub lyrics_manager: Option<LyricsManager>,
     pub youtube: YoutubeManager,
     req_tx: mpsc::UnboundedSender<(ClientId, DaemonReq, ReplyTx)>,
     req_rx: mpsc::UnboundedReceiver<(ClientId, DaemonReq, ReplyTx)>,
@@ -152,6 +154,7 @@ impl Daemon {
             crossfade_loaded_for: None,
             library,
             cover_cache: Some(CoverCache::new(cache_dir)),
+            lyrics_manager: Some(LyricsManager::new()),
             youtube: YoutubeManager::new(),
         })
     }
@@ -456,7 +459,8 @@ impl Daemon {
             DaemonReq::SetEqPreset { preset } => self.cmd_set_eq_preset(*preset).await,
             DaemonReq::SetEqEnabled { enabled } => self.cmd_set_eq_enabled(*enabled).await,
             DaemonReq::SetReverb { enabled, room_size } => self.cmd_set_reverb(*enabled, *room_size).await,
-            DaemonReq::GetCoverArt { track_id } => self.cmd_get_cover_art(*track_id).await,
+        DaemonReq::GetCoverArt { track_id }           => self.cmd_get_cover_art(*track_id).await,
+        DaemonReq::GetLyrics { track_id }             => self.cmd_get_lyrics(*track_id).await,
             DaemonReq::Ping => Ok(DaemonRes::Pong),
             DaemonReq::Quit => {
                 info!("quit requested");
@@ -1675,5 +1679,45 @@ impl Daemon {
         }
 
         Ok(DaemonRes::CoverArt { version: u32::MAX, data: None })
+    }
+
+    async fn cmd_get_lyrics(&mut self, track_id: i64) -> Result<DaemonRes, CoreError> {
+        let track = {
+            let state = self.state.read().await;
+            if let Some(ref t) = state.current_track {
+                if t.id == track_id {
+                    Some(t.clone())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+        let track = if let Some(t) = track {
+            t
+        } else if let Some(ref library) = self.library {
+            match library.get_track(track_id) {
+                Ok(Some(t)) => t,
+                _ => {
+                    return Ok(DaemonRes::Lyrics { version: u32::MAX, lyrics: None });
+                }
+            }
+        } else {
+            return Ok(DaemonRes::Lyrics { version: u32::MAX, lyrics: None });
+        };
+
+        if let Some(ref manager) = self.lyrics_manager {
+            let lyrics = tokio::time::timeout(
+                Duration::from_secs(5),
+                manager.get_lyrics(&track),
+            )
+            .await
+            .ok()
+            .flatten();
+            Ok(DaemonRes::Lyrics { version: u32::MAX, lyrics })
+        } else {
+            Ok(DaemonRes::Lyrics { version: u32::MAX, lyrics: None })
+        }
     }
 }

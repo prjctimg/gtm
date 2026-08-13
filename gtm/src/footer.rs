@@ -81,106 +81,146 @@ pub fn num_presets() -> usize {
 
 /// Collect the rendered spans for a preset so they can be cached across frames.
 pub fn collect_preset_spans(app: &App, preset: &FooterPreset) -> Option<(Vec<Span<'static>>, ratatui::style::Color, ratatui::style::Color)> {
-    let left_modules: Vec<&FooterModule> = preset.a.iter()
-        .chain(preset.b.iter())
-        .chain(preset.c.iter())
-        .collect();
-    let left_parts = render_modules(&left_modules, app);
-    let left_bg = if app.state.status == PlaybackStatus::Playing { app.theme.accent } else { app.theme.fg_dim };
+    let groups = build_groups(preset, app);
+    let mut all_spans: Vec<Span<'static>> = Vec::new();
+    for (i, group) in groups.iter().enumerate() {
+        let parts = render_modules(&group.modules, app);
+        if parts.is_empty() {
+            continue;
+        }
+        if i > 0 {
+            all_spans.push(Span::raw(" "));
+        }
+        all_spans.push(Span::raw(" "));
+        for (j, (text, color)) in parts.iter().enumerate() {
+            if j > 0 { all_spans.push(Span::raw(" ")); }
+            let fg = crate::ui::readable_fg(group.bg, *color, app.theme.fg_bright);
+            all_spans.push(Span::styled(text.clone(), Style::default().fg(fg)));
+        }
+        all_spans.push(Span::raw(" "));
+    }
+    let left_bg = if all_spans.is_empty() { app.theme.fg_dim } else { groups[0].bg };
     let right_bg = app.theme.border;
-    if left_parts.is_empty() {
-        return None;
+    Some((all_spans, left_bg, right_bg))
+}
+
+struct FooterGroup<'a> {
+    modules: Vec<&'a FooterModule>,
+    bg: ratatui::style::Color,
+}
+
+fn build_groups<'a>(preset: &'a FooterPreset, app: &App) -> Vec<FooterGroup<'a>> {
+    let is_playing = app.state.status == PlaybackStatus::Playing;
+    let status_bg = if is_playing { app.theme.accent } else { app.theme.fg_dim };
+    let mode_bg = app.theme.border;
+    let mut groups = Vec::new();
+
+    // Group 1: Playback + Volume + EqPreset (status)
+    let mut status = Vec::new();
+    for m in preset.a.iter().chain(preset.b.iter()).chain(preset.c.iter()) {
+        if matches!(m, FooterModule::Playback | FooterModule::Volume | FooterModule::EqPreset) {
+            status.push(m);
+        }
     }
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    spans.push(Span::raw(" "));
-    for (i, (text, color)) in left_parts.iter().enumerate() {
-        if i > 0 { spans.push(Span::raw(" ")); }
-        let fg = crate::ui::readable_fg(left_bg, *color, app.theme.fg_bright);
-        spans.push(Span::styled(text.clone(), Style::default().fg(fg)));
+    if !status.is_empty() {
+        groups.push(FooterGroup { modules: status, bg: status_bg });
     }
-    spans.push(Span::raw(" "));
-    Some((spans, left_bg, right_bg))
+
+    // Group 2: Repeat + Shuffle (mode)
+    let mut mode = Vec::new();
+    for m in preset.x.iter().chain(preset.y.iter()).chain(preset.z.iter()) {
+        if matches!(m, FooterModule::Repeat | FooterModule::Shuffle) {
+            mode.push(m);
+        }
+    }
+    if !mode.is_empty() {
+        groups.push(FooterGroup { modules: mode, bg: mode_bg });
+    }
+
+    // Group 3: Queue
+    let mut queue = Vec::new();
+    for m in preset.a.iter().chain(preset.b.iter()).chain(preset.c.iter()) {
+        if matches!(m, FooterModule::Queue) {
+            queue.push(m);
+        }
+    }
+    if !queue.is_empty() {
+        groups.push(FooterGroup { modules: queue, bg: mode_bg });
+    }
+
+    // Group 4: KeyAction + SleepTimer (misc)
+    let mut misc = Vec::new();
+    for m in preset.x.iter().chain(preset.y.iter()).chain(preset.z.iter()) {
+        if matches!(m, FooterModule::KeyAction | FooterModule::SleepTimer) {
+            misc.push(m);
+        }
+    }
+    if !misc.is_empty() {
+        groups.push(FooterGroup { modules: misc, bg: app.theme.fg_dim });
+    }
+
+    // Group 5: Clock (far right)
+    groups.push(FooterGroup {
+        modules: vec![&FooterModule::Clock],
+        bg: app.theme.fg_dim,
+    });
+
+    groups
 }
 
 pub fn render_preset(f: &mut Frame, area: Rect, app: &App, preset: &FooterPreset) {
-    let left_modules: Vec<&FooterModule> = preset.a.iter()
-        .chain(preset.b.iter())
-        .chain(preset.c.iter())
-        .collect();
+    let groups = build_groups(preset, app);
 
-    let right_modules: Vec<&FooterModule> = preset.x.iter()
-        .chain(preset.y.iter())
-        .chain(preset.z.iter())
-        .collect();
+    // Calculate width for each group
+    let mut group_widths: Vec<u16> = Vec::new();
+    for group in &groups {
+        let parts = render_modules(&group.modules, app);
+        let s: String = parts.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>().join(" ");
+        let w = if s.is_empty() { 0 } else { s.len() as u16 + 2 };
+        group_widths.push(w);
+    }
 
-    let left_parts = render_modules(&left_modules, app);
-    let right_parts = render_modules(&right_modules, app);
-
-    let left_str: String = left_parts.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>().join(" ");
-    let right_str: String = right_parts.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>().join(" ");
-
-    let left_w = if left_str.is_empty() { 0u16 } else { left_str.len() as u16 + 2 };
-    let right_w = if right_str.is_empty() { 0u16 } else { right_str.len() as u16 + 2 };
-
-    let total_needed = left_w + right_w;
-    let is_playing = app.state.status == PlaybackStatus::Playing;
-
-    let left_bg = if is_playing { app.theme.accent } else { app.theme.fg_dim };
-    let right_bg = app.theme.border;
-
-    if left_w == 0 && right_w == 0 {
+    let total: u16 = group_widths.iter().sum();
+    if total == 0 {
         return;
     }
 
-    if total_needed as u16 >= area.width {
-        let mut spans = Vec::new();
-        for (i, (text, color)) in left_parts.iter().enumerate() {
-            if i > 0 { spans.push(Span::raw(" ")); }
-            let fg = crate::ui::readable_fg(left_bg, *color, app.theme.fg_bright);
-            spans.push(Span::styled(text.clone(), Style::default().fg(fg)));
-        }
-        f.render_widget(
-            Paragraph::new(Line::from(spans))
-                .style(Style::default().bg(left_bg)),
-            area,
-        );
-        return;
-    }
+    // If terminal too narrow, show only as much as fits
+    let mut constraints: Vec<Constraint> = group_widths.iter()
+        .map(|w| {
+            if *w > 0 { Constraint::Length(*w) } else { Constraint::Length(0) }
+        })
+        .collect();
+    // Add fill for remaining space
+    constraints.push(Constraint::Min(0));
 
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(left_w), Constraint::Min(0)])
+        .constraints(constraints)
         .split(area);
 
-    if left_w > 0 {
-        let mut spans = Vec::new();
-        spans.push(Span::raw(" "));
-        for (i, (text, color)) in left_parts.iter().enumerate() {
-            if i > 0 { spans.push(Span::raw(" ")); }
-            let fg = crate::ui::readable_fg(left_bg, *color, app.theme.fg_bright);
-            spans.push(Span::styled(text.clone(), Style::default().fg(fg)));
+    for (i, group) in groups.iter().enumerate() {
+        let parts = render_modules(&group.modules, app);
+        if parts.is_empty() || group_widths[i] == 0 {
+            continue;
         }
-        spans.push(Span::raw(" "));
-        f.render_widget(
-            Paragraph::new(Line::from(spans))
-                .style(Style::default().bg(left_bg)),
-            chunks[0],
-        );
-    }
+        if chunks[i].x >= area.x + area.width {
+            break;
+        }
 
-    if right_w > 0 {
         let mut spans = Vec::new();
         spans.push(Span::raw(" "));
-        for (i, (text, color)) in right_parts.iter().enumerate() {
-            if i > 0 { spans.push(Span::raw(" ")); }
-            let fg = crate::ui::readable_fg(right_bg, *color, app.theme.fg_bright);
+        for (j, (text, color)) in parts.iter().enumerate() {
+            if j > 0 { spans.push(Span::raw(" ")); }
+            let fg = crate::ui::readable_fg(group.bg, *color, app.theme.fg_bright);
             spans.push(Span::styled(text.clone(), Style::default().fg(fg)));
         }
         spans.push(Span::raw(" "));
+
         f.render_widget(
             Paragraph::new(Line::from(spans))
-                .style(Style::default().bg(right_bg)),
-            chunks[1],
+                .style(Style::default().bg(group.bg)),
+            chunks[i],
         );
     }
 }

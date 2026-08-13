@@ -98,6 +98,9 @@ pub enum KeyboardAction {
     FocusLeft,
     FocusRight,
 
+    // Lyrics
+    FetchLyrics,
+
     // Library motions (vim-style)
     ToggleMultiselect,
     ToggleSelectAndAdvance,
@@ -386,9 +389,9 @@ pub fn default_keybindings() -> Keybindings {
                     description: "Clear queue",
                 },
             ),
-            // Focus navigation — H, L
+            // Focus navigation — [, ]
             (
-                KeyCode::Char('h').into(),
+                KeyCode::Char('[').into(),
                 BoundCommand {
                     action: KeyboardAction::FocusLeft,
                     contexts: vec![KeyContext::Normal],
@@ -396,11 +399,20 @@ pub fn default_keybindings() -> Keybindings {
                 },
             ),
             (
-                KeyCode::Char('l').into(),
+                KeyCode::Char(']').into(),
                 BoundCommand {
                     action: KeyboardAction::FocusRight,
                     contexts: vec![KeyContext::Normal],
                     description: "Focus right pane",
+                },
+            ),
+            // Lyrics — l
+            (
+                KeyCode::Char('l').into(),
+                BoundCommand {
+                    action: KeyboardAction::FetchLyrics,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Fetch lyrics",
                 },
             ),
             // Repeat — r, Shift+R

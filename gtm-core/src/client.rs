@@ -500,6 +500,15 @@ impl DaemonClient {
             _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
         }
     }
+
+    pub async fn get_lyrics(&self, track_id: i64) -> Result<Option<crate::track::LrcData>> {
+        let res = self.send_raw(DaemonReq::GetLyrics { track_id }).await?;
+        match res {
+            DaemonRes::Lyrics { lyrics, .. } => Ok(lyrics),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+        }
+    }
 }
 
 enum Frame {
