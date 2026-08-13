@@ -18,7 +18,10 @@ fn log_path() -> &'static std::path::PathBuf {
             let _ = std::fs::create_dir_all(&p);
             p.join("gtm.log")
         } else if let Ok(home) = std::env::var("HOME") {
-            let p = std::path::PathBuf::from(home).join(".local").join("share").join("gtm");
+            let p = std::path::PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("gtm");
             let _ = std::fs::create_dir_all(&p);
             p.join("gtm.log")
         } else {
@@ -34,9 +37,7 @@ fn log_file() -> &'static std::sync::Mutex<std::fs::File> {
             .create(true)
             .append(true)
             .open(path)
-            .unwrap_or_else(|_| {
-                std::fs::File::create(path).expect("cannot create log file")
-            });
+            .unwrap_or_else(|_| std::fs::File::create(path).expect("cannot create log file"));
         std::sync::Mutex::new(file)
     })
 }
@@ -62,11 +63,7 @@ pub fn log_file_path() -> std::path::PathBuf {
 pub fn redirect_stderr_to_log() -> std::os::unix::io::RawFd {
     use std::os::unix::io::AsRawFd;
     let path = log_path();
-    let file = match OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)
-    {
+    let file = match OpenOptions::new().create(true).append(true).open(path) {
         Ok(f) => f,
         Err(_) => return -1,
     };

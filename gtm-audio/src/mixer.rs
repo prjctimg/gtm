@@ -20,9 +20,16 @@ use gtm_core::state::{Easing, EqPreset, ReverbConfig};
 /// Trait abstracting over audio mixer implementations (real or null).
 pub trait Mixer: Send + Sync {
     fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()>;
-    fn load_active_decoded(&mut self, source: Box<dyn Source<Item = f32> + Send>, start_pos: f64) -> AudioResult<()>;
+    fn load_active_decoded(
+        &mut self,
+        source: Box<dyn Source<Item = f32> + Send>,
+        start_pos: f64,
+    ) -> AudioResult<()>;
     fn load_standby(&mut self, path: &str) -> AudioResult<()>;
-    fn load_standby_decoded(&mut self, source: Box<dyn Source<Item = f32> + Send>) -> AudioResult<()>;
+    fn load_standby_decoded(
+        &mut self,
+        source: Box<dyn Source<Item = f32> + Send>,
+    ) -> AudioResult<()>;
     fn standby_is_loaded(&self) -> bool;
     fn play(&mut self) -> AudioResult<()>;
     fn pause(&mut self) -> AudioResult<()>;
@@ -102,13 +109,20 @@ impl Mixer for AudioMixer {
     fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()> {
         self.load_active(path, start_pos)
     }
-    fn load_active_decoded(&mut self, source: Box<dyn Source<Item = f32> + Send>, start_pos: f64) -> AudioResult<()> {
+    fn load_active_decoded(
+        &mut self,
+        source: Box<dyn Source<Item = f32> + Send>,
+        start_pos: f64,
+    ) -> AudioResult<()> {
         self.load_active_decoded(source, start_pos)
     }
     fn load_standby(&mut self, path: &str) -> AudioResult<()> {
         self.load_standby(path)
     }
-    fn load_standby_decoded(&mut self, source: Box<dyn Source<Item = f32> + Send>) -> AudioResult<()> {
+    fn load_standby_decoded(
+        &mut self,
+        source: Box<dyn Source<Item = f32> + Send>,
+    ) -> AudioResult<()> {
         self.load_standby_decoded(source)
     }
     fn standby_is_loaded(&self) -> bool {
@@ -252,7 +266,10 @@ impl AudioMixer {
     /// Probe the duration of an audio file without fully decoding it.
     fn probe_duration(path: &str) -> AudioResult<f64> {
         let source = Self::decode(path)?;
-        Ok(source.total_duration().map(|d| d.as_secs_f64()).unwrap_or(0.0))
+        Ok(source
+            .total_duration()
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0))
     }
 
     /// Stop a decode thread and drain its handle.
@@ -270,7 +287,10 @@ impl AudioMixer {
 
     /// Wrap a decoded source with EQ and optional reverb.
     /// Used only for pre-decoded sources (load_active_decoded / load_standby_decoded).
-    fn wrap_source(&self, source: Box<dyn Source<Item = f32> + Send>) -> Box<dyn Source<Item = f32> + Send> {
+    fn wrap_source(
+        &self,
+        source: Box<dyn Source<Item = f32> + Send>,
+    ) -> Box<dyn Source<Item = f32> + Send> {
         let boxed: Box<dyn Source<Item = f32> + Send> = if self.eq_enabled.load(Ordering::Relaxed) {
             Box::new(EqSource::new(source, self.eq_gains.clone()))
         } else {
@@ -278,7 +298,11 @@ impl AudioMixer {
         };
         if self.reverb_enabled.load(Ordering::Relaxed) {
             let room_size = *self.reverb_room_size.lock().unwrap();
-            Box::new(ReverbSource::new(boxed, room_size, self.reverb_enabled.clone()))
+            Box::new(ReverbSource::new(
+                boxed,
+                room_size,
+                self.reverb_enabled.clone(),
+            ))
         } else {
             boxed
         }
@@ -291,7 +315,11 @@ impl AudioMixer {
         eq_enabled: &Arc<AtomicBool>,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
-    ) -> AudioResult<(Arc<DecodeControl>, RingBufferSource, std::thread::JoinHandle<()>)> {
+    ) -> AudioResult<(
+        Arc<DecodeControl>,
+        RingBufferSource,
+        std::thread::JoinHandle<()>,
+    )> {
         let control = Arc::new(DecodeControl::new());
         let shared = Arc::new(RingBufferInner::new(44100 * 2 * 3));
 
@@ -360,7 +388,11 @@ impl AudioMixer {
 
     /// Like `load_active` but source is pre-decoded (avoids blocking in async context).
     /// Uses EQ/reverb wrapping directly (no decode thread needed).
-    pub fn load_active_decoded(&mut self, source: Box<dyn Source<Item = f32> + Send>, start_pos: f64) -> AudioResult<()> {
+    pub fn load_active_decoded(
+        &mut self,
+        source: Box<dyn Source<Item = f32> + Send>,
+        start_pos: f64,
+    ) -> AudioResult<()> {
         // Stop old decode thread
         Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
 
@@ -405,7 +437,10 @@ impl AudioMixer {
         Ok(())
     }
 
-    pub fn load_standby_decoded(&mut self, source: Box<dyn Source<Item = f32> + Send>) -> AudioResult<()> {
+    pub fn load_standby_decoded(
+        &mut self,
+        source: Box<dyn Source<Item = f32> + Send>,
+    ) -> AudioResult<()> {
         Self::stop_decode_thread(&self.standby_control, &mut self.standby_decode_handle);
 
         self.standby().stop();

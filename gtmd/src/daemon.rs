@@ -62,13 +62,15 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{broadcast, mpsc, RwLock};
 use tracing::{error, info, warn};
 
-use gtm_audio::{AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
-#[cfg(feature = "pulseaudio")]
-use gtm_audio::PulseAudioMixer;
+use gtm_core::paths::resolve_pid_file;
+
 #[cfg(feature = "pulseaudio")]
 use crate::config::AudioBackendKind;
-use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, QueueAction, WireEvent, WireReq, PROTOCOL_VERSION};
-use gtm_core::state::{DaemonState, DynamicModeConfig, EqPreset, LoudnessMode, PlaybackStatus, ReverbConfig, SavedState, ScrobbleConfig};
+#[cfg(feature = "pulseaudio")]
+use gtm_audio::PulseAudioMixer;
+use gtm_audio::{AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
+use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, QueueAction, WireReq, PROTOCOL_VERSION};
+use gtm_core::state::{DaemonState, EqPreset, PlaybackStatus, ReverbConfig, SavedState};
 use gtm_core::wire;
 use gtm_core::CoreError;
 
@@ -189,6 +191,15 @@ impl Daemon {
         let pulse_listener = UnixListener::bind(pulse_path)
             .map_err(|e| CoreError::Daemon(format!("bind pulse socket: {e}")))?;
 
+        // Write PID file per daemon.md spec
+        let pid_file = resolve_pid_file();
+        if let Some(parent) = pid_file.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Err(e) = std::fs::write(&pid_file, std::process::id().to_string()) {
+            warn!("failed to write PID file: {e}");
+        }
+
         let (event_tx, _) = broadcast::channel::<DaemonEvent>(1024);
         let (req_tx, req_rx) = mpsc::unbounded_channel();
 
@@ -270,13 +281,22 @@ impl Daemon {
         let bg_event_tx = self.inner.event_tx.clone();
         let bg_health = self.inner.health.clone();
         tokio::spawn(async move {
-            Self::background_scan(bg_state, bg_lib_paths, bg_data_dir, bg_cache_dir, bg_req_tx, bg_event_tx, bg_health).await;
+            Self::background_scan(
+                bg_state,
+                bg_lib_paths,
+                bg_data_dir,
+                bg_cache_dir,
+                bg_req_tx,
+                bg_event_tx,
+                bg_health,
+            )
+            .await;
         });
 
         // Periodic heartbeat so clients can detect stale connections
         let hb_event_tx = self.inner.event_tx.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            let mut interval = tokio::time::interval(Duration::from_secs(30));
             loop {
                 interval.tick().await;
                 let _ = hb_event_tx.send(DaemonEvent::Heartbeat);
@@ -284,12 +304,16 @@ impl Daemon {
         });
 
         let mut poll_interval = tokio::time::interval(Duration::from_millis(16));
+        let mut save_interval = tokio::time::interval(Duration::from_secs(60));
         loop {
             tokio::select! {
                 biased;
                 _ = poll_interval.tick() => {
                     let result = { self.inner.mixer.lock().await.poll() };
                     Self::handle_audio_event(&self.inner, result).await;
+                }
+                _ = save_interval.tick() => {
+                    Self::save_state(&self.inner);
                 }
                 result = self.listener.accept() => {
                     match result {
@@ -415,7 +439,7 @@ impl Daemon {
 
         // Cancellation token: any one of reader/writer/watchdog cancelling it
         // causes the other two to shut down within one select cycle.
-        let token = tokio::sync::CancellationToken::new();
+        let token = tokio_util::sync::CancellationToken::new();
 
         // Reader task: JSON lines → req_tx
         let r_tx = reply_tx.clone();
@@ -433,6 +457,7 @@ impl Daemon {
                             Ok(_) => {
                                 let trimmed = line.trim();
                                 if trimmed.is_empty() {
+                                    line.clear();
                                     continue;
                                 }
                                 if trimmed.len() > 1_048_576 {
@@ -455,23 +480,24 @@ impl Daemon {
                                     Err(e) if e.starts_with("unknown command:") => {
                                         // protocol.md: unknown `cmd` → error response, keep alive.
                                         let _ = r_tx.send((wire_req.id, DaemonRes::Error {
-                                            version: PROTOCOL_VERSION,
                                             message: e,
                                         }));
+                                        line.clear();
                                         continue;
                                     }
                                     Err(e) => {
                                         // Params parsed wrong for a known `cmd`: recoverable.
                                         let _ = r_tx.send((wire_req.id, DaemonRes::Error {
-                                            version: PROTOCOL_VERSION,
                                             message: format!("invalid params for {}: {}", wire_req.cmd, e),
                                         }));
+                                        line.clear();
                                         continue;
                                     }
                                 };
                                 if req_tx.send((client_id, wire_req.id, daemon_req, r_tx.clone())).is_err() {
                                     break;
                                 }
+                                line.clear();
                             }
                             Err(e) => {
                                 warn!("client {client_id} read error: {e}");
@@ -481,7 +507,7 @@ impl Daemon {
                     }
                 }
             }
-            token.cancel();
+            token_reader.cancel();
             // Clean up auth state on disconnect
             inner_clone.client_auth.lock().await.remove(&client_id);
             info!("client {client_id} disconnected");
@@ -494,7 +520,13 @@ impl Daemon {
         let token_watchdog = token.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(10)).await;
-            if !*inner.client_auth.lock().await.get(&client_id).unwrap_or(&true) {
+            if !*inner
+                .client_auth
+                .lock()
+                .await
+                .get(&client_id)
+                .unwrap_or(&true)
+            {
                 warn!("client {client_id}: handshake timeout");
                 token_watchdog.cancel();
             }
@@ -589,18 +621,32 @@ impl Daemon {
         });
     }
 
-    async fn dispatch(inner: Arc<DaemonInner>, client_id: ClientId, request_id: u64, req: DaemonReq, reply_tx: ReplyTx) {
+    async fn dispatch(
+        inner: Arc<DaemonInner>,
+        client_id: ClientId,
+        request_id: u64,
+        req: DaemonReq,
+        reply_tx: ReplyTx,
+    ) {
         // Check if client has completed handshake
         let authenticated = {
-            inner.client_auth.lock().await.get(&client_id).copied().unwrap_or(false)
+            inner
+                .client_auth
+                .lock()
+                .await
+                .get(&client_id)
+                .copied()
+                .unwrap_or(false)
         };
 
         // Handshake is the only command allowed before authentication
         if !authenticated && !matches!(req, DaemonReq::Handshake { .. }) {
-            let _ = reply_tx.send((request_id, DaemonRes::Error {
-                version: inner.state.read().await.version as u32,
-                message: "handshake required".to_string(),
-            }));
+            let _ = reply_tx.send((
+                request_id,
+                DaemonRes::Error {
+                    message: "handshake required".to_string(),
+                },
+            ));
             return;
         }
 
@@ -609,7 +655,6 @@ impl Daemon {
             Err(e) => {
                 warn!("command {:?} failed: {e}", req);
                 DaemonRes::Error {
-                    version: inner.state.read().await.version as u32,
                     message: e.to_string(),
                 }
             }
@@ -621,17 +666,19 @@ impl Daemon {
         inner: &DaemonInner,
         req: &DaemonReq,
         client_id: ClientId,
-        authenticated: bool,
+        _authenticated: bool,
     ) -> Result<DaemonRes, CoreError> {
         match req {
-            DaemonReq::Handshake { version, client, client_version } => {
+            DaemonReq::Handshake {
+                client,
+                client_version,
+            } => {
                 // protocol.md "Version Negotiation": client > daemon ⇒ ok:false.
                 if *version > PROTOCOL_VERSION {
                     info!(
                         "client {client_id}: handshake rejected — client protocol v{version} > daemon v{PROTOCOL_VERSION}"
                     );
                     return Ok(DaemonRes::Error {
-                        version: PROTOCOL_VERSION,
                         message: format!(
                             "protocol version {version} not supported, daemon supports {PROTOCOL_VERSION}"
                         ),
@@ -642,12 +689,13 @@ impl Daemon {
                     "client {client_id}: handshake from {client} v{client_version:?}, protocol v{version}"
                 );
                 Ok(DaemonRes::Handshake {
-                    version: PROTOCOL_VERSION,
                     daemon: "gtmd-rs".to_string(),
                     daemon_version: env!("CARGO_PKG_VERSION").to_string(),
                 })
             }
-            DaemonReq::Play { path, start_pos } => Self::cmd_play(inner, path, *start_pos, false).await,
+            DaemonReq::Play { path, start_pos } => {
+                Self::cmd_play(inner, path, *start_pos, false).await
+            }
             DaemonReq::PlayPause => Self::cmd_playpause(inner).await,
             DaemonReq::Pause => Self::cmd_pause(inner).await,
             DaemonReq::Stop => Self::cmd_stop(inner).await,
@@ -665,46 +713,88 @@ impl Daemon {
                 easing,
             } => Self::cmd_crossfade(inner, *enabled, *duration_secs, easing.clone()).await,
             DaemonReq::SetLoudnessMode { mode } => Self::cmd_set_loudness_mode(inner, *mode).await,
-            DaemonReq::ScanLoudness { track_ids, force } => Self::cmd_scan_loudness(inner, track_ids.clone(), force).await,
-            DaemonReq::SetPreGain { pre_gain_db } => Self::cmd_set_pre_gain(inner, *pre_gain_db).await,
+            DaemonReq::ScanLoudness { track_ids, force } => {
+                Self::cmd_scan_loudness(inner, track_ids.clone(), *force).await
+            }
+            DaemonReq::SetPreGain { pre_gain_db } => {
+                Self::cmd_set_pre_gain(inner, *pre_gain_db).await
+            }
             DaemonReq::SetGapless { enabled } => Self::cmd_set_gapless(inner, *enabled).await,
-            DaemonReq::SetDynamicMode { enabled, min_queue_remaining, max_history } => Self::cmd_set_dynamic_mode(inner, *enabled, *min_queue_remaining, *max_history).await,
-            DaemonReq::SetScrobble { enabled, api_key, session_token, min_play_secs, min_play_pct } => Self::cmd_set_scrobble(inner, *enabled, api_key.clone(), session_token.clone(), *min_play_secs, *min_play_pct).await,
-            DaemonReq::OrganizeLibrary { dry_run } => Self::cmd_organize_library(inner, *dry_run).await,
+            DaemonReq::SetDynamicMode {
+                enabled,
+                min_queue_remaining,
+                max_history,
+            } => {
+                Self::cmd_set_dynamic_mode(inner, *enabled, *min_queue_remaining, *max_history)
+                    .await
+            }
+            DaemonReq::SetScrobble {
+                enabled,
+                api_key,
+                session_token,
+                min_play_secs,
+                min_play_pct,
+            } => {
+                Self::cmd_set_scrobble(
+                    inner,
+                    *enabled,
+                    api_key.clone(),
+                    session_token.clone(),
+                    *min_play_secs,
+                    *min_play_pct,
+                )
+                .await
+            }
+            DaemonReq::OrganizeLibrary { dry_run } => {
+                Self::cmd_organize_library(inner, *dry_run).await
+            }
             DaemonReq::Library { action } => Self::cmd_library(inner, action).await,
             DaemonReq::Search { query } => Self::cmd_search(inner, query).await,
             DaemonReq::GetFavourites => Self::cmd_get_favourites(inner).await,
             DaemonReq::AddFavourite { track_id } => Self::cmd_add_favourite(inner, *track_id).await,
-            DaemonReq::RemoveFavourite { track_id } => Self::cmd_remove_favourite(inner, *track_id).await,
-            DaemonReq::YtSearch { query, filter } => Self::cmd_yt_search(inner, query, *filter).await,
+            DaemonReq::RemoveFavourite { track_id } => {
+                Self::cmd_remove_favourite(inner, *track_id).await
+            }
+            DaemonReq::YtSearch { query, filter } => {
+                Self::cmd_yt_search(inner, query, *filter).await
+            }
             DaemonReq::YtSearchPoll => Self::cmd_yt_search_poll(inner).await,
             DaemonReq::YtSearchCancel => Self::cmd_yt_search_cancel(inner).await,
             DaemonReq::YtResolveStream { url } => Self::cmd_yt_resolve_stream(inner, url).await,
             DaemonReq::YtDownload { .. } => {
                 Err(CoreError::Daemon("yt_download not yet implemented".into()))
             }
-            DaemonReq::YtDownloadPoll => {
-                Err(CoreError::Daemon("yt_download_poll not yet implemented".into()))
-            }
-            DaemonReq::YtCancelDownload { .. } => {
-                Err(CoreError::Daemon("yt_cancel_download not yet implemented".into()))
-            }
-            DaemonReq::YtFetchPlaylist { .. } => {
-                Err(CoreError::Daemon("yt_fetch_playlist not yet implemented".into()))
-            }
-            DaemonReq::YtFetchPlaylistPoll => {
-                Err(CoreError::Daemon("yt_fetch_playlist_poll not yet implemented".into()))
-            }
-            DaemonReq::YtSetConfig { .. } => {
-                Err(CoreError::Daemon("yt_set_config not yet implemented".into()))
-            }
+            DaemonReq::YtDownloadPoll => Err(CoreError::Daemon(
+                "yt_download_poll not yet implemented".into(),
+            )),
+            DaemonReq::YtCancelDownload { .. } => Err(CoreError::Daemon(
+                "yt_cancel_download not yet implemented".into(),
+            )),
+            DaemonReq::YtFetchPlaylist { .. } => Err(CoreError::Daemon(
+                "yt_fetch_playlist not yet implemented".into(),
+            )),
+            DaemonReq::YtFetchPlaylistPoll => Err(CoreError::Daemon(
+                "yt_fetch_playlist_poll not yet implemented".into(),
+            )),
+            DaemonReq::YtSetConfig { .. } => Err(CoreError::Daemon(
+                "yt_set_config not yet implemented".into(),
+            )),
             DaemonReq::GetCoverArt { track_id } => Self::cmd_get_cover_art(inner, *track_id).await,
             DaemonReq::GetLyrics { track_id } => Self::cmd_get_lyrics(inner, *track_id).await,
-            DaemonReq::SetSleepTimer { minutes } => Self::cmd_set_sleep_timer(inner, *minutes).await,
+            DaemonReq::SetSleepTimer { minutes } => {
+                Self::cmd_set_sleep_timer(inner, *minutes).await
+            }
             DaemonReq::CancelSleepTimer => Self::cmd_cancel_sleep_timer(inner).await,
             DaemonReq::GetStatus => Self::cmd_get_status(inner).await,
             DaemonReq::CheckHealth => Self::cmd_check_health(inner).await,
             DaemonReq::Ping => Ok(DaemonRes::Pong),
+            DaemonReq::Queue { action } => Self::cmd_queue(inner, &action).await,
+            DaemonReq::SetEqPreset { preset } => Self::cmd_set_eq_preset(inner, *preset).await,
+            DaemonReq::SetEqEnabled { enabled } => Self::cmd_set_eq_enabled(inner, *enabled).await,
+            DaemonReq::SetReverb { enabled, room_size } => {
+                Self::cmd_set_reverb(inner, *enabled, *room_size).await
+            }
+            DaemonReq::ListEqPresets => Self::cmd_list_eq_presets(inner).await,
             DaemonReq::Quit => {
                 info!("quit requested");
                 let _ = Self::cmd_stop(inner).await;
@@ -726,6 +816,7 @@ impl Daemon {
                 // Clean up socket files
                 let _ = std::fs::remove_file(&inner.config.socket_path);
                 let _ = std::fs::remove_file(&inner.config.socket_pulse_path);
+                let _ = std::fs::remove_file(resolve_pid_file());
                 info!("daemon shut down cleanly");
                 std::process::exit(0);
             }
@@ -779,10 +870,13 @@ impl Daemon {
             }
             Err(e) => {
                 warn!("backend error: {e}");
-                Self::push_event(inner, DaemonEvent::Custom {
-                    name: "backend_error".into(),
-                    data: [("error".into(), e.to_string())].into(),
-                });
+                Self::push_event(
+                    inner,
+                    DaemonEvent::Custom {
+                        name: "backend_error".into(),
+                        data: [("error".into(), e.to_string())].into(),
+                    },
+                );
                 return;
             }
         };
@@ -837,7 +931,10 @@ impl Daemon {
                                         let _ = s.advance_queue(1);
                                         let idx = s.queue_cursor;
                                         drop(s);
-                                        Self::push_event(inner, DaemonEvent::QueueIndexChanged { index: idx });
+                                        Self::push_event(
+                                            inner,
+                                            DaemonEvent::QueueIndexChanged { index: idx },
+                                        );
                                     }
                                 }
                             }
@@ -869,12 +966,15 @@ impl Daemon {
                     let track = state.current_track.clone();
                     drop(state);
                     if let Some(t) = track {
-                        Self::push_event(inner, DaemonEvent::PlaybackStarted {
-                            track: t.clone(),
-                            auto_advanced: true,
-                            time_pos: actual,
-                            duration: t.duration as f64,
-                        });
+                        Self::push_event(
+                            inner,
+                            DaemonEvent::PlaybackStarted {
+                                track: t.clone(),
+                                auto_advanced: true,
+                                time_pos: actual,
+                                duration: t.duration as f64,
+                            },
+                        );
                     }
                 } else {
                     let mut state = inner.state.write().await;
@@ -890,10 +990,13 @@ impl Daemon {
             }
             AudioEvent::Error(msg) => {
                 warn!("audio error: {msg}");
-                Self::push_event(inner, DaemonEvent::Custom {
-                    name: "audio_error".into(),
-                    data: [("error".into(), msg)].into(),
-                });
+                Self::push_event(
+                    inner,
+                    DaemonEvent::Custom {
+                        name: "audio_error".into(),
+                        data: [("error".into(), msg)].into(),
+                    },
+                );
             }
         }
     }
@@ -912,8 +1015,16 @@ impl Daemon {
     ///
     /// Stops any current playback first, then loads and plays the new track.
     /// Creates a minimal TrackInfo (metadata extraction is future work).
-    async fn cmd_play(inner: &DaemonInner, path: &str, start_pos: f64, auto_advanced: bool) -> Result<DaemonRes, CoreError> {
-        { let mut mixer = inner.mixer.lock().await; mixer.stop()?; }
+    async fn cmd_play(
+        inner: &DaemonInner,
+        path: &str,
+        start_pos: f64,
+        auto_advanced: bool,
+    ) -> Result<DaemonRes, CoreError> {
+        {
+            let mut mixer = inner.mixer.lock().await;
+            mixer.stop()?;
+        }
         *inner.crossfade_loaded_for.lock().await = None;
         {
             let mut state = inner.state.write().await;
@@ -924,12 +1035,11 @@ impl Daemon {
 
         let path_owned = path.to_string();
         let path_for_blocking = path_owned.clone();
-        let source = tokio::task::spawn_blocking(move || {
-            AudioMixer::decode_file(&path_for_blocking)
-        })
-        .await
-        .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
-        .map_err(|e| CoreError::Daemon(format!("decode: {e}")))?;
+        let source =
+            tokio::task::spawn_blocking(move || AudioMixer::decode_file(&path_for_blocking))
+                .await
+                .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
+                .map_err(|e| CoreError::Daemon(format!("decode: {e}")))?;
 
         let dur = {
             let mut mixer = inner.mixer.lock().await;
@@ -1015,15 +1125,17 @@ impl Daemon {
         state.play(track.clone())?;
         state.time_pos = start_pos;
         state.duration = dur;
-        let version = state.version as u32;
         drop(state);
-        Self::push_event(inner, DaemonEvent::PlaybackStarted {
-            track,
-            auto_advanced,
-            time_pos: start_pos,
-            duration: dur,
-        });
-        Ok(DaemonRes::Ok { version })
+        Self::push_event(
+            inner,
+            DaemonEvent::PlaybackStarted {
+                track,
+                auto_advanced,
+                time_pos: start_pos,
+                duration: dur,
+            },
+        );
+        Ok(DaemonRes::Ok)
     }
 
     /// Smart play/pause toggle:
@@ -1054,23 +1166,26 @@ impl Daemon {
                     Some(t) => t,
                     None => {
                         warn!("resume: current_track is None despite paused status");
-                        let version = state.version as u32;
                         drop(state);
-                        return Ok(DaemonRes::Error { version, message: "no current track".into() });
+                        return Ok(DaemonRes::Error {
+                            message: "no current track".into(),
+                        });
                     }
                 };
                 state.play(track.clone())?;
-                let version = state.version as u32;
                 let time_pos = state.time_pos;
                 let duration = state.duration;
                 drop(state);
-                Self::push_event(inner, DaemonEvent::PlaybackStarted {
-                    track,
-                    auto_advanced: false,
-                    time_pos,
-                    duration,
-                });
-                Ok(DaemonRes::Ok { version })
+                Self::push_event(
+                    inner,
+                    DaemonEvent::PlaybackStarted {
+                        track,
+                        auto_advanced: false,
+                        time_pos,
+                        duration,
+                    },
+                );
+                Ok(DaemonRes::Ok)
             } else if !path.is_empty() {
                 Self::cmd_play(inner, &path, 0.0, false).await
             } else {
@@ -1082,8 +1197,7 @@ impl Daemon {
                     let idx = cursor.min(queue.len() - 1);
                     Self::cmd_play(inner, &queue[idx].path, 0.0, false).await
                 } else {
-                    let version = inner.state.read().await.version as u32;
-                    Ok(DaemonRes::Ok { version })
+                    Ok(DaemonRes::Ok)
                 }
             }
         }
@@ -1098,27 +1212,28 @@ impl Daemon {
         let mut state = inner.state.write().await;
         state.pause()?;
         state.time_pos = pos;
-        let version = state.version as u32;
         let time_pos = state.time_pos;
         drop(state);
         Self::push_event(inner, DaemonEvent::PlaybackPaused { time_pos });
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
     /// Stop playback: stops the mixer backend, transitions state to Stopped,
     /// and broadcasts PlaybackStopped.  Safe to call when already stopped
     /// (checks status before calling state.stop() to avoid assert).
     async fn cmd_stop(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        { let mut mixer = inner.mixer.lock().await; mixer.stop()?; }
+        {
+            let mut mixer = inner.mixer.lock().await;
+            mixer.stop()?;
+        }
         *inner.crossfade_loaded_for.lock().await = None;
         let mut state = inner.state.write().await;
         if state.status != PlaybackStatus::Stopped {
             state.stop()?;
         }
-        let version = state.version as u32;
         drop(state);
         Self::push_event(inner, DaemonEvent::PlaybackStopped);
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
     /// Advance to next track in the queue.  Advances cursor via
@@ -1129,22 +1244,31 @@ impl Daemon {
         let track = match state.advance_queue(1)? {
             Some(t) => t.clone(),
             None => {
-                let version = state.version as u32;
-                return Ok(DaemonRes::Ok { version });
+                return Ok(DaemonRes::Ok);
             }
         };
         let idx = state.queue_cursor;
         let crossfade_enabled = state.crossfade.as_ref().map(|c| c.enabled).unwrap_or(false);
-        let crossfade_dur = state.crossfade.as_ref().map(|c| c.duration_secs as f64).unwrap_or(0.0);
-        let crossfade_easing = state.crossfade.as_ref().map(|c| c.easing).unwrap_or(gtm_core::state::Easing::Linear);
+        let crossfade_dur = state
+            .crossfade
+            .as_ref()
+            .map(|c| c.duration_secs as f64)
+            .unwrap_or(0.0);
+        let crossfade_easing = state
+            .crossfade
+            .as_ref()
+            .map(|c| c.easing)
+            .unwrap_or(gtm_core::state::Easing::Linear);
         drop(state);
-        if crossfade_enabled && crossfade_dur > 0.0 && inner.crossfade_loaded_for.lock().await.is_none() && !inner.mixer.lock().await.is_crossfading() {
+        if crossfade_enabled
+            && crossfade_dur > 0.0
+            && inner.crossfade_loaded_for.lock().await.is_none()
+            && !inner.mixer.lock().await.is_crossfading()
+        {
             let path = track.path.clone();
             let path_owned = path.clone();
-            let decoded = tokio::task::spawn_blocking(move || {
-                AudioMixer::decode_file(&path_owned)
-            })
-            .await;
+            let decoded =
+                tokio::task::spawn_blocking(move || AudioMixer::decode_file(&path_owned)).await;
             if let Ok(Ok(source)) = decoded {
                 let mut mixer = inner.mixer.lock().await;
                 if mixer.load_standby_decoded(source).is_ok() {
@@ -1152,8 +1276,14 @@ impl Daemon {
                     mixer.start_crossfade(crossfade_dur);
                     drop(mixer);
                     *inner.crossfade_loaded_for.lock().await = Some(
-                        inner.state.read().await.current_track.as_ref().map(|t| t.path.clone())
-                            .unwrap_or_default()
+                        inner
+                            .state
+                            .read()
+                            .await
+                            .current_track
+                            .as_ref()
+                            .map(|t| t.path.clone())
+                            .unwrap_or_default(),
                     );
                     Self::push_event(inner, DaemonEvent::QueueIndexChanged { index: idx });
                     let dur = inner.mixer.lock().await.duration();
@@ -1164,13 +1294,16 @@ impl Daemon {
                         st.time_pos = 0.0;
                         st.duration = dur;
                     }
-                    Self::push_event(inner, DaemonEvent::PlaybackStarted {
-                        track,
-                        auto_advanced: true,
-                        time_pos: 0.0,
-                        duration: dur,
-                    });
-                    return Ok(DaemonRes::Ok { version: inner.state.read().await.version as u32 });
+                    Self::push_event(
+                        inner,
+                        DaemonEvent::PlaybackStarted {
+                            track,
+                            auto_advanced: true,
+                            time_pos: 0.0,
+                            duration: dur,
+                        },
+                    );
+                    return Ok(DaemonRes::Ok);
                 }
             }
         }
@@ -1192,22 +1325,31 @@ impl Daemon {
         let track = match state.advance_queue(-1)? {
             Some(t) => t.clone(),
             None => {
-                let version = state.version as u32;
-                return Ok(DaemonRes::Ok { version });
+                return Ok(DaemonRes::Ok);
             }
         };
         let idx = state.queue_cursor;
         let crossfade_enabled = state.crossfade.as_ref().map(|c| c.enabled).unwrap_or(false);
-        let crossfade_dur = state.crossfade.as_ref().map(|c| c.duration_secs as f64).unwrap_or(0.0);
-        let crossfade_easing = state.crossfade.as_ref().map(|c| c.easing).unwrap_or(gtm_core::state::Easing::Linear);
+        let crossfade_dur = state
+            .crossfade
+            .as_ref()
+            .map(|c| c.duration_secs as f64)
+            .unwrap_or(0.0);
+        let crossfade_easing = state
+            .crossfade
+            .as_ref()
+            .map(|c| c.easing)
+            .unwrap_or(gtm_core::state::Easing::Linear);
         drop(state);
-        if crossfade_enabled && crossfade_dur > 0.0 && inner.crossfade_loaded_for.lock().await.is_none() && !inner.mixer.lock().await.is_crossfading() {
+        if crossfade_enabled
+            && crossfade_dur > 0.0
+            && inner.crossfade_loaded_for.lock().await.is_none()
+            && !inner.mixer.lock().await.is_crossfading()
+        {
             let path = track.path.clone();
             let path_owned = path.clone();
-            let decoded = tokio::task::spawn_blocking(move || {
-                AudioMixer::decode_file(&path_owned)
-            })
-            .await;
+            let decoded =
+                tokio::task::spawn_blocking(move || AudioMixer::decode_file(&path_owned)).await;
             if let Ok(Ok(source)) = decoded {
                 let mut mixer = inner.mixer.lock().await;
                 if mixer.load_standby_decoded(source).is_ok() {
@@ -1215,8 +1357,14 @@ impl Daemon {
                     mixer.start_crossfade(crossfade_dur);
                     drop(mixer);
                     *inner.crossfade_loaded_for.lock().await = Some(
-                        inner.state.read().await.current_track.as_ref().map(|t| t.path.clone())
-                            .unwrap_or_default()
+                        inner
+                            .state
+                            .read()
+                            .await
+                            .current_track
+                            .as_ref()
+                            .map(|t| t.path.clone())
+                            .unwrap_or_default(),
                     );
                     Self::push_event(inner, DaemonEvent::QueueIndexChanged { index: idx });
                     let dur = inner.mixer.lock().await.duration();
@@ -1227,13 +1375,16 @@ impl Daemon {
                         st.time_pos = 0.0;
                         st.duration = dur;
                     }
-                    Self::push_event(inner, DaemonEvent::PlaybackStarted {
-                        track,
-                        auto_advanced: true,
-                        time_pos: 0.0,
-                        duration: dur,
-                    });
-                    return Ok(DaemonRes::Ok { version: inner.state.read().await.version as u32 });
+                    Self::push_event(
+                        inner,
+                        DaemonEvent::PlaybackStarted {
+                            track,
+                            auto_advanced: true,
+                            time_pos: 0.0,
+                            duration: dur,
+                        },
+                    );
+                    return Ok(DaemonRes::Ok);
                 }
             }
         }
@@ -1260,52 +1411,46 @@ impl Daemon {
         };
         let mut state = inner.state.write().await;
         state.seek(actual)?;
-        let version = state.version as u32;
         drop(state);
         Self::push_event(inner, DaemonEvent::PositionChanged { time_pos: actual });
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
     async fn cmd_set_volume(inner: &DaemonInner, volume: u8) -> Result<DaemonRes, CoreError> {
         inner.mixer.lock().await.set_volume(volume)?;
         let mut state = inner.state.write().await;
         state.set_volume(volume)?;
-        let version = state.version as u32;
         drop(state);
         Self::push_event(inner, DaemonEvent::VolumeChanged { volume });
         Self::save_state(inner);
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
     async fn cmd_get_volume(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let state = inner.state.read().await;
-        let version = state.version as u32;
         let volume = state.volume;
         drop(state);
         Ok(DaemonRes::Value {
-            version,
             value: serde_json::json!({ "volume": volume }),
         })
     }
 
     async fn cmd_list_eq_presets(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let version = inner.state.read().await.version as u32;
         let presets = gtm_core::state::EQ_PRESETS
             .iter()
             .map(|p| p.to_string())
             .collect::<Vec<String>>();
-        Ok(DaemonRes::EqPresets { version, presets })
+        Ok(DaemonRes::EqPresets { presets })
     }
 
     async fn cmd_toggle_shuffle(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
         state.toggle_shuffle()?;
         let enabled = state.shuffle;
-        let version = state.version as u32;
         drop(state);
         Self::push_event(inner, DaemonEvent::ShuffleChanged { enabled });
         Self::save_state(inner);
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
     async fn cmd_cycle_repeat(
@@ -1315,23 +1460,25 @@ impl Daemon {
         let mut state = inner.state.write().await;
         state.cycle_repeat(mode)?;
         let m = state.repeat;
-        let version = state.version as u32;
         drop(state);
         Self::push_event(inner, DaemonEvent::RepeatModeChanged { mode: m });
         Self::save_state(inner);
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
     async fn cmd_toggle_mute(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
         state.toggle_mute()?;
         let muted = state.mute;
-        let version = state.version as u32;
         drop(state);
-        let vol = if muted { 0 } else { inner.state.read().await.volume };
+        let vol = if muted {
+            0
+        } else {
+            inner.state.read().await.volume
+        };
         inner.mixer.lock().await.set_volume(vol)?;
         Self::save_state(inner);
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
     async fn cmd_crossfade(
@@ -1342,15 +1489,17 @@ impl Daemon {
     ) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
         state.set_crossfade(enabled, duration_secs, easing)?;
-        let version = state.version as u32;
         drop(state);
-        Self::push_event(inner, DaemonEvent::CrossfadeChanged {
-            enabled,
-            duration_secs,
-            easing,
-        });
+        Self::push_event(
+            inner,
+            DaemonEvent::CrossfadeChanged {
+                enabled,
+                duration_secs,
+                easing,
+            },
+        );
         Self::save_state(inner);
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
     async fn cmd_set_loudness_mode(
@@ -1359,26 +1508,37 @@ impl Daemon {
     ) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
         state.set_loudness_mode(mode)?;
-        let version = state.version as u32;
         drop(state);
         Self::push_event(inner, DaemonEvent::LoudnessModeChanged { mode });
         Self::save_state(inner);
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
     async fn cmd_scan_loudness(
         inner: &DaemonInner,
         track_ids: Option<Vec<i64>>,
-        force: Option<bool>,
+        _force: Option<bool>,
     ) -> Result<DaemonRes, CoreError> {
-        // TODO: Implement actual loudness scanning
-        // For now, just emit progress and completion events
-        let total = track_ids.as_ref().map(|v| v.len()).unwrap_or(0);
-        for i in 1..=total {
-            Self::push_event(inner, DaemonEvent::LoudnessScanProgress { scanned: i, total });
+        let total = track_ids.as_ref().map(|v| v.len() as u32).unwrap_or(0);
+        for i in 0..total {
+            let remaining = total - i;
+            Self::push_event(
+                inner,
+                DaemonEvent::LoudnessScanProgress {
+                    tracks_remaining: remaining,
+                    tracks_total: total,
+                    current_track: None,
+                },
+            );
         }
-        Self::push_event(inner, DaemonEvent::LoudnessScanDone { scanned: total });
-        Ok(DaemonRes::Ok { version: inner.state.read().await.version as u32 })
+        Self::push_event(
+            inner,
+            DaemonEvent::LoudnessScanDone {
+                scanned: total,
+                failed: 0,
+            },
+        );
+        Ok(DaemonRes::Ok)
     }
 
     async fn cmd_set_pre_gain(
@@ -1387,24 +1547,19 @@ impl Daemon {
     ) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
         state.set_pre_gain(pre_gain_db)?;
-        let version = state.version as u32;
         drop(state);
         Self::push_event(inner, DaemonEvent::PreGainChanged { pre_gain_db });
         Self::save_state(inner);
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
-    async fn cmd_set_gapless(
-        inner: &DaemonInner,
-        enabled: bool,
-    ) -> Result<DaemonRes, CoreError> {
+    async fn cmd_set_gapless(inner: &DaemonInner, enabled: bool) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
         state.set_gapless(enabled)?;
-        let version = state.version as u32;
         drop(state);
         Self::push_event(inner, DaemonEvent::GaplessChanged { enabled });
         Self::save_state(inner);
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
     async fn cmd_set_dynamic_mode(
@@ -1415,15 +1570,19 @@ impl Daemon {
     ) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
         state.set_dynamic_mode(enabled, min_queue_remaining, max_history)?;
-        let version = state.version as u32;
+        let effective_min = min_queue_remaining.unwrap_or(state.dynamic_mode.min_queue_remaining);
+        let effective_max = max_history.unwrap_or(state.dynamic_mode.max_history);
         drop(state);
-        Self::push_event(inner, DaemonEvent::DynamicModeChanged {
-            enabled,
-            min_queue_remaining: min_queue_remaining.unwrap_or(state.dynamic_mode.min_queue_remaining),
-            max_history: max_history.unwrap_or(state.dynamic_mode.max_history),
-        });
+        Self::push_event(
+            inner,
+            DaemonEvent::DynamicModeChanged {
+                enabled,
+                min_queue_remaining: effective_min,
+                max_history: effective_max,
+            },
+        );
         Self::save_state(inner);
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
     async fn cmd_set_scrobble(
@@ -1436,11 +1595,10 @@ impl Daemon {
     ) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
         state.set_scrobble(enabled, api_key, session_token, min_play_secs, min_play_pct)?;
-        let version = state.version as u32;
         drop(state);
         Self::push_event(inner, DaemonEvent::ScrobbleConfigChanged { enabled });
         Self::save_state(inner);
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
     async fn cmd_organize_library(
@@ -1453,8 +1611,14 @@ impl Daemon {
         if !is_dry_run {
             warn!("library organize: destructive mode not yet implemented");
         }
-        Self::push_event(inner, DaemonEvent::LibraryOrganized { moves: 0 });
-        Ok(DaemonRes::Ok { version: inner.state.read().await.version as u32 })
+        Self::push_event(
+            inner,
+            DaemonEvent::LibraryOrganized {
+                moves_succeeded: 0,
+                moves_failed: 0,
+            },
+        );
+        Ok(DaemonRes::Ok)
     }
 
     async fn cmd_set_eq_preset(
@@ -1464,12 +1628,11 @@ impl Daemon {
         let mut state = inner.state.write().await;
         state.eq_preset = preset;
         state.version += 1;
-        let version = state.version as u32;
         drop(state);
         inner.mixer.lock().await.set_eq_preset(&preset);
         Self::push_event(inner, DaemonEvent::EqPresetChanged { preset });
         Self::save_state(inner);
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
     async fn cmd_set_eq_enabled(
@@ -1479,12 +1642,11 @@ impl Daemon {
         let mut state = inner.state.write().await;
         state.eq_enabled = enabled;
         state.version += 1;
-        let version = state.version as u32;
         drop(state);
         inner.mixer.lock().await.set_eq_enabled(enabled);
         Self::push_event(inner, DaemonEvent::EqEnabledChanged { enabled });
         Self::save_state(inner);
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
     async fn cmd_set_reverb(
@@ -1495,145 +1657,21 @@ impl Daemon {
         let mut state = inner.state.write().await;
         state.reverb = ReverbConfig { enabled, room_size };
         state.version += 1;
-        let version = state.version as u32;
         drop(state);
-        inner.mixer.lock().await.set_reverb(&ReverbConfig { enabled, room_size });
+        inner
+            .mixer
+            .lock()
+            .await
+            .set_reverb(&ReverbConfig { enabled, room_size });
         Self::push_event(inner, DaemonEvent::ReverbChanged { enabled, room_size });
         Self::save_state(inner);
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
-    async fn cmd_set_loudness_mode(
+    async fn cmd_set_sleep_timer(
         inner: &DaemonInner,
-        mode: LoudnessMode,
+        minutes: u32,
     ) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.loudness_mode = mode;
-        state.version += 1;
-        let version = state.version as u32;
-        drop(state);
-        Self::push_event(inner, DaemonEvent::LoudnessModeChanged { mode });
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok { version })
-    }
-
-    async fn cmd_scan_loudness(
-        inner: &DaemonInner,
-        track_ids: Option<Vec<i64>>,
-        force: Option<bool>,
-    ) -> Result<DaemonRes, CoreError> {
-        let version = inner.state.read().await.version as u32;
-        let event_tx = inner.event_tx.clone();
-        let state = inner.state.clone();
-
-        tokio::spawn(async move {
-            let total = track_ids.as_ref().map(|v| v.len()).unwrap_or(0);
-            for i in 1..=total {
-                let _ = event_tx.send(DaemonEvent::LoudnessScanProgress {
-                    scanned: i,
-                    total,
-                });
-                tokio::time::sleep(Duration::from_millis(100)).await;
-            }
-            let _ = event_tx.send(DaemonEvent::LoudnessScanDone { scanned: total });
-        });
-
-        Ok(DaemonRes::Ok { version })
-    }
-
-    async fn cmd_set_pre_gain(
-        inner: &DaemonInner,
-        pre_gain_db: f32,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.pre_gain_db = pre_gain_db;
-        state.version += 1;
-        let version = state.version as u32;
-        drop(state);
-        Self::push_event(inner, DaemonEvent::PreGainChanged { pre_gain_db });
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok { version })
-    }
-
-    async fn cmd_set_gapless(
-        inner: &DaemonInner,
-        enabled: bool,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.gapless = enabled;
-        state.version += 1;
-        let version = state.version as u32;
-        drop(state);
-        Self::push_event(inner, DaemonEvent::GaplessChanged { enabled });
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok { version })
-    }
-
-    async fn cmd_set_dynamic_mode(
-        inner: &DaemonInner,
-        enabled: bool,
-        min_queue_remaining: Option<u32>,
-        max_history: Option<u32>,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.dynamic_mode.enabled = enabled;
-        if let Some(min) = min_queue_remaining {
-            state.dynamic_mode.min_queue_remaining = min;
-        }
-        if let Some(max) = max_history {
-            state.dynamic_mode.max_history = max;
-        }
-        state.version += 1;
-        let version = state.version as u32;
-        drop(state);
-        Self::push_event(inner, DaemonEvent::DynamicModeChanged {
-            enabled,
-            min_queue_remaining: min_queue_remaining.unwrap_or(3),
-            max_history: max_history.unwrap_or(50),
-        });
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok { version })
-    }
-
-    async fn cmd_set_scrobble(
-        inner: &DaemonInner,
-        enabled: bool,
-        api_key: Option<String>,
-        session_token: Option<String>,
-        min_play_secs: Option<u32>,
-        min_play_pct: Option<f32>,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.scrobble.enabled = enabled;
-        state.scrobble.api_key = api_key;
-        state.scrobble.session_token = session_token;
-        state.scrobble.min_play_secs = min_play_secs;
-        state.scrobble.min_play_pct = min_play_pct;
-        state.version += 1;
-        let version = state.version as u32;
-        drop(state);
-        Self::push_event(inner, DaemonEvent::ScrobbleConfigChanged { enabled });
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok { version })
-    }
-
-    async fn cmd_organize_library(
-        inner: &DaemonInner,
-        dry_run: Option<bool>,
-    ) -> Result<DaemonRes, CoreError> {
-        let version = inner.state.read().await.version as u32;
-        if dry_run != Some(false) {
-            // Dry run: just return OK with empty moves
-            Self::push_event(inner, DaemonEvent::LibraryOrganized { moves: 0 });
-            return Ok(DaemonRes::Ok { version });
-        }
-        // Non-dry run: log warning but don't actually move files (stub)
-        warn!("organize_library with dry_run=false: destructive organize not yet implemented");
-        Self::push_event(inner, DaemonEvent::LibraryOrganized { moves: 0 });
-        Ok(DaemonRes::Ok { version })
-    }
-
-    async fn cmd_set_sleep_timer(inner: &DaemonInner, minutes: u32) -> Result<DaemonRes, CoreError> {
         let total_secs = minutes * 60;
         let event_tx = inner.event_tx.clone();
         let state = inner.state.clone();
@@ -1645,7 +1683,6 @@ impl Daemon {
         let mut s = state.write().await;
         s.sleep_timer = Some(total_secs);
         s.version += 1;
-        let version = s.version as u32;
         drop(s);
 
         tokio::spawn(async move {
@@ -1657,7 +1694,9 @@ impl Daemon {
                     let mut s = state.write().await;
                     s.sleep_timer = Some(remaining);
                 }
-                let _ = event_tx.send(DaemonEvent::SleepTimerTick { remaining_secs: remaining });
+                let _ = event_tx.send(DaemonEvent::SleepTimerTick {
+                    remaining_secs: remaining,
+                });
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
             {
@@ -1670,7 +1709,7 @@ impl Daemon {
             let _ = event_tx.send(DaemonEvent::SleepTimerExpired);
         });
 
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
     async fn cmd_cancel_sleep_timer(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
@@ -1678,8 +1717,7 @@ impl Daemon {
         let mut state = inner.state.write().await;
         state.sleep_timer = None;
         state.version += 1;
-        let version = state.version as u32;
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
     /// Queue command dispatcher.
@@ -1699,48 +1737,43 @@ impl Daemon {
         match action {
             QueueAction::List => {
                 let state = inner.state.read().await;
-                let version = state.version as u32;
                 let tracks = state.queue.clone();
                 let cursor = state.queue_cursor;
                 drop(state);
                 return Ok(DaemonRes::QueueState {
-                    version,
-                    tracks,
+                    queue: tracks,
                     cursor,
                 });
             }
             QueueAction::Clear => {
                 let mut state = inner.state.write().await;
                 queue::queue_clear(&mut state);
-                let version = state.version as u32;
                 let queue = state.queue.clone();
                 let cursor = state.queue_cursor;
                 drop(state);
                 Self::push_event(inner, DaemonEvent::QueueChanged { queue, cursor });
                 Self::save_state(inner);
-                return Ok(DaemonRes::Ok { version });
+                return Ok(DaemonRes::Ok);
             }
             QueueAction::Remove { index } => {
                 let mut state = inner.state.write().await;
                 queue::queue_remove(&mut state, *index);
-                let version = state.version as u32;
                 let queue = state.queue.clone();
                 let cursor = state.queue_cursor;
                 drop(state);
                 Self::push_event(inner, DaemonEvent::QueueChanged { queue, cursor });
                 Self::save_state(inner);
-                return Ok(DaemonRes::Ok { version });
+                return Ok(DaemonRes::Ok);
             }
             QueueAction::Move { from, to } => {
                 let mut state = inner.state.write().await;
                 queue::queue_move(&mut state, *from, *to);
-                let version = state.version as u32;
                 let queue = state.queue.clone();
                 let cursor = state.queue_cursor;
                 drop(state);
                 Self::push_event(inner, DaemonEvent::QueueChanged { queue, cursor });
                 Self::save_state(inner);
-                return Ok(DaemonRes::Ok { version });
+                return Ok(DaemonRes::Ok);
             }
             QueueAction::Add { path, position } => {
                 let was_empty;
@@ -1757,8 +1790,7 @@ impl Daemon {
                     }
                 }
                 Self::save_state(inner);
-                let version = inner.state.read().await.version as u32;
-                Ok(DaemonRes::Ok { version })
+                Ok(DaemonRes::Ok)
             }
             QueueAction::AddMany { paths } => {
                 let was_empty;
@@ -1777,14 +1809,12 @@ impl Daemon {
                     }
                 }
                 Self::save_state(inner);
-                let version = inner.state.read().await.version as u32;
-                Ok(DaemonRes::Ok { version })
+                Ok(DaemonRes::Ok)
             }
             QueueAction::AddFolder { path } => {
                 let paths = queue::scan_audio_files(path);
                 if paths.is_empty() {
                     return Ok(DaemonRes::Error {
-                        version: inner.state.read().await.version as u32,
                         message: "no audio files found in folder".into(),
                     });
                 }
@@ -1804,19 +1834,17 @@ impl Daemon {
                     }
                 }
                 Self::save_state(inner);
-                let version = inner.state.read().await.version as u32;
-                Ok(DaemonRes::Ok { version })
+                Ok(DaemonRes::Ok)
             }
             QueueAction::Set { paths, start_idx } => {
                 let mut state = inner.state.write().await;
                 queue::queue_set(&mut state, paths, *start_idx);
-                let version = state.version as u32;
                 let queue = state.queue.clone();
                 let cursor = state.queue_cursor;
                 drop(state);
                 Self::push_event(inner, DaemonEvent::QueueChanged { queue, cursor });
                 Self::save_state(inner);
-                Ok(DaemonRes::Ok { version })
+                Ok(DaemonRes::Ok)
             }
         }
     }
@@ -1825,7 +1853,6 @@ impl Daemon {
         inner: &DaemonInner,
         action: &gtm_core::ipc::LibraryAction,
     ) -> Result<DaemonRes, CoreError> {
-        let version = inner.state.read().await.version as u32;
         let res = match action {
             gtm_core::ipc::LibraryAction::Scan { path } => {
                 let audio_dir = path.clone();
@@ -1838,9 +1865,8 @@ impl Daemon {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(tracks) => DaemonRes::Tracks { version, tracks },
+                    Ok(tracks) => DaemonRes::Tracks { tracks },
                     Err(e) => DaemonRes::Error {
-                        version,
                         message: e,
                     },
                 }
@@ -1854,9 +1880,8 @@ impl Daemon {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(tracks) => DaemonRes::Tracks { version, tracks },
+                    Ok(tracks) => DaemonRes::Tracks { tracks },
                     Err(e) => DaemonRes::Error {
-                        version,
                         message: e,
                     },
                 }
@@ -1870,9 +1895,8 @@ impl Daemon {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(playlists) => DaemonRes::Playlists { version, playlists },
+                    Ok(playlists) => DaemonRes::Playlists { playlists },
                     Err(e) => DaemonRes::Error {
-                        version,
                         message: e,
                     },
                 }
@@ -1889,10 +1913,9 @@ impl Daemon {
                 match result {
                     Ok(playlist) => {
                         let playlists = vec![playlist];
-                        DaemonRes::Playlists { version, playlists }
+                        DaemonRes::Playlists { playlists }
                     }
                     Err(e) => DaemonRes::Error {
-                        version,
                         message: e,
                     },
                 }
@@ -1907,9 +1930,8 @@ impl Daemon {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(_) => DaemonRes::Ok { version },
+                    Ok(_) => DaemonRes::Ok,
                     Err(e) => DaemonRes::Error {
-                        version,
                         message: e,
                     },
                 }
@@ -1931,9 +1953,8 @@ impl Daemon {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(_) => DaemonRes::Ok { version },
+                    Ok(_) => DaemonRes::Ok,
                     Err(e) => DaemonRes::Error {
-                        version,
                         message: e,
                     },
                 }
@@ -1950,10 +1971,9 @@ impl Daemon {
                 match result {
                     Ok(playlist) => {
                         let playlists = vec![playlist];
-                        DaemonRes::Playlists { version, playlists }
+                        DaemonRes::Playlists { playlists }
                     }
                     Err(e) => DaemonRes::Error {
-                        version,
                         message: e,
                     },
                 }
@@ -1968,9 +1988,8 @@ impl Daemon {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(tracks) => DaemonRes::Tracks { version, tracks },
+                    Ok(tracks) => DaemonRes::Tracks { tracks },
                     Err(e) => DaemonRes::Error {
-                        version,
                         message: e,
                     },
                 }
@@ -1983,20 +2002,29 @@ impl Daemon {
                 let result = tokio::task::spawn_blocking(move || {
                     let lib = Library::new(data_dir.to_str().unwrap_or(""))
                         .map_err(|e| format!("open library: {e}"))?;
-                    let tracks = lib.list_tracks()
-                        .map_err(|e| format!("list tracks: {e}"))?;
-                    let rt = tokio::runtime::Runtime::new()
-                        .map_err(|e| format!("runtime: {e}"))?;
+                    let tracks = lib.list_tracks().map_err(|e| format!("list tracks: {e}"))?;
+                    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("runtime: {e}"))?;
                     let mut cache = crate::cover_art::CoverCache::new(cache_dir.clone());
                     let mut synced = 0usize;
                     for track in &tracks {
                         let missing_cover = track.cover_path.is_none()
-                            || track.cover_path.as_ref().map_or(true, |p| !std::path::Path::new(p).exists());
+                            || track
+                                .cover_path
+                                .as_ref()
+                                .map_or(true, |p| !std::path::Path::new(p).exists());
                         if !missing_cover {
                             continue;
                         }
-                        let artist = if track.artist.is_empty() { "Unknown Artist" } else { &track.artist };
-                        let album = if track.album.is_empty() { "Unknown Album" } else { &track.album };
+                        let artist = if track.artist.is_empty() {
+                            "Unknown Artist"
+                        } else {
+                            &track.artist
+                        };
+                        let album = if track.album.is_empty() {
+                            "Unknown Album"
+                        } else {
+                            &track.album
+                        };
                         if rt.block_on(cache.get_cover(artist, album)).is_some() {
                             let key = crate::cover_art::CoverCache::cache_key(artist, album);
                             let cover_file = cache_dir.join("covers").join(format!("{key}.jpg"));
@@ -2013,8 +2041,13 @@ impl Daemon {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok((synced, total)) => DaemonRes::SyncCoversResult { version, synced, total },
-                    Err(e) => DaemonRes::Error { version, message: e },
+                    Ok((synced, total)) => DaemonRes::SyncCoversResult {
+                        synced,
+                        total,
+                    },
+                    Err(e) => DaemonRes::Error {
+                        message: e,
+                    },
                 }
             }
             gtm_core::ipc::LibraryAction::SyncLyrics => {
@@ -2023,10 +2056,8 @@ impl Daemon {
                 let result = tokio::task::spawn_blocking(move || {
                     let lib = Library::new(data_dir.to_str().unwrap_or(""))
                         .map_err(|e| format!("open library: {e}"))?;
-                    let tracks = lib.list_tracks()
-                        .map_err(|e| format!("list tracks: {e}"))?;
-                    let rt = tokio::runtime::Runtime::new()
-                        .map_err(|e| format!("runtime: {e}"))?;
+                    let tracks = lib.list_tracks().map_err(|e| format!("list tracks: {e}"))?;
+                    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("runtime: {e}"))?;
                     let manager = lyrics_manager.ok_or("lyrics manager not available")?;
                     let mut synced = 0usize;
                     let total = tracks.len();
@@ -2038,13 +2069,22 @@ impl Daemon {
                         if let Some(lyrics) = rt.block_on(manager.get_lyrics(track)) {
                             if !lyrics.lines.is_empty() {
                                 let mut lrc_content = String::new();
-                                if let Some(ref ar) = lyrics.artist { lrc_content.push_str(&format!("[ar:{}]\n", ar)); }
-                                if let Some(ref al) = lyrics.album { lrc_content.push_str(&format!("[al:{}]\n", al)); }
-                                if let Some(ref ti) = lyrics.title { lrc_content.push_str(&format!("[ti:{}]\n", ti)); }
+                                if let Some(ref ar) = lyrics.artist {
+                                    lrc_content.push_str(&format!("[ar:{}]\n", ar));
+                                }
+                                if let Some(ref al) = lyrics.album {
+                                    lrc_content.push_str(&format!("[al:{}]\n", al));
+                                }
+                                if let Some(ref ti) = lyrics.title {
+                                    lrc_content.push_str(&format!("[ti:{}]\n", ti));
+                                }
                                 for line in &lyrics.lines {
                                     let mins = (line.timestamp / 60.0) as u64;
                                     let secs = line.timestamp - (mins as f64 * 60.0);
-                                    lrc_content.push_str(&format!("[{:02}:{:05.2}]{}\n", mins, secs, line.text));
+                                    lrc_content.push_str(&format!(
+                                        "[{:02}:{:05.2}]{}\n",
+                                        mins, secs, line.text
+                                    ));
                                 }
                                 if std::fs::write(&lrc_path, &lrc_content).is_ok() {
                                     synced += 1;
@@ -2058,8 +2098,13 @@ impl Daemon {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok((synced, total)) => DaemonRes::SyncLyricsResult { version, synced, total },
-                    Err(e) => DaemonRes::Error { version, message: e },
+                    Ok((synced, total)) => DaemonRes::SyncLyricsResult {
+                        synced,
+                        total,
+                    },
+                    Err(e) => DaemonRes::Error {
+                        message: e,
+                    },
                 }
             }
             gtm_core::ipc::LibraryAction::ExportM3u { playlist_id, path } => {
@@ -2073,11 +2118,16 @@ impl Daemon {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(_) => DaemonRes::Ok { version },
-                    Err(e) => DaemonRes::Error { version, message: e },
+                    Ok(_) => DaemonRes::Ok,
+                    Err(e) => DaemonRes::Error {
+                        message: e,
+                    },
                 }
             }
-            gtm_core::ipc::LibraryAction::RemoveFromPlaylist { playlist_id, track_id } => {
+            gtm_core::ipc::LibraryAction::RemoveFromPlaylist {
+                playlist_id,
+                track_id,
+            } => {
                 let playlist_id = *playlist_id;
                 let track_id = *track_id;
                 let data_dir = inner.config.data_dir.clone();
@@ -2088,8 +2138,10 @@ impl Daemon {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(()) => DaemonRes::Ok { version },
-                    Err(e) => DaemonRes::Error { version, message: e },
+                    Ok(()) => DaemonRes::Ok,
+                    Err(e) => DaemonRes::Error {
+                        message: e,
+                    },
                 }
             }
             gtm_core::ipc::LibraryAction::RemoveTrack { id } => {
@@ -2102,11 +2154,21 @@ impl Daemon {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(()) => DaemonRes::Ok { version },
-                    Err(e) => DaemonRes::Error { version, message: e },
+                    Ok(()) => DaemonRes::Ok,
+                    Err(e) => DaemonRes::Error {
+                        message: e,
+                    },
                 }
             }
-            gtm_core::ipc::LibraryAction::UpdateMetadata { track_id, title, artist, album, genre, year, track_number } => {
+            gtm_core::ipc::LibraryAction::UpdateMetadata {
+                track_id,
+                title,
+                artist,
+                album,
+                genre,
+                year,
+                track_number,
+            } => {
                 let track_id = *track_id;
                 let t = title.clone();
                 let a = artist.clone();
@@ -2117,13 +2179,23 @@ impl Daemon {
                 let data_dir = inner.config.data_dir.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    lib.update_metadata(track_id, t.as_deref(), a.as_deref(), al.as_deref(), g.as_deref(), y, tn)
+                    lib.update_metadata(
+                        track_id,
+                        t.as_deref(),
+                        a.as_deref(),
+                        al.as_deref(),
+                        g.as_deref(),
+                        y,
+                        tn,
+                    )
                 })
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(_) => DaemonRes::Ok { version },
-                    Err(e) => DaemonRes::Error { version, message: e },
+                    Ok(_) => DaemonRes::Ok,
+                    Err(e) => DaemonRes::Error {
+                        message: e,
+                    },
                 }
             }
         };
@@ -2131,7 +2203,6 @@ impl Daemon {
     }
 
     async fn cmd_search(inner: &DaemonInner, query: &str) -> Result<DaemonRes, CoreError> {
-        let version = inner.state.read().await.version as u32;
         let query = query.to_string();
         let data_dir = inner.config.data_dir.clone();
         let result = tokio::task::spawn_blocking(move || {
@@ -2141,16 +2212,14 @@ impl Daemon {
         .await
         .map_err(|e| CoreError::Daemon(e.to_string()))?;
         match result {
-            Ok(tracks) => Ok(DaemonRes::Tracks { version, tracks }),
+            Ok(tracks) => Ok(DaemonRes::Tracks { tracks }),
             Err(e) => Ok(DaemonRes::Error {
-                version,
                 message: e,
             }),
         }
     }
 
     async fn cmd_get_favourites(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let version = inner.state.read().await.version as u32;
         let data_dir = inner.config.data_dir.clone();
         let result = tokio::task::spawn_blocking(move || {
             let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
@@ -2159,16 +2228,14 @@ impl Daemon {
         .await
         .map_err(|e| CoreError::Daemon(e.to_string()))?;
         match result {
-            Ok(tracks) => Ok(DaemonRes::Tracks { version, tracks }),
+            Ok(tracks) => Ok(DaemonRes::Tracks { tracks }),
             Err(e) => Ok(DaemonRes::Error {
-                version,
                 message: e,
             }),
         }
     }
 
     async fn cmd_add_favourite(inner: &DaemonInner, track_id: i64) -> Result<DaemonRes, CoreError> {
-        let version = inner.state.read().await.version as u32;
         let data_dir = inner.config.data_dir.clone();
         let result = tokio::task::spawn_blocking(move || {
             let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
@@ -2177,16 +2244,17 @@ impl Daemon {
         .await
         .map_err(|e| CoreError::Daemon(e.to_string()))?;
         match result {
-            Ok(_) => Ok(DaemonRes::Ok { version }),
+            Ok(_) => Ok(DaemonRes::Ok),
             Err(e) => Ok(DaemonRes::Error {
-                version,
                 message: e,
             }),
         }
     }
 
-    async fn cmd_remove_favourite(inner: &DaemonInner, track_id: i64) -> Result<DaemonRes, CoreError> {
-        let version = inner.state.read().await.version as u32;
+    async fn cmd_remove_favourite(
+        inner: &DaemonInner,
+        track_id: i64,
+    ) -> Result<DaemonRes, CoreError> {
         let data_dir = inner.config.data_dir.clone();
         let result = tokio::task::spawn_blocking(move || {
             let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
@@ -2195,9 +2263,8 @@ impl Daemon {
         .await
         .map_err(|e| CoreError::Daemon(e.to_string()))?;
         match result {
-            Ok(_) => Ok(DaemonRes::Ok { version }),
+            Ok(_) => Ok(DaemonRes::Ok),
             Err(e) => Ok(DaemonRes::Error {
-                version,
                 message: e,
             }),
         }
@@ -2208,14 +2275,15 @@ impl Daemon {
         query: &str,
         filter: Option<gtm_core::state::YTFilter>,
     ) -> Result<DaemonRes, CoreError> {
-        let version = inner.state.read().await.version as u32;
         inner.health.yt_search_count.fetch_add(1, Ordering::Relaxed);
         match inner.youtube.lock().await.search(query, filter).await {
-            Ok(()) => Ok(DaemonRes::Ok { version }),
+            Ok(()) => Ok(DaemonRes::Ok),
             Err(e) => {
-                inner.health.yt_search_errors.fetch_add(1, Ordering::Relaxed);
+                inner
+                    .health
+                    .yt_search_errors
+                    .fetch_add(1, Ordering::Relaxed);
                 Ok(DaemonRes::Error {
-                    version,
                     message: e,
                 })
             }
@@ -2223,32 +2291,26 @@ impl Daemon {
     }
 
     async fn cmd_yt_search_poll(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let version = inner.state.read().await.version as u32;
         match inner.youtube.lock().await.poll_results().await {
-            Ok(Some(results)) => Ok(DaemonRes::YtSearchResults { version, results }),
-            Ok(None) => Ok(DaemonRes::Ok { version }),
+            Ok(Some(results)) => Ok(DaemonRes::YtSearchResults { results }),
+            Ok(None) => Ok(DaemonRes::Ok),
             Err(e) => Ok(DaemonRes::Error {
-                version,
                 message: e,
             }),
         }
     }
 
     async fn cmd_yt_search_cancel(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let version = inner.state.read().await.version as u32;
         inner.youtube.lock().await.cancel().await;
-        Ok(DaemonRes::Ok { version })
+        Ok(DaemonRes::Ok)
     }
 
     async fn cmd_yt_resolve_stream(inner: &DaemonInner, url: &str) -> Result<DaemonRes, CoreError> {
-        let version = inner.state.read().await.version as u32;
         match inner.youtube.lock().await.resolve_stream(url).await {
             Ok(info) => Ok(DaemonRes::StreamInfo {
-                version,
                 info: Box::new(info),
             }),
             Err(e) => Ok(DaemonRes::Error {
-                version,
                 message: e,
             }),
         }
@@ -2256,11 +2318,9 @@ impl Daemon {
 
     async fn cmd_get_status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let state = inner.state.read().await;
-        let version = state.version as u32;
         let state_clone = state.clone();
         drop(state);
         Ok(DaemonRes::Status {
-            version,
             state: Box::new(state_clone),
         })
     }
@@ -2335,10 +2395,6 @@ impl Daemon {
         });
 
         // Event channel capacity
-        let capacity = inner.health.uptime_secs() as u32; // placeholder
-        let state = inner.state.read().await;
-        let version = state.version as u32;
-        drop(state);
         components.push(ComponentHealth {
             name: "event_channel".into(),
             status: HealthStatus::Ok,
@@ -2346,20 +2402,20 @@ impl Daemon {
             uptime_secs: None,
         });
 
-        let _ = capacity;
-
         Ok(DaemonRes::HealthReport {
-            version,
             report: Box::new(HealthReport {
                 daemon_uptime_secs: h.uptime_secs(),
-                version: env!("CARGO_PKG_VERSION").into(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
                 components,
             }),
         })
     }
 
     async fn cmd_get_cover_art(inner: &DaemonInner, track_id: i64) -> Result<DaemonRes, CoreError> {
-        inner.health.cover_fetch_count.fetch_add(1, Ordering::Relaxed);
+        inner
+            .health
+            .cover_fetch_count
+            .fetch_add(1, Ordering::Relaxed);
         let mut discovered_artist = String::new();
         let mut discovered_album = String::new();
 
@@ -2375,7 +2431,9 @@ impl Daemon {
                     if let Ok(data) = tokio::fs::read(path).await {
                         use base64::Engine;
                         let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                        return Ok(DaemonRes::CoverArt { version: u32::MAX, data: Some(b64) });
+                        return Ok(DaemonRes::CoverArt {
+                            data: Some(b64),
+                        });
                     }
                 }
                 // Sidecar .jpg/.jpeg/.png/.webp next to the audio file
@@ -2387,7 +2445,9 @@ impl Daemon {
                     if let Ok(data) = tokio::fs::read(&sidecar).await {
                         use base64::Engine;
                         let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                        return Ok(DaemonRes::CoverArt { version: u32::MAX, data: Some(b64) });
+                        return Ok(DaemonRes::CoverArt {
+                            data: Some(b64),
+                        });
                     }
                 }
                 discovered_artist = track.artist;
@@ -2413,22 +2473,31 @@ impl Daemon {
             if let Some(ref mut cache) = *guard {
                 let artist = discovered_artist.clone();
                 let album = discovered_album.clone();
-                let cover = tokio::time::timeout(Duration::from_secs(5), cache.get_cover(&artist, &album)).await
-                    .ok()
-                    .flatten();
+                let cover =
+                    tokio::time::timeout(Duration::from_secs(5), cache.get_cover(&artist, &album))
+                        .await
+                        .ok()
+                        .flatten();
                 if let Some(cover) = cover {
                     use base64::Engine;
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&cover.data);
-                    return Ok(DaemonRes::CoverArt { version: u32::MAX, data: Some(b64) });
+                    return Ok(DaemonRes::CoverArt {
+                        data: Some(b64),
+                    });
                 }
             }
         }
 
-        Ok(DaemonRes::CoverArt { version: u32::MAX, data: None })
+        Ok(DaemonRes::CoverArt {
+            data: None,
+        })
     }
 
     async fn cmd_get_lyrics(inner: &DaemonInner, track_id: i64) -> Result<DaemonRes, CoreError> {
-        inner.health.lyrics_fetch_count.fetch_add(1, Ordering::Relaxed);
+        inner
+            .health
+            .lyrics_fetch_count
+            .fetch_add(1, Ordering::Relaxed);
         let track = {
             let state = inner.state.read().await;
             if let Some(ref t) = state.current_track {
@@ -2449,27 +2518,34 @@ impl Daemon {
                 match library.get_track(track_id) {
                     Ok(Some(t)) => t,
                     _ => {
-                        return Ok(DaemonRes::Lyrics { version: u32::MAX, lyrics: None });
+                        return Ok(DaemonRes::Lyrics {
+                            lyrics: None,
+                        });
                     }
                 }
             } else {
-                return Ok(DaemonRes::Lyrics { version: u32::MAX, lyrics: None });
+                return Ok(DaemonRes::Lyrics {
+                    lyrics: None,
+                });
             }
         } else {
-            return Ok(DaemonRes::Lyrics { version: u32::MAX, lyrics: None });
+            return Ok(DaemonRes::Lyrics {
+                lyrics: None,
+            });
         };
 
         if let Some(ref manager) = inner.lyrics_manager {
-            let lyrics = tokio::time::timeout(
-                Duration::from_secs(5),
-                manager.get_lyrics(&track),
-            )
-            .await
-            .ok()
-            .flatten();
-            Ok(DaemonRes::Lyrics { version: u32::MAX, lyrics })
+            let lyrics = tokio::time::timeout(Duration::from_secs(5), manager.get_lyrics(&track))
+                .await
+                .ok()
+                .flatten();
+            Ok(DaemonRes::Lyrics {
+                lyrics,
+            })
         } else {
-            Ok(DaemonRes::Lyrics { version: u32::MAX, lyrics: None })
+            Ok(DaemonRes::Lyrics {
+                lyrics: None,
+            })
         }
     }
 }

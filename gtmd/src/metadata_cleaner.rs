@@ -12,20 +12,31 @@ pub fn clean_youtube_title(title: &str) -> (Option<String>, String) {
 
     // Strip official media tags: (Official Audio), [Official Video], etc.
     let official_tags = [
-        "(Official Audio)", "(Official Music Video)", "(Official Video)",
-        "(Official Lyric Video)", "(Official Visualizer)",
-        "[Official Audio]", "[Official Music Video]", "[Official Video]",
-        "[Official Lyric Video]", "[Official Visualizer]",
-        "(Lyric Video)", "[Lyric Video]",
-        "(Audio)", "(Video)", "(Music Video)",
+        "(Official Audio)",
+        "(Official Music Video)",
+        "(Official Video)",
+        "(Official Lyric Video)",
+        "(Official Visualizer)",
+        "[Official Audio]",
+        "[Official Music Video]",
+        "[Official Video]",
+        "[Official Lyric Video]",
+        "[Official Visualizer]",
+        "(Lyric Video)",
+        "[Lyric Video]",
+        "(Audio)",
+        "(Video)",
+        "(Music Video)",
     ];
     for tag in &official_tags {
         result = result.replace(tag, "");
     }
 
     // Strip quality tags
-    let quality_tags = ["[HD]", "[4K]", "[8K]", "[1080p]", "[720p]", "[480p]",
-                        "(HD)", "(4K)", "(8K)", "(1080p)", "(720p)", "(480p)"];
+    let quality_tags = [
+        "[HD]", "[4K]", "[8K]", "[1080p]", "[720p]", "[480p]", "(HD)", "(4K)", "(8K)", "(1080p)",
+        "(720p)", "(480p)",
+    ];
     for tag in &quality_tags {
         result = result.replace(tag, "");
     }
@@ -37,12 +48,20 @@ pub fn clean_youtube_title(title: &str) -> (Option<String>, String) {
     result = result.replace("[Clean]", "");
 
     // Strip year: (2024), [2024]
-    result = strip_bracket_content_matching(&result, |s| s.chars().all(|c| c.is_ascii_digit()) && s.len() == 4);
+    result = strip_bracket_content_matching(&result, |s| {
+        s.chars().all(|c| c.is_ascii_digit()) && s.len() == 4
+    });
 
     // Strip generic fillers
     let fillers = [
-        "Official", "Music", "Lyric Video", "Audio Only", "With Lyrics",
-        "Official Lyric Video", "Official Music Video", "Official Video",
+        "Official",
+        "Music",
+        "Lyric Video",
+        "Audio Only",
+        "With Lyrics",
+        "Official Lyric Video",
+        "Official Music Video",
+        "Official Video",
         "Official Audio",
     ];
     for filler in &fillers {
@@ -84,10 +103,20 @@ pub fn clean_youtube_title(title: &str) -> (Option<String>, String) {
     // Clean up trailing/leading separators
     result = result.trim().to_string();
     while result.ends_with('-') || result.ends_with('|') || result.ends_with(',') {
-        result = result.trim_end_matches('-').trim_end_matches('|').trim_end_matches(',').trim().to_string();
+        result = result
+            .trim_end_matches('-')
+            .trim_end_matches('|')
+            .trim_end_matches(',')
+            .trim()
+            .to_string();
     }
     while result.starts_with('-') || result.starts_with('|') || result.starts_with(',') {
-        result = result.trim_start_matches('-').trim_start_matches('|').trim_start_matches(',').trim().to_string();
+        result = result
+            .trim_start_matches('-')
+            .trim_start_matches('|')
+            .trim_start_matches(',')
+            .trim()
+            .to_string();
     }
 
     // Collapse multiple spaces
@@ -168,7 +197,9 @@ fn find_last_bracket_pair(s: &str) -> Option<(char, char, usize, usize)> {
     let mut last = None;
     for i in 0..s.len() {
         match bytes[i] {
-            b'(' | b'[' => { last = Some((bytes[i] as char, i)); }
+            b'(' | b'[' => {
+                last = Some((bytes[i] as char, i));
+            }
             b')' => {
                 if let Some((open, open_pos)) = last {
                     if open == '(' {

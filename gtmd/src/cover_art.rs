@@ -54,8 +54,16 @@ impl CoverCache {
     }
 
     pub async fn get_cover(&mut self, artist: &str, album: &str) -> Option<CoverData> {
-        let artist = if artist.is_empty() { "Unknown Artist" } else { artist };
-        let album = if album.is_empty() { "Unknown Album" } else { album };
+        let artist = if artist.is_empty() {
+            "Unknown Artist"
+        } else {
+            artist
+        };
+        let album = if album.is_empty() {
+            "Unknown Album"
+        } else {
+            album
+        };
         let key = Self::cache_key(artist, album);
 
         {
@@ -95,7 +103,13 @@ impl CoverCache {
 
         tokio::time::sleep(std::time::Duration::from_millis(RATE_LIMIT_MS)).await;
 
-        let resp = match self.client.get(DEEZER_API).query(&[("q", &query)]).send().await {
+        let resp = match self
+            .client
+            .get(DEEZER_API)
+            .query(&[("q", &query)])
+            .send()
+            .await
+        {
             Ok(r) => r,
             Err(e) => {
                 warn!("Deezer API request failed for {artist}/{album}: {e}");

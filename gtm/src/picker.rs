@@ -126,7 +126,7 @@ impl PickerId {
             PickerId::CommandPalette => "Command Palette",
             PickerId::About => "About",
             PickerId::SleepTimer => "Sleep Timer",
-                PickerId::ThemePicker => "Theme",
+            PickerId::ThemePicker => "Theme",
             PickerId::SoundEffects => "Sound Effects",
             PickerId::Help => "Help",
             PickerId::PlaylistSelect => "Add to Playlist",

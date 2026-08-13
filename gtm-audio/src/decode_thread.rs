@@ -16,7 +16,7 @@ use rodio::Source;
 use gtm_core::state::{EQ_DEFAULT_Q, EQ_FREQUENCIES};
 
 use crate::eq::EqGains;
-use crate::ring_buffer::{DecodeControl, PREBUFFER_SAMPLES, SharedRingBuffer};
+use crate::ring_buffer::{DecodeControl, SharedRingBuffer, PREBUFFER_SAMPLES};
 use crate::symphonia::SymphoniaSource;
 
 // ---------------------------------------------------------------------------
@@ -231,18 +231,27 @@ impl DecodeThread {
                                     };
                                     sample_count += 1; // count the right sample too
                                     if let Some(ref mut rev) = reverb_state {
-                                        let (out_l, out_r) = rev.process_stereo(eq_sample, right_eq);
+                                        let (out_l, out_r) =
+                                            rev.process_stereo(eq_sample, right_eq);
                                         // Write left now, push right to ring buffer
                                         let _ = self.shared.push(out_l);
                                         let _ = self.shared.push(out_r);
                                         sample_count += 1;
-                                        prebuffer_check(&self.shared, &self.control, &mut prebuffered);
+                                        prebuffer_check(
+                                            &self.shared,
+                                            &self.control,
+                                            &mut prebuffered,
+                                        );
                                         continue; // both channels written
                                     } else {
                                         let _ = self.shared.push(eq_sample);
                                         let _ = self.shared.push(right_eq);
                                         sample_count += 1;
-                                        prebuffer_check(&self.shared, &self.control, &mut prebuffered);
+                                        prebuffer_check(
+                                            &self.shared,
+                                            &self.control,
+                                            &mut prebuffered,
+                                        );
                                         continue;
                                     }
                                 }

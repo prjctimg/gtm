@@ -67,10 +67,20 @@ pub fn presets() -> Vec<FooterPreset> {
             name: "Full",
             a: vec![FooterModule::Playback],
             b: vec![FooterModule::Title],
-            c: vec![FooterModule::Volume, FooterModule::Repeat, FooterModule::Shuffle, FooterModule::EqPreset],
+            c: vec![
+                FooterModule::Volume,
+                FooterModule::Repeat,
+                FooterModule::Shuffle,
+                FooterModule::EqPreset,
+            ],
             x: vec![FooterModule::Backend, FooterModule::Device],
             y: vec![FooterModule::KeyAction],
-            z: vec![FooterModule::System, FooterModule::Clock, FooterModule::SleepTimer, FooterModule::Progress],
+            z: vec![
+                FooterModule::System,
+                FooterModule::Clock,
+                FooterModule::SleepTimer,
+                FooterModule::Progress,
+            ],
         },
     ]
 }
@@ -80,7 +90,14 @@ pub fn num_presets() -> usize {
 }
 
 /// Collect the rendered spans for a preset so they can be cached across frames.
-pub fn collect_preset_spans(app: &App, preset: &FooterPreset) -> Option<(Vec<Span<'static>>, ratatui::style::Color, ratatui::style::Color)> {
+pub fn collect_preset_spans(
+    app: &App,
+    preset: &FooterPreset,
+) -> Option<(
+    Vec<Span<'static>>,
+    ratatui::style::Color,
+    ratatui::style::Color,
+)> {
     let groups = build_groups(preset, app);
     let mut all_spans: Vec<Span<'static>> = Vec::new();
     for (i, group) in groups.iter().enumerate() {
@@ -93,13 +110,19 @@ pub fn collect_preset_spans(app: &App, preset: &FooterPreset) -> Option<(Vec<Spa
         }
         all_spans.push(Span::raw(" "));
         for (j, (text, color)) in parts.iter().enumerate() {
-            if j > 0 { all_spans.push(Span::raw(" ")); }
+            if j > 0 {
+                all_spans.push(Span::raw(" "));
+            }
             let fg = crate::ui::readable_fg(group.bg, *color, app.theme.fg_bright);
             all_spans.push(Span::styled(text.clone(), Style::default().fg(fg)));
         }
         all_spans.push(Span::raw(" "));
     }
-    let left_bg = if all_spans.is_empty() { app.theme.fg_dim } else { groups[0].bg };
+    let left_bg = if all_spans.is_empty() {
+        app.theme.fg_dim
+    } else {
+        groups[0].bg
+    };
     let right_bg = app.theme.border;
     Some((all_spans, left_bg, right_bg))
 }
@@ -111,11 +134,17 @@ struct FooterGroup<'a> {
 
 fn build_groups<'a>(preset: &'a FooterPreset, app: &App) -> Vec<FooterGroup<'a>> {
     let is_playing = app.state.status == PlaybackStatus::Playing;
-    let status_bg = if is_playing { app.theme.accent } else { app.theme.fg_dim };
+    let status_bg = if is_playing {
+        app.theme.accent
+    } else {
+        app.theme.fg_dim
+    };
     let mut groups = Vec::new();
 
     // Collect all modules from all preset fields
-    let all: Vec<&'a FooterModule> = preset.a.iter()
+    let all: Vec<&'a FooterModule> = preset
+        .a
+        .iter()
         .chain(preset.b.iter())
         .chain(preset.c.iter())
         .chain(preset.x.iter())
@@ -126,17 +155,28 @@ fn build_groups<'a>(preset: &'a FooterPreset, app: &App) -> Vec<FooterGroup<'a>>
     // Group 1 (left): Status/info modules
     let mut left = Vec::new();
     for m in &all {
-        if matches!(m,
-            FooterModule::Playback | FooterModule::Volume | FooterModule::EqPreset
-            | FooterModule::Queue | FooterModule::Repeat | FooterModule::Shuffle
-            | FooterModule::Progress | FooterModule::Title | FooterModule::Backend
-            | FooterModule::Device | FooterModule::System
+        if matches!(
+            m,
+            FooterModule::Playback
+                | FooterModule::Volume
+                | FooterModule::EqPreset
+                | FooterModule::Queue
+                | FooterModule::Repeat
+                | FooterModule::Shuffle
+                | FooterModule::Progress
+                | FooterModule::Title
+                | FooterModule::Backend
+                | FooterModule::Device
+                | FooterModule::System
         ) {
             left.push(*m);
         }
     }
     if !left.is_empty() {
-        groups.push(FooterGroup { modules: left, bg: status_bg });
+        groups.push(FooterGroup {
+            modules: left,
+            bg: status_bg,
+        });
     }
 
     // Group 2 (middle): KeyAction + SleepTimer
@@ -147,7 +187,10 @@ fn build_groups<'a>(preset: &'a FooterPreset, app: &App) -> Vec<FooterGroup<'a>>
         }
     }
     if !middle.is_empty() {
-        groups.push(FooterGroup { modules: middle, bg: app.theme.fg_dim });
+        groups.push(FooterGroup {
+            modules: middle,
+            bg: app.theme.fg_dim,
+        });
     }
 
     // Group 3 (right): Clock
@@ -166,7 +209,11 @@ pub fn render_preset(f: &mut Frame, area: Rect, app: &App, preset: &FooterPreset
     let mut group_widths: Vec<u16> = Vec::new();
     for group in &groups {
         let parts = render_modules(&group.modules, app);
-        let s: String = parts.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>().join(" ");
+        let s: String = parts
+            .iter()
+            .map(|(t, _)| t.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
         let w = if s.is_empty() { 0 } else { s.len() as u16 + 2 };
         group_widths.push(w);
     }
@@ -177,9 +224,14 @@ pub fn render_preset(f: &mut Frame, area: Rect, app: &App, preset: &FooterPreset
     }
 
     // If terminal too narrow, show only as much as fits
-    let mut constraints: Vec<Constraint> = group_widths.iter()
+    let mut constraints: Vec<Constraint> = group_widths
+        .iter()
         .map(|w| {
-            if *w > 0 { Constraint::Length(*w) } else { Constraint::Length(0) }
+            if *w > 0 {
+                Constraint::Length(*w)
+            } else {
+                Constraint::Length(0)
+            }
         })
         .collect();
     // Add fill for remaining space
@@ -202,15 +254,16 @@ pub fn render_preset(f: &mut Frame, area: Rect, app: &App, preset: &FooterPreset
         let mut spans = Vec::new();
         spans.push(Span::raw(" "));
         for (j, (text, color)) in parts.iter().enumerate() {
-            if j > 0 { spans.push(Span::raw(" ")); }
+            if j > 0 {
+                spans.push(Span::raw(" "));
+            }
             let fg = crate::ui::readable_fg(group.bg, *color, app.theme.fg_bright);
             spans.push(Span::styled(text.clone(), Style::default().fg(fg)));
         }
         spans.push(Span::raw(" "));
 
         f.render_widget(
-            Paragraph::new(Line::from(spans))
-                .style(Style::default().bg(group.bg)),
+            Paragraph::new(Line::from(spans)).style(Style::default().bg(group.bg)),
             chunks[i],
         );
     }
@@ -281,7 +334,12 @@ fn render_title(app: &App) -> String {
         },
     );
     if raw.len() > 30 {
-        let s = raw.chars().cycle().skip(app.footer_title_scroll % raw.len()).take(30).collect::<String>();
+        let s = raw
+            .chars()
+            .cycle()
+            .skip(app.footer_title_scroll % raw.len())
+            .take(30)
+            .collect::<String>();
         format!("{} \u{2026}", s)
     } else {
         raw
@@ -305,7 +363,11 @@ fn render_repeat(app: &App) -> String {
 }
 
 fn render_shuffle(app: &App) -> String {
-    if app.state.shuffle { "S".into() } else { String::new() }
+    if app.state.shuffle {
+        "S".into()
+    } else {
+        String::new()
+    }
 }
 
 fn render_eq_preset(app: &App) -> String {
@@ -333,7 +395,9 @@ fn render_progress(app: &App) -> String {
     };
     let pos = app.display_position as u64;
     let dur = track.duration as u64;
-    if dur == 0 { return String::new(); }
+    if dur == 0 {
+        return String::new();
+    }
     let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
     let time_str = format!("{} / {}", format_duration(pos), format_duration(dur));
     let bar_w = 14usize;
@@ -354,10 +418,19 @@ fn format_duration(secs: u64) -> String {
 
 fn render_queue(app: &App) -> String {
     let len = app.queue_cache.len();
-    if len == 0 { return String::new(); }
+    if len == 0 {
+        return String::new();
+    }
     let cursor = app.queue_cursor;
     let next = if cursor + 1 < len {
-        format!(" \u{2192} {}", app.queue_cache[cursor + 1].title.chars().take(20).collect::<String>())
+        format!(
+            " \u{2192} {}",
+            app.queue_cache[cursor + 1]
+                .title
+                .chars()
+                .take(20)
+                .collect::<String>()
+        )
     } else {
         String::new()
     };
@@ -387,7 +460,9 @@ fn render_backend() -> String {
 fn render_system() -> String {
     let os = std::env::consts::OS;
     let arch = std::env::consts::ARCH;
-    let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let cpus = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1);
     let mem = read_process_memory_kb();
     if let Some(kb) = mem {
         if kb > 1024 * 1024 {

@@ -11,6 +11,7 @@ gtm-audio = { path = "../gtm-audio" }
 gtm-mpris = { path = "../gtm-mpris", optional = true }
 rusqlite = { version = "0.31", features = ["bundled"] }
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 reqwest = { version = "0.12", default-features = false, features = ["json"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

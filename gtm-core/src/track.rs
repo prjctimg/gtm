@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TrackInfo {
     pub id: i64,
     pub path: String,
@@ -14,6 +14,8 @@ pub struct TrackInfo {
     pub artist: String,
     pub album: String,
     pub duration: f64,
+    #[serde(default)]
+    pub actual_duration: Option<f64>,
     pub track_number: Option<i32>,
     pub genre: String,
     pub year: Option<i32>,
@@ -22,6 +24,12 @@ pub struct TrackInfo {
     pub hash: String,
     pub cover_path: Option<String>,
     pub favourite: bool,
+    #[serde(default)]
+    pub loudness_lufs: Option<f32>,
+    #[serde(default)]
+    pub loudness_peak_db: Option<f32>,
+    #[serde(default)]
+    pub loudness_range: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

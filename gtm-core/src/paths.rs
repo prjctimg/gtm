@@ -30,7 +30,9 @@ fn state_dir() -> PathBuf {
         }
     }
     if let Ok(user) = std::env::var("USER") {
-        let p = PathBuf::from("/tmp").join(format!("gtm-{}", user)).join("gtm");
+        let p = PathBuf::from("/tmp")
+            .join(format!("gtm-{}", user))
+            .join("gtm");
         if let Some(parent) = p.parent() {
             if parent.exists() {
                 let _ = std::fs::create_dir_all(&p);
@@ -84,18 +86,6 @@ pub fn resolve_pulse_socket() -> PathBuf {
 /// Return the default daemon PID file path.
 pub fn resolve_pid_file() -> PathBuf {
     state_dir().join("gtmd.pid")
-}
-
-/// Return the default daemon socket path (alias for resolve_command_socket).
-///
-/// Resolution order:
-/// 1. `$XDG_RUNTIME_DIR/gtm/gtmd.sock`
-/// 2. `/tmp/gtm-$USER/gtm/gtmd.sock`
-/// 3. `$TMPDIR/gtm/gtmd.sock`
-/// 4. Termux fallback: `$PREFIX/tmp/gtm/gtmd.sock`
-/// 5. `$HOME/.gtm/gtm/gtmd.sock`
-pub fn default_socket_path() -> PathBuf {
-    resolve_command_socket()
 }
 
 /// Return Termux-specific music library paths (if any exist).

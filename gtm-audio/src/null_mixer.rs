@@ -43,7 +43,11 @@ impl Mixer for NullMixer {
         Ok(())
     }
 
-    fn load_active_decoded(&mut self, _source: Box<dyn Source<Item = f32> + Send>, start_pos: f64) -> AudioResult<()> {
+    fn load_active_decoded(
+        &mut self,
+        _source: Box<dyn Source<Item = f32> + Send>,
+        start_pos: f64,
+    ) -> AudioResult<()> {
         *self.position.lock().unwrap() = start_pos;
         self.playing.store(false, Ordering::SeqCst);
         Ok(())
@@ -54,7 +58,10 @@ impl Mixer for NullMixer {
         Ok(())
     }
 
-    fn load_standby_decoded(&mut self, _source: Box<dyn Source<Item = f32> + Send>) -> AudioResult<()> {
+    fn load_standby_decoded(
+        &mut self,
+        _source: Box<dyn Source<Item = f32> + Send>,
+    ) -> AudioResult<()> {
         *self.standby_loaded.lock().unwrap() = true;
         Ok(())
     }

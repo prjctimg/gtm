@@ -8,7 +8,6 @@ use std::path::Path;
 
 use reqwest::Client;
 
-
 use gtm_core::track::{LrcData, LrcLine, TrackInfo};
 
 const LRCLIB_API: &str = "https://lrclib.net/api";
@@ -114,11 +113,7 @@ impl LyricsManager {
 
     async fn fetch_lrclib_search(&self, track: &TrackInfo) -> Option<LrcData> {
         let query = format!("{} {}", track.artist, track.title);
-        let url = format!(
-            "{}/search?q={}",
-            LRCLIB_API,
-            urlencoding(&query),
-        );
+        let url = format!("{}/search?q={}", LRCLIB_API, urlencoding(&query),);
 
         let resp = self.client.get(&url).send().await.ok()?;
         if !resp.status().is_success() {

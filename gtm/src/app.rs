@@ -13,8 +13,8 @@ use gtm_core::ipc::DaemonRes;
 use gtm_core::state::{DaemonState, Easing, PlaybackStatus, RepeatMode, Tab};
 use gtm_core::track::{Playlist, TrackInfo, YTSearchResult};
 use ratatui::layout::Alignment;
-use ratatui::Terminal;
 use ratatui::widgets::Paragraph;
+use ratatui::Terminal;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 use tokio::sync::mpsc;
@@ -54,15 +54,32 @@ fn load_prefs() -> Prefs {
     let path = prefs_path();
     let s = match std::fs::read_to_string(path) {
         Ok(s) => s,
-        Err(_) => return Prefs { theme_index: 0, transparent_bg: false, footer_preset: 0, progress_style: crate::progress::ProgressStyle::default() },
+        Err(_) => {
+            return Prefs {
+                theme_index: 0,
+                transparent_bg: false,
+                footer_preset: 0,
+                progress_style: crate::progress::ProgressStyle::default(),
+            }
+        }
     };
     if let Ok(p) = serde_json::from_str::<Prefs>(&s) {
         return p;
     }
     if let Ok(idx) = serde_json::from_str::<usize>(&s) {
-        return Prefs { theme_index: idx.min(crate::theme::THEMES.len().saturating_sub(1)), transparent_bg: false, footer_preset: 0, progress_style: crate::progress::ProgressStyle::default() };
+        return Prefs {
+            theme_index: idx.min(crate::theme::THEMES.len().saturating_sub(1)),
+            transparent_bg: false,
+            footer_preset: 0,
+            progress_style: crate::progress::ProgressStyle::default(),
+        };
     }
-    Prefs { theme_index: 0, transparent_bg: false, footer_preset: 0, progress_style: crate::progress::ProgressStyle::default() }
+    Prefs {
+        theme_index: 0,
+        transparent_bg: false,
+        footer_preset: 0,
+        progress_style: crate::progress::ProgressStyle::default(),
+    }
 }
 
 fn save_prefs(prefs: &Prefs) {
@@ -177,7 +194,11 @@ pub struct App {
     prev_cover_id: Option<i64>,
     cover_art_dirty: bool,
     pub suppress_footer_refresh: bool,
-    pub cached_footer_spans: Option<(Vec<ratatui::text::Span<'static>>, ratatui::style::Color, ratatui::style::Color)>,
+    pub cached_footer_spans: Option<(
+        Vec<ratatui::text::Span<'static>>,
+        ratatui::style::Color,
+        ratatui::style::Color,
+    )>,
     last_event_time: std::time::Instant,
     pub multiselect_mode: bool,
     pub progress_style: crate::progress::ProgressStyle,
@@ -271,7 +292,12 @@ impl App {
         let keybindings = default_keybindings();
         let prefs = tokio::task::spawn_blocking(load_prefs)
             .await
-            .unwrap_or_else(|_| Prefs { theme_index: 0, transparent_bg: false, footer_preset: 0, progress_style: crate::progress::ProgressStyle::default() });
+            .unwrap_or_else(|_| Prefs {
+                theme_index: 0,
+                transparent_bg: false,
+                footer_preset: 0,
+                progress_style: crate::progress::ProgressStyle::default(),
+            });
         let initial_cursor = state.queue_cursor;
         Ok(Self {
             theme: (THEMES[prefs.theme_index].builder)(),
@@ -327,7 +353,9 @@ impl App {
             viewport_items: 20,
             transparent_bg: prefs.transparent_bg,
             last_action_name: None,
-            footer_preset: prefs.footer_preset.min(footer::num_presets().saturating_sub(1)),
+            footer_preset: prefs
+                .footer_preset
+                .min(footer::num_presets().saturating_sub(1)),
             footer_title_scroll: 0,
             is_ready: false,
             last_queue_cursor: initial_cursor,
@@ -411,7 +439,12 @@ impl App {
             let c = self.client.clone();
             let ipc_tx = self.ipc_tx.clone();
             tokio::spawn(async move {
-                if let Ok(DaemonRes::QueueState { tracks, cursor, .. }) = c.queue_list().await {
+                if let Ok(DaemonRes::QueueState {
+                    queue: tracks,
+                    cursor,
+                    ..
+                }) = c.queue_list().await
+                {
                     let _ = ipc_tx.send(IpcResult::Queue(tracks, cursor as usize));
                 }
             });
@@ -420,7 +453,8 @@ impl App {
             let c = self.client.clone();
             let ipc_tx = self.ipc_tx.clone();
             tokio::spawn(async move {
-                if let Ok(DaemonRes::Tracks { tracks, .. }) = c.library_get_tracks(None, None).await {
+                if let Ok(DaemonRes::Tracks { tracks, .. }) = c.library_get_tracks(None, None).await
+                {
                     if !tracks.is_empty() {
                         let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
                     }
@@ -468,7 +502,10 @@ impl App {
             }
             if had_sleep_expired {
                 self.sleep_timer_remaining = None;
-                self.notify("Sleep timer expired — playback stopped", NotificationKind::Info);
+                self.notify(
+                    "Sleep timer expired — playback stopped",
+                    NotificationKind::Info,
+                );
             }
             // Sync sleep_timer_remaining from daemon state
             if let Some(secs) = self.state.sleep_timer {
@@ -485,8 +522,7 @@ impl App {
             // Force a state refresh if no events received for 8s to prevent
             // stale state from broadcast lag. Works in all playback states,
             // not just Playing, to catch lag when paused/stopped too.
-            if self.last_event_time.elapsed() > Duration::from_secs(8)
-                && self.client.is_connected()
+            if self.last_event_time.elapsed() > Duration::from_secs(8) && self.client.is_connected()
             {
                 let c = self.client.clone();
                 let ipc_tx2 = self.ipc_tx.clone();
@@ -523,10 +559,10 @@ impl App {
                     let ipc_tx2 = self.ipc_tx.clone();
                     tokio::spawn(async move {
                         if let Ok(Some(b64)) = client2.get_cover_art(tid).await {
-                            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                                let _ = ipc_tx2.send(IpcResult::CoverArt(
-                                    Some(bytes), Some(tid)
-                                ));
+                            if let Ok(bytes) =
+                                base64::engine::general_purpose::STANDARD.decode(&b64)
+                            {
+                                let _ = ipc_tx2.send(IpcResult::CoverArt(Some(bytes), Some(tid)));
                             }
                         }
                     });
@@ -816,19 +852,28 @@ impl App {
             tracks.retain(|t| t.favourite);
         } else if self.library_category == 5 {
             // Spotify: tracks from the spotify audio subdirectory
-            tracks.retain(|t| t.path.contains("/audio/spotify") || t.path.contains("\\audio\\spotify"));
+            tracks.retain(|t| {
+                t.path.contains("/audio/spotify") || t.path.contains("\\audio\\spotify")
+            });
         } else if self.library_category == 6 {
             // YouTube: tracks from the youtube audio subdirectory
-            tracks.retain(|t| t.path.contains("/audio/youtube") || t.path.contains("\\audio\\youtube"));
+            tracks.retain(|t| {
+                t.path.contains("/audio/youtube") || t.path.contains("\\audio\\youtube")
+            });
         }
         tracks
     }
 
     /// Unique album names with track counts, sorted by album.
     pub fn unique_albums(&self) -> Vec<(String, usize)> {
-        let mut albums: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        let mut albums: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
         for t in &self.tracks_cache {
-            let key = if t.album.is_empty() { "Unknown Album".into() } else { t.album.clone() };
+            let key = if t.album.is_empty() {
+                "Unknown Album".into()
+            } else {
+                t.album.clone()
+            };
             *albums.entry(key).or_insert(0) += 1;
         }
         albums.into_iter().collect()
@@ -836,9 +881,14 @@ impl App {
 
     /// Unique artist names with track counts, sorted by artist.
     pub fn unique_artists(&self) -> Vec<(String, usize)> {
-        let mut artists: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+        let mut artists: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
         for t in &self.tracks_cache {
-            let key = if t.artist.is_empty() { "Unknown Artist".into() } else { t.artist.clone() };
+            let key = if t.artist.is_empty() {
+                "Unknown Artist".into()
+            } else {
+                t.artist.clone()
+            };
             *artists.entry(key).or_insert(0) += 1;
         }
         artists.into_iter().collect()
@@ -872,18 +922,21 @@ impl App {
 
     fn settings_options_for_category(&self) -> usize {
         match self.settings_category {
-            0 => 2,  // Audio: Volume, Mute
-            1 => 8,  // YouTube: (all display-only for now)
-            2 => 4,  // Playback: Repeat, Shuffle, Crossfade, Easing
-            3 => 5,  // System: Theme, Transparent BG, Sync Covers, Sync Lyrics, Footer Preset
-            4 => 1,  // Spotify: Status
+            0 => 2, // Audio: Volume, Mute
+            1 => 8, // YouTube: (all display-only for now)
+            2 => 4, // Playback: Repeat, Shuffle, Crossfade, Easing
+            3 => 5, // System: Theme, Transparent BG, Sync Covers, Sync Lyrics, Footer Preset
+            4 => 1, // Spotify: Status
             _ => 0,
         }
     }
 
     async fn fetch_queue(&mut self) {
-        if let Ok(DaemonRes::QueueState { tracks, cursor, .. }) =
-            self.client.queue_list().await
+        if let Ok(DaemonRes::QueueState {
+            queue: tracks,
+            cursor,
+            ..
+        }) = self.client.queue_list().await
         {
             self.queue_cache = tracks;
             self.queue_cursor = cursor as usize;
@@ -906,94 +959,126 @@ impl App {
         match cmd {
             TuiCommand::Play(path) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.play(&path, 0.0).await { error_handler(e); }
+                    if let Err(e) = client.play(&path, 0.0).await {
+                        error_handler(e);
+                    }
                 });
             }
             TuiCommand::PlayPause => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.play_pause().await { error_handler(e); }
+                    if let Err(e) = client.play_pause().await {
+                        error_handler(e);
+                    }
                 });
             }
             TuiCommand::Pause => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.pause().await { error_handler(e); }
+                    if let Err(e) = client.pause().await {
+                        error_handler(e);
+                    }
                 });
             }
             TuiCommand::Stop => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.stop().await { error_handler(e); }
+                    if let Err(e) = client.stop().await {
+                        error_handler(e);
+                    }
                 });
             }
             TuiCommand::Next => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.next().await { error_handler(e); }
+                    if let Err(e) = client.next().await {
+                        error_handler(e);
+                    }
                 });
             }
             TuiCommand::Prev => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.prev().await { error_handler(e); }
+                    if let Err(e) = client.prev().await {
+                        error_handler(e);
+                    }
                 });
             }
             TuiCommand::Seek(pos) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.seek(pos).await { error_handler(e); }
+                    if let Err(e) = client.seek(pos).await {
+                        error_handler(e);
+                    }
                 });
             }
             TuiCommand::SetVolume(v) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.set_volume(v).await { error_handler(e); }
+                    if let Err(e) = client.set_volume(v).await {
+                        error_handler(e);
+                    }
                 });
             }
             TuiCommand::ToggleShuffle => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.toggle_shuffle().await { error_handler(e); }
+                    if let Err(e) = client.toggle_shuffle().await {
+                        error_handler(e);
+                    }
                 });
             }
             TuiCommand::CycleRepeat(m) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.cycle_repeat(m).await { error_handler(e); }
+                    if let Err(e) = client.cycle_repeat(m).await {
+                        error_handler(e);
+                    }
                 });
             }
             TuiCommand::ToggleMute => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.toggle_mute().await { error_handler(e); }
+                    if let Err(e) = client.toggle_mute().await {
+                        error_handler(e);
+                    }
                 });
             }
             TuiCommand::Crossfade(en, dur) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.crossfade(en, dur).await { error_handler(e); }
+                    if let Err(e) = client.crossfade(en, dur, None).await {
+                        error_handler(e);
+                    }
                 });
             }
-            TuiCommand::SetCrossfadeEasing(easing) => {
-                tokio::spawn(async move {
-                    if let Err(e) = client.set_crossfade_easing(easing).await { error_handler(e); }
-                });
+            TuiCommand::SetCrossfadeEasing(_easing) => {
+                // TODO: pass easing through crossfade command
             }
             TuiCommand::QueueAdd(p) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.queue_add(&p, None).await { error_handler2(e); }
+                    if let Err(e) = client.queue_add(&p, None).await {
+                        error_handler2(e);
+                    }
                 });
             }
             TuiCommand::QueueRemove(i) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.queue_rm(i).await { error_handler(e); }
+                    if let Err(e) = client.queue_rm(i).await {
+                        error_handler(e);
+                    }
                 });
             }
             TuiCommand::QueueMove(from, to) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.queue_move(from, to).await { error_handler(e); }
+                    if let Err(e) = client.queue_move(from, to).await {
+                        error_handler(e);
+                    }
                 });
             }
             TuiCommand::QueueClear => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.queue_clear().await { error_handler(e); }
+                    if let Err(e) = client.queue_clear().await {
+                        error_handler(e);
+                    }
                 });
             }
             TuiCommand::YtSearch(q) => {
                 self.yt_search_loading = true;
                 let c = client.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = c.yt_search(&q, None).await { error_handler2(e); }
+                    if let Err(e) = c.yt_search(&q, None).await {
+                        error_handler2(e);
+                    }
                 });
             }
             TuiCommand::YtDownload(url) => {
@@ -1021,20 +1106,33 @@ impl App {
                         .await;
                     let msg = match output {
                         Ok(o) if o.status.success() => {
-                            let _ = client2.library_scan(
-                                audio_dir.to_string_lossy().as_ref(),
-                            ).await;
+                            let _ = client2
+                                .library_scan(audio_dir.to_string_lossy().as_ref())
+                                .await;
                             // Also refresh the track cache
-                            if let Ok(DaemonRes::Tracks { tracks, .. }) = client2.library_get_tracks(None, None).await {
+                            if let Ok(DaemonRes::Tracks { tracks, .. }) =
+                                client2.library_get_tracks(None, None).await
+                            {
                                 let _ = ipc.send(IpcResult::LibraryTracks(tracks));
                             }
                             // Try to fetch lyrics for the newly downloaded track
                             let stdout_text = String::from_utf8_lossy(&o.stdout).to_string();
                             let filename = stdout_text.lines().next().unwrap_or(&url).to_string();
                             // Find the track by filename substring match in library
-                            if let Ok(DaemonRes::Tracks { tracks, .. }) = client2.library_get_tracks(None, None).await {
-                                if let Some(track) = tracks.iter().find(|t| filename.contains(&t.title) || t.path.contains(&filename.trim_end_matches(".mp3"))).or_else(|| tracks.last()) {
-                                    if let Ok(Some(lyrics_data)) = client2.get_lyrics(track.id).await {
+                            if let Ok(DaemonRes::Tracks { tracks, .. }) =
+                                client2.library_get_tracks(None, None).await
+                            {
+                                if let Some(track) = tracks
+                                    .iter()
+                                    .find(|t| {
+                                        filename.contains(&t.title)
+                                            || t.path.contains(&filename.trim_end_matches(".mp3"))
+                                    })
+                                    .or_else(|| tracks.last())
+                                {
+                                    if let Ok(Some(lyrics_data)) =
+                                        client2.get_lyrics(track.id).await
+                                    {
                                         if !lyrics_data.lines.is_empty() {
                                             // Write .lrc sidecar next to the audio file
                                             let lrc_path = {
@@ -1042,13 +1140,22 @@ impl App {
                                                 p.with_extension("lrc")
                                             };
                                             let mut lrc_content = String::new();
-                                            if let Some(ref ar) = lyrics_data.artist { lrc_content.push_str(&format!("[ar:{}]\n", ar)); }
-                                            if let Some(ref al) = lyrics_data.album { lrc_content.push_str(&format!("[al:{}]\n", al)); }
-                                            if let Some(ref ti) = lyrics_data.title { lrc_content.push_str(&format!("[ti:{}]\n", ti)); }
+                                            if let Some(ref ar) = lyrics_data.artist {
+                                                lrc_content.push_str(&format!("[ar:{}]\n", ar));
+                                            }
+                                            if let Some(ref al) = lyrics_data.album {
+                                                lrc_content.push_str(&format!("[al:{}]\n", al));
+                                            }
+                                            if let Some(ref ti) = lyrics_data.title {
+                                                lrc_content.push_str(&format!("[ti:{}]\n", ti));
+                                            }
                                             for line in &lyrics_data.lines {
                                                 let mins = (line.timestamp / 60.0) as u64;
                                                 let secs = line.timestamp - (mins as f64 * 60.0);
-                                                lrc_content.push_str(&format!("[{:02}:{:05.2}]{}\n", mins, secs, line.text));
+                                                lrc_content.push_str(&format!(
+                                                    "[{:02}:{:05.2}]{}\n",
+                                                    mins, secs, line.text
+                                                ));
                                             }
                                             let _ = std::fs::write(&lrc_path, lrc_content);
                                         }
@@ -1057,7 +1164,13 @@ impl App {
                             }
                             format!("Downloaded: {}", filename)
                         }
-                        Ok(o) => format!("Download failed: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("unknown error")),
+                        Ok(o) => format!(
+                            "Download failed: {}",
+                            String::from_utf8_lossy(&o.stderr)
+                                .lines()
+                                .last()
+                                .unwrap_or("unknown error")
+                        ),
                         Err(e) => format!("Download error: {e}"),
                     };
                     let kind = if msg.starts_with("Downloaded") {
@@ -1070,27 +1183,37 @@ impl App {
             }
             TuiCommand::YtResolve(u) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.yt_resolve_stream(&u).await { error_handler2(e); }
+                    if let Err(e) = client.yt_resolve_stream(&u).await {
+                        error_handler2(e);
+                    }
                 });
             }
             TuiCommand::SetEqPreset(preset) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.set_eq_preset(preset).await { error_handler(e); }
+                    if let Err(e) = client.set_eq_preset(preset).await {
+                        error_handler(e);
+                    }
                 });
             }
             TuiCommand::Search(q) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.search(&q).await { error_handler2(e); }
+                    if let Err(e) = client.search(&q).await {
+                        error_handler2(e);
+                    }
                 });
             }
             TuiCommand::AddFavourite(id) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.add_favourite(id).await { error_handler(e); }
+                    if let Err(e) = client.add_favourite(id).await {
+                        error_handler(e);
+                    }
                 });
             }
             TuiCommand::RemoveFavourite(id) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.remove_favourite(id).await { error_handler(e); }
+                    if let Err(e) = client.remove_favourite(id).await {
+                        error_handler(e);
+                    }
                 });
             }
             TuiCommand::Refresh => {
@@ -1104,8 +1227,11 @@ impl App {
                     }
                     // Also refresh queue to recover from initial background
                     // spawn failures that leave queue_cache empty.
-                    if let Ok(DaemonRes::QueueState { tracks, cursor, .. }) =
-                        client2.queue_list().await
+                    if let Ok(DaemonRes::QueueState {
+                        queue: tracks,
+                        cursor,
+                        ..
+                    }) = client2.queue_list().await
                     {
                         let _ = ipc_tx2.send(IpcResult::Queue(tracks, cursor as usize));
                     }
@@ -1113,28 +1239,39 @@ impl App {
             }
             TuiCommand::RefreshPlaylists => {
                 tokio::spawn(async move {
-                    if let Ok(DaemonRes::Playlists { playlists, .. }) = client.library_get_playlists().await {
+                    if let Ok(DaemonRes::Playlists { playlists, .. }) =
+                        client.library_get_playlists().await
+                    {
                         let _ = ipc_tx.send(IpcResult::Playlists(playlists));
                     }
                 });
             }
             TuiCommand::RefreshLibrary => {
                 tokio::spawn(async move {
-                    if let Ok(DaemonRes::Tracks { tracks, .. }) = client.library_get_tracks(None, None).await {
+                    if let Ok(DaemonRes::Tracks { tracks, .. }) =
+                        client.library_get_tracks(None, None).await
+                    {
                         let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
                     }
                 });
             }
             TuiCommand::RefreshQueue => {
                 tokio::spawn(async move {
-                    if let Ok(DaemonRes::QueueState { tracks, cursor, .. }) = client.queue_list().await {
+                    if let Ok(DaemonRes::QueueState {
+                        queue: tracks,
+                        cursor,
+                        ..
+                    }) = client.queue_list().await
+                    {
                         let _ = ipc_tx.send(IpcResult::Queue(tracks, cursor as usize));
                     }
                 });
             }
             TuiCommand::RefreshYt => {
                 tokio::spawn(async move {
-                    if let Ok(DaemonRes::YtSearchResults { results, .. }) = client.yt_search_poll().await {
+                    if let Ok(DaemonRes::YtSearchResults { results, .. }) =
+                        client.yt_search_poll().await
+                    {
                         if !results.is_empty() {
                             let _ = ipc_tx.send(IpcResult::YtResults(results));
                         }
@@ -1146,8 +1283,13 @@ impl App {
                     if let Err(e) = client.library_remove_track(track_id).await {
                         error_handler(e);
                     } else {
-                        let _ = ipc_tx.send(IpcResult::Notification("Track deleted".to_string(), NotificationKind::Success));
-                        if let Ok(DaemonRes::Tracks { tracks, .. }) = client.library_get_tracks(None, None).await {
+                        let _ = ipc_tx.send(IpcResult::Notification(
+                            "Track deleted".to_string(),
+                            NotificationKind::Success,
+                        ));
+                        if let Ok(DaemonRes::Tracks { tracks, .. }) =
+                            client.library_get_tracks(None, None).await
+                        {
                             let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
                         }
                     }
@@ -1155,11 +1297,19 @@ impl App {
             }
             TuiCommand::RemoveFromPlaylist(playlist_id, track_id) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.library_remove_from_playlist(playlist_id, track_id).await {
+                    if let Err(e) = client
+                        .library_remove_from_playlist(playlist_id, track_id)
+                        .await
+                    {
                         error_handler(e);
                     } else {
-                        let _ = ipc_tx.send(IpcResult::Notification("Removed from playlist".to_string(), NotificationKind::Success));
-                        if let Ok(DaemonRes::Playlists { playlists, .. }) = client.library_get_playlists().await {
+                        let _ = ipc_tx.send(IpcResult::Notification(
+                            "Removed from playlist".to_string(),
+                            NotificationKind::Success,
+                        ));
+                        if let Ok(DaemonRes::Playlists { playlists, .. }) =
+                            client.library_get_playlists().await
+                        {
                             let _ = ipc_tx.send(IpcResult::Playlists(playlists));
                         }
                     }
@@ -1167,14 +1317,15 @@ impl App {
             }
             TuiCommand::FetchLyrics => {
                 let track_id = self.state.current_track.as_ref().map(|t| t.id).unwrap_or(0);
-                if track_id == 0 { return; }
+                if track_id == 0 {
+                    return;
+                }
                 let client2 = self.client.clone();
                 let ipc_tx2 = self.ipc_tx.clone();
                 tokio::spawn(async move {
-                    let result = tokio::time::timeout(
-                        Duration::from_secs(5),
-                        client2.get_lyrics(track_id),
-                    ).await;
+                    let result =
+                        tokio::time::timeout(Duration::from_secs(5), client2.get_lyrics(track_id))
+                            .await;
                     let _ = ipc_tx2.send(IpcResult::Lyrics(match result {
                         Ok(r) => r.unwrap_or(None),
                         Err(_) => None,
@@ -1217,7 +1368,10 @@ impl App {
     }
 
     fn set_last_action(&mut self, name: &str) {
-        self.last_action_name = Some((name.to_string(), std::time::Instant::now() + std::time::Duration::from_secs(3)));
+        self.last_action_name = Some((
+            name.to_string(),
+            std::time::Instant::now() + std::time::Duration::from_secs(3),
+        ));
     }
 
     fn clamp_picker_selection(&mut self) {
@@ -1230,11 +1384,15 @@ impl App {
                     if q.is_empty() {
                         self.tracks_cache.len()
                     } else {
-                        self.tracks_cache.iter().filter(|t| {
-                            t.title.to_lowercase().contains(&q)
-                                || t.artist.to_lowercase().contains(&q)
-                        }).count()
-                    }.saturating_sub(1)
+                        self.tracks_cache
+                            .iter()
+                            .filter(|t| {
+                                t.title.to_lowercase().contains(&q)
+                                    || t.artist.to_lowercase().contains(&q)
+                            })
+                            .count()
+                    }
+                    .saturating_sub(1)
                 }
                 PickerId::Equalizer => {
                     let presets = [
@@ -1262,17 +1420,21 @@ impl App {
                     if q.is_empty() {
                         THEMES.len()
                     } else {
-                        THEMES.iter().filter(|entry| {
-                            let lower = entry.name.to_lowercase();
-                            let mut qi = 0usize;
-                            for ch in lower.chars() {
-                                if qi < q.len() && ch == q.as_bytes()[qi] as char {
-                                    qi += 1;
+                        THEMES
+                            .iter()
+                            .filter(|entry| {
+                                let lower = entry.name.to_lowercase();
+                                let mut qi = 0usize;
+                                for ch in lower.chars() {
+                                    if qi < q.len() && ch == q.as_bytes()[qi] as char {
+                                        qi += 1;
+                                    }
                                 }
-                            }
-                            qi == q.len()
-                        }).count()
-                    }.saturating_sub(1)
+                                qi == q.len()
+                            })
+                            .count()
+                    }
+                    .saturating_sub(1)
                 }
                 PickerId::CommandPalette => {
                     let commands = crate::ui::COMMAND_PALETTE_COMMANDS;
@@ -1280,17 +1442,21 @@ impl App {
                     if q.is_empty() {
                         commands.len()
                     } else {
-                        commands.iter().filter(|c| {
-                            let lower = c.0.to_lowercase();
-                            let mut qi = 0usize;
-                            for ch in lower.chars() {
-                                if qi < q.len() && ch == q.as_bytes()[qi] as char {
-                                    qi += 1;
+                        commands
+                            .iter()
+                            .filter(|c| {
+                                let lower = c.0.to_lowercase();
+                                let mut qi = 0usize;
+                                for ch in lower.chars() {
+                                    if qi < q.len() && ch == q.as_bytes()[qi] as char {
+                                        qi += 1;
+                                    }
                                 }
-                            }
-                            qi == q.len()
-                        }).count()
-                    }.saturating_sub(1)
+                                qi == q.len()
+                            })
+                            .count()
+                    }
+                    .saturating_sub(1)
                 }
                 _ => usize::MAX,
             };
@@ -1397,7 +1563,10 @@ impl App {
                             if let Some((track_id, track_name)) = self.pending_delete.take() {
                                 let tx = self.cmd_tx();
                                 let _ = tx.send(TuiCommand::RemoveTrack(track_id)).await;
-                                self.notify(format!("Deleted: {track_name}"), NotificationKind::Success);
+                                self.notify(
+                                    format!("Deleted: {track_name}"),
+                                    NotificationKind::Success,
+                                );
                             }
                         }
                         KeyCode::Esc => {
@@ -1449,7 +1618,9 @@ impl App {
                     Some(KeyboardAction::Quit) => return false,
                     Some(KeyboardAction::QuitDaemon) => {
                         let c = self.client.clone();
-                        tokio::spawn(async move { let _ = c.quit().await; });
+                        tokio::spawn(async move {
+                            let _ = c.quit().await;
+                        });
                         return false;
                     }
                     Some(KeyboardAction::NextTab) => {
@@ -1496,8 +1667,7 @@ impl App {
                             }
                             PlaybackStatus::Stopped => {
                                 if !self.queue_cache.is_empty() {
-                                    let idx =
-                                        self.queue_cursor.min(self.queue_cache.len() - 1);
+                                    let idx = self.queue_cursor.min(self.queue_cache.len() - 1);
                                     let path = self.queue_cache[idx].path.clone();
                                     self.send_high(TuiCommand::Play(path));
                                 }
@@ -1607,28 +1777,31 @@ impl App {
                     }
                     Some(KeyboardAction::CycleProgressStyle) => {
                         self.progress_style = self.progress_style.next();
-                        self.notify(&format!("Progress: {}", self.progress_style.name()), NotificationKind::Info);
+                        self.notify(
+                            &format!("Progress: {}", self.progress_style.name()),
+                            NotificationKind::Info,
+                        );
                     }
                     Some(KeyboardAction::ToggleVisualizer) => {
                         self.visualizer.toggle();
-                        let state = if self.visualizer.is_enabled() { "ON" } else { "OFF" };
+                        let state = if self.visualizer.is_enabled() {
+                            "ON"
+                        } else {
+                            "OFF"
+                        };
                         self.notify(&format!("Visualizer: {}", state), NotificationKind::Info);
                     }
                     Some(KeyboardAction::CheckHealth) => {
                         self.send_high(TuiCommand::CheckHealth);
                     }
-                    Some(KeyboardAction::FocusLeft) => {
-                        match self.current_tab {
-                            Tab::Library => self.library_pane_focus = true,
-                            Tab::Settings => self.settings_pane_focus = true,
-                        }
-                    }
-                    Some(KeyboardAction::FocusRight) => {
-                        match self.current_tab {
-                            Tab::Library => self.library_pane_focus = false,
-                            Tab::Settings => self.settings_pane_focus = false,
-                        }
-                    }
+                    Some(KeyboardAction::FocusLeft) => match self.current_tab {
+                        Tab::Library => self.library_pane_focus = true,
+                        Tab::Settings => self.settings_pane_focus = true,
+                    },
+                    Some(KeyboardAction::FocusRight) => match self.current_tab {
+                        Tab::Library => self.library_pane_focus = false,
+                        Tab::Settings => self.settings_pane_focus = false,
+                    },
                     Some(KeyboardAction::Back) => {
                         let is_narrow = self.terminal_cols < 60;
                         if is_narrow && self.show_lyrics {
@@ -1656,52 +1829,51 @@ impl App {
                         self.input_mode = InputMode::Command;
                         self.dismiss_track_popup();
                     }
-                    Some(KeyboardAction::MoveUp) => {
-                        match self.current_tab {
-                            Tab::Library if self.library_pane_focus => {
-                                let new_cat = self.library_category.saturating_sub(1);
-                                if new_cat != self.library_category {
-                                    self.browse_detail = None;
-                                    self.scroll_offset = 0;
-                                }
-                                self.library_category = new_cat;
+                    Some(KeyboardAction::MoveUp) => match self.current_tab {
+                        Tab::Library if self.library_pane_focus => {
+                            let new_cat = self.library_category.saturating_sub(1);
+                            if new_cat != self.library_category {
+                                self.browse_detail = None;
+                                self.scroll_offset = 0;
                             }
-                            Tab::Settings if self.settings_pane_focus => {
-                                self.settings_category = self.settings_category.saturating_sub(1);
-                            }
-                            Tab::Settings => {
-                                self.settings_option = self.settings_option.saturating_sub(1);
-                            }
-                            Tab::Library => {
-                                self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                                self.update_track_popup();
-                            }
+                            self.library_category = new_cat;
                         }
-                    }
-                    Some(KeyboardAction::MoveDown) => {
-                        match self.current_tab {
-                            Tab::Library if self.library_pane_focus => {
-                                let new_cat = (self.library_category + 1).min(LIBRARY_CATEGORIES.len() - 1);
-                                if new_cat != self.library_category {
-                                    self.browse_detail = None;
-                                    self.scroll_offset = 0;
-                                }
-                                self.library_category = new_cat;
-                            }
-                            Tab::Settings if self.settings_pane_focus => {
-                                self.settings_category = (self.settings_category + 1).min(NUM_SETTINGS_CATEGORIES.saturating_sub(1));
-                            }
-                            Tab::Settings => {
-                                let max = self.settings_options_for_category().saturating_sub(1);
-                                self.settings_option = (self.settings_option + 1).min(max);
-                            }
-                            Tab::Library => {
-                                let max_list = self.filtered_tracks().len();
-                                self.scroll_offset = (self.scroll_offset + 1).min(max_list.saturating_sub(1));
-                                self.update_track_popup();
-                            }
+                        Tab::Settings if self.settings_pane_focus => {
+                            self.settings_category = self.settings_category.saturating_sub(1);
                         }
-                    }
+                        Tab::Settings => {
+                            self.settings_option = self.settings_option.saturating_sub(1);
+                        }
+                        Tab::Library => {
+                            self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                            self.update_track_popup();
+                        }
+                    },
+                    Some(KeyboardAction::MoveDown) => match self.current_tab {
+                        Tab::Library if self.library_pane_focus => {
+                            let new_cat =
+                                (self.library_category + 1).min(LIBRARY_CATEGORIES.len() - 1);
+                            if new_cat != self.library_category {
+                                self.browse_detail = None;
+                                self.scroll_offset = 0;
+                            }
+                            self.library_category = new_cat;
+                        }
+                        Tab::Settings if self.settings_pane_focus => {
+                            self.settings_category = (self.settings_category + 1)
+                                .min(NUM_SETTINGS_CATEGORIES.saturating_sub(1));
+                        }
+                        Tab::Settings => {
+                            let max = self.settings_options_for_category().saturating_sub(1);
+                            self.settings_option = (self.settings_option + 1).min(max);
+                        }
+                        Tab::Library => {
+                            let max_list = self.filtered_tracks().len();
+                            self.scroll_offset =
+                                (self.scroll_offset + 1).min(max_list.saturating_sub(1));
+                            self.update_track_popup();
+                        }
+                    },
                     Some(KeyboardAction::Select) => {
                         if self.current_tab == Tab::Library {
                             if self.library_pane_focus {
@@ -1711,7 +1883,8 @@ impl App {
                                 let filtered = self.filtered_tracks();
                                 if self.scroll_offset < filtered.len() {
                                     let idx = self.scroll_offset;
-                                    let paths: Vec<String> = filtered.iter().map(|t| t.path.clone()).collect();
+                                    let paths: Vec<String> =
+                                        filtered.iter().map(|t| t.path.clone()).collect();
                                     let path = paths[idx].clone();
                                     let c = self.client.clone();
                                     tokio::spawn(async move {
@@ -1730,13 +1903,15 @@ impl App {
                                 // Artists: select artist → show its tracks
                                 let artists = self.unique_artists();
                                 if self.scroll_offset < artists.len() {
-                                    self.browse_detail = Some(artists[self.scroll_offset].0.clone());
+                                    self.browse_detail =
+                                        Some(artists[self.scroll_offset].0.clone());
                                     self.scroll_offset = 0;
                                 }
                             } else if self.library_category == 4 {
                                 // Playlists: select playlist → show its tracks
                                 if self.scroll_offset < self.playlist_cache.len() {
-                                    self.browse_detail = Some(self.playlist_cache[self.scroll_offset].name.clone());
+                                    self.browse_detail =
+                                        Some(self.playlist_cache[self.scroll_offset].name.clone());
                                     self.scroll_offset = 0;
                                 }
                             } else {
@@ -1744,7 +1919,8 @@ impl App {
                                 let filtered = self.filtered_tracks();
                                 if self.scroll_offset < filtered.len() {
                                     let idx = self.scroll_offset;
-                                    let paths: Vec<String> = filtered.iter().map(|t| t.path.clone()).collect();
+                                    let paths: Vec<String> =
+                                        filtered.iter().map(|t| t.path.clone()).collect();
                                     let path = paths[idx].clone();
                                     let c = self.client.clone();
                                     tokio::spawn(async move {
@@ -1758,104 +1934,189 @@ impl App {
                             let opt = self.settings_option;
                             match self.settings_category {
                                 0 => match opt {
-                                    1 => { // Mute toggle
+                                    1 => {
+                                        // Mute toggle
                                         let muted = !self.state.mute;
-                                        self.send_high(TuiCommand::SetVolume(if muted { 0 } else { self.state.volume }));
+                                        self.send_high(TuiCommand::SetVolume(if muted {
+                                            0
+                                        } else {
+                                            self.state.volume
+                                        }));
                                         self.state.mute = muted;
                                     }
                                     _ => {}
                                 },
                                 2 => match opt {
-                                    0 => { // Repeat cycle
+                                    0 => {
+                                        // Repeat cycle
                                         let next = match self.state.repeat {
-                                            gtm_core::state::RepeatMode::Off => gtm_core::state::RepeatMode::One,
-                                            gtm_core::state::RepeatMode::One => gtm_core::state::RepeatMode::All,
-                                            gtm_core::state::RepeatMode::All => gtm_core::state::RepeatMode::Off,
+                                            gtm_core::state::RepeatMode::Off => {
+                                                gtm_core::state::RepeatMode::One
+                                            }
+                                            gtm_core::state::RepeatMode::One => {
+                                                gtm_core::state::RepeatMode::All
+                                            }
+                                            gtm_core::state::RepeatMode::All => {
+                                                gtm_core::state::RepeatMode::Off
+                                            }
                                         };
                                         let c = self.client.clone();
-                                        tokio::spawn(async move { let _ = c.cycle_repeat(next).await; });
+                                        tokio::spawn(async move {
+                                            let _ = c.cycle_repeat(next).await;
+                                        });
                                         self.state.repeat = next;
                                     }
-                                    1 => { // Shuffle toggle
+                                    1 => {
+                                        // Shuffle toggle
                                         let c = self.client.clone();
-                                        tokio::spawn(async move { let _ = c.toggle_shuffle().await; });
+                                        tokio::spawn(async move {
+                                            let _ = c.toggle_shuffle().await;
+                                        });
                                         self.state.shuffle = !self.state.shuffle;
                                     }
-                                    2 => { // Crossfade toggle
-                                        let enabled = !self.state.crossfade.as_ref().map(|c| c.enabled).unwrap_or(false);
-                                        let dur = self.state.crossfade.as_ref().map(|c| c.duration_secs).unwrap_or(self.crossfade_duration);
+                                    2 => {
+                                        // Crossfade toggle
+                                        let enabled = !self
+                                            .state
+                                            .crossfade
+                                            .as_ref()
+                                            .map(|c| c.enabled)
+                                            .unwrap_or(false);
+                                        let dur = self
+                                            .state
+                                            .crossfade
+                                            .as_ref()
+                                            .map(|c| c.duration_secs)
+                                            .unwrap_or(self.crossfade_duration);
                                         let _ = tx.send(TuiCommand::Crossfade(enabled, dur)).await;
                                     }
-                                    3 => { // Easing cycle
-                                        let current = self.state.crossfade.as_ref().map(|c| c.easing).unwrap_or(Easing::Linear);
+                                    3 => {
+                                        // Easing cycle
+                                        let current = self
+                                            .state
+                                            .crossfade
+                                            .as_ref()
+                                            .map(|c| c.easing)
+                                            .unwrap_or(Easing::Linear);
                                         let next = match current {
                                             Easing::Linear => Easing::Smoothstep,
                                             Easing::Smoothstep => Easing::Logarithmic,
                                             Easing::Logarithmic => Easing::SlowFadeInFastFadeOut,
-                                            Easing::SlowFadeInFastFadeOut => Easing::FastFadeInSlowFadeOut,
+                                            Easing::SlowFadeInFastFadeOut => {
+                                                Easing::FastFadeInSlowFadeOut
+                                            }
                                             Easing::FastFadeInSlowFadeOut => Easing::EqualPower,
                                             Easing::EqualPower => Easing::Exponential,
                                             Easing::Exponential => Easing::Linear,
                                         };
                                         let _ = tx.send(TuiCommand::SetCrossfadeEasing(next)).await;
-                                        if let Some(ref mut cf) = self.state.crossfade { cf.easing = next; }
+                                        if let Some(ref mut cf) = self.state.crossfade {
+                                            cf.easing = next;
+                                        }
                                     }
-                                    4 => { // EQ Enabled toggle
+                                    4 => {
+                                        // EQ Enabled toggle
                                         let new_enabled = !self.state.eq_enabled;
                                         self.state.eq_enabled = new_enabled;
                                         let c = self.client.clone();
-                                        tokio::spawn(async move { let _ = c.set_eq_enabled(new_enabled).await; });
+                                        tokio::spawn(async move {
+                                            let _ = c.set_eq_enabled(new_enabled).await;
+                                        });
                                     }
                                     _ => {}
                                 },
                                 3 => match opt {
-                                    1 => { // Transparent BG toggle
+                                    1 => {
+                                        // Transparent BG toggle
                                         self.transparent_bg = !self.transparent_bg;
-                                        save_prefs(&Prefs { theme_index: self.theme_index, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, progress_style: self.progress_style });
+                                        save_prefs(&Prefs {
+                                            theme_index: self.theme_index,
+                                            transparent_bg: self.transparent_bg,
+                                            footer_preset: self.footer_preset,
+                                            progress_style: self.progress_style,
+                                        });
                                     }
-                                    2 => { // Sync Covers
+                                    2 => {
+                                        // Sync Covers
                                         let ipc_tx = self.ipc_tx.clone();
                                         let c = self.client.clone();
                                         tokio::spawn(async move {
                                             match c.library_sync_covers().await {
-                                                Ok(DaemonRes::SyncCoversResult { synced, total, .. }) => {
-                                                    let msg = format!("Covers synced: {synced}/{total} tracks");
-                                                    let _ = ipc_tx.send(IpcResult::Notification(msg, crate::app::NotificationKind::Info));
+                                                Ok(DaemonRes::SyncCoversResult {
+                                                    synced,
+                                                    total,
+                                                    ..
+                                                }) => {
+                                                    let msg = format!(
+                                                        "Covers synced: {synced}/{total} tracks"
+                                                    );
+                                                    let _ = ipc_tx.send(IpcResult::Notification(
+                                                        msg,
+                                                        crate::app::NotificationKind::Info,
+                                                    ));
                                                 }
                                                 Ok(DaemonRes::Error { message, .. }) => {
-                                                    let _ = ipc_tx.send(IpcResult::Notification(format!("Sync failed: {message}"), crate::app::NotificationKind::Error));
+                                                    let _ = ipc_tx.send(IpcResult::Notification(
+                                                        format!("Sync failed: {message}"),
+                                                        crate::app::NotificationKind::Error,
+                                                    ));
                                                 }
                                                 Ok(_) => {}
                                                 Err(e) => {
-                                                    let _ = ipc_tx.send(IpcResult::Error(e.to_string()));
+                                                    let _ = ipc_tx
+                                                        .send(IpcResult::Error(e.to_string()));
                                                 }
                                             }
                                         });
                                     }
-                                    3 => { // Sync Lyrics
+                                    3 => {
+                                        // Sync Lyrics
                                         let ipc_tx = self.ipc_tx.clone();
                                         let c = self.client.clone();
                                         tokio::spawn(async move {
                                             match c.library_sync_lyrics().await {
-                                                Ok(DaemonRes::SyncLyricsResult { synced, total, .. }) => {
-                                                    let msg = format!("Lyrics synced: {synced}/{total} tracks");
-                                                    let _ = ipc_tx.send(IpcResult::Notification(msg, crate::app::NotificationKind::Info));
+                                                Ok(DaemonRes::SyncLyricsResult {
+                                                    synced,
+                                                    total,
+                                                    ..
+                                                }) => {
+                                                    let msg = format!(
+                                                        "Lyrics synced: {synced}/{total} tracks"
+                                                    );
+                                                    let _ = ipc_tx.send(IpcResult::Notification(
+                                                        msg,
+                                                        crate::app::NotificationKind::Info,
+                                                    ));
                                                 }
                                                 Ok(DaemonRes::Error { message, .. }) => {
-                                                    let _ = ipc_tx.send(IpcResult::Notification(format!("Sync failed: {message}"), crate::app::NotificationKind::Error));
+                                                    let _ = ipc_tx.send(IpcResult::Notification(
+                                                        format!("Sync failed: {message}"),
+                                                        crate::app::NotificationKind::Error,
+                                                    ));
                                                 }
                                                 Ok(_) => {}
                                                 Err(e) => {
-                                                    let _ = ipc_tx.send(IpcResult::Error(e.to_string()));
+                                                    let _ = ipc_tx
+                                                        .send(IpcResult::Error(e.to_string()));
                                                 }
                                             }
                                         });
                                     }
-                                    4 => { // Footer Preset cycle
-                                        self.footer_preset = (self.footer_preset + 1) % footer::num_presets();
+                                    4 => {
+                                        // Footer Preset cycle
+                                        self.footer_preset =
+                                            (self.footer_preset + 1) % footer::num_presets();
                                         let name = footer::presets()[self.footer_preset].name;
-                                        save_prefs(&Prefs { theme_index: self.theme_index, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, progress_style: self.progress_style });
-                                        self.notify(format!("Footer: {}", name), NotificationKind::Info);
+                                        save_prefs(&Prefs {
+                                            theme_index: self.theme_index,
+                                            transparent_bg: self.transparent_bg,
+                                            footer_preset: self.footer_preset,
+                                            progress_style: self.progress_style,
+                                        });
+                                        self.notify(
+                                            format!("Footer: {}", name),
+                                            NotificationKind::Info,
+                                        );
                                     }
                                     _ => {}
                                 },
@@ -1865,12 +2126,16 @@ impl App {
                     }
                     Some(KeyboardAction::Delete) => {
                         if self.current_tab == Tab::Library && !self.library_pane_focus {
-                            let track_data = self.filtered_tracks().get(self.scroll_offset)
+                            let track_data = self
+                                .filtered_tracks()
+                                .get(self.scroll_offset)
                                 .map(|t| (t.id, t.title.clone()));
                             if let Some((track_id, track_name)) = track_data {
                                 self.pending_delete = Some((track_id, track_name.clone()));
                                 self.notify(
-                                    format!("Delete \"{track_name}\"? Enter to confirm, Esc to cancel"),
+                                    format!(
+                                        "Delete \"{track_name}\"? Enter to confirm, Esc to cancel"
+                                    ),
                                     NotificationKind::Info,
                                 );
                             }
@@ -1882,12 +2147,19 @@ impl App {
                             if !self.multiselect_mode {
                                 self.selected_indices.clear();
                             }
-                            let msg = if self.multiselect_mode { "Multiselect ON" } else { "Multiselect OFF" };
+                            let msg = if self.multiselect_mode {
+                                "Multiselect ON"
+                            } else {
+                                "Multiselect OFF"
+                            };
                             self.notify(msg, NotificationKind::Info);
                         }
                     }
                     Some(KeyboardAction::ToggleSelectAndAdvance) => {
-                        if self.multiselect_mode && self.current_tab == Tab::Library && !self.library_pane_focus {
+                        if self.multiselect_mode
+                            && self.current_tab == Tab::Library
+                            && !self.library_pane_focus
+                        {
                             if self.selected_indices.contains(&self.scroll_offset) {
                                 self.selected_indices.remove(&self.scroll_offset);
                             } else {
@@ -1895,38 +2167,50 @@ impl App {
                             }
                             let max = self.filtered_tracks().len().saturating_sub(1);
                             self.scroll_offset = (self.scroll_offset + 1).min(max);
-    
                         }
                     }
                     Some(KeyboardAction::AddToQueue) => {
                         if self.current_tab == Tab::Library && !self.library_pane_focus {
                             let tracks = self.filtered_tracks();
-                            let indices: Vec<usize> = if self.multiselect_mode && !self.selected_indices.is_empty() {
-                                self.selected_indices.iter().copied().collect()
-                            } else {
-                                vec![self.scroll_offset]
-                            };
+                            let indices: Vec<usize> =
+                                if self.multiselect_mode && !self.selected_indices.is_empty() {
+                                    self.selected_indices.iter().copied().collect()
+                                } else {
+                                    vec![self.scroll_offset]
+                                };
                             let mut added = 0;
                             for idx in indices {
                                 if let Some(track) = tracks.get(idx) {
                                     let c = self.client.clone();
                                     let path = track.path.clone();
-                                    tokio::spawn(async move { let _ = c.queue_add(&path, None).await; });
+                                    tokio::spawn(async move {
+                                        let _ = c.queue_add(&path, None).await;
+                                    });
                                     added += 1;
                                 }
                             }
                             self.fetch_queue().await;
-                            self.notify(format!("Added {added} track(s) to queue"), NotificationKind::Info);
+                            self.notify(
+                                format!("Added {added} track(s) to queue"),
+                                NotificationKind::Info,
+                            );
                         }
                     }
                     Some(KeyboardAction::AddToPlaylist) => {
                         if self.current_tab == Tab::Library && !self.library_pane_focus {
                             let tracks = self.filtered_tracks();
-                            let indices: Vec<i64> = if self.multiselect_mode && !self.selected_indices.is_empty() {
-                                self.selected_indices.iter().filter_map(|i| tracks.get(*i).map(|t| t.id)).collect()
-                            } else {
-                                tracks.get(self.scroll_offset).map(|t| vec![t.id]).unwrap_or_default()
-                            };
+                            let indices: Vec<i64> =
+                                if self.multiselect_mode && !self.selected_indices.is_empty() {
+                                    self.selected_indices
+                                        .iter()
+                                        .filter_map(|i| tracks.get(*i).map(|t| t.id))
+                                        .collect()
+                                } else {
+                                    tracks
+                                        .get(self.scroll_offset)
+                                        .map(|t| vec![t.id])
+                                        .unwrap_or_default()
+                                };
                             if !indices.is_empty() {
                                 self.pending_playlist_track_ids = indices;
                                 self.pickers.open(PickerId::PlaylistSelect);
@@ -1940,29 +2224,42 @@ impl App {
                                 let filtered = self.filtered_tracks();
                                 if let Some(track) = filtered.get(self.scroll_offset) {
                                     let track_id = track.id;
-                                    if let Some(pl) = self.playlist_cache.iter().find(|p| self.browse_detail.as_deref() == Some(&p.name)) {
+                                    if let Some(pl) = self
+                                        .playlist_cache
+                                        .iter()
+                                        .find(|p| self.browse_detail.as_deref() == Some(&p.name))
+                                    {
                                         let playlist_id = pl.id;
                                         let tx = self.cmd_tx();
-                                        let _ = tx.send(TuiCommand::RemoveFromPlaylist(playlist_id, track_id)).await;
-                                        self.notify("Removed from playlist", NotificationKind::Info);
+                                        let _ = tx
+                                            .send(TuiCommand::RemoveFromPlaylist(
+                                                playlist_id,
+                                                track_id,
+                                            ))
+                                            .await;
+                                        self.notify(
+                                            "Removed from playlist",
+                                            NotificationKind::Info,
+                                        );
                                     }
                                 }
                             } else {
-                                self.notify("Remove from list only available in playlist view", NotificationKind::Info);
+                                self.notify(
+                                    "Remove from list only available in playlist view",
+                                    NotificationKind::Info,
+                                );
                             }
                         }
                     }
                     Some(KeyboardAction::JumpToStart) => {
                         if self.current_tab == Tab::Library && !self.library_pane_focus {
                             self.scroll_offset = 0;
-    
                         }
                     }
                     Some(KeyboardAction::JumpToEnd) => {
                         if self.current_tab == Tab::Library && !self.library_pane_focus {
                             let max = self.filtered_tracks().len().saturating_sub(1);
                             self.scroll_offset = max;
-    
                         }
                     }
                     Some(KeyboardAction::EditMetadata) => {
@@ -1970,11 +2267,20 @@ impl App {
                             let track_data = {
                                 let tracks = self.filtered_tracks();
                                 tracks.get(self.scroll_offset).map(|t| {
-                                    (t.id, t.title.clone(), t.artist.clone(), t.album.clone(),
-                                     t.genre.clone(), t.year, t.track_number)
+                                    (
+                                        t.id,
+                                        t.title.clone(),
+                                        t.artist.clone(),
+                                        t.album.clone(),
+                                        t.genre.clone(),
+                                        t.year,
+                                        t.track_number,
+                                    )
                                 })
                             };
-                            if let Some((id, title, artist, album, genre, year, track_num)) = track_data {
+                            if let Some((id, title, artist, album, genre, year, track_num)) =
+                                track_data
+                            {
                                 self.metadata_edit_track_id = Some(id);
                                 self.metadata_fields = [
                                     title,
@@ -2008,11 +2314,15 @@ impl App {
                             }
                             KeyCode::Char('c') if self.current_tab == Tab::Settings => {
                                 // Toggle crossfade in Settings tab
-                                let enabled = !self.state.crossfade
+                                let enabled = !self
+                                    .state
+                                    .crossfade
                                     .as_ref()
                                     .map(|c| c.enabled)
                                     .unwrap_or(false);
-                                let dur = self.state.crossfade
+                                let dur = self
+                                    .state
+                                    .crossfade
                                     .as_ref()
                                     .map(|c| c.duration_secs)
                                     .unwrap_or(self.crossfade_duration);
@@ -2021,7 +2331,9 @@ impl App {
                             }
                             KeyCode::Char('C') if self.current_tab == Tab::Settings => {
                                 // Cycle crossfade duration (3, 5, 7, 10, 15, 30)
-                                let dur = self.state.crossfade
+                                let dur = self
+                                    .state
+                                    .crossfade
                                     .as_ref()
                                     .map(|c| c.duration_secs)
                                     .unwrap_or(self.crossfade_duration);
@@ -2032,7 +2344,9 @@ impl App {
                                     15..=29 => 30,
                                     _ => 3,
                                 };
-                                let enabled = self.state.crossfade
+                                let enabled = self
+                                    .state
+                                    .crossfade
                                     .as_ref()
                                     .map(|c| c.enabled)
                                     .unwrap_or(true);
@@ -2046,12 +2360,21 @@ impl App {
                                 self.notify("Syncing covers...", NotificationKind::Info);
                                 tokio::spawn(async move {
                                     match c.library_sync_covers().await {
-                                        Ok(DaemonRes::SyncCoversResult { synced, total, .. }) => {
-                                            let msg = format!("Covers synced: {synced}/{total} tracks");
-                                            let _ = ipc_tx.send(IpcResult::Notification(msg, crate::app::NotificationKind::Info));
+                                        Ok(DaemonRes::SyncCoversResult {
+                                            synced, total, ..
+                                        }) => {
+                                            let msg =
+                                                format!("Covers synced: {synced}/{total} tracks");
+                                            let _ = ipc_tx.send(IpcResult::Notification(
+                                                msg,
+                                                crate::app::NotificationKind::Info,
+                                            ));
                                         }
                                         Ok(DaemonRes::Error { message, .. }) => {
-                                            let _ = ipc_tx.send(IpcResult::Notification(format!("Sync failed: {message}"), crate::app::NotificationKind::Error));
+                                            let _ = ipc_tx.send(IpcResult::Notification(
+                                                format!("Sync failed: {message}"),
+                                                crate::app::NotificationKind::Error,
+                                            ));
                                         }
                                         Ok(_) => {}
                                         Err(e) => {
@@ -2087,8 +2410,12 @@ impl App {
                         self.sleep_timer_input_mode = false;
                         self.sleep_timer_input_buf.clear();
                     }
-                    KeyCode::Backspace => { self.sleep_timer_input_buf.pop(); }
-                    KeyCode::Char(c) if c.is_ascii_digit() => { self.sleep_timer_input_buf.push(c); }
+                    KeyCode::Backspace => {
+                        self.sleep_timer_input_buf.pop();
+                    }
+                    KeyCode::Char(c) if c.is_ascii_digit() => {
+                        self.sleep_timer_input_buf.push(c);
+                    }
                     _ => {}
                 }
                 return;
@@ -2122,7 +2449,10 @@ impl App {
                     let mins = self.sleep_timer_minutes;
                     self.sleep_timer_remaining = Some(mins as u64);
                     self.send_high(TuiCommand::SetSleepTimer(mins));
-                    self.notify(&format!("Sleep timer set: {} min", mins), NotificationKind::Info);
+                    self.notify(
+                        &format!("Sleep timer set: {} min", mins),
+                        NotificationKind::Info,
+                    );
                     self.pickers.close_top();
                     return;
                 }
@@ -2148,7 +2478,11 @@ impl App {
                 KeyCode::Down | KeyCode::Char('k') => {
                     let quick_opts = [5u32, 10, 15, 30, 60, 90, 120];
                     if let Some(top) = self.pickers.top_mut() {
-                        top.selected = if top.selected == 0 { quick_opts.len() - 1 } else { top.selected - 1 };
+                        top.selected = if top.selected == 0 {
+                            quick_opts.len() - 1
+                        } else {
+                            top.selected - 1
+                        };
                         self.sleep_timer_minutes = quick_opts[top.selected];
                     }
                     return;
@@ -2173,7 +2507,12 @@ impl App {
                     if top.id == PickerId::Queue && !self.queue_cache.is_empty() {
                         let idx = top.selected.min(self.queue_cache.len() - 1);
                         if idx > 0 {
-                            let _ = tx.send(TuiCommand::QueueMove(idx as u128, idx.saturating_sub(1) as u128)).await;
+                            let _ = tx
+                                .send(TuiCommand::QueueMove(
+                                    idx as u128,
+                                    idx.saturating_sub(1) as u128,
+                                ))
+                                .await;
                             self.fetch_queue().await;
                         }
                     }
@@ -2184,15 +2523,25 @@ impl App {
                     if top.id == PickerId::Queue && !self.queue_cache.is_empty() {
                         let idx = top.selected.min(self.queue_cache.len() - 1);
                         if idx < self.queue_cache.len() - 1 {
-                            let _ = tx.send(TuiCommand::QueueMove(idx as u128, (idx + 1) as u128)).await;
+                            let _ = tx
+                                .send(TuiCommand::QueueMove(idx as u128, (idx + 1) as u128))
+                                .await;
                             self.fetch_queue().await;
                         }
                     }
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                let has_input = matches!(self.pickers.top().map(|o| o.id), Some(PickerId::YTSearch) | Some(PickerId::SearchLibrary) | Some(PickerId::CommandPalette));
-                let is_metadata = matches!(self.pickers.top().map(|o| o.id), Some(PickerId::EditMetadata));
+                let has_input = matches!(
+                    self.pickers.top().map(|o| o.id),
+                    Some(PickerId::YTSearch)
+                        | Some(PickerId::SearchLibrary)
+                        | Some(PickerId::CommandPalette)
+                );
+                let is_metadata = matches!(
+                    self.pickers.top().map(|o| o.id),
+                    Some(PickerId::EditMetadata)
+                );
                 if is_metadata {
                     if self.metadata_field_idx > 0 {
                         self.metadata_field_idx -= 1;
@@ -2212,15 +2561,28 @@ impl App {
                         let idx = top.selected.min(THEMES.len().saturating_sub(1));
                         self.theme = (THEMES[idx].builder)();
                         self.theme_index = idx;
-                        save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, progress_style: self.progress_style });
+                        save_prefs(&Prefs {
+                            theme_index: idx,
+                            transparent_bg: self.transparent_bg,
+                            footer_preset: self.footer_preset,
+                            progress_style: self.progress_style,
+                        });
                     }
                 }
                 self.clamp_picker_selection();
                 self.apply_eq_on_navigation().await;
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                let has_input = matches!(self.pickers.top().map(|o| o.id), Some(PickerId::YTSearch) | Some(PickerId::SearchLibrary) | Some(PickerId::CommandPalette));
-                let is_metadata = matches!(self.pickers.top().map(|o| o.id), Some(PickerId::EditMetadata));
+                let has_input = matches!(
+                    self.pickers.top().map(|o| o.id),
+                    Some(PickerId::YTSearch)
+                        | Some(PickerId::SearchLibrary)
+                        | Some(PickerId::CommandPalette)
+                );
+                let is_metadata = matches!(
+                    self.pickers.top().map(|o| o.id),
+                    Some(PickerId::EditMetadata)
+                );
                 if is_metadata {
                     if self.metadata_field_idx < 6 {
                         self.metadata_field_idx += 1;
@@ -2240,14 +2602,22 @@ impl App {
                         let idx = top.selected.min(THEMES.len().saturating_sub(1));
                         self.theme = (THEMES[idx].builder)();
                         self.theme_index = idx;
-                        save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, progress_style: self.progress_style });
+                        save_prefs(&Prefs {
+                            theme_index: idx,
+                            transparent_bg: self.transparent_bg,
+                            footer_preset: self.footer_preset,
+                            progress_style: self.progress_style,
+                        });
                     }
                 }
                 self.clamp_picker_selection();
                 self.apply_eq_on_navigation().await;
             }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::EditMetadata)) {
+                if matches!(
+                    self.pickers.top().map(|o| o.id),
+                    Some(PickerId::EditMetadata)
+                ) {
                     if let Some(track_id) = self.metadata_edit_track_id {
                         let title = self.metadata_fields[0].clone();
                         let artist = self.metadata_fields[1].clone();
@@ -2258,13 +2628,21 @@ impl App {
                         let client = self.client.clone();
                         let ipc_tx = self.ipc_tx.clone();
                         tokio::spawn(async move {
-                            let _ = client.library_update_metadata(
-                                track_id,
-                                Some(title), Some(artist),
-                                Some(album), Some(genre),
-                                year, track_number,
-                            ).await;
-                            let _ = ipc_tx.send(IpcResult::Notification("Metadata saved".to_string(), NotificationKind::Success));
+                            let _ = client
+                                .library_update_metadata(
+                                    track_id,
+                                    Some(title),
+                                    Some(artist),
+                                    Some(album),
+                                    Some(genre),
+                                    year,
+                                    track_number,
+                                )
+                                .await;
+                            let _ = ipc_tx.send(IpcResult::Notification(
+                                "Metadata saved".to_string(),
+                                NotificationKind::Success,
+                            ));
                         });
                         self.metadata_edit_track_id = None;
                     }
@@ -2315,22 +2693,30 @@ impl App {
                             let filtered: Vec<&(&str, &str)> = if query.is_empty() {
                                 commands.iter().collect()
                             } else {
-                                commands.iter().filter(|c| {
-                                    let lower = c.0.to_lowercase();
-                                    let mut qi = 0usize;
-                                    for ch in lower.chars() {
-                                        if qi < query.len() && ch == query.as_bytes()[qi] as char {
-                                            qi += 1;
+                                commands
+                                    .iter()
+                                    .filter(|c| {
+                                        let lower = c.0.to_lowercase();
+                                        let mut qi = 0usize;
+                                        for ch in lower.chars() {
+                                            if qi < query.len()
+                                                && ch == query.as_bytes()[qi] as char
+                                            {
+                                                qi += 1;
+                                            }
                                         }
-                                    }
-                                    qi == query.len()
-                                }).collect()
+                                        qi == query.len()
+                                    })
+                                    .collect()
                             };
                             let idx = top.selected.min(filtered.len().saturating_sub(1));
                             if let Some(cmd) = filtered.get(idx) {
                                 let raw = cmd.0.to_lowercase();
                                 // Strip leading icon (skip to first ASCII letter)
-                                let label = raw.chars().skip_while(|c| !c.is_ascii_alphabetic()).collect::<String>();
+                                let label = raw
+                                    .chars()
+                                    .skip_while(|c| !c.is_ascii_alphabetic())
+                                    .collect::<String>();
                                 if label.starts_with("play/pause") {
                                     self.send_high(TuiCommand::PlayPause);
                                 } else if label.starts_with("next track") {
@@ -2376,7 +2762,10 @@ impl App {
                                 } else if label.starts_with("sleeptimer") {
                                     self.pickers.open(PickerId::SleepTimer);
                                 } else if label.starts_with("themepicker") {
-                                    self.pickers.open_with_selection(PickerId::ThemePicker, self.theme_index);
+                                    self.pickers.open_with_selection(
+                                        PickerId::ThemePicker,
+                                        self.theme_index,
+                                    );
                                 } else if label.starts_with("sound fx") {
                                     self.pickers.open(PickerId::SoundEffects);
                                 } else if label.starts_with("about") {
@@ -2390,11 +2779,21 @@ impl App {
                                     self.send_high(TuiCommand::FetchLyrics);
                                 } else if label.starts_with("progress style") {
                                     self.progress_style = self.progress_style.next();
-                                    self.notify(&format!("Progress: {}", self.progress_style.name()), crate::app::NotificationKind::Info);
+                                    self.notify(
+                                        &format!("Progress: {}", self.progress_style.name()),
+                                        crate::app::NotificationKind::Info,
+                                    );
                                 } else if label.starts_with("visualizer") {
                                     self.visualizer.toggle();
-                                    let state = if self.visualizer.is_enabled() { "ON" } else { "OFF" };
-                                    self.notify(&format!("Visualizer: {}", state), crate::app::NotificationKind::Info);
+                                    let state = if self.visualizer.is_enabled() {
+                                        "ON"
+                                    } else {
+                                        "OFF"
+                                    };
+                                    self.notify(
+                                        &format!("Visualizer: {}", state),
+                                        crate::app::NotificationKind::Info,
+                                    );
                                 }
                             }
                             self.pickers.close_top();
@@ -2420,14 +2819,21 @@ impl App {
                             ];
                             let idx = top.selected.min(presets.len() - 1);
                             let c = self.client.clone();
-                            tokio::spawn(async move { let _ = c.set_eq_preset(presets[idx]).await; });
+                            tokio::spawn(async move {
+                                let _ = c.set_eq_preset(presets[idx]).await;
+                            });
                             self.pickers.close_top();
                         }
                         PickerId::ThemePicker => {
                             let idx = top.selected.min(THEMES.len().saturating_sub(1));
                             self.theme = (THEMES[idx].builder)();
                             self.theme_index = idx;
-                            save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, progress_style: self.progress_style });
+                            save_prefs(&Prefs {
+                                theme_index: idx,
+                                transparent_bg: self.transparent_bg,
+                                footer_preset: self.footer_preset,
+                                progress_style: self.progress_style,
+                            });
                             self.pickers.close_top();
                         }
                         PickerId::SearchLibrary => {
@@ -2459,7 +2865,9 @@ impl App {
                                     let room_size = self.state.reverb.room_size;
                                     self.state.reverb.enabled = new_enabled;
                                     let c = self.client.clone();
-                                    tokio::spawn(async move { let _ = c.set_reverb(new_enabled, room_size).await; });
+                                    tokio::spawn(async move {
+                                        let _ = c.set_reverb(new_enabled, room_size).await;
+                                    });
                                     self.pickers.close_top();
                                 }
                                 _ => {
@@ -2481,13 +2889,21 @@ impl App {
                                     let client = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
-                                        let _ = client.library_update_metadata(
-                                            track_id,
-                                            Some(title), Some(artist),
-                                            Some(album), Some(genre),
-                                            year, track_number,
-                                        ).await;
-                                        let _ = ipc_tx.send(IpcResult::Notification("Metadata saved".to_string(), NotificationKind::Success));
+                                        let _ = client
+                                            .library_update_metadata(
+                                                track_id,
+                                                Some(title),
+                                                Some(artist),
+                                                Some(album),
+                                                Some(genre),
+                                                year,
+                                                track_number,
+                                            )
+                                            .await;
+                                        let _ = ipc_tx.send(IpcResult::Notification(
+                                            "Metadata saved".to_string(),
+                                            NotificationKind::Success,
+                                        ));
                                     });
                                     self.metadata_edit_track_id = None;
                                 }
@@ -2500,7 +2916,10 @@ impl App {
             }
             KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
                 // YT search: download selected result
-                let idx = self.pickers.top().map_or(0, |o| o.selected.min(self.yt_results_cache.len().saturating_sub(1)));
+                let idx = self.pickers.top().map_or(0, |o| {
+                    o.selected
+                        .min(self.yt_results_cache.len().saturating_sub(1))
+                });
                 if !self.yt_results_cache.is_empty() {
                     let url = self.yt_results_cache[idx].url.clone();
                     let _ = tx.send(TuiCommand::YtDownload(url)).await;
@@ -2508,7 +2927,10 @@ impl App {
             }
             KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
                 // YT search: add selected result to queue
-                let idx = self.pickers.top().map_or(0, |o| o.selected.min(self.yt_results_cache.len().saturating_sub(1)));
+                let idx = self.pickers.top().map_or(0, |o| {
+                    o.selected
+                        .min(self.yt_results_cache.len().saturating_sub(1))
+                });
                 if !self.yt_results_cache.is_empty() {
                     let url = self.yt_results_cache[idx].url.clone();
                     if self.yt_results_cache[idx].is_playlist {
@@ -2521,14 +2943,18 @@ impl App {
             KeyCode::Char(c) => {
                 if let Some(top) = self.pickers.top_mut() {
                     match top.id {
-                        PickerId::YTSearch | PickerId::SearchLibrary | PickerId::CommandPalette | PickerId::ThemePicker => {
+                        PickerId::YTSearch
+                        | PickerId::SearchLibrary
+                        | PickerId::CommandPalette
+                        | PickerId::ThemePicker => {
                             top.query.push(c);
                             if top.id == PickerId::YTSearch {
                                 if c == ' ' {
                                     self.yt_results_cache.clear();
                                     self.yt_search_loading = false;
                                 }
-                                self.yt_search_debounce = Some(std::time::Instant::now() + Duration::from_millis(500));
+                                self.yt_search_debounce =
+                                    Some(std::time::Instant::now() + Duration::from_millis(500));
                             }
                         }
                         PickerId::EditMetadata => {
@@ -2586,7 +3012,9 @@ impl App {
     }
 
     /// Interleave YT search results: insert one playlist entry after every 3 track entries.
-    fn interleave_yt_results(mut results: Vec<gtm_core::track::YTSearchResult>) -> Vec<gtm_core::track::YTSearchResult> {
+    fn interleave_yt_results(
+        mut results: Vec<gtm_core::track::YTSearchResult>,
+    ) -> Vec<gtm_core::track::YTSearchResult> {
         let tracks: Vec<_> = results.drain(..).filter(|r| !r.is_playlist).collect();
         let playlists: Vec<_> = results; // remaining are playlists
         let mut out = Vec::with_capacity(tracks.len() + playlists.len());

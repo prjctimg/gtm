@@ -19,42 +19,96 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    Play { path: String, start_pos: Option<f64> },
+    Play {
+        path: String,
+        start_pos: Option<f64>,
+    },
     PlayPause,
     Pause,
     Stop,
     Next,
     Prev,
-    Seek { position_secs: f64 },
-    Volume { volume: u8 },
+    Seek {
+        position_secs: f64,
+    },
+    Volume {
+        volume: u8,
+    },
     Shuffle,
-    Repeat { mode: String },
+    Repeat {
+        mode: String,
+    },
     Mute,
-    Crossfade { enabled: bool, duration_secs: Option<u8> },
+    Crossfade {
+        enabled: bool,
+        duration_secs: Option<u8>,
+    },
     Queue,
-    QueueAdd { path: String, position: Option<u128> },
-    QueueAddMany { paths: Vec<String> },
-    QueueAddFolder { path: String },
-    QueueRemove { index: u128 },
-    QueueMove { from: u128, to: u128 },
+    QueueAdd {
+        path: String,
+        position: Option<u128>,
+    },
+    QueueAddMany {
+        paths: Vec<String>,
+    },
+    QueueAddFolder {
+        path: String,
+    },
+    QueueRemove {
+        index: u128,
+    },
+    QueueMove {
+        from: u128,
+        to: u128,
+    },
     QueueClear,
-    QueueSet { paths: Vec<String>, start_idx: u128 },
-    Scan { path: String },
-    Tracks { filter: Option<String>, sort: Option<String> },
+    QueueSet {
+        paths: Vec<String>,
+        start_idx: u128,
+    },
+    Scan {
+        path: String,
+    },
+    Tracks {
+        filter: Option<String>,
+        sort: Option<String>,
+    },
     Playlists,
-    CreatePlaylist { name: String },
-    DeletePlaylist { id: i64 },
-    AddToPlaylist { playlist_id: i64, track_ids: Vec<i64> },
-    ImportM3u { path: String },
-    Recent { count: u128 },
+    CreatePlaylist {
+        name: String,
+    },
+    DeletePlaylist {
+        id: i64,
+    },
+    AddToPlaylist {
+        playlist_id: i64,
+        track_ids: Vec<i64>,
+    },
+    ImportM3u {
+        path: String,
+    },
+    Recent {
+        count: u128,
+    },
     Favourites,
-    FavouriteAdd { track_id: i64 },
-    FavouriteRemove { track_id: i64 },
-    YtSearch { query: String, filter: Option<String> },
+    FavouriteAdd {
+        track_id: i64,
+    },
+    FavouriteRemove {
+        track_id: i64,
+    },
+    YtSearch {
+        query: String,
+        filter: Option<String>,
+    },
     YtPoll,
     YtCancel,
-    YtResolve { url: String },
-    Search { query: String },
+    YtResolve {
+        url: String,
+    },
+    Search {
+        query: String,
+    },
     Status,
     Ping,
     Quit,
@@ -91,7 +145,9 @@ fn main() {
                 eprintln!("missing shell argument");
                 std::process::exit(1);
             }
-            let shell: Shell = args[2].parse().expect("invalid shell (bash, zsh, fish, powershell, elvish)");
+            let shell: Shell = args[2]
+                .parse()
+                .expect("invalid shell (bash, zsh, fish, powershell, elvish)");
             gen_completions::<Cli>("gtm", shell, &mut std::io::stdout());
         }
         "completions-gtmd" => {
@@ -99,11 +155,17 @@ fn main() {
                 eprintln!("missing shell argument");
                 std::process::exit(1);
             }
-            let shell: Shell = args[2].parse().expect("invalid shell (bash, zsh, fish, powershell, elvish)");
+            let shell: Shell = args[2]
+                .parse()
+                .expect("invalid shell (bash, zsh, fish, powershell, elvish)");
             gen_completions::<DaemonArgs>("gtmd", shell, &mut std::io::stdout());
         }
         "completions" | "all" => {
-            let outdir = if args.len() >= 3 { &args[2] } else { "artifacts" };
+            let outdir = if args.len() >= 3 {
+                &args[2]
+            } else {
+                "artifacts"
+            };
             generate_completions(outdir);
         }
         _ => {

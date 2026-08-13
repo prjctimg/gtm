@@ -68,13 +68,13 @@ impl TestReader {
             }
             // Need more data from the socket.
             let mut tmp = [0u8; 8192];
-            let n = self
-                .stream
-                .read(&mut tmp)
-                .await
-                .expect("read from socket");
+            let n = self.stream.read(&mut tmp).await.expect("read from socket");
             if n == 0 {
-                panic!("connection closed before response (buf contains {} bytes: {:?})", self.buf.len(), &self.buf[..self.buf.len().min(32)]);
+                panic!(
+                    "connection closed before response (buf contains {} bytes: {:?})",
+                    self.buf.len(),
+                    &self.buf[..self.buf.len().min(32)]
+                );
             }
             self.buf.extend_from_slice(&tmp[..n]);
         }
@@ -142,9 +142,7 @@ async fn daemon_handle() -> (tokio::task::JoinHandle<()>, DaemonConfig) {
     (handle, config)
 }
 
-async fn connect(
-    socket_path: &PathBuf,
-) -> (TestReader, tokio::net::unix::OwnedWriteHalf) {
+async fn connect(socket_path: &PathBuf) -> (TestReader, tokio::net::unix::OwnedWriteHalf) {
     let stream = UnixStream::connect(socket_path).await.unwrap();
     let (reader_half, writer_half) = stream.into_split();
     (TestReader::new(reader_half), writer_half)
@@ -220,7 +218,11 @@ async fn test_queue_add_and_list() {
     )
     .await;
     match res {
-        DaemonRes::QueueState { tracks, cursor, .. } => {
+        DaemonRes::QueueState {
+            queue: tracks,
+            cursor,
+            ..
+        } => {
             assert_eq!(tracks.len(), 1, "expected 1 track in queue");
             assert_eq!(tracks[0].path, "/tmp/test.opus");
             assert_eq!(cursor, 0);
@@ -261,7 +263,11 @@ async fn test_queue_add_multiple() {
     )
     .await;
     match res {
-        DaemonRes::QueueState { tracks, cursor, .. } => {
+        DaemonRes::QueueState {
+            queue: tracks,
+            cursor,
+            ..
+        } => {
             assert_eq!(tracks.len(), 3);
             assert_eq!(tracks[0].path, "/tmp/a.opus");
             assert_eq!(tracks[1].path, "/tmp/b.opus");
@@ -314,7 +320,9 @@ async fn test_queue_remove() {
     .await;
     match res {
         DaemonRes::QueueState {
-            tracks, cursor: _, ..
+            queue: tracks,
+            cursor: _,
+            ..
         } => {
             assert_eq!(tracks.len(), 1);
             assert_eq!(tracks[0].path, "/tmp/y.opus");
@@ -362,7 +370,11 @@ async fn test_queue_clear() {
     )
     .await;
     match res {
-        DaemonRes::QueueState { tracks, cursor, .. } => {
+        DaemonRes::QueueState {
+            queue: tracks,
+            cursor,
+            ..
+        } => {
             assert_eq!(tracks.len(), 0);
             assert_eq!(cursor, 0);
         }

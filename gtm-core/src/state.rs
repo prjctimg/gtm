@@ -85,6 +85,12 @@ pub struct DynamicModeConfig {
     pub enabled: bool,
     pub min_queue_remaining: u32,
     pub max_history: u32,
+    #[serde(default = "default_cooldown_weight")]
+    pub cooldown_weight: f32,
+}
+
+fn default_cooldown_weight() -> f32 {
+    0.1
 }
 
 impl Default for DynamicModeConfig {
@@ -93,6 +99,7 @@ impl Default for DynamicModeConfig {
             enabled: false,
             min_queue_remaining: 3,
             max_history: 50,
+            cooldown_weight: 0.1,
         }
     }
 }
@@ -117,6 +124,9 @@ impl Default for ScrobbleConfig {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrossfadeConfig {
     pub enabled: bool,
     pub duration_secs: u8,
     pub easing: Easing,
@@ -130,7 +140,10 @@ pub struct ReverbConfig {
 
 impl Default for ReverbConfig {
     fn default() -> Self {
-        Self { enabled: false, room_size: 0.5 }
+        Self {
+            enabled: false,
+            room_size: 0.5,
+        }
     }
 }
 
@@ -216,13 +229,26 @@ pub struct EqBand {
 
 /// ISO 1/3-octave center frequencies for 15-band graphic EQ.
 pub const EQ_FREQUENCIES: [f64; 15] = [
-    25.0, 40.0, 63.0, 100.0, 160.0, 250.0, 400.0, 630.0,
-    1000.0, 1600.0, 2500.0, 4000.0, 6300.0, 10000.0, 16000.0,
+    25.0, 40.0, 63.0, 100.0, 160.0, 250.0, 400.0, 630.0, 1000.0, 1600.0, 2500.0, 4000.0, 6300.0,
+    10000.0, 16000.0,
 ];
 /// All available EQ preset names (excluding Custom).
 pub const EQ_PRESETS: &[&str] = &[
-    "flat", "pop", "rock", "jazz", "classical", "bass", "vocal", "electronic",
-    "hiphop", "latin", "acoustic", "podcast", "dance", "headphones", "speaker",
+    "flat",
+    "pop",
+    "rock",
+    "jazz",
+    "classical",
+    "bass",
+    "vocal",
+    "electronic",
+    "hiphop",
+    "latin",
+    "acoustic",
+    "podcast",
+    "dance",
+    "headphones",
+    "speaker",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
@@ -275,24 +301,54 @@ impl EqPreset {
     /// All presets are capped at ±5 dB for musicality.
     pub fn to_gains(&self) -> [f32; 15] {
         match self {
-            Self::Flat    => [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            Self::Pop     => [-1.0, 0.0, 1.0, 3.0, 4.0, 5.0, 4.0, 2.0, 0.0, -1.0, -1.0, 0.0, 2.0, 3.0, 2.0],
-            Self::Rock    => [4.0, 4.0, 3.0, 1.0, -1.0, -2.0, -3.0, -1.0, 0.0, 1.0, 3.0, 4.0, 4.0, 4.0, 3.0],
-            Self::Jazz    => [3.0, 2.0, 2.0, 1.0, 0.0, 1.0, 0.0, -1.0, -1.0, 0.0, 1.0, 2.0, 2.0, 2.0, 2.0],
-            Self::Classical => [3.0, 3.0, 2.0, 2.0, 1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 1.0, 2.0, 2.0, 2.0, 2.0],
-            Self::Bass    => [5.0, 5.0, 4.0, 4.0, 3.0, 2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
-            Self::Vocal   => [-2.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0],
-            Self::Electronic => [4.0, 4.0, 3.0, 2.0, 0.0, -1.0, -1.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 3.0],
-            Self::HipHop  => [4.0, 4.0, 3.0, 2.0, 1.0, 1.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, 2.0, 2.0, 2.0],
-            Self::Latin   => [3.0, 3.0, 2.0, 1.0, 0.0, 0.0, -1.0, -1.0, -1.0, 0.0, 1.0, 2.0, 2.0, 3.0, 3.0],
-            Self::Acoustic => [3.0, 3.0, 2.0, 2.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 1.0],
+            Self::Flat => [
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+            Self::Pop => [
+                -1.0, 0.0, 1.0, 3.0, 4.0, 5.0, 4.0, 2.0, 0.0, -1.0, -1.0, 0.0, 2.0, 3.0, 2.0,
+            ],
+            Self::Rock => [
+                4.0, 4.0, 3.0, 1.0, -1.0, -2.0, -3.0, -1.0, 0.0, 1.0, 3.0, 4.0, 4.0, 4.0, 3.0,
+            ],
+            Self::Jazz => [
+                3.0, 2.0, 2.0, 1.0, 0.0, 1.0, 0.0, -1.0, -1.0, 0.0, 1.0, 2.0, 2.0, 2.0, 2.0,
+            ],
+            Self::Classical => [
+                3.0, 3.0, 2.0, 2.0, 1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 1.0, 2.0, 2.0, 2.0, 2.0,
+            ],
+            Self::Bass => [
+                5.0, 5.0, 4.0, 4.0, 3.0, 2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+            Self::Vocal => [
+                -2.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0,
+            ],
+            Self::Electronic => [
+                4.0, 4.0, 3.0, 2.0, 0.0, -1.0, -1.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 3.0,
+            ],
+            Self::HipHop => [
+                4.0, 4.0, 3.0, 2.0, 1.0, 1.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, 2.0, 2.0, 2.0,
+            ],
+            Self::Latin => [
+                3.0, 3.0, 2.0, 1.0, 0.0, 0.0, -1.0, -1.0, -1.0, 0.0, 1.0, 2.0, 2.0, 3.0, 3.0,
+            ],
+            Self::Acoustic => [
+                3.0, 3.0, 2.0, 2.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 1.0,
+            ],
             // Podcast: speech-optimized — low-cut rumble, narrow presence boost, de-ess, air
-            Self::Podcast => [-4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 3.0, 1.0, 2.0, 3.0, 3.0, 2.0],
-            Self::Dance   => [4.0, 4.0, 4.0, 3.0, 2.0, 0.0, 0.0, -1.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0],
+            Self::Podcast => [
+                -4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 3.0, 1.0, 2.0, 3.0, 3.0, 2.0,
+            ],
+            Self::Dance => [
+                4.0, 4.0, 4.0, 3.0, 2.0, 0.0, 0.0, -1.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0,
+            ],
             // Headphones: compensate closed-back — sub-bass warmth, presence dip, air shelf
-            Self::Headphones => [3.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 3.0],
+            Self::Headphones => [
+                3.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 3.0,
+            ],
             // Speaker: desktop speakers — cut unplayable sub-bass, boost presence, add clarity
-            Self::Speaker => [-3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 3.0, 3.0, 2.0, 1.0, 0.0, 1.0, 2.0, 1.0],
+            Self::Speaker => [
+                -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 3.0, 3.0, 2.0, 1.0, 0.0, 1.0, 2.0, 1.0,
+            ],
             Self::Custom(gains) => *gains,
         }
     }
@@ -300,9 +356,15 @@ impl EqPreset {
     /// Convert to 15 `EqBand` structs with ISO frequencies.
     pub fn to_bands(&self) -> Vec<EqBand> {
         let gains = self.to_gains();
-        EQ_FREQUENCIES.iter().zip(gains.iter()).map(|(freq, gain)| {
-            EqBand { frequency: *freq, gain_db: *gain, q: EQ_DEFAULT_Q }
-        }).collect()
+        EQ_FREQUENCIES
+            .iter()
+            .zip(gains.iter())
+            .map(|(freq, gain)| EqBand {
+                frequency: *freq,
+                gain_db: *gain,
+                q: EQ_DEFAULT_Q,
+            })
+            .collect()
     }
 }
 
@@ -368,7 +430,7 @@ impl SavedState {
     }
 
     /// Apply this saved state to a `DaemonState`, restoring persisted fields.
-pub fn apply_to(&self, state: &mut DaemonState) {
+    pub fn apply_to(&self, state: &mut DaemonState) {
         state.queue = self.queue.clone();
         state.queue_cursor = self.queue_cursor;
         state.volume = self.volume;

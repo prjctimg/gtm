@@ -15,7 +15,6 @@ symphonia = { version = "0.6", default-features = false, features = ["all-codecs
 symphonia-adapter-libopus = "0.3"
 fundsp = { version = "0.23", default-features = false, features = ["std"] }
 thiserror = "2"
-async-trait = "0.1"
 log = "0.4"
 pulseaudio = { version = "0.3", optional = true }
 tokio = { version = "1", features = ["rt-multi-thread"], optional = true }

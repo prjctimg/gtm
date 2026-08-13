@@ -425,16 +425,52 @@ pub struct ThemeEntry {
 }
 
 pub const THEMES: &[ThemeEntry] = &[
-    ThemeEntry { name: "Chadrula", builder: chadrula },
-    ThemeEntry { name: "One Dark", builder: one_dark },
-    ThemeEntry { name: "Tokyo Night", builder: tokyonight },
-    ThemeEntry { name: "Tokyo Night Storm", builder: tokyonight_storm },
-    ThemeEntry { name: "Catppuccin Mocha", builder: catppuccin_mocha },
-    ThemeEntry { name: "Catppuccin Latte", builder: catppuccin_latte },
-    ThemeEntry { name: "Gruvbox Dark", builder: gruvbox_dark },
-    ThemeEntry { name: "Nord", builder: nord },
-    ThemeEntry { name: "Rose Pine", builder: rose_pine },
-    ThemeEntry { name: "Everforest", builder: everforest },
-    ThemeEntry { name: "Kanagawa", builder: kanagawa },
-    ThemeEntry { name: "Kanagawa Lotus", builder: kanagawa_lotus },
+    ThemeEntry {
+        name: "Chadrula",
+        builder: chadrula,
+    },
+    ThemeEntry {
+        name: "One Dark",
+        builder: one_dark,
+    },
+    ThemeEntry {
+        name: "Tokyo Night",
+        builder: tokyonight,
+    },
+    ThemeEntry {
+        name: "Tokyo Night Storm",
+        builder: tokyonight_storm,
+    },
+    ThemeEntry {
+        name: "Catppuccin Mocha",
+        builder: catppuccin_mocha,
+    },
+    ThemeEntry {
+        name: "Catppuccin Latte",
+        builder: catppuccin_latte,
+    },
+    ThemeEntry {
+        name: "Gruvbox Dark",
+        builder: gruvbox_dark,
+    },
+    ThemeEntry {
+        name: "Nord",
+        builder: nord,
+    },
+    ThemeEntry {
+        name: "Rose Pine",
+        builder: rose_pine,
+    },
+    ThemeEntry {
+        name: "Everforest",
+        builder: everforest,
+    },
+    ThemeEntry {
+        name: "Kanagawa",
+        builder: kanagawa,
+    },
+    ThemeEntry {
+        name: "Kanagawa Lotus",
+        builder: kanagawa_lotus,
+    },
 ];

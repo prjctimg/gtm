@@ -17,7 +17,7 @@ use fundsp::audiounit::AudioUnit;
 use fundsp::prelude32::*;
 use rodio::Source;
 
-use gtm_core::state::{EqPreset, EQ_FREQUENCIES, EQ_DEFAULT_Q};
+use gtm_core::state::{EqPreset, EQ_DEFAULT_Q, EQ_FREQUENCIES};
 
 // ---------------------------------------------------------------------------
 // AtomicF32 (stable API wrapper)

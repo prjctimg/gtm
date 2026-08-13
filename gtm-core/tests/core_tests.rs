@@ -151,66 +151,102 @@ roundtrip!(
 );
 
 // ---------------------------------------------------------------------------
-// IPC enum round-trips
+// IPC: cmd_name round-trips (parse_cmd is the canonical deserialization path)
 // ---------------------------------------------------------------------------
 
-macro_rules! enum_roundtrip {
-    ($name:ident, $ty:ty, $json_variant:literal, $bincode_val:expr) => {
+#[test]
+fn daemon_req_cmd_name_roundtrip() {
+    let reqs: Vec<DaemonReq> = vec![
+        DaemonReq::Play {
+            path: "/m/s.mp3".into(),
+            start_pos: 0.0,
+        },
+        DaemonReq::PlayPause,
+        DaemonReq::Pause,
+        DaemonReq::Stop,
+        DaemonReq::Next,
+        DaemonReq::Prev,
+        DaemonReq::Seek {
+            position_secs: 10.0,
+        },
+        DaemonReq::SetVolume { volume: 80 },
+        DaemonReq::GetVolume,
+        DaemonReq::ToggleShuffle,
+        DaemonReq::ToggleMute,
+        DaemonReq::GetStatus,
+        DaemonReq::CheckHealth,
+        DaemonReq::Ping,
+        DaemonReq::Quit,
+    ];
+    for req in &reqs {
+        let cmd = req.cmd_name();
+        let params = serde_json::to_value(req).unwrap();
+        let de = DaemonReq::parse_cmd(cmd, params).unwrap();
+        assert_eq!(req.cmd_name(), de.cmd_name(), "roundtrip failed for {cmd}");
+    }
+}
+
+#[test]
+fn daemon_req_parse_cmd_unknown_cmd() {
+    let result = DaemonReq::parse_cmd("totally_unknown", serde_json::json!({}));
+    assert!(result.is_err());
+}
+
+#[test]
+fn daemon_req_parse_cmd_play() {
+    let params = serde_json::json!({"path": "/music/song.mp3", "start_pos": 0.0});
+    let req = DaemonReq::parse_cmd("play", params).unwrap();
+    assert_eq!(req.cmd_name(), "play");
+    match req {
+        DaemonReq::Play { path, start_pos } => {
+            assert_eq!(path, "/music/song.mp3");
+            assert_eq!(start_pos, 0.0);
+        }
+        other => panic!("expected Play, got {other:?}"),
+    }
+}
+
+#[test]
+fn daemon_req_parse_cmd_unit_variants() {
+    for (cmd, expected) in [
+        ("play_pause", "play_pause"),
+        ("pause", "pause"),
+        ("stop", "stop"),
+        ("next", "next"),
+        ("prev", "prev"),
+        ("get_volume", "get_volume"),
+        ("toggle_shuffle", "toggle_shuffle"),
+        ("toggle_mute", "toggle_mute"),
+        ("get_status", "get_status"),
+        ("check_health", "check_health"),
+        ("ping", "ping"),
+        ("quit", "quit"),
+    ] {
+        let req = DaemonReq::parse_cmd(cmd, serde_json::json!({})).unwrap();
+        assert_eq!(req.cmd_name(), expected);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// IPC: wire encode/decode round-trips (bincode via the wire module)
+// ---------------------------------------------------------------------------
+
+macro_rules! wire_event_roundtrip {
+    ($name:ident, $event:expr) => {
         #[test]
         fn $name() {
-            let val: $ty = $bincode_val;
-            // JSON roundtrip
-            let json = serde_json::to_value(&val).unwrap();
-            let de: $ty = serde_json::from_value(json).unwrap();
-            assert_eq!(format!("{:?}", val), format!("{:?}", de));
-            // Bincode roundtrip
-            let bin = bincode::serialize(&val).unwrap();
-            let de2: $ty = bincode::deserialize(&bin).unwrap();
-            assert_eq!(format!("{:?}", val), format!("{:?}", de2));
+            let events = vec![$event];
+            let buf = encode(&events).unwrap();
+            let (decoded, consumed) = decode(&buf).unwrap().unwrap();
+            assert_eq!(decoded.len(), 1);
+            assert_eq!(consumed as usize, buf.len());
+            assert_eq!(format!("{:?}", events[0]), format!("{:?}", decoded[0]));
         }
     };
 }
 
-enum_roundtrip!(
-    daemon_req_play,
-    DaemonReq,
-    "Play",
-    DaemonReq::Play {
-        path: "/m/s.mp3".into(),
-        start_pos: 0.0,
-    }
-);
-enum_roundtrip!(daemon_req_pause, DaemonReq, "Pause", DaemonReq::Pause);
-enum_roundtrip!(daemon_req_stop, DaemonReq, "Stop", DaemonReq::Stop);
-enum_roundtrip!(
-    daemon_req_get_status,
-    DaemonReq,
-    "GetStatus",
-    DaemonReq::GetStatus
-);
-enum_roundtrip!(daemon_req_quit, DaemonReq, "Quit", DaemonReq::Quit);
-
-enum_roundtrip!(
-    daemon_res_ok,
-    DaemonRes,
-    "Ok",
-    DaemonRes::Ok { version: 42 }
-);
-enum_roundtrip!(daemon_res_pong, DaemonRes, "Pong", DaemonRes::Pong);
-enum_roundtrip!(
-    daemon_res_error,
-    DaemonRes,
-    "Error",
-    DaemonRes::Error {
-        version: 0,
-        message: "fail".into()
-    }
-);
-
-enum_roundtrip!(
-    daemon_event_playback_started,
-    DaemonEvent,
-    "PlaybackStarted",
+wire_event_roundtrip!(
+    wire_event_playback_started,
     DaemonEvent::PlaybackStarted {
         track: sample_track(),
         auto_advanced: false,
@@ -218,47 +254,104 @@ enum_roundtrip!(
         duration: 240.0,
     }
 );
-enum_roundtrip!(
-    daemon_event_playback_paused,
-    DaemonEvent,
-    "PlaybackPaused",
+wire_event_roundtrip!(
+    wire_event_playback_paused,
     DaemonEvent::PlaybackPaused { time_pos: 0.0 }
 );
-enum_roundtrip!(
-    daemon_event_track_ended,
-    DaemonEvent,
-    "TrackEnded",
-    DaemonEvent::TrackEnded
+wire_event_roundtrip!(wire_event_track_ended, DaemonEvent::TrackEnded);
+wire_event_roundtrip!(
+    wire_event_volume_changed,
+    DaemonEvent::VolumeChanged { volume: 50 }
 );
 
-enum_roundtrip!(queue_action_list, QueueAction, "List", QueueAction::List);
-enum_roundtrip!(
-    queue_action_add,
-    QueueAction,
-    "Add",
-    QueueAction::Add {
-        path: "/m/s.mp3".into(),
-        position: Some(0),
-    }
-);
+// ---------------------------------------------------------------------------
+// IPC: DaemonRes serde round-trips (internally tagged, JSON-only)
+// ---------------------------------------------------------------------------
 
-enum_roundtrip!(
-    library_action_scan,
-    LibraryAction,
-    "Scan",
-    LibraryAction::Scan {
-        path: "/music".into()
+#[test]
+fn daemon_res_json_roundtrip() {
+    let ress: Vec<DaemonRes> = vec![
+        DaemonRes::Ok { version: 42 },
+        DaemonRes::Pong,
+        DaemonRes::Error {
+            version: 0,
+            message: "fail".into(),
+        },
+    ];
+    for res in &ress {
+        let json = serde_json::to_value(res).unwrap();
+        let de: DaemonRes = serde_json::from_value(json).unwrap();
+        assert_eq!(format!("{:?}", res), format!("{:?}", de));
     }
-);
-enum_roundtrip!(
-    library_action_get_tracks,
-    LibraryAction,
-    "GetTracks",
-    LibraryAction::GetTracks {
-        filter: None,
-        sort: None,
+}
+
+// ---------------------------------------------------------------------------
+// IPC: QueueAction / LibraryAction serde JSON round-trips (internally tagged)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn queue_action_json_roundtrip() {
+    let actions: Vec<QueueAction> = vec![
+        QueueAction::List,
+        QueueAction::Clear,
+        QueueAction::Add {
+            path: "/m/s.mp3".into(),
+            position: None,
+        },
+        QueueAction::AddMany {
+            paths: vec!["/a.mp3".into(), "/b.mp3".into()],
+        },
+        QueueAction::AddFolder {
+            path: "/music".into(),
+        },
+    ];
+    for action in &actions {
+        let json = serde_json::to_value(action).unwrap();
+        let de: QueueAction = serde_json::from_value(json).unwrap();
+        assert_eq!(format!("{:?}", action), format!("{:?}", de));
     }
-);
+}
+
+#[test]
+fn library_action_json_roundtrip() {
+    let actions: Vec<LibraryAction> = vec![
+        LibraryAction::Scan {
+            path: "/music".into(),
+        },
+        LibraryAction::GetTracks {
+            filter: None,
+            sort: None,
+        },
+        LibraryAction::GetPlaylists,
+        LibraryAction::CreatePlaylist {
+            name: "Favs".into(),
+        },
+        LibraryAction::DeletePlaylist { id: 1 },
+        LibraryAction::AddToPlaylist {
+            playlist_id: 1,
+            track_ids: vec![1, 2],
+        },
+        LibraryAction::ImportM3u {
+            path: "/m.m3u".into(),
+        },
+        LibraryAction::ExportM3u {
+            playlist_id: 1,
+            path: "/out.m3u".into(),
+        },
+        LibraryAction::SyncCovers,
+        LibraryAction::SyncLyrics,
+        LibraryAction::RemoveFromPlaylist {
+            playlist_id: 1,
+            track_id: 2,
+        },
+        LibraryAction::RemoveTrack { id: 1 },
+    ];
+    for action in &actions {
+        let json = serde_json::to_value(action).unwrap();
+        let de: LibraryAction = serde_json::from_value(json).unwrap();
+        assert_eq!(format!("{:?}", action), format!("{:?}", de));
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Wire protocol
@@ -268,7 +361,7 @@ enum_roundtrip!(
 fn encode_decode_empty() {
     let buf = encode(&[]).unwrap();
     let (frame, consumed) = decode(&buf).unwrap().unwrap();
-    assert!(frame.events.is_empty());
+    assert!(frame.is_empty());
     assert_eq!(consumed as usize, buf.len());
 }
 
@@ -277,8 +370,8 @@ fn encode_decode_one() {
     let events = vec![DaemonEvent::PlaybackPaused { time_pos: 0.0 }];
     let buf = encode(&events).unwrap();
     let (frame, consumed) = decode(&buf).unwrap().unwrap();
-    assert_eq!(frame.events.len(), 1);
-    assert!(matches!(frame.events[0], DaemonEvent::PlaybackPaused { .. }));
+    assert_eq!(frame.len(), 1);
+    assert!(matches!(frame[0], DaemonEvent::PlaybackPaused { .. }));
     assert_eq!(consumed as usize, buf.len());
 }
 
@@ -291,7 +384,7 @@ fn encode_decode_multi() {
     ];
     let buf = encode(&events).unwrap();
     let (frame, consumed) = decode(&buf).unwrap().unwrap();
-    assert_eq!(frame.events.len(), 3);
+    assert_eq!(frame.len(), 3);
     assert_eq!(consumed as usize, buf.len());
 }
 
@@ -414,18 +507,18 @@ fn state_transition_mute_toggle() {
 #[test]
 fn state_transition_crossfade() {
     let mut s = sample_state();
-    s.set_crossfade(true, 8).unwrap();
+    s.set_crossfade(true, 8, None).unwrap();
     assert!(s.crossfade.is_some());
     assert_eq!(s.crossfade.as_ref().unwrap().duration_secs, 8);
 
-    s.set_crossfade(false, 0).unwrap();
+    s.set_crossfade(false, 0, None).unwrap();
     assert!(s.crossfade.is_none());
 }
 
 #[test]
 fn state_transition_crossfade_clamped() {
     let mut s = sample_state();
-    s.set_crossfade(true, 99).unwrap();
+    s.set_crossfade(true, 99, None).unwrap();
     assert_eq!(s.crossfade.as_ref().unwrap().duration_secs, 30);
 }
 
@@ -445,6 +538,7 @@ fn state_transition_advance_queue() {
     s.queue.push(t2);
     s.queue.push(t3);
     s.queue_cursor = 0;
+    s.repeat = RepeatMode::All;
 
     let next = s.advance_queue(1).unwrap().unwrap();
     assert_eq!(next.id, 2);
@@ -667,13 +761,12 @@ fn truncated_bincode_returns_error() {
 fn empty_wire_frame() {
     let buf = encode(&[]).unwrap();
     let (frame, _) = decode(&buf).unwrap().unwrap();
-    assert!(frame.events.is_empty());
+    assert!(frame.is_empty());
 }
 
 #[test]
-fn unknown_json_tag_is_error() {
-    let bad = r#"{"UnknownVariant":{}}"#;
-    let result: Result<DaemonReq> = serde_json::from_str(bad).map_err(Into::into);
+fn unknown_cmd_is_error() {
+    let result = DaemonReq::parse_cmd("unknown_command", serde_json::json!({}));
     assert!(result.is_err());
 }
 

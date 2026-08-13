@@ -20,7 +20,7 @@
 // ```
 
 use crate::ipc::DaemonEvent;
-use crate::state::{CoreError, CrossfadeConfig, DaemonState, DynamicModeConfig, LoudnessMode, PlaybackStatus, RepeatMode, ScrobbleConfig};
+use crate::state::{CoreError, CrossfadeConfig, DaemonState, PlaybackStatus, RepeatMode};
 use crate::track::TrackInfo;
 use crate::tripwire::{self, FailPoint};
 use crate::Result;
@@ -141,7 +141,12 @@ impl DaemonState {
         Ok(())
     }
 
-    pub fn set_crossfade(&mut self, enabled: bool, duration: u8, easing: Option<crate::state::Easing>) -> Result<()> {
+    pub fn set_crossfade(
+        &mut self,
+        enabled: bool,
+        duration: u8,
+        easing: Option<crate::state::Easing>,
+    ) -> Result<()> {
         tripwire::check(FailPoint::CrossfadeApply)?;
         self.crossfade = if enabled {
             let easing_val = easing.unwrap_or_else(|| {
@@ -367,7 +372,11 @@ impl DaemonState {
             DaemonEvent::GaplessChanged { enabled } => {
                 self.gapless = *enabled;
             }
-            DaemonEvent::DynamicModeChanged { enabled, min_queue_remaining, max_history } => {
+            DaemonEvent::DynamicModeChanged {
+                enabled,
+                min_queue_remaining,
+                max_history,
+            } => {
                 self.dynamic_mode.enabled = *enabled;
                 self.dynamic_mode.min_queue_remaining = *min_queue_remaining;
                 self.dynamic_mode.max_history = *max_history;
@@ -375,11 +384,14 @@ impl DaemonState {
             DaemonEvent::ScrobbleConfigChanged { enabled } => {
                 self.scrobble.enabled = *enabled;
             }
-            DaemonEvent::LibraryOrganized { moves } => {
+            DaemonEvent::LibraryOrganized { moves: _ } => {
                 // No state to update
             }
-            DaemonEvent::LoudnessScanProgress { scanned, total } => {}
-            DaemonEvent::LoudnessScanDone { scanned } => {}
+            DaemonEvent::LoudnessScanProgress {
+                scanned: _,
+                total: _,
+            } => {}
+            DaemonEvent::LoudnessScanDone { scanned: _ } => {}
             _ => {} // MetadataChanged, Custom — no state mirror field
         }
         self.version += 1;

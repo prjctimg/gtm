@@ -26,7 +26,7 @@ use ratatui_image::StatefulImage;
 pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = socket
         .map(PathBuf::from)
-        .unwrap_or_else(gtm_core::default_socket_path);
+        .unwrap_or_else(gtm_core::resolve_command_socket);
 
     // Redirect stderr to log file so diagnostic messages don't break the TUI
     let _original_stderr = gtm_core::log::redirect_stderr_to_log();
@@ -65,7 +65,9 @@ pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>>
     })
 }
 
-async fn ensure_daemon_running(socket_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+async fn ensure_daemon_running(
+    socket_path: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
     // If socket exists, try a quick ping to check if daemon is alive
     if socket_path.exists() {
         if let Ok(mut stream) = tokio::net::UnixStream::connect(socket_path).await {
@@ -77,10 +79,10 @@ async fn ensure_daemon_running(socket_path: &std::path::Path) -> Result<(), Box<
             })? + "\n";
             let _ = stream.write_all(ping.as_bytes()).await;
             let mut buf = [0u8; 256];
-            if let Ok(Ok(n)) = tokio::time::timeout(
-                std::time::Duration::from_millis(100),
-                stream.read(&mut buf),
-            ).await {
+            if let Ok(Ok(n)) =
+                tokio::time::timeout(std::time::Duration::from_millis(100), stream.read(&mut buf))
+                    .await
+            {
                 if n > 0 {
                     return Ok(());
                 }
@@ -126,7 +128,9 @@ async fn ensure_daemon_running(socket_path: &std::path::Path) -> Result<(), Box<
                 if let Ok(Ok(n)) = tokio::time::timeout(
                     std::time::Duration::from_millis(500),
                     stream.read(&mut buf),
-                ).await {
+                )
+                .await
+                {
                     if n > 0 {
                         return Ok(());
                     }
@@ -178,8 +182,7 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
         area,
     );
     // help bar shows on Library tab, hidden during pickers
-    let show_help =
-        app.current_tab == Tab::Library && !app.pickers.is_open() && !app.hide_help_bar;
+    let show_help = app.current_tab == Tab::Library && !app.pickers.is_open() && !app.hide_help_bar;
     let help_height: u16 = if show_help { 1 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -402,10 +405,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let vis_w = area.width / 3;
         let h = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Min(0),
-                Constraint::Length(vis_w),
-            ])
+            .constraints([Constraint::Min(0), Constraint::Length(vis_w)])
             .split(area);
         (h[0], Some(h[1]), None)
     } else {
@@ -421,10 +421,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let vis_w = app.terminal_cols / 3;
         let h = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Min(0),
-                Constraint::Length(vis_w),
-            ])
+            .constraints([Constraint::Min(0), Constraint::Length(vis_w)])
             .split(chunks[0]);
         (h[0], Some(h[1]))
     } else {
@@ -1390,10 +1387,7 @@ fn render_yt_search_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let query = app
-        .pickers
-        .top()
-        .map_or(String::new(), |o| o.query.clone());
+    let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
     let cursor = if app
         .pickers
         .top()
@@ -1480,10 +1474,7 @@ fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let query = app
-        .pickers
-        .top()
-        .map_or(String::new(), |o| o.query.clone());
+    let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
     let filtered: Vec<&gtm_core::track::TrackInfo> = if query.is_empty() {
         app.tracks_cache.iter().collect()
     } else {
@@ -1957,10 +1948,7 @@ fn render_about_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let query = app
-        .pickers
-        .top()
-        .map_or(String::new(), |o| o.query.clone());
+    let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
     let help_lines = vec![
         " Playback",
         "   Space        Play / Pause",
@@ -2242,10 +2230,7 @@ pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str)] = &[
 fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let commands = COMMAND_PALETTE_COMMANDS;
 
-    let query = app
-        .pickers
-        .top()
-        .map_or(String::new(), |o| o.query.clone());
+    let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
     let q = query.to_lowercase();
     let mut filtered: Vec<(&(&str, &str), usize)> = if q.is_empty() {
         commands.iter().map(|c| (c, 0)).collect()
@@ -2486,10 +2471,7 @@ fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let query = app
-        .pickers
-        .top()
-        .map_or(String::new(), |o| o.query.clone());
+    let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
     let q = query.to_lowercase();
 
     let filtered: Vec<_> = if q.is_empty() {
@@ -2782,7 +2764,9 @@ fn render_health_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
         lines.push(Line::from(vec![
             Span::styled(
                 format!("Daemon v{}", report.version),
-                Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!("  uptime {:.0}s", report.daemon_uptime_secs),
@@ -2818,13 +2802,11 @@ fn render_health_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let para = Paragraph::new(lines).scroll((0, 0));
         f.render_widget(para, inner);
     } else {
-        let loading = Paragraph::new(" Loading...")
-            .style(Style::default().fg(app.theme.fg_dim));
+        let loading = Paragraph::new(" Loading...").style(Style::default().fg(app.theme.fg_dim));
         f.render_widget(loading, inner);
     }
 
-    let help = Paragraph::new(" [Esc] Close")
-        .style(Style::default().fg(app.theme.fg_dim));
+    let help = Paragraph::new(" [Esc] Close").style(Style::default().fg(app.theme.fg_dim));
     let help_area = Rect::new(
         rect.x,
         rect.y + rect.height.saturating_sub(1),

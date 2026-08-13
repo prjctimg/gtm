@@ -254,8 +254,7 @@ impl<'a> Widget for Lines<'a> {
                         break;
                     }
                     if let Some(cell) = buf.cell_mut((x, area.y + row as u16)) {
-                        cell.set_symbol(&ch.to_string())
-                            .set_style(span.style);
+                        cell.set_symbol(&ch.to_string()).set_style(span.style);
                     }
                     x += 1;
                 }

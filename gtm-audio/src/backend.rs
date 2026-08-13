@@ -1,28 +1,10 @@
 // Copyright (c) 2025 - present
 // Author: prjctimg <prjctimg@outlook.com>
-// AudioBackend trait, AudioEvent, and AudioError definitions
+// AudioEvent and AudioError definitions
 //
 // This is free software released under the GPL-3.0 license.
 
-use async_trait::async_trait;
-
 pub type AudioResult<T> = std::result::Result<T, AudioError>;
-
-#[async_trait]
-pub trait AudioBackend: Send + Sync {
-    async fn load(&mut self, path: &str, start_pos: f64) -> AudioResult<()>;
-    async fn play(&mut self) -> AudioResult<()>;
-    async fn pause(&mut self) -> AudioResult<()>;
-    async fn stop(&mut self) -> AudioResult<()>;
-    async fn seek(&mut self, position_secs: f64) -> AudioResult<()>;
-    async fn set_volume(&mut self, volume: u8) -> AudioResult<()>;
-    async fn poll(&mut self) -> AudioResult<Option<AudioEvent>>;
-
-    fn current_position(&self) -> f64;
-    fn duration(&self) -> f64;
-    fn is_playing(&self) -> bool;
-    fn volume(&self) -> u8;
-}
 
 #[derive(Debug, Clone)]
 pub enum AudioEvent {

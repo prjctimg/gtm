@@ -32,11 +32,7 @@ struct PaPlaybackSource {
 }
 
 impl PlaybackSource for PaPlaybackSource {
-    fn poll_read(
-        self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
-        buf: &mut [u8],
-    ) -> Poll<usize> {
+    fn poll_read(self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<usize> {
         let vol = self.volume.load(Ordering::Relaxed) as f32 / 100.0;
         let float_count = buf.len() / 4;
         let mut written = 0usize;
@@ -82,11 +78,7 @@ struct PaStreamState {
 }
 
 impl PaStreamState {
-    fn new(
-        client: &Client,
-        name: &str,
-        _mixer_volume: &Arc<AtomicU8>,
-    ) -> AudioResult<Self> {
+    fn new(client: &Client, name: &str, _mixer_volume: &Arc<AtomicU8>) -> AudioResult<Self> {
         let ring = Arc::new(RingBufferInner::new(44100 * 2 * 3));
         let stream_volume = Arc::new(AtomicU8::new(0));
 
@@ -114,7 +106,8 @@ impl PaStreamState {
         };
 
         let stream = tokio::task::block_in_place(|| {
-            tokio::runtime::Handle::current().block_on(client.create_playback_stream(params, source))
+            tokio::runtime::Handle::current()
+                .block_on(client.create_playback_stream(params, source))
         })
         .map_err(|e| AudioError::OutputError(format!("PA create stream '{name}': {e}")))?;
 
@@ -188,9 +181,8 @@ pub struct PulseAudioMixer {
 
 impl PulseAudioMixer {
     pub fn new() -> AudioResult<Self> {
-        let client = Client::from_env(c"gtm").map_err(|e| {
-            AudioError::OutputError(format!("PulseAudio client: {e}"))
-        })?;
+        let client = Client::from_env(c"gtm")
+            .map_err(|e| AudioError::OutputError(format!("PulseAudio client: {e}")))?;
 
         let mixer_volume = Arc::new(AtomicU8::new(100));
 
@@ -266,7 +258,10 @@ impl PulseAudioMixer {
 
     fn probe_duration(path: &str) -> AudioResult<f64> {
         let source = Self::decode(path)?;
-        Ok(source.total_duration().map(|d| d.as_secs_f64()).unwrap_or(0.0))
+        Ok(source
+            .total_duration()
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0))
     }
 
     fn start_decode(
@@ -395,7 +390,11 @@ impl Mixer for PulseAudioMixer {
         };
         let source = if self.reverb_enabled.load(Ordering::Relaxed) {
             let room_size = *self.reverb_room_size.lock().unwrap();
-            Box::new(ReverbSource::new(source, room_size, self.reverb_enabled.clone()))
+            Box::new(ReverbSource::new(
+                source,
+                room_size,
+                self.reverb_enabled.clone(),
+            ))
         } else {
             source
         };
@@ -467,7 +466,11 @@ impl Mixer for PulseAudioMixer {
         };
         let source = if self.reverb_enabled.load(Ordering::Relaxed) {
             let room_size = *self.reverb_room_size.lock().unwrap();
-            Box::new(ReverbSource::new(source, room_size, self.reverb_enabled.clone()))
+            Box::new(ReverbSource::new(
+                source,
+                room_size,
+                self.reverb_enabled.clone(),
+            ))
         } else {
             source
         };
@@ -670,8 +673,7 @@ impl Mixer for PulseAudioMixer {
                 self.playing.store(false, Ordering::SeqCst);
             } else {
                 let progress = elapsed / FADE_MS;
-                let target =
-                    (self.stored_volume.min(100) as f32 / 100.0) * (1.0 - progress as f32);
+                let target = (self.stored_volume.min(100) as f32 / 100.0) * (1.0 - progress as f32);
                 Self::set_stream_volume(&self.active(), (target * 100.0) as u8);
             }
         }

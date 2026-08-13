@@ -107,9 +107,7 @@ impl YoutubeManager {
         results.sort_by(|a, b| {
             let a_prio = priority(&a.title);
             let b_prio = priority(&b.title);
-            b_prio.cmp(&a_prio).then(
-                b.views.cmp(&a.views)
-            )
+            b_prio.cmp(&a_prio).then(b.views.cmp(&a.views))
         });
         self.results = results;
         Ok(())
@@ -137,17 +135,20 @@ impl YoutubeManager {
             .await
             .map_err(|e| format!("semaphore: {e}"))?;
 
-        let output = timeout(SEARCH_TIMEOUT, Command::new("yt-dlp")
-            .arg("-g")
-            .arg("-f")
-            .arg("bestaudio[ext=m4a]/bestaudio")
-            .arg(url)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::null())
-            .output())
-            .await
-            .map_err(|_| "resolve timeout".to_string())?
-            .map_err(|e| format!("yt-dlp: {e}"))?;
+        let output = timeout(
+            SEARCH_TIMEOUT,
+            Command::new("yt-dlp")
+                .arg("-g")
+                .arg("-f")
+                .arg("bestaudio[ext=m4a]/bestaudio")
+                .arg(url)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .output(),
+        )
+        .await
+        .map_err(|_| "resolve timeout".to_string())?
+        .map_err(|e| format!("yt-dlp: {e}"))?;
 
         if !output.status.success() {
             return Err("yt-dlp resolve failed".to_string());
@@ -190,11 +191,18 @@ fn priority(title: &str) -> u32 {
 }
 
 fn parse_yt_json(line: &str) -> Result<YTSearchResult, String> {
-    let v: serde_json::Value =
-        serde_json::from_str(line).map_err(|e| format!("json: {e}"))?;
-    let id = v.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let v: serde_json::Value = serde_json::from_str(line).map_err(|e| format!("json: {e}"))?;
+    let id = v
+        .get("id")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let is_playlist = v.get("_type").and_then(|v| v.as_str()) == Some("playlist");
-    let raw_title = v.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let raw_title = v
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
     let (_artist, title) = crate::metadata_cleaner::clean_youtube_title(&raw_title);
     Ok(YTSearchResult {
         id: id.clone(),
@@ -204,10 +212,17 @@ fn parse_yt_json(line: &str) -> Result<YTSearchResult, String> {
         } else {
             format!("https://www.youtube.com/watch?v={id}")
         },
-        channel: v.get("channel").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        channel: v
+            .get("channel")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
         duration: v.get("duration").and_then(|v| v.as_f64()).unwrap_or(0.0),
         views: v.get("view_count").and_then(|v| v.as_u64()).unwrap_or(0),
-        thumbnail: v.get("thumbnail").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        thumbnail: v
+            .get("thumbnail")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
         is_playlist,
     })
 }

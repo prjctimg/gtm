@@ -184,10 +184,7 @@ pub struct RingBufferSource {
 }
 
 impl RingBufferSource {
-    pub fn new(
-        shared: SharedRingBuffer,
-        control: Arc<DecodeControl>,
-    ) -> Self {
+    pub fn new(shared: SharedRingBuffer, control: Arc<DecodeControl>) -> Self {
         let sr = control.sample_rate.load(Ordering::Relaxed);
         let ch = control.channels.load(Ordering::Relaxed);
         Self {

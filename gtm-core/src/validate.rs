@@ -66,6 +66,23 @@ impl TrackInfo {
         !self.path.is_empty() && !self.hash.is_empty() && self.duration >= 0.0
     }
 
+    /// Create a minimal TrackInfo from a file path and duration.
+    /// Used when playing a file not in the library.
+    pub fn from_path(path: &str, duration: f64) -> Self {
+        Self {
+            path: path.to_string(),
+            title: std::path::Path::new(path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Unknown")
+                .to_string(),
+            artist: "Unknown Artist".into(),
+            album: "Unknown Album".into(),
+            duration,
+            ..Default::default()
+        }
+    }
+
     /// Format duration as "M:SS" or "H:MM:SS".
     pub fn duration_formatted(&self) -> String {
         let total = self.duration as u64;

@@ -37,7 +37,7 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
     let result: Result<String, String> = rt.block_on(async {
         let socket_path = socket
             .map(PathBuf::from)
-            .unwrap_or_else(gtm_core::default_socket_path);
+            .unwrap_or_else(gtm_core::resolve_command_socket);
 
         let client = DaemonClient::connect(&socket_path)
             .await
@@ -49,61 +49,61 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
                 client
                     .play(path, pos)
                     .await
-                    .map(|v| format!("ok version={v}"))
+                    .map(|()| "ok".to_string())
                     .map_err(|e| e.to_string())
             }
             CliCommand::PlayPause => client
                 .play_pause()
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Pause => client
                 .pause()
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Stop => client
                 .stop()
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Next => client
                 .next()
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Prev => client
                 .prev()
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Seek { position_secs } => client
                 .seek(*position_secs)
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Volume { volume } => client
                 .set_volume(*volume)
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Shuffle => client
                 .toggle_shuffle()
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Repeat { mode } => {
                 let mode: RepeatMode = mode.parse().map_err(|e: String| e)?;
                 client
                     .cycle_repeat(mode)
                     .await
-                    .map(|v| format!("ok version={v}"))
+                    .map(|()| "ok".to_string())
                     .map_err(|e| e.to_string())
             }
             CliCommand::Mute => client
                 .toggle_mute()
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Crossfade {
                 enabled,
@@ -111,9 +111,9 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
             } => {
                 let dur = duration_secs.unwrap_or(7);
                 client
-                    .crossfade(*enabled, dur)
+                    .crossfade(*enabled, dur, None)
                     .await
-                    .map(|v| format!("ok version={v}"))
+                    .map(|()| "ok".to_string())
                     .map_err(|e| e.to_string())
             }
             CliCommand::Queue => {
@@ -127,42 +127,42 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
             CliCommand::QueueAdd { path, position } => client
                 .queue_add(path, *position)
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::QueueAddMany { paths } => client
                 .queue_add_many(paths.clone())
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::QueueAddFolder { path } => client
                 .queue_add_dir(path)
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::QueueRemove { index } => client
                 .queue_rm(*index)
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::QueueMove { from, to } => client
                 .queue_move(*from, *to)
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::QueueClear => client
                 .queue_clear()
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::QueueSet { paths, start_idx } => client
                 .queue_set(paths.clone(), *start_idx)
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Scan { path } => client
                 .library_scan(path)
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Tracks { filter, sort } => {
                 let res = client
@@ -189,12 +189,12 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
             CliCommand::CreatePlaylist { name } => client
                 .library_create_playlist(name)
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::DeletePlaylist { id } => client
                 .library_delete_playlist(*id)
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::AddToPlaylist {
                 playlist_id,
@@ -202,17 +202,17 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
             } => client
                 .library_add_to_playlist(*playlist_id, track_ids.clone())
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::ImportM3u { path } => client
                 .library_import_m3u(path)
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::ExportM3u { playlist_id, path } => client
                 .library_export_m3u(*playlist_id, path)
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Recent { count } => {
                 let res = client
@@ -236,12 +236,12 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
             CliCommand::FavouriteAdd { track_id } => client
                 .add_favourite(*track_id)
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::FavouriteRemove { track_id } => client
                 .remove_favourite(*track_id)
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Search { query } => {
                 let res = client.search(query).await.map_err(|e| e.to_string())?;
@@ -276,7 +276,7 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
             CliCommand::YtCancel => client
                 .yt_search_cancel()
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::YtResolve { url } => {
                 let res = client
@@ -299,19 +299,43 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
                         gtm_core::state::PlaybackStatus::Paused => "\x1b[33m⏸ Paused\x1b[0m",
                         gtm_core::state::PlaybackStatus::Stopped => "\x1b[31m⏹ Stopped\x1b[0m",
                     };
-                    let track_str = state.current_track.as_ref().map(|t| {
-                        let title = if t.title.is_empty() {
-                            std::path::Path::new(&t.path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Unknown".into())
-                        } else {
-                            t.title.clone()
-                        };
-                        if t.artist.is_empty() { title } else { format!("{} — {}", t.artist, title) }
-                    }).unwrap_or_else(|| "No track".into());
+                    let track_str = state
+                        .current_track
+                        .as_ref()
+                        .map(|t| {
+                            let title = if t.title.is_empty() {
+                                std::path::Path::new(&t.path)
+                                    .file_stem()
+                                    .map(|s| s.to_string_lossy().to_string())
+                                    .unwrap_or_else(|| "Unknown".into())
+                            } else {
+                                t.title.clone()
+                            };
+                            if t.artist.is_empty() {
+                                title
+                            } else {
+                                format!("{} — {}", t.artist, title)
+                            }
+                        })
+                        .unwrap_or_else(|| "No track".into());
                     let vol_str = format!("\x1b[36m{}%\x1b[0m", state.volume);
                     let repeat_str = format!("{:?}", state.repeat);
-                    let shuffle_str = if state.shuffle { "\x1b[32mOn\x1b[0m" } else { "Off" };
-                    let queue_str = format!("{} tracks, cursor {}/{}", state.queue.len(), state.queue_cursor + 1, state.queue.len().max(1));
-                    let mute_str = if state.mute { "\x1b[33mMuted\x1b[0m" } else { "Unmuted" };
+                    let shuffle_str = if state.shuffle {
+                        "\x1b[32mOn\x1b[0m"
+                    } else {
+                        "Off"
+                    };
+                    let queue_str = format!(
+                        "{} tracks, cursor {}/{}",
+                        state.queue.len(),
+                        state.queue_cursor + 1,
+                        state.queue.len().max(1)
+                    );
+                    let mute_str = if state.mute {
+                        "\x1b[33mMuted\x1b[0m"
+                    } else {
+                        "Unmuted"
+                    };
                     Ok(format!(
                         "\x1b[1mPlayback:\x1b[0m  {}\n\
                          \x1b[1mTrack:\x1b[0m    {}\n\
@@ -319,7 +343,13 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
                          \x1b[1mRepeat:\x1b[0m   {}\n\
                          \x1b[1mShuffle:\x1b[0m  {}\n\
                          \x1b[1mQueue:\x1b[0m    {}",
-                        status_str, track_str, vol_str, mute_str, repeat_str, shuffle_str, queue_str
+                        status_str,
+                        track_str,
+                        vol_str,
+                        mute_str,
+                        repeat_str,
+                        shuffle_str,
+                        queue_str
                     ))
                 }
             }
@@ -358,7 +388,7 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
             CliCommand::Quit => client
                 .quit()
                 .await
-                .map(|v| format!("ok version={v}"))
+                .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
         }
     });
