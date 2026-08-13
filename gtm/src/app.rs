@@ -589,6 +589,25 @@ impl App {
         save_prefs(&self.current_prefs());
     }
 
+    /// Cycle the design and auto-switch the theme to match, then persist.
+    fn cycle_design(&mut self) {
+        let all = Design::all();
+        let idx = all.iter().position(|d| *d == self.design).unwrap_or(0);
+        self.design = all[(idx + 1) % all.len()];
+        let target_theme = match self.design {
+            Design::Classic => "Classic",
+            Design::Modern => "Chadrula",
+        };
+        if let Some(idx) = self.themes.iter().position(|t| t.name == target_theme) {
+            self.theme_index = idx;
+        }
+        self.notify(
+            format!("Design: {}", self.design.name()),
+            NotificationKind::Info,
+        );
+        save_prefs(&self.current_prefs());
+    }
+
     pub async fn run(
         mut self,
         terminal: &mut Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
@@ -738,6 +757,9 @@ impl App {
                 self.display_position = raw;
                 self.last_display_position = raw;
                 self.track_anim_trigger = true;
+                // Re-enable auto-sync for the new track; a manual lyric scroll
+                // on a previous track must not stick across track changes.
+                self.lyrics_manual_scroll = false;
             }
 
             // Clear stale cover immediately so we don't show old art on the
@@ -1017,22 +1039,7 @@ impl App {
         let Some(ref lyrics) = self.current_lyrics else {
             return 0;
         };
-        if lyrics.lines.is_empty() {
-            return 0;
-        }
-        let pos = self.display_position;
-        let mut current_idx = 0;
-        for (i, line) in lyrics.lines.iter().enumerate() {
-            if line.timestamp < 0.0 {
-                continue;
-            }
-            if line.timestamp <= pos {
-                current_idx = i;
-            } else {
-                break;
-            }
-        }
-        current_idx
+        lyric_index_at(&lyrics.lines, self.display_position)
     }
 
     pub fn notify(&mut self, message: impl Into<String>, kind: NotificationKind) {
@@ -1114,11 +1121,33 @@ impl App {
             });
         }
         if let Some(ref detail) = self.browse_detail {
-            let detail_lower = detail.to_lowercase();
-            tracks.retain(|t| {
-                t.album.to_lowercase().contains(&detail_lower)
-                    || t.artist.to_lowercase().contains(&detail_lower)
-                    || t.title.to_lowercase().contains(&detail_lower)
+            // Drill-down must match the browse key exactly — a substring OR
+            // across album/artist/title pulls in unrelated tracks (e.g. an
+            // album name that appears in another track's title) and misses
+            // empty-field keys that `unique_albums`/`unique_artists` render
+            // as "Unknown Album"/"Unknown Artist".
+            tracks.retain(|t| match self.library_category {
+                2 => {
+                    let album: &str = if t.album.is_empty() {
+                        "Unknown Album"
+                    } else {
+                        &t.album
+                    };
+                    album.eq_ignore_ascii_case(detail)
+                }
+                3 => {
+                    let artist: &str = if t.artist.is_empty() {
+                        "Unknown Artist"
+                    } else {
+                        &t.artist
+                    };
+                    artist.eq_ignore_ascii_case(detail)
+                }
+                _ => {
+                    t.album.eq_ignore_ascii_case(detail)
+                        || t.artist.eq_ignore_ascii_case(detail)
+                        || t.title.eq_ignore_ascii_case(detail)
+                }
             });
         }
         if self.library_category == 1 {
@@ -2114,21 +2143,7 @@ impl App {
                         );
                     }
                     Some(KeyboardAction::CycleDesign) => {
-                        let all = Design::all();
-                        let idx = all.iter().position(|d| *d == self.design).unwrap_or(0);
-                        self.design = all[(idx + 1) % all.len()];
-                        // Auto-switch theme to match design
-                        let target_theme = match self.design {
-                            Design::Classic => "Classic",
-                            Design::Modern => "Chadrula",
-                        };
-                        if let Some(idx) = self.themes.iter().position(|t| t.name == target_theme) {
-                            self.theme_index = idx;
-                        }
-                        self.notify(
-                            format!("Design: {}", self.design.name()),
-                            NotificationKind::Info,
-                        );
+                        self.cycle_design();
                     }
                     Some(KeyboardAction::ToggleVisualizer) => {
                         self.visualizer.toggle();
@@ -2690,6 +2705,10 @@ impl App {
                                     }
                                     _ => {}
                                 },
+                                5 if opt == 0 => {
+                                    // Design cycle
+                                    self.cycle_design();
+                                }
                                 _ => {}
                             }
                         }
@@ -3646,5 +3665,63 @@ impl App {
             pl_idx += 1;
         }
         out
+    }
+}
+
+/// Index of the active time-synced lyric line for a playback position.
+/// Untimed lines (timestamp < 0) are skipped for matching but keep their
+/// index so the highlight tracks timed lines correctly.
+fn lyric_index_at(lines: &[gtm_core::track::LrcLine], position: f64) -> usize {
+    if lines.is_empty() {
+        return 0;
+    }
+    let mut current_idx = 0;
+    for (i, line) in lines.iter().enumerate() {
+        if line.timestamp < 0.0 {
+            continue;
+        }
+        if line.timestamp <= position {
+            current_idx = i;
+        } else {
+            break;
+        }
+    }
+    current_idx
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lyric_index_tracks_position_through_timed_lines() {
+        let lines = vec![
+            gtm_core::track::LrcLine {
+                timestamp: -1.0,
+                text: "intro (untimed)".into(),
+            },
+            gtm_core::track::LrcLine {
+                timestamp: 0.0,
+                text: "first".into(),
+            },
+            gtm_core::track::LrcLine {
+                timestamp: 5.0,
+                text: "second".into(),
+            },
+            gtm_core::track::LrcLine {
+                timestamp: 10.0,
+                text: "third".into(),
+            },
+        ];
+        assert_eq!(lyric_index_at(&lines, -1.0), 0);
+        assert_eq!(lyric_index_at(&lines, 0.0), 1);
+        assert_eq!(lyric_index_at(&lines, 4.9), 1);
+        assert_eq!(lyric_index_at(&lines, 5.0), 2);
+        assert_eq!(lyric_index_at(&lines, 999.0), 3);
+    }
+
+    #[test]
+    fn lyric_index_empty_returns_zero() {
+        assert_eq!(lyric_index_at(&[], 42.0), 0);
     }
 }

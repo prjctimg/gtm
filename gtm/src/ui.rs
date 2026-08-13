@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use crate::app::{App, Design, InputMode, LIBRARY_CATEGORIES};
+use crate::app::{App, InputMode, LIBRARY_CATEGORIES};
 use crate::picker::{Picker, PickerId};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -230,23 +230,24 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
 }
 
 fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let tabs: [(u16, Tab, &str); 2] =
-        [(1, Tab::Library, "Library"), (2, Tab::Settings, "Settings")];
+    let (lib_icon, settings_icon) = if use_nerd_fonts() {
+        ("\u{f001}", "\u{f013}")
+    } else {
+        ("\u{266a}", "\u{2699}")
+    };
+    let tabs: [(u16, Tab, &str, &str); 2] = [
+        (1, Tab::Library, "Library", lib_icon),
+        (2, Tab::Settings, "Settings", settings_icon),
+    ];
     let mut spans: Vec<Span> = Vec::new();
-    for (num, tab, label) in tabs {
+    for (num, tab, label, icon) in tabs {
         let active = app.current_tab == tab;
-        let text = format!(" {num} {label} ");
+        let text = format!(" {icon} {num} {label} ");
         let style = if active {
-            if app.design == Design::Classic {
-                Style::default()
-                    .fg(app.theme.selection_fg)
-                    .bg(app.theme.selection_bg)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD)
-            }
+            Style::default()
+                .fg(app.theme.selection_fg)
+                .bg(app.theme.selection_bg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(app.theme.fg_dim)
         };
@@ -648,11 +649,13 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     ])
                     .split(inner);
 
+                // Inset the cover 1 cell from the block's left/top so it never
+                // butts against the pane edge or the divider column.
                 let cover_area = Rect {
-                    x: hchunks[0].x,
-                    y: hchunks[0].y,
-                    width: hchunks[0].width,
-                    height: COVER_H.min(hchunks[0].height),
+                    x: hchunks[0].x + 1,
+                    y: hchunks[0].y + 1,
+                    width: hchunks[0].width.saturating_sub(1),
+                    height: COVER_H.min(hchunks[0].height).saturating_sub(1),
                 };
                 render_cover(
                     f,
@@ -1220,8 +1223,12 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     }
 
     let right_para = Paragraph::new(right_lines);
-    let right_inner =
-        render_pane_header(f, panes[1], app, category_label, !left_focus, false, true);
+    let header_label = if let Some(detail) = app.browse_detail.as_deref() {
+        format!("▶ {detail}")
+    } else {
+        category_label.to_string()
+    };
+    let right_inner = render_pane_header(f, panes[1], app, &header_label, !left_focus, false, true);
     fill_pane(f, right_inner, app);
     render_evolving(f, right_inner, right_para, "lib", app, false);
     // end content rendering
@@ -1567,15 +1574,32 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let picker_area = if top.id == PickerId::Help {
         area
     } else {
-        // Content-driven size with a square-ish minimum floor so floating
-        // pickers are never skinny strips, and never wider than their
-        // content demands.  Centered on both axes.
+        // Content-driven size, centered on both axes. Scrolling list pickers
+        // are capped at half the terminal so they never dominate the screen;
+        // the old 40-row square floor made even short lists balloon. Their
+        // internal renderers use `centered_scroll`, so the highlighted row
+        // stays in view as the viewport shrinks. Fixed-layout pickers (EQ,
+        // About, EditMetadata, …) keep their content height.
         let square_min = 40
             .min(area.width.saturating_sub(2))
             .min(area.height.saturating_sub(2));
         let (content_w, content_h) = picker_content_hint(top, app);
         let picker_width = content_w.max(square_min).min(area.width.saturating_sub(2));
-        let picker_height = content_h.max(square_min).min(area.height.saturating_sub(2));
+        let scrolling = matches!(
+            top.id,
+            PickerId::Queue
+                | PickerId::YTSearch
+                | PickerId::SearchLibrary
+                | PickerId::CommandPalette
+                | PickerId::ThemePicker
+                | PickerId::PlaylistSelect
+        );
+        let picker_height = if scrolling {
+            let height_cap = (area.height.saturating_sub(2) / 2).max(10);
+            content_h.max((square_min / 2).max(10)).min(height_cap)
+        } else {
+            content_h.max(10).min(area.height.saturating_sub(2))
+        };
         let picker_x = area.width.saturating_sub(picker_width) / 2;
         let picker_y = area.height.saturating_sub(picker_height) / 2;
 
@@ -2047,8 +2071,9 @@ fn render_track_popup(f: &mut ratatui::Frame, content_area: Rect, app: &mut App)
     let text_margin = 2u16;
 
     // Fixed dimensions to prevent layout shift when cover loads/unloads.
-    // Height must fit the 6 text rows (title, artist, album, spacer,
-    // duration, source) plus the border; the cover is vertically centered.
+    // Height must fit the 5 text rows (title, artist, album, spacer,
+    // "[duration] | [source]") plus the border; the cover is vertically
+    // centered.
     let popup_w = (COVER_W + 1 + 38 + text_margin).min(content_area.width.saturating_sub(2));
     let popup_h = COVER_H + 3;
     if popup_w < 20 || popup_h > content_area.height {
@@ -2161,11 +2186,7 @@ fn render_track_popup(f: &mut ratatui::Frame, content_area: Rect, app: &mut App)
             }),
             Line::from(""),
             Line::from(Span::styled(
-                format!(" Duration: {}", dur),
-                Style::default().fg(app.theme.fg_dim),
-            )),
-            Line::from(Span::styled(
-                format!(" Source: {}", source_label),
+                format!(" [{}] | {}", dur, source_label.trim_start()),
                 Style::default().fg(app.theme.fg_dim),
             )),
         ];
@@ -2209,11 +2230,7 @@ fn render_track_popup(f: &mut ratatui::Frame, content_area: Rect, app: &mut App)
             }),
             Line::from(""),
             Line::from(Span::styled(
-                format!("  Duration: {}", dur),
-                Style::default().fg(app.theme.fg_dim),
-            )),
-            Line::from(Span::styled(
-                format!("  Source: {}", source_label),
+                format!("  [{}] | {}", dur, source_label.trim_start()),
                 Style::default().fg(app.theme.fg_dim),
             )),
         ];
