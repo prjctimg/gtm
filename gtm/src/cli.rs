@@ -41,6 +41,9 @@ pub struct Args {
     #[arg(long, short, help = "Run in CLI mode instead of TUI")]
     pub cli: bool,
 
+    #[arg(long, short, global = true, help = "Verbose output")]
+    pub verbose: bool,
+
     #[arg(long, short, global = true, help = "Daemon socket path")]
     pub socket: Option<String>,
 
@@ -186,7 +189,11 @@ pub enum CliCommand {
     Search {
         query: String,
     },
-    Status,
+    Status {
+        /// Stream elapsed time continuously
+        #[arg(long)]
+        stream: bool,
+    },
     CheckHealth,
     Ping,
     Quit,
@@ -194,7 +201,7 @@ pub enum CliCommand {
     Config,
 }
 
-pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
+pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) {
     // `gtm config` edits the config file locally — no daemon needed.
     if matches!(cmd, CliCommand::Config) {
         if let Err(e) = open_config_in_editor() {
@@ -238,26 +245,62 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
-            CliCommand::Next => client
-                .next()
-                .await
-                .map(|()| "ok".to_string())
-                .map_err(|e| e.to_string()),
-            CliCommand::Prev => client
-                .prev()
-                .await
-                .map(|()| "ok".to_string())
-                .map_err(|e| e.to_string()),
+            CliCommand::Next => {
+                client.next().await.map_err(|e| e.to_string())?;
+                if verbose {
+                    match client.get_status().await {
+                        Ok(state) => {
+                            if let Some(ref t) = state.current_track {
+                                Ok(format!(
+                                    "Now Playing: {}\n{} - {}",
+                                    t.title, t.artist, t.album
+                                ))
+                            } else {
+                                Ok("Stopped".to_string())
+                            }
+                        }
+                        Err(_) => Ok("ok".to_string()),
+                    }
+                } else {
+                    Ok("ok".to_string())
+                }
+            }
+            CliCommand::Prev => {
+                client.prev().await.map_err(|e| e.to_string())?;
+                if verbose {
+                    match client.get_status().await {
+                        Ok(state) => {
+                            if let Some(ref t) = state.current_track {
+                                Ok(format!(
+                                    "Now Playing: {}\n{} - {}",
+                                    t.title, t.artist, t.album
+                                ))
+                            } else {
+                                Ok("Stopped".to_string())
+                            }
+                        }
+                        Err(_) => Ok("ok".to_string()),
+                    }
+                } else {
+                    Ok("ok".to_string())
+                }
+            }
             CliCommand::Seek { position_secs } => client
                 .seek(*position_secs)
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
-            CliCommand::Volume { volume } => client
-                .set_volume(*volume)
-                .await
-                .map(|()| "ok".to_string())
-                .map_err(|e| e.to_string()),
+            CliCommand::Volume { volume } => {
+                client
+                    .set_volume(*volume)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if verbose {
+                    Ok(format!("Volume: {}%", volume))
+                } else {
+                    Ok("ok".to_string())
+                }
+            }
             CliCommand::Shuffle => client
                 .toggle_shuffle()
                 .await
@@ -528,68 +571,92 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
                     }
                 }
             }
-            CliCommand::Status => {
-                let state = client.get_status().await.map_err(|e| e.to_string())?;
-                if json {
-                    serde_json::to_string_pretty(&state).map_err(|e| e.to_string())
-                } else {
-                    let status_str = match state.status {
-                        gtm_core::state::PlaybackStatus::Playing => "\x1b[32m▶ Playing\x1b[0m",
-                        gtm_core::state::PlaybackStatus::Paused => "\x1b[33m⏸ Paused\x1b[0m",
-                        gtm_core::state::PlaybackStatus::Stopped => "\x1b[31m⏹ Stopped\x1b[0m",
-                    };
-                    let track_str = state
-                        .current_track
-                        .as_ref()
-                        .map(|t| {
-                            let title = if t.title.is_empty() {
-                                std::path::Path::new(&t.path)
-                                    .file_stem()
-                                    .map(|s| s.to_string_lossy().to_string())
-                                    .unwrap_or_else(|| "Unknown".into())
-                            } else {
-                                t.title.clone()
-                            };
+            CliCommand::Status { stream } => {
+                if *stream {
+                    // Stream mode: continuously print status every second
+                    loop {
+                        let state = client.get_status().await.map_err(|e| e.to_string())?;
+                        let elapsed = state.time_pos as u64;
+                        let dur = state.duration as u64;
+                        let track = state.current_track.as_ref().map_or("No track".into(), |t| {
                             if t.artist.is_empty() {
-                                title
+                                t.title.clone()
                             } else {
-                                format!("{} — {}", t.artist, title)
+                                format!("{} - {}", t.artist, t.title)
                             }
-                        })
-                        .unwrap_or_else(|| "No track".into());
-                    let vol_str = format!("\x1b[36m{}%\x1b[0m", state.volume);
-                    let repeat_str = format!("{:?}", state.repeat);
-                    let shuffle_str = if state.shuffle {
-                        "\x1b[32mOn\x1b[0m"
+                        });
+                        let vol = state.volume;
+                        print!(
+                            "\rStream: {} | {}s / {}s | {}%   ",
+                            track, elapsed, dur, vol
+                        );
+                        use std::io::Write;
+                        std::io::stdout().flush().ok();
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                    }
+                } else {
+                    let state = client.get_status().await.map_err(|e| e.to_string())?;
+                    if json {
+                        serde_json::to_string_pretty(&state).map_err(|e| e.to_string())
                     } else {
-                        "Off"
-                    };
-                    let queue_str = format!(
-                        "{} tracks, cursor {}/{}",
-                        state.queue.len(),
-                        state.queue_cursor + 1,
-                        state.queue.len().max(1)
-                    );
-                    let mute_str = if state.mute {
-                        "\x1b[33mMuted\x1b[0m"
-                    } else {
-                        "Unmuted"
-                    };
-                    Ok(format!(
-                        "\x1b[1mPlayback:\x1b[0m  {}\n\
+                        let status_str = match state.status {
+                            gtm_core::state::PlaybackStatus::Playing => "\x1b[32m▶ Playing\x1b[0m",
+                            gtm_core::state::PlaybackStatus::Paused => "\x1b[33m⏸ Paused\x1b[0m",
+                            gtm_core::state::PlaybackStatus::Stopped => "\x1b[31m⏹ Stopped\x1b[0m",
+                        };
+                        let track_str = state
+                            .current_track
+                            .as_ref()
+                            .map(|t| {
+                                let title = if t.title.is_empty() {
+                                    std::path::Path::new(&t.path)
+                                        .file_stem()
+                                        .map(|s| s.to_string_lossy().to_string())
+                                        .unwrap_or_else(|| "Unknown".into())
+                                } else {
+                                    t.title.clone()
+                                };
+                                if t.artist.is_empty() {
+                                    title
+                                } else {
+                                    format!("{} — {}", t.artist, title)
+                                }
+                            })
+                            .unwrap_or_else(|| "No track".into());
+                        let vol_str = format!("\x1b[36m{}%\x1b[0m", state.volume);
+                        let repeat_str = format!("{:?}", state.repeat);
+                        let shuffle_str = if state.shuffle {
+                            "\x1b[32mOn\x1b[0m"
+                        } else {
+                            "Off"
+                        };
+                        let queue_str = format!(
+                            "{} tracks, cursor {}/{}",
+                            state.queue.len(),
+                            state.queue_cursor + 1,
+                            state.queue.len().max(1)
+                        );
+                        let mute_str = if state.mute {
+                            "\x1b[33mMuted\x1b[0m"
+                        } else {
+                            "Unmuted"
+                        };
+                        Ok(format!(
+                            "\x1b[1mPlayback:\x1b[0m  {}\n\
                          \x1b[1mTrack:\x1b[0m    {}\n\
                          \x1b[1mVolume:\x1b[0m   {} ({})\n\
                          \x1b[1mRepeat:\x1b[0m   {}\n\
                          \x1b[1mShuffle:\x1b[0m  {}\n\
                          \x1b[1mQueue:\x1b[0m    {}",
-                        status_str,
-                        track_str,
-                        vol_str,
-                        mute_str,
-                        repeat_str,
-                        shuffle_str,
-                        queue_str
-                    ))
+                            status_str,
+                            track_str,
+                            vol_str,
+                            mute_str,
+                            repeat_str,
+                            shuffle_str,
+                            queue_str
+                        ))
+                    }
                 }
             }
             CliCommand::Ping => {

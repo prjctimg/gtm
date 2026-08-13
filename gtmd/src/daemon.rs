@@ -1683,6 +1683,9 @@ impl Daemon {
     /// entry, then play the next queued / default-list / freshly-built
     /// fallback track.  Stops playback when there is nothing left to play.
     async fn cmd_next(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        // Clear any in-progress crossfade state before starting a new one
+        // so连续 prev/next works with >2 tracks (spec 09.1).
+        *inner.crossfade_loaded_for.lock().await = None;
         // Crossfade path: look up the standby without advancing the model and
         // start the fade; `finish_crossfade` advances at completion.  Falls
         // through to an immediate step for the non-crossfade case.

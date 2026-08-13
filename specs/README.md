@@ -9,15 +9,15 @@ can be picked up and completed in a later session.
 | [`00-repo-launch.md`](./00-repo-launch.md) — repository/launch readiness (audit fixes) | Done |
 | [`01-feature-improvements.md`](./01-feature-improvements.md) — playback/library feature work | Done |
 | [`01-preset-keybindings.md`](./01-preset-keybindings.md) — preset shuffle keybindings (dark/light cycling, Alt+key pattern) | Done |
-| [`02-pickers.md`](./02-pickers.md) — better pickers and floating windows (cover art, swatches, fuzzy finder) | Planned |
+| [`02-pickers.md`](./02-pickers.md) — better pickers and floating windows (cover art, swatches, fuzzy finder) | Done |
 | [`02-ui-redesign.md`](./02-ui-redesign.md) — borderless TUI structural redesign | Done |
 | [`03-command-palette.md`](./03-command-palette.md) — command palette reliability and coverage | Done |
 | [`04-theming.md`](./04-theming.md) — secondary/tertiary accents, footer colors, monochromatic, gradient fill | Done |
 | [`05-notifications.md`](./05-notifications.md) — floating notifications and vertical volume window | Planned |
 | [`06-improvements.md`](./06-improvements.md) — UI improvements, help text, CLI logging, READMEs | Done |
-| [`07-cli-logging.md`](./07-cli-logging.md) — verbose CLI output, --stream flag | Planned |
+| [`07-cli-logging.md`](./07-cli-logging.md) — verbose CLI output, --stream flag | Done |
 | [`08-toml-config.md`](./08-toml-config.md) — TOML configuration format migration | Planned |
-| [`09-bugs.md`](./09-bugs.md) — crossfade, track title, master volume fixes | Planned |
+| [`09-bugs.md`](./09-bugs.md) — crossfade, track title, master volume fixes | Done |
 
 ## Committed decisions
 

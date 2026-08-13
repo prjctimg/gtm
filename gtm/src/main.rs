@@ -58,7 +58,7 @@ fn main() {
 
     if let Some(ref cmd) = args.command {
         // A subcommand was given → run in CLI mode, dispatch directly
-        cli::run(args.socket, args.json, cmd);
+        cli::run(args.socket, args.json, args.verbose, cmd);
     } else if args.cli {
         // --cli flag with no subcommand → print CLI help
         let mut cmd = cli::Args::command();

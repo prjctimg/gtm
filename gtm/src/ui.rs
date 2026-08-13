@@ -2918,7 +2918,20 @@ fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let check = if is_active { " \u{2713}" } else { "" };
         // Badge light themes so users can spot them at a glance.
         let light_badge = if entry.light { " \u{2600}" } else { "" };
-        let content = format!("{}{}{}{}", prefix, entry.name, light_badge, check);
+        let name_part = format!("{}{}{}", prefix, entry.name, light_badge);
+        // Color swatch: small block showing the theme's accent color
+        let swatch = Span::styled(
+            "  ",
+            Style::default()
+                .fg(entry.theme.accent)
+                .bg(entry.theme.accent),
+        );
+        let spans = vec![
+            Span::styled(name_part, Style::default()),
+            Span::raw(" "),
+            swatch,
+            Span::styled(check, Style::default()),
+        ];
         let style = if i == sel {
             Style::default()
                 .fg(app.theme.selection_fg)
@@ -2930,7 +2943,7 @@ fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         } else {
             Style::default()
         };
-        list_items.push(ListItem::new(content).style(style));
+        list_items.push(ListItem::new(Line::from(spans)).style(style));
     }
 
     let list = List::new(list_items);
