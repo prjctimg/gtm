@@ -33,11 +33,13 @@ if [ -d "$REPO_ROOT/artifacts/man" ]; then
 fi
 
 # Create the .deb
+# termux-create-package 0.12.0 crashes (UnboundLocalError) when --files-dir or
+# --deb-dir are passed, so files_dir/deb_dir are read from the manifest. Run
+# from the repo root so the manifest's relative paths resolve correctly.
+cd "$REPO_ROOT"
 termux-create-package \
     --pkg-version "$VERSION" \
     --pkg-arch "$ARCH" \
-    --files-dir "$FILES_DIR" \
-    --deb-dir "$REPO_ROOT" \
-    "$REPO_ROOT/termux/gtm.yml"
+    termux/gtm.yml
 
 echo "Built: $(ls "$REPO_ROOT"/*.deb 2>/dev/null | head -1)"

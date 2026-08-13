@@ -24,7 +24,7 @@ tracing-subscriber = "0.3"
 toml = "0.8"
 
 [package.metadata.deb]
-package-name = "gtm-full"
+name = "gtm-full"
 maintainer = "prjctimg <prjctimg@outlook.com>"
 copyright = "2025 - present prjctimg"
 license-file = ["../LICENSE"]

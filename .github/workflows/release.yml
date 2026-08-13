@@ -263,18 +263,19 @@ jobs:
       - name: Build Termux .deb packages
         if: matrix.platform == 'aarch64-android'
         run: |
-          pip install termux-create-package
+          pip install termux-create-package ruamel.yaml
           version="${{ needs.tag.outputs.version }}"
           files="target/aarch64-linux-android/termux-pkg/files"
           mkdir -p "$files/bin" "$files/share/man/man1"
           cp target/aarch64-linux-android/release/gtmd "$files/bin/"
           cp target/aarch64-linux-android/release/gtm  "$files/bin/"
           cp artifacts/man/gtm.1 artifacts/man/gtmd.1 artifacts/man/gtmd-ipc.1 "$files/share/man/man1/"
+          # termux-create-package 0.12.0 crashes (UnboundLocalError) when
+          # --files-dir/--deb-dir are passed, so files_dir/deb_dir are read
+          # from the manifest instead (resolved relative to the workspace).
           termux-create-package \
             --pkg-version "$version" \
             --pkg-arch aarch64 \
-            --files-dir "$files" \
-            --deb-dir "$GITHUB_WORKSPACE" \
             termux/gtm.yml
 
       # Upload per-OS build artifacts so the release job can collect them.

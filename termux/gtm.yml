@@ -9,12 +9,18 @@ control:
     Depends: libpulseaudio
     Recommends: pulseaudio
     Homepage: https://github.com/prjctimg/gtm.rs
-    Description: |-
+    Description: |2-
         Terminal music player (TUI + CLI) and daemon with PulseAudio backend.
-        .
+         .
         GTM is a terminal-based music player with a TUI client, a background
         daemon, and optional MPRIS D-Bus integration. This package bundles
         both the gtm client and the gtmd daemon.
+
+# files_dir and deb_dir are resolved relative to the current working
+# directory. Both the release workflow and scripts/build-termux-deb.sh run
+# termux-create-package from the repository root.
+files_dir: target/aarch64-linux-android/termux-pkg/files
+deb_dir: .
 
 data_files:
     bin/gtmd:
