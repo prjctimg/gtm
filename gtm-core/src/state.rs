@@ -31,6 +31,22 @@ pub enum Easing {
     FastFadeInSlowFadeOut,
     Logarithmic,
     Smoothstep,
+    EqualPower,
+    Exponential,
+}
+
+impl Easing {
+    pub fn name(&self) -> &'static str {
+        match self {
+            Self::Linear => "Linear",
+            Self::SlowFadeInFastFadeOut => "Slow In, Fast Out",
+            Self::FastFadeInSlowFadeOut => "Fast In, Slow Out",
+            Self::Logarithmic => "Logarithmic",
+            Self::Smoothstep => "Smoothstep",
+            Self::EqualPower => "Equal Power",
+            Self::Exponential => "Exponential",
+        }
+    }
 }
 
 impl Default for Easing {

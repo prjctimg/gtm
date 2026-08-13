@@ -256,6 +256,14 @@ impl DaemonClient {
         self.send_ok(DaemonReq::SetCrossfadeEasing { easing }).await
     }
 
+    pub async fn set_sleep_timer(&self, minutes: u32) -> Result<u32> {
+        self.send_ok(DaemonReq::SetSleepTimer { minutes }).await
+    }
+
+    pub async fn cancel_sleep_timer(&self) -> Result<u32> {
+        self.send_ok(DaemonReq::CancelSleepTimer).await
+    }
+
     // ─── Queue ───
 
     pub async fn queue_list(&self) -> Result<DaemonRes> {

@@ -19,12 +19,13 @@
 //! │  over JSON lines (DaemonClient in gtm-core).             │
 //! └──────────────────────────────────────────────────────────┘
 //! ```
-
 mod app;
+
 mod cli;
 mod footer;
 mod keymap;
 mod overlay;
+mod progress;
 mod theme;
 mod ui;
 

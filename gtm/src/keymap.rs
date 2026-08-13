@@ -117,6 +117,7 @@ pub enum KeyboardAction {
     ReloadConfig,
     ToggleHelp,
     CycleFooterPreset,
+    CycleProgressStyle,
     Custom(String),
 }
 
@@ -663,6 +664,15 @@ pub fn default_keybindings() -> Keybindings {
                     action: KeyboardAction::EditMetadata,
                     contexts: vec![KeyContext::Normal],
                     description: "Edit metadata",
+                },
+            ),
+            // P — cycle progress style
+            (
+                KeyCode::Char('P').into(),
+                BoundCommand {
+                    action: KeyboardAction::CycleProgressStyle,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Cycle progress style",
                 },
             ),
         ],

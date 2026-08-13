@@ -461,6 +461,8 @@ impl AudioMixer {
             Easing::FastFadeInSlowFadeOut => t.sqrt(),
             Easing::Logarithmic => 1.0 - 2.0f64.powf(-t),
             Easing::Smoothstep => t * t * (3.0 - 2.0 * t),
+            Easing::EqualPower => (t * std::f64::consts::FRAC_PI_2).sin(),
+            Easing::Exponential => t.powf(3.0),
         }
     }
 
@@ -471,6 +473,8 @@ impl AudioMixer {
             Easing::FastFadeInSlowFadeOut => (1.0 - t) * (1.0 - t),
             Easing::Logarithmic => 2.0f64.powf(-t),
             Easing::Smoothstep => 1.0 - (t * t * (3.0 - 2.0 * t)),
+            Easing::EqualPower => (t * std::f64::consts::FRAC_PI_2).cos(),
+            Easing::Exponential => 1.0 - (1.0 - t).powf(3.0),
         }
     }
 

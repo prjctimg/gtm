@@ -151,6 +151,7 @@ pub enum DaemonEvent {
     SleepTimerTick {
         remaining_secs: u32,
     },
+    SleepTimerExpired,
     EqPresetChanged {
         preset: state::EqPreset,
     },
@@ -249,6 +250,12 @@ pub enum DaemonReq {
     GetLyrics {
         track_id: i64,
     },
+
+    // ─── Sleep Timer ───
+    SetSleepTimer {
+        minutes: u32,
+    },
+    CancelSleepTimer,
 
     // ─── System ───
     GetStatus,

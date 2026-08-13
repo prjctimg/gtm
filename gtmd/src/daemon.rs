@@ -52,6 +52,7 @@
 //! ```
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -91,6 +92,7 @@ pub struct Daemon {
     req_rx: mpsc::UnboundedReceiver<(ClientId, DaemonReq, ReplyTx)>,
     next_client_id: ClientId,
     crossfade_loaded_for: Option<String>,
+    sleep_cancel: Arc<AtomicBool>,
 }
 
 impl Daemon {
@@ -152,6 +154,7 @@ impl Daemon {
             req_rx,
             next_client_id: 0,
             crossfade_loaded_for: None,
+            sleep_cancel: Arc::new(AtomicBool::new(false)),
             library,
             cover_cache: Some(CoverCache::new(cache_dir)),
             lyrics_manager: Some(LyricsManager::new()),
@@ -462,6 +465,8 @@ impl Daemon {
             DaemonReq::SetEqPreset { preset } => self.cmd_set_eq_preset(*preset).await,
             DaemonReq::SetEqEnabled { enabled } => self.cmd_set_eq_enabled(*enabled).await,
             DaemonReq::SetReverb { enabled, room_size } => self.cmd_set_reverb(*enabled, *room_size).await,
+            DaemonReq::SetSleepTimer { minutes } => self.cmd_set_sleep_timer(*minutes).await,
+            DaemonReq::CancelSleepTimer => self.cmd_cancel_sleep_timer().await,
         DaemonReq::GetCoverArt { track_id }           => self.cmd_get_cover_art(*track_id).await,
         DaemonReq::GetLyrics { track_id }             => self.cmd_get_lyrics(*track_id).await,
             DaemonReq::Ping => Ok(DaemonRes::Pong),
@@ -1090,6 +1095,57 @@ impl Daemon {
         drop(state);
         self.mixer.set_reverb(&ReverbConfig { enabled, room_size });
         self.push_event(DaemonEvent::ReverbChanged { enabled, room_size });
+        Ok(DaemonRes::Ok { version })
+    }
+
+    async fn cmd_set_sleep_timer(&mut self, minutes: u32) -> Result<DaemonRes, CoreError> {
+        let total_secs = minutes * 60;
+        let event_tx = self.event_tx.clone();
+        let state = self.state.clone();
+
+        // Cancel any previous timer
+        self.sleep_cancel.store(true, Ordering::SeqCst);
+        let cancel_flag = Arc::new(AtomicBool::new(false));
+        self.sleep_cancel = cancel_flag.clone();
+
+        let mut s = state.write().await;
+        s.sleep_timer = Some(total_secs);
+        s.version += 1;
+        let version = s.version as u32;
+        drop(s);
+
+        tokio::spawn(async move {
+            for remaining in (1..=total_secs).rev() {
+                if cancel_flag.load(Ordering::SeqCst) {
+                    return;
+                }
+                {
+                    let mut s = state.write().await;
+                    s.sleep_timer = Some(remaining);
+                }
+                let _ = event_tx.send(DaemonEvent::SleepTimerTick { remaining_secs: remaining });
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            // Timer expired
+            {
+                let mut s = state.write().await;
+                s.status = PlaybackStatus::Stopped;
+                s.sleep_timer = None;
+                s.version += 1;
+            }
+            let _ = event_tx.send(DaemonEvent::PlaybackStopped);
+            let _ = event_tx.send(DaemonEvent::SleepTimerExpired);
+        });
+
+        Ok(DaemonRes::Ok { version })
+    }
+
+    async fn cmd_cancel_sleep_timer(&mut self) -> Result<DaemonRes, CoreError> {
+        self.sleep_cancel.store(true, Ordering::SeqCst);
+        let mut state = self.state.write().await;
+        state.sleep_timer = None;
+        state.version += 1;
+        let version = state.version as u32;
         Ok(DaemonRes::Ok { version })
     }
 

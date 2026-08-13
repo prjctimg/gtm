@@ -833,7 +833,7 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
          2 => {
             let crossfade_on = app.state.crossfade.as_ref().map(|c| c.enabled).unwrap_or(false);
             let crossfade_dur = app.state.crossfade.as_ref().map(|c| c.duration_secs).unwrap_or(0);
-            let easing = app.state.crossfade.as_ref().map(|c| format!("{:?}", c.easing)).unwrap_or_else(|| "N/A".into());
+            let easing = app.state.crossfade.as_ref().map(|c| c.easing.name()).unwrap_or("N/A");
             vec![
                 format!("Repeat          [ {:?}       ▶ ]", app.state.repeat),
                 format!("Shuffle         [ {} ]", if app.state.shuffle { "●   On " } else { "○   Off" }),
@@ -897,7 +897,7 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
             lines.push(Line::from(Span::styled(if cf_on { " Crossfade: On. Press Enter to toggle off or use C to change duration." } else { " Crossfade: Off. Press Enter to toggle on." }, Style::default().fg(app.theme.fg))));
         }
         (2, 3) => {
-            let easing = app.state.crossfade.as_ref().map(|c| format!("{:?}", c.easing)).unwrap_or_else(|| "N/A".into());
+            let easing = app.state.crossfade.as_ref().map(|c| c.easing.name()).unwrap_or("N/A");
             lines.push(Line::from(Span::styled(format!(" Easing: Press Enter to cycle (current: {}). Controls crossfade volume curve.", easing), Style::default().fg(app.theme.fg))));
         }
         (2, 4) => {
@@ -1207,44 +1207,7 @@ fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 }
 
 pub fn render_progress_variant(ratio: f64, width: usize, app: &App) -> String {
-    let inner_w = width.saturating_sub(2).max(4);
-    let filled = (ratio.clamp(0.0, 1.0) * inner_w as f64).round() as usize;
-    let mut line = String::with_capacity(width);
-    match app.theme_index % 3 {
-        0 => {
-            // Braille dots variant
-            line.push('⡀');
-            for i in 0..inner_w {
-                if i < filled {
-                    line.push('⣿');
-                } else {
-                    line.push('⣀');
-                }
-            }
-            line.push('⠤');
-        }
-        1 => {
-            // Seek-head line variant
-            line.push('─');
-            for i in 0..inner_w {
-                if i == filled {
-                    line.push('●');
-                } else {
-                    line.push('─');
-                }
-            }
-            line.push('─');
-        }
-        _ => {
-            // Classic bracket variant
-            line.push('[');
-            for i in 0..inner_w {
-                line.push(if i < filled { '█' } else { '░' });
-            }
-            line.push(']');
-        }
-    }
-    line
+    crate::progress::render_progress(ratio, width, app.progress_style)
 }
 
 /// Time-synced lyrics pane on the right side of the library view.
@@ -1642,38 +1605,106 @@ fn render_help_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 fn render_sleep_timer_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let presets = [5u64, 10, 15, 30, 60];
-    let sel = app.overlays.top().map_or(0, |o| o.selected.min(presets.len() - 1));
+    let inner = area;
 
-    let mut items: Vec<ListItem> = presets
-        .iter()
-        .enumerate()
-        .map(|(i, mins)| {
-            let label = if *mins == 1 { "minute" } else { "minutes" };
-            let prefix = if i == sel { " > " } else { "   " };
-            let content = format!("{prefix}{} {}", mins, label);
-            let style = if i == sel {
-                Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
-            } else {
-                Style::default()
-            };
-            ListItem::new(content).style(style)
-        })
-        .collect();
-
-    if let Some(remaining) = app.sleep_timer_remaining {
-        let status = format!(" Active: {} min remaining", remaining);
-        items.push(ListItem::new(status).style(Style::default().fg(app.theme.success)));
-        items.push(ListItem::new(" [Esc] Cancel timer").style(Style::default().fg(app.theme.fg_dim)));
+    if app.sleep_timer_input_mode {
+        let label = Paragraph::new(Line::from(vec![
+            Span::styled(" Enter minutes: ", Style::default().fg(app.theme.fg_dim)),
+            Span::styled(&app.sleep_timer_input_buf, Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD)),
+            Span::raw("_"),
+        ]));
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Sleep Timer — Manual Input ")
+            .border_type(BorderType::Plain)
+            .border_style(Style::default().fg(app.theme.border));
+        f.render_widget(label.block(block), inner);
+        return;
     }
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Sleep Timer ")
-            .border_type(BorderType::Plain),
-    );
-    f.render_widget(list, area);
+    let mins = app.sleep_timer_minutes;
+    let is_active = app.sleep_timer_remaining.is_some();
+
+    let mut lines: Vec<Line> = Vec::new();
+
+    // Current value
+    lines.push(Line::from(vec![
+        Span::styled(format!("  Timer: {} minutes", mins), Style::default().fg(app.theme.fg).add_modifier(Modifier::BOLD)),
+    ]));
+    lines.push(Line::from(""));
+
+    // Slider
+    let slider_w = inner.width.saturating_sub(4) as u32;
+    let pos = if slider_w > 0 { ((mins as f32 / 180.0) * slider_w as f32) as u32 } else { 0 };
+    let filled: String = "─".repeat(pos as usize);
+    let empty: String = "─".repeat((slider_w.saturating_sub(pos + 1)) as usize);
+    lines.push(Line::from(vec![
+        Span::styled("  ", Style::default()),
+        Span::styled(filled, Style::default().fg(app.theme.success)),
+        Span::styled("●", Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD)),
+        Span::styled(empty, Style::default().fg(app.theme.fg_dim)),
+    ]));
+    lines.push(Line::from(vec![
+        Span::styled("  0m", Style::default().fg(app.theme.fg_dim)),
+        Span::styled(format!("{:.0}m", 180.0), Style::default().fg(app.theme.fg_dim)),
+    ]));
+    lines.push(Line::from(""));
+
+    // Quick options
+    let quick_opts = [5u32, 10, 15, 30, 60, 90, 120];
+    let sel = app.overlays.top().map_or(0, |o| o.selected.min(quick_opts.len() - 1));
+    let mut spans: Vec<Span> = vec![Span::styled("  ", Style::default())];
+    for (i, &m) in quick_opts.iter().enumerate() {
+        let style = if i == sel {
+            Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg).add_modifier(Modifier::BOLD)
+        } else if m == mins {
+            Style::default().fg(app.theme.accent)
+        } else {
+            Style::default().fg(app.theme.fg_dim)
+        };
+        spans.push(Span::styled(format!("[{}m] ", m), style));
+    }
+    lines.push(Line::from(spans));
+    lines.push(Line::from(""));
+
+    // Active status
+    if is_active {
+        if let Some(remaining) = app.sleep_timer_remaining {
+            let r_mins = remaining / 60;
+            let r_secs = remaining % 60;
+            lines.push(Line::from(Span::styled(
+                format!("  Active: {:02}:{:02} remaining", r_mins, r_secs),
+                Style::default().fg(app.theme.success).add_modifier(Modifier::BOLD),
+            )));
+        }
+    }
+    lines.push(Line::from(""));
+
+    // Controls
+    lines.push(Line::from(Span::styled(
+        "  h/- Decrease  l/+ Increase  i: Input  Enter: Set",
+        Style::default().fg(app.theme.fg_dim),
+    )));
+    if is_active {
+        lines.push(Line::from(Span::styled(
+            "  c: Cancel Timer  Esc: Close",
+            Style::default().fg(app.theme.fg_dim),
+        )));
+    } else {
+        lines.push(Line::from(Span::styled(
+            "  Esc: Close",
+            Style::default().fg(app.theme.fg_dim),
+        )));
+    }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Sleep Timer ")
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(app.theme.border));
+
+    let paragraph = Paragraph::new(lines).block(block);
+    f.render_widget(paragraph, inner);
 }
 
 pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str)] = &[
@@ -1700,6 +1731,7 @@ pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("\u{2139} About O/L",    "Alt+A"),
     ("\u{266b} Spotify O/L",  "Alt+S"),
     ("\u{1f4dd} Fetch Lyrics","l"),
+    ("\u{2576} Progress Style","P"),
 ];
 
 fn render_command_palette_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {

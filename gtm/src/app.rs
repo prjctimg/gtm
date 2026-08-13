@@ -46,21 +46,23 @@ struct Prefs {
     transparent_bg: bool,
     #[serde(default)]
     footer_preset: usize,
+    #[serde(default)]
+    progress_style: crate::progress::ProgressStyle,
 }
 
 fn load_prefs() -> Prefs {
     let path = prefs_path();
     let s = match std::fs::read_to_string(path) {
         Ok(s) => s,
-        Err(_) => return Prefs { theme_index: 0, transparent_bg: false, footer_preset: 0 },
+        Err(_) => return Prefs { theme_index: 0, transparent_bg: false, footer_preset: 0, progress_style: crate::progress::ProgressStyle::default() },
     };
     if let Ok(p) = serde_json::from_str::<Prefs>(&s) {
         return p;
     }
     if let Ok(idx) = serde_json::from_str::<usize>(&s) {
-        return Prefs { theme_index: idx.min(crate::theme::THEMES.len().saturating_sub(1)), transparent_bg: false, footer_preset: 0 };
+        return Prefs { theme_index: idx.min(crate::theme::THEMES.len().saturating_sub(1)), transparent_bg: false, footer_preset: 0, progress_style: crate::progress::ProgressStyle::default() };
     }
-    Prefs { theme_index: 0, transparent_bg: false, footer_preset: 0 }
+    Prefs { theme_index: 0, transparent_bg: false, footer_preset: 0, progress_style: crate::progress::ProgressStyle::default() }
 }
 
 fn save_prefs(prefs: &Prefs) {
@@ -141,6 +143,9 @@ pub struct App {
     pub pending_delete: Option<(i64, String)>,
     pub overlays: OverlayManager,
     pub sleep_timer_remaining: Option<u64>,
+    pub sleep_timer_minutes: u32,
+    pub sleep_timer_input_mode: bool,
+    pub sleep_timer_input_buf: String,
     pub playback_speed: f64,
     pub current_cover: Option<Vec<u8>>,
     pub last_cover_track_id: Option<i64>,
@@ -175,6 +180,7 @@ pub struct App {
     pub cached_footer_spans: Option<(Vec<ratatui::text::Span<'static>>, ratatui::style::Color, ratatui::style::Color)>,
     last_event_time: std::time::Instant,
     pub multiselect_mode: bool,
+    pub progress_style: crate::progress::ProgressStyle,
     pub selected_indices: std::collections::HashSet<usize>,
     pending_motion: Option<char>,
     pub pending_playlist_track_ids: Vec<i64>,
@@ -243,6 +249,8 @@ pub enum TuiCommand {
     RemoveTrack(i64),
     RemoveFromPlaylist(i64, i64),
     FetchLyrics,
+    SetSleepTimer(u32),
+    CancelSleepTimer,
 }
 
 impl App {
@@ -287,6 +295,9 @@ impl App {
             yt_search_debounce: None,
             overlays: OverlayManager::new(),
             sleep_timer_remaining: None,
+            sleep_timer_minutes: 30,
+            sleep_timer_input_mode: false,
+            sleep_timer_input_buf: String::new(),
             playback_speed: 1.0,
             current_cover: None,
             last_cover_track_id: None,
@@ -321,6 +332,7 @@ impl App {
             cached_footer_spans: None,
             last_event_time: std::time::Instant::now(),
             multiselect_mode: false,
+            progress_style: crate::progress::ProgressStyle::Braille,
             selected_indices: std::collections::HashSet::new(),
             pending_motion: None,
             pending_playlist_track_ids: Vec::new(),
@@ -398,15 +410,29 @@ impl App {
         loop {
             let mut events_received = false;
             let mut had_track_change = false;
+            let mut had_sleep_expired = false;
             for ev in self.client.drain().await {
                 if matches!(ev, gtm_core::ipc::DaemonEvent::PlaybackStarted { .. }) {
                     had_track_change = true;
+                }
+                if matches!(ev, gtm_core::ipc::DaemonEvent::SleepTimerExpired) {
+                    had_sleep_expired = true;
                 }
                 self.state.apply_event(&ev);
                 events_received = true;
             }
             if events_received {
                 self.last_event_time = std::time::Instant::now();
+            }
+            if had_sleep_expired {
+                self.sleep_timer_remaining = None;
+                self.notify("Sleep timer expired — playback stopped", NotificationKind::Info);
+            }
+            // Sync sleep_timer_remaining from daemon state
+            if let Some(secs) = self.state.sleep_timer {
+                self.sleep_timer_remaining = Some(secs as u64);
+            } else if self.sleep_timer_remaining.is_some() && self.state.sleep_timer.is_none() {
+                self.sleep_timer_remaining = None;
             }
             // Re-seed clock from state after track change events so the
             // local position estimate stays in sync with the daemon.
@@ -1145,6 +1171,24 @@ impl App {
                     }
                 });
             }
+            TuiCommand::SetSleepTimer(minutes) => {
+                let client = self.client.clone();
+                let ipc_tx = self.ipc_tx.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = client.set_sleep_timer(minutes).await {
+                        let _ = ipc_tx.send(IpcResult::Error(e.to_string()));
+                    }
+                });
+            }
+            TuiCommand::CancelSleepTimer => {
+                let client = self.client.clone();
+                let ipc_tx = self.ipc_tx.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = client.cancel_sleep_timer().await {
+                        let _ = ipc_tx.send(IpcResult::Error(e.to_string()));
+                    }
+                });
+            }
         };
     }
 
@@ -1495,7 +1539,12 @@ impl App {
                             theme_index: self.theme_index,
                             transparent_bg: self.transparent_bg,
                             footer_preset: self.footer_preset,
+                            progress_style: self.progress_style,
                         });
+                    }
+                    Some(KeyboardAction::CycleProgressStyle) => {
+                        self.progress_style = self.progress_style.next();
+                        self.notify(&format!("Progress: {}", self.progress_style.name()), NotificationKind::Info);
                     }
                     Some(KeyboardAction::FocusLeft) => {
                         match self.current_tab {
@@ -1661,7 +1710,9 @@ impl App {
                                             Easing::Smoothstep => Easing::Logarithmic,
                                             Easing::Logarithmic => Easing::SlowFadeInFastFadeOut,
                                             Easing::SlowFadeInFastFadeOut => Easing::FastFadeInSlowFadeOut,
-                                            Easing::FastFadeInSlowFadeOut => Easing::Linear,
+                                            Easing::FastFadeInSlowFadeOut => Easing::EqualPower,
+                                            Easing::EqualPower => Easing::Exponential,
+                                            Easing::Exponential => Easing::Linear,
                                         };
                                         let _ = tx.send(TuiCommand::SetCrossfadeEasing(next)).await;
                                         if let Some(ref mut cf) = self.state.crossfade { cf.easing = next; }
@@ -1677,7 +1728,7 @@ impl App {
                                 3 => match opt {
                                     1 => { // Transparent BG toggle
                                         self.transparent_bg = !self.transparent_bg;
-                                        save_prefs(&Prefs { theme_index: self.theme_index, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset });
+                                        save_prefs(&Prefs { theme_index: self.theme_index, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, progress_style: self.progress_style });
                                     }
                                     2 => { // Sync Covers
                                         let ipc_tx = self.ipc_tx.clone();
@@ -1701,7 +1752,7 @@ impl App {
                                     3 => { // Footer Preset cycle
                                         self.footer_preset = (self.footer_preset + 1) % footer::num_presets();
                                         let name = footer::presets()[self.footer_preset].name;
-                                        save_prefs(&Prefs { theme_index: self.theme_index, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset });
+                                        save_prefs(&Prefs { theme_index: self.theme_index, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, progress_style: self.progress_style });
                                         self.notify(format!("Footer: {}", name), NotificationKind::Info);
                                     }
                                     _ => {}
@@ -1919,6 +1970,92 @@ impl App {
 
     async fn handle_overlay_key(&mut self, key: event::KeyEvent) {
         let tx = self.cmd_tx();
+
+        if matches!(self.overlays.top().map(|o| o.id), Some(OverlayId::SleepTimer)) {
+            if self.sleep_timer_input_mode {
+                match key.code {
+                    KeyCode::Esc => {
+                        self.sleep_timer_input_mode = false;
+                        self.sleep_timer_input_buf.clear();
+                    }
+                    KeyCode::Enter => {
+                        if let Ok(m) = self.sleep_timer_input_buf.parse::<u32>() {
+                            self.sleep_timer_minutes = m.min(180);
+                        }
+                        self.sleep_timer_input_mode = false;
+                        self.sleep_timer_input_buf.clear();
+                    }
+                    KeyCode::Backspace => { self.sleep_timer_input_buf.pop(); }
+                    KeyCode::Char(c) if c.is_ascii_digit() => { self.sleep_timer_input_buf.push(c); }
+                    _ => {}
+                }
+                return;
+            }
+            match key.code {
+                KeyCode::Esc => {
+                    self.sleep_timer_remaining = None;
+                    self.sleep_timer_minutes = 30;
+                    self.sleep_timer_input_mode = false;
+                    self.sleep_timer_input_buf.clear();
+                    self.overlays.close_top();
+                    return;
+                }
+                KeyCode::Char('h') | KeyCode::Left => {
+                    self.sleep_timer_minutes = self.sleep_timer_minutes.saturating_sub(5);
+                    return;
+                }
+                KeyCode::Char('l') | KeyCode::Right => {
+                    self.sleep_timer_minutes = (self.sleep_timer_minutes + 5).min(180);
+                    return;
+                }
+                KeyCode::Char('-') => {
+                    self.sleep_timer_minutes = self.sleep_timer_minutes.saturating_sub(1);
+                    return;
+                }
+                KeyCode::Char('+') | KeyCode::Char('=') => {
+                    self.sleep_timer_minutes = (self.sleep_timer_minutes + 1).min(180);
+                    return;
+                }
+                KeyCode::Enter => {
+                    let mins = self.sleep_timer_minutes;
+                    self.sleep_timer_remaining = Some(mins as u64);
+                    self.send_high(TuiCommand::SetSleepTimer(mins));
+                    self.notify(&format!("Sleep timer set: {} min", mins), NotificationKind::Info);
+                    self.overlays.close_top();
+                    return;
+                }
+                KeyCode::Char('i') => {
+                    self.sleep_timer_input_mode = true;
+                    self.sleep_timer_input_buf.clear();
+                    return;
+                }
+                KeyCode::Char('c') => {
+                    self.sleep_timer_remaining = None;
+                    self.send_high(TuiCommand::CancelSleepTimer);
+                    self.notify("Sleep timer cancelled", NotificationKind::Info);
+                    return;
+                }
+                KeyCode::Up | KeyCode::Char('j') => {
+                    let quick_opts = [5u32, 10, 15, 30, 60, 90, 120];
+                    if let Some(top) = self.overlays.top_mut() {
+                        top.selected = (top.selected + 1) % quick_opts.len();
+                        self.sleep_timer_minutes = quick_opts[top.selected];
+                    }
+                    return;
+                }
+                KeyCode::Down | KeyCode::Char('k') => {
+                    let quick_opts = [5u32, 10, 15, 30, 60, 90, 120];
+                    if let Some(top) = self.overlays.top_mut() {
+                        top.selected = if top.selected == 0 { quick_opts.len() - 1 } else { top.selected - 1 };
+                        self.sleep_timer_minutes = quick_opts[top.selected];
+                    }
+                    return;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         match key.code {
             KeyCode::Esc => {
                 if let Some(top) = self.overlays.top() {
@@ -1973,7 +2110,7 @@ impl App {
                         let idx = top.selected.min(THEMES.len().saturating_sub(1));
                         self.theme = (THEMES[idx].builder)();
                         self.theme_index = idx;
-                        save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset });
+                        save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, progress_style: self.progress_style });
                     }
                 }
                 self.clamp_overlay_selection();
@@ -2001,7 +2138,7 @@ impl App {
                         let idx = top.selected.min(THEMES.len().saturating_sub(1));
                         self.theme = (THEMES[idx].builder)();
                         self.theme_index = idx;
-                        save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset });
+                        save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, progress_style: self.progress_style });
                     }
                 }
                 self.clamp_overlay_selection();
@@ -2068,11 +2205,7 @@ impl App {
                             }
                         }
                         OverlayId::SleepTimer => {
-                            // Set sleep timer from selected preset
-                            let presets = [5u64, 10, 15, 30, 60];
-                            let idx = top.selected.min(presets.len() - 1);
-                            self.sleep_timer_remaining = Some(presets[idx]);
-                            self.overlays.close_top();
+                            // Handled by early return above
                         }
                         OverlayId::CommandPalette => {
                             let commands = crate::ui::COMMAND_PALETTE_COMMANDS;
@@ -2153,6 +2286,9 @@ impl App {
                                 } else if label.starts_with("fetch lyrics") {
                                     self.show_lyrics = true;
                                     self.send_high(TuiCommand::FetchLyrics);
+                                } else if label.starts_with("progress style") {
+                                    self.progress_style = self.progress_style.next();
+                                    self.notify(&format!("Progress: {}", self.progress_style.name()), crate::app::NotificationKind::Info);
                                 }
                             }
                             self.overlays.close_top();
@@ -2185,7 +2321,7 @@ impl App {
                             let idx = top.selected.min(THEMES.len().saturating_sub(1));
                             self.theme = (THEMES[idx].builder)();
                             self.theme_index = idx;
-                            save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset });
+                            save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, progress_style: self.progress_style });
                             self.overlays.close_top();
                         }
                         OverlayId::SearchLibrary => {
