@@ -4,116 +4,122 @@ Only 3 tabs: **NowPlaying**, **Library**, **Settings**.
 
 Queue, YouTube, and Help are removed as tabs and become overlays (see `08-gtm-tui-overlays.md`).
 
-All tabs use the **Cyberdeck TUI** aesthetic: plain (sharp) borders, high information density, monospaced JetBrains Mono aesthetic, and bracket-style ASCII widgets. No emoji — all icons are ASCII characters.
+All tabs use the **Cyberdeck TUI** design system: plain (sharp) borders, high information density, monospaced JetBrains Mono aesthetic, bracket-style widgets, no emoji.
+
+---
+
+## Tab Bar
+
+```
+[1] Now Playing   [2] Library   [3] Settings                    gtm 0.7.34
+──────────────────────────────────────────────────────────────────────────
+```
+
+- Active tab: `bg-secondary-container text-on-secondary-container` (`#454747` background, `#e5e2e1` text)
+- Inactive tab: `text-on-surface-variant` (`#c4c7c7`), hover → `bg-primary text-on-primary`
+- Version string right-aligned in header
+- Plain border-bottom separator
 
 ---
 
 ## NowPlaying Tab
 
-Displays current playback state with track metadata, progress bar, volume, and controls.
+Two-column layout: album art (left) + metadata + controls (right).
 
-### Layout
 ```
-> NOW PLAYING ───────────────────────────────────────
-│                                                     │
-│  Title:   Song Title                                │
-│  Artist:  Artist Name                               │
-│  Album:   Album Name                                │
-│  Genre:   Genre (if available)                      │
-│                                                     │
-├─ 1:23 / 4:56 ──────────────────────────────────────┤
-│  [###############-------------]                     │
-│                                                     │
-├─ [ VOL 80% ] ──────────────────────────────────────┤
-│  [########-------------------]                      │
-│                                                     │
-├─────────────────────────────────────────────────────┤
-│  [Space]P/P  [n]Next  [p]Prev  [+/-]Vol  [:]Cmd    │
-│  [m]Mute  [r]Repeat  [h]Shuffle  [q]Quit            │
-└─────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────
+┌─ Album Art ──┐  NOW PLAYING
+│               │  ──────────────────────────────────
+│   (grayscale  │  Codeine Crazy (Official Audio)
+│    album      │  Artist: Future
+│    art)       │  Format: [FLAC | 24-bit/96kHz]
+│               │
+│               │  ── Progress ──
+│               │  00:45                         5:52
+│               │  ▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░░░░░░░░  (visualizer bars)
+│               │  ▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░░░░░░░
+│               │  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░░░░░
+│               │  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░
+│               │  ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓░░░░░░
+│               │
+│               │  [Space]P/P  [n]Next  [p]Prev  ...
+└───────────────┘
 ```
 
-- Progress bar: bracketed `[###---]` style with `#` fill and `-` empty characters
-- Volume bar changes color by level: tertiary green (<50%), on_surface (50-85%), error red (>85%)
-- Track metadata labels (Title/Artist/Album/Genre) use dim foreground, values use bright/primary
-- Controls use bracket notation for keybindings
-- Cover art renders as half-block Unicode art (`▀`) with CatmullRom resampling when available
+- Progress is displayed as a **vertical audio visualizer** — a series of vertical bars of varying height
+  - Played portion: `bg-tertiary` (`#00e639`)
+  - Remaining portion: `bg-outline-variant` (`#444748`)
+- Track metadata: title in prominent `headline-lg` bold, artist as label:value pair, format chip in brackets
+- Album art rendered via half-block Unicode (`▀`) with CatmullRom resampling
+- Controls at bottom in bracket notation
 
 ---
 
-## Library Tab
+## LibraryTab
 
-Displays all tracks indexed in the daemon's SQLite library. Filterable via `/` search. Two-pane layout: numbered categories sidebar (left) + track listing (right).
+Full library view with track table and sidebar.
 
-### Layout
 ```
-> LIBRARY ──────────────────────────────────────────────
-│  1. All Tracks      1234  │  ▶ Artist - Song Title [3:45] │
-│  2. Albums                 │    Artist2 - Another Song [4:20] │
-│  3. Artists                │    Artist3 - Third Song [2:15]  │
-│  4. Playlists              │    ...                          │
-│  5. Recently Added         │                                  │
-│  6. Most Played            │                                  │
-│  7. Least Played           │                                  │
-│  8. Spotify                │                                  │
-│  9. Downloads              │                                  │
-│                            │                                  │
-├────────────────────────────┴──────────────────────────────────┤
-│  1234 tracks · 123h 45m of playback                           │
-└──────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────
+┌─ Library · 13 Tracks ──────────────────────────────────────────────┐
+│  Up Next: Juice WRLD - Stay High              Listening time      │
+│                                               48:12 / -32:15       │
+│                                                                     │
+│  #  │ Title / Artist / Album            │ Duration │ Bitrate       │
+│  ───┼───────────────────────────────────┼──────────┼────────────── │
+│  >01│ Future - Codeine Crazy            │ 05:41    │ 128kbps       │
+│   02│ Juice WRLD - Stay High            │ 03:48    │ 320kbps       │
+│   03│ Kanye West - Can't Tell Me Nothing│ 04:31    │ 320kbps       │
+│  ...│                                   │          │               │
+│                                                                     │
+│  [Enter]Play  [a]Add  [d]Remove  [/]Search  [q]Quit                 │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
-- Left pane: categories numbered `1.` through `9.`, with track count right-aligned
-- Active pane border highlighted with primary color (`#c8c6c5`)
-- Selected item gets full-width background block in secondary container (`#454747`) with dark text (`#313030`)
-- Filterable via `/` search (local filter on cached data: title, artist, album)
-- Navigation: j/k or ↑/↓; Tab toggles pane focus; Enter to play selected
-- Right pane shows tracks in `Artist - Title [duration]` format
-- Stats bar: total filtered count + total playback time
+- Sidebar (collapsed in this view — shown in separate overlay or as left pane):
+  - Items: All Tracks, Artists, Albums, Playlists, Recent, Favorites
+  - Active item: `bg-secondary-container text-on-secondary-container` with `border-l-4 border-tertiary`
+  - Inactive items: `text-on-surface-variant`, `hover:bg-surface-container-highest`
+  - Icons before each label (music_note, person, album, list, history, star)
+- Track table uses fixed columns: `#` (3rem), `Title/Artist/Album` (1fr), `Duration` (6rem), `Bitrate` (6rem)
+- Current playing track: `bg-secondary-container text-on-secondary-container font-bold`, `>` prefix, `play_arrow` icon in tertiary
+- Other tracks: `hover:bg-surface-container-highest transition-colors cursor-pointer`
+- Header shows track count in tertiary + up-next info + listening time
+- Filterable via `/` search
 
 ---
 
 ## Settings Tab
 
-Configures daemon and TUI settings. Two-pane layout: categories (left) + options (right). Help bar at bottom.
+Two-pane layout: sidebar (left) + settings panel (right).
 
-### Options
-| Setting | Type | Description |
-|---------|------|-------------|
-| Volume | slider | 0-100% with unsafe warning at >85% |
-| Repeat | toggle | Off / One / All |
-| Shuffle | toggle | On/Off |
-| Mute | toggle | On/Off |
-| Crossfade | toggle + slider | Enable + duration (1-15s) |
-| Crossfade Easing | select | Linear / Slow fade in-fast out / etc |
-| Audio Backend | select | Rodio (default) |
-| Library Paths | multi-input | Directories to scan for audio |
-| Theme | select | Cyberdeck (default) / Catppuccin Mocha / etc |
-| Progress Bar Style | select | Bracket / Line / Waveform |
-| Footer Preset | select | Preset 1 / Preset 2 / Minimal |
-| Opacity | slider | 0-100% for overlay backgrounds |
-
-### Layout
 ```
-> CATEGORIES ──────────── > AUDIO ────────────────────
-│  Audio                  │  Volume:     80% [########--------] │
-│  General                │  Mute:       OFF                    │
-│  Playback               │                                     │
-│  Appearance             │                                     │
-│  Spotify                │                                     │
-│                         │                                     │
-│                         │                                     │
-├───────────────────────────────────────────────────────────────┤
-│  Volume: Adjust playback volume  |  Mute: Toggle mute          │
-└───────────────────────────────────────────────────────────────┘
+──────────────────────────────────────────────────────────────────────────
+┌─ ♫ Audio ───────────────────────────────────────────────────────────┐
+│  ──────────────── YouTube ─────────────────                         │
+│                                                                      │
+│  Cookie Source          [ chromium    ▶ ]                            │
+│  Cookie File            [ (none)      ▶ ]                            │
+│  JS Runtime             [ deno        ▶ ]                            │
+│  Max Downloads          ▓▓▓▓▓▓▓▓▓░░░  3                              │
+│  Results Per Page       10                                            │
+│  Search History         [ 0 entries  ▶ ]                              │
+│  Auto Download          [ ● ]  On                                    │
+│  Clear Search History   [Clear]                                      │
+│                                                                      │
+│  ── Help ───────────────────────────────                             │
+│  YouTube integration: JS runtime, download limits, search prefs.     │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-- Left pane: category list in a `>` block titled pane
-- Right pane: options for selected category, content varies by category:
-  - **Audio**: Volume slider, Mute toggle
-  - **General**: Status indicator, Queue count
-  - **Playback**: Repeat mode, Shuffle toggle, Crossfade toggle + duration
-  - **Appearance**: Theme selector, Notification toggle
-  - **Spotify**: Connection status
-- Right pane content updates immediately when cycling categories
-- Help bar shows relevant key hints for the selected category
+- Sidebar: `w-64` with icons (`♫`, `▶`, `✧`, `⚙`, `☊`) before each category
+  - Active item: `border-l-2 border-magenta/60`, `bg-white/10` overlay
+  - Inactive: `text-gray-400`, `hover:text-white`
+  - Categories: Audio, YouTube, Appearance, System, Spotify
+- Settings panel section headers: `─── Title ───` with accent color horizontal lines
+- Settings items in key-value pairs with `hover:bg-white/5`
+- Values shown in bracket style: `[ value ▶ ]`
+- Toggles: `[ ● ]` with filled dot and "On"/"Off" label
+- Sliders: vertical colored bars
+- Action buttons: `[Clear]` in accent color
+- Help section at bottom of each panel

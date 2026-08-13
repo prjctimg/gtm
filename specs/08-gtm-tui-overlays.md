@@ -16,24 +16,18 @@ Overlays float above all tabs with a semi-transparent background. Accessible via
 | SleepTimer | `Alt+Z` | Set sleep timer |
 | ThemePicker | `Alt+T` | Live preview theme picker |
 | SoundEffects | `Alt+X` | Sound effects settings |
+| VolumeConfirm | (auto) | Confirm unsafe volume level |
 
 ## Generic Overlay Container
 
 ```rust
 pub struct OverlayContainer<T> {
-    /// Optional fuzzy finder for filtering items
     pub fuzzy: Option<FuzzyFinder>,
-    /// Keymap specific to this overlay
     pub keymap: Keymap<T>,
-    /// Items to display (type varies by overlay)
     pub items: Vec<T>,
-    /// Selected index
     pub selected: usize,
-    /// Search query
     pub query: String,
-    /// Z-index (higher = on top)
     pub z_index: u8,
-    /// Background opacity (0.0 - 1.0)
     pub opacity: f64,
 }
 ```
@@ -42,14 +36,14 @@ pub struct OverlayContainer<T> {
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  (terminal background, dimmed via tonal layer)    │
+│  (terminal background, dimmed)                    │
 │  ┌──────── > OVERLAY ──────────────────────────┐  │
 │  │                                              │  │
 │  │  > query_                                    │  │
 │  │                                              │  │
-│  │  [1] First Result                            │  │
-│  │  [2] Second Result                           │  │
-│  │  [3] Third Result                            │  │
+│  │  > First Result                              │  │
+│  │    Second Result                             │  │
+│  │    Third Result                              │  │
 │  │                                              │  │
 │  │  [Enter]Select  [Esc]Close  [↑/↓]Navigate    │  │
 │  └──────────────────────────────────────────────┘  │
@@ -57,27 +51,29 @@ pub struct OverlayContainer<T> {
 ```
 
 - Plain (sharp) borders throughout — no rounded corners
-- Search input uses `>` prompt character instead of labeled "Search:" prefix
-- No background color on input fields — plain fg text with `_` cursor indicator
-- List items in overlays use full-width highlight on selection
+- Search input uses `>` prompt character with `_` cursor indicator
+- No background color on input fields — plain fg text
+- List items use full-width highlight on selection (`secondary-container` bg)
 - All keybinding hints use bracket notation `[Key]Action`
 
 ## Per-Overlay Details
 
 ### Queue Overlay
-- Shows current queue items with `[1]`, `[2]`, etc. numbering
-- Current track marked with `>` prefix
+- Shows current queue with track table layout:
+  - Columns: `#`, `Title / Artist / Album`, `Duration`, `Bitrate`
+- Current track: `border-l-2 border-tertiary`, `bg-secondary-container`, `>` prefix
+- Other items: `hover:bg-surface-container-highest`, numbered `01.` / `02.` etc.
 - `Enter` to play, `d`/`Del` to remove, `c` to clear
-- Selected item highlighted with full-width background block
+- Numbering: `01.` two-digit zero-padded format
 
 ### YTSearch Overlay
-- Search field with `>` prompt
+- Search field with `>` prompt and `_` cursor
 - Results list: `Channel - Title [duration]`
 - `Enter` to play, `Ctrl+d` to download, `Ctrl+a` to add to queue
 - Results cached for navigation
 
 ### SearchLibrary Overlay
-- Fuzzy finder on local tracks with `>` prompt
+- Fuzzy finder on local tracks with `>` prompt and `_` cursor
 - Real-time filtering as user types
 - `Enter` to play, `Ctrl+a` to add to queue
 
@@ -90,21 +86,18 @@ pub struct OverlayContainer<T> {
 - List of EQ presets: Flat, Rock, Pop, Jazz, Classical, Bass, Vocal
 - ASCII waveform preview graph
 - Active preset marked with `>` prefix
-- Applies EQ in real-time via audio backend
+- Applies EQ in real-time
 
 ### CommandPalette Overlay
 - Lists every available action as rows
-- Filter field with `>` prompt
+- Filter field with `>` prompt and `_` cursor
 - `Enter` to execute
 - Shows keybinding hint in bracket notation `[Key]` for each action
 
 ### About Overlay
 - Version info (gtm, gtmd, gtm-core, gtm-audio)
 - Daemon health: status, volume, queue, shuffle, repeat
-- All values use Cyberdeck color roles:
-  - Status: `tertiary` (neon green) when playing
-  - Volume: color-coded by level (green/yellow/red)
-  - Queue/Shuffle/Repeat: primary foreground
+- All values use Cyberdeck color roles
 
 ### SleepTimer Overlay
 - Quick options: 5m, 10m, 15m, 30m, 60m
@@ -114,7 +107,6 @@ pub struct OverlayContainer<T> {
 ### ThemePicker Overlay
 - List of themes: Cyberdeck (default), Catppuccin Mocha, etc.
 - Live preview: changes apply as user navigates
-- Preview panel showing theme colors
 
 ## Accessibility
 

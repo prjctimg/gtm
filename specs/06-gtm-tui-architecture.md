@@ -30,7 +30,7 @@
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-Key difference from current: IPC calls never block the render loop. All daemon communication runs in a background task (see `01-ipc-redesign.md`).
+IPC calls never block the render loop. All daemon communication runs in a background task.
 
 ## DaemonClient (non-blocking)
 
@@ -42,23 +42,16 @@ pub struct DaemonClient {
 }
 
 impl DaemonClient {
-    /// Fire a request and optionally wait for response via oneshot
     pub async fn send(&self, req: DaemonReq) -> Result<DaemonRes>;
-    
-    /// Fire a request with no response needed
     pub async fn send_fire(&self, req: DaemonReq);
-    
-    /// Drain buffered events
     pub fn drain(&mut self) -> Vec<DaemonEvent>;
-    
-    /// Get current daemon state (sends GetStatus, awaits response)
     pub async fn get_status(&self) -> Result<DaemonState>;
 }
 ```
 
 ## State Mirror
 
-`App.state` is a `DaemonState` mirror updated via `apply_event()`. No IPC calls needed for position/status updates — they come through the pulse event stream.
+`App.state` is a `DaemonState` mirror updated via `apply_event()`. No IPC calls needed for position/status updates.
 
 ### Event → State Mapping
 
@@ -77,8 +70,6 @@ impl DaemonClient {
 
 ## Position Extrapolation
 
-When no position events arrive (e.g., between render frames), extrapolate:
-
 ```rust
 let now = Instant::now();
 let elapsed = now.duration_since(last_event_time).as_secs_f64();
@@ -91,48 +82,46 @@ let display_pos = if state.status == Playing {
 
 ## Layout Structure
 
-The TUI uses a **rigid 4-row grid** layout with sharp (plain) borders throughout, following the Cyberdeck TUI design system:
-
 ```
-┌─────────────────────────────────────────────────┐
-│ > GTM    [1]NowPlaying  [2]Library  [3]Settings │  3 lines (Tab Bar)
-│  (notification line — single row)               │  1 line
-├─────────────────────────────────────────────────┤
-│                                                  │
-│  Content Area (per-tab)                          │  Min(0)
-│                                                  │
-│  ┌─ NOW PLAYING ─────────────────────────────┐  │
-│  │  Title:   Song Title                       │  │
-│  │  Artist:  Artist Name                      │  │
-│  │  Album:   Album Name                       │  │
-│  │  [####------------] 1:23 / 4:56            │  │
-│  └────────────────────────────────────────────┘  │
-│                                                  │
-│  ┌─ LIBRARY ──────────────────────────────────┐  │
-│  │  1. All Tracks    │  ▶ Artist - Title [dur] │  │
-│  │  2. Albums        │  ...                    │  │
-│  └────────────────────────────────────────────┘  │
-│                                                  │
-│  ┌─ SETTINGS ─────────────────────────────────┐  │
-│  │  Volume: 80% [########--------]             │  │
-│  │  Repeat: OFF                                │  │
-│  └────────────────────────────────────────────┘  │
-│                                                  │
-│  Overlays float above content (Alt+key)          │
-│  > Queue, YTSearch, SearchLibrary, Spotify,      │
-│    Equalizer, CommandPalette, About, SleepTimer,  │
-│    ThemePicker, SoundEffects                     │
-│                                                  │
-├─────────────────────────────────────────────────┤
-│  > [Vol:80%] [Queue:12] [RPT] [SHF]             │  3 lines (Footer)
-└─────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────┐
+│ [1] Now Playing  [2] Library  [3] Settings    gtm 0.7.34    │  Tab Bar (3 lines)
+│  (notification line)                                          │  1 line
+├──────────────────────────────────────────────────────────────┤
+│                                                               │
+│  Content Area (per-tab)                                      │  Min(0)
+│                                                               │
+│  ┌─ NOW PLAYING ──────────────────────────────────────────┐  │
+│  │  ┌──┐  NOW PLAYING                                     │  │
+│  │  │▀▀│  Codeine Crazy (Official Audio)                   │  │
+│  │  │▀▀│  Artist: Future                                   │  │
+│  │  │▀▀│  Format: [FLAC | 24-bit/96kHz]                   │  │
+│  │  └──┘                                                   │  │
+│  │      00:45                          5:52                │  │
+│  │      ▓▓▓▓▓▓░░░░░░  (visualizer bars)                   │  │
+│  └─────────────────────────────────────────────────────────┘  │
+│                                                               │
+│  ┌─ LIBRARY ───────────────────────────────────────────────┐  │
+│  │  #  │ Title / Artist / Album      │ Dur   │ Bitrate     │  │
+│  │  >01│ Future - Codeine Crazy      │ 05:41 │ 128kbps     │  │
+│  │   02│ Juice WRLD - Stay High      │ 03:48 │ 320kbps     │  │
+│  └─────────────────────────────────────────────────────────┘  │
+│                                                               │
+│  ┌─ SETTINGS ──────────────────────────────────────────────┐  │
+│  │  ♫ Audio       Cookie Source    [ chromium  ▶ ]         │  │
+│  │  ▶ YouTube     Auto Download    [ ● ] On                │  │
+│  │  ✧ Appearance  Clear History    [Clear]                  │  │
+│  └─────────────────────────────────────────────────────────┘  │
+│                                                               │
+│  Overlays float above content (Alt+key)                       │
+│  > Queue, YTSearch, SearchLibrary, Spotify, Equalizer, ...   │
+│                                                               │
+├──────────────────────────────────────────────────────────────┤
+│  [0:06] [1/13] [65%] [ALSA] [▶]                             │  Footer (3 lines)
+└──────────────────────────────────────────────────────────────┘
 ```
 
 - **Cyberdeck TUI** theme: deep charcoal `#141313` background, off-white `#e5e2e1` text, neon green `#00e639` accents
-- 3 tabs only: NowPlaying, Library, Settings
-- 10 overlays: Queue, YTSearch, SearchLibrary, SpotifySearch, Equalizer, CommandPalette, About, SleepTimer, ThemePicker, SoundEffects
-- All borders use `BorderType::Plain` (sharp corners — no rounded borders)
-- All controls use bracket notation `[Key]Action` — no emoji
-- Overlays accessible via Alt+key from any tab
-- Footer shows playback status, volume, queue count, repeat/shuffle indicators
+- 3 tabs: NowPlaying (visualizer progress, album art, metadata), Library (track table + sidebar), Settings (sidebar + bracket-style panel)
+- Footer uses multi-segment colored blocks for status info
+- All borders use `BorderType::Plain` (sharp corners)
 - High information density with minimal padding

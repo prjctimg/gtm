@@ -20,6 +20,8 @@ pub struct AppTheme {
     pub tab_active_fg: Color,
     pub tab_active_bg: Color,
     pub tab_inactive_fg: Color,
+    pub tab_bar_bg: Color,
+    pub sidebar_active_border: Color,
 }
 
 impl AppTheme {
@@ -68,6 +70,8 @@ fn cyberdeck() -> AppTheme {
         tab_active_fg: hex(0x313030),
         tab_active_bg: hex(0xc8c6c5),
         tab_inactive_fg: hex(0x8e9192),
+        tab_bar_bg: hex(0x141313),
+        sidebar_active_border: hex(0x00e639),
     }
 }
 
@@ -93,6 +97,8 @@ fn catppuccin_mocha() -> AppTheme {
         tab_active_fg: hex(0x1e1e2e),
         tab_active_bg: hex(0x89b4fa),
         tab_inactive_fg: hex(0x89b4fa),
+        tab_bar_bg: hex(0x1e1e2e),
+        sidebar_active_border: hex(0x89b4fa),
     }
 }
 
@@ -118,6 +124,8 @@ fn catppuccin_macchiato() -> AppTheme {
         tab_active_fg: hex(0x24273a),
         tab_active_bg: hex(0x8aadf4),
         tab_inactive_fg: hex(0x8aadf4),
+        tab_bar_bg: hex(0x24273a),
+        sidebar_active_border: hex(0x8aadf4),
     }
 }
 
@@ -143,6 +151,8 @@ fn catppuccin_frappe() -> AppTheme {
         tab_active_fg: hex(0x303446),
         tab_active_bg: hex(0x8caaee),
         tab_inactive_fg: hex(0x8caaee),
+        tab_bar_bg: hex(0x303446),
+        sidebar_active_border: hex(0x8caaee),
     }
 }
 
@@ -168,6 +178,8 @@ fn catppuccin_latte() -> AppTheme {
         tab_active_fg: hex(0xeff1f5),
         tab_active_bg: hex(0x1e66f5),
         tab_inactive_fg: hex(0x1e66f5),
+        tab_bar_bg: hex(0xeff1f5),
+        sidebar_active_border: hex(0x1e66f5),
     }
 }
 
@@ -193,6 +205,8 @@ fn tokyonight_night() -> AppTheme {
         tab_active_fg: hex(0x1a1b26),
         tab_active_bg: hex(0x7aa2f7),
         tab_inactive_fg: hex(0x7aa2f7),
+        tab_bar_bg: hex(0x1a1b26),
+        sidebar_active_border: hex(0x7aa2f7),
     }
 }
 
@@ -218,6 +232,8 @@ fn gruvbox_dark() -> AppTheme {
         tab_active_fg: hex(0x282828),
         tab_active_bg: hex(0x83a598),
         tab_inactive_fg: hex(0x83a598),
+        tab_bar_bg: hex(0x282828),
+        sidebar_active_border: hex(0x83a598),
     }
 }
 
@@ -243,5 +259,7 @@ fn ayu_dark() -> AppTheme {
         tab_active_fg: hex(0x0a0e14),
         tab_active_bg: hex(0xff8f40),
         tab_inactive_fg: hex(0xff8f40),
+        tab_bar_bg: hex(0x0a0e14),
+        sidebar_active_border: hex(0xff8f40),
     }
 }

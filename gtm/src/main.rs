@@ -23,6 +23,18 @@ mod ui;
 
 use clap::{CommandFactory, Parser, Subcommand};
 
+fn print_version() {
+    let ver = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0");
+    println!(
+        "gtm {ver}\n\
+         Copyright (C) 2026 prjctimg <prjctimg@outlook.com>\n\
+         Website: https://prjctimg.me\n\
+         License GPL-3.0\n\
+         This is free software: you are free to change and redistribute it.\n\
+         There is NO WARRANTY, to the extent permitted by law."
+    );
+}
+
 #[derive(Parser)]
 #[command(
     name = "gtm",
@@ -95,6 +107,11 @@ enum CliCommand {
 //   └──────────┘     no args ───────────→ ui::run_tui() → TUI event loop
 //
 fn main() {
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        print_version();
+        return;
+    }
+
     let args = Args::parse();
 
     if let Some(ref cmd) = args.command {
