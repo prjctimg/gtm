@@ -290,6 +290,56 @@ pub fn default_keybindings() -> Keybindings {
                     description: "Move down",
                 },
             ),
+            // Cursor — page up/down (PgUp/PgDn, Ctrl+U/Ctrl+D)
+            (
+                KeyCode::PageUp.into(),
+                BoundCommand {
+                    action: KeyboardAction::PageUp,
+                    contexts: vec![KeyContext::List, KeyContext::Normal],
+                    description: "Page up",
+                },
+            ),
+            (
+                KeyCode::PageDown.into(),
+                BoundCommand {
+                    action: KeyboardAction::PageDown,
+                    contexts: vec![KeyContext::List, KeyContext::Normal],
+                    description: "Page down",
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+                BoundCommand {
+                    action: KeyboardAction::PageUp,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Page up",
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+                BoundCommand {
+                    action: KeyboardAction::PageDown,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Page down",
+                },
+            ),
+            // Cursor — jump to top/bottom (Home/End)
+            (
+                KeyCode::Home.into(),
+                BoundCommand {
+                    action: KeyboardAction::Top,
+                    contexts: vec![KeyContext::List, KeyContext::Normal],
+                    description: "Jump to top",
+                },
+            ),
+            (
+                KeyCode::End.into(),
+                BoundCommand {
+                    action: KeyboardAction::Bottom,
+                    contexts: vec![KeyContext::List, KeyContext::Normal],
+                    description: "Jump to bottom",
+                },
+            ),
             // Playback — space, n, p, Ctrl+N/P, s (stop)
             (
                 KeyCode::Char(' ').into(),

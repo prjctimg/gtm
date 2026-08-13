@@ -20,7 +20,7 @@
 // ```
 
 use crate::ipc::DaemonEvent;
-use crate::state::{CoreError, CrossfadeConfig, DaemonState, PlaybackStatus, RepeatMode};
+use crate::state::{CoreError, CrossfadeConfig, DaemonState, PlaybackStatus};
 use crate::track::TrackInfo;
 use crate::tripwire::{self, FailPoint};
 use crate::Result;
@@ -248,33 +248,23 @@ impl DaemonState {
         Ok(())
     }
 
-    /// Advance the queue cursor by `dir` (±1). Returns the next track if valid.
-    pub fn advance_queue(&mut self, dir: i32) -> Result<Option<&TrackInfo>> {
+    /// Consume the front of the one-time user queue.  The entry at the head
+    /// is the currently-playing track; advancing removes it and returns the
+    /// next pending user entry (now at the head), or None when the queue is
+    /// exhausted.
+    pub fn advance_queue(&mut self) -> Result<Option<&TrackInfo>> {
         tripwire::check(FailPoint::QueueAdvance)?;
         if self.queue.is_empty() {
             return Ok(None);
         }
-        let len = self.queue.len() as i128;
-        let new = self.queue_cursor as i128 + dir as i128;
-        if new >= len {
-            if matches!(self.repeat, RepeatMode::Off) {
-                return Ok(None);
-            }
-            self.queue_cursor = 0;
-        } else if new < 0 {
-            if matches!(self.repeat, RepeatMode::Off) {
-                return Ok(None);
-            }
-            self.queue_cursor = (len - 1) as u128;
-        } else {
-            self.queue_cursor = new as u128;
-        }
+        self.queue.remove(0);
+        self.queue_cursor = 0;
         self.version += 1;
         #[cfg(debug_assertions)]
         {
             self.check_invariants();
         }
-        Ok(self.queue.get(self.queue_cursor as usize))
+        Ok(self.queue.first())
     }
 
     /// Apply a DaemonEvent to mirror daemon state on the client side.
@@ -329,8 +319,9 @@ impl DaemonState {
                 self.status = PlaybackStatus::Stopped;
                 self.current_track = None;
                 self.time_pos = 0.0;
-                self.queue.clear();
-                self.queue_cursor = 0;
+                // Note: do NOT clear the queue here — the daemon owns queue
+                // consumption and mirrors every change via QueueChanged.  Wiping
+                // it here previously erased pending entries on every track end.
             }
             DaemonEvent::EqEnabledChanged { enabled } => {
                 self.eq_enabled = *enabled;

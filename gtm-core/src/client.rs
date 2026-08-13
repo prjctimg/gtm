@@ -283,6 +283,10 @@ impl DaemonClient {
         self.send_ok(DaemonReq::SetVolume { volume }).await
     }
 
+    pub async fn set_master_volume(&self, volume: u8) -> Result<()> {
+        self.send_ok(DaemonReq::SetMasterVolume { volume }).await
+    }
+
     pub async fn toggle_shuffle(&self) -> Result<()> {
         self.send_ok(DaemonReq::ToggleShuffle).await
     }

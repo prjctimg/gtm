@@ -106,7 +106,11 @@ impl DaemonConfig {
 
         let socket_pulse_path = if let Some(ref s) = args.socket {
             let mut p = PathBuf::from(s);
-            p.set_file_name("gtmd.pulse");
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "gtmd.sock".into());
+            p.set_file_name(format!("{name}.pulse"));
             p
         } else {
             gtm_core::resolve_pulse_socket()

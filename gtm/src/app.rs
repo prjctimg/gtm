@@ -158,7 +158,6 @@ pub struct App {
     pub crossfade_duration: u8,
     pub yt_search_loading: bool,
     pub yt_search_debounce: Option<std::time::Instant>,
-    pub pending_volume: Option<u8>,
     pub pending_delete: Option<(i64, String)>,
     pub pickers: PickerManager,
     pub sleep_timer_remaining: Option<u64>,
@@ -256,6 +255,7 @@ pub enum TuiCommand {
     Prev,
     Seek(f64),
     SetVolume(u8),
+    SetMasterVolume(u8),
     ToggleShuffle,
     CycleRepeat(RepeatMode),
     ToggleMute,
@@ -330,7 +330,6 @@ impl App {
             status_message: None,
             notifications: Vec::new(),
             crossfade_duration: 7,
-            pending_volume: None,
             pending_delete: None,
             yt_search_loading: false,
             yt_search_debounce: None,
@@ -895,6 +894,20 @@ impl App {
         albums.into_iter().collect()
     }
 
+    /// Length of the list currently visible in the library right pane,
+    /// depending on the active category and drill-down state.
+    pub fn library_list_len(&self) -> usize {
+        if self.browse_detail.is_some() {
+            return self.filtered_tracks().len();
+        }
+        match self.library_category {
+            2 => self.unique_albums().len(),
+            3 => self.unique_artists().len(),
+            4 => self.playlist_cache.len(),
+            _ => self.filtered_tracks().len(),
+        }
+    }
+
     /// Unique artist names with track counts, sorted by artist.
     pub fn unique_artists(&self) -> Vec<(String, usize)> {
         let mut artists: std::collections::BTreeMap<String, usize> =
@@ -938,7 +951,7 @@ impl App {
 
     fn settings_options_for_category(&self) -> usize {
         match self.settings_category {
-            0 => 2, // Audio: Volume, Mute
+            0 => 3, // Audio: Master Volume, Volume, Mute
             1 => 8, // YouTube
             2 => 4, // Playback: Repeat, Shuffle, Crossfade, Easing
             3 => 5, // System: Theme, Transparent BG, Sync Covers, Sync Lyrics, Footer Preset
@@ -1025,6 +1038,13 @@ impl App {
             TuiCommand::SetVolume(v) => {
                 tokio::spawn(async move {
                     if let Err(e) = client.set_volume(v).await {
+                        error_handler(e);
+                    }
+                });
+            }
+            TuiCommand::SetMasterVolume(v) => {
+                tokio::spawn(async move {
+                    if let Err(e) = client.set_master_volume(v).await {
                         error_handler(e);
                     }
                 });
@@ -1537,11 +1557,7 @@ impl App {
                         return false;
                     }
                     if let Ok(vol) = cmd.parse::<u8>() {
-                        if vol > 85 {
-                            self.pending_volume = Some(vol);
-                        } else {
-                            self.send_high(TuiCommand::SetVolume(vol));
-                        }
+                        self.send_high(TuiCommand::SetVolume(vol));
                     }
                 }
                 KeyCode::Char(c) => {
@@ -1553,22 +1569,6 @@ impl App {
                 _ => {}
             },
             InputMode::Normal => {
-                // If a volume safety prompt is pending, intercept Enter/Esc
-                if self.pending_volume.is_some() {
-                    match key.code {
-                        KeyCode::Enter => {
-                            if let Some(v) = self.pending_volume.take() {
-                                self.send_high(TuiCommand::SetVolume(v));
-                                self.notify(format!("Volume: {}%", v), NotificationKind::Info);
-                            }
-                        }
-                        KeyCode::Esc => {
-                            self.pending_volume = None;
-                        }
-                        _ => {}
-                    }
-                    return true;
-                }
                 // If a delete confirmation is pending, intercept Enter/Esc
                 if self.pending_delete.is_some() {
                     match key.code {
@@ -1597,7 +1597,10 @@ impl App {
                     }
                 }
                 // Handle gg (vim-style double-press) for jump to start
-                if key.code == KeyCode::Char('g') {
+                if key.code == KeyCode::Char('g')
+                    && self.current_tab == Tab::Library
+                    && !self.library_pane_focus
+                {
                     if self.pending_motion == Some('g') {
                         // Second 'g' — execute jump to start
                         self.pending_motion = None;
@@ -1628,7 +1631,14 @@ impl App {
                     return true;
                 }
                 match self.keybindings.dispatch(key, KeyContext::Normal) {
-                    Some(KeyboardAction::Quit) => return false,
+                    Some(KeyboardAction::Quit) => {
+                        if self.browse_detail.is_some() {
+                            self.browse_detail = None;
+                            self.scroll_offset = 0;
+                        } else {
+                            return false;
+                        }
+                    }
                     Some(KeyboardAction::QuitDaemon) => {
                         let c = self.client.clone();
                         tokio::spawn(async move {
@@ -1701,12 +1711,8 @@ impl App {
                     }
                     Some(KeyboardAction::VolumeUp) => {
                         let new_vol = (self.state.volume + 5).min(100);
-                        if new_vol > 85 {
-                            self.pending_volume = Some(new_vol);
-                        } else {
-                            self.send_high(TuiCommand::SetVolume(new_vol));
-                            self.notify(format!("Volume: {}%", new_vol), NotificationKind::Info);
-                        }
+                        self.send_high(TuiCommand::SetVolume(new_vol));
+                        self.notify(format!("Volume: {}%", new_vol), NotificationKind::Info);
                     }
                     Some(KeyboardAction::VolumeDown) => {
                         self.set_last_action("Volume Down");
@@ -1881,12 +1887,37 @@ impl App {
                             self.settings_option = (self.settings_option + 1).min(max);
                         }
                         Tab::Library => {
-                            let max_list = self.filtered_tracks().len();
-                            self.scroll_offset =
-                                (self.scroll_offset + 1).min(max_list.saturating_sub(1));
+                            let max_list = self.library_list_len().saturating_sub(1);
+                            self.scroll_offset = (self.scroll_offset + 1).min(max_list);
                             self.update_track_popup();
                         }
                     },
+                    Some(KeyboardAction::PageUp) => {
+                        if self.current_tab == Tab::Library && !self.library_pane_focus {
+                            let page = self.viewport_items.max(1);
+                            self.scroll_offset = self.scroll_offset.saturating_sub(page);
+                            self.update_track_popup();
+                        }
+                    }
+                    Some(KeyboardAction::PageDown) => {
+                        if self.current_tab == Tab::Library && !self.library_pane_focus {
+                            let page = self.viewport_items.max(1);
+                            let max_list = self.library_list_len().saturating_sub(1);
+                            self.scroll_offset = (self.scroll_offset + page).min(max_list);
+                            self.update_track_popup();
+                        }
+                    }
+                    Some(KeyboardAction::Top) => {
+                        if self.current_tab == Tab::Library && !self.library_pane_focus {
+                            self.scroll_offset = 0;
+                        }
+                    }
+                    Some(KeyboardAction::Bottom) => {
+                        if self.current_tab == Tab::Library && !self.library_pane_focus {
+                            let max_list = self.library_list_len().saturating_sub(1);
+                            self.scroll_offset = max_list;
+                        }
+                    }
                     Some(KeyboardAction::Select) => {
                         if self.current_tab == Tab::Library {
                             if self.library_pane_focus {
@@ -1961,6 +1992,20 @@ impl App {
                             let opt = self.settings_option;
                             match self.settings_category {
                                     0 => match opt {
+                                    0 => {
+                                        // Master Volume: cycle in 10% increments
+                                        let current = self.state.master_volume;
+                                        let new_vol = if current >= 100 {
+                                            50
+                                        } else {
+                                            (current + 10).min(100)
+                                        };
+                                        self.send_high(TuiCommand::SetMasterVolume(new_vol));
+                                        self.notify(
+                                            format!("Master Volume: {}%", new_vol),
+                                            NotificationKind::Info,
+                                        );
+                                    }
                                     1 => {
                                         // Mute toggle
                                         let muted = !self.state.mute;
@@ -2312,7 +2357,7 @@ impl App {
                     }
                     Some(KeyboardAction::JumpToEnd) => {
                         if self.current_tab == Tab::Library && !self.library_pane_focus {
-                            let max = self.filtered_tracks().len().saturating_sub(1);
+                            let max = self.library_list_len().saturating_sub(1);
                             self.scroll_offset = max;
                         }
                     }

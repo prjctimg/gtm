@@ -523,7 +523,7 @@ fn state_transition_crossfade_clamped() {
 }
 
 #[test]
-fn state_transition_advance_queue() {
+fn state_transition_advance_queue_one_time() {
     let mut s = sample_state();
     let t2 = TrackInfo {
         id: 2,
@@ -540,24 +540,26 @@ fn state_transition_advance_queue() {
     s.queue_cursor = 0;
     s.repeat = RepeatMode::All;
 
-    let next = s.advance_queue(1).unwrap().unwrap();
+    // The queue is a one-time FIFO: advancing consumes the head and surfaces
+    // the next pending entry.  sample_state() starts with track id 1.
+    let next = s.advance_queue().unwrap().unwrap();
     assert_eq!(next.id, 2);
-    assert_eq!(s.queue_cursor, 1);
-
-    let next = s.advance_queue(1).unwrap().unwrap();
-    assert_eq!(next.id, 3);
-    assert_eq!(s.queue_cursor, 2);
-
-    // Wrap around
-    let next = s.advance_queue(1).unwrap().unwrap();
-    assert_eq!(next.id, 1);
+    assert_eq!(s.queue.len(), 2);
     assert_eq!(s.queue_cursor, 0);
+
+    let next = s.advance_queue().unwrap().unwrap();
+    assert_eq!(next.id, 3);
+    assert_eq!(s.queue.len(), 1);
+
+    // Exhausted queue -> None.
+    assert!(s.advance_queue().unwrap().is_none());
+    assert!(s.queue.is_empty());
 }
 
 #[test]
 fn state_transition_advance_queue_empty() {
     let mut s = DaemonState::new();
-    assert!(s.advance_queue(1).unwrap().is_none());
+    assert!(s.advance_queue().unwrap().is_none());
 }
 
 #[test]

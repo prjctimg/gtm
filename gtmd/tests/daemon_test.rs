@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
-use gtm_core::ipc::{DaemonReq, DaemonRes, QueueAction};
+use gtm_core::ipc::{DaemonReq, DaemonRes, QueueAction, WireReq, WireRes, PROTOCOL_VERSION};
 
 use gtmd::config::{DaemonArgs, DaemonConfig};
 use gtmd::daemon::Daemon;
@@ -58,9 +58,9 @@ impl TestReader {
         }
     }
 
-    /// Read the next JSON response, silently discarding any binary event frames
-    /// that arrive before it.
-    async fn read_response(&mut self) -> DaemonRes {
+    /// Read the next response envelope, silently discarding any binary event
+    /// frames (and JSON event lines) that arrive before it.
+    async fn read_response(&mut self) -> WireRes {
         loop {
             // Try to parse from buffered data first.
             if let Some(res) = self.try_parse_response() {
@@ -80,26 +80,23 @@ impl TestReader {
         }
     }
 
-    fn try_parse_response(&mut self) -> Option<DaemonRes> {
+    fn try_parse_response(&mut self) -> Option<WireRes> {
         loop {
             if self.buf.is_empty() {
                 return None;
             }
-            if self.buf[0] == b'{' || self.buf[0] == b'"' {
-                // JSON response line — find the newline.
+            if self.buf[0] == b'{' {
+                // JSON line — either a response envelope or an event line.
                 let pos = match self.buf.iter().position(|&b| b == b'\n') {
                     Some(p) => p,
                     None => return None, // incomplete line, need more data
                 };
                 let line = self.buf[..pos].to_vec();
                 self.buf.drain(..=pos);
-                let res: DaemonRes = match serde_json::from_slice(&line) {
-                    Ok(r) => r,
-                    Err(_) => {
-                        continue; // skip bad data
-                    }
-                };
-                return Some(res);
+                match serde_json::from_slice::<WireRes>(&line) {
+                    Ok(res) => return Some(res),
+                    Err(_) => continue, // event line, skip it
+                }
             }
             // Binary WireFrame: 4-byte big-endian length prefix + payload.
             if self.buf.len() < 4 {
@@ -123,11 +120,17 @@ async fn send_req(
     writer: &mut tokio::net::unix::OwnedWriteHalf,
     req: &DaemonReq,
 ) -> DaemonRes {
-    let line = serde_json::to_string(req).unwrap() + "\n";
+    let params = serde_json::to_value(req).unwrap();
+    let wire = WireReq {
+        id: 1,
+        cmd: req.cmd_name().to_string(),
+        params,
+    };
+    let line = serde_json::to_string(&wire).unwrap() + "\n";
     writer.write_all(line.as_bytes()).await.unwrap();
     writer.flush().await.unwrap();
     let res = reader.read_response().await;
-    res
+    DaemonRes::from_wire(req.cmd_name(), &res)
 }
 
 async fn daemon_handle() -> (tokio::task::JoinHandle<()>, DaemonConfig) {
@@ -145,7 +148,23 @@ async fn daemon_handle() -> (tokio::task::JoinHandle<()>, DaemonConfig) {
 async fn connect(socket_path: &PathBuf) -> (TestReader, tokio::net::unix::OwnedWriteHalf) {
     let stream = UnixStream::connect(socket_path).await.unwrap();
     let (reader_half, writer_half) = stream.into_split();
-    (TestReader::new(reader_half), writer_half)
+    let mut reader = TestReader::new(reader_half);
+    let mut writer = writer_half;
+
+    // The daemon requires a handshake before accepting commands.
+    let res = send_req(
+        &mut reader,
+        &mut writer,
+        &DaemonReq::Handshake {
+            version: PROTOCOL_VERSION,
+            client: "daemon_test".into(),
+            client_version: None,
+        },
+    )
+    .await;
+    assert!(matches!(res, DaemonRes::Handshake { .. }));
+
+    (reader, writer)
 }
 
 #[tokio::test]
@@ -207,7 +226,7 @@ async fn test_queue_add_and_list() {
         },
     )
     .await;
-    assert!(matches!(res, DaemonRes::Ok { .. }));
+    assert!(matches!(res, DaemonRes::Ok { .. }), "got {res:?}");
 
     let res = send_req(
         &mut reader,
@@ -254,6 +273,9 @@ async fn test_queue_add_multiple() {
         assert!(matches!(res, DaemonRes::Ok { .. }));
     }
 
+    // Each Add with `position: None` queues the entry "next" (right after the
+    // currently-playing head), so sequential adds land in reverse insertion
+    // order after the head.
     let res = send_req(
         &mut reader,
         &mut writer,
@@ -270,8 +292,8 @@ async fn test_queue_add_multiple() {
         } => {
             assert_eq!(tracks.len(), 3);
             assert_eq!(tracks[0].path, "/tmp/a.opus");
-            assert_eq!(tracks[1].path, "/tmp/b.opus");
-            assert_eq!(tracks[2].path, "/tmp/c.opus");
+            assert_eq!(tracks[1].path, "/tmp/c.opus");
+            assert_eq!(tracks[2].path, "/tmp/b.opus");
             assert_eq!(cursor, 0);
         }
         _ => panic!("expected QueueState, got {res:?}"),
@@ -308,7 +330,7 @@ async fn test_queue_remove() {
         },
     )
     .await;
-    assert!(matches!(res, DaemonRes::Ok { .. }));
+    assert!(matches!(res, DaemonRes::Ok { .. }), "got {res:?}");
 
     let res = send_req(
         &mut reader,

@@ -1063,6 +1063,7 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
     // ── Right pane: options for selected category ──
     let items: Vec<String> = match app.settings_category {
         0 => vec![
+            format!("Master Volume   [ {:>3}%  ]", app.state.master_volume),
             format!("Volume          [ {:>3}%  ]", app.state.volume),
             format!(
                 "Mute            [ {} ]",
@@ -1183,8 +1184,9 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
     lines.push(Line::from(""));
     match (app.settings_category, sel) {
-        (0, 0) => lines.push(Line::from(Span::styled(" Volume: Use +/- keys to adjust playback volume.", Style::default().fg(app.theme.fg)))),
-        (0, 1) => lines.push(Line::from(Span::styled(" Mute: Press Enter to toggle mute on/off.", Style::default().fg(app.theme.fg)))),
+        (0, 0) => lines.push(Line::from(Span::styled(" Master Volume: Press Enter to cycle (caps maximum loudness).", Style::default().fg(app.theme.fg)))),
+        (0, 1) => lines.push(Line::from(Span::styled(" Volume: Use +/- keys to adjust playback volume.", Style::default().fg(app.theme.fg)))),
+        (0, 2) => lines.push(Line::from(Span::styled(" Mute: Press Enter to toggle mute on/off.", Style::default().fg(app.theme.fg)))),
         (1, _) => lines.push(Line::from(Span::styled(" YouTube: Configure JS runtime, download limits & search preferences.", Style::default().fg(app.theme.fg)))),
         (2, 0) => lines.push(Line::from(Span::styled(format!(" Repeat: Press Enter to cycle (current: {:?}).", app.state.repeat), Style::default().fg(app.theme.fg)))),
         (2, 1) => lines.push(Line::from(Span::styled(" Shuffle: Press Enter to toggle shuffle on/off.", Style::default().fg(app.theme.fg)))),
@@ -1520,17 +1522,6 @@ fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 // ─── Footer ───
 
 fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    // Volume safety prompt: shown inline in the footer
-    if app.pending_volume.is_some() {
-        let vol = app.pending_volume.unwrap_or(app.state.volume);
-        let prompt = format!("Volume >{}%? [Enter] Yes [Esc] No", vol);
-        f.render_widget(
-            Paragraph::new(prompt)
-                .style(Style::default().fg(app.theme.fg_bright).bg(app.theme.error)),
-            area,
-        );
-        return;
-    }
     match app.input_mode {
         InputMode::Normal => {
             // During tab transitions, preserve the last footer render to avoid

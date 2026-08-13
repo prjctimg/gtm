@@ -26,6 +26,7 @@ lru = "0.12"
 hex = "0.4"
 base64 = "0.22"
 dirs = "5"
+fastrand = "2"
 
 [features]
 default = ["mpris"]

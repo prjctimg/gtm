@@ -14,7 +14,37 @@ use std::collections::HashMap;
 /// `protocol.md` "Version Negotiation". Bumped only on breaking wire changes.
 pub const PROTOCOL_VERSION: u32 = 2;
 
-/// `/queue` sub-commands. Internally tagged via `action` so they serialize
+/// Serialization helpers for `u128` fields on wire enums.
+///
+/// `serde_json` cannot deserialize `u128` from numbers that pass through the
+/// content buffering used by internally-tagged enums ("u128 is not supported"),
+/// so wire enum fields use these helpers: numbers are carried as `u64` and
+/// widened to `u128`.
+mod u128_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &u128, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_u128(*v)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<u128, D::Error> {
+        u64::deserialize(d).map(u128::from)
+    }
+}
+
+mod opt_u128_serde {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &Option<u128>, s: S) -> Result<S::Ok, S::Error> {
+        v.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<u128>, D::Error> {
+        Ok(Option::<u64>::deserialize(d)?.map(u128::from))
+    }
+}
+
+/// `/queue` sub-commands. Internally tagged via `action`, wire encoding is
 /// flat: `{"action":"add","path":"...","position":null}` per `commands.md`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -22,14 +52,18 @@ pub enum QueueAction {
     List,
     Clear,
     Remove {
+        #[serde(with = "u128_serde")]
         index: u128,
     },
     Move {
+        #[serde(with = "u128_serde")]
         from: u128,
+        #[serde(with = "u128_serde")]
         to: u128,
     },
     Add {
         path: String,
+        #[serde(with = "opt_u128_serde")]
         position: Option<u128>,
     },
     AddMany {
@@ -40,6 +74,7 @@ pub enum QueueAction {
     },
     Set {
         paths: Vec<String>,
+        #[serde(with = "u128_serde")]
         start_idx: u128,
     },
 }
@@ -77,6 +112,7 @@ pub enum LibraryAction {
         path: String,
     },
     GetRecent {
+        #[serde(with = "u128_serde")]
         count: u128,
     },
     SyncCovers,
@@ -131,6 +167,9 @@ pub enum DaemonReq {
         position_secs: f64,
     },
     SetVolume {
+        volume: u8,
+    },
+    SetMasterVolume {
         volume: u8,
     },
     GetVolume,
@@ -260,6 +299,7 @@ impl DaemonReq {
             DaemonReq::Prev => "prev",
             DaemonReq::Seek { .. } => "seek",
             DaemonReq::SetVolume { .. } => "set_volume",
+            DaemonReq::SetMasterVolume { .. } => "set_master_volume",
             DaemonReq::GetVolume => "get_volume",
             DaemonReq::ToggleShuffle => "toggle_shuffle",
             DaemonReq::CycleRepeat { .. } => "cycle_repeat",
@@ -899,6 +939,20 @@ impl DaemonRes {
     }
 
     fn ok_from_data(cmd: &str, data: Value) -> Self {
+        // Plain ack: no payload. serde flatten turns an empty remainder into
+        // `Some(Object{})`, so treat Null/empty-object as a bare ack.
+        let is_ack = match &data {
+            Value::Null => true,
+            Value::Object(map) => map.is_empty(),
+            _ => false,
+        };
+        if is_ack {
+            return if cmd == "ping" {
+                DaemonRes::Pong
+            } else {
+                DaemonRes::Ok
+            };
+        }
         match cmd {
             "handshake" => {
                 #[derive(Deserialize)]

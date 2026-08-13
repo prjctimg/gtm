@@ -37,6 +37,8 @@ pub trait Mixer: Send + Sync {
     fn seek(&mut self, position_secs: f64) -> AudioResult<()>;
     fn set_volume(&mut self, volume: u8) -> AudioResult<()>;
     fn volume(&self) -> u8;
+    fn set_master_volume(&mut self, volume: u8) -> AudioResult<()>;
+    fn master_volume(&self) -> u8;
     fn is_playing(&self) -> bool;
     fn current_position(&self) -> f64;
     fn duration(&self) -> f64;
@@ -82,6 +84,7 @@ pub struct AudioMixer {
     duration: Arc<Mutex<f64>>,
     playing: Arc<AtomicBool>,
     volume: Arc<AtomicU8>,
+    master_volume: Arc<AtomicU8>,
     start_time: Arc<Mutex<Option<Instant>>>,
     start_pos: Arc<Mutex<f64>>,
     crossfade_start: Option<Instant>,
@@ -101,7 +104,15 @@ pub struct AudioMixer {
     active_decode_handle: Option<std::thread::JoinHandle<()>>,
     standby_control: Option<Arc<DecodeControl>>,
     standby_decode_handle: Option<std::thread::JoinHandle<()>>,
+    /// When the active sink first ran dry while still marked playing.
+    /// Emit `Finished` only after the grace period elapses so transient
+    /// buffer gaps (seek restarts, source swaps) never truncate a track.
+    underrun_since: Option<Instant>,
 }
+
+/// Grace period before an empty sink is declared finished.  All supported
+/// sources only run dry at genuine EOF, so this is purely a jitter filter.
+const UNDERFLOW_GRACE: Duration = Duration::from_millis(100);
 
 struct MixerDeviceSink(rodio::MixerDeviceSink);
 
@@ -145,6 +156,12 @@ impl Mixer for AudioMixer {
     }
     fn volume(&self) -> u8 {
         self.volume()
+    }
+    fn set_master_volume(&mut self, volume: u8) -> AudioResult<()> {
+        self.set_master_volume(volume)
+    }
+    fn master_volume(&self) -> u8 {
+        self.master_volume()
     }
     fn is_playing(&self) -> bool {
         self.is_playing()
@@ -210,6 +227,7 @@ impl AudioMixer {
             duration: Arc::new(Mutex::new(0.0)),
             playing: Arc::new(AtomicBool::new(false)),
             volume: Arc::new(AtomicU8::new(100)),
+            master_volume: Arc::new(AtomicU8::new(100)),
             start_time: Arc::new(Mutex::new(None)),
             start_pos: Arc::new(Mutex::new(0.0)),
             crossfade_start: None,
@@ -227,6 +245,7 @@ impl AudioMixer {
             active_decode_handle: None,
             standby_control: None,
             standby_decode_handle: None,
+            underrun_since: None,
         })
     }
 
@@ -250,6 +269,16 @@ impl AudioMixer {
     /// Kept for `load_active_decoded` / `load_standby_decoded` paths.
     pub fn decode_file(path: &str) -> AudioResult<Box<dyn Source<Item = f32> + Send>> {
         Self::decode(path)
+    }
+
+    /// Decode a file starting at `start_pos` seconds (blocking I/O).
+    /// Safe to call from `spawn_blocking`. Uses the seek-skip fast-forward
+    /// in `SymphoniaSource`, so it works for every supported format.
+    pub fn decode_file_at(
+        path: &str,
+        start_pos: f64,
+    ) -> AudioResult<Box<dyn Source<Item = f32> + Send>> {
+        SymphoniaSource::from_file(path, start_pos)
     }
 
     fn decode(path: &str) -> AudioResult<Box<dyn Source<Item = f32> + Send>> {
@@ -355,7 +384,7 @@ impl AudioMixer {
 
         let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
         self.active().stop();
-        self.active().set_volume(vol);
+        self.active().set_volume(vol * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0));
 
         // Probe duration
         let dur = Self::probe_duration(path)?;
@@ -398,7 +427,7 @@ impl AudioMixer {
 
         let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
         self.active().stop();
-        self.active().set_volume(vol);
+        self.active().set_volume(vol * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0));
 
         if let Some(ref dur) = source.total_duration() {
             *self.duration.lock().unwrap() = dur.as_secs_f64();
@@ -460,13 +489,13 @@ impl AudioMixer {
             self.active().play();
             // Restore volume — the sink was faded to 0 during the pause fade-out.
             let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
-            self.active().set_volume(vol);
+            self.active().set_volume(vol * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0));
         }
         if self.pending_pause {
             self.pending_pause = false;
             self.pause_fade_start = None;
             let vol = self.stored_volume.min(100) as f32 / 100.0;
-            self.active().set_volume(vol);
+            self.active().set_volume(vol * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0));
         }
         *self.start_time.lock().unwrap() = Some(Instant::now());
         self.playing.store(true, Ordering::SeqCst);
@@ -505,15 +534,27 @@ impl AudioMixer {
         Ok(())
     }
 
+    fn effective_vol_ratio(&self, volume: u8) -> f32 {
+        (volume.min(100) as f32 / 100.0) * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0)
+    }
+
     pub fn set_volume(&mut self, volume: u8) -> AudioResult<()> {
-        let vol = volume.min(100) as f32 / 100.0;
         self.volume.store(volume.min(100), Ordering::SeqCst);
-        self.active().set_volume(vol);
+        self.active().set_volume(self.effective_vol_ratio(volume));
         Ok(())
     }
 
     pub fn volume(&self) -> u8 {
         self.volume.load(Ordering::SeqCst)
+    }
+
+    pub fn set_master_volume(&mut self, volume: u8) -> AudioResult<()> {
+        self.master_volume.store(volume.min(100), Ordering::SeqCst);
+        self.set_volume(self.volume.load(Ordering::SeqCst))
+    }
+
+    pub fn master_volume(&self) -> u8 {
+        self.master_volume.load(Ordering::SeqCst)
     }
 
     pub fn is_playing(&self) -> bool {
@@ -568,14 +609,15 @@ impl AudioMixer {
         }
         self.crossfade_start = None;
         let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
+        let master = self.master_volume.load(Ordering::SeqCst) as f32 / 100.0;
         if self.is_a_active {
             self.player_a.set_volume(0.0);
             self.player_a.stop();
-            self.player_b.set_volume(vol);
+            self.player_b.set_volume(vol * master);
         } else {
             self.player_b.set_volume(0.0);
             self.player_b.stop();
-            self.player_a.set_volume(vol);
+            self.player_a.set_volume(vol * master);
         }
         self.is_a_active = !self.is_a_active;
         *self.start_time.lock().unwrap() = Some(Instant::now());
@@ -626,7 +668,8 @@ impl AudioMixer {
         let eased_out = Self::ease_out(progress, self.crossfade_easing);
         let eased_in = Self::ease_in(progress, self.crossfade_easing);
         let vol = self.volume.load(Ordering::SeqCst) as f64 / 100.0;
-        let base = vol.min(1.0);
+        let master = self.master_volume.load(Ordering::SeqCst) as f64 / 100.0;
+        let base = vol.min(1.0) * master;
 
         self.player_a.set_volume(if self.is_a_active {
             eased_out * base
@@ -695,7 +738,8 @@ impl AudioMixer {
                 self.playing.store(false, Ordering::SeqCst);
             } else {
                 let progress = elapsed / FADE_MS;
-                let target = (self.stored_volume.min(100) as f32 / 100.0) * (1.0 - progress as f32);
+                let start = (self.stored_volume.min(100) as f32 / 100.0) * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0);
+                let target = start * (1.0 - progress as f32);
                 self.active().set_volume(target);
             }
         }
@@ -704,22 +748,27 @@ impl AudioMixer {
             if self.crossfade_start.is_some() {
                 self.force_complete_crossfade();
                 if !self.active().empty() {
+                    self.underrun_since = None;
                     return Ok(None);
                 }
             }
             if self.playing.load(Ordering::SeqCst) {
-                // Guard: if the buffer emptied before the track duration was
-                // reached, it's an underrun — skip Finished and retry next poll.
-                let total = *self.duration.lock().unwrap();
-                let pos = self.current_position();
-                if total > 0.0 && pos < total - 0.5 {
+                // Underrun guard: the sink can run dry transiently while a
+                // source is swapped or a decode thread restarts. Give it a
+                // short grace period, then emit Finished unconditionally so
+                // auto-advance always fires at end of track.
+                let since = self.underrun_since.get_or_insert_with(Instant::now);
+                if since.elapsed() < UNDERFLOW_GRACE {
                     return Ok(None);
                 }
+                self.underrun_since = None;
                 self.playing.store(false, Ordering::SeqCst);
                 return Ok(Some(AudioEvent::Finished));
             }
+            self.underrun_since = None;
             return Ok(None);
         }
+        self.underrun_since = None;
 
         if !self.active().is_paused() {
             let elapsed = self

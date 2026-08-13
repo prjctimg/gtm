@@ -1655,6 +1655,7 @@ dependencies = [
  "bincode",
  "clap",
  "dirs 5.0.1",
+ "fastrand",
  "gtm-audio",
  "gtm-core",
  "gtm-mpris",

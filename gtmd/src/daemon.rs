@@ -70,7 +70,8 @@ use crate::config::AudioBackendKind;
 use gtm_audio::PulseAudioMixer;
 use gtm_audio::{AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
 use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, QueueAction, WireReq, PROTOCOL_VERSION};
-use gtm_core::state::{DaemonState, EqPreset, PlaybackStatus, ReverbConfig, SavedState};
+use gtm_core::state::{DaemonState, EqPreset, PlaybackStatus, RepeatMode, ReverbConfig, SavedState};
+use gtm_core::track::TrackInfo;
 use gtm_core::wire;
 use gtm_core::CoreError;
 
@@ -83,6 +84,10 @@ use crate::youtube::YoutubeManager;
 
 type ClientId = u64;
 type ReplyTx = mpsc::UnboundedSender<(u64, DaemonRes)>;
+
+/// Above this position `Prev` restarts the current track instead of going
+/// back through playback history.
+const RESTART_THRESHOLD_SECS: f64 = 3.0;
 
 use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
@@ -122,6 +127,16 @@ impl HealthTracker {
     }
 }
 
+/// One previously-played track used by `Prev` for full back-traversal
+/// (through user queue entries, then into the default list).
+enum HistoryEntry {
+    User(TrackInfo),
+    Default {
+        index: usize,
+        track: TrackInfo,
+    },
+}
+
 struct DaemonInner {
     state: Arc<RwLock<DaemonState>>,
     mixer: tokio::sync::Mutex<Box<dyn Mixer>>,
@@ -143,6 +158,8 @@ struct DaemonInner {
     /// and internal commands) so that only one state mutation runs at a
     /// time, preventing races between concurrent IPC commands and auto-advance.
     cmd_lock: tokio::sync::Mutex<()>,
+    /// Playback history for Prev back-traversal (guarded by cmd_lock in use).
+    play_history: tokio::sync::Mutex<Vec<HistoryEntry>>,
 }
 
 pub struct Daemon {
@@ -181,8 +198,13 @@ impl Daemon {
                 .map_err(|e| CoreError::Daemon(format!("create socket dir: {e}")))?;
         }
         if socket_path.exists() {
-            std::fs::remove_file(socket_path)
-                .map_err(|e| CoreError::Daemon(format!("remove stale socket: {e}")))?;
+            match std::fs::remove_file(socket_path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(CoreError::Daemon(format!("remove stale socket: {e}")))
+                }
+            }
         }
 
         let listener = UnixListener::bind(socket_path)
@@ -194,8 +216,13 @@ impl Daemon {
                 .map_err(|e| CoreError::Daemon(format!("create pulse socket dir: {e}")))?;
         }
         if pulse_path.exists() {
-            std::fs::remove_file(pulse_path)
-                .map_err(|e| CoreError::Daemon(format!("remove stale pulse socket: {e}")))?;
+            match std::fs::remove_file(pulse_path) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => {
+                    return Err(CoreError::Daemon(format!("remove stale pulse socket: {e}")))
+                }
+            }
         }
         let pulse_listener = UnixListener::bind(pulse_path)
             .map_err(|e| CoreError::Daemon(format!("bind pulse socket: {e}")))?;
@@ -234,6 +261,7 @@ impl Daemon {
             client_auth: tokio::sync::Mutex::new(HashMap::new()),
             internal_req_tx,
             cmd_lock: tokio::sync::Mutex::new(()),
+            play_history: tokio::sync::Mutex::new(Vec::new()),
         });
 
         Ok(Self {
@@ -715,6 +743,10 @@ impl Daemon {
                 })
             }
             DaemonReq::Play { path, start_pos } => {
+                // Explicit user play: reset Prev back-traversal and re-enable
+                // the default-list fallback.
+                Self::clear_history(inner).await;
+                Self::enable_fallback(inner).await;
                 Self::cmd_play(inner, path, *start_pos, false).await
             }
             DaemonReq::PlayPause => Self::cmd_playpause(inner).await,
@@ -724,6 +756,7 @@ impl Daemon {
             DaemonReq::Prev => Self::cmd_prev(inner).await,
             DaemonReq::Seek { position_secs } => Self::cmd_seek(inner, *position_secs).await,
             DaemonReq::SetVolume { volume } => Self::cmd_set_volume(inner, *volume).await,
+            DaemonReq::SetMasterVolume { volume } => Self::cmd_set_master_volume(inner, *volume).await,
             DaemonReq::GetVolume => Self::cmd_get_volume(inner).await,
             DaemonReq::ToggleShuffle => Self::cmd_toggle_shuffle(inner).await,
             DaemonReq::CycleRepeat { mode } => Self::cmd_cycle_repeat(inner, *mode).await,
@@ -887,6 +920,320 @@ impl Daemon {
         });
     }
 
+    /// Re-enable the default-list fallback (explicit play / queue add intent).
+    async fn enable_fallback(inner: &DaemonInner) {
+        inner.state.write().await.fallback_disabled = false;
+    }
+
+    /// Clear the Prev back-traversal history (explicit play / queue reset).
+    async fn clear_history(inner: &DaemonInner) {
+        inner.play_history.lock().await.clear();
+    }
+
+    /// Push a QueueChanged event carrying the merged queue view.
+    async fn push_queue_state(inner: &DaemonInner) {
+        let state = inner.state.read().await;
+        let (queue, cursor) = queue::visible_queue(&state);
+        drop(state);
+        Self::push_event(inner, DaemonEvent::QueueChanged { queue, cursor });
+    }
+
+    /// The track that will play after the current one, without mutating any
+    /// state.  Used to preload the crossfade standby.
+    ///
+    /// The default-list cursor points at the currently-playing (or most
+    /// recently played) default entry, so the resume point is `cursor + 1`.
+    fn next_track(state: &DaemonState) -> Option<TrackInfo> {
+        let cur_is_queued = state
+            .current_track
+            .as_ref()
+            .map(|t| {
+                state
+                    .queue
+                    .first()
+                    .map(|q| q.path == t.path)
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if !state.queue.is_empty() {
+            if cur_is_queued {
+                state
+                    .queue
+                    .get(1)
+                    .cloned()
+                    .or_else(|| state.default_list.get(state.default_cursor + 1).cloned())
+            } else {
+                state.queue.first().cloned()
+            }
+        } else if !state.default_list.is_empty() {
+            let len = state.default_list.len();
+            let cursor = state.default_cursor.min(len - 1);
+            if cursor + 1 < len {
+                state.default_list.get(cursor + 1).cloned()
+            } else {
+                match state.repeat {
+                    RepeatMode::All => state.default_list.first().cloned(),
+                    _ => None,
+                }
+            }
+        } else {
+            None
+        }
+    }
+
+    /// Build the default playback list: the whole library sorted by title
+    /// (case-insensitive), shuffled when enabled.  When not shuffling, the
+    /// list is rotated so it resumes at the first title at/after the leading
+    /// letter of `resume_key`.
+    async fn build_default_list(inner: &DaemonInner, resume_key: Option<&str>) -> Vec<TrackInfo> {
+        let data_dir = inner.config.data_dir.clone();
+        let tracks = tokio::task::spawn_blocking(move || {
+            Library::new(data_dir.to_str().unwrap_or(""))
+                .ok()
+                .and_then(|lib| lib.list_tracks().ok())
+        })
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+        if tracks.is_empty() {
+            return tracks;
+        }
+        let mut list = tracks;
+        list.sort_by_key(|a| a.title.to_lowercase());
+        let shuffle = inner.state.read().await.shuffle;
+        if shuffle {
+            fastrand::shuffle(&mut list);
+        } else if let Some(key) = resume_key {
+            let key_char = key
+                .chars()
+                .next()
+                .map(|c| c.to_lowercase().next().unwrap_or(c))
+                .unwrap_or('\0');
+            let pos = list.iter().position(|t| {
+                t.title
+                    .chars()
+                    .next()
+                    .map(|c| c.to_lowercase().next().unwrap_or(c))
+                    .unwrap_or('\0')
+                    >= key_char
+            });
+            if let Some(pos) = pos {
+                if pos > 0 {
+                    list.rotate_left(pos);
+                }
+            }
+        }
+        list
+    }
+
+    /// Consume the current entry (recording it for Prev back-traversal) and
+    /// return the next track to play per the queue model:
+    ///
+    ///   1. the next user-queue entry, if any
+    ///   2. the next default-list entry (RepeatMode governs the list end)
+    ///   3. a freshly-built default list (resuming at the letter of the last
+    ///      played track) once the user queue exhausts, unless disabled
+    ///
+    /// Returns None when playback should stop.  Does not start playback.
+    async fn step_next(inner: &DaemonInner) -> Result<Option<TrackInfo>, CoreError> {
+        let mut resume_key: Option<String> = None;
+        {
+            let mut history = inner.play_history.lock().await;
+            let mut state = inner.state.write().await;
+            if !state.queue.is_empty() {
+                let cur_is_queued = state
+                    .current_track
+                    .as_ref()
+                    .map(|t| t.path == state.queue[0].path)
+                    .unwrap_or(false);
+                if cur_is_queued {
+                    let cur = state.queue.remove(0);
+                    resume_key = Some(cur.title.clone());
+                    history.push(HistoryEntry::User(cur));
+                    if !state.queue.is_empty() {
+                        let next = state.queue[0].clone();
+                        drop(state);
+                        drop(history);
+                        return Ok(Some(next));
+                    }
+                } else {
+                    // Standalone interruption with queue items pending: the
+                    // next queue entry plays without consuming anything.
+                    let next = state.queue[0].clone();
+                    drop(state);
+                    drop(history);
+                    return Ok(Some(next));
+                }
+                // User queue exhausted → fall through to the default list.
+            }
+            if !state.default_list.is_empty() {
+                let len = state.default_list.len();
+                let cursor = state.default_cursor;
+                if cursor < len {
+                    let cur = state.default_list[cursor].clone();
+                    history.push(HistoryEntry::Default {
+                        index: cursor,
+                        track: cur.clone(),
+                    });
+                    let next_idx = cursor + 1;
+                    if next_idx < len {
+                        state.default_cursor = next_idx;
+                        let next = state.default_list[next_idx].clone();
+                        drop(state);
+                        drop(history);
+                        return Ok(Some(next));
+                    }
+                    state.default_cursor = next_idx;
+                    let next = match state.repeat {
+                        RepeatMode::Off => None,
+                        RepeatMode::All => {
+                            state.default_cursor = 0;
+                            state.default_list.first().cloned()
+                        }
+                        RepeatMode::One => {
+                            state.default_cursor = cursor;
+                            Some(cur)
+                        }
+                    };
+                    drop(state);
+                    drop(history);
+                    return Ok(next);
+                } else {
+                    // Cursor already past the end (e.g. after an Off-stop);
+                    // honor RepeatMode without re-recording history.
+                    let next = match state.repeat {
+                        RepeatMode::Off => None,
+                        RepeatMode::All => {
+                            state.default_cursor = 0;
+                            state.default_list.first().cloned()
+                        }
+                        RepeatMode::One => {
+                            state.default_cursor = len - 1;
+                            state.default_list.get(len - 1).cloned()
+                        }
+                    };
+                    drop(state);
+                    drop(history);
+                    return Ok(next);
+                }
+            }
+            if resume_key.is_none() {
+                resume_key = state.current_track.as_ref().map(|t| t.title.clone());
+            }
+            let fallback_disabled = state.fallback_disabled;
+            drop(state);
+            drop(history);
+            if fallback_disabled {
+                return Ok(None);
+            }
+        }
+        let list = Self::build_default_list(inner, resume_key.as_deref()).await;
+        if list.is_empty() {
+            return Ok(None);
+        }
+        let first = list[0].clone();
+        {
+            let mut state = inner.state.write().await;
+            state.default_list = list;
+            state.default_cursor = 0;
+            state.fallback_disabled = false;
+        }
+        Ok(Some(first))
+    }
+
+    /// Stop the mixer and reset playback state, broadcasting TrackEnded.
+    async fn stop_playback(inner: &DaemonInner) {
+        {
+            let mut mixer = inner.mixer.lock().await;
+            let _ = mixer.stop();
+        }
+        *inner.crossfade_loaded_for.lock().await = None;
+        let mut state = inner.state.write().await;
+        state.status = PlaybackStatus::Stopped;
+        state.current_track = None;
+        state.time_pos = 0.0;
+        drop(state);
+        Self::push_event(inner, DaemonEvent::TrackEnded);
+    }
+
+    /// Start playback of `track` as an auto-advanced next entry, using a
+    /// crossfade when enabled and straightforward, else a plain play.
+    /// Pushes PlaybackStarted.
+    /// Preload `track` as a crossfade standby and start the fade without
+    /// advancing the model.  Returns true when the fade started; the model is
+    /// advanced later by `finish_crossfade` once the mixer swaps the standby
+    /// into the active slot.
+    async fn try_start_crossfade(inner: &DaemonInner, track: &TrackInfo) -> bool {
+        let (enabled, dur, easing) = {
+            let state = inner.state.read().await;
+            match state.crossfade.as_ref() {
+                Some(cf) => (cf.enabled, cf.duration_secs as f64, cf.easing),
+                None => (false, 0.0, gtm_core::state::Easing::Linear),
+            }
+        };
+        if !enabled
+            || dur <= 0.0
+            || inner.crossfade_loaded_for.lock().await.is_some()
+            || inner.mixer.lock().await.is_crossfading()
+        {
+            return false;
+        }
+        let path = track.path.clone();
+        let path_owned = path.clone();
+        let decoded =
+            tokio::task::spawn_blocking(move || AudioMixer::decode_file(&path_owned)).await;
+        let source = match decoded {
+            Ok(Ok(source)) => source,
+            _ => return false,
+        };
+        let mut mixer = inner.mixer.lock().await;
+        if mixer.load_standby_decoded(source).is_err() {
+            return false;
+        }
+        mixer.set_crossfade_easing(easing);
+        mixer.start_crossfade(dur);
+        drop(mixer);
+        *inner.crossfade_loaded_for.lock().await = Some(track.path.clone());
+        true
+    }
+
+    /// Finalize a crossfade: the standby (next) track is already playing on
+    /// the mixer, so only the state must be advanced and reported.
+    async fn finish_crossfade(inner: &DaemonInner) {
+        let actual = inner.mixer.lock().await.current_position();
+        *inner.crossfade_loaded_for.lock().await = None;
+        match Self::step_next(inner).await {
+            Ok(Some(next)) => {
+                let dur = inner.mixer.lock().await.duration();
+                {
+                    let mut state = inner.state.write().await;
+                    state.status = PlaybackStatus::Playing;
+                    state.time_pos = actual;
+                    state.current_track = Some(next.clone());
+                    state.duration = dur;
+                }
+                Self::push_event(
+                    inner,
+                    DaemonEvent::PlaybackStarted {
+                        track: next,
+                        auto_advanced: true,
+                        time_pos: actual,
+                        duration: dur,
+                    },
+                );
+                Self::push_queue_state(inner).await;
+            }
+            Ok(None) => {
+                Self::stop_playback(inner).await;
+            }
+            Err(e) => {
+                warn!("crossfade finish failed: {e}");
+                Self::stop_playback(inner).await;
+            }
+        }
+    }
+
     /// Process an audio event from the mixer backend.
     ///
     /// ```text
@@ -926,61 +1273,26 @@ impl Daemon {
 
         match ev {
             AudioEvent::Position(pos) => {
+                // Crossfade completion: the mixer has swapped the standby
+                // into the active slot, so the model must catch up before
+                // time_pos is updated.
+                if inner.crossfade_loaded_for.lock().await.is_some()
+                    && !inner.mixer.lock().await.is_crossfading()
+                {
+                    let _lock = inner.cmd_lock.lock().await;
+                    Self::finish_crossfade(inner).await;
+                }
                 let mut state = inner.state.write().await;
                 state.time_pos = pos;
                 let dur = state.duration;
                 let crossfade = state.crossfade.clone();
-                let cur_path = state.current_track.as_ref().map(|t| t.path.clone());
-                let queue_len = state.queue.len();
+                let next = Self::next_track(&state);
                 drop(state);
 
                 if let Some(cf) = crossfade {
-                    let should_crossfade = {
-                        let mixer = inner.mixer.lock().await;
-                        cf.enabled
-                            && dur > 0.0
-                            && queue_len > 0
-                            && !mixer.is_crossfading()
-                            && inner.crossfade_loaded_for.lock().await.is_none()
-                            && (dur - pos) <= cf.duration_secs as f64 + 0.5
-                    };
-                    if should_crossfade {
-                        let next_path = {
-                            let s = inner.state.read().await;
-                            if s.queue_cursor + 1 < s.queue.len() as u128 {
-                                Some(s.queue[s.queue_cursor as usize + 1].path.clone())
-                            } else if matches!(s.repeat, gtm_core::state::RepeatMode::All)
-                                && !s.queue.is_empty()
-                            {
-                                Some(s.queue[0].path.clone())
-                            } else {
-                                None
-                            }
-                        };
-                        if let Some(ref path) = next_path {
-                            let path_owned = path.clone();
-                            let decoded = tokio::task::spawn_blocking(move || {
-                                AudioMixer::decode_file(&path_owned)
-                            })
-                            .await;
-                            if let Ok(Ok(source)) = decoded {
-                                let mut mixer = inner.mixer.lock().await;
-                                if mixer.load_standby_decoded(source).is_ok() {
-                                    mixer.set_crossfade_easing(cf.easing);
-                                    mixer.start_crossfade(cf.duration_secs as f64);
-                                    drop(mixer);
-                                    *inner.crossfade_loaded_for.lock().await = cur_path.clone();
-                                    if let Ok(mut s) = inner.state.try_write() {
-                                        let _ = s.advance_queue(1);
-                                        let idx = s.queue_cursor;
-                                        drop(s);
-                                        Self::push_event(
-                                            inner,
-                                            DaemonEvent::QueueIndexChanged { index: idx },
-                                        );
-                                    }
-                                }
-                            }
+                    if cf.enabled && dur > 0.0 && (dur - pos) <= cf.duration_secs as f64 + 0.5 {
+                        if let Some(track) = next {
+                            let _ = Self::try_start_crossfade(inner, &track).await;
                         }
                     }
                 }
@@ -993,39 +1305,16 @@ impl Daemon {
             }
             AudioEvent::Finished => {
                 let was_crossfading = inner.crossfade_loaded_for.lock().await.is_some();
-                *inner.crossfade_loaded_for.lock().await = None;
                 if was_crossfading {
-                    let actual = {
-                        let mixer = inner.mixer.lock().await;
-                        mixer.current_position()
-                    };
-                    let mut state = inner.state.write().await;
-                    state.status = PlaybackStatus::Playing;
-                    state.time_pos = actual;
-                    if state.queue_cursor < state.queue.len() as u128 {
-                        state.current_track =
-                            Some(state.queue[state.queue_cursor as usize].clone());
-                    }
-                    let track = state.current_track.clone();
-                    drop(state);
-                    if let Some(t) = track {
-                        Self::push_event(
-                            inner,
-                            DaemonEvent::PlaybackStarted {
-                                track: t.clone(),
-                                auto_advanced: true,
-                                time_pos: actual,
-                                duration: t.duration as f64,
-                            },
-                        );
-                    }
+                    // Rare: the completion-detection poll was missed, so the
+                    // crossfaded standby already ended. Finalize the model,
+                    // then keep auto-advancing past it.
+                    let _lock = inner.cmd_lock.lock().await;
+                    Self::finish_crossfade(inner).await;
+                    let _ = Self::cmd_next(inner).await;
                 } else {
-                    let mut state = inner.state.write().await;
-                    state.status = PlaybackStatus::Stopped;
-                    state.time_pos = 0.0;
-                    state.current_track = None;
-                    drop(state);
-                    Self::push_event(inner, DaemonEvent::TrackEnded);
+                    // Genuine end-of-track: auto-advance through the internal
+                    // request channel so it is serialized with client commands.
                     let _ = inner.internal_req_tx.send(DaemonReq::Next);
                 }
             }
@@ -1180,6 +1469,14 @@ impl Daemon {
                 ..Default::default()
             }
         };
+        // Rotate the user queue so the explicitly-played track sits at index
+        // 0 (the one-time queue consumes from the head).  No-op when the track
+        // isn't queued (standalone interruption) or already at the head.
+        if let Some(pos) = state.queue.iter().position(|t| t.path == track.path) {
+            if pos > 0 {
+                state.queue.rotate_left(pos);
+            }
+        }
         state.play(track.clone())?;
         state.time_pos = start_pos;
         state.duration = dur;
@@ -1247,12 +1544,13 @@ impl Daemon {
             } else if !path.is_empty() {
                 Self::cmd_play(inner, &path, 0.0, false).await
             } else {
+                // Stopped with nothing current: play the merged view's entry
+                // at the cursor (next user entry or default-list entry).
                 let state = inner.state.read().await;
-                let queue = state.queue.clone();
-                let cursor = state.queue_cursor as usize;
+                let (queue, cursor) = queue::visible_queue(&state);
                 drop(state);
                 if !queue.is_empty() {
-                    let idx = cursor.min(queue.len() - 1);
+                    let idx = (cursor as usize).min(queue.len() - 1);
                     Self::cmd_play(inner, &queue[idx].path, 0.0, false).await
                 } else {
                     Ok(DaemonRes::Ok)
@@ -1294,199 +1592,118 @@ impl Daemon {
         Ok(DaemonRes::Ok)
     }
 
-    /// Advance to next track in the queue.  Advances cursor via
-    /// state.advance_queue(1), then plays the track at the new cursor.
-    /// Returns Ok if no next track (already at end).
+    /// Advance to the next track per the queue model: consume the current
+    /// entry, then play the next queued / default-list / freshly-built
+    /// fallback track.  Stops playback when there is nothing left to play.
     async fn cmd_next(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        let track = match state.advance_queue(1)? {
-            Some(t) => t.clone(),
-            None => {
-                let was_playing = state.status == PlaybackStatus::Playing;
-                drop(state);
-                if was_playing {
-                    inner.mixer.lock().await.stop()?;
-                }
-                let mut state = inner.state.write().await;
-                state.queue.clear();
-                state.queue_cursor = 0;
-                state.current_track = None;
-                state.status = PlaybackStatus::Stopped;
-                state.time_pos = 0.0;
-                drop(state);
-                Self::push_event(inner, DaemonEvent::TrackEnded);
+        // Crossfade path: look up the standby without advancing the model and
+        // start the fade; `finish_crossfade` advances at completion.  Falls
+        // through to an immediate step for the non-crossfade case.
+        let standby = {
+            let state = inner.state.read().await;
+            Self::next_track(&state)
+        };
+        if let Some(track) = standby {
+            if Self::try_start_crossfade(inner, &track).await {
                 return Ok(DaemonRes::Ok);
             }
-        };
-        let idx = state.queue_cursor;
-        let crossfade_enabled = state.crossfade.as_ref().map(|c| c.enabled).unwrap_or(false);
-        let crossfade_dur = state
-            .crossfade
-            .as_ref()
-            .map(|c| c.duration_secs as f64)
-            .unwrap_or(0.0);
-        let crossfade_easing = state
-            .crossfade
-            .as_ref()
-            .map(|c| c.easing)
-            .unwrap_or(gtm_core::state::Easing::Linear);
-        drop(state);
-        if crossfade_enabled
-            && crossfade_dur > 0.0
-            && inner.crossfade_loaded_for.lock().await.is_none()
-            && !inner.mixer.lock().await.is_crossfading()
-        {
-            let path = track.path.clone();
-            let path_owned = path.clone();
-            let decoded =
-                tokio::task::spawn_blocking(move || AudioMixer::decode_file(&path_owned)).await;
-            if let Ok(Ok(source)) = decoded {
-                let mut mixer = inner.mixer.lock().await;
-                if mixer.load_standby_decoded(source).is_ok() {
-                    mixer.set_crossfade_easing(crossfade_easing);
-                    mixer.start_crossfade(crossfade_dur);
-                    drop(mixer);
-                    *inner.crossfade_loaded_for.lock().await = Some(
-                        inner
-                            .state
-                            .read()
-                            .await
-                            .current_track
-                            .as_ref()
-                            .map(|t| t.path.clone())
-                            .unwrap_or_default(),
-                    );
-                    Self::push_event(inner, DaemonEvent::QueueIndexChanged { index: idx });
-                    let dur = inner.mixer.lock().await.duration();
-                    {
-                        let mut st = inner.state.write().await;
-                        st.status = PlaybackStatus::Playing;
-                        st.current_track = Some(track.clone());
-                        st.time_pos = 0.0;
-                        st.duration = dur;
-                    }
-                    Self::push_event(
-                        inner,
-                        DaemonEvent::PlaybackStarted {
-                            track,
-                            auto_advanced: true,
-                            time_pos: 0.0,
-                            duration: dur,
-                        },
-                    );
-                    return Ok(DaemonRes::Ok);
-                }
-            }
         }
-        *inner.crossfade_loaded_for.lock().await = None;
-        let path = track.path.clone();
-        let res = Self::cmd_play(inner, &path, 0.0, true).await?;
-        Self::push_event(inner, DaemonEvent::QueueIndexChanged { index: idx });
-        Ok(res)
+        let next = match Self::step_next(inner).await {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                let was_playing = inner.state.read().await.status != PlaybackStatus::Stopped;
+                if was_playing {
+                    Self::stop_playback(inner).await;
+                } else {
+                    Self::push_queue_state(inner).await;
+                }
+                return Ok(DaemonRes::Ok);
+            }
+            Err(e) => return Err(e),
+        };
+        let _ = Self::cmd_play(inner, &next.path, 0.0, true).await?;
+        Self::push_queue_state(inner).await;
+        Ok(DaemonRes::Ok)
     }
 
-    /// Go to previous track.  If cursor is at 0 or queue is empty,
-    /// seek to beginning of current track instead.
+    /// Go to the previous track, traversing playback history back through
+    /// user-queue entries and into the default list.  If the current track
+    /// has been playing for a while, restart it instead.
     async fn cmd_prev(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        if state.queue.is_empty() || state.queue_cursor == 0 {
-            drop(state);
+        let pos = inner.mixer.lock().await.current_position();
+        if pos > RESTART_THRESHOLD_SECS {
             return Self::cmd_seek(inner, 0.0).await;
         }
-        let track = match state.advance_queue(-1)? {
-            Some(t) => t.clone(),
-            None => {
-                return Ok(DaemonRes::Ok);
+        let has_current = inner.state.read().await.current_track.is_some();
+
+        let prev = inner.play_history.lock().await.pop();
+        match prev {
+            Some(HistoryEntry::User(track)) => {
+                {
+                    let mut state = inner.state.write().await;
+                    state.queue.insert(0, track.clone());
+                }
+                let res = Self::cmd_play(inner, &track.path, 0.0, true).await?;
+                Self::push_queue_state(inner).await;
+                Ok(res)
             }
-        };
-        let idx = state.queue_cursor;
-        let crossfade_enabled = state.crossfade.as_ref().map(|c| c.enabled).unwrap_or(false);
-        let crossfade_dur = state
-            .crossfade
-            .as_ref()
-            .map(|c| c.duration_secs as f64)
-            .unwrap_or(0.0);
-        let crossfade_easing = state
-            .crossfade
-            .as_ref()
-            .map(|c| c.easing)
-            .unwrap_or(gtm_core::state::Easing::Linear);
-        drop(state);
-        if crossfade_enabled
-            && crossfade_dur > 0.0
-            && inner.crossfade_loaded_for.lock().await.is_none()
-            && !inner.mixer.lock().await.is_crossfading()
-        {
-            let path = track.path.clone();
-            let path_owned = path.clone();
-            let decoded =
-                tokio::task::spawn_blocking(move || AudioMixer::decode_file(&path_owned)).await;
-            if let Ok(Ok(source)) = decoded {
-                let mut mixer = inner.mixer.lock().await;
-                if mixer.load_standby_decoded(source).is_ok() {
-                    mixer.set_crossfade_easing(crossfade_easing);
-                    mixer.start_crossfade(crossfade_dur);
-                    drop(mixer);
-                    *inner.crossfade_loaded_for.lock().await = Some(
-                        inner
-                            .state
-                            .read()
-                            .await
-                            .current_track
-                            .as_ref()
-                            .map(|t| t.path.clone())
-                            .unwrap_or_default(),
-                    );
-                    Self::push_event(inner, DaemonEvent::QueueIndexChanged { index: idx });
-                    let dur = inner.mixer.lock().await.duration();
-                    {
-                        let mut st = inner.state.write().await;
-                        st.status = PlaybackStatus::Playing;
-                        st.current_track = Some(track.clone());
-                        st.time_pos = 0.0;
-                        st.duration = dur;
+            Some(HistoryEntry::Default { index, track }) => {
+                {
+                    let mut state = inner.state.write().await;
+                    if index < state.default_list.len() {
+                        state.default_cursor = index;
                     }
-                    Self::push_event(
-                        inner,
-                        DaemonEvent::PlaybackStarted {
-                            track,
-                            auto_advanced: true,
-                            time_pos: 0.0,
-                            duration: dur,
-                        },
-                    );
-                    return Ok(DaemonRes::Ok);
+                }
+                let res = Self::cmd_play(inner, &track.path, 0.0, true).await?;
+                Self::push_queue_state(inner).await;
+                Ok(res)
+            }
+            None => {
+                if has_current {
+                    Self::cmd_seek(inner, 0.0).await
+                } else {
+                    Ok(DaemonRes::Ok)
                 }
             }
         }
-        *inner.crossfade_loaded_for.lock().await = None;
-        let path = track.path.clone();
-        let res = Self::cmd_play(inner, &path, 0.0, true).await?;
-        Self::push_event(inner, DaemonEvent::QueueIndexChanged { index: idx });
-        Ok(res)
     }
 
-    /// Seek to absolute position in seconds.  Errors if status is Stopped.
-    /// Reports the *actual* position (mixer.current_position()) in the event,
-    /// which may differ from the requested pos due to clamping.
+    /// Seek to absolute position in seconds.  No-op if status is Stopped.
+    /// Re-decodes the current track from `pos` via `SymphoniaSource`'s
+    /// seek-skip fast-forward (the decode runs on a blocking task so the
+    /// event loop isn't starved).  Reports the requested (clamped) position.
     async fn cmd_seek(inner: &DaemonInner, pos: f64) -> Result<DaemonRes, CoreError> {
         let state = inner.state.read().await;
         if state.status == PlaybackStatus::Stopped {
-            return Err(CoreError::Daemon("cannot seek while stopped".into()));
+            return Ok(DaemonRes::Ok);
         }
+        let was_paused = state.status == PlaybackStatus::Paused;
+        let path = state.current_track.as_ref().map(|t| t.path.clone());
+        let duration = state.duration;
         drop(state);
-        tracing::debug!("cmd_seek: requested position={}", pos);
-        let actual = {
-            let mut mixer = inner.mixer.lock().await;
-            mixer.seek(pos)?;
-            let current = mixer.current_position();
-            tracing::debug!("cmd_seek: actual position after seek={}", current);
-            current
+        let Some(path) = path else {
+            return Ok(DaemonRes::Ok);
         };
+        let pos = pos.clamp(0.0, duration.max(0.0));
+        tracing::debug!("cmd_seek: requested position={}", pos);
+        let path_owned = path.clone();
+        let source =
+            tokio::task::spawn_blocking(move || AudioMixer::decode_file_at(&path_owned, pos))
+                .await
+                .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
+                .map_err(|e| CoreError::Daemon(format!("decode: {e}")))?;
+        {
+            let mut mixer = inner.mixer.lock().await;
+            mixer.load_active_decoded(source, pos)?;
+            mixer.play()?;
+            if was_paused {
+                mixer.pause()?;
+            }
+        }
         let mut state = inner.state.write().await;
-        state.seek(actual)?;
+        state.seek(pos)?;
         drop(state);
-        Self::push_event(inner, DaemonEvent::PositionChanged { time_pos: actual });
+        Self::push_event(inner, DaemonEvent::PositionChanged { time_pos: pos });
         Ok(DaemonRes::Ok)
     }
 
@@ -1496,6 +1713,16 @@ impl Daemon {
         state.set_volume(volume)?;
         drop(state);
         Self::push_event(inner, DaemonEvent::VolumeChanged { volume });
+        Self::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    async fn cmd_set_master_volume(inner: &DaemonInner, volume: u8) -> Result<DaemonRes, CoreError> {
+        let vol = volume.min(100);
+        inner.mixer.lock().await.set_master_volume(vol)?;
+        let mut state = inner.state.write().await;
+        state.master_volume = vol;
+        drop(state);
         Self::save_state(inner);
         Ok(DaemonRes::Ok)
     }
@@ -1811,77 +2038,68 @@ impl Daemon {
         match action {
             QueueAction::List => {
                 let state = inner.state.read().await;
-                let tracks = state.queue.clone();
-                let cursor = state.queue_cursor;
+                let (queue, cursor) = queue::visible_queue(&state);
                 drop(state);
-                return Ok(DaemonRes::QueueState {
-                    queue: tracks,
-                    cursor,
-                });
+                Ok(DaemonRes::QueueState { queue, cursor })
             }
             QueueAction::Clear => {
-                let mut state = inner.state.write().await;
-                queue::queue_clear(&mut state);
-                let queue = state.queue.clone();
-                let cursor = state.queue_cursor;
-                drop(state);
-                Self::push_event(inner, DaemonEvent::QueueChanged { queue, cursor });
-                Self::save_state(inner);
-                return Ok(DaemonRes::Ok);
-            }
-            QueueAction::Remove { index } => {
-                let mut state = inner.state.write().await;
-                queue::queue_remove(&mut state, *index);
-                let queue = state.queue.clone();
-                let cursor = state.queue_cursor;
-                drop(state);
-                Self::push_event(inner, DaemonEvent::QueueChanged { queue, cursor });
-                Self::save_state(inner);
-                return Ok(DaemonRes::Ok);
-            }
-            QueueAction::Move { from, to } => {
-                let mut state = inner.state.write().await;
-                queue::queue_move(&mut state, *from, *to);
-                let queue = state.queue.clone();
-                let cursor = state.queue_cursor;
-                drop(state);
-                Self::push_event(inner, DaemonEvent::QueueChanged { queue, cursor });
-                Self::save_state(inner);
-                return Ok(DaemonRes::Ok);
-            }
-            QueueAction::Add { path, position } => {
-                let was_empty;
+                Self::clear_history(inner).await;
                 {
                     let mut state = inner.state.write().await;
-                    was_empty = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
-                    queue::queue_add(&mut state, path, *position);
-                    let queue = state.queue.clone();
-                    let cursor = state.queue_cursor;
-                    drop(state);
-                    Self::push_event(inner, DaemonEvent::QueueChanged { queue, cursor });
-                    if was_empty {
-                        let _ = Self::cmd_play(inner, path, 0.0, false).await;
-                    }
+                    queue::queue_clear(&mut state);
                 }
+                Self::push_queue_state(inner).await;
+                Self::save_state(inner);
+                Ok(DaemonRes::Ok)
+            }
+            QueueAction::Remove { index } => {
+                {
+                    let mut state = inner.state.write().await;
+                    queue::queue_remove(&mut state, *index);
+                }
+                Self::push_queue_state(inner).await;
+                Self::save_state(inner);
+                Ok(DaemonRes::Ok)
+            }
+            QueueAction::Move { from, to } => {
+                {
+                    let mut state = inner.state.write().await;
+                    queue::queue_move(&mut state, *from, *to);
+                }
+                Self::push_queue_state(inner).await;
+                Self::save_state(inner);
+                Ok(DaemonRes::Ok)
+            }
+            QueueAction::Add { path, position } => {
+                let was_empty = {
+                    let mut state = inner.state.write().await;
+                    state.fallback_disabled = false;
+                    let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
+                    queue::queue_add(&mut state, path, *position);
+                    drop(state);
+                    w
+                };
+                if was_empty {
+                    let _ = Self::cmd_play(inner, path, 0.0, false).await;
+                }
+                Self::push_queue_state(inner).await;
                 Self::save_state(inner);
                 Ok(DaemonRes::Ok)
             }
             QueueAction::AddMany { paths } => {
-                let was_empty;
-                let first_path;
-                {
+                let first_path = paths[0].clone();
+                let was_empty = {
                     let mut state = inner.state.write().await;
-                    was_empty = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
+                    state.fallback_disabled = false;
+                    let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
                     queue::queue_add_many(&mut state, paths);
-                    first_path = paths[0].clone();
-                    let queue = state.queue.clone();
-                    let cursor = state.queue_cursor;
                     drop(state);
-                    Self::push_event(inner, DaemonEvent::QueueChanged { queue, cursor });
-                    if was_empty {
-                        let _ = Self::cmd_play(inner, &first_path, 0.0, false).await;
-                    }
+                    w
+                };
+                if was_empty {
+                    let _ = Self::cmd_play(inner, &first_path, 0.0, false).await;
                 }
+                Self::push_queue_state(inner).await;
                 Self::save_state(inner);
                 Ok(DaemonRes::Ok)
             }
@@ -1892,31 +2110,29 @@ impl Daemon {
                         message: "no audio files found in folder".into(),
                     });
                 }
-                let was_empty;
-                let first_path;
-                {
+                let first_path = paths[0].clone();
+                let was_empty = {
                     let mut state = inner.state.write().await;
-                    was_empty = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
+                    state.fallback_disabled = false;
+                    let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
                     queue::queue_add_many(&mut state, &paths);
-                    first_path = paths[0].clone();
-                    let queue = state.queue.clone();
-                    let cursor = state.queue_cursor;
                     drop(state);
-                    Self::push_event(inner, DaemonEvent::QueueChanged { queue, cursor });
-                    if was_empty {
-                        return Self::cmd_play(inner, &first_path, 0.0, false).await;
-                    }
+                    w
+                };
+                if was_empty {
+                    let _ = Self::cmd_play(inner, &first_path, 0.0, false).await;
                 }
+                Self::push_queue_state(inner).await;
                 Self::save_state(inner);
                 Ok(DaemonRes::Ok)
             }
             QueueAction::Set { paths, start_idx } => {
-                let mut state = inner.state.write().await;
-                queue::queue_set(&mut state, paths, *start_idx);
-                let queue = state.queue.clone();
-                let cursor = state.queue_cursor;
-                drop(state);
-                Self::push_event(inner, DaemonEvent::QueueChanged { queue, cursor });
+                Self::clear_history(inner).await;
+                {
+                    let mut state = inner.state.write().await;
+                    queue::queue_set(&mut state, paths, *start_idx);
+                }
+                Self::push_queue_state(inner).await;
                 Self::save_state(inner);
                 Ok(DaemonRes::Ok)
             }
@@ -2358,7 +2574,12 @@ impl Daemon {
 
     async fn cmd_get_status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let state = inner.state.read().await;
-        let state_clone = state.clone();
+        let mut state_clone = state.clone();
+        // Report the merged queue view so clients see the same list they get
+        // from QueueChanged events (user entries + remaining default list).
+        let (queue, cursor) = queue::visible_queue(&state);
+        state_clone.queue = queue;
+        state_clone.queue_cursor = cursor;
         drop(state);
         Ok(DaemonRes::Status {
             state: Box::new(state_clone),
@@ -2491,10 +2712,16 @@ impl Daemon {
             }
         }
 
-        // If not found in library, search the queue for the requested track_id
+        // If not found in library, search the merged queue view and the
+        // current track for the requested track_id.
         if discovered_artist.is_empty() {
             let state = inner.state.read().await;
-            if let Some(t) = state.queue.iter().find(|t| t.id == track_id) {
+            let in_merged = state
+                .queue
+                .iter()
+                .chain(state.default_list.iter())
+                .find(|t| t.id == track_id);
+            if let Some(t) = in_merged {
                 discovered_artist = t.artist.clone();
                 discovered_album = t.album.clone();
             } else if let Some(ref t) = state.current_track {

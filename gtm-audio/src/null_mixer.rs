@@ -17,6 +17,7 @@ use gtm_core::state::{Easing, EqPreset, ReverbConfig};
 pub struct NullMixer {
     playing: AtomicBool,
     volume: AtomicU8,
+    master_volume: AtomicU8,
     position: Mutex<f64>,
     duration: Mutex<f64>,
     crossfading: Mutex<bool>,
@@ -28,6 +29,7 @@ impl NullMixer {
         Self {
             playing: AtomicBool::new(false),
             volume: AtomicU8::new(100),
+            master_volume: AtomicU8::new(100),
             position: Mutex::new(0.0),
             duration: Mutex::new(0.0),
             crossfading: Mutex::new(false),
@@ -100,6 +102,15 @@ impl Mixer for NullMixer {
 
     fn volume(&self) -> u8 {
         self.volume.load(Ordering::SeqCst)
+    }
+
+    fn set_master_volume(&mut self, volume: u8) -> AudioResult<()> {
+        self.master_volume.store(volume.min(100), Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn master_volume(&self) -> u8 {
+        self.master_volume.load(Ordering::SeqCst)
     }
 
     fn is_playing(&self) -> bool {
