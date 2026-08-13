@@ -384,14 +384,11 @@ impl DaemonState {
             DaemonEvent::ScrobbleConfigChanged { enabled } => {
                 self.scrobble.enabled = *enabled;
             }
-            DaemonEvent::LibraryOrganized { moves: _ } => {
+            DaemonEvent::LibraryOrganized { .. } => {
                 // No state to update
             }
-            DaemonEvent::LoudnessScanProgress {
-                scanned: _,
-                total: _,
-            } => {}
-            DaemonEvent::LoudnessScanDone { scanned: _ } => {}
+            DaemonEvent::LoudnessScanProgress { .. } => {}
+            DaemonEvent::LoudnessScanDone { .. } => {}
             _ => {} // MetadataChanged, Custom — no state mirror field
         }
         self.version += 1;

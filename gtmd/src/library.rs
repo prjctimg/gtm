@@ -504,6 +504,7 @@ impl Library {
             hash: row.get(11)?,
             cover_path: row.get(12)?,
             favourite: row.get::<_, i32>(13)? != 0,
+            ..Default::default()
         })
     }
 

@@ -135,8 +135,8 @@ impl DaemonClient {
                 }
                 Err(e) => {
                     last_err = Some(e);
-                    // Exponential backoff: 50ms, 100ms, 200ms, ... up to 5s
-                    let delay = 50u64.saturating_mul(1u64 << i).min(5000);
+                    // Exponential backoff: 50ms, 100ms, 200ms, ... up to 2s
+                    let delay = 50u64.saturating_mul(1u64 << i).min(2000);
                     tokio::time::sleep(Duration::from_millis(delay)).await;
                 }
             }
@@ -695,7 +695,7 @@ struct IpcWorker {
 }
 
 const MAX_CONSECUTIVE_FAILURES: u32 = 5;
-const HEARTBEAT_TIMEOUT_SECS: u64 = 30;
+const HEARTBEAT_TIMEOUT_SECS: u64 = 60;
 
 impl IpcWorker {
     async fn run(mut self) {
@@ -813,9 +813,13 @@ impl IpcWorker {
                     self.buf.clear();
                     self.connected.store(true, Ordering::Release);
                     crate::log::log(&format!("IPC worker reconnected after {attempt} attempts"));
-                    // Reset handshake tracking after reconnect
                     self.handshake_sent = false;
                     self.authenticated.store(false, Ordering::Release);
+                    if let Err(e) = self.post_reconnect_handshake().await {
+                        crate::log::log(&format!(
+                            "IPC worker post-reconnect handshake failed: {e}"
+                        ));
+                    }
                     return;
                 }
                 Err(e) => {
@@ -828,6 +832,60 @@ impl IpcWorker {
                 }
             }
         }
+    }
+
+    /// Send a handshake immediately after reconnect so the daemon marks this
+    /// client as authenticated. Without this, all subsequent commands would
+    /// fail with "handshake required".
+    async fn post_reconnect_handshake(&mut self) -> Result<()> {
+        let wire_req = WireReq {
+            id: 0,
+            cmd: "handshake".to_string(),
+            params: serde_json::json!({
+                "version": PROTOCOL_VERSION,
+                "client": "gtm-rs",
+                "client_version": env!("CARGO_PKG_VERSION"),
+            }),
+        };
+        let mut line = serde_json::to_string(&wire_req)
+            .map_err(|e| CoreError::Daemon(format!("serialize handshake: {e}")))?;
+        line.push('\n');
+        self.writer
+            .write_all(line.as_bytes())
+            .await
+            .map_err(|e| CoreError::Daemon(format!("write handshake: {e}")))?;
+        self.writer
+            .flush()
+            .await
+            .map_err(|e| CoreError::Daemon(format!("flush handshake: {e}")))?;
+
+        // Read the response with a short timeout
+        let mut tmp = [0u8; 4096];
+        tokio::time::timeout(Duration::from_secs(5), self.reader.read(&mut tmp))
+            .await
+            .map_err(|_| CoreError::Daemon("handshake response timeout".into()))?
+            .map_err(|e| CoreError::Daemon(format!("read handshake response: {e}")))?;
+
+        // Parse and verify the response
+        let data = &tmp[..];
+        if let Some(pos) = data.iter().position(|&b| b == b'\n') {
+            let line = &data[..pos];
+            if let Ok(wire_res) = serde_json::from_slice::<WireRes>(line) {
+                if wire_res.ok == Some(true) {
+                    self.handshake_sent = true;
+                    self.authenticated.store(true, Ordering::Release);
+                    *self.last_heartbeat_at.lock().unwrap() = Instant::now();
+                    crate::log::log("IPC worker post-reconnect handshake OK");
+                    return Ok(());
+                } else {
+                    return Err(CoreError::Daemon(format!(
+                        "handshake rejected: {:?}",
+                        wire_res.error
+                    )));
+                }
+            }
+        }
+        Err(CoreError::Daemon("malformed handshake response".into()))
     }
 
     async fn read_with_timeout(&mut self, tmp: &mut [u8; 4096]) -> Result<bool> {

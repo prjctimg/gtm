@@ -670,6 +670,7 @@ impl Daemon {
     ) -> Result<DaemonRes, CoreError> {
         match req {
             DaemonReq::Handshake {
+                version,
                 client,
                 client_version,
             } => {
@@ -689,6 +690,7 @@ impl Daemon {
                     "client {client_id}: handshake from {client} v{client_version:?}, protocol v{version}"
                 );
                 Ok(DaemonRes::Handshake {
+                    version: *version,
                     daemon: "gtmd-rs".to_string(),
                     daemon_version: env!("CARGO_PKG_VERSION").to_string(),
                 })
@@ -1076,6 +1078,7 @@ impl Daemon {
                         hash: String::new(),
                         cover_path: None,
                         favourite: false,
+                        ..Default::default()
                     },
                 }
             } else {
@@ -1098,6 +1101,7 @@ impl Daemon {
                     hash: String::new(),
                     cover_path: None,
                     favourite: false,
+                    ..Default::default()
                 }
             }
         } else {
@@ -1120,6 +1124,7 @@ impl Daemon {
                 hash: String::new(),
                 cover_path: None,
                 favourite: false,
+                ..Default::default()
             }
         };
         state.play(track.clone())?;
@@ -1435,7 +1440,7 @@ impl Daemon {
         })
     }
 
-    async fn cmd_list_eq_presets(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+    async fn cmd_list_eq_presets(_inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let presets = gtm_core::state::EQ_PRESETS
             .iter()
             .map(|p| p.to_string())

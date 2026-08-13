@@ -39,6 +39,7 @@ pub fn resolve_track(path: &str) -> TrackInfo {
         hash: String::new(),
         cover_path: None,
         favourite: false,
+        ..Default::default()
     }
 }
 

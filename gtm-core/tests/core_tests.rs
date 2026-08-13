@@ -33,6 +33,7 @@ fn sample_track() -> TrackInfo {
         hash: "abc123".into(),
         cover_path: Some("/covers/test.jpg".into()),
         favourite: false,
+        ..Default::default()
     }
 }
 
@@ -271,10 +272,9 @@ wire_event_roundtrip!(
 #[test]
 fn daemon_res_json_roundtrip() {
     let ress: Vec<DaemonRes> = vec![
-        DaemonRes::Ok { version: 42 },
+        DaemonRes::Ok,
         DaemonRes::Pong,
         DaemonRes::Error {
-            version: 0,
             message: "fail".into(),
         },
     ];

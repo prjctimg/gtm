@@ -1607,7 +1607,6 @@ dependencies = [
 name = "gtm-audio"
 version = "0.1.0"
 dependencies = [
- "async-trait",
  "fundsp",
  "gtm-core",
  "log",
