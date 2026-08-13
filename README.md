@@ -19,7 +19,7 @@ A modular terminal-based music player daemon and client suite written in Rust.
 
 ## Build
 
-Requires Rust 1.81+.
+Requires Rust 1.81+, ALSA development headers (Linux, `libasound2-dev` on Debian/Ubuntu).
 
 ```bash
 # Build everything
@@ -32,8 +32,56 @@ cargo test --workspace
 ### Feature flags
 
 - `gtmd` — `mpris` (default): enables the MPRIS D-Bus interface
-- `gtm` — `completions`: generates shell completions
 - `gtm-core` — `debug-fail`: enables debug/test failure injection
+
+## Install
+
+### From source
+
+```bash
+make && sudo make install
+```
+
+Or manually:
+
+```bash
+cargo build --release
+sudo install -Dm 0755 target/release/gtmd /usr/local/bin/gtmd
+sudo install -Dm 0755 target/release/gtm  /usr/local/bin/gtm
+```
+
+### Debian / Ubuntu (.deb)
+
+Requires [`cargo-deb`](https://crates.io/crates/cargo-deb).
+
+```bash
+make deb
+sudo dpkg -i target/debian/gtm-full_*.deb
+```
+
+### RPM-based (Fedora, RHEL)
+
+Requires `rpmbuild`.
+
+```bash
+make rpm
+sudo rpm -i ~/rpmbuild/RPMS/*/gtm-*.rpm
+```
+
+### Nix
+
+```bash
+nix build
+./result/bin/gtmd
+```
+
+### Systemd user service
+
+After installation, enable the daemon for your user session:
+
+```bash
+systemctl --user enable --now gtmd.service
+```
 
 ## Usage
 
@@ -44,10 +92,10 @@ gtmd
 # Terminal UI (default, no args)
 gtm
 
-# CLI mode (-c flag)
-gtm -c status
-gtm -c play /path/to/track.opus
-gtm -c next
+# CLI mode (--cli flag)
+gtm --cli status
+gtm --cli play /path/to/track.opus
+gtm --cli next
 ```
 
 ## IPC Protocol

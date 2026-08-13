@@ -271,7 +271,7 @@ fn render_now_playing(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(info_para, info_chunks[1]);
 
     let dur = track.duration;
-    let pos = app.state.time_pos;
+    let pos = app.display_position;
     let ratio = if dur > 0.0 { (pos / dur) as f64 } else { 0.0 };
     let pos_str = format_duration(pos as u64);
     let dur_str = format_duration(dur as u64);
@@ -321,23 +321,29 @@ fn render_cover_block(f: &mut ratatui::Frame, area: Rect, cover_bytes: &[u8]) {
         Ok(img) => img.into_rgba8(),
         Err(_) => return,
     };
-    let cell_w = (area.width as u32).max(1);
-    let cell_h = (area.height as u32).max(1);
-    let thumb = image::imageops::resize(&img, cell_w, cell_h, image::imageops::FilterType::Nearest);
-    for y in 0..cell_h {
-        for x in 0..cell_w {
-            let px = thumb.get_pixel(x, y);
-            let ratatui_color = ratatui::style::Color::Rgb(px[0], px[1], px[2]);
-            let cell_area = Rect {
-                x: area.x + x as u16,
-                y: area.y + y as u16,
-                width: 1,
-                height: 1,
+    let disp_w = (area.width as u32).max(1);
+    let disp_h = (area.height as u32 * 2).max(1);
+    let thumb = image::imageops::resize(&img, disp_w, disp_h, image::imageops::FilterType::CatmullRom);
+    for y in 0..area.height as u32 {
+        let mut spans = Vec::with_capacity(disp_w as usize);
+        for x in 0..disp_w {
+            let top = thumb.get_pixel(x, y * 2);
+            let bot = if y * 2 + 1 < disp_h {
+                *thumb.get_pixel(x, y * 2 + 1)
+            } else {
+                image::Rgba([0, 0, 0, 255])
             };
-            let block = Block::default()
-                .style(Style::default().bg(ratatui_color));
-            f.render_widget(block, cell_area);
+            let fg = ratatui::style::Color::Rgb(top[0], top[1], top[2]);
+            let bg = ratatui::style::Color::Rgb(bot[0], bot[1], bot[2]);
+            spans.push(Span::styled("\u{2580}", Style::default().fg(fg).bg(bg)));
         }
+        let row = Rect {
+            x: area.x,
+            y: area.y + y as u16,
+            width: area.width,
+            height: 1,
+        };
+        f.render_widget(Paragraph::new(Line::from(spans)), row);
     }
 }
 
@@ -794,7 +800,7 @@ fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
             let status_section = format!(" {status_icon} Vol:{vol_str}{repeat_str}{shuffle_str} ");
 
             let progress_section = if let Some(ref track) = app.state.current_track {
-                let pos = app.state.time_pos as u64;
+                let pos = app.display_position as u64;
                 let dur = track.duration as u64;
                 let ratio = if dur > 0 { pos as f64 / dur as f64 } else { 0.0 };
                 let bar = render_progress_line(ratio, 20);

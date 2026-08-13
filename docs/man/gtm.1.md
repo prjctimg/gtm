@@ -19,38 +19,30 @@ command-line client for scripting and headless control.
 
 # TUI MODE (default)
 
-The TUI provides six tabs accessed via the **1**–**6** keys:
+The TUI provides three tabs navigated with **Tab** and **Shift+Tab**:
 
 ## Now Playing (1)
-Shows current track info, a progress bar, volume gauge, and control hints.
+Shows current track info, cover art, a progress bar, volume gauge,
+sleep timer, and control hints.
 Keys: Space (play/pause), n (next), p (prev), +/- (volume), m (mute),
 r (repeat), s (shuffle), h/l (seek).
 
 ## Library (2)
-Browse tracks, playlists, favourites, and recent additions.
-Keys: j/k or up/down (navigate), Enter (play), / (filter), d (detail),
-f (favourite), s (sort).
+Browse tracks by category: All Tracks, Playlists, Favourites, Recent.
+Left pane selects category, right pane lists tracks.
+Keys: Tab (toggle pane), j/k or up/down (navigate), Enter (play),
+/ (filter).
 
-## Queue (3)
-View and manage the playback queue.
-Keys: j/k (navigate), Enter (play), d (delete), m (move mode),
-C (clear), s (save as playlist).
-
-## YouTube (4)
-Search YouTube and browse results.
-Keys: / (search), Enter (play stream), a (add to queue), j/k (navigate).
-
-## Settings (5)
-View and adjust playback settings.
-
-## Help (6)
-Keyboard shortcut reference.
+## Settings (3)
+Adjust playback settings and open overlays.
+Left pane selects category (Playback, Appearance, Sleep Timer, About),
+right pane shows options.
+Keys: Tab (toggle pane), j/k (navigate), Enter (toggle/select).
 
 ## Global Keys
 
 | Key | Action |
 |-----|--------|
-| `1`-`6` | Switch to tab |
 | `Tab` / `Shift+Tab` | Next / Previous tab |
 | `Space` | Play / Pause |
 | `n` / `p` | Next / Previous track |
@@ -59,7 +51,6 @@ Keyboard shortcut reference.
 | `r` | Cycle repeat mode |
 | `s` | Toggle shuffle |
 | `:` | Command mode |
-| `/` | Filter / search |
 | `?` | Toggle help |
 | `q` / `Esc` | Quit |
 

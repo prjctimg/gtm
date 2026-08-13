@@ -66,6 +66,7 @@ pub struct AudioMixer {
     pending_pause: bool,
     pause_fade_start: Option<Instant>,
     stored_volume: u8,
+    last_reported_pos: f64,
 }
 
 struct MixerDeviceSink(rodio::MixerDeviceSink);
@@ -153,6 +154,7 @@ impl AudioMixer {
             pending_pause: false,
             pause_fade_start: None,
             stored_volume: 100,
+            last_reported_pos: f64::NEG_INFINITY,
         })
     }
 
@@ -453,7 +455,11 @@ impl AudioMixer {
             let total = *self.duration.lock().unwrap();
             let pos = (start + elapsed).min(total);
             *self.position.lock().unwrap() = pos;
-            return Ok(Some(AudioEvent::Position(pos)));
+            if (pos - self.last_reported_pos).abs() >= 0.05 {
+                self.last_reported_pos = pos;
+                return Ok(Some(AudioEvent::Position(pos)));
+            }
+            return Ok(None);
         }
 
         Ok(None)

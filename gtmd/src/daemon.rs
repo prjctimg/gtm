@@ -47,6 +47,7 @@
 
 use std::path::Path;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
@@ -160,8 +161,13 @@ impl Daemon {
             Self::background_scan(bg_state, bg_lib_paths, bg_data_dir, bg_req_tx, bg_event_tx).await;
         });
 
+        let mut poll_interval = tokio::time::interval(Duration::from_millis(33));
         loop {
             tokio::select! {
+                _ = poll_interval.tick() => {
+                    let result = self.mixer.poll();
+                    self.handle_audio_event(result).await;
+                }
                 result = self.listener.accept() => {
                     match result {
                         Ok((stream, _addr)) => {
@@ -184,9 +190,6 @@ impl Daemon {
                 }
                 Some((client_id, req, reply_tx)) = self.req_rx.recv() => {
                     self.dispatch(client_id, req, reply_tx).await;
-                }
-                result = std::future::ready(self.mixer.poll()) => {
-                    self.handle_audio_event(result).await;
                 }
             }
         }
@@ -539,10 +542,8 @@ impl Daemon {
                     }
                 }
 
-                self.push_event(DaemonEvent::PositionChanged { time_pos: pos })
-                    .await;
-            }
-            AudioEvent::Duration(dur) => {
+                }
+                AudioEvent::Duration(dur) => {
                 let mut state = self.state.write().await;
                 state.duration = dur;
                 drop(state);
@@ -686,8 +687,9 @@ impl Daemon {
         state.pause()?;
         state.time_pos = self.mixer.current_position();
         let version = state.version as u32;
+        let time_pos = state.time_pos;
         drop(state);
-        self.push_event(DaemonEvent::PlaybackPaused).await;
+        self.push_event(DaemonEvent::PlaybackPaused { time_pos }).await;
         Ok(DaemonRes::Ok { version })
     }
 
@@ -769,8 +771,6 @@ impl Daemon {
         state.seek(actual)?;
         let version = state.version as u32;
         drop(state);
-        self.push_event(DaemonEvent::PositionChanged { time_pos: actual })
-            .await;
         Ok(DaemonRes::Ok { version })
     }
 

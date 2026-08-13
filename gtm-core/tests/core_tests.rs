@@ -219,7 +219,7 @@ enum_roundtrip!(
     daemon_event_playback_paused,
     DaemonEvent,
     "PlaybackPaused",
-    DaemonEvent::PlaybackPaused
+    DaemonEvent::PlaybackPaused { time_pos: 0.0 }
 );
 enum_roundtrip!(
     daemon_event_track_ended,
@@ -271,18 +271,18 @@ fn encode_decode_empty() {
 
 #[test]
 fn encode_decode_one() {
-    let events = vec![DaemonEvent::PlaybackPaused];
+    let events = vec![DaemonEvent::PlaybackPaused { time_pos: 0.0 }];
     let buf = encode(&events).unwrap();
     let (frame, consumed) = decode(&buf).unwrap().unwrap();
     assert_eq!(frame.events.len(), 1);
-    assert!(matches!(frame.events[0], DaemonEvent::PlaybackPaused));
+    assert!(matches!(frame.events[0], DaemonEvent::PlaybackPaused { .. }));
     assert_eq!(consumed as usize, buf.len());
 }
 
 #[test]
 fn encode_decode_multi() {
     let events = vec![
-        DaemonEvent::PlaybackPaused,
+        DaemonEvent::PlaybackPaused { time_pos: 0.0 },
         DaemonEvent::VolumeChanged { volume: 50 },
         DaemonEvent::TrackEnded,
     ];
@@ -294,7 +294,7 @@ fn encode_decode_multi() {
 
 #[test]
 fn decode_partial_buffer_returns_none() {
-    let events = vec![DaemonEvent::PlaybackPaused];
+    let events = vec![DaemonEvent::PlaybackPaused { time_pos: 0.0 }];
     let buf = encode(&events).unwrap();
     // Truncate to only length prefix
     assert!(decode(&buf[..2]).unwrap().is_none());
@@ -494,7 +494,7 @@ fn apply_playback_started() {
 #[test]
 fn apply_playback_paused() {
     let mut s = sample_state();
-    s.apply_event(&DaemonEvent::PlaybackPaused);
+    s.apply_event(&DaemonEvent::PlaybackPaused { time_pos: 0.0 });
     assert_eq!(s.status, PlaybackStatus::Paused);
 }
 
@@ -552,7 +552,7 @@ fn apply_repeat_mode_changed() {
 fn apply_event_increments_version() {
     let mut s = sample_state();
     let v0 = s.version;
-    s.apply_event(&DaemonEvent::PlaybackPaused);
+    s.apply_event(&DaemonEvent::PlaybackPaused { time_pos: 0.0 });
     assert_eq!(s.version, v0 + 1);
 }
 

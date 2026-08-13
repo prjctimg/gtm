@@ -93,7 +93,9 @@ pub enum DaemonEvent {
         time_pos: f64,
         duration: f64,
     },
-    PlaybackPaused,
+    PlaybackPaused {
+        time_pos: f64,
+    },
     PlaybackStopped,
     TrackEnded,
     PositionChanged {

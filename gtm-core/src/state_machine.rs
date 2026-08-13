@@ -187,8 +187,9 @@ impl DaemonState {
                 self.time_pos = *time_pos;
                 self.duration = *duration;
             }
-            DaemonEvent::PlaybackPaused => {
+            DaemonEvent::PlaybackPaused { time_pos } => {
                 self.status = PlaybackStatus::Paused;
+                self.time_pos = *time_pos;
             }
             DaemonEvent::PlaybackStopped => {
                 self.status = PlaybackStatus::Stopped;

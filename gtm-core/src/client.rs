@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
@@ -22,6 +22,11 @@ pub struct DaemonClient {
     cmd_tx: mpsc::UnboundedSender<PendingRequest>,
     events: Arc<Mutex<Vec<DaemonEvent>>>,
     connected: Arc<AtomicBool>,
+    /// Clock-skewing state: base position and time for local position estimation.
+    /// Updated on playback start/pause/stop from event stream.
+    base_pos: Arc<Mutex<f64>>,
+    base_time: Arc<Mutex<Option<Instant>>>,
+    is_playing: Arc<AtomicBool>,
 }
 
 impl DaemonClient {
@@ -62,6 +67,9 @@ impl DaemonClient {
                         cmd_tx,
                         events,
                         connected,
+                        base_pos: Arc::new(Mutex::new(0.0)),
+                        base_time: Arc::new(Mutex::new(None)),
+                        is_playing: Arc::new(AtomicBool::new(false)),
                     });
                 }
                 Err(e) => {
@@ -83,7 +91,47 @@ impl DaemonClient {
 
     pub async fn drain(&self) -> Vec<DaemonEvent> {
         let mut events = self.events.lock().await;
-        std::mem::take(&mut *events)
+        let drained = std::mem::take(&mut *events);
+        self.apply_clock_events(&drained).await;
+        drained
+    }
+
+    async fn apply_clock_events(&self, evs: &[DaemonEvent]) {
+        let mut base_pos = self.base_pos.lock().await;
+        let mut base_time = self.base_time.lock().await;
+        for ev in evs {
+            match ev {
+                DaemonEvent::PlaybackStarted { time_pos, .. } => {
+                    *base_pos = *time_pos;
+                    *base_time = Some(Instant::now());
+                    self.is_playing.store(true, Ordering::Release);
+                }
+                DaemonEvent::PlaybackPaused { time_pos } => {
+                    *base_pos = *time_pos;
+                    *base_time = None;
+                    self.is_playing.store(false, Ordering::Release);
+                }
+                DaemonEvent::PlaybackStopped | DaemonEvent::TrackEnded => {
+                    *base_pos = 0.0;
+                    *base_time = None;
+                    self.is_playing.store(false, Ordering::Release);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Compute estimated playback position using local clock skewing.
+    /// Returns the position in seconds, or 0.0 if unknown.
+    pub async fn estimated_position(&self) -> f64 {
+        let base_pos = *self.base_pos.lock().await;
+        if self.is_playing.load(Ordering::Acquire) {
+            if let Some(base_time) = *self.base_time.lock().await {
+                let elapsed = base_time.elapsed().as_secs_f64();
+                return base_pos + elapsed;
+            }
+        }
+        base_pos
     }
 
     async fn send_raw(&self, req: DaemonReq) -> Result<DaemonRes> {
@@ -137,6 +185,8 @@ impl DaemonClient {
     }
 
     pub async fn seek(&self, position_secs: f64) -> Result<u32> {
+        *self.base_pos.lock().await = position_secs;
+        *self.base_time.lock().await = Some(Instant::now());
         self.send_ok(DaemonReq::Seek { position_secs })
             .await
     }
