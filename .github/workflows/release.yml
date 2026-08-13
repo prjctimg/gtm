@@ -66,6 +66,11 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Actions now run on Node 24, which does not trust the system CA store by
+  # default. GitHub runners sit behind an SSL-inspecting proxy, so Node-based
+  # actions (checkout, gh-release, etc.) fail with "self-signed certificate"
+  # unless they opt into the system CAs.
+  NODE_OPTIONS: --use-system-ca
 
 jobs:
   tag:
@@ -211,8 +216,14 @@ jobs:
         if: matrix.family == 'android'
         run: sudo apt-get update && sudo apt-get install -y pandoc
 
+      # actions/checkout uses GitHub's authenticated transport, avoiding the
+      # "SSL certificate problem: self signed certificate" git clone failures
+      # that intermittently hit the macOS runners.
       - name: Clone gtm.spec (manpage sources)
-        run: git clone --depth 1 https://github.com/prjctimg/gtm.spec.git gtm.spec
+        uses: actions/checkout@v4
+        with:
+          repository: prjctimg/gtm.spec
+          path: gtm.spec
 
       # Alpine-on-ARM64 cannot run JavaScript actions inside a container, so the
       # aarch64-musl build runs the whole Alpine pipeline in an ad-hoc container.
@@ -538,9 +549,15 @@ jobs:
     permissions:
       contents: read
     env:
-      CARGO_REGISTRY_TOKEN: ${{ secrets.GTM_IO }}
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO }}
     steps:
       - uses: actions/checkout@v4
+
+      # cargo publish verifies each package by compiling it (with default
+      # features), which pulls in alsa-sys via rodio on Linux. ubuntu-latest
+      # does not ship the ALSA dev headers the publish job needs.
+      - name: Install build dependencies for publish verification
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev
 
       - name: Verify manifest version matches tag
         run: |
