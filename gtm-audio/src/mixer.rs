@@ -63,6 +63,9 @@ pub struct AudioMixer {
     start_pos: Arc<Mutex<f64>>,
     crossfade_start: Option<Instant>,
     crossfade_duration: f64,
+    pending_pause: bool,
+    pause_fade_start: Option<Instant>,
+    stored_volume: u8,
 }
 
 struct MixerDeviceSink(rodio::MixerDeviceSink);
@@ -147,6 +150,9 @@ impl AudioMixer {
             start_pos: Arc::new(Mutex::new(0.0)),
             crossfade_start: None,
             crossfade_duration: 0.0,
+            pending_pause: false,
+            pause_fade_start: None,
+            stored_volume: 100,
         })
     }
 
@@ -212,24 +218,24 @@ impl AudioMixer {
         if self.active().is_paused() {
             self.active().play();
         }
+        if self.pending_pause {
+            self.pending_pause = false;
+            self.pause_fade_start = None;
+            let vol = self.stored_volume.min(100) as f32 / 100.0;
+            self.active().set_volume(vol);
+        }
         *self.start_time.lock().unwrap() = Some(Instant::now());
         self.playing.store(true, Ordering::SeqCst);
         Ok(())
     }
 
     pub fn pause(&mut self) -> AudioResult<()> {
-        if !self.active().is_paused() {
-            self.active().pause();
+        if self.active().is_paused() {
+            return Ok(());
         }
-        let elapsed = self
-            .start_time
-            .lock()
-            .unwrap()
-            .map(|t| t.elapsed().as_secs_f64())
-            .unwrap_or(0.0);
-        let current = *self.start_pos.lock().unwrap();
-        *self.position.lock().unwrap() = current + elapsed;
-        self.playing.store(false, Ordering::SeqCst);
+        self.stored_volume = self.volume.load(Ordering::SeqCst);
+        self.pending_pause = true;
+        self.pause_fade_start = Some(Instant::now());
         Ok(())
     }
 
@@ -267,7 +273,7 @@ impl AudioMixer {
     }
 
     pub fn is_playing(&self) -> bool {
-        self.playing.load(Ordering::SeqCst)
+        self.playing.load(Ordering::SeqCst) && !self.pending_pause
     }
 
     pub fn current_position(&self) -> f64 {
@@ -338,6 +344,10 @@ impl AudioMixer {
         new_standby.pause();
     }
 
+    fn ease_in_out(t: f64) -> f64 {
+        t * t * (3.0 - 2.0 * t)
+    }
+
     fn step_crossfade(&mut self) -> bool {
         let start = match self.crossfade_start {
             Some(s) => s,
@@ -345,18 +355,19 @@ impl AudioMixer {
         };
         let elapsed = start.elapsed().as_secs_f64();
         let progress = (elapsed / self.crossfade_duration).min(1.0);
+        let eased = Self::ease_in_out(progress);
         let vol = self.volume.load(Ordering::SeqCst) as f64 / 100.0;
         let base = vol.min(1.0);
 
         self.player_a.set_volume(if self.is_a_active {
-            (1.0 - progress) * base
+            (1.0 - eased) * base
         } else {
-            progress * base
+            eased * base
         } as f32);
         self.player_b.set_volume(if self.is_a_active {
-            progress * base
+            eased * base
         } else {
-            (1.0 - progress) * base
+            (1.0 - eased) * base
         } as f32);
 
         if progress >= 1.0 {
@@ -388,6 +399,36 @@ impl AudioMixer {
     pub fn poll(&mut self) -> AudioResult<Option<AudioEvent>> {
         if self.crossfade_start.is_some() {
             self.step_crossfade();
+        }
+
+        if self.pending_pause {
+            let fade_start = match self.pause_fade_start {
+                Some(s) => s,
+                None => return Ok(None),
+            };
+            const FADE_MS: f64 = 150.0;
+            let elapsed = fade_start.elapsed().as_secs_f64() * 1000.0;
+            if elapsed >= FADE_MS {
+                self.pending_pause = false;
+                self.pause_fade_start = None;
+                self.active().pause();
+                let elapsed_time = self
+                    .start_time
+                    .lock()
+                    .unwrap()
+                    .map(|t| t.elapsed().as_secs_f64())
+                    .unwrap_or(0.0);
+                let current = *self.start_pos.lock().unwrap();
+                let paused_pos = current + elapsed_time;
+                *self.position.lock().unwrap() = paused_pos;
+                *self.start_pos.lock().unwrap() = paused_pos;
+                *self.start_time.lock().unwrap() = None;
+                self.playing.store(false, Ordering::SeqCst);
+            } else {
+                let progress = elapsed / FADE_MS;
+                let target = (self.stored_volume.min(100) as f32 / 100.0) * (1.0 - progress as f32);
+                self.active().set_volume(target);
+            }
         }
 
         if self.active().empty() {

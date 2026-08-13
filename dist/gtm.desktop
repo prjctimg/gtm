@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=GTM Music Player
+Comment=Terminal-based music player daemon and client
+Exec=gtm
+Terminal=true
+Type=Application
+Categories=Audio;Music;Player;
+Keywords=music;player;terminal;tui;
+StartupNotify=false

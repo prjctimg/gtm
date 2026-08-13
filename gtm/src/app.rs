@@ -604,9 +604,18 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::Select) => {
-                        // In Library left pane, Enter moves focus to right pane
-                        if self.current_tab == Tab::Library && self.library_pane_focus {
-                            self.library_pane_focus = false;
+                        if self.current_tab == Tab::Library {
+                            if self.library_pane_focus {
+                                // Left pane: move focus to right pane
+                                self.library_pane_focus = false;
+                            } else {
+                                // Right pane: play selected track
+                                if self.scroll_offset < self.tracks_cache.len() {
+                                    let path = self.tracks_cache[self.scroll_offset].path.clone();
+                                    let tx = self.cmd_tx();
+                                    let _ = tx.send(TuiCommand::Play(path)).await;
+                                }
+                            }
                         }
                     }
                     Some(KeyboardAction::Delete) => {}

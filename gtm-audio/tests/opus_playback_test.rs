@@ -80,6 +80,7 @@ fn test_mixer_load_play_pause_stop() {
     assert!(mixer.is_playing());
 
     mixer.pause().unwrap();
+    std::thread::sleep(Duration::from_millis(200));
     assert!(!mixer.is_playing());
     let paused_pos = mixer.current_position();
     std::thread::sleep(Duration::from_millis(200));

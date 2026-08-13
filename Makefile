@@ -1,0 +1,74 @@
+# GTM build convenience targets
+#
+# Usage:
+#   make          – build all binaries (debug)
+#   make release  – build all binaries (release)
+#   make test     – run all workspace tests
+#   make check    – cargo check + cargo clippy
+#   make clean    – clean build artifacts
+#   make deb      – build .deb packages (requires cargo-deb)
+#   make man      – generate man pages (requires pandoc)
+#   make completions – generate shell completions
+#   make install  – install binaries to $(DESTDIR)$(PREFIX)/bin
+#   make rpm      – build RPM (requires rpmbuild)
+
+PREFIX ?= /usr/local
+DESTDIR ?=
+BINDIR ?= $(PREFIX)/bin
+MANDIR ?= $(PREFIX)/share/man
+COMPLETIONSDIR ?= $(PREFIX)/share/bash-completion/completions
+
+.PHONY: all release test check clean deb man completions install rpm
+
+all:
+	cargo build
+
+release:
+	cargo build --release
+
+test:
+	cargo test --workspace
+
+check:
+	cargo check --workspace
+	cargo clippy --workspace -- -D warnings
+
+clean:
+	cargo clean
+
+man:
+	./scripts/gen-manpages.sh artifacts
+
+completions: release
+	cargo run --release --bin release-gen completions artifacts
+
+install: release man completions
+	install -Dm 0755 target/release/gtmd $(DESTDIR)$(BINDIR)/gtmd
+	install -Dm 0755 target/release/gtm  $(DESTDIR)$(BINDIR)/gtm
+	install -Dm 0644 artifacts/man/gtmd.1     $(DESTDIR)$(MANDIR)/man1/gtmd.1
+	install -Dm 0644 artifacts/man/gtmd-ipc.1 $(DESTDIR)$(MANDIR)/man1/gtmd-ipc.1
+	install -Dm 0644 artifacts/man/gtm.1      $(DESTDIR)$(MANDIR)/man1/gtm.1
+	install -Dm 0644 artifacts/completions/gtm.bash   $(DESTDIR)$(COMPLETIONSDIR)/gtm
+	install -Dm 0644 artifacts/completions/gtmd.bash  $(DESTDIR)$(COMPLETIONSDIR)/gtmd
+	install -Dm 0644 dist/gtmd.service $(DESTDIR)$(PREFIX)/lib/systemd/user/gtmd.service
+
+deb: release man completions
+	@command -v cargo-deb >/dev/null 2>&1 || { echo "cargo-deb not found. Install with: cargo install cargo-deb"; exit 1; }
+	for pkg in gtmd gtm; do \
+		mkdir -p "$$pkg/deb-assets/man" "$$pkg/deb-assets/completions"; \
+		cp artifacts/man/* "$$pkg/deb-assets/man/"; \
+		cp artifacts/completions/* "$$pkg/deb-assets/completions/"; \
+	done
+	cp target/release/gtmd gtm/deb-assets/gtmd
+	cp dist/gtmd.service gtm/deb-assets/
+	cp dist/gtmd.service gtmd/deb-assets/
+	cargo deb --package gtm
+	cargo deb --package gtmd
+	for pkg in gtmd gtm; do rm -rf "$$pkg/deb-assets"; done
+
+rpm: release
+	@command -v rpmbuild >/dev/null 2>&1 || { echo "rpmbuild not found."; exit 1; }
+	tar czf /tmp/gtmd-0.1.0.tar.gz --transform 's|^|gtmd-0.1.0/|' \
+		--exclude=target --exclude=.git \
+		.
+	rpmbuild -tb /tmp/gtmd-0.1.0.tar.gz
