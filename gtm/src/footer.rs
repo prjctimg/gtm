@@ -24,7 +24,6 @@ pub enum FooterModule {
     Shuffle,
     Progress,
     Queue,
-    Clock,
     KeyAction,
     Backend,
     System,
@@ -45,7 +44,6 @@ impl FooterModule {
             FooterModule::Shuffle => "Shuffle",
             FooterModule::Progress => "Progress",
             FooterModule::Queue => "Queue",
-            FooterModule::Clock => "Clock",
             FooterModule::KeyAction => "KeyAction",
             FooterModule::Backend => "Backend",
             FooterModule::System => "System",
@@ -66,7 +64,6 @@ impl FooterModule {
             "Shuffle" => FooterModule::Shuffle,
             "Progress" => FooterModule::Progress,
             "Queue" => FooterModule::Queue,
-            "Clock" => FooterModule::Clock,
             "KeyAction" => FooterModule::KeyAction,
             "Backend" => FooterModule::Backend,
             "System" => FooterModule::System,
@@ -103,14 +100,14 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::EqPreset,
             ],
             middle: vec![FooterModule::KeyAction, FooterModule::SleepTimer],
-            right: vec![FooterModule::Clock],
+            right: vec![],
         },
         // Bare minimum for termux or very small viewports.
         FooterPreset {
             name: Cow::Borrowed("Minimal"),
             left: vec![FooterModule::Playback, FooterModule::EqPreset],
             middle: vec![FooterModule::KeyAction, FooterModule::SleepTimer],
-            right: vec![FooterModule::Clock],
+            right: vec![],
         },
         FooterPreset {
             name: Cow::Borrowed("Full"),
@@ -124,7 +121,7 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::Progress,
             ],
             middle: vec![FooterModule::KeyAction, FooterModule::SleepTimer],
-            right: vec![FooterModule::Clock],
+            right: vec![],
         },
     ]
 }
@@ -337,7 +334,6 @@ fn module_color(m: FooterModule, theme: &crate::theme::AppTheme) -> Color {
         FooterModule::Shuffle => theme.warning,
         FooterModule::Progress => theme.accent,
         FooterModule::Queue => theme.fg_dim,
-        FooterModule::Clock => theme.fg_dim,
         FooterModule::KeyAction => theme.warning,
         FooterModule::Backend => theme.fg_dim,
         FooterModule::System => theme.fg_dim,
@@ -368,7 +364,6 @@ fn module_text(m: FooterModule, app: &App) -> Option<String> {
         FooterModule::Shuffle => render_shuffle(app),
         FooterModule::Progress => render_progress(app),
         FooterModule::Queue => render_queue(app),
-        FooterModule::Clock => Some(render_clock()),
         FooterModule::KeyAction => render_keyaction(app),
         FooterModule::Backend => Some(render_backend()),
         FooterModule::System => Some(render_system()),
@@ -506,10 +501,6 @@ fn render_queue(app: &App) -> Option<String> {
     Some(format!("[{}/{}]{}", cursor + 1, len, next))
 }
 
-fn render_clock() -> String {
-    crate::ui::local_time_str().trim().to_string()
-}
-
 fn render_keyaction(app: &App) -> Option<String> {
     if let Some((ref action, expires)) = app.last_action_name {
         if std::time::Instant::now() < expires {
@@ -588,7 +579,6 @@ mod tests {
             FooterModule::Shuffle,
             FooterModule::Progress,
             FooterModule::Queue,
-            FooterModule::Clock,
             FooterModule::KeyAction,
             FooterModule::Backend,
             FooterModule::System,
@@ -614,9 +604,9 @@ mod tests {
 
     #[test]
     fn parse_module_list_drops_unknowns() {
-        let names = vec!["Playback".into(), "Bogus".into(), "Clock".into()];
+        let names = vec!["Playback".into(), "Bogus".into(), "Volume".into()];
         let parsed = parse_module_list(&names);
-        assert_eq!(parsed, vec![FooterModule::Playback, FooterModule::Clock]);
+        assert_eq!(parsed, vec![FooterModule::Playback, FooterModule::Volume]);
     }
 
     #[test]
@@ -626,7 +616,7 @@ mod tests {
             name = "Custom"
             left = ["Playback", "Queue"]
             middle = ["KeyAction"]
-            right = ["Volume", "Clock"]
+            right = ["Volume"]
         "#;
         let parsed: UserPresetsFile = toml::from_str(toml_text).unwrap();
         assert_eq!(parsed.preset.len(), 1);

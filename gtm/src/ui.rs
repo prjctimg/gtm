@@ -2475,6 +2475,7 @@ fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
 fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let presets = [
         ("Flat", EqPreset::Flat),
+        ("Normal", EqPreset::Normal),
         ("Pop", EqPreset::Pop),
         ("Rock", EqPreset::Rock),
         ("Jazz", EqPreset::Jazz),
@@ -2697,12 +2698,6 @@ fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
     let list = List::new(list_items);
     f.render_widget(list, inner);
-}
-
-/// Return the local time using the system clock and timezone.
-pub fn local_time_str() -> String {
-    let now = chrono::Local::now();
-    format!(" {} | {} ", now.format("%H:%M"), now.format("%Z"))
 }
 
 fn format_duration(secs: u64) -> String {

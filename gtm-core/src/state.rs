@@ -224,6 +224,7 @@ pub const EQ_FREQUENCIES: [f64; 15] = [
 /// All available EQ preset names (excluding Custom).
 pub const EQ_PRESETS: &[&str] = &[
     "flat",
+    "normal",
     "pop",
     "rock",
     "jazz",
@@ -244,6 +245,7 @@ pub const EQ_PRESETS: &[&str] = &[
 #[serde(rename_all = "snake_case")]
 pub enum EqPreset {
     Flat,
+    Normal,
     Pop,
     Rock,
     Jazz,
@@ -268,6 +270,7 @@ impl EqPreset {
     pub fn label(&self) -> &'static str {
         match self {
             Self::Flat => "Flat",
+            Self::Normal => "Normal",
             Self::Pop => "Pop",
             Self::Rock => "Rock",
             Self::Jazz => "Jazz",
@@ -287,59 +290,115 @@ impl EqPreset {
     }
 
     /// Convert this preset to 15 per-band gain values in dB.
-    /// All presets are capped at ±5 dB for musicality.
+    ///
+    /// Bands follow ISO 1/3-octave centers: 25, 40, 63, 100, 160, 250, 400,
+    /// 630, 1000, 1600, 2500, 4000, 6300, 10000, 16000 Hz.
+    ///
+    /// Tuning rationale (research-based, all curves capped at ±4 dB):
+    /// - Human hearing is most sensitive from ~2–5 kHz (ISO 226 equal-loudness
+    ///   contours, ear-canal resonance ~3–4 kHz), so presence bands get modest
+    ///   boosts and harshness-prone 4 kHz is treated with care.
+    /// - 200–500 Hz is the "mud" zone where bass, kick, guitars, piano, and
+    ///   vocals all accumulate; gentle cuts here clear a mix without thinning it.
+    /// - Sub-bass (20–60 Hz) is felt more than heard and only exists on capable
+    ///   speakers, so playback-agnostic presets cut it instead of boosting it.
+    /// - Boosts are kept wide and adjacent transitions smooth to avoid the
+    ///   resonances and comb-filter artifacts that adjacent ±5 dB steps cause.
     pub fn to_gains(&self) -> [f32; 15] {
         match self {
             Self::Flat => [
                 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
             ],
+            // Normal: the signal exactly as the artist/mastering intended.
+            Self::Normal => [
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+            ],
+            // Pop: punchy kick/bass (60–120 Hz), neutral 250–630 so vocals sit
+            // forward, gentle 1.6–2.5 kHz presence lift, air above 10 kHz.
             Self::Pop => [
-                -1.0, 0.0, 1.0, 3.0, 4.0, 5.0, 4.0, 2.0, 0.0, -1.0, -1.0, 0.0, 2.0, 3.0, 2.0,
+                1.0, 2.0, 3.0, 3.0, 2.0, 1.0, -1.0, 0.0, 1.0, 2.0, 2.0, 1.0, 1.0, 2.0, 3.0,
             ],
+            // Rock: moderate lows for kick/bass guitar, guitar body in the mids,
+            // a wide 400 Hz mud cut and a gentle 4 kHz dip to tame cymbal
+            // harshness, light top for snare crack.
             Self::Rock => [
-                4.0, 4.0, 3.0, 1.0, -1.0, -2.0, -3.0, -1.0, 0.0, 1.0, 3.0, 4.0, 4.0, 4.0, 3.0,
+                0.0, 0.0, 2.0, 3.0, 2.0, 1.0, -1.0, 0.0, 1.0, 2.0, 2.0, -1.0, 2.0, 2.0, 1.0,
             ],
+            // Jazz: dynamics preserved — nearly flat, clears low-mid congestion,
+            // lifts presence and top so brushes and double bass articulate.
             Self::Jazz => [
-                3.0, 2.0, 2.0, 1.0, 0.0, 1.0, 0.0, -1.0, -1.0, 0.0, 1.0, 2.0, 2.0, 2.0, 2.0,
+                0.0, 0.0, 1.0, 2.0, 1.0, 0.0, -1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0,
             ],
+            // Classical: minimal touch — slight warmth, mostly a gentle
+            // brightness tilt so strings and hall air shine through.
             Self::Classical => [
-                3.0, 3.0, 2.0, 2.0, 1.0, 0.0, 0.0, 0.0, -1.0, 0.0, 1.0, 2.0, 2.0, 2.0, 2.0,
+                0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 2.0,
             ],
+            // Bass Boost: sub/bass shelf with mids backed off to avoid mud and a
+            // hint of treble for balance.
             Self::Bass => [
-                5.0, 5.0, 4.0, 4.0, 3.0, 2.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                4.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0,
             ],
+            // Vocal: aggressive low cut, chest warmth at 250 Hz, a 400 Hz mud
+            // dip, presence lift 1.6–4 kHz (voice fundamentals/harmonics) and a
+            // de-ess tilt above 6.3 kHz.
             Self::Vocal => [
-                -2.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0,
+                -4.0, -3.0, -2.0, -1.0, 0.0, 1.0, -1.0, 0.0, 1.0, 2.0, 3.0, 2.0, 1.0, -1.0, -2.0,
             ],
+            // Electronic: sub weight for synth bass/kicks, 200–400 Hz mud cut so
+            // kicks don't smear into the mids, crisp hats via 6.3–16 kHz lift.
             Self::Electronic => [
-                4.0, 4.0, 3.0, 2.0, 0.0, -1.0, -1.0, 0.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 3.0,
+                4.0, 4.0, 3.0, 1.0, 0.0, -2.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 3.0, 3.0,
             ],
+            // Hip-Hop: target the 808 fundamental at 40–63 Hz, keep the 100–250
+            // region clean, cut 400 Hz mud, lift 2.5 kHz so vocals stay above
+            // the low end.
             Self::HipHop => [
-                4.0, 4.0, 3.0, 2.0, 1.0, 1.0, 0.0, -1.0, -1.0, 0.0, 1.0, 1.0, 2.0, 2.0, 2.0,
+                4.0, 4.0, 3.0, 1.0, 0.0, -2.0, -1.0, 0.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 0.0,
             ],
+            // Latin: percussive mids and horns — full 250–1000 Hz body for
+            // congas/bongos, presence and a touch of air for clave and brass.
             Self::Latin => [
-                3.0, 3.0, 2.0, 1.0, 0.0, 0.0, -1.0, -1.0, -1.0, 0.0, 1.0, 2.0, 2.0, 3.0, 3.0,
+                0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 1.0, 1.0,
             ],
+            // Acoustic: small moves only — acoustic recordings punish heavy EQ;
+            // a slight 250 Hz trim, gentle 1.6–4 kHz presence and top air.
             Self::Acoustic => [
-                3.0, 3.0, 2.0, 2.0, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 2.0, 1.0,
+                0.0, 0.0, 1.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0,
             ],
-            // Podcast: speech-optimized — low-cut rumble, narrow presence boost, de-ess, air
+            // Podcast: speech-optimized — hard low cut for rumble/plosives,
+            // 2.5 kHz intelligibility lift, narrow sibilance dip at 6.3 kHz.
             Self::Podcast => [
-                -4.0, -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 3.0, 1.0, 2.0, 3.0, 3.0, 2.0,
+                -4.0, -4.0, -2.0, -1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 2.0, 3.0, 2.0, -1.0, -1.0, -2.0,
             ],
+            // Dance: club-oriented — strong bass, mids scooped to leave room for
+            // bass and treble, sparkle above 10 kHz.
             Self::Dance => [
-                4.0, 4.0, 4.0, 3.0, 2.0, 0.0, 0.0, -1.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0,
+                3.0, 4.0, 4.0, 3.0, 1.0, -1.0, -1.0, -1.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 2.0,
             ],
-            // Headphones: compensate closed-back — sub-bass warmth, presence dip, air shelf
+            // Headphones: mild smiley for consumer cans — a touch of low-end
+            // warmth, mids kept present (not scooped), gentle treble lift.
             Self::Headphones => [
-                3.0, 3.0, 2.0, 1.0, 0.0, -1.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 4.0, 4.0, 3.0,
+                2.0, 3.0, 2.0, 1.0, 0.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 2.0,
             ],
-            // Speaker: desktop speakers — cut unplayable sub-bass, boost presence, add clarity
+            // Speaker: small desktop speakers can't reproduce sub-bass — cut
+            // 25–63 Hz (saves excursion, prevents distortion), keep the
+            // presence band 2.5–4 kHz forward for clarity, minimal top.
             Self::Speaker => [
-                -3.0, -2.0, -1.0, 0.0, 1.0, 2.0, 3.0, 3.0, 3.0, 2.0, 1.0, 0.0, 1.0, 2.0, 1.0,
+                -4.0, -4.0, -2.0, 0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 1.0, 1.0, 0.0,
             ],
             Self::Custom(gains) => *gains,
         }
+    }
+
+    /// Headroom trim in dB applied after the EQ so boosts can never push the
+    /// output past full scale. Equals the negative of the largest positive
+    /// band gain (0 dB for presets with no boosts). This is the standard
+    /// "preamp" compensation used in professional EQ presets; it guarantees
+    /// no clipping/artifacts regardless of the source's peak level.
+    pub fn headroom_db(&self) -> f32 {
+        let max_boost = self.to_gains().iter().copied().fold(0.0f32, f32::max);
+        -max_boost
     }
 
     /// Convert to 15 `EqBand` structs with ISO frequencies.

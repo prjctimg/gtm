@@ -1005,6 +1005,23 @@ impl App {
         tracks
     }
 
+    /// Play the track highlighted in the current library view, replacing the
+    /// queue with the filtered list and starting at that row.
+    fn play_filtered_highlighted(&self) {
+        let filtered = self.filtered_tracks();
+        if self.scroll_offset >= filtered.len() {
+            return;
+        }
+        let idx = self.scroll_offset;
+        let paths: Vec<String> = filtered.iter().map(|t| t.path.clone()).collect();
+        let path = paths[idx].clone();
+        let c = self.client.clone();
+        tokio::spawn(async move {
+            let _ = c.queue_set(paths, idx as u64).await;
+            let _ = c.play(&path, 0.0).await;
+        });
+    }
+
     /// Unique album names with track counts, sorted by album.
     pub fn unique_albums(&self) -> Vec<(String, usize)> {
         let mut albums: std::collections::BTreeMap<String, usize> =
@@ -1533,6 +1550,7 @@ impl App {
                 PickerId::Equalizer => {
                     let presets = [
                         gtm_core::state::EqPreset::Flat,
+                        gtm_core::state::EqPreset::Normal,
                         gtm_core::state::EqPreset::Pop,
                         gtm_core::state::EqPreset::Rock,
                         gtm_core::state::EqPreset::Jazz,
@@ -1705,9 +1723,9 @@ impl App {
                     self.input_mode = InputMode::Normal;
                     match self.current_tab {
                         Tab::Library => {
-                            // Commit the filter without clearing it: the user
-                            // can keep navigating the filtered list with
-                            // normal keys, and Enter plays the highlighted row.
+                            // Commit the filter without clearing it and play
+                            // the highlighted row in the filtered list.
+                            self.play_filtered_highlighted();
                         }
                         _ => {
                             let tx = self.cmd_tx();
@@ -2108,18 +2126,7 @@ impl App {
                                         });
                                     }
                                 } else {
-                                    let filtered = self.filtered_tracks();
-                                    if self.scroll_offset < filtered.len() {
-                                        let idx = self.scroll_offset;
-                                        let paths: Vec<String> =
-                                            filtered.iter().map(|t| t.path.clone()).collect();
-                                        let path = paths[idx].clone();
-                                        let c = self.client.clone();
-                                        tokio::spawn(async move {
-                                            let _ = c.queue_set(paths, idx as u64).await;
-                                            let _ = c.play(&path, 0.0).await;
-                                        });
-                                    }
+                                    self.play_filtered_highlighted();
                                 }
                             } else if self.library_category == 2 {
                                 // Albums: select album → show its tracks
@@ -2181,18 +2188,7 @@ impl App {
                                 }
                             } else {
                                 // Default: play track from flat list
-                                let filtered = self.filtered_tracks();
-                                if self.scroll_offset < filtered.len() {
-                                    let idx = self.scroll_offset;
-                                    let paths: Vec<String> =
-                                        filtered.iter().map(|t| t.path.clone()).collect();
-                                    let path = paths[idx].clone();
-                                    let c = self.client.clone();
-                                    tokio::spawn(async move {
-                                        let _ = c.queue_set(paths, idx as u64).await;
-                                        let _ = c.play(&path, 0.0).await;
-                                    });
-                                }
+                                self.play_filtered_highlighted();
                             }
                         } else if self.current_tab == Tab::Settings && !self.settings_pane_focus {
                             let tx = self.cmd_tx();
@@ -2826,6 +2822,12 @@ impl App {
             return;
         }
 
+        let top_id = self.pickers.top().map(|o| o.id);
+        let is_help = top_id == Some(PickerId::Help);
+        let ctrl_or_alt = key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+
         match key.code {
             KeyCode::Esc => {
                 if let Some(top) = self.pickers.top() {
@@ -2838,62 +2840,44 @@ impl App {
                 self.pickers.close_top();
             }
             // Help picker vim motions
-            KeyCode::Char('g') if key.modifiers == KeyModifiers::CONTROL => {
+            KeyCode::Char('g') if key.modifiers == KeyModifiers::CONTROL && is_help => {
                 if let Some(top) = self.pickers.top_mut() {
-                    if top.id == PickerId::Help {
-                        top.selected = 0;
-                    }
+                    top.selected = 0;
                 }
             }
-            KeyCode::Char('G') => {
-                let is_help = self.pickers.top().map_or(false, |t| t.id == PickerId::Help);
-                let total = if is_help { self.help_picker_total() } else { 0 };
+            KeyCode::Char('G') if is_help && !ctrl_or_alt => {
+                let total = self.help_picker_total();
                 if let Some(top) = self.pickers.top_mut() {
-                    if top.id == PickerId::Help {
-                        top.selected = total.saturating_sub(1);
-                    }
+                    top.selected = total.saturating_sub(1);
                 }
             }
-            KeyCode::Char('0') => {
+            KeyCode::Char('0') if is_help && !ctrl_or_alt => {
                 if let Some(top) = self.pickers.top_mut() {
-                    if top.id == PickerId::Help {
-                        top.selected = 0;
-                    }
+                    top.selected = 0;
                 }
             }
-            KeyCode::Char('$') => {
-                let is_help = self.pickers.top().map_or(false, |t| t.id == PickerId::Help);
-                let total = if is_help { self.help_picker_total() } else { 0 };
+            KeyCode::Char('$') if is_help && !ctrl_or_alt => {
+                let total = self.help_picker_total();
                 if let Some(top) = self.pickers.top_mut() {
-                    if top.id == PickerId::Help {
-                        top.selected = total.saturating_sub(1);
-                    }
+                    top.selected = total.saturating_sub(1);
                 }
             }
-            KeyCode::Char('/') => {
+            KeyCode::Char('/') if is_help && !ctrl_or_alt => {
                 if let Some(top) = self.pickers.top_mut() {
-                    if top.id == PickerId::Help {
-                        top.query.clear();
+                    top.query.clear();
+                }
+            }
+            KeyCode::Char('n') if is_help && !ctrl_or_alt => {
+                let total = self.help_picker_total();
+                if let Some(top) = self.pickers.top_mut() {
+                    if total > 0 {
+                        top.selected = (top.selected + 1).min(total - 1);
                     }
                 }
             }
-            KeyCode::Char('n') => {
-                if self.pickers.top().map_or(false, |t| t.id == PickerId::Help) {
-                    let total = self.help_picker_total();
-                    if let Some(top) = self.pickers.top_mut() {
-                        if top.id == PickerId::Help && total > 0 {
-                            top.selected = (top.selected + 1).min(total - 1);
-                        }
-                    }
-                }
-            }
-            KeyCode::Char('N') => {
-                if self.pickers.top().map_or(false, |t| t.id == PickerId::Help) {
-                    if let Some(top) = self.pickers.top_mut() {
-                        if top.id == PickerId::Help {
-                            top.selected = top.selected.saturating_sub(1);
-                        }
-                    }
+            KeyCode::Char('N') if is_help && !ctrl_or_alt => {
+                if let Some(top) = self.pickers.top_mut() {
+                    top.selected = top.selected.saturating_sub(1);
                 }
             }
             // Queue move up/down (Ctrl+K/J) must come before plain k/j
@@ -2932,6 +2916,7 @@ impl App {
                     Some(PickerId::YTSearch)
                         | Some(PickerId::SearchLibrary)
                         | Some(PickerId::CommandPalette)
+                        | Some(PickerId::ThemePicker)
                 );
                 let is_metadata = matches!(
                     self.pickers.top().map(|o| o.id),
@@ -2967,6 +2952,7 @@ impl App {
                     Some(PickerId::YTSearch)
                         | Some(PickerId::SearchLibrary)
                         | Some(PickerId::CommandPalette)
+                        | Some(PickerId::ThemePicker)
                 );
                 let is_metadata = matches!(
                     self.pickers.top().map(|o| o.id),
@@ -3213,6 +3199,7 @@ impl App {
                             // Apply selected EQ preset
                             let presets = [
                                 gtm_core::state::EqPreset::Flat,
+                                gtm_core::state::EqPreset::Normal,
                                 gtm_core::state::EqPreset::Pop,
                                 gtm_core::state::EqPreset::Rock,
                                 gtm_core::state::EqPreset::Jazz,
@@ -3343,7 +3330,7 @@ impl App {
                     }
                 }
             }
-            KeyCode::Char(c) => {
+            KeyCode::Char(c) if !ctrl_or_alt => {
                 if let Some(top) = self.pickers.top_mut() {
                     match top.id {
                         PickerId::YTSearch
@@ -3402,6 +3389,7 @@ impl App {
             if top.id == PickerId::Equalizer {
                 let presets = [
                     gtm_core::state::EqPreset::Flat,
+                    gtm_core::state::EqPreset::Normal,
                     gtm_core::state::EqPreset::Pop,
                     gtm_core::state::EqPreset::Rock,
                     gtm_core::state::EqPreset::Jazz,

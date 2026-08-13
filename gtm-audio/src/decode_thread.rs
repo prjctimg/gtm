@@ -33,6 +33,13 @@ fn apply_band(unit: &mut dyn AudioUnit, band: usize, freq: f32, gain_db: f32) {
     unit.set(Setting::center_q_gain(freq, EQ_DEFAULT_Q as f32, db_amp(gain_db)).index(band));
 }
 
+/// Anti-clip stage: trims the filtered sample by the preset headroom so band
+/// boosts can never push past full scale, then hard-clamps as a final safety
+/// net. With headroom compensation the clamp rarely engages.
+fn apply_headroom(sample: f32, headroom_mult: f32) -> f32 {
+    (sample * headroom_mult).clamp(-1.0, 1.0)
+}
+
 // ---------------------------------------------------------------------------
 // Reverb helper — standalone processing function (no Source wrapper needed)
 // ---------------------------------------------------------------------------
@@ -137,6 +144,7 @@ impl DecodeThread {
                 apply_band(&mut *eq_right, i, EQ_FREQUENCIES[i] as f32, v);
             }
             let mut gain_check: usize = 0;
+            let mut headroom_mult = db_amp(self.eq_gains.headroom());
 
             // Build reverb state
             let mut reverb_state = {
@@ -205,13 +213,15 @@ impl DecodeThread {
                                 prev_gains[i] = v;
                             }
                         }
+                        headroom_mult = db_amp(self.eq_gains.headroom());
                     }
                     let ch = sample_count % channels as usize;
-                    if ch == 0 {
+                    let filtered = if ch == 0 {
                         eq_left.filter_mono(sample)
                     } else {
                         eq_right.filter_mono(sample)
-                    }
+                    };
+                    apply_headroom(filtered, headroom_mult)
                 } else {
                     sample
                 };
@@ -225,7 +235,10 @@ impl DecodeThread {
                             match source_iter.next() {
                                 Some(right_raw) => {
                                     let right_eq = if self.eq_enabled.load(Ordering::Relaxed) {
-                                        eq_right.filter_mono(right_raw)
+                                        apply_headroom(
+                                            eq_right.filter_mono(right_raw),
+                                            headroom_mult,
+                                        )
                                     } else {
                                         right_raw
                                     };

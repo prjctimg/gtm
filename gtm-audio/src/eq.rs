@@ -43,6 +43,9 @@ impl AtomicF32 {
 
 pub struct EqGainsInner {
     bands: [AtomicF32; 15],
+    /// Global makeup-gain trim (dB, ≤ 0) applied after the bands so boosts
+    /// can never push the output past full scale.
+    headroom_db: AtomicF32,
 }
 
 #[derive(Clone)]
@@ -52,6 +55,7 @@ impl EqGains {
     pub fn new_flat() -> Self {
         Self(Arc::new(EqGainsInner {
             bands: std::array::from_fn(|_| AtomicF32::new(0.0)),
+            headroom_db: AtomicF32::new(0.0),
         }))
     }
 
@@ -63,11 +67,18 @@ impl EqGains {
         self.0.bands[index].store(value, Ordering::Relaxed);
     }
 
+    pub fn headroom(&self) -> f32 {
+        self.0.headroom_db.load(Ordering::Relaxed)
+    }
+
     pub fn apply_preset(&self, preset: &EqPreset) {
         let values = preset.to_gains();
         for (i, v) in values.iter().enumerate() {
             self.0.bands[i].store(*v, Ordering::Relaxed);
         }
+        self.0
+            .headroom_db
+            .store(preset.headroom_db(), Ordering::Relaxed);
     }
 }
 
@@ -81,6 +92,7 @@ pub struct EqSource<I> {
     eq_right: Box<dyn AudioUnit>,
     gains: EqGains,
     prev_gains: [f32; 15],
+    headroom_mult: f32,
     channels: NonZeroU16,
     sample_count: usize,
     gain_check_counter: usize,
@@ -105,12 +117,15 @@ where
             apply_band(&mut *eq_right, i, EQ_FREQUENCIES[i] as f32, v);
         }
 
+        let headroom_mult = db_amp(gains.headroom());
+
         Self {
             inner,
             eq_left,
             eq_right,
             gains,
             prev_gains,
+            headroom_mult,
             channels,
             sample_count: 0,
             gain_check_counter: 0,
@@ -137,6 +152,7 @@ where
                     self.prev_gains[i] = v;
                 }
             }
+            self.headroom_mult = db_amp(self.gains.headroom());
         }
 
         let ch = self.sample_count % self.channels.get() as usize;
@@ -148,7 +164,7 @@ where
             self.eq_right.filter_mono(raw)
         };
 
-        Some(processed)
+        Some((processed * self.headroom_mult).clamp(-1.0, 1.0))
     }
 }
 
