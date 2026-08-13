@@ -499,10 +499,6 @@ impl AudioMixer {
             return Ok(());
         };
         ctrl.signal_seek(position_secs);
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while ctrl.seeking.load(Ordering::Acquire) && Instant::now() < deadline {
-            std::thread::sleep(Duration::from_millis(5));
-        }
         *self.position.lock().unwrap() = position_secs;
         *self.start_time.lock().unwrap() = (position_secs > 0.0).then(|| Instant::now());
         *self.start_pos.lock().unwrap() = position_secs;

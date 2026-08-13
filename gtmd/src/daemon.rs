@@ -1098,26 +1098,40 @@ impl Daemon {
                         t.duration = dur;
                         t
                     }
-                    _ => gtm_core::track::TrackInfo {
-                        id: 0,
-                        path: path_owned.clone(),
-                        title: std::path::Path::new(&path_owned)
-                            .file_stem()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("Unknown")
-                            .to_string(),
-                        artist: "Unknown Artist".to_string(),
-                        album: "Unknown Album".to_string(),
-                        duration: dur,
-                        track_number: None,
-                        genre: String::new(),
-                        year: None,
-                        bitrate: None,
-                        samplerate: None,
-                        hash: String::new(),
-                        cover_path: None,
-                        favourite: false,
-                        ..Default::default()
+                    _ => {
+                        // Fallback: search by path substring
+                        let mut fallback = gtm_core::track::TrackInfo {
+                            id: 0,
+                            path: path_owned.clone(),
+                            title: std::path::Path::new(&path_owned)
+                                .file_stem()
+                                .and_then(|s| s.to_str())
+                                .unwrap_or("Unknown")
+                                .to_string(),
+                            artist: "Unknown Artist".to_string(),
+                            album: "Unknown Album".to_string(),
+                            duration: dur,
+                            track_number: None,
+                            genre: String::new(),
+                            year: None,
+                            bitrate: None,
+                            samplerate: None,
+                            hash: String::new(),
+                            cover_path: None,
+                            favourite: false,
+                            ..Default::default()
+                        };
+                        if let Ok(tracks) = lib.list_tracks() {
+                            if let Some(matched) = tracks.iter().find(|t| path_owned.contains(&t.path) || t.path.contains(&path_owned)) {
+                                fallback.id = matched.id;
+                                fallback.title = matched.title.clone();
+                                fallback.artist = matched.artist.clone();
+                                fallback.album = matched.album.clone();
+                                fallback.cover_path = matched.cover_path.clone();
+                                fallback.favourite = matched.favourite;
+                            }
+                        }
+                        fallback
                     },
                 }
             } else {
@@ -1288,6 +1302,19 @@ impl Daemon {
         let track = match state.advance_queue(1)? {
             Some(t) => t.clone(),
             None => {
+                let was_playing = state.status == PlaybackStatus::Playing;
+                drop(state);
+                if was_playing {
+                    inner.mixer.lock().await.stop()?;
+                }
+                let mut state = inner.state.write().await;
+                state.queue.clear();
+                state.queue_cursor = 0;
+                state.current_track = None;
+                state.status = PlaybackStatus::Stopped;
+                state.time_pos = 0.0;
+                drop(state);
+                Self::push_event(inner, DaemonEvent::TrackEnded);
                 return Ok(DaemonRes::Ok);
             }
         };
@@ -1448,10 +1475,13 @@ impl Daemon {
             return Err(CoreError::Daemon("cannot seek while stopped".into()));
         }
         drop(state);
+        tracing::debug!("cmd_seek: requested position={}", pos);
         let actual = {
             let mut mixer = inner.mixer.lock().await;
             mixer.seek(pos)?;
-            mixer.current_position()
+            let current = mixer.current_position();
+            tracing::debug!("cmd_seek: actual position after seek={}", current);
+            current
         };
         let mut state = inner.state.write().await;
         state.seek(actual)?;

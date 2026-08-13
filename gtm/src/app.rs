@@ -752,9 +752,9 @@ impl App {
                 let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
                 self.terminal_cols = cols;
                 self.terminal_rows = rows;
-                if cols < 40 || rows < 10 {
+                if cols < 20 || rows < 6 {
                     let _ = terminal.draw(|f| {
-                        let msg = Paragraph::new("Terminal too small (min 40x10)")
+                        let msg = Paragraph::new("Terminal too small (min 20x6)")
                             .alignment(Alignment::Center);
                         f.render_widget(msg, f.area());
                     });

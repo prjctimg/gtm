@@ -176,6 +176,13 @@ fn find_gtmd_binary() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> 
 
 pub fn render(f: &mut ratatui::Frame, app: &mut App) {
     let area = f.area();
+    if area.width < 20 || area.height < 6 {
+        let msg = Paragraph::new("Terminal too small (min 20x6)")
+            .alignment(Alignment::Center)
+            .style(Style::default().fg(app.theme.fg_dim));
+        f.render_widget(msg, area);
+        return;
+    }
     // Explicit background fill — the TUI defines its own background
     f.render_widget(
         ratatui::widgets::Block::default().style(ratatui::style::Style::default().bg(app.theme.bg)),
@@ -384,9 +391,9 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let np_height: u16 = if is_narrow { 5 } else { 8 };
 
     let lib_width: u16 = if is_narrow {
-        (app.terminal_cols / 3).max(12)
+        (app.terminal_cols / 3).max(12).min(area.width.saturating_sub(2))
     } else {
-        28
+        28u16.min(area.width.saturating_sub(2))
     };
 
     // Lyrics always get a right column spanning the full height.
