@@ -118,6 +118,7 @@ pub enum KeyboardAction {
     ToggleHelp,
     CycleFooterPreset,
     CycleProgressStyle,
+    ToggleVisualizer,
     Custom(String),
 }
 
@@ -485,6 +486,15 @@ pub fn default_keybindings() -> Keybindings {
                     description: "Select item",
                 },
             ),
+            // Back — Backspace (go back in library drill-down / move focus left)
+            (
+                KeyCode::Backspace.into(),
+                BoundCommand {
+                    action: KeyboardAction::Back,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Go back",
+                },
+            ),
             // Delete — Del / D (uppercase, with confirmation)
             (
                 KeyCode::Delete.into(),
@@ -673,6 +683,15 @@ pub fn default_keybindings() -> Keybindings {
                     action: KeyboardAction::CycleProgressStyle,
                     contexts: vec![KeyContext::Normal],
                     description: "Cycle progress style",
+                },
+            ),
+            // Ctrl+V — toggle visualizer
+            (
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
+                BoundCommand {
+                    action: KeyboardAction::ToggleVisualizer,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Toggle visualizer",
                 },
             ),
         ],

@@ -28,6 +28,7 @@ mod overlay;
 mod progress;
 mod theme;
 mod ui;
+mod visualizer;
 
 use clap::{CommandFactory, Parser, Subcommand};
 
