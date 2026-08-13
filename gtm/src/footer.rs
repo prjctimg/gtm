@@ -112,54 +112,45 @@ struct FooterGroup<'a> {
 fn build_groups<'a>(preset: &'a FooterPreset, app: &App) -> Vec<FooterGroup<'a>> {
     let is_playing = app.state.status == PlaybackStatus::Playing;
     let status_bg = if is_playing { app.theme.accent } else { app.theme.fg_dim };
-    let mode_bg = app.theme.border;
     let mut groups = Vec::new();
 
-    // Group 1: Playback + Volume + EqPreset (status)
-    let mut status = Vec::new();
-    for m in preset.a.iter().chain(preset.b.iter()).chain(preset.c.iter()) {
-        if matches!(m, FooterModule::Playback | FooterModule::Volume | FooterModule::EqPreset) {
-            status.push(m);
+    // Collect all modules from all preset fields
+    let all: Vec<&'a FooterModule> = preset.a.iter()
+        .chain(preset.b.iter())
+        .chain(preset.c.iter())
+        .chain(preset.x.iter())
+        .chain(preset.y.iter())
+        .chain(preset.z.iter())
+        .collect();
+
+    // Group 1 (left): Status/info modules
+    let mut left = Vec::new();
+    for m in &all {
+        if matches!(m,
+            FooterModule::Playback | FooterModule::Volume | FooterModule::EqPreset
+            | FooterModule::Queue | FooterModule::Repeat | FooterModule::Shuffle
+            | FooterModule::Progress | FooterModule::Title | FooterModule::Backend
+            | FooterModule::Device | FooterModule::System
+        ) {
+            left.push(*m);
         }
     }
-    if !status.is_empty() {
-        groups.push(FooterGroup { modules: status, bg: status_bg });
+    if !left.is_empty() {
+        groups.push(FooterGroup { modules: left, bg: status_bg });
     }
 
-    // Group 2: Repeat + Shuffle (mode)
-    let mut mode = Vec::new();
-    for m in preset.x.iter().chain(preset.y.iter()).chain(preset.z.iter()) {
-        if matches!(m, FooterModule::Repeat | FooterModule::Shuffle) {
-            mode.push(m);
-        }
-    }
-    if !mode.is_empty() {
-        groups.push(FooterGroup { modules: mode, bg: mode_bg });
-    }
-
-    // Group 3: Queue
-    let mut queue = Vec::new();
-    for m in preset.a.iter().chain(preset.b.iter()).chain(preset.c.iter()) {
-        if matches!(m, FooterModule::Queue) {
-            queue.push(m);
-        }
-    }
-    if !queue.is_empty() {
-        groups.push(FooterGroup { modules: queue, bg: mode_bg });
-    }
-
-    // Group 4: KeyAction + SleepTimer (misc)
-    let mut misc = Vec::new();
-    for m in preset.x.iter().chain(preset.y.iter()).chain(preset.z.iter()) {
+    // Group 2 (middle): KeyAction + SleepTimer
+    let mut middle = Vec::new();
+    for m in &all {
         if matches!(m, FooterModule::KeyAction | FooterModule::SleepTimer) {
-            misc.push(m);
+            middle.push(*m);
         }
     }
-    if !misc.is_empty() {
-        groups.push(FooterGroup { modules: misc, bg: app.theme.fg_dim });
+    if !middle.is_empty() {
+        groups.push(FooterGroup { modules: middle, bg: app.theme.fg_dim });
     }
 
-    // Group 5: Clock (far right)
+    // Group 3 (right): Clock
     groups.push(FooterGroup {
         modules: vec![&FooterModule::Clock],
         bg: app.theme.fg_dim,

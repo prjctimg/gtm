@@ -408,6 +408,13 @@ impl DaemonClient {
         .await
     }
 
+    pub async fn library_sync_lyrics(&self) -> Result<DaemonRes> {
+        self.send_raw(DaemonReq::Library {
+            action: LibraryAction::SyncLyrics,
+        })
+        .await
+    }
+
     pub async fn library_remove_from_playlist(&self, playlist_id: i64, track_id: i64) -> Result<u32> {
         self.send_ok(DaemonReq::Library {
             action: LibraryAction::RemoveFromPlaylist { playlist_id, track_id },

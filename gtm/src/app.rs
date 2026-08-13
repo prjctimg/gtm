@@ -197,6 +197,7 @@ pub struct App {
     last_popup_cover_fetch_id: Option<i64>,
     pub current_lyrics: Option<gtm_core::track::LrcData>,
     pub lyrics_scroll: usize,
+    pub lyrics_fetching: bool,
     last_lyrics_track_id: Option<i64>,
     pub show_lyrics: bool,
     pub lyrics_manual_scroll: bool,
@@ -350,6 +351,7 @@ impl App {
             last_popup_cover_fetch_id: None,
             current_lyrics: None,
             lyrics_scroll: 0,
+            lyrics_fetching: false,
             last_lyrics_track_id: None,
             show_lyrics: false,
             lyrics_manual_scroll: false,
@@ -496,11 +498,11 @@ impl App {
                     let client3 = self.client.clone();
                     let ipc_tx3 = self.ipc_tx.clone();
                     self.current_lyrics = None;
+                    self.lyrics_fetching = true;
                     self.lyrics_scroll = 0;
                     tokio::spawn(async move {
-                        if let Ok(lyrics) = client3.get_lyrics(tid).await {
-                            let _ = ipc_tx3.send(IpcResult::Lyrics(lyrics));
-                        }
+                        let result = client3.get_lyrics(tid).await;
+                        let _ = ipc_tx3.send(IpcResult::Lyrics(result.unwrap_or(None)));
                     });
                 }
             }
@@ -563,6 +565,7 @@ impl App {
                     }
                     IpcResult::Lyrics(lyrics) => {
                         self.current_lyrics = lyrics;
+                        self.lyrics_fetching = false;
                         self.lyrics_scroll = 0;
                     }
                 }
@@ -858,7 +861,7 @@ impl App {
             0 => 2,  // Audio: Volume, Mute
             1 => 8,  // YouTube: (all display-only for now)
             2 => 4,  // Playback: Repeat, Shuffle, Crossfade, Easing
-            3 => 4,  // System: Theme, Transparent BG, Sync Covers, Footer Preset
+            3 => 5,  // System: Theme, Transparent BG, Sync Covers, Sync Lyrics, Footer Preset
             4 => 1,  // Spotify: Status
             _ => 0,
         }
@@ -1034,9 +1037,33 @@ impl App {
                             if let Ok(DaemonRes::Tracks { tracks, .. }) = client2.library_get_tracks(None, None).await {
                                 let _ = ipc.send(IpcResult::LibraryTracks(tracks));
                             }
-                            // Extract filename from yt-dlp output for a nicer notification
-                            let filename = String::from_utf8_lossy(&o.stdout)
-                                .lines().next().unwrap_or(&url).to_string();
+                            // Try to fetch lyrics for the newly downloaded track
+                            let stdout_text = String::from_utf8_lossy(&o.stdout).to_string();
+                            let filename = stdout_text.lines().next().unwrap_or(&url).to_string();
+                            // Find the track by filename substring match in library
+                            if let Ok(DaemonRes::Tracks { tracks, .. }) = client2.library_get_tracks(None, None).await {
+                                if let Some(track) = tracks.iter().find(|t| filename.contains(&t.title) || t.path.contains(&filename.trim_end_matches(".mp3"))).or_else(|| tracks.last()) {
+                                    if let Ok(Some(lyrics_data)) = client2.get_lyrics(track.id).await {
+                                        if !lyrics_data.lines.is_empty() {
+                                            // Write .lrc sidecar next to the audio file
+                                            let lrc_path = {
+                                                let p = std::path::PathBuf::from(&track.path);
+                                                p.with_extension("lrc")
+                                            };
+                                            let mut lrc_content = String::new();
+                                            if let Some(ref ar) = lyrics_data.artist { lrc_content.push_str(&format!("[ar:{}]\n", ar)); }
+                                            if let Some(ref al) = lyrics_data.album { lrc_content.push_str(&format!("[al:{}]\n", al)); }
+                                            if let Some(ref ti) = lyrics_data.title { lrc_content.push_str(&format!("[ti:{}]\n", ti)); }
+                                            for line in &lyrics_data.lines {
+                                                let mins = (line.timestamp / 60.0) as u64;
+                                                let secs = line.timestamp - (mins as f64 * 60.0);
+                                                lrc_content.push_str(&format!("[{:02}:{:05.2}]{}\n", mins, secs, line.text));
+                                            }
+                                            let _ = std::fs::write(&lrc_path, lrc_content);
+                                        }
+                                    }
+                                }
+                            }
                             format!("Downloaded: {}", filename)
                         }
                         Ok(o) => format!("Download failed: {}", String::from_utf8_lossy(&o.stderr).lines().last().unwrap_or("unknown error")),
@@ -1168,9 +1195,8 @@ impl App {
                 let client2 = self.client.clone();
                 let ipc_tx2 = self.ipc_tx.clone();
                 tokio::spawn(async move {
-                    if let Ok(lyrics) = client2.get_lyrics(track_id).await {
-                        let _ = ipc_tx2.send(IpcResult::Lyrics(lyrics));
-                    }
+                    let result = client2.get_lyrics(track_id).await;
+                    let _ = ipc_tx2.send(IpcResult::Lyrics(result.unwrap_or(None)));
                 });
             }
             TuiCommand::SetSleepTimer(minutes) => {
@@ -1576,6 +1602,7 @@ impl App {
                     Some(KeyboardAction::FetchLyrics) => {
                         self.show_lyrics = !self.show_lyrics;
                         if self.show_lyrics && self.current_lyrics.is_none() {
+                            self.lyrics_fetching = true;
                             self.send_high(TuiCommand::FetchLyrics);
                         }
                         self.dismiss_track_popup();
@@ -1764,7 +1791,26 @@ impl App {
                                             }
                                         });
                                     }
-                                    3 => { // Footer Preset cycle
+                                    3 => { // Sync Lyrics
+                                        let ipc_tx = self.ipc_tx.clone();
+                                        let c = self.client.clone();
+                                        tokio::spawn(async move {
+                                            match c.library_sync_lyrics().await {
+                                                Ok(DaemonRes::SyncLyricsResult { synced, total, .. }) => {
+                                                    let msg = format!("Lyrics synced: {synced}/{total} tracks");
+                                                    let _ = ipc_tx.send(IpcResult::Notification(msg, crate::app::NotificationKind::Info));
+                                                }
+                                                Ok(DaemonRes::Error { message, .. }) => {
+                                                    let _ = ipc_tx.send(IpcResult::Notification(format!("Sync failed: {message}"), crate::app::NotificationKind::Error));
+                                                }
+                                                Ok(_) => {}
+                                                Err(e) => {
+                                                    let _ = ipc_tx.send(IpcResult::Error(e.to_string()));
+                                                }
+                                            }
+                                        });
+                                    }
+                                    4 => { // Footer Preset cycle
                                         self.footer_preset = (self.footer_preset + 1) % footer::num_presets();
                                         let name = footer::presets()[self.footer_preset].name;
                                         save_prefs(&Prefs { theme_index: self.theme_index, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, progress_style: self.progress_style });

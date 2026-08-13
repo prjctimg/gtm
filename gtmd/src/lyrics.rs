@@ -13,6 +13,7 @@ use gtm_core::track::{LrcData, LrcLine, TrackInfo};
 
 const LRCLIB_API: &str = "https://lrclib.net/api";
 
+#[derive(Clone)]
 pub struct LyricsManager {
     client: Client,
 }

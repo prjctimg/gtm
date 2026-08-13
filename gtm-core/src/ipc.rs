@@ -59,6 +59,7 @@ pub enum LibraryAction {
         count: u128,
     },
     SyncCovers,
+    SyncLyrics,
     RemoveFromPlaylist {
         playlist_id: i64,
         track_id: i64,
@@ -307,6 +308,11 @@ pub enum DaemonRes {
         data: Option<String>, // base64-encoded PNG bytes
     },
     SyncCoversResult {
+        version: u32,
+        synced: usize,
+        total: usize,
+    },
+    SyncLyricsResult {
         version: u32,
         synced: usize,
         total: usize,

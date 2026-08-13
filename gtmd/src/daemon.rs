@@ -1480,6 +1480,51 @@ impl Daemon {
                     Err(e) => DaemonRes::Error { version, message: e },
                 }
             }
+            gtm_core::ipc::LibraryAction::SyncLyrics => {
+                let lyrics_manager = self.lyrics_manager.clone();
+                let data_dir = self.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))
+                        .map_err(|e| format!("open library: {e}"))?;
+                    let tracks = lib.list_tracks()
+                        .map_err(|e| format!("list tracks: {e}"))?;
+                    let rt = tokio::runtime::Runtime::new()
+                        .map_err(|e| format!("runtime: {e}"))?;
+                    let manager = lyrics_manager.ok_or("lyrics manager not available")?;
+                    let mut synced = 0usize;
+                    let total = tracks.len();
+                    for track in &tracks {
+                        let lrc_path = std::path::Path::new(&track.path).with_extension("lrc");
+                        if lrc_path.exists() {
+                            continue;
+                        }
+                        if let Some(lyrics) = rt.block_on(manager.get_lyrics(track)) {
+                            if !lyrics.lines.is_empty() {
+                                let mut lrc_content = String::new();
+                                if let Some(ref ar) = lyrics.artist { lrc_content.push_str(&format!("[ar:{}]\n", ar)); }
+                                if let Some(ref al) = lyrics.album { lrc_content.push_str(&format!("[al:{}]\n", al)); }
+                                if let Some(ref ti) = lyrics.title { lrc_content.push_str(&format!("[ti:{}]\n", ti)); }
+                                for line in &lyrics.lines {
+                                    let mins = (line.timestamp / 60.0) as u64;
+                                    let secs = line.timestamp - (mins as f64 * 60.0);
+                                    lrc_content.push_str(&format!("[{:02}:{:05.2}]{}\n", mins, secs, line.text));
+                                }
+                                if std::fs::write(&lrc_path, &lrc_content).is_ok() {
+                                    synced += 1;
+                                }
+                            }
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    Ok::<(usize, usize), String>((synced, total))
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok((synced, total)) => DaemonRes::SyncLyricsResult { version, synced, total },
+                    Err(e) => DaemonRes::Error { version, message: e },
+                }
+            }
             gtm_core::ipc::LibraryAction::ExportM3u { playlist_id, path } => {
                 let playlist_id = *playlist_id;
                 let export_path = path.clone();

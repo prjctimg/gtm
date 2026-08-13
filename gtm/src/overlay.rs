@@ -107,6 +107,7 @@ pub struct OverlayCtx<'a> {
 }
 
 impl OverlayId {
+    #[allow(dead_code)]
     pub fn title(&self) -> &'static str {
         match self {
             OverlayId::Queue => "Queue",

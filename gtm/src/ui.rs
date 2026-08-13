@@ -915,6 +915,7 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
                 "Theme           [ Cyberdeck  ▶ ]".to_string(),
                 format!("Transparent BG  [ {} ]", if app.transparent_bg { "●" } else { "○" }),
                 "Sync Covers     [ Enter  ▶ ]".to_string(),
+                "Sync Lyrics     [ Enter  ▶ ]".to_string(),
                 format!("Footer Preset   [ {:>8} ▶ ]", preset_name),
             ]
         },
@@ -970,7 +971,8 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         (3, 0) => lines.push(Line::from(Span::styled(" Theme: Press Enter to open the Theme Picker overlay (Alt+C).", Style::default().fg(app.theme.fg)))),
         (3, 1) => lines.push(Line::from(Span::styled(" Transparent BG: Press Enter to toggle. When on, overlay backgrounds become transparent.", Style::default().fg(app.theme.fg)))),
         (3, 2) => lines.push(Line::from(Span::styled(" Sync Covers: Download missing cover art from Deezer for all library tracks.", Style::default().fg(app.theme.fg)))),
-        (3, 3) => lines.push(Line::from(Span::styled(" Footer Preset: Press Enter to cycle (Default, Minimal, Full). Also toggled via Alt+F.", Style::default().fg(app.theme.fg)))),
+        (3, 3) => lines.push(Line::from(Span::styled(" Sync Lyrics: Fetch and save lyrics files alongside all library tracks.", Style::default().fg(app.theme.fg)))),
+        (3, 4) => lines.push(Line::from(Span::styled(" Footer Preset: Press Enter to cycle (Default, Minimal, Full). Also toggled via Alt+F.", Style::default().fg(app.theme.fg)))),
         (4, 0) => lines.push(Line::from(Span::styled(" Spotify: Integration status — requires daemon restart.", Style::default().fg(app.theme.fg)))),
         _ => {}
     }
@@ -999,32 +1001,30 @@ fn render_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         height: overlay_height,
     };
 
-    // Use a block with rounded borders
     let overlay_box_bg = if app.transparent_bg { ratatui::style::Color::Reset } else { app.theme.overlay_bg };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
-        .title(format!(" {} ", top.id.title()))
-        .style(Style::default().bg(overlay_box_bg));
-
-    let inner = block.inner(overlay_area);
     f.render_widget(Clear, overlay_area);
-    f.render_widget(block, overlay_area);
 
     match top.id {
-        OverlayId::Queue => render_queue_overlay(f, inner, app),
-        OverlayId::YTSearch => render_yt_search_overlay(f, inner, app),
-        OverlayId::SearchLibrary => render_search_library_overlay(f, inner, app),
-        OverlayId::About => render_about_overlay(f, inner, app),
-        OverlayId::SleepTimer => render_sleep_timer_overlay(f, inner, app),
-        OverlayId::CommandPalette => render_command_palette_overlay(f, inner, app),
-        OverlayId::Equalizer => render_equalizer_overlay(f, inner, app),
-        OverlayId::SoundEffects => render_sound_effects_overlay(f, inner, app),
-        OverlayId::ThemePicker => render_theme_picker_overlay(f, inner, app),
-        OverlayId::Help => render_help_overlay(f, inner, app),
-        OverlayId::PlaylistSelect => render_playlist_select_overlay(f, inner, app),
-        OverlayId::EditMetadata => render_edit_metadata_overlay(f, inner, app),
+        OverlayId::Queue => render_queue_overlay(f, overlay_area, app),
+        OverlayId::YTSearch => render_yt_search_overlay(f, overlay_area, app),
+        OverlayId::SearchLibrary => render_search_library_overlay(f, overlay_area, app),
+        OverlayId::About => render_about_overlay(f, overlay_area, app),
+        OverlayId::SleepTimer => render_sleep_timer_overlay(f, overlay_area, app),
+        OverlayId::CommandPalette => render_command_palette_overlay(f, overlay_area, app),
+        OverlayId::Equalizer => render_equalizer_overlay(f, overlay_area, app),
+        OverlayId::SoundEffects => render_sound_effects_overlay(f, overlay_area, app),
+        OverlayId::ThemePicker => render_theme_picker_overlay(f, overlay_area, app),
+        OverlayId::Help => render_help_overlay(f, overlay_area, app),
+        OverlayId::PlaylistSelect => render_playlist_select_overlay(f, overlay_area, app),
+        OverlayId::EditMetadata => render_edit_metadata_overlay(f, overlay_area, app),
         OverlayId::SpotifySearch => {
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(BorderType::Plain)
+                .title(" Spotify Search ")
+                .style(Style::default().bg(overlay_box_bg));
+            let inner = block.inner(overlay_area);
+            f.render_widget(block, overlay_area);
             let p = Paragraph::new("Spotify search not yet implemented")
                 .alignment(Alignment::Center)
                 .style(Style::default().fg(app.theme.fg_dim));
@@ -1043,17 +1043,25 @@ fn overlay_help(f: &mut ratatui::Frame, area: Rect, text: &str, app: &App) {
 fn render_queue_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let sel = app.overlays.top().map_or(0, |o| o.selected);
 
-    let pane_w = area.width as usize;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Queue ")
+        .border_type(BorderType::Plain)
+        .style(Style::default().bg(if app.transparent_bg { ratatui::style::Color::Reset } else { app.theme.overlay_bg }));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let pane_w = inner.width as usize;
     let total = app.queue_cache.len();
     if total == 0 {
         let p = Paragraph::new("Queue is empty")
             .style(Style::default().fg(app.theme.fg_dim));
-        f.render_widget(p, area);
-        overlay_help(f, area, " [Esc] Close", app);
+        f.render_widget(p, inner);
+        overlay_help(f, inner, " [Esc] Close", app);
         return;
     }
 
-    let visible = area.height as usize;
+    let visible = inner.height as usize;
     let (scroll_start, scroll_end) = centered_scroll(sel, visible, total);
 
     let mut lines = Vec::new();
@@ -1081,15 +1089,18 @@ fn render_queue_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
 
     let para = Paragraph::new(lines);
-    f.render_widget(para, area);
-    overlay_help(f, area, " [Enter] Play  [d] Remove from Queue  [Esc] Close  j/k Navigate", app);
+    f.render_widget(para, inner);
+    overlay_help(f, inner, " [Enter] Play  [d] Remove from Queue  [Esc] Close  j/k Navigate", app);
 }
 
 fn render_yt_search_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" YouTube Search ")
+        .border_type(BorderType::Plain)
+        .style(Style::default().bg(if app.transparent_bg { ratatui::style::Color::Reset } else { app.theme.overlay_bg }));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
     let query = app.overlays.top().map_or(String::new(), |o| o.query.clone());
     let cursor = if app.overlays.top().map_or(false, |o| o.id == OverlayId::YTSearch) { "_" } else { "" };
@@ -1099,54 +1110,51 @@ fn render_yt_search_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
     } else {
         String::new()
     };
-    let search_input = Paragraph::new(format!(" > {}{}{}", query, cursor, loading_indicator))
-        .style(Style::default().fg(app.theme.fg));
-    f.render_widget(search_input, chunks[0]);
+    let search_line = Line::from(Span::styled(
+        format!(" > {}{}{}", query, cursor, loading_indicator),
+        Style::default().fg(app.theme.fg),
+    ));
 
-    let results_area = chunks[1];
     let sel = app.overlays.top().map_or(0, |o| o.selected);
     let total = app.yt_results_cache.len();
-    let visible = results_area.height as usize;
+    let visible = inner.height.saturating_sub(1) as usize; // reserve 1 line for search
     let (scroll_start, _) = if total > 0 { centered_scroll(sel, visible, total) } else { (0, 0) };
     let scroll_end = (scroll_start + visible).min(total);
 
-    let items: Vec<ListItem> = app
-        .yt_results_cache
-        .iter()
-        .enumerate()
-        .skip(scroll_start)
-        .take(scroll_end - scroll_start)
-        .map(|(i, r)| {
-            let dur = format_duration(r.duration as u64);
-            let icon = if r.is_playlist { "\u{f01db} " } else { "\u{f008} " };
-            let prefix = if i == sel { " > " } else { "   " };
-            let content = format!("{prefix}{}{} - {} [{}]", icon, r.channel, r.title, dur);
-            let style = if i == sel {
-                Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
-            } else {
-                Style::default()
-            };
-            ListItem::new(content).style(style)
-        })
-        .collect();
+    let mut lines: Vec<Line> = vec![search_line];
+    for i in scroll_start..scroll_end {
+        let r = &app.yt_results_cache[i];
+        let dur = format_duration(r.duration as u64);
+        let icon = if r.is_playlist { "\u{f01db} " } else { "\u{f008} " };
+        let prefix = if i == sel { " > " } else { "   " };
+        let content = format!("{prefix}{}{} - {} [{}]", icon, r.channel, r.title, dur);
+        let style = if i == sel {
+            Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(content, style)));
+    }
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Results ")
-            .border_type(BorderType::Plain),
-    );
-    f.render_widget(list, results_area);
+    let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
 
-    // Help footer
     let help_text = " [Enter] Play / Drill-down  [Ctrl+d] Download  [Ctrl+a] Add to Queue  [Esc] Close  Type to search (auto, 500ms)";
     let help = Paragraph::new(Span::styled(help_text, Style::default().fg(app.theme.fg_dim)))
-        .style(Style::default().bg(app.theme.overlay_bg));
-    let help_area = Rect { x: area.x, y: area.y + area.height - 1, width: area.width, height: 1 };
+        .style(Style::default().bg(if app.transparent_bg { ratatui::style::Color::Reset } else { app.theme.overlay_bg }));
+    let help_area = Rect { x: inner.x, y: inner.y + inner.height.saturating_sub(1), width: inner.width, height: 1 };
     f.render_widget(help, help_area);
 }
 
 fn render_search_library_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Tracks ")
+        .border_type(BorderType::Plain)
+        .style(Style::default().bg(if app.transparent_bg { ratatui::style::Color::Reset } else { app.theme.overlay_bg }));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
     let query = app.overlays.top().map_or(String::new(), |o| o.query.clone());
     let filtered: Vec<&gtm_core::track::TrackInfo> = if query.is_empty() {
         app.tracks_cache.iter().collect()
@@ -1161,49 +1169,34 @@ fn render_search_library_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) 
             .collect()
     };
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(area);
-
-    let search_input = Paragraph::new(format!(" > {}_", query))
-        .style(Style::default().fg(app.theme.fg));
-    f.render_widget(search_input, chunks[0]);
+    let search_line = Line::from(Span::styled(
+        format!(" > {}_", query),
+        Style::default().fg(app.theme.fg),
+    ));
 
     let sel = app.overlays.top().map_or(0, |o| o.selected.min(filtered.len().saturating_sub(1)));
-    let results_area = chunks[1];
     let total = filtered.len();
-    let visible = results_area.height as usize;
+    let visible = inner.height.saturating_sub(1) as usize;
     let (scroll_start, _) = if total > 0 { centered_scroll(sel, visible, total) } else { (0, 0) };
     let scroll_end = (scroll_start + visible).min(total);
 
-    let items: Vec<ListItem> = filtered
-        .iter()
-        .enumerate()
-        .skip(scroll_start)
-        .take(scroll_end - scroll_start)
-        .map(|(i, track)| {
-            let prefix = if i == sel { " > " } else { "   " };
-            let dur = format_duration(track.duration as u64);
-            let content = format!("{prefix}{} - {} [{}]", track.artist, track.title, dur);
-            let style = if i == sel {
-                Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
-            } else {
-                Style::default()
-            };
-            ListItem::new(content).style(style)
-        })
-        .collect();
+    let mut lines: Vec<Line> = vec![search_line];
+    for i in scroll_start..scroll_end {
+        let track = &filtered[i];
+        let prefix = if i == sel { " > " } else { "   " };
+        let dur = format_duration(track.duration as u64);
+        let content = format!("{prefix}{} - {} [{}]", track.artist, track.title, dur);
+        let style = if i == sel {
+            Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(content, style)));
+    }
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Tracks ")
-            .border_type(BorderType::Plain),
-    );
-
-    f.render_widget(list, results_area);
-    overlay_help(f, area, " [Enter] Play  [Esc] Close  Type to search  j/k Navigate", app);
+    let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
+    overlay_help(f, inner, " [Enter] Play  [Esc] Close  Type to search  j/k Navigate", app);
 }
 
 // ─── Footer ───
@@ -1285,9 +1278,15 @@ fn render_lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     f.render_widget(block, area);
 
     let Some(ref lyrics) = app.current_lyrics else {
-        let msg = Paragraph::new("Press [l] to search")
+        let msg_text = if app.lyrics_fetching {
+            let spinner = braille_spinner(app.scroll_offset);
+            format!("Fetching lyrics... {}", spinner)
+        } else {
+            "Press [l] to search".to_string()
+        };
+        let msg = Paragraph::new(msg_text)
             .alignment(Alignment::Center)
-            .style(Style::default().fg(app.theme.fg_dim));
+            .style(Style::default().fg(if app.lyrics_fetching { app.theme.accent } else { app.theme.fg_dim }));
         f.render_widget(msg, inner);
         return;
     };
@@ -1504,6 +1503,14 @@ fn render_track_popup(f: &mut ratatui::Frame, content_area: Rect, app: &mut App)
 }
 
 fn render_about_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" About ")
+        .border_type(BorderType::Plain)
+        .style(Style::default().bg(if app.transparent_bg { ratatui::style::Color::Reset } else { app.theme.overlay_bg }));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
     let version = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0");
     let commit = option_env!("VERGEN_GIT_SHA").unwrap_or("unknown");
     let build_date = option_env!("VERGEN_BUILD_DATE").unwrap_or("unknown");
@@ -1568,10 +1575,9 @@ fn render_about_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
     ];
 
     let p = Paragraph::new(lines)
-        .alignment(Alignment::Left)
-        .style(Style::default().bg(app.theme.overlay_bg));
-    f.render_widget(p, area);
-    overlay_help(f, area, " [Esc] Close  [q] Quit gtm", app);
+        .alignment(Alignment::Left);
+    f.render_widget(p, inner);
+    overlay_help(f, inner, " [Esc] Close  [q] Quit gtm", app);
 }
 
 fn render_help_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -1631,59 +1637,74 @@ fn render_help_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
         help_lines.iter().filter(|l| l.to_lowercase().contains(&q)).copied().collect()
     };
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Keybindings ")
+        .border_type(BorderType::Plain)
+        .style(Style::default().bg(if app.transparent_bg { ratatui::style::Color::Reset } else { app.theme.overlay_bg }));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
-    let search_input = Paragraph::new(format!(" > {}_", query))
-        .style(Style::default().fg(app.theme.fg));
-    f.render_widget(search_input, chunks[0]);
+    let search_line = Line::from(Span::styled(
+        format!(" > {}_", query),
+        Style::default().fg(app.theme.fg),
+    ));
 
-    let items: Vec<ListItem> = filtered
-        .iter()
-        .enumerate()
-        .map(|(i, line)| {
-            let is_header = line.starts_with(|c: char| c.is_uppercase()) && !line.starts_with("   ");
-            let is_sel = i == app.overlays.top().map_or(0, |o| o.selected);
-            let style = if is_sel {
-                Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
-            } else if is_header {
-                Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(app.theme.fg)
-            };
-            ListItem::new(*line).style(style)
-        })
-        .collect();
+    let total = filtered.len();
+    let visible = inner.height.saturating_sub(1) as usize;
+    let sel = app.overlays.top().map_or(0, |o| o.selected);
+    let (scroll_start, _) = if total > 0 { centered_scroll(sel, visible, total) } else { (0, 0) };
+    let scroll_end = (scroll_start + visible).min(total);
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Keybindings ")
-            .border_type(BorderType::Plain),
-    );
-    f.render_widget(list, chunks[1]);
-    overlay_help(f, area, " [Esc] Close  Type to search  j/k Navigate", app);
+    let mut lines: Vec<Line> = vec![search_line];
+    for i in scroll_start..scroll_end {
+        let line = filtered[i];
+        let is_header = line.starts_with(|c: char| c.is_uppercase()) && !line.starts_with("   ");
+        let is_sel = i == sel;
+        let style = if is_sel {
+            Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
+        } else if is_header {
+            Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(app.theme.fg)
+        };
+        lines.push(Line::from(Span::styled(line, style)));
+    }
+
+    let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
+    overlay_help(f, inner, " [Esc] Close  Type to search  j/k Navigate", app);
 }
 
 fn render_sleep_timer_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let inner = area;
+    let overlay_bg = if app.transparent_bg { ratatui::style::Color::Reset } else { app.theme.overlay_bg };
 
     if app.sleep_timer_input_mode {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Sleep Timer — Manual Input ")
+            .border_type(BorderType::Plain)
+            .border_style(Style::default().fg(app.theme.border))
+            .style(Style::default().bg(overlay_bg));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
         let label = Paragraph::new(Line::from(vec![
             Span::styled(" Enter minutes: ", Style::default().fg(app.theme.fg_dim)),
             Span::styled(&app.sleep_timer_input_buf, Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD)),
             Span::raw("_"),
         ]));
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Sleep Timer — Manual Input ")
-            .border_type(BorderType::Plain)
-            .border_style(Style::default().fg(app.theme.border));
-        f.render_widget(label.block(block), inner);
+        f.render_widget(label, inner);
         return;
     }
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Sleep Timer ")
+        .border_type(BorderType::Plain)
+        .border_style(Style::default().fg(app.theme.border))
+        .style(Style::default().bg(overlay_bg));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
     let mins = app.sleep_timer_minutes;
     let is_active = app.sleep_timer_remaining.is_some();
@@ -1760,13 +1781,7 @@ fn render_sleep_timer_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
         )));
     }
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Sleep Timer ")
-        .border_type(BorderType::Plain)
-        .border_style(Style::default().fg(app.theme.border));
-
-    let paragraph = Paragraph::new(lines).block(block);
+    let paragraph = Paragraph::new(lines);
     f.render_widget(paragraph, inner);
 }
 
@@ -1825,6 +1840,7 @@ fn render_command_palette_overlay(f: &mut ratatui::Frame, area: Rect, app: &App)
     // Sort by score descending (longer match = better)
     filtered.sort_by(|a, b| b.1.cmp(&a.1));
 
+    // Narrow the palette width within the overlay area
     let palette_width = (area.width as f32 * 0.5).min(60.0) as u16;
     let x_offset = (area.width.saturating_sub(palette_width)) / 2;
     let palette_area = Rect {
@@ -1834,48 +1850,42 @@ fn render_command_palette_overlay(f: &mut ratatui::Frame, area: Rect, app: &App)
         height: area.height,
     };
 
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(palette_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Commands ")
+        .border_type(BorderType::Plain)
+        .style(Style::default().bg(if app.transparent_bg { ratatui::style::Color::Reset } else { app.theme.overlay_bg }));
+    let inner = block.inner(palette_area);
+    f.render_widget(block, palette_area);
 
-    let search_input = Paragraph::new(format!(" > {}_", query))
-        .style(Style::default().fg(app.theme.fg));
-    f.render_widget(search_input, chunks[0]);
+    let search_line = Line::from(Span::styled(
+        format!(" > {}_", query),
+        Style::default().fg(app.theme.fg),
+    ));
 
     let sel = app.overlays.top().map_or(0, |o| o.selected.min(filtered.len().saturating_sub(1)));
-    let results_area = chunks[1];
     let total = filtered.len();
-    let visible = results_area.height as usize;
+    let visible = inner.height.saturating_sub(1) as usize;
     let (scroll_start, _) = if total > 0 { centered_scroll(sel, visible, total) } else { (0, 0) };
     let scroll_end = (scroll_start + visible).min(total);
 
-    let list_items: Vec<ListItem> = filtered
-        .iter()
-        .enumerate()
-        .skip(scroll_start)
-        .take(scroll_end - scroll_start)
-        .map(|(i, ((name, key), _score))| {
-            let prefix = if i == sel { " > " } else { "   " };
-            let style = if i == sel {
-                Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
-            } else {
-                Style::default()
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(format!("{prefix}{name}"), style),
-                Span::styled(format!("  [{key}]", key = key), Style::default().fg(app.theme.fg_dim)),
-            ])).style(style)
-        })
-        .collect();
+    let mut lines: Vec<Line> = vec![search_line];
+    for i in scroll_start..scroll_end {
+        let ((name, key), _score) = filtered[i];
+        let prefix = if i == sel { " > " } else { "   " };
+        let style = if i == sel {
+            Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{prefix}{name}"), style),
+            Span::styled(format!("  [{key}]", key = key), Style::default().fg(app.theme.fg_dim)),
+        ]));
+    }
 
-    let list = List::new(list_items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Commands ")
-            .border_type(BorderType::Plain),
-    );
-    f.render_widget(list, results_area);
+    let para = Paragraph::new(lines);
+    f.render_widget(para, inner);
 }
 
 fn render_equalizer_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -1904,6 +1914,14 @@ fn render_equalizer_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let (scroll_start, _) = centered_scroll(sel, visible, total);
     let scroll_end = (scroll_start + visible).min(total);
 
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Equalizer ")
+        .border_type(BorderType::Plain)
+        .style(Style::default().bg(if app.transparent_bg { ratatui::style::Color::Reset } else { app.theme.overlay_bg }));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
     let list_items: Vec<ListItem> = presets.iter().enumerate()
         .skip(scroll_start)
         .take(scroll_end - scroll_start)
@@ -1919,16 +1937,19 @@ fn render_equalizer_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
             ListItem::new(format!("{prefix}{}", name)).style(style)
         }).collect();
 
-    let list = List::new(list_items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Equalizer ")
-            .border_type(BorderType::Plain),
-    );
-    f.render_widget(list, area);
+    let list = List::new(list_items);
+    f.render_widget(list, inner);
 }
 
 fn render_sound_effects_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Sound Effects ")
+        .border_type(BorderType::Plain)
+        .style(Style::default().bg(if app.transparent_bg { ratatui::style::Color::Reset } else { app.theme.overlay_bg }));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
     let crossfade_on = app.state.crossfade.as_ref().map(|c| c.enabled).unwrap_or(false);
     let crossfade_dur = app.state.crossfade.as_ref().map(|c| c.duration_secs).unwrap_or(0);
 
@@ -1943,7 +1964,7 @@ fn render_sound_effects_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
     ];
 
     let sel = app.overlays.top().map_or(0, |o| o.selected.min(items.len() - 1));
-    let visible = area.height as usize;
+    let visible = inner.height as usize;
     let total = items.len();
     let (scroll_start, _) = centered_scroll(sel, visible, total);
     let scroll_end = (scroll_start + visible).min(total);
@@ -1961,18 +1982,21 @@ fn render_sound_effects_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
             ListItem::new(format!("{prefix}{}", s)).style(style)
         }).collect();
 
-    let list = List::new(list_items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Sound Effects ")
-            .border_type(BorderType::Plain),
-    );
-    f.render_widget(list, area);
+    let list = List::new(list_items);
+    f.render_widget(list, inner);
 }
 
 fn render_theme_picker_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Theme ")
+        .border_type(BorderType::Plain)
+        .style(Style::default().bg(if app.transparent_bg { ratatui::style::Color::Reset } else { app.theme.overlay_bg }));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
     let sel = app.overlays.top().map_or(0, |o| o.selected.min(THEMES.len().saturating_sub(1)));
-    let visible = area.height as usize;
+    let visible = inner.height as usize;
     let total = THEMES.len();
     let (scroll_start, _) = centered_scroll(sel, visible, total);
     let scroll_end = (scroll_start + visible).min(total);
@@ -1995,13 +2019,8 @@ fn render_theme_picker_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
             ListItem::new(content).style(style)
         }).collect();
 
-    let list = List::new(list_items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Theme ")
-            .border_type(BorderType::Plain),
-    );
-    f.render_widget(list, area);
+    let list = List::new(list_items);
+    f.render_widget(list, inner);
 }
 
 /// Return the local time using the system clock and timezone.
@@ -2108,6 +2127,14 @@ fn scroll_text(text: &str, max_width: usize, frame: usize, is_selected: bool) ->
 // ─── Library Motion Overlays ───
 
 fn render_playlist_select_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Select Playlist ")
+        .border_type(BorderType::Plain)
+        .style(Style::default().bg(if app.transparent_bg { ratatui::style::Color::Reset } else { app.theme.overlay_bg }));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
     let sel = app.overlays.top().map_or(0, |o| o.selected);
     let mut items: Vec<ListItem> = Vec::new();
 
@@ -2127,19 +2154,22 @@ fn render_playlist_select_overlay(f: &mut ratatui::Frame, area: Rect, app: &App)
         items.push(ListItem::new(content).style(style));
     }
 
-    let list = List::new(items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Select Playlist ")
-            .border_type(BorderType::Plain),
-    );
-    f.render_widget(list, area);
+    let list = List::new(items);
+    f.render_widget(list, inner);
 
     let help_text = " [Enter] Select  [Esc] Cancel";
-    overlay_help(f, area, help_text, app);
+    overlay_help(f, inner, help_text, app);
 }
 
 fn render_edit_metadata_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Edit Metadata ")
+        .border_type(BorderType::Plain)
+        .style(Style::default().bg(if app.transparent_bg { ratatui::style::Color::Reset } else { app.theme.overlay_bg }));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
     let field_names = ["Title", "Artist", "Album", "Album Artist", "Genre", "Year", "Track #"];
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -2147,7 +2177,7 @@ fn render_edit_metadata_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
             Constraint::Length(field_names.len() as u16 * 2 + 1),
             Constraint::Min(0),
         ])
-        .split(area);
+        .split(inner);
 
     let mut lines: Vec<Line> = Vec::new();
     for (i, name) in field_names.iter().enumerate() {
