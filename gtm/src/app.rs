@@ -41,6 +41,19 @@ fn prefs_path() -> std::path::PathBuf {
     dir.join("prefs.json")
 }
 
+/// Return the config file path, creating the config directory and a
+/// default (pretty-printed) `prefs.json` if it does not exist yet. Used by
+/// the `gtm config` CLI command to give the editor a valid starting point.
+pub(crate) fn ensure_prefs_file() -> std::path::PathBuf {
+    let path = prefs_path();
+    if !path.exists() {
+        if let Ok(s) = serde_json::to_string_pretty(&Prefs::default()) {
+            let _ = std::fs::write(&path, format!("{s}\n"));
+        }
+    }
+    path
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct Prefs {
     #[serde(default = "default_theme_name")]

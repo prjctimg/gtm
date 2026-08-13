@@ -190,9 +190,20 @@ pub enum CliCommand {
     CheckHealth,
     Ping,
     Quit,
+    /// Open the config file in the default editor
+    Config,
 }
 
 pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
+    // `gtm config` edits the config file locally — no daemon needed.
+    if matches!(cmd, CliCommand::Config) {
+        if let Err(e) = open_config_in_editor() {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let rt = tokio::runtime::Runtime::new().unwrap();
     let result: Result<String, String> = rt.block_on(async {
         let socket_path = socket
@@ -618,6 +629,7 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
+            CliCommand::Config => Ok("config opened".to_string()),
         }
     });
 
@@ -628,4 +640,59 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
             std::process::exit(1);
         }
     }
+}
+
+/// Open the config file (`~/.config/gtm/prefs.json`) in the user's default
+/// editor, creating it with defaults if it does not exist yet.
+///
+/// Editor resolution order: `$VISUAL` → `$EDITOR` → first installed editor
+/// from a common list. Values may include arguments (e.g. `code --wait`).
+fn open_config_in_editor() -> Result<(), String> {
+    let path = crate::app::ensure_prefs_file();
+    let editor = pick_editor().ok_or_else(|| {
+        format!(
+            "no editor found — set $VISUAL or $EDITOR to open {}",
+            path.display()
+        )
+    })?;
+
+    let program = editor[0].clone();
+    let args = &editor[1..];
+    let status = std::process::Command::new(&program)
+        .args(args)
+        .arg(&path)
+        .status()
+        .map_err(|e| format!("failed to launch editor `{program}`: {e}"))?;
+
+    if status.success() {
+        println!("Opened config at {}", path.display());
+        Ok(())
+    } else {
+        Err(format!("editor `{program}` exited with status {status}"))
+    }
+}
+
+fn pick_editor() -> Option<Vec<String>> {
+    for var in ["VISUAL", "EDITOR"] {
+        if let Ok(val) = std::env::var(var) {
+            let parts: Vec<String> = val.split_whitespace().map(String::from).collect();
+            if let Some(program) = parts.first() {
+                if command_exists(program) {
+                    return Some(parts);
+                }
+            }
+        }
+    }
+    for name in ["vim", "nvim", "vi", "nano", "micro", "emacs", "ed"] {
+        if command_exists(name) {
+            return Some(vec![name.to_string()]);
+        }
+    }
+    None
+}
+
+fn command_exists(name: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
+        .unwrap_or(false)
 }

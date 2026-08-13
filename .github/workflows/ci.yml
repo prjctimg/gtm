@@ -2,6 +2,10 @@ name: CI
 on:
   push:
   pull_request:
+env:
+  # Never fall back to the deprecated Node 20 runtime: force every action
+  # onto the current Node (24+).
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'false'
 jobs:
   check:
     runs-on: ${{ matrix.os }}
@@ -9,7 +13,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-latest]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: Swatinem/rust-cache@v2
       - name: Install ALSA headers (Linux)
         if: runner.os == 'Linux'

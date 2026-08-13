@@ -66,6 +66,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Never fall back to the deprecated Node 20 runtime: force every action
+  # onto the current Node (24+).
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'false'
   # Actions now run on Node 24, which does not trust the system CA store by
   # default. GitHub runners sit behind an SSL-inspecting proxy, so Node-based
   # actions (checkout, gh-release, etc.) fail with "self-signed certificate"
@@ -82,7 +85,7 @@ jobs:
       version: ${{ steps.set-tag.outputs.version }}
       nightly: ${{ steps.set-tag.outputs.nightly }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -194,7 +197,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@v2
         with:
@@ -220,7 +223,7 @@ jobs:
       # "SSL certificate problem: self signed certificate" git clone failures
       # that intermittently hit the macOS runners.
       - name: Clone gtm.spec (manpage sources)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: prjctimg/gtm.spec
           path: gtm.spec
@@ -493,7 +496,7 @@ jobs:
             termux/gtm.yml
           mv "gtm_${version}_aarch64.deb" release-assets/
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-assets-${{ matrix.platform }}
           path: release-assets/*
@@ -507,9 +510,9 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: release-assets-*
           merge-multiple: true
@@ -527,7 +530,7 @@ jobs:
           # gtm_*.deb covers the underscore-named Debian/Termux packages.
           sha256sum gtm-* gtm_*.deb | tee checksums.txt
 
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.tag.outputs.tag }}
           name: ${{ needs.tag.outputs.tag }}
@@ -551,7 +554,7 @@ jobs:
     env:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # cargo publish verifies each package by compiling it (with default
       # features), which pulls in alsa-sys via rodio on Linux. ubuntu-latest
@@ -574,26 +577,32 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ needs.tag.outputs.version }}"
-          # Dependents resolve their gtm-* deps from the crates.io index,
-          # which can lag a freshly published crate by a few seconds, so
-          # retry a failing publish before giving up.
-          publish_with_retry() {
+          # Idempotent per crate: publishing is attempted directly (cargo
+          # resolves the crates.io sparse index, which is authoritative), and
+          # "already exists" is treated as success so re-running a release
+          # after a partial publish resumes cleanly. Dependents resolve their
+          # gtm-* deps from the index, which can lag a fresh publish by a few
+          # seconds, so retry other failures before giving up.
+          publish_crate() {
             local crate="$1"
             local attempt
             for attempt in 1 2 3 4; do
-              if cargo publish --locked -p "${crate}"; then
+              local out
+              if out="$(cargo publish --locked -p "${crate}" 2>&1)"; then
+                echo "${crate} v${version} published"
                 return 0
               fi
+              if grep -q "already exists" <<<"${out}"; then
+                echo "${crate} v${version}: already published, skipping"
+                return 0
+              fi
+              echo "${out}"
               echo "Retrying ${crate} after index propagation delay (attempt ${attempt}/4)..."
               sleep 20
             done
             return 1
           }
           for crate in gtm-core gtm-audio gtm-mpris gtmd gtm; do
-            if curl -fsS "https://crates.io/api/v1/crates/${crate}/${version}" >/dev/null 2>&1; then
-              echo "Skipping ${crate} v${version}: already published"
-            else
-              echo "Publishing ${crate} v${version}..."
-              publish_with_retry "${crate}"
-            fi
+            echo "Publishing ${crate} v${version}..."
+            publish_crate "${crate}"
           done
