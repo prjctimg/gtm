@@ -1,6 +1,6 @@
 # 08 — TUI Overlays
 
-Overlays float above all tabs with a semi-transparent background (default 90% opacity). Accessible via **Alt+key** from any tab.
+Overlays float above all tabs with a semi-transparent background. Accessible via **Alt+key** from any tab. All overlays use the **Cyberdeck TUI** aesthetic: plain (sharp) borders, bracket-style widgets, `>` prompt for search inputs, and ASCII-only icons.
 
 ## Complete Overlay List
 
@@ -13,8 +13,9 @@ Overlays float above all tabs with a semi-transparent background (default 90% op
 | Equalizer | `Alt+E` | EQ presets with live waveform preview |
 | CommandPalette | `Alt+P` | List/search all available actions |
 | About | `Alt+A` | Version, stats, health info |
-| SleepTimer | `Alt+T` | Set sleep timer |
-| ThemePicker | `Alt+M` (theme) | Live preview theme picker |
+| SleepTimer | `Alt+Z` | Set sleep timer |
+| ThemePicker | `Alt+T` | Live preview theme picker |
+| SoundEffects | `Alt+X` | Sound effects settings |
 
 ## Generic Overlay Container
 
@@ -41,35 +42,42 @@ pub struct OverlayContainer<T> {
 
 ```
 ┌──────────────────────────────────────────────────┐
-│  ⋮ (terminal background, dimmed)                  │
-│  ┌─────── Overlay (semi-transparent) ──────────┐  │
-│  │  Search: [________________]                  │  │
+│  (terminal background, dimmed via tonal layer)    │
+│  ┌──────── > OVERLAY ──────────────────────────┐  │
 │  │                                              │  │
-│  │  ▶ Result 1                                  │  │
-│  │    Result 2                                  │  │
-│  │    Result 3                                  │  │
+│  │  > query_                                    │  │
 │  │                                              │  │
-│  │  [Enter] Select  [Esc] Close  [↑/↓] Navigate │  │
+│  │  [1] First Result                            │  │
+│  │  [2] Second Result                           │  │
+│  │  [3] Third Result                            │  │
+│  │                                              │  │
+│  │  [Enter]Select  [Esc]Close  [↑/↓]Navigate    │  │
 │  └──────────────────────────────────────────────┘  │
 └──────────────────────────────────────────────────┘
 ```
 
+- Plain (sharp) borders throughout — no rounded corners
+- Search input uses `>` prompt character instead of labeled "Search:" prefix
+- No background color on input fields — plain fg text with `_` cursor indicator
+- List items in overlays use full-width highlight on selection
+- All keybinding hints use bracket notation `[Key]Action`
+
 ## Per-Overlay Details
 
 ### Queue Overlay
-- Shows current queue with drag-to-reorder (MoveUp/MoveDown keys)
-- Add tracks from library, remove, clear
-- Shows current track indicator
+- Shows current queue items with `[1]`, `[2]`, etc. numbering
+- Current track marked with `>` prefix
 - `Enter` to play, `d`/`Del` to remove, `c` to clear
+- Selected item highlighted with full-width background block
 
 ### YTSearch Overlay
-- Search field, results list
+- Search field with `>` prompt
+- Results list: `Channel - Title [duration]`
 - `Enter` to play, `Ctrl+d` to download, `Ctrl+a` to add to queue
-- Playlist support (download entire playlist)
 - Results cached for navigation
 
 ### SearchLibrary Overlay
-- Fuzzy finder on local tracks
+- Fuzzy finder on local tracks with `>` prompt
 - Real-time filtering as user types
 - `Enter` to play, `Ctrl+a` to add to queue
 
@@ -79,38 +87,40 @@ pub struct OverlayContainer<T> {
 - `Enter` to play/download
 
 ### Equalizer Overlay
-- List of EQ presets: Flat, Rock, Pop, Jazz, Classical, Bass Boost, Vocal, Custom
-- Live waveform preview graph (ASCII) updating as user navigates
+- List of EQ presets: Flat, Rock, Pop, Jazz, Classical, Bass, Vocal
+- ASCII waveform preview graph
+- Active preset marked with `>` prefix
 - Applies EQ in real-time via audio backend
 
 ### CommandPalette Overlay
 - Lists every available action as rows
-- Fuzzy search to filter
+- Filter field with `>` prompt
 - `Enter` to execute
-- Shows keybinding hint for each action
+- Shows keybinding hint in bracket notation `[Key]` for each action
 
 ### About Overlay
 - Version info (gtm, gtmd, gtm-core, gtm-audio)
-- System stats: CPU usage, memory, storage
-- Daemon health: uptime, connected clients, queue length
-- Library stats: tracks, playlists, favourites
+- Daemon health: status, volume, queue, shuffle, repeat
+- All values use Cyberdeck color roles:
+  - Status: `tertiary` (neon green) when playing
+  - Volume: color-coded by level (green/yellow/red)
+  - Queue/Shuffle/Repeat: primary foreground
 
 ### SleepTimer Overlay
-- Quick options: 15m, 30m, 45m, 60m, Custom
+- Quick options: 5m, 10m, 15m, 30m, 60m
 - Shows remaining time when active
-- Cancel option
+- Cancel option with `[Esc]`
 
 ### ThemePicker Overlay
+- List of themes: Cyberdeck (default), Catppuccin Mocha, etc.
 - Live preview: changes apply as user navigates
-- List of themes: Dark (default), Light, Transparent
-- HSL seed input for custom theme generation
-- Preview panel showing all 26 theme colors
+- Preview panel showing theme colors
 
 ## Accessibility
 
 All overlays:
 - Open via `Alt+<key>` (configurable)
 - Close via `Esc`
-- Support `Tab`/`Shift+Tab` for focus cycling within the overlay
-- Show keybinding hints at the bottom
-- Have semi-transparent background that dims the content below
+- Support `j`/`k` or `↑`/`↓` for navigation
+- Show keybinding hints at the bottom in bracket notation
+- Have tonal-layer background that dims the content below

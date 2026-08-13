@@ -527,6 +527,7 @@ impl Daemon {
                         };
                         if let Some(ref path) = next_path {
                             if self.mixer.load_standby(path).is_ok() {
+                                self.mixer.set_crossfade_easing(cf.easing);
                                 self.mixer.start_crossfade(cf.duration_secs as f64);
                                 self.crossfade_loaded_for = cur_path.clone();
                                 // Advance the queue cursor to the next track
@@ -551,16 +552,40 @@ impl Daemon {
                     .await;
             }
             // Track finished — if we were crossfading the next track is already
-            // playing on the standby player, so don't auto-advance.
+            // playing on the swapped player.  Emit PlaybackStarted so the
+            // client knows which track is now active.
             AudioEvent::Finished => {
                 let was_crossfading = self.crossfade_loaded_for.is_some();
                 self.crossfade_loaded_for = None;
-                let mut state = self.state.write().await;
-                state.status = PlaybackStatus::Stopped;
-                state.time_pos = 0.0;
-                drop(state);
-                self.push_event(DaemonEvent::TrackEnded).await;
-                if !was_crossfading {
+                if was_crossfading {
+                    let actual = self.mixer.current_position();
+                    let mut state = self.state.write().await;
+                    state.status = PlaybackStatus::Playing;
+                    state.time_pos = actual;
+                    // Queue cursor was already advanced when crossfade started.
+                    if state.queue_cursor < state.queue.len() as u128 {
+                        state.current_track =
+                            Some(state.queue[state.queue_cursor as usize].clone());
+                    }
+                    let track = state.current_track.clone();
+                    let dur = state.duration;
+                    drop(state);
+                    if let Some(t) = track {
+                        self.push_event(DaemonEvent::PlaybackStarted {
+                            track: t,
+                            auto_advanced: true,
+                            time_pos: actual,
+                            duration: dur,
+                        })
+                        .await;
+                    }
+                } else {
+                    let mut state = self.state.write().await;
+                    state.status = PlaybackStatus::Stopped;
+                    state.time_pos = 0.0;
+                    state.current_track = None;
+                    drop(state);
+                    self.push_event(DaemonEvent::TrackEnded).await;
                     let _ = self.cmd_next().await;
                 }
             }

@@ -24,10 +24,26 @@ pub enum CoreError {
     Timeout,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Easing {
+    Linear,
+    SlowFadeInFastFadeOut,
+    FastFadeInSlowFadeOut,
+    Logarithmic,
+    Smoothstep,
+}
+
+impl Default for Easing {
+    fn default() -> Self {
+        Self::Smoothstep
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrossfadeConfig {
     pub enabled: bool,
     pub duration_secs: u8,
+    pub easing: Easing,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -164,7 +164,7 @@ fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
+                .border_type(BorderType::Plain)
                 .title(format!(" GTM{overlay_hint}"))
                 .title_alignment(Alignment::Center),
         )
@@ -235,7 +235,7 @@ fn render_now_playing(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let placeholder = Block::default()
             .borders(Borders::ALL)
             .title(" Cover ")
-            .border_type(BorderType::Rounded)
+            .border_type(BorderType::Plain)
             .style(Style::default().fg(app.theme.fg_dim));
         f.render_widget(placeholder, cover_area);
     }
@@ -282,7 +282,7 @@ fn render_now_playing(f: &mut ratatui::Frame, area: Rect, app: &App) {
             Block::default()
                 .title(format!(" {pos_str} / {dur_str} "))
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded),
+                .border_type(BorderType::Plain),
         )
         .style(Style::default().fg(app.theme.accent));
     f.render_widget(gauge, chunks[1]);
@@ -293,9 +293,9 @@ fn render_now_playing(f: &mut ratatui::Frame, area: Rect, app: &App) {
         app.state.volume as f64 / 100.0
     };
     let vol_label: String = if app.state.mute {
-        "\u{1F507} Volume: MUTED ".to_string()
+        " [MUTED] ".to_string()
     } else {
-        format!(" {} Volume: {:3}% ", volume_icon(app.state.volume), app.state.volume)
+        format!(" [{}%] ", app.state.volume)
     };
     let vol_bar = render_progress_line(vol_ratio, chunks[2].width.saturating_sub(4) as usize);
     let vol_gauge = Paragraph::new(vol_bar)
@@ -303,13 +303,13 @@ fn render_now_playing(f: &mut ratatui::Frame, area: Rect, app: &App) {
             Block::default()
                 .title(format!(" {vol_label} "))
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded),
+                .border_type(BorderType::Plain),
         )
         .style(Style::default().fg(app.theme.volume_color(app.state.volume)));
     f.render_widget(vol_gauge, chunks[2]);
 
     let controls = Paragraph::new(
-        " \u{23EF}P/P [n]\u{23ED}Next [p]\u{23EE}Prev [+/-]\u{1F50A}Vol [m]\u{1F507}Mute [r]\u{1F501}Repeat [h]\u{1F500}Shuffle [:]Cmd [q]\u{1F6AA}Quit ",
+        " [Space]P/P  [n]Next  [p]Prev  [+/-]Vol  [m]Mute  [r]Repeat  [h]Shuffle  [:]Cmd  [q]Quit ",
     )
     .alignment(Alignment::Center)
     .style(Style::default().fg(app.theme.fg_dim));
@@ -372,9 +372,9 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &App) {
                 _ => 0, // TODO: compute per-category counts
             };
             let label = if count > 0 {
-                format!(" {:<20} {:>4}", cat, count)
+                format!(" {}. {:<17} {:>4}", i + 1, cat, count)
             } else {
-                format!(" {}", cat)
+                format!(" {}. {}", i + 1, cat)
             };
             let style = if i == app.library_category {
                 if left_focus {
@@ -392,7 +392,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let left_block = Block::default()
         .borders(Borders::ALL)
         .title(" Library ")
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(if left_focus {
             Style::default().fg(app.theme.border_active)
         } else {
@@ -433,7 +433,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .iter()
         .enumerate()
         .map(|(i, track)| {
-            let prefix = if i == sel { " \u{25B6} " } else { "   " };
+            let prefix = if i == sel { " > " } else { "   " };
             let dur = format_duration(track.duration as u64);
             let content = format!("{prefix}{} - {} [{}]", track.artist, track.title, dur);
             let style = if i == sel && !left_focus {
@@ -448,7 +448,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let right_block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {} ", category_label))
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .border_style(if !left_focus {
             Style::default().fg(app.theme.border_active)
         } else {
@@ -511,7 +511,7 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let left_block = Block::default()
         .borders(Borders::ALL)
         .title(" Categories ")
-        .border_type(BorderType::Rounded);
+        .border_type(BorderType::Plain);
 
     f.render_widget(List::new(left_items).block(left_block), panes[0]);
 
@@ -558,7 +558,7 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let right_block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {} ", category_label))
-        .border_type(BorderType::Rounded);
+        .border_type(BorderType::Plain);
 
     f.render_widget(List::new(right_items).block(right_block), panes[1]);
 
@@ -599,7 +599,7 @@ fn render_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     // Use a block with rounded borders
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(BorderType::Plain)
         .title(format!(" {} ", top.id.title()))
         .style(Style::default().bg(app.theme.overlay_bg));
 
@@ -633,7 +633,7 @@ fn render_queue_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .enumerate()
         .map(|(i, track)| {
             let is_current = i == app.queue_cursor;
-            let prefix = if is_current { " \u{25B6} " } else { "   " };
+            let prefix = if is_current { " > " } else { "   " };
             let dur = format_duration(track.duration as u64);
             let content = format!("{prefix}#{} {} - {} [{}]", i, track.artist, track.title, dur);
             let style = if i == app.overlays.top().map_or(0, |o| o.selected) {
@@ -651,7 +651,7 @@ fn render_queue_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
         Block::default()
             .borders(Borders::ALL)
             .title(" Queue ")
-            .border_type(BorderType::Rounded),
+            .border_type(BorderType::Plain),
     );
 
     f.render_widget(list, area);
@@ -664,8 +664,9 @@ fn render_yt_search_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .split(area);
 
     let query = app.overlays.top().map_or(String::new(), |o| o.query.clone());
-    let search_input = Paragraph::new(format!(" Search: {}", query))
-        .style(Style::default().fg(app.theme.fg).bg(app.theme.warning));
+    let cursor = if app.overlays.top().map_or(false, |o| o.id == OverlayId::YTSearch) { "_" } else { "" };
+    let search_input = Paragraph::new(format!(" > {}{}", query, cursor))
+        .style(Style::default().fg(app.theme.fg));
     f.render_widget(search_input, chunks[0]);
 
     let items: Vec<ListItem> = app
@@ -674,11 +675,7 @@ fn render_yt_search_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .enumerate()
         .map(|(i, r)| {
             let dur = format_duration(r.duration as u64);
-            let prefix = if i == app.overlays.top().map_or(0, |o| o.selected) {
-                " \u{25B6} "
-            } else {
-                "   "
-            };
+            let prefix = if i == app.overlays.top().map_or(0, |o| o.selected) { " > " } else { "   " };
             let content = format!("{prefix}{} - {} [{}]", r.channel, r.title, dur);
             let style = if i == app.overlays.top().map_or(0, |o| o.selected) {
                 Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
@@ -693,7 +690,7 @@ fn render_yt_search_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
         Block::default()
             .borders(Borders::ALL)
             .title(" Results ")
-            .border_type(BorderType::Rounded),
+            .border_type(BorderType::Plain),
     );
 
     f.render_widget(list, chunks[1]);
@@ -719,8 +716,8 @@ fn render_search_library_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) 
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(area);
 
-    let search_input = Paragraph::new(format!(" Search: {}", query))
-        .style(Style::default().fg(app.theme.fg).bg(app.theme.warning));
+    let search_input = Paragraph::new(format!(" > {}_", query))
+        .style(Style::default().fg(app.theme.fg));
     f.render_widget(search_input, chunks[0]);
 
     let sel = app.overlays.top().map_or(0, |o| o.selected.min(filtered.len().saturating_sub(1)));
@@ -728,7 +725,7 @@ fn render_search_library_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) 
         .iter()
         .enumerate()
         .map(|(i, track)| {
-            let prefix = if i == sel { " \u{25B6} " } else { "   " };
+            let prefix = if i == sel { " > " } else { "   " };
             let dur = format_duration(track.duration as u64);
             let content = format!("{prefix}{} - {} [{}]", track.artist, track.title, dur);
             let style = if i == sel {
@@ -744,7 +741,7 @@ fn render_search_library_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) 
         Block::default()
             .borders(Borders::ALL)
             .title(" Tracks ")
-            .border_type(BorderType::Rounded),
+            .border_type(BorderType::Plain),
     );
 
     f.render_widget(list, chunks[1]);
@@ -781,9 +778,9 @@ fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
     match app.input_mode {
         InputMode::Normal => {
             let status_icon = match app.state.status {
-                PlaybackStatus::Playing => "\u{25B6}",
-                PlaybackStatus::Paused => "\u{23F8}",
-                PlaybackStatus::Stopped => "\u{25A0}",
+                PlaybackStatus::Playing => ">",
+                PlaybackStatus::Paused => "||",
+                PlaybackStatus::Stopped => "#",
             };
             let vol_str = if app.state.mute {
                 "MUTED".to_string()
@@ -792,10 +789,10 @@ fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
             };
             let repeat_str = match app.state.repeat {
                 RepeatMode::Off => "",
-                RepeatMode::One => " \u{1F501}",
-                RepeatMode::All => " \u{1F500}",
+                RepeatMode::One => " [1]",
+                RepeatMode::All => " [A]",
             };
-            let shuffle_str = if app.state.shuffle { " \u{1F500}" } else { "" };
+            let shuffle_str = if app.state.shuffle { " [S]" } else { "" };
 
             let status_section = format!(" {status_icon} Vol:{vol_str}{repeat_str}{shuffle_str} ");
 
@@ -827,13 +824,13 @@ fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
             f.render_widget(footer, area);
         }
         InputMode::Searching => {
-            let input = Paragraph::new(format!(" Search: {}", app.search_query))
-                .style(Style::default().fg(app.theme.fg).bg(app.theme.warning));
+            let input = Paragraph::new(format!(" > {}_", app.search_query))
+                .style(Style::default().fg(app.theme.fg));
             f.render_widget(input, area);
         }
         InputMode::Command => {
-            let input = Paragraph::new(format!(" :{}", app.search_query))
-                .style(Style::default().fg(app.theme.fg).bg(app.theme.accent));
+            let input = Paragraph::new(format!(" :{}_", app.search_query))
+                .style(Style::default().fg(app.theme.fg));
             f.render_widget(input, area);
         }
     }
@@ -907,7 +904,7 @@ fn render_sleep_timer_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .enumerate()
         .map(|(i, mins)| {
             let label = if *mins == 1 { "minute" } else { "minutes" };
-            let prefix = if i == sel { " \u{25B6} " } else { "   " };
+            let prefix = if i == sel { " > " } else { "   " };
             let content = format!("{prefix}{} {}", mins, label);
             let style = if i == sel {
                 Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
@@ -928,7 +925,7 @@ fn render_sleep_timer_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
         Block::default()
             .borders(Borders::ALL)
             .title(" Sleep Timer ")
-            .border_type(BorderType::Rounded),
+            .border_type(BorderType::Plain),
     );
     f.render_widget(list, area);
 }
@@ -975,8 +972,8 @@ fn render_command_palette_overlay(f: &mut ratatui::Frame, area: Rect, app: &App)
         .constraints([Constraint::Length(3), Constraint::Min(0)])
         .split(area);
 
-    let search_input = Paragraph::new(format!(" Filter: {}", query))
-        .style(Style::default().fg(app.theme.fg).bg(app.theme.warning));
+    let search_input = Paragraph::new(format!(" > {}_", query))
+        .style(Style::default().fg(app.theme.fg));
     f.render_widget(search_input, chunks[0]);
 
     let sel = app.overlays.top().map_or(0, |o| o.selected.min(filtered.len().saturating_sub(1)));
@@ -984,7 +981,7 @@ fn render_command_palette_overlay(f: &mut ratatui::Frame, area: Rect, app: &App)
         .iter()
         .enumerate()
         .map(|(i, cmd)| {
-            let prefix = if i == sel { " \u{25B6} " } else { "   " };
+            let prefix = if i == sel { " > " } else { "   " };
             let style = if i == sel {
                 Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
             } else {
@@ -998,7 +995,7 @@ fn render_command_palette_overlay(f: &mut ratatui::Frame, area: Rect, app: &App)
         Block::default()
             .borders(Borders::ALL)
             .title(" Commands ")
-            .border_type(BorderType::Rounded),
+            .border_type(BorderType::Plain),
     );
     f.render_widget(list, chunks[1]);
 }
@@ -1017,7 +1014,7 @@ fn render_equalizer_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let sel = app.overlays.top().map_or(0, |o| o.selected.min(presets.len() - 1));
 
     let list_items: Vec<ListItem> = presets.iter().enumerate().map(|(i, (name, _))| {
-        let prefix = if i == sel { " \u{25B6} " } else { "   " };
+        let prefix = if i == sel { " > " } else { "   " };
         let style = if i == sel {
             Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
         } else if *name == app.state.eq_preset.label() {
@@ -1038,7 +1035,7 @@ fn render_equalizer_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
         Block::default()
             .borders(Borders::ALL)
             .title(" Equalizer ")
-            .border_type(BorderType::Rounded),
+            .border_type(BorderType::Plain),
     );
     f.render_widget(list, area);
 }
@@ -1078,7 +1075,7 @@ fn render_sound_effects_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
     let sel = app.overlays.top().map_or(0, |o| o.selected.min(items.len() - 1));
     let list_items: Vec<ListItem> = items.iter().enumerate().map(|(i, s)| {
-        let prefix = if i == sel { " \u{25B6} " } else { "   " };
+        let prefix = if i == sel { " > " } else { "   " };
         let style = if i == sel {
             Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
         } else {
@@ -1091,7 +1088,7 @@ fn render_sound_effects_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
         Block::default()
             .borders(Borders::ALL)
             .title(" Sound Effects ")
-            .border_type(BorderType::Rounded),
+            .border_type(BorderType::Plain),
     );
     f.render_widget(list, area);
 }
@@ -1118,34 +1115,27 @@ pub fn braille_spinner(frame: usize) -> char {
     SPINNER_FRAMES[frame % SPINNER_FRAMES.len()]
 }
 
-/// Build a single-line progress bar string using unicode block characters
-/// with an oscillating head at the fill position.
-/// `ratio` in [0.0, 1.0]; `width` in terminal columns.
+/// Build a single-line progress bar string in bracket style:
+/// `[###########---------]` — `#` fill, `-` empty.
+/// `ratio` in [0.0, 1.0]; `width` in terminal columns (includes brackets).
 fn render_progress_line(ratio: f64, width: usize) -> String {
-    let width = width.max(10); // never narrower than 10
-    let filled = (ratio.clamp(0.0, 1.0) * width as f64).round() as usize;
-
-    let head = if ratio > 0.0 && ratio < 1.0 { '●' } else { ' ' };
+    let width = width.max(6);
+    let inner_w = width.saturating_sub(2);
+    let filled = (ratio.clamp(0.0, 1.0) * inner_w as f64).round() as usize;
 
     let mut line = String::with_capacity(width);
-    for i in 0..width {
-        if i < filled.saturating_sub(1) {
-            line.push('█');
-        } else if i == filled.saturating_sub(1) && filled > 0 && filled < width {
-            line.push(head);
-        } else if i < width {
-            line.push('░');
-        }
+    line.push('[');
+    for i in 0..inner_w {
+        line.push(if i < filled { '#' } else { '-' });
     }
+    line.push(']');
     line
 }
 
-/// Nerd-font volume icon with emoji fallback.
+/// Volume label in bracket style.
 fn volume_icon(volume: u8) -> &'static str {
     match volume {
-        0 => "\u{1F507}",   // muted
-        1..=33 => "\u{1F509}", // low
-        34..=66 => "\u{1F50A}", // medium
-        _ => "\u{1F50A}",   // high
+        0 => "[MUTED]",
+        _ => "[VOL]",
     }
 }

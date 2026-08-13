@@ -236,6 +236,7 @@ impl App {
 
     async fn fetch_state(&mut self) {
         if let Ok(state) = self.client.get_status().await {
+            self.client.seed_clock_from_state(&state).await;
             self.state = state;
             // Fetch cover art if current track changed
             let track_id = self.state.current_track.as_ref().map(|t| t.id);

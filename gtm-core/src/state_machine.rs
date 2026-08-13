@@ -136,9 +136,15 @@ impl DaemonState {
     pub fn set_crossfade(&mut self, enabled: bool, duration: u8) -> Result<()> {
         tripwire::check(FailPoint::CrossfadeApply)?;
         self.crossfade = if enabled {
+            let easing = self
+                .crossfade
+                .as_ref()
+                .map(|c| c.easing)
+                .unwrap_or_default();
             Some(CrossfadeConfig {
                 enabled: true,
                 duration_secs: duration.min(30),
+                easing,
             })
         } else {
             None
@@ -221,7 +227,12 @@ impl DaemonState {
             DaemonEvent::SleepTimerTick { remaining_secs } => {
                 self.sleep_timer = Some(*remaining_secs);
             }
-            _ => {} // TrackEnded, MetadataChanged, Custom — no state mirror field
+            DaemonEvent::TrackEnded => {
+                self.status = PlaybackStatus::Stopped;
+                self.current_track = None;
+                self.time_pos = 0.0;
+            }
+            _ => {} // MetadataChanged, Custom — no state mirror field
         }
         self.version += 1;
         #[cfg(debug_assertions)]

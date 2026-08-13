@@ -8,6 +8,7 @@ use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
 
 use crate::backend::{AudioError, AudioEvent, AudioResult};
 use crate::symphonia::SymphoniaSource;
+use gtm_core::state::Easing;
 
 /// Trait abstracting over audio mixer implementations (real or null).
 pub trait Mixer: Send + Sync {
@@ -25,6 +26,7 @@ pub trait Mixer: Send + Sync {
     fn duration(&self) -> f64;
     fn active_remaining(&self) -> f64;
     fn start_crossfade(&mut self, duration_secs: f64);
+    fn set_crossfade_easing(&mut self, easing: Easing);
     fn is_crossfading(&self) -> bool;
     fn force_complete_crossfade(&mut self);
     fn poll(&mut self) -> AudioResult<Option<AudioEvent>>;
@@ -67,6 +69,7 @@ pub struct AudioMixer {
     pause_fade_start: Option<Instant>,
     stored_volume: u8,
     last_reported_pos: f64,
+    crossfade_easing: Easing,
 }
 
 struct MixerDeviceSink(rodio::MixerDeviceSink);
@@ -114,6 +117,9 @@ impl Mixer for AudioMixer {
     fn start_crossfade(&mut self, duration_secs: f64) {
         self.start_crossfade(duration_secs)
     }
+    fn set_crossfade_easing(&mut self, easing: Easing) {
+        self.set_crossfade_easing(easing)
+    }
     fn is_crossfading(&self) -> bool {
         self.is_crossfading()
     }
@@ -151,6 +157,7 @@ impl AudioMixer {
             start_pos: Arc::new(Mutex::new(0.0)),
             crossfade_start: None,
             crossfade_duration: 0.0,
+            crossfade_easing: Easing::default(),
             pending_pause: false,
             pause_fade_start: None,
             stored_volume: 100,
@@ -302,6 +309,10 @@ impl AudioMixer {
         (total - self.current_position()).max(0.0)
     }
 
+    pub fn set_crossfade_easing(&mut self, easing: Easing) {
+        self.crossfade_easing = easing;
+    }
+
     pub fn start_crossfade(&mut self, duration_secs: f64) {
         if self.standby().empty() {
             return;
@@ -346,8 +357,24 @@ impl AudioMixer {
         new_standby.pause();
     }
 
-    fn ease_in_out(t: f64) -> f64 {
-        t * t * (3.0 - 2.0 * t)
+    fn ease_in(t: f64, easing: Easing) -> f64 {
+        match easing {
+            Easing::Linear => t,
+            Easing::SlowFadeInFastFadeOut => t * t,
+            Easing::FastFadeInSlowFadeOut => t.sqrt(),
+            Easing::Logarithmic => 1.0 - 2.0f64.powf(-t),
+            Easing::Smoothstep => t * t * (3.0 - 2.0 * t),
+        }
+    }
+
+    fn ease_out(t: f64, easing: Easing) -> f64 {
+        match easing {
+            Easing::Linear => t,
+            Easing::SlowFadeInFastFadeOut => 1.0 - (1.0 - t).sqrt(),
+            Easing::FastFadeInSlowFadeOut => 1.0 - (1.0 - t) * (1.0 - t),
+            Easing::Logarithmic => 2.0f64.powf(-t),
+            Easing::Smoothstep => t * t * (3.0 - 2.0 * t),
+        }
     }
 
     fn step_crossfade(&mut self) -> bool {
@@ -357,19 +384,20 @@ impl AudioMixer {
         };
         let elapsed = start.elapsed().as_secs_f64();
         let progress = (elapsed / self.crossfade_duration).min(1.0);
-        let eased = Self::ease_in_out(progress);
+        let eased_out = Self::ease_out(progress, self.crossfade_easing);
+        let eased_in = Self::ease_in(progress, self.crossfade_easing);
         let vol = self.volume.load(Ordering::SeqCst) as f64 / 100.0;
         let base = vol.min(1.0);
 
         self.player_a.set_volume(if self.is_a_active {
-            (1.0 - eased) * base
+            eased_out * base
         } else {
-            eased * base
+            eased_in * base
         } as f32);
         self.player_b.set_volume(if self.is_a_active {
-            eased * base
+            eased_in * base
         } else {
-            (1.0 - eased) * base
+            eased_out * base
         } as f32);
 
         if progress >= 1.0 {
@@ -436,6 +464,11 @@ impl AudioMixer {
         if self.active().empty() {
             if self.crossfade_start.is_some() {
                 self.force_complete_crossfade();
+                // After force-complete the new active player (the old standby)
+                // may still be playing — don't emit Finished if there's audio.
+                if !self.active().empty() {
+                    return Ok(None);
+                }
             }
             if self.playing.load(Ordering::SeqCst) {
                 self.playing.store(false, Ordering::SeqCst);

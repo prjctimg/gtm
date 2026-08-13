@@ -2,7 +2,8 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
 
 use crate::backend::{AudioEvent, AudioResult};
-use crate::mixer::Mixer;
+use crate::mixer::{Mixer};
+use gtm_core::state::Easing;
 
 /// A silent no-op mixer for environments without audio hardware (CI, testing).
 pub struct NullMixer {
@@ -94,6 +95,8 @@ impl Mixer for NullMixer {
     fn start_crossfade(&mut self, _duration_secs: f64) {
         *self.crossfading.lock().unwrap() = true;
     }
+
+    fn set_crossfade_easing(&mut self, _easing: Easing) {}
 
     fn is_crossfading(&self) -> bool {
         *self.crossfading.lock().unwrap()

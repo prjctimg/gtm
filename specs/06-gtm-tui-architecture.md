@@ -13,7 +13,7 @@
 │      }                                                           │
 │                                                                  │
 │      // 2. Drain events from IPC worker                          │
-│      for ev in self.client.drain() {                             │
+│      for ev in self.client.drain().await {                       │
 │          self.state.apply_event(&ev);                            │
 │      }                                                           │
 │                                                                  │
@@ -91,29 +91,48 @@ let display_pos = if state.status == Playing {
 
 ## Layout Structure
 
+The TUI uses a **rigid 4-row grid** layout with sharp (plain) borders throughout, following the Cyberdeck TUI design system:
+
 ```
 ┌─────────────────────────────────────────────────┐
-│  Tab Bar: [1]NowPlaying [2]Library [3]Settings  │  3 lines
-│  Status: ▶ Vol: 80%                             │
+│ > GTM    [1]NowPlaying  [2]Library  [3]Settings │  3 lines (Tab Bar)
+│  (notification line — single row)               │  1 line
 ├─────────────────────────────────────────────────┤
-│                                                 │
-│  Content Area (per-tab)                         │  Min(0)
-│  - NowPlaying: cover art, metadata, progress    │
-│  - Library: track list, filterable              │
-│  - Settings: config panels                      │
-│                                                 │
-│  Overlays float above content (Alt+key)         │
-│  - Queue, YTSearch, SearchLibrary, Spotify,     │
-│    Equalizer, CommandPalette, About, SleepTimer,│
-│    ThemePicker                                  │
-│                                                 │
+│                                                  │
+│  Content Area (per-tab)                          │  Min(0)
+│                                                  │
+│  ┌─ NOW PLAYING ─────────────────────────────┐  │
+│  │  Title:   Song Title                       │  │
+│  │  Artist:  Artist Name                      │  │
+│  │  Album:   Album Name                       │  │
+│  │  [####------------] 1:23 / 4:56            │  │
+│  └────────────────────────────────────────────┘  │
+│                                                  │
+│  ┌─ LIBRARY ──────────────────────────────────┐  │
+│  │  1. All Tracks    │  ▶ Artist - Title [dur] │  │
+│  │  2. Albums        │  ...                    │  │
+│  └────────────────────────────────────────────┘  │
+│                                                  │
+│  ┌─ SETTINGS ─────────────────────────────────┐  │
+│  │  Volume: 80% [########--------]             │  │
+│  │  Repeat: OFF                                │  │
+│  └────────────────────────────────────────────┘  │
+│                                                  │
+│  Overlays float above content (Alt+key)          │
+│  > Queue, YTSearch, SearchLibrary, Spotify,      │
+│    Equalizer, CommandPalette, About, SleepTimer,  │
+│    ThemePicker, SoundEffects                     │
+│                                                  │
 ├─────────────────────────────────────────────────┤
-│  Footer: customizable modules                   │  3 lines
-│  [▶ Playing] [Vol:80%] [Queue:12] [MPD]         │
+│  > [Vol:80%] [Queue:12] [RPT] [SHF]             │  3 lines (Footer)
 └─────────────────────────────────────────────────┘
 ```
 
+- **Cyberdeck TUI** theme: deep charcoal `#141313` background, off-white `#e5e2e1` text, neon green `#00e639` accents
 - 3 tabs only: NowPlaying, Library, Settings
-- 9 overlays: Queue, YTSearch, SearchLibrary, SpotifySearch, Equalizer, CommandPalette, About, SleepTimer, ThemePicker
+- 10 overlays: Queue, YTSearch, SearchLibrary, SpotifySearch, Equalizer, CommandPalette, About, SleepTimer, ThemePicker, SoundEffects
+- All borders use `BorderType::Plain` (sharp corners — no rounded borders)
+- All controls use bracket notation `[Key]Action` — no emoji
 - Overlays accessible via Alt+key from any tab
-- Footer modules customizable per-preset
+- Footer shows playback status, volume, queue count, repeat/shuffle indicators
+- High information density with minimal padding

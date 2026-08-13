@@ -13,7 +13,7 @@ pub mod tripwire;
 pub mod validate;
 pub mod wire;
 
-pub use state::{CoreError, CrossfadeConfig, DaemonState};
+pub use state::{CoreError, CrossfadeConfig, DaemonState, Easing};
 pub use track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
 
 pub type Result<T> = std::result::Result<T, CoreError>;

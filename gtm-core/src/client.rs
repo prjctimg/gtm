@@ -134,6 +134,16 @@ impl DaemonClient {
         base_pos
     }
 
+    /// Seed the clock-skewing state from a full daemon state snapshot
+    /// (e.g. after `GetStatus` on reconnect).  This ensures the position
+    /// estimate is correct before the first event arrives.
+    pub async fn seed_clock_from_state(&self, state: &crate::state::DaemonState) {
+        let is_playing = state.status == crate::state::PlaybackStatus::Playing;
+        *self.base_pos.lock().await = state.time_pos;
+        *self.base_time.lock().await = if is_playing { Some(Instant::now()) } else { None };
+        self.is_playing.store(is_playing, Ordering::Release);
+    }
+
     async fn send_raw(&self, req: DaemonReq) -> Result<DaemonRes> {
         let (tx, rx) = oneshot::channel();
         self.cmd_tx

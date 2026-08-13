@@ -14,6 +14,7 @@ impl CrossfadeConfig {
         Self {
             enabled,
             duration_secs: duration_secs.min(30),
+            easing: crate::state::Easing::default(),
         }
     }
 }

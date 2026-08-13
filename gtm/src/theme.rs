@@ -24,7 +24,7 @@ pub struct AppTheme {
 
 impl AppTheme {
     pub fn default() -> Self {
-        catppuccin_mocha()
+        cyberdeck()
     }
 
     pub fn volume_color(&self, volume: u8) -> Color {
@@ -47,7 +47,32 @@ fn hex(c: u32) -> Color {
     Color::Rgb(r, g, b)
 }
 
+/// Cyberdeck TUI — default theme
+fn cyberdeck() -> AppTheme {
+    AppTheme {
+        overlay_bg: hex(0x141313),
+        fg: hex(0xe5e2e1),
+        fg_dim: hex(0x353434),
+        fg_bright: hex(0xc4c7c7),
+        accent: hex(0x00e639),
+        error: hex(0xffb4ab),
+        warning: hex(0xffdad6),
+        success: hex(0x00e639),
+        selection_fg: hex(0x313030),
+        selection_bg: hex(0x454747),
+        border: hex(0x8e9192),
+        border_active: hex(0xc8c6c5),
+        volume_low: hex(0x00e639),
+        volume_medium: hex(0xe5e2e1),
+        volume_high: hex(0xffb4ab),
+        tab_active_fg: hex(0x313030),
+        tab_active_bg: hex(0xc8c6c5),
+        tab_inactive_fg: hex(0x8e9192),
+    }
+}
+
 /// Catppuccin Mocha
+#[allow(dead_code)]
 fn catppuccin_mocha() -> AppTheme {
     AppTheme {
         overlay_bg: hex(0x1e1e2e),

@@ -6,7 +6,8 @@
 
 use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction};
 use gtm_core::state::{
-    CrossfadeConfig, DaemonState, Image, PlaybackStatus, RepeatMode, ThemeMode, UIMode, YTFilter,
+    CrossfadeConfig, DaemonState, Easing, Image, PlaybackStatus, RepeatMode, ThemeMode, UIMode,
+    YTFilter,
 };
 use gtm_core::track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
 use gtm_core::wire::{decode, encode};
@@ -133,6 +134,7 @@ roundtrip!(
     CrossfadeConfig {
         enabled: true,
         duration_secs: 8,
+        easing: Easing::default(),
     }
 );
 roundtrip!(daemon_state_roundtrip, DaemonState, sample_state());
@@ -725,6 +727,7 @@ fn check_invariants_crossfade_zero_duration() {
     s.crossfade = Some(CrossfadeConfig {
         enabled: true,
         duration_secs: 0,
+        easing: Easing::default(),
     });
     s.check_invariants();
 }
