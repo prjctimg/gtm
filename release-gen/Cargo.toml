@@ -6,7 +6,6 @@ license.workspace = true
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }
-clap_mangen = "0.2"
 clap_complete = "4"
 
 [[bin]]

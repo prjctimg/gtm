@@ -1,8 +1,10 @@
 # gtm-rs
 
-[![CI](https://github.com/skchr/gtm-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/skchr/gtm-rs/actions/workflows/ci.yml)
-[![Release](https://github.com/skchr/gtm-rs/actions/workflows/release.yml/badge.svg)](https://github.com/skchr/gtm-rs/actions/workflows/release.yml)
+[![CI](https://github.com/skchr/gtm-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/skchr/gtm-rs/actions/workflows/ci.yml)
+[![Release](https://github.com/skchr/gtm-rs/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/skchr/gtm-rs/actions/workflows/release.yml)
 [![License](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rustc-1.81+-orange.svg)](https://www.rust-lang.org)
+[![Size](https://img.shields.io/github/repo-size/skchr/gtm-rs)](https://github.com/skchr/gtm-rs)
 
 A modular terminal-based music player daemon and client suite written in Rust.
 

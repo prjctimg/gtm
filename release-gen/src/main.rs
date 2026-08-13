@@ -2,7 +2,6 @@ use std::fs;
 
 use clap::{Parser, Subcommand};
 use clap_complete::Shell;
-use clap_mangen::Man;
 
 /// GTM CLI client
 #[derive(Parser)]
@@ -117,13 +116,11 @@ struct DaemonArgs {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: release-gen <man-gtm|man-gtmd|completions-gtm <shell>|completions-gtmd <shell>|all <outdir>>");
+        eprintln!("Usage: release-gen <completions|completions-gtm <shell>|completions-gtmd <shell>> [outdir]");
         std::process::exit(1);
     }
 
     match args[1].as_str() {
-        "man-gtm" => render_man::<Cli>("gtm", &mut std::io::stdout()),
-        "man-gtmd" => render_man::<DaemonArgs>("gtmd", &mut std::io::stdout()),
         "completions-gtm" => {
             if args.len() < 3 {
                 eprintln!("missing shell argument");
@@ -140,9 +137,9 @@ fn main() {
             let shell: Shell = args[2].parse().expect("invalid shell (bash, zsh, fish, powershell, elvish)");
             gen_completions::<DaemonArgs>("gtmd", shell, &mut std::io::stdout());
         }
-        "all" => {
+        "completions" | "all" => {
             let outdir = if args.len() >= 3 { &args[2] } else { "artifacts" };
-            generate_all(outdir);
+            generate_completions(outdir);
         }
         _ => {
             eprintln!("unknown command: {}", args[1]);
@@ -151,34 +148,15 @@ fn main() {
     }
 }
 
-fn render_man<T: Parser>(_name: &str, w: &mut impl std::io::Write) {
-    let cmd = T::command();
-    let man = Man::new(cmd);
-    man.render(w).expect("render manpage");
-}
-
 fn gen_completions<T: Parser>(bin_name: &str, shell: Shell, w: &mut impl std::io::Write) {
     let mut cmd = T::command();
     clap_complete::generate(shell, &mut cmd, bin_name, w);
 }
 
-fn generate_all(outdir: &str) {
-    let man_dir = format!("{outdir}/man");
+fn generate_completions(outdir: &str) {
     let comp_dir = format!("{outdir}/completions");
-    fs::create_dir_all(&man_dir).expect("create man dir");
     fs::create_dir_all(&comp_dir).expect("create completions dir");
 
-    // Manpages
-    let mut buf: Vec<u8> = Vec::new();
-    render_man::<Cli>("gtm", &mut buf);
-    fs::write(format!("{man_dir}/gtm.1"), &buf).expect("write gtm manpage");
-    buf.clear();
-
-    render_man::<DaemonArgs>("gtmd", &mut buf);
-    fs::write(format!("{man_dir}/gtmd.1"), &buf).expect("write gtmd manpage");
-    buf.clear();
-
-    // Completions
     let shells = [
         (Shell::Bash, "bash"),
         (Shell::Zsh, "zsh"),
@@ -191,7 +169,7 @@ fn generate_all(outdir: &str) {
         let ext = *ext;
         let suffix = match ext {
             "bash" => "bash",
-            "zsh" => "_zsh",   // zsh uses _ prefix
+            "zsh" => "_zsh",
             "fish" => "fish",
             "powershell" => "ps1",
             "elvish" => "elv",
@@ -214,7 +192,5 @@ fn generate_all(outdir: &str) {
         fs::write(format!("{comp_dir}/{name_suffix2}"), &buf).expect("write gtmd completion");
     }
 
-    println!("Generated artifacts in {outdir}/");
-    println!("  man:  gtm.1, gtmd.1");
-    println!("  completions: gtm.*, gtmd.*");
+    println!("Generated completions in {comp_dir}/");
 }

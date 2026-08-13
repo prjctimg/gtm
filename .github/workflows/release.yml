@@ -54,11 +54,22 @@ jobs:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
 
+      - name: Install system dependencies (Linux)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pandoc
+
+      - name: Install system dependencies (macOS)
+        if: startsWith(matrix.os, 'macos')
+        run: brew install pkg-config pandoc
+
       - name: Build release binaries
         run: cargo build --release
 
-      - name: Generate manpages and shell completions
-        run: cargo run --release --bin release-gen all artifacts
+      - name: Generate manpages (pandoc)
+        run: ./scripts/gen-manpages.sh artifacts
+
+      - name: Generate shell completions
+        run: cargo run --release --bin release-gen completions artifacts
 
       - name: Package binaries
         shell: bash
@@ -77,16 +88,47 @@ jobs:
           done
           echo "platform=${platform}" >> "$GITHUB_ENV"
 
-      - name: Build Debian packages (Linux only)
+      - name: Create component archives
+        shell: bash
+        run: |
+          cd target/release
+          # gtm
+          tar czf "gtm-${platform}.tar.gz" \
+            "gtm-${platform}" \
+            ../../artifacts/man/gtm.1
+          # gtmd
+          tar czf "gtmd-${platform}.tar.gz" \
+            "gtmd-${platform}" \
+            ../../artifacts/man/gtmd.1 \
+            ../../dist/gtmd.service
+          # gtm-tui
+          tar czf "gtm-tui-${platform}.tar.gz" \
+            "gtm-tui-${platform}"
+
+      - name: Install cargo-deb and build Debian packages (Linux only)
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           cargo install cargo-deb
-          cargo deb --package gtmd --package gtm-cli --package gtm-tui
-          # Rename deb to include arch
+          # Copy generated assets into each package's deb-assets/ directory
+          # (cargo deb does not support ../ in asset paths)
+          for pkg in gtmd gtm-cli gtm-tui; do
+            mkdir -p "$pkg/deb-assets/man" "$pkg/deb-assets/completions"
+            cp -r artifacts/man/* "$pkg/deb-assets/man/"
+            cp -r artifacts/completions/* "$pkg/deb-assets/completions/"
+          done
+          cp dist/gtmd.service gtmd/deb-assets/
+          for pkg in gtmd gtm-cli gtm-tui; do
+            cargo deb --package "$pkg"
+          done
+          # Rename debs to include arch
           arch="$(uname -m)"
           for deb in target/debian/*.deb; do
             base="$(basename "$deb" .deb)"
             mv "$deb" "target/debian/${base}_${arch}.deb"
+          done
+          # Clean up deb-assets dirs
+          for pkg in gtmd gtm-cli gtm-tui; do
+            rm -rf "$pkg/deb-assets"
           done
 
       - uses: actions/upload-artifact@v4
@@ -129,6 +171,9 @@ jobs:
             gtmd-*-darwin
             gtm-tui-*-linux
             gtm-tui-*-darwin
+            gtm-*.tar.gz
+            gtmd-*.tar.gz
+            gtm-tui-*.tar.gz
             man/*
             completions/*
             *.deb

@@ -3,6 +3,7 @@ name = "gtm-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "GTM CLI client for controlling the GTM music daemon"
 
 [dependencies]
 gtm-core = { path = "../gtm-core" }
@@ -27,11 +28,10 @@ section = "sound"
 priority = "optional"
 depends = "$auto"
 assets = [
-    ["../artifacts/man/gtm.1", "/usr/share/man/man1/"],
-    ["../artifacts/completions/gtm.bash", "/usr/share/bash-completion/completions/gtm"],
-    ["../artifacts/completions/_gtm", "/usr/share/zsh/vendor-completions/_gtm"],
-    ["../artifacts/completions/gtm.fish", "/usr/share/fish/vendor_completions.d/gtm.fish"],
-    ["../artifacts/completions/gtm.ps1", "/usr/share/powershell/completions/gtm.ps1"],
-    ["../artifacts/completions/gtm.elv", "/usr/share/elvish/completions/gtm.elv"],
-    ["../LICENSE", "/usr/share/doc/gtm/copyright"],
+    ["deb-assets/man/gtm.1", "/usr/share/man/man1/"],
+    ["deb-assets/completions/gtm.bash", "/usr/share/bash-completion/completions/gtm"],
+    ["deb-assets/completions/_gtm", "/usr/share/zsh/vendor-completions/_gtm"],
+    ["deb-assets/completions/gtm.fish", "/usr/share/fish/vendor_completions.d/gtm.fish"],
+    ["deb-assets/completions/gtm.ps1", "/usr/share/powershell/completions/gtm.ps1"],
+    ["deb-assets/completions/gtm.elv", "/usr/share/elvish/completions/gtm.elv"],
 ]
