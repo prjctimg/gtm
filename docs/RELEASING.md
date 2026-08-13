@@ -24,29 +24,29 @@ Per stable release `v0.1.4` (illustrative):
 
 | Asset | Target | Built from |
 |---|---|---|
-| `gtm-full-x86_64-linux.tar.gz` | Linux x86_64 (glibc) | Ubuntu 22.04 |
-| `gtm-full_0.1.4-1_amd64.deb` | Debian/Ubuntu x86_64 | Ubuntu 22.04 |
-| `gtm-full-0.1.4-1.x86_64.rpm` | Fedora/RHEL x86_64 | Ubuntu 22.04 |
-| `gtm-full-0.1.4-1-x86_64.pkg.tar.zst` | Arch x86_64 | Ubuntu 22.04 |
-| `gtm-full-aarch64-linux.tar.gz` | Linux ARM64 (glibc) | Debian 12 |
-| `gtm-full_0.1.4-1_arm64.deb` | Debian/Ubuntu ARM64 | Debian 12 |
-| `gtm-full-0.1.4-1.aarch64.rpm` | Fedora/RHEL ARM64 | Debian 12 |
-| `gtm-full-0.1.4-1-aarch64.pkg.tar.zst` | Arch Linux ARM | Debian 12 |
-| `gtm-full-aarch64-darwin.tar.gz` | macOS ARM64 | macOS runner |
-| `gtm-full-aarch64-android.tar.gz` | Android / Termux ARM64 | Ubuntu + NDK |
+| `gtm-x86_64-linux.tar.gz` | Linux x86_64 (glibc) | Debian 12 |
+| `gtm_0.1.4-1_amd64.deb` | Debian/Ubuntu x86_64 | Debian 12 |
+| `gtm-0.1.4-1.x86_64.rpm` | Fedora/RHEL x86_64 | Debian 12 |
+| `gtm-0.1.4-1-x86_64.pkg.tar.zst` | Arch x86_64 | Debian 12 |
+| `gtm-aarch64-linux.tar.gz` | Linux ARM64 (glibc) | Debian 12 |
+| `gtm_0.1.4-1_arm64.deb` | Debian/Ubuntu ARM64 | Debian 12 |
+| `gtm-0.1.4-1.aarch64.rpm` | Fedora/RHEL ARM64 | Debian 12 |
+| `gtm-0.1.4-1-aarch64.pkg.tar.zst` | Arch Linux ARM | Debian 12 |
+| `gtm-aarch64-darwin.tar.gz` | macOS ARM64 | macOS runner |
+| `gtm-aarch64-android.tar.gz` | Android / Termux ARM64 | Ubuntu + NDK |
 | `gtm_0.1.4_aarch64.deb` | Termux ARM64 | Ubuntu + NDK |
-| `gtm-full-x86_64-linux-musl.tar.gz` | Linux x86_64 (musl) | Alpine 3.22 |
+| `gtm-x86_64-linux-musl.tar.gz` | Linux x86_64 (musl) | Alpine 3.22 |
 | `gtm-0.1.4-r0-x86_64.apk` | Alpine x86_64 | Alpine 3.22 |
-| `gtm-full-aarch64-linux-musl.tar.gz` | Linux ARM64 (musl) | Alpine 3.22 |
+| `gtm-aarch64-linux-musl.tar.gz` | Linux ARM64 (musl) | Alpine 3.22 |
 | `gtm-0.1.4-r0-aarch64.apk` | Alpine ARM64 | Alpine 3.22 |
 | `checksums.txt` | all targets | release job (SHA-256) |
 
 ## Archive layout
 
-`gtm-full-{platform}.tar.gz` is a flat, self-contained bundle:
+`gtm-{platform}.tar.gz` is a flat, self-contained bundle:
 
 ```
-gtm-full-{platform}/
+gtm-{platform}/
 ├── bin/          gtm, gtmd
 ├── man/man1/     gtm.1, gtmd.1, gtmd-ipc.1
 ├── completions/  bash, zsh (_*), fish, elv, ps1 for gtm + gtmd
@@ -62,10 +62,10 @@ gtm-full-{platform}/
 
 ## Package notes
 
-- **.deb** — `cargo-deb`; deps resolved via `dpkg-shlibdeps` on the build host,
-  so the amd64 deb targets glibc 2.35 (Ubuntu 22.04+) and the arm64 deb
-  targets glibc 2.36 (Debian 12+).
-- **.rpm** — binary packaging via `dist/gtm-full.spec` (no source rebuild);
+- **.deb** — `cargo-deb`; deps resolved via `dpkg-shlibdeps` on the build host.
+  Both Linux glibc targets build inside the Debian 12 container, so the amd64
+  and arm64 debs target glibc 2.36 (Debian 12+).
+- **.rpm** — binary packaging via `dist/gtm.spec` (no source rebuild);
   runtime dep is `alsa-lib`.
 - **.pkg.tar.zst** — Arch package built from the staged tree via
   `scripts/build-arch-pkg.sh` (`.PKGINFO` + `.MTREE`).

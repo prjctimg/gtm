@@ -43,16 +43,16 @@ curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.spec/main/install.sh |
 ### GitHub Release
 
 Every release publishes **complete per-target archives** plus native distro
-packages. Each `gtm-full-{platform}.tar.gz` bundles both binaries
+packages. Each `gtm-{platform}.tar.gz` bundles both binaries
 (`bin/gtm`, `bin/gtmd`), man pages, shell completions, and the systemd user
 service. Grab one from the [releases page](https://github.com/prjctimg/gtm.rs/releases/latest).
 
 Manual install for x86_64 Linux (tar.xvf style):
 
 ```bash
-curl -fsSLO https://github.com/prjctimg/gtm.rs/releases/latest/download/gtm-full-x86_64-linux.tar.gz
-tar xzf gtm-full-x86_64-linux.tar.gz
-cd gtm-full-x86_64-linux
+curl -fsSLO https://github.com/prjctimg/gtm.rs/releases/latest/download/gtm-x86_64-linux.tar.gz
+tar xzf gtm-x86_64-linux.tar.gz
+cd gtm-x86_64-linux
 
 sudo install -Dm755 bin/gtm  /usr/local/bin/gtm
 sudo install -Dm755 bin/gtmd /usr/local/bin/gtmd
@@ -74,9 +74,9 @@ Native packages are also published for each release:
 
 | Format | Distro | Install |
 |---|---|---|
-| `.deb` | Debian / Ubuntu | `sudo dpkg -i gtm-full_*.deb` |
-| `.rpm` | Fedora / RHEL / CentOS | `sudo dnf install ./gtm-full-*.rpm` |
-| `.pkg.tar.zst` | Arch Linux | `sudo pacman -U gtm-full-*.pkg.tar.zst` |
+| `.deb` | Debian / Ubuntu | `sudo dpkg -i gtm_*.deb` |
+| `.rpm` | Fedora / RHEL / CentOS | `sudo dnf install ./gtm-*.rpm` |
+| `.pkg.tar.zst` | Arch Linux | `sudo pacman -U gtm-*.pkg.tar.zst` |
 | `.apk` | Alpine (musl) | `sudo apk add --allow-untrusted ./gtm-*.apk` |
 
 ### Build from Source

@@ -4,7 +4,7 @@
 #
 # Targets:
 #
-#   x86_64-linux          Ubuntu 22.04 host (glibc 2.35)  → tar.gz + deb + rpm + Arch pkg
+#   x86_64-linux          Debian 12 container (glibc 2.36) → tar.gz + deb + rpm + Arch pkg
 #   aarch64-linux         Debian 12 container (glibc 2.36) → tar.gz + deb + rpm + Arch pkg
 #   aarch64-darwin        macOS runner                     → tar.gz
 #   aarch64-android       Ubuntu runner + cargo-ndk        → tar.gz + Termux deb
@@ -24,8 +24,8 @@
 #     │         1. cargo build --release (cargo-ndk for Android; native musl for Alpine)
 #     │         2. Generate manpages (pandoc) + completions (release-gen)
 #     │         3. Assemble a complete per-target archive:
-#     │            gtm-full-{platform}.tar.gz  (bin/ man/ completions/ systemd/
-#     │                                          desktop/ icons/ LICENSE)
+#     │            gtm-{platform}.tar.gz  (bin/ man/ completions/ systemd/
+#     │                                    desktop/ icons/ LICENSE)
 #     │         4. Build native packages from the staged tree:
 #     │            .deb (cargo-deb, Linux), .rpm (rpmbuild, Linux),
 #     │            .pkg.tar.zst (Arch, Linux), .apk (Alpine)
@@ -125,7 +125,7 @@ jobs:
         include:
           - os: ubuntu-22.04
             platform: x86_64-linux
-            container: null
+            container: debian:12
             family: debian
           - os: ubuntu-24.04-arm
             platform: aarch64-linux
@@ -188,7 +188,7 @@ jobs:
         with:
           # Keep each matrix entry's cache isolated: the default key is shared
           # across all Linux/x64 runners, so e.g. the Android job (ubuntu-latest,
-          # glibc 2.39) could poison the cache of the ubuntu-22.04 (glibc 2.35)
+          # glibc 2.39) could poison the cache of the Debian 12 (glibc 2.36)
           # jobs with incompatible host build-script binaries.
           key: release-${{ matrix.platform }}
 
@@ -243,6 +243,22 @@ jobs:
         if: matrix.family != 'android' && matrix.family != 'alpine-arm'
         run: cargo build --release
 
+      # Debian 12 ships glibc 2.36; guard the Linux glibc targets so a binary
+      # that requires a newer libc can never reach the release.
+      - name: Assert glibc compatibility (<= 2.36)
+        if: matrix.family == 'debian'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for bin in target/release/gtm target/release/gtmd; do
+            max="$(objdump -T "$bin" | grep -o 'GLIBC_[0-9.]*' | sort -Vu | tail -1 || true)"
+            echo "$bin requires ${max:-<no glibc symbols>}"
+            if [ -z "$max" ] || ! dpkg --compare-versions "${max#GLIBC_}" le 2.36; then
+              echo "::error::$bin requires $max; Debian 12 ships glibc 2.36" >&2
+              exit 1
+            fi
+          done
+
       - name: Build Android release binaries
         if: matrix.family == 'android'
         run: |
@@ -270,7 +286,7 @@ jobs:
         run: |
           set -euo pipefail
           platform="${{ matrix.platform }}"
-          root="gtm-full-${platform}"
+          root="gtm-${platform}"
           mkdir -p release-assets \
             "$root/bin" "$root/man/man1" "$root/completions" \
             "$root/systemd" "$root/desktop" "$root/icons"
@@ -282,7 +298,7 @@ jobs:
           cp dist/gtm.desktop   "$root/desktop/"
           cp assets/gtm.svg     "$root/icons/"
           cp LICENSE            "$root/"
-          tar czf "release-assets/gtm-full-${platform}.tar.gz" "$root"
+          tar czf "release-assets/gtm-${platform}.tar.gz" "$root"
 
       - name: Package complete archive (Alpine musl)
         if: matrix.family == 'alpine'
@@ -290,7 +306,7 @@ jobs:
         run: |
           set -euo pipefail
           platform="${{ matrix.platform }}"
-          root="gtm-full-${platform}"
+          root="gtm-${platform}"
           mkdir -p release-assets \
             "$root/bin" "$root/man/man1" "$root/completions" \
             "$root/systemd" "$root/desktop" "$root/icons"
@@ -302,20 +318,20 @@ jobs:
           cp dist/gtm.desktop   "$root/desktop/"
           cp assets/gtm.svg     "$root/icons/"
           cp LICENSE            "$root/"
-          tar czf "release-assets/gtm-full-${platform}.tar.gz" "$root"
+          tar czf "release-assets/gtm-${platform}.tar.gz" "$root"
 
       - name: Package complete archive (Android)
         if: matrix.family == 'android'
         shell: bash
         run: |
           set -euo pipefail
-          root="gtm-full-aarch64-android"
+          root="gtm-aarch64-android"
           mkdir -p release-assets "$root/bin" "$root/man/man1" "$root/completions"
           cp target/aarch64-linux-android/release/gtm  "$root/bin/"
           cp target/aarch64-linux-android/release/gtmd "$root/bin/"
           cp artifacts/man/*.1       "$root/man/man1/"
           cp artifacts/completions/* "$root/completions/"
-          tar czf "release-assets/gtm-full-aarch64-android.tar.gz" "$root"
+          tar czf "release-assets/gtm-aarch64-android.tar.gz" "$root"
 
       # ── Native Linux packages (from a common rootfs-style stage tree) ──
       - name: Build Debian/Ubuntu .deb
@@ -334,8 +350,8 @@ jobs:
           cp assets/gtm.svg gtm/deb-assets/
           cargo deb --package gtm
           arch="$(dpkg --print-architecture)"
-          for deb in target/debian/gtm-full_*.deb; do
-            mv "$deb" "release-assets/gtm-full_${version}-1_${arch}.deb"
+          for deb in target/debian/gtm_*.deb; do
+            mv "$deb" "release-assets/gtm_${version}-1_${arch}.deb"
           done
           rm -rf gtm/deb-assets
 
@@ -354,7 +370,7 @@ jobs:
             stage/usr/share/powershell/completions \
             stage/usr/share/applications \
             stage/usr/share/icons/hicolor/scalable/apps \
-            stage/usr/share/licenses/gtm-full
+            stage/usr/share/licenses/gtm
           cp target/release/gtm  stage/usr/bin/
           cp target/release/gtmd stage/usr/bin/
           cp dist/gtmd.service stage/usr/lib/systemd/user/
@@ -371,7 +387,7 @@ jobs:
           cp artifacts/completions/gtmd.ps1 stage/usr/share/powershell/completions/
           cp dist/gtm.desktop stage/usr/share/applications/
           cp assets/gtm.svg stage/usr/share/icons/hicolor/scalable/apps/
-          cp LICENSE stage/usr/share/licenses/gtm-full/
+          cp LICENSE stage/usr/share/licenses/gtm/
 
       - name: Build Fedora/RHEL .rpm
         if: matrix.family == 'debian'
@@ -385,8 +401,8 @@ jobs:
             --define "gtm_version $version" \
             --define "gtm_staging $PWD/stage" \
             --define "gtm_changelog_date $(date -u +'%a %b %d %Y')" \
-            dist/gtm-full.spec
-          cp rpmbuild/RPMS/*/*.rpm "release-assets/gtm-full-${version}-1.${rpm_arch}.rpm"
+            dist/gtm.spec
+          cp rpmbuild/RPMS/*/*.rpm "release-assets/gtm-${version}-1.${rpm_arch}.rpm"
 
       - name: Build Arch Linux package
         if: matrix.family == 'debian'
@@ -396,7 +412,7 @@ jobs:
           version="${{ needs.tag.outputs.version }}"
           rpm_arch="$(rpmbuild --eval '%{_target_cpu}')"
           ./scripts/build-arch-pkg.sh "$version" "$rpm_arch" stage \
-            "release-assets/gtm-full-${version}-1-${rpm_arch}.pkg.tar.zst"
+            "release-assets/gtm-${version}-1-${rpm_arch}.pkg.tar.zst"
 
       - name: Stage rootfs tree (Alpine .apk)
         if: matrix.family == 'alpine'
@@ -413,7 +429,7 @@ jobs:
             stage/usr/share/powershell/completions \
             stage/usr/share/applications \
             stage/usr/share/icons/hicolor/scalable/apps \
-            stage/usr/share/licenses/gtm-full
+            stage/usr/share/licenses/gtm
           cp target/release/gtm  stage/usr/bin/
           cp target/release/gtmd stage/usr/bin/
           cp dist/gtmd.service stage/usr/lib/systemd/user/
@@ -430,7 +446,7 @@ jobs:
           cp artifacts/completions/gtmd.ps1 stage/usr/share/powershell/completions/
           cp dist/gtm.desktop stage/usr/share/applications/
           cp assets/gtm.svg stage/usr/share/icons/hicolor/scalable/apps/
-          cp LICENSE stage/usr/share/licenses/gtm-full/
+          cp LICENSE stage/usr/share/licenses/gtm/
 
       - name: Build Alpine .apk
         if: matrix.family == 'alpine'
@@ -483,13 +499,15 @@ jobs:
       - name: Print release asset manifest
         run: |
           echo "=== Release assets ==="
-          ls -lh gtm-full-*.tar.gz *.deb *.rpm *.pkg.tar.zst *.apk 2>/dev/null
+          ls -lh gtm-*.tar.gz *.deb *.rpm *.pkg.tar.zst *.apk 2>/dev/null
           echo
-          echo "Total: $(ls gtm-full-*.tar.gz *.deb *.rpm *.pkg.tar.zst *.apk 2>/dev/null | wc -l) files"
+          echo "Total: $(ls gtm-*.tar.gz *.deb *.rpm *.pkg.tar.zst *.apk 2>/dev/null | wc -l) files"
 
       - name: Generate checksums
         run: |
-          sha256sum gtm-full-* gtm_*.deb gtm-*.apk | tee checksums.txt
+          # gtm-* covers the tarballs, .rpm, .pkg.tar.zst and .apk assets;
+          # gtm_*.deb covers the underscore-named Debian/Termux packages.
+          sha256sum gtm-* gtm_*.deb | tee checksums.txt
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -499,7 +517,7 @@ jobs:
           generate_release_notes: true
           overwrite_files: true
           files: |
-            gtm-full-*.tar.gz
+            gtm-*.tar.gz
             *.deb
             *.rpm
             *.pkg.tar.zst

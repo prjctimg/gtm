@@ -1,11 +1,11 @@
-# gtm-full RPM Spec — binary packaging of prebuilt release artifacts.
+# gtm RPM Spec — binary packaging of prebuilt release artifacts.
 #
 # Build (from the repository root, with a staged rootfs tree in ./stage):
 #   rpmbuild -bb \
 #     --define "_topdir $PWD/rpmbuild" \
 #     --define "gtm_version <X.Y.Z>" \
 #     --define "gtm_staging $PWD/stage" \
-#     dist/gtm-full.spec
+#     dist/gtm.spec
 #
 # The stage tree is a rootfs-style layout (usr/bin/gtm, usr/share/man/man1,
 # ...) assembled by the release workflow.
@@ -13,7 +13,7 @@
 %global debug_package %{nil}
 %global _userunitdir %{_prefix}/lib/systemd/user
 
-Name: gtm-full
+Name: gtm
 Version: %{gtm_version}
 Release: 1
 Summary: GTM terminal music player - client and daemon
@@ -22,7 +22,7 @@ URL: https://github.com/prjctimg/gtm.rs
 Requires: alsa-lib
 
 %description
-gtm-full bundles the gtm terminal music player client (TUI + CLI) and the
+gtm bundles the gtm terminal music player client (TUI + CLI) and the
 gtmd background daemon, along with man pages, shell completions, a desktop
 entry, and a systemd user service.
 
@@ -30,7 +30,7 @@ entry, and a systemd user service.
 cp -a %{gtm_staging}/. %{buildroot}/
 
 %files
-%{_datadir}/licenses/gtm-full/LICENSE
+%{_datadir}/licenses/gtm/LICENSE
 %{_bindir}/gtm
 %{_bindir}/gtmd
 %{_userunitdir}/gtmd.service

@@ -2,7 +2,7 @@
 # Build the Alpine (musl) release artifacts inside an alpine container.
 #
 # Runs with the workspace mounted at /work (CWD=/work). Produces:
-#   release-assets/gtm-full-{platform}.tar.gz
+#   release-assets/gtm-{platform}.tar.gz
 #   release-assets/gtm-{version}-r0-{arch}.apk
 #
 # Usage (from the runner host):
@@ -31,7 +31,7 @@ cargo build --release
 cargo run --release --bin release-gen completions artifacts
 
 # ── Complete per-target archive ──
-root="gtm-full-${platform}"
+root="gtm-${platform}"
 mkdir -p release-assets \
   "$root/bin" "$root/man/man1" "$root/completions" \
   "$root/systemd" "$root/desktop" "$root/icons"
@@ -43,7 +43,7 @@ cp dist/gtmd.service  "$root/systemd/"
 cp dist/gtm.desktop   "$root/desktop/"
 cp assets/gtm.svg     "$root/icons/"
 cp LICENSE            "$root/"
-tar czf "release-assets/gtm-full-${platform}.tar.gz" "$root"
+tar czf "release-assets/gtm-${platform}.tar.gz" "$root"
 
 # ── Alpine .apk from a rootfs-style stage tree ──
 mkdir -p stage/usr/bin \
@@ -56,7 +56,7 @@ mkdir -p stage/usr/bin \
   stage/usr/share/powershell/completions \
   stage/usr/share/applications \
   stage/usr/share/icons/hicolor/scalable/apps \
-  stage/usr/share/licenses/gtm-full
+  stage/usr/share/licenses/gtm
 cp target/release/gtm  stage/usr/bin/
 cp target/release/gtmd stage/usr/bin/
 cp dist/gtmd.service stage/usr/lib/systemd/user/
@@ -73,7 +73,7 @@ cp artifacts/completions/gtm.ps1  stage/usr/share/powershell/completions/
 cp artifacts/completions/gtmd.ps1 stage/usr/share/powershell/completions/
 cp dist/gtm.desktop stage/usr/share/applications/
 cp assets/gtm.svg stage/usr/share/icons/hicolor/scalable/apps/
-cp LICENSE stage/usr/share/licenses/gtm-full/
+cp LICENSE stage/usr/share/licenses/gtm/
 
 bash /work/scripts/build-alpine-apk.sh "$version" "$arch" stage \
   "release-assets/gtm-${version}-r0-${arch}.apk"

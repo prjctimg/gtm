@@ -8,14 +8,14 @@ set -euo pipefail
 #
 # The stage tree is a normal rootfs layout (usr/bin/gtm, usr/share/man/man1,
 # ...) assembled by the release workflow. Requires bsdtar (libarchive) and
-# zstd. Install with:  sudo pacman -U gtm-full-<ver>-1-<arch>.pkg.tar.zst
+# zstd. Install with:  sudo pacman -U gtm-<ver>-1-<arch>.pkg.tar.zst
 
 version="${1:?version required}"
 arch="${2:?arch required}"
 stage="${3:?stage dir required}"
 out="${4:?output file required}"
 
-name="gtm-full"
+name="gtm"
 pkgver="${version}-1"
 
 [ -d "$stage" ] || { echo "error: stage dir not found: $stage" >&2; exit 1; }

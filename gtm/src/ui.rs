@@ -1389,6 +1389,7 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
                 "Sync Lyrics     [ Enter  ▶ ]".to_string(),
                 "Sync Metadata   [ Enter  ▶ ]".to_string(),
                 format!("Footer Preset   [ {:>8} ▶ ]", preset_name),
+                format!("Visualizer      [ {:>8} ▶ ]", app.visualizer.preset.name()),
             ]
         }
         4 => {
@@ -1483,6 +1484,7 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         (3, 3) => lines.push(Line::from(Span::styled(" Sync Lyrics: Fetch and save lyrics files alongside all library tracks.", Style::default().fg(app.theme.fg_dim)))),
         (3, 4) => lines.push(Line::from(Span::styled(" Sync Metadata: Resolve unreliable track metadata via Deezer and embed clean tags (title, artist, album, genre, year, track, cover) into the files.", Style::default().fg(app.theme.fg_dim)))),
         (3, 5) => lines.push(Line::from(Span::styled(" Footer Preset: Press Enter to cycle. Also toggled via Alt+F. Add or override presets in ~/.config/gtm/footer.toml.", Style::default().fg(app.theme.fg_dim)))),
+        (3, 6) => lines.push(Line::from(Span::styled(" Visualizer Preset: Press Enter to cycle (Braille, Blocks, Mirror, Gradient, Spectrum). Also toggled via Alt+V.", Style::default().fg(app.theme.fg_dim)))),
         (4, 0) => lines.push(Line::from(Span::styled(" Spotify: Integration status for the linked account.", Style::default().fg(app.theme.fg_dim)))),
         (4, 1) => lines.push(Line::from(Span::styled(" Account: Display name of the linked Spotify user.", Style::default().fg(app.theme.fg_dim)))),
         (4, 2) => lines.push(Line::from(Span::styled(" Playlists: Number of playlists synced by the daemon.", Style::default().fg(app.theme.fg_dim)))),
@@ -2580,6 +2582,7 @@ pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("\u{1f4dd} Fetch Lyrics", "l"),
     ("\u{2576} Progress Style", "P"),
     ("\u{1f3b6} Visualizer", "Ctrl+V"),
+    ("\u{1f3b6} Visualizer Preset", "Alt+V"),
 ];
 
 fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {

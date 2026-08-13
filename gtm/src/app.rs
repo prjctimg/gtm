@@ -53,6 +53,8 @@ struct Prefs {
     progress_style: crate::progress::ProgressStyle,
     #[serde(default)]
     design: Design,
+    #[serde(default)]
+    visualizer_preset: crate::visualizer::VisualizerPreset,
 }
 
 fn default_theme_name() -> String {
@@ -91,6 +93,7 @@ impl Default for Prefs {
             footer_preset_name: default_footer_preset_name(),
             progress_style: crate::progress::ProgressStyle::default(),
             design: Design::default(),
+            visualizer_preset: crate::visualizer::VisualizerPreset::default(),
         }
     }
 }
@@ -134,6 +137,7 @@ fn load_prefs() -> Prefs {
                 .unwrap_or_else(default_footer_preset_name),
             progress_style: old.progress_style,
             design: old.design,
+            visualizer_preset: crate::visualizer::VisualizerPreset::default(),
         };
     }
     // Legacy v1 format: bare integer theme_index.
@@ -504,7 +508,11 @@ impl App {
             multiselect_mode: false,
             progress_style: prefs.progress_style,
             design: prefs.design,
-            visualizer: crate::visualizer::AudioVisualizer::new(),
+            visualizer: {
+                let mut v = crate::visualizer::AudioVisualizer::new();
+                v.preset = prefs.visualizer_preset;
+                v
+            },
             selected_indices: std::collections::HashSet::new(),
             pending_motion: None,
             pending_playlist_track_ids: Vec::new(),
@@ -558,6 +566,7 @@ impl App {
                 .unwrap_or_else(default_footer_preset_name),
             progress_style: self.progress_style,
             design: self.design,
+            visualizer_preset: self.visualizer.preset,
         }
     }
 
@@ -1223,7 +1232,7 @@ impl App {
             0 => 3, // Audio: Master Volume, Volume, Mute
             1 => 8, // YouTube
             2 => 4, // Playback: Repeat, Shuffle, Crossfade, Easing
-            3 => 6, // System: Theme, Transparent BG, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset
+            3 => 7, // System: Theme, Transparent BG, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer Preset
             4 => 6, // Spotify: Status, Account, Playlists, Link, Sync, Unlink
             _ => 0,
         }
@@ -2130,6 +2139,14 @@ impl App {
                         };
                         self.notify(format!("Visualizer: {}", state), NotificationKind::Info);
                     }
+                    Some(KeyboardAction::CycleVisualizerPreset) => {
+                        self.visualizer.cycle_preset();
+                        save_prefs(&self.current_prefs());
+                        self.notify(
+                            format!("Visualizer: {}", self.visualizer.preset.name()),
+                            NotificationKind::Info,
+                        );
+                    }
                     Some(KeyboardAction::CheckHealth) => {
                         self.send_high(TuiCommand::CheckHealth);
                     }
@@ -2219,6 +2236,7 @@ impl App {
                                 Tab::Settings if self.settings_pane_focus => {
                                     self.settings_category =
                                         self.settings_category.saturating_sub(1);
+                                    self.settings_option = 0;
                                 }
                                 Tab::Settings => {
                                     self.settings_option = self.settings_option.saturating_sub(1);
@@ -2253,6 +2271,7 @@ impl App {
                                 Tab::Settings if self.settings_pane_focus => {
                                     self.settings_category = (self.settings_category + 1)
                                         .min(NUM_SETTINGS_CATEGORIES.saturating_sub(1));
+                                    self.settings_option = 0;
                                 }
                                 Tab::Settings => {
                                     let max =
@@ -2598,6 +2617,18 @@ impl App {
                                                 NotificationKind::Info,
                                             );
                                         }
+                                    }
+                                    6 => {
+                                        // Visualizer Preset cycle
+                                        self.visualizer.cycle_preset();
+                                        save_prefs(&self.current_prefs());
+                                        self.notify(
+                                            format!(
+                                                "Visualizer: {}",
+                                                self.visualizer.preset.name()
+                                            ),
+                                            NotificationKind::Info,
+                                        );
                                     }
                                     _ => {}
                                 },
@@ -3347,6 +3378,13 @@ impl App {
                                     self.progress_style = self.progress_style.next();
                                     self.notify(
                                         format!("Progress: {}", self.progress_style.name()),
+                                        crate::app::NotificationKind::Info,
+                                    );
+                                } else if label.starts_with("visualizer preset") {
+                                    self.visualizer.cycle_preset();
+                                    save_prefs(&self.current_prefs());
+                                    self.notify(
+                                        format!("Visualizer: {}", self.visualizer.preset.name()),
                                         crate::app::NotificationKind::Info,
                                     );
                                 } else if label.starts_with("visualizer") {

@@ -28,7 +28,7 @@
       in
       {
         packages.default = pkgs.stdenv.mkDerivation {
-          pname = "gtm-full";
+          pname = "gtm";
           version = "0.1.0";
 
           src = ./.;

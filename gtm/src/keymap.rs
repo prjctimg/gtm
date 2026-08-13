@@ -107,6 +107,7 @@ pub enum KeyboardAction {
     CycleProgressStyle,
     CycleDesign,
     ToggleVisualizer,
+    CycleVisualizerPreset,
     CheckHealth,
 }
 
@@ -646,6 +647,14 @@ pub fn default_keybindings() -> Keybindings {
                 KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
                 BoundCommand {
                     action: KeyboardAction::ToggleVisualizer,
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
+            // Alt+V — cycle visualizer preset
+            (
+                KeyEvent::new(KeyCode::Char('V'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::CycleVisualizerPreset,
                     contexts: vec![KeyContext::Normal],
                 },
             ),
