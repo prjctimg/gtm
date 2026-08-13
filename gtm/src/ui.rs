@@ -72,7 +72,8 @@ async fn ensure_daemon_running(socket_path: &std::path::Path) -> Result<(), Box<
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let ping = serde_json::to_string(&gtm_core::ipc::WireReq {
                 id: 0,
-                req: gtm_core::ipc::DaemonReq::Ping,
+                cmd: "ping".to_string(),
+                params: serde_json::to_value(gtm_core::ipc::DaemonReq::Ping).unwrap(),
             })? + "\n";
             let _ = stream.write_all(ping.as_bytes()).await;
             let mut buf = [0u8; 256];
@@ -117,7 +118,8 @@ async fn ensure_daemon_running(socket_path: &std::path::Path) -> Result<(), Box<
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
                 let ping = serde_json::to_string(&gtm_core::ipc::WireReq {
                     id: 0,
-                    req: gtm_core::ipc::DaemonReq::Ping,
+                    cmd: "ping".to_string(),
+                    params: serde_json::to_value(gtm_core::ipc::DaemonReq::Ping).unwrap(),
                 })? + "\n";
                 let _ = stream.write_all(ping.as_bytes()).await;
                 let mut buf = [0u8; 256];

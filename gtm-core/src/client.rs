@@ -14,11 +14,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
-use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction, WireEvent, WireReq, WireRes};
-use gtm_core::state::{DaemonState, EqPreset, PlaybackStatus, ReverbConfig, SavedState};
-use gtm_core::wire;
-use gtm_core::CoreError;
-use gtm_core::Result;
+use crate::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction, WireEvent, WireReq, WireRes};
+use crate::state::{self, DaemonState, EqPreset, PlaybackStatus, RepeatMode, ReverbConfig, SavedState, YTFilter};
+use crate::track;
+use crate::wire;
+use crate::CoreError;
+use crate::Result;
 
 // Socket location constants for GTM Protocol v1
 const DEFAULT_RUNTIME_DIR: &str = "XDG_RUNTIME_DIR";
@@ -565,7 +566,7 @@ impl DaemonClient {
         }
     }
 
-    pub async fn check_health(&self) -> Result<gtm_core::ipc::HealthReport> {
+    pub async fn check_health(&self) -> Result<crate::ipc::HealthReport> {
         let res = self.send_raw(DaemonReq::CheckHealth).await?;
         match res {
             DaemonRes::HealthReport { report, .. } => Ok(*report),
@@ -749,76 +750,76 @@ impl IpcWorker {
     }
 
     async fn send_request_by_id(&mut self, id: u64, pending: &PendingRequest) -> Result<()> {
-        let mut line = serde_json::to_string(WireReq {
+        let mut line = serde_json::to_string(&WireReq {
             id,
             cmd: match &pending.req {
-                DaemonReq::Handshake { .. } => "handshake",
-                DaemonReq::Play { .. } => "play",
-                DaemonReq::PlayPause => "play_pause",
-                DaemonReq::Pause => "pause",
-                DaemonReq::Stop => "stop",
-                DaemonReq::Next => "next",
-                DaemonReq::Prev => "prev",
-                DaemonReq::Seek { .. } => "seek",
-                DaemonReq::SetVolume { .. } => "set_volume",
-                DaemonReq::GetVolume => "get_volume",
-                DaemonReq::ToggleShuffle => "toggle_shuffle",
-                DaemonReq::CycleRepeat { .. } => "cycle_repeat",
-                DaemonReq::ToggleMute => "toggle_mute",
-                DaemonReq::Crossfade { .. } => "crossfade",
-                DaemonReq::SetCrossfadeEasing { .. } => "crossfade",
-                DaemonReq::SetEqPreset { .. } => "set_eq_preset",
-                DaemonReq::SetEqEnabled { .. } => "set_eq_enabled",
-                DaemonReq::SetReverb { .. } => "set_reverb",
-                DaemonReq::ListEqPresets => "list_eq_presets",
+                DaemonReq::Handshake { .. } => "handshake".to_string(),
+                DaemonReq::Play { .. } => "play".to_string(),
+                DaemonReq::PlayPause => "play_pause".to_string(),
+                DaemonReq::Pause => "pause".to_string(),
+                DaemonReq::Stop => "stop".to_string(),
+                DaemonReq::Next => "next".to_string(),
+                DaemonReq::Prev => "prev".to_string(),
+                DaemonReq::Seek { .. } => "seek".to_string(),
+                DaemonReq::SetVolume { .. } => "set_volume".to_string(),
+                DaemonReq::GetVolume => "get_volume".to_string(),
+                DaemonReq::ToggleShuffle => "toggle_shuffle".to_string(),
+                DaemonReq::CycleRepeat { .. } => "cycle_repeat".to_string(),
+                DaemonReq::ToggleMute => "toggle_mute".to_string(),
+                DaemonReq::Crossfade { .. } => "crossfade".to_string(),
+                DaemonReq::SetCrossfadeEasing { .. } => "crossfade".to_string(),
+                DaemonReq::SetEqPreset { .. } => "set_eq_preset".to_string(),
+                DaemonReq::SetEqEnabled { .. } => "set_eq_enabled".to_string(),
+                DaemonReq::SetReverb { .. } => "set_reverb".to_string(),
+                DaemonReq::ListEqPresets => "list_eq_presets".to_string(),
                 DaemonReq::Queue { action } => match action {
-                    QueueAction::List => "queue",
-                    QueueAction::Clear => "queue",
-                    QueueAction::Remove { .. } => "queue",
-                    QueueAction::Move { .. } => "queue",
-                    QueueAction::Add { .. } => "queue",
-                    QueueAction::AddMany { .. } => "queue",
-                    QueueAction::AddFolder { .. } => "queue",
-                    QueueAction::Set { .. } => "queue",
+                    QueueAction::List => "queue".to_string(),
+                    QueueAction::Clear => "queue".to_string(),
+                    QueueAction::Remove { .. } => "queue".to_string(),
+                    QueueAction::Move { .. } => "queue".to_string(),
+                    QueueAction::Add { .. } => "queue".to_string(),
+                    QueueAction::AddMany { .. } => "queue".to_string(),
+                    QueueAction::AddFolder { .. } => "queue".to_string(),
+                    QueueAction::Set { .. } => "queue".to_string(),
                 },
                 DaemonReq::Library { action } => match action {
-                    LibraryAction::Scan { .. } => "library",
-                    LibraryAction::GetTracks { .. } => "library",
-                    LibraryAction::GetPlaylists => "library",
-                    LibraryAction::CreatePlaylist { .. } => "library",
-                    LibraryAction::DeletePlaylist { .. } => "library",
-                    LibraryAction::AddToPlaylist { .. } => "library",
-                    LibraryAction::ImportM3u { .. } => "library",
-                    LibraryAction::ExportM3u { .. } => "library",
-                    LibraryAction::GetRecent { .. } => "library",
-                    LibraryAction::SyncCovers => "library",
-                    LibraryAction::SyncLyrics => "library",
-                    LibraryAction::RemoveFromPlaylist { .. } => "library",
-                    LibraryAction::RemoveTrack { .. } => "library",
-                    LibraryAction::UpdateMetadata { .. } => "library",
+                    LibraryAction::Scan { .. } => "library".to_string(),
+                    LibraryAction::GetTracks { .. } => "library".to_string(),
+                    LibraryAction::GetPlaylists => "library".to_string(),
+                    LibraryAction::CreatePlaylist { .. } => "library".to_string(),
+                    LibraryAction::DeletePlaylist { .. } => "library".to_string(),
+                    LibraryAction::AddToPlaylist { .. } => "library".to_string(),
+                    LibraryAction::ImportM3u { .. } => "library".to_string(),
+                    LibraryAction::ExportM3u { .. } => "library".to_string(),
+                    LibraryAction::GetRecent { .. } => "library".to_string(),
+                    LibraryAction::SyncCovers => "library".to_string(),
+                    LibraryAction::SyncLyrics => "library".to_string(),
+                    LibraryAction::RemoveFromPlaylist { .. } => "library".to_string(),
+                    LibraryAction::RemoveTrack { .. } => "library".to_string(),
+                    LibraryAction::UpdateMetadata { .. } => "library".to_string(),
                 },
-                DaemonReq::Search { .. } => "search",
-                DaemonReq::GetFavourites => "get_favourites",
-                DaemonReq::AddFavourite { .. } => "add_favourite",
-                DaemonReq::RemoveFavourite { .. } => "remove_favourite",
-                DaemonReq::YtSearch { .. } => "yt_search",
-                DaemonReq::YtSearchPoll => "yt_search_poll",
-                DaemonReq::YtSearchCancel => "yt_search_cancel",
-                DaemonReq::YtResolveStream { .. } => "yt_resolve_stream",
-                DaemonReq::YtDownload { .. } => "yt_download",
-                DaemonReq::YtDownloadPoll => "yt_download_poll",
-                DaemonReq::YtCancelDownload { .. } => "yt_cancel_download",
-                DaemonReq::YtFetchPlaylist { .. } => "yt_fetch_playlist",
-                DaemonReq::YtFetchPlaylistPoll => "yt_fetch_playlist_poll",
-                DaemonReq::YtSetConfig { .. } => "yt_set_config",
-                DaemonReq::GetCoverArt { .. } => "get_cover_art",
-                DaemonReq::GetLyrics { .. } => "get_lyrics",
-                DaemonReq::SetSleepTimer { .. } => "set_sleep_timer",
-                DaemonReq::CancelSleepTimer => "cancel_sleep_timer",
-                DaemonReq::GetStatus => "get_status",
-                DaemonReq::CheckHealth => "check_health",
-                DaemonReq::Ping => "ping",
-                DaemonReq::Quit => "quit",
+                DaemonReq::Search { .. } => "search".to_string(),
+                DaemonReq::GetFavourites => "get_favourites".to_string(),
+                DaemonReq::AddFavourite { .. } => "add_favourite".to_string(),
+                DaemonReq::RemoveFavourite { .. } => "remove_favourite".to_string(),
+                DaemonReq::YtSearch { .. } => "yt_search".to_string(),
+                DaemonReq::YtSearchPoll => "yt_search_poll".to_string(),
+                DaemonReq::YtSearchCancel => "yt_search_cancel".to_string(),
+                DaemonReq::YtResolveStream { .. } => "yt_resolve_stream".to_string(),
+                DaemonReq::YtDownload { .. } => "yt_download".to_string(),
+                DaemonReq::YtDownloadPoll => "yt_download_poll".to_string(),
+                DaemonReq::YtCancelDownload { .. } => "yt_cancel_download".to_string(),
+                DaemonReq::YtFetchPlaylist { .. } => "yt_fetch_playlist".to_string(),
+                DaemonReq::YtFetchPlaylistPoll => "yt_fetch_playlist_poll".to_string(),
+                DaemonReq::YtSetConfig { .. } => "yt_set_config".to_string(),
+                DaemonReq::GetCoverArt { .. } => "get_cover_art".to_string(),
+                DaemonReq::GetLyrics { .. } => "get_lyrics".to_string(),
+                DaemonReq::SetSleepTimer { .. } => "set_sleep_timer".to_string(),
+                DaemonReq::CancelSleepTimer => "cancel_sleep_timer".to_string(),
+                DaemonReq::GetStatus => "get_status".to_string(),
+                DaemonReq::CheckHealth => "check_health".to_string(),
+                DaemonReq::Ping => "ping".to_string(),
+                DaemonReq::Quit => "quit".to_string(),
             },
             params: serde_json::to_value(pending.req.clone())?,
         })?;
@@ -854,70 +855,7 @@ impl IpcWorker {
             return true;
         }
         if let Ok(wire_event) = serde_json::from_slice::<WireEvent>(&line) {
-            let event = match wire_event.event.as_str() {
-                "playback_started" => serde_json::from_value(wire_event.data)
-                    .map(|data| DaemonEvent::PlaybackStarted { ..data })
-                    .ok(),
-                "playback_paused" => serde_json::from_value(wire_event.data)
-                    .map(|data| DaemonEvent::PlaybackPaused { ..data })
-                    .ok(),
-                "playback_stopped" => Some(DaemonEvent::PlaybackStopped),
-                "track_ended" => Some(DaemonEvent::TrackEnded),
-                "position_changed" => serde_json::from_value(wire_event.data)
-                    .map(|data| DaemonEvent::PositionChanged { ..data })
-                    .ok(),
-                "duration_changed" => serde_json::from_value(wire_event.data)
-                    .map(|data| DaemonEvent::DurationChanged { ..data })
-                    .ok(),
-                "volume_changed" => serde_json::from_value(wire_event.data)
-                    .map(|data| DaemonEvent::VolumeChanged { ..data })
-                    .ok(),
-                "metadata_changed" => serde_json::from_value(wire_event.data)
-                    .map(|data| DaemonEvent::MetadataChanged { ..data })
-                    .ok(),
-                "queue_changed" => serde_json::from_value(wire_event.data)
-                    .map(|data| DaemonEvent::QueueChanged { ..data })
-                    .ok(),
-                "queue_index_changed" => serde_json::from_value(wire_event.data)
-                    .map(|data| DaemonEvent::QueueIndexChanged { ..data })
-                    .ok(),
-                "repeat_mode_changed" => serde_json::from_value(wire_event.data)
-                    .map(|data| DaemonEvent::RepeatModeChanged { ..data })
-                    .ok(),
-                "shuffle_changed" => serde_json::from_value(wire_event.data)
-                    .map(|data| DaemonEvent::ShuffleChanged { ..data })
-                    .ok(),
-                "crossfade_changed" => serde_json::from_value(wire_event.data)
-                    .map(|data| DaemonEvent::CrossfadeChanged { ..data })
-                    .ok(),
-                "sleep_timer_tick" => serde_json::from_value(wire_event.data)
-                    .map(|data| DaemonEvent::SleepTimerTick { ..data })
-                    .ok(),
-                "sleep_timer_expired" => Some(DaemonEvent::SleepTimerExpired),
-                "eq_preset_changed" => serde_json::from_value(wire_event.data)
-                    .map(|data| DaemonEvent::EqPresetChanged { ..data })
-                    .ok(),
-                "eq_enabled_changed" => serde_json::from_value(wire_event.data)
-                    .map(|data| DaemonEvent::EqEnabledChanged { ..data })
-                    .ok(),
-                "reverb_changed" => serde_json::from_value(wire_event.data)
-                    .map(|data| DaemonEvent::ReverbChanged { ..data })
-                    .ok(),
-                "custom" => {
-                    let name = wire_event.data.get("name").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
-                    let mut map = HashMap::new();
-                    if let Some(obj) = wire_event.data.as_object() {
-                        for (k, v) in obj {
-                            if k != "name" {
-                                map.insert(k.clone(), v.as_str().unwrap_or("").to_string());
-                            }
-                        }
-                    }
-                    Some(DaemonEvent::Custom { name, data: map })
-                }
-                "heartbeat" => Some(DaemonEvent::Heartbeat),
-                _ => None,
-            };
+            let event = deserialize_daemon_event(&wire_event.event, wire_event.data);
             if let Some(event) = event {
                 if matches!(event, DaemonEvent::Heartbeat) {
                     *self.last_heartbeat_at.lock().unwrap() = Instant::now();
@@ -928,6 +866,15 @@ impl IpcWorker {
         }
         true
     }
+}
+
+fn deserialize_daemon_event(tag: &str, data: serde_json::Value) -> Option<DaemonEvent> {
+    let mut obj = match data {
+        serde_json::Value::Object(o) => o,
+        _ => return None,
+    };
+    obj.insert("event".to_string(), serde_json::Value::String(tag.to_string()));
+    serde_json::from_value(serde_json::Value::Object(obj)).ok()
 }
 
 async fn pulse_reader(
@@ -973,7 +920,7 @@ async fn pulse_reader(
             };
             buf.extend_from_slice(&tmp[..n]);
             loop {
-                let (events, consumed) = match wire::decode(&buf) {
+                let (decoded, consumed) = match wire::decode(&buf) {
                     Ok(Some((e, c))) => (e, c),
                     Ok(None) => break,
                     Err(e) => {
@@ -983,11 +930,11 @@ async fn pulse_reader(
                     }
                 };
                 buf.drain(..consumed as usize);
-                if events.iter().any(|e| matches!(e, DaemonEvent::Heartbeat)) {
+                if decoded.iter().any(|e| matches!(e, DaemonEvent::Heartbeat)) {
                     *last_heartbeat_at.lock().unwrap() = Instant::now();
                 }
                 let mut evs = events.lock().await;
-                evs.extend(events);
+                evs.extend(decoded);
             }
         }
         tokio::time::sleep(Duration::from_millis(500)).await;

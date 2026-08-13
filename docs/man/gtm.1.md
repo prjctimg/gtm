@@ -17,6 +17,9 @@ the **\--cli** flag, it opens a full-screen Terminal User Interface (TUI) with
 keyboard-driven navigation.  With **\--cli** (or **-c**), it acts as a
 command-line client for scripting and headless control.
 
+For the universal TUI keybinding reference, see **gtm-keybindings**(1).
+For configuration, see **gtm-config**(1).
+
 # TUI MODE (default)
 
 The TUI provides three tabs navigated with **Tab** and **Shift+Tab**:
@@ -84,7 +87,7 @@ daemon and prints the result.  Use **\--json** for machine-readable output.
 :   Seek to a specific position in the current track (in seconds).
 
 **volume** *volume*
-:   Set the playback volume (0–100).
+:   Set the playback volume (0-100).
 
 **mute**
 :   Toggle mute.
@@ -210,9 +213,9 @@ daemon and prints the result.  Use **\--json** for machine-readable output.
 
 # FILES
 
-`/run/user/1000/gtmd.socket`
+`$XDG_RUNTIME_DIR/gtm/gtmd.sock`
 :   Default daemon IPC socket.
 
 # SEE ALSO
 
-**gtmd**(1), **gtmd-ipc**(1)
+**gtmd**(1), **gtmd-ipc**(1), **gtm-keybindings**(1), **gtm-config**(1)

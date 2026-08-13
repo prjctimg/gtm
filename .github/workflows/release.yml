@@ -91,6 +91,10 @@ jobs:
         if: startsWith(matrix.os, 'macos')
         run: brew install pkg-config pandoc
 
+      - name: Clone gtm.spec (manpage sources)
+        if: matrix.platform != 'aarch64-android'
+        run: git clone --depth 1 https://github.com/prjctimg/gtm.spec.git ../gtm.spec
+
       - name: Install Android NDK + tools
         if: matrix.platform == 'aarch64-android'
         uses: nttld/setup-ndk@v1

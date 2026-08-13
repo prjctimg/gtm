@@ -12,8 +12,6 @@ use crate::track::TrackInfo;
 pub enum CoreError {
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
-    #[error("bincode error: {0}")]
-    Bincode(#[from] bincode::Error),
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
     #[error("daemon error: {0}")]

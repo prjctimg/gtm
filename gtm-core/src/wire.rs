@@ -12,7 +12,7 @@ pub fn encode(events: &[DaemonEvent]) -> Result<Vec<u8>, rmp_serde::encode::Erro
     let mut buf = Vec::with_capacity(1024);
     events.serialize(&mut Serializer::new(&mut buf))?;
     let len = buf.len() as u32;
-    let mut out = Vec::with_capacity(4 + len);
+    let mut out = Vec::with_capacity(4 + len as usize);
     out.extend_from_slice(&len.to_be_bytes());
     out.extend_from_slice(&buf);
     Ok(out)

@@ -17,6 +17,9 @@ gtmd - background music playback daemon
 management, and library management services. It listens on a Unix socket
 for commands from clients such as **gtm**(1).
 
+For the IPC protocol reference, see **gtmd-ipc**(1).
+For configuration, see **gtm-config**(1).
+
 Audio playback is handled by the **rodio** backend with **symphonia** for
 format decoding. The daemon supports MP3, FLAC, Ogg Vorbis, Opus, WAV,
 AAC, ALAC, and MKV/WebM containers.
@@ -30,9 +33,9 @@ The daemon is built around an event-driven, multi-threaded core:
                         │          gtmd daemon             │
                         │                                  │
   ┌──────────┐          │  ┌────────────┐                  │
-  │ Clients  │  bincode │  │   IPC      │  ┌────────────┐  │
+  │ Clients  │ msgpack/ │  │   IPC      │  ┌────────────┐  │
   │ (gtm)    │─────────▶│  │  Listener  │──│  Router    │  │
-  │          │          │  │  (tokio)   │  └─────┬──────┘  │
+  │          │  JSON    │  │  (tokio)   │  └─────┬──────┘  │
   └──────────┘          │  └────────────┘        │         │
                         │                        │         │
                         │                ┌───────▼──────┐  │
@@ -109,10 +112,10 @@ The daemon maintains a simple playback state machine:
 Transitions:
 
 Playing → Paused
-:   Triggered by the `pause` command or `play-pause` while playing.
+:   Triggered by the `pause` command or `play_pause` while playing.
 
 Paused → Playing
-:   Triggered by `play`, `play-pause` while paused, or `next`/`prev`.
+:   Triggered by `play`, `play_pause` while paused, or `next`/`prev`.
 
 Playing → Stopped
 :   Triggered by `stop` or when the queue is empty after the last track
@@ -125,7 +128,7 @@ Stopped → Playing
 
 **\--socket**=*path*
 :   Unix socket path for client IPC. Default:
-    `/run/user/1000/gtmd.socket`.
+    `$XDG_RUNTIME_DIR/gtm/gtmd.sock`.
 
 **\--library**=*path*
 :   Path to the SQLite library database file. Default:
@@ -157,7 +160,7 @@ Stopped → Playing
 
 # FILES
 
-`/run/user/1000/gtmd.socket`
+`$XDG_RUNTIME_DIR/gtm/gtmd.sock`
 :   Default Unix socket for client IPC.
 
 `$XDG_DATA_HOME/gtmd/library.db`
@@ -169,4 +172,4 @@ Stopped → Playing
 
 # SEE ALSO
 
-**gtm**(1), **gtmd-ipc**(1)
+**gtm**(1), **gtmd-ipc**(1), **gtm-config**(1)

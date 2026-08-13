@@ -8,407 +8,728 @@ gtmd-ipc - IPC protocol for the GTM music daemon
 
 # DESCRIPTION
 
-The GTM daemon (**gtmd**(1)) communicates with clients on a Unix socket
-using a mixed JSON+binary protocol.  Commands are sent as newline-delimited
-JSON **DaemonReq** objects.  The daemon responds synchronously with a
-**DaemonRes** JSON object per request, interleaved with asynchronous
-binary-framed **DaemonEvent** notifications.
+The GTM daemon (**gtmd**(1)) communicates with clients over Unix domain
+sockets using a mixed JSON+binary protocol.  Commands are sent as
+newline-delimited JSON objects with an explicit `cmd` field.  The daemon
+responds synchronously with a JSON response per request, interleaved with
+asynchronous JSON and binary event notifications.
+
+For the canonical, normative protocol reference, see the **gtm.spec**
+repository (protocol.md, commands.md, events.md).  This manpage is a
+summary for developers and packagers.
+
+# TRANSPORT
+
+Two sockets are used:
+
+| Socket | Path | Purpose |
+|--------|------|---------|
+| **Command** | `$XDG_RUNTIME_DIR/gtm/gtmd.sock` | JSON commands, responses, and JSON events |
+| **Pulse** | `$XDG_RUNTIME_DIR/gtm/gtmd.pulse` | Binary event stream (MessagePack, read-only) |
+
+If `$XDG_RUNTIME_DIR` is not set, the daemon falls back in order:
+`/tmp/gtm-$USER/gtm/gtmd.sock`, `$TMPDIR/gtm/gtmd.sock`,
+`$HOME/.gtm/gtm/gtmd.sock`.
 
 # FRAMING
 
-**Requests** are a single JSON line terminated with `\\n`:
+## Commands (client → daemon)
 
-```
-{"Ping":null}
-```
+Each command is a single JSON line terminated with `\n`:
 
-**Responses** are a single JSON line terminated with `\\n`:
-
-```
-{"Pong":null}
+```json
+{"id": 1, "cmd": "play", "path": "/music/song.mp3", "start_pos": 0.0}
 ```
 
-**Events** are binary frames with a 4-byte big-endian length prefix followed
-by a bincode-encoded `WireFrame` payload.
+Fields:
 
-The client distinguishes responses from events by the first byte:
-- `0x7B` (`{`) — JSON response (read until `\\n`)
+- `id` (uint64, required): Monotonically increasing sequence number.
+  Used to correlate responses.  MUST be `0` for the handshake command only.
+- `cmd` (string, required): The command name.
+- Additional fields: command-specific parameters.
+
+## Responses (daemon → client)
+
+Each response is a single JSON line terminated with `\n`:
+
+```json
+{"id": 1, "ok": true, "state": {"volume": 80}}
+```
+
+Fields:
+
+- `id` (uint64, required): Echoes the `id` from the matching request.
+- `ok` (boolean, required): `true` on success, `false` on error.
+- `error` (string, optional): Human-readable error message when `ok` is `false`.
+- Additional fields: command-specific response data.
+
+## Events (daemon → client, JSON)
+
+Events are delivered as individual JSON objects on the command socket,
+interleaved with responses.  Clients distinguish events from responses by
+checking for the `event` field (events) versus the `id` field (responses).
+
+```json
+{"event": "playback_started", "track": {"title": "Song"}, "time_pos": 0.0, "duration": 240.0}
+```
+
+## Events (daemon → client, binary / MessagePack)
+
+The pulse socket delivers the same events in a compact binary format for
+high-frequency position updates.  Frame format:
+
+```
+[4 bytes: payload length, big-endian uint32][payload bytes]
+```
+
+The payload is a MessagePack-encoded array of event objects.  Each event
+is a MessagePack map with at minimum an `event` string field, matching
+the full JSON event schema.
+
+The client distinguishes responses from binary events by the first byte:
+- `0x7B` (`{`) — JSON response (read until `\n`)
 - anything else — binary event frame (read 4-byte length, then payload)
 
-# COMMON RESPONSES
+Maximum line length: 1,048,576 bytes (1 MiB).  Maximum binary frame: 16 MiB.
 
-Many commands return:
+# HANDSHAKE
 
+The first message a client sends MUST be a handshake command:
+
+```json
+{"id": 0, "cmd": "handshake", "version": 1, "client": "gtm", "client_version": "0.1.0"}
 ```
-{"Ok":{"version":<u32>}}
+
+Daemon response:
+
+```json
+{"id": 0, "ok": true, "version": 1, "daemon": "gtmd-rs", "daemon_version": "0.1.0"}
 ```
 
-On error:
+If the client's protocol version exceeds the daemon's, the daemon responds
+with `ok: false` and the client MUST disconnect.
 
+# COMMAND ENVELOPE
+
+Every command follows this envelope:
+
+```json
+{"id": <uint64>, "cmd": "<name>", ...params}
 ```
-{"Error":{"version":<u32>,"message":"..."}}
+
+The daemon responds with:
+
+```json
+{"id": <uint64>, "ok": true, ...data}
+{"id": <uint64>, "ok": false, "error": "<message>"}
 ```
 
 # PLAYBACK COMMANDS
 
-## Play
+## play
 
-```
-{"Play":{"path":"/path/to/file.opus","start_pos":0.0}}
-```
+Load a track by path and begin playback.
 
-Response: `{"Ok":{"version":1}}`
-
-Emits: `PlaybackStarted` event.
-
-## PlayPause
-
-```
-{"PlayPause":null}
+```json
+{"id": 1, "cmd": "play", "path": "/path/to/file.opus", "start_pos": 0.0}
 ```
 
-Response: `{"Ok":{"version":1}}`
+Response: `{"id": 1, "ok": true}`
 
-Toggles between playing and paused state.
+Emits: `playback_started` event.
 
-## Pause
+## play_pause
 
-```
-{"Pause":null}
-```
+Smart toggle: stopped → play, playing → pause, paused → resume.
 
-Response: `{"Ok":{"version":1}}`
-
-## Stop
-
-```
-{"Stop":null}
+```json
+{"id": 2, "cmd": "play_pause"}
 ```
 
-Response: `{"Ok":{"version":1}}`
+Response: `{"id": 2, "ok": true}`
 
-## Next / Prev
+## pause
 
-```
-{"Next":null}
-{"Prev":null}
-```
-
-Response: `{"Ok":{"version":1}}`
-
-## Seek
-
-```
-{"Seek":{"position_secs":30.0}}
+```json
+{"id": 3, "cmd": "pause"}
 ```
 
-Response: `{"Ok":{"version":1}}`
+Response: `{"id": 3, "ok": true}`
 
-## SetVolume
+## stop
 
-```
-{"SetVolume":{"volume":75}}
-```
-
-Response: `{"Ok":{"version":1}}`
-
-Volume range: 0–100.
-
-## ToggleShuffle
-
-```
-{"ToggleShuffle":null}
+```json
+{"id": 4, "cmd": "stop"}
 ```
 
-Response: `{"Ok":{"version":1}}`
+Response: `{"id": 4, "ok": true}`
 
-## CycleRepeat
+## next / prev
 
-```
-{"CycleRepeat":{"mode":"All"}}
-```
-
-Response: `{"Ok":{"version":1}}`
-
-Modes: `Off`, `One`, `All`.
-
-## ToggleMute
-
-```
-{"ToggleMute":null}
+```json
+{"id": 5, "cmd": "next"}
+{"id": 6, "cmd": "prev"}
 ```
 
-Response: `{"Ok":{"version":1}}`
+Response: `{"id": 5, "ok": true}`
 
-## Crossfade
+## seek
 
+```json
+{"id": 7, "cmd": "seek", "position_secs": 30.0}
 ```
-{"Crossfade":{"enabled":true,"duration_secs":3}}
+
+Response: `{"id": 7, "ok": true}`
+
+## set_volume
+
+Volume range: 0-100.
+
+```json
+{"id": 8, "cmd": "set_volume", "volume": 75}
 ```
 
-Response: `{"Ok":{"version":1}}`
+Response: `{"id": 8, "ok": true}`
+
+## get_volume
+
+```json
+{"id": 9, "cmd": "get_volume"}
+```
+
+Response: `{"id": 9, "ok": true, "volume": 75}`
+
+## toggle_shuffle
+
+```json
+{"id": 10, "cmd": "toggle_shuffle"}
+```
+
+Response: `{"id": 10, "ok": true}`
+
+## cycle_repeat
+
+Modes: `"off"`, `"one"`, `"all"`.
+
+```json
+{"id": 11, "cmd": "cycle_repeat", "mode": "all"}
+```
+
+Response: `{"id": 11, "ok": true}`
+
+## toggle_mute
+
+```json
+{"id": 12, "cmd": "toggle_mute"}
+```
+
+Response: `{"id": 12, "ok": true}`
+
+## crossfade
+
+```json
+{"id": 13, "cmd": "crossfade", "enabled": true, "duration_secs": 3}
+```
+
+Response: `{"id": 13, "ok": true}`
+
+# AUDIO EFFECT COMMANDS
+
+## set_eq_preset
+
+```json
+{"id": 14, "cmd": "set_eq_preset", "preset": "rock"}
+```
+
+## set_eq_enabled
+
+```json
+{"id": 15, "cmd": "set_eq_enabled", "enabled": true}
+```
+
+## set_reverb
+
+```json
+{"id": 16, "cmd": "set_reverb", "enabled": true, "room_size": 0.7}
+```
+
+## list_eq_presets
+
+```json
+{"id": 17, "cmd": "list_eq_presets"}
+```
+
+Response: `{"id": 17, "ok": true, "presets": ["flat", "rock", "pop", "jazz"]}`
 
 # QUEUE COMMANDS
 
-## Queue List
+All queue operations are sub-commands dispatched through the `queue` command
+with an `action` field.
 
-```
-{"Queue":{"action":"List"}}
+## queue list
+
+```json
+{"id": 20, "cmd": "queue", "action": "list"}
 ```
 
 Response:
 
-```
-{"QueueState":{"version":1,"tracks":[...],"cursor":0}}
-```
-
-## Queue Add
-
-```
-{"Queue":{"action":{"Add":{"path":"/path/to/file.opus","position":null}}}}
+```json
+{"id": 20, "ok": true, "queue": [{"title": "...", "path": "..."}], "cursor": 0}
 ```
 
-Response: `{"Ok":{"version":1}}`
+## queue add
 
-## Queue AddMany
-
-```
-{"Queue":{"action":{"AddMany":{"paths":["/a.opus","/b.opus"]}}}}
+```json
+{"id": 21, "cmd": "queue", "action": "add", "path": "/path/to/file.opus"}
 ```
 
-Response: `{"Ok":{"version":1}}`
+## queue add_many
 
-## Queue AddFolder
-
-```
-{"Queue":{"action":{"AddFolder":{"path":"/path/to/music/"}}}}
+```json
+{"id": 22, "cmd": "queue", "action": "add_many", "paths": ["/a.opus", "/b.opus"]}
 ```
 
-Response: `{"Ok":{"version":1}}`
+## queue add_folder
 
-## Queue Remove
-
-```
-{"Queue":{"action":{"Remove":{"index":2}}}}
+```json
+{"id": 23, "cmd": "queue", "action": "add_folder", "path": "/path/to/music/"}
 ```
 
-Response: `{"Ok":{"version":1}}`
+## queue remove
 
-## Queue Move
-
-```
-{"Queue":{"action":{"Move":{"from":3,"to":1}}}}
+```json
+{"id": 24, "cmd": "queue", "action": "remove", "index": 2}
 ```
 
-Response: `{"Ok":{"version":1}}`
+## queue move
 
-## Queue Clear
-
-```
-{"Queue":{"action":"Clear"}}
+```json
+{"id": 25, "cmd": "queue", "action": "move", "from": 3, "to": 1}
 ```
 
-Response: `{"Ok":{"version":1}}`
+## queue clear
 
-## Queue Set
-
-```
-{"Queue":{"action":{"Set":{"paths":["/a.opus"],"start_idx":0}}}}
+```json
+{"id": 26, "cmd": "queue", "action": "clear"}
 ```
 
-Response: `{"Ok":{"version":1}}`
+## queue set
+
+```json
+{"id": 27, "cmd": "queue", "action": "set", "paths": ["/a.opus"], "start_idx": 0}
+```
 
 # LIBRARY COMMANDS
 
-## Library Scan
+All library operations are sub-commands dispatched through the `library`
+command with an `action` field.
 
-```
-{"Library":{"action":{"Scan":{"path":"/path/to/music"}}}}
-```
+## library scan
 
-Response: `{"Ok":{"version":1}}`
-
-## Library GetTracks
-
-```
-{"Library":{"action":{"GetTracks":{"filter":null,"sort":null}}}}
+```json
+{"id": 30, "cmd": "library", "action": "scan", "path": "/path/to/music"}
 ```
 
-Response:
+Runs asynchronously. Emits `custom` event with `name: "scan_done"`.
 
-```
-{"Tracks":{"version":1,"tracks":[...]}}
-```
+## library get_tracks
 
-## Library GetPlaylists
-
-```
-{"Library":{"action":"GetPlaylists"}}
+```json
+{"id": 31, "cmd": "library", "action": "get_tracks", "filter": null, "sort": null}
 ```
 
 Response:
 
-```
-{"Playlists":{"version":1,"playlists":[...]}}
-```
-
-## Library CreatePlaylist
-
-```
-{"Library":{"action":{"CreatePlaylist":{"name":"My Mix"}}}}
+```json
+{"id": 31, "ok": true, "tracks": [{"id": "abc", "title": "...", "artist": "...", "path": "...", "duration": 240.0}]}
 ```
 
-Response: `{"Ok":{"version":1}}`
+## library get_playlists
 
-## Library DeletePlaylist
-
-```
-{"Library":{"action":{"DeletePlaylist":{"id":1}}}}
-```
-
-Response: `{"Ok":{"version":1}}`
-
-## Library AddToPlaylist
-
-```
-{"Library":{"action":{"AddToPlaylist":{"playlist_id":1,"track_ids":[1,2,3]}}}}
-```
-
-Response: `{"Ok":{"version":1}}`
-
-## Library GetRecent
-
-```
-{"Library":{"action":{"GetRecent":{"count":10}}}}
+```json
+{"id": 32, "cmd": "library", "action": "get_playlists"}
 ```
 
 Response:
 
-```
-{"Tracks":{"version":1,"tracks":[...]}}
-```
-
-# DISCOVERY COMMANDS
-
-## Search
-
-```
-{"Search":{"query":"jazz"}}
+```json
+{"id": 32, "ok": true, "playlists": [{"id": 1, "name": "My Playlist", "track_count": 15}]}
 ```
 
-Response:
+## library create_playlist
 
-```
-{"Tracks":{"version":1,"tracks":[...]}}
-```
-
-## GetFavourites
-
-```
-{"GetFavourites":null}
+```json
+{"id": 33, "cmd": "library", "action": "create_playlist", "name": "My Mix"}
 ```
 
-Response:
+## library delete_playlist
 
-```
-{"Tracks":{"version":1,"tracks":[...]}}
-```
-
-## AddFavourite / RemoveFavourite
-
-```
-{"AddFavourite":{"track_id":42}}
-{"RemoveFavourite":{"track_id":42}}
+```json
+{"id": 34, "cmd": "library", "action": "delete_playlist", "id": 1}
 ```
 
-Response: `{"Ok":{"version":1}}`
+## library add_to_playlist
 
-## YtSearch
-
-```
-{"YtSearch":{"query":"lofi jazz","filter":null}}
+```json
+{"id": 35, "cmd": "library", "action": "add_to_playlist", "playlist_id": 1, "track_ids": [1, 2, 3]}
 ```
 
-Response: `{"Ok":{"version":1}}` (results are polled via YtSearchPoll)
+## library get_recent
 
-## YtSearchPoll
-
-```
-{"YtSearchPoll":null}
+```json
+{"id": 36, "cmd": "library", "action": "get_recent", "count": 10}
 ```
 
-Response:
+## library remove_track
 
-```
-{"YtSearchResults":{"version":1,"results":[...]}}
-```
-
-## YtSearchCancel
-
-```
-{"YtSearchCancel":null}
+```json
+{"id": 37, "cmd": "library", "action": "remove_track", "id": 42}
 ```
 
-Response: `{"Ok":{"version":1}}`
+## library update_metadata
 
-## YtResolveStream
-
+```json
+{"id": 38, "cmd": "library", "action": "update_metadata", "track_id": 42, "title": "New Title"}
 ```
-{"YtResolveStream":{"url":"https://youtube.com/watch?v=..."}}
+
+## library sync_covers / sync_lyrics
+
+```json
+{"id": 39, "cmd": "library", "action": "sync_covers"}
+{"id": 40, "cmd": "library", "action": "sync_lyrics"}
+```
+
+Both run asynchronously and emit `custom` events on completion.
+
+# SEARCH AND FAVOURITES
+
+## search
+
+```json
+{"id": 41, "cmd": "search", "query": "jazz"}
 ```
 
 Response:
 
+```json
+{"id": 41, "ok": true, "tracks": [...]}
 ```
-{"StreamInfo":{"version":1,"info":{...}}}
+
+Extended parameters: `fuzzy` (bool), `ignore_diacritics` (bool),
+`fields` (string array).
+
+## get_favourites
+
+```json
+{"id": 42, "cmd": "get_favourites"}
+```
+
+Response:
+
+```json
+{"id": 42, "ok": true, "tracks": [...]}
+```
+
+## add_favourite / remove_favourite
+
+```json
+{"id": 43, "cmd": "add_favourite", "track_id": 42}
+{"id": 44, "cmd": "remove_favourite", "track_id": 42}
+```
+
+# YOUTUBE COMMANDS
+
+## yt_search
+
+```json
+{"id": 45, "cmd": "yt_search", "query": "lofi jazz"}
+```
+
+Emits `custom` events with `name: "yt_search_partial"` or `"yt_search_done"`.
+
+## yt_search_poll
+
+```json
+{"id": 46, "cmd": "yt_search_poll"}
+```
+
+Response:
+
+```json
+{"id": 46, "ok": true, "results": [{"title": "...", "url": "...", "duration": 240, "channel": "..."}]}
+```
+
+## yt_search_cancel
+
+```json
+{"id": 47, "cmd": "yt_search_cancel"}
+```
+
+## yt_resolve_stream
+
+```json
+{"id": 48, "cmd": "yt_resolve_stream", "url": "https://youtube.com/watch?v=..."}
+```
+
+## yt_download
+
+```json
+{"id": 49, "cmd": "yt_download", "url": "https://youtube.com/watch?v=..."}
+```
+
+## yt_download_poll
+
+```json
+{"id": 50, "cmd": "yt_download_poll"}
+```
+
+Response:
+
+```json
+{"id": 50, "ok": true, "progress": 0.75, "status": "downloading"}
+```
+
+## yt_cancel_download
+
+```json
+{"id": 51, "cmd": "yt_cancel_download", "url": "https://youtube.com/watch?v=..."}
+```
+
+## yt_fetch_playlist / yt_fetch_playlist_poll
+
+```json
+{"id": 52, "cmd": "yt_fetch_playlist", "url": "https://youtube.com/playlist?list=..."}
+{"id": 53, "cmd": "yt_fetch_playlist_poll"}
+```
+
+## yt_set_config
+
+```json
+{"id": 54, "cmd": "yt_set_config", "cookie_source": "/path/to/cookies.txt", "js_runtime": "deno"}
+```
+
+# COVER ART AND LYRICS
+
+## get_cover_art
+
+```json
+{"id": 55, "cmd": "get_cover_art", "track_id": 42}
+```
+
+Response:
+
+```json
+{"id": 55, "ok": true, "data": "<base64-encoded PNG>"}
+```
+
+## get_lyrics
+
+```json
+{"id": 56, "cmd": "get_lyrics", "track_id": 42}
+```
+
+Response:
+
+```json
+{"id": 56, "ok": true, "lyrics": {"synced": true, "lines": [{"time": 0.0, "text": "..."}]}}
+```
+
+# AUDIO EFFECTS
+
+## set_sleep_timer / cancel_sleep_timer
+
+```json
+{"id": 57, "cmd": "set_sleep_timer", "minutes": 30}
+{"id": 58, "cmd": "cancel_sleep_timer"}
+```
+
+# LOUDNESS COMPENSATION
+
+## set_loudness_mode
+
+Modes: `"off"`, `"track"`, `"album"`, `"auto"`.
+
+```json
+{"id": 60, "cmd": "set_loudness_mode", "mode": "auto"}
+```
+
+## scan_loudness
+
+```json
+{"id": 61, "cmd": "scan_loudness", "track_ids": null, "force": false}
+```
+
+Runs asynchronously. Emits `loudness_scan_progress` and `loudness_scan_done`.
+
+## set_pre_gain
+
+```json
+{"id": 62, "cmd": "set_pre_gain", "pre_gain_db": -14.0}
+```
+
+# GAPLESS PLAYBACK
+
+## set_gapless
+
+```json
+{"id": 63, "cmd": "set_gapless", "enabled": true}
+```
+
+# DYNAMIC MODE
+
+## set_dynamic_mode
+
+```json
+{"id": 64, "cmd": "set_dynamic_mode", "enabled": true, "min_queue_remaining": 3, "max_history": 50}
+```
+
+# SCROBBLING
+
+## set_scrobble
+
+```json
+{"id": 65, "cmd": "set_scrobble", "enabled": true, "api_key": "...", "session_token": "..."}
+```
+
+# LIBRARY ORGANIZATION
+
+## organize_library
+
+```json
+{"id": 66, "cmd": "organize_library", "dry_run": true}
+```
+
+Response (dry_run):
+
+```json
+{"id": 66, "ok": true, "moves": [{"from": "/old/path.mp3", "to": "/new/Artist/Album/01 - Title.mp3"}]}
 ```
 
 # SYSTEM COMMANDS
 
-## GetStatus
+## get_status
 
+```json
+{"id": 70, "cmd": "get_status"}
 ```
-{"GetStatus":null}
+
+## check_health
+
+```json
+{"id": 71, "cmd": "check_health"}
 ```
 
 Response:
 
-```
-{"Status":{"version":1,"state":{"version":0,"status":"Stopped",...}}}
-```
-
-## Ping
-
-```
-{"Ping":null}
+```json
+{"id": 71, "ok": true, "report": {"uptime_secs": 3600, "clients_connected": 2, "audio_backend": "rodio"}}
 ```
 
-Response: `{"Pong":null}`
+## ping
 
-## Quit
-
-```
-{"Quit":null}
+```json
+{"id": 99, "cmd": "ping"}
 ```
 
-Response: `{"Ok":{"version":1}}`
+Response: `{"id": 99, "ok": true}`
+
+## quit
+
+```json
+{"id": 100, "cmd": "quit"}
+```
+
+Response: `{"id": 100, "ok": true}`
+
+The daemon persists state and closes the connection.
 
 # EVENTS
 
-Events are received asynchronously as binary bincode frames:
+Events are daemon-to-client notifications about state changes.  They are
+delivered as JSON objects on the command socket and as MessagePack binary
+frames on the pulse socket.
 
-```
-DaemonEvent::PlaybackStarted { track, auto_advanced, time_pos, duration }
-DaemonEvent::PlaybackPaused
-DaemonEvent::PlaybackStopped
-DaemonEvent::TrackEnded
-DaemonEvent::PositionChanged { time_pos }
-DaemonEvent::DurationChanged { duration }
-DaemonEvent::VolumeChanged { volume }
-DaemonEvent::QueueChanged { queue, cursor }
-DaemonEvent::RepeatModeChanged { mode }
-DaemonEvent::ShuffleChanged { enabled }
-DaemonEvent::SleepTimerTick { remaining_secs }
+## Playback Lifecycle
+
+- `playback_started` — track begins playing.  Fields: `track` (TrackInfo),
+  `auto_advanced` (bool), `time_pos` (float64), `duration` (float64).
+- `playback_paused` — playback paused.  Fields: `time_pos`.
+- `playback_stopped` — playback explicitly stopped.
+- `track_ended` — track reached end of file naturally.
+
+## Position and Duration
+
+- `position_changed` — playback position updated.  Fields: `time_pos`.
+- `duration_changed` — track duration resolved.  Fields: `duration`.
+
+## Volume
+
+- `volume_changed` — volume level changed.  Fields: `volume` (uint8, 0-100).
+
+## Playback Mode
+
+- `shuffle_changed` — shuffle toggled.  Fields: `enabled` (bool).
+- `repeat_mode_changed` — repeat mode changed.  Fields: `mode` (string).
+
+## Queue
+
+- `queue_changed` — queue modified.  Fields: `queue` (array), `cursor`.
+- `queue_index_changed` — cursor moved.  Fields: `index`.
+
+## Audio Effects
+
+- `crossfade_changed` — fields: `enabled`, `duration_secs`.
+- `eq_preset_changed` — fields: `preset`.
+- `eq_enabled_changed` — fields: `enabled`.
+- `reverb_changed` — fields: `enabled`, `room_size`.
+
+## Sleep Timer
+
+- `sleep_timer_tick` — emitted every second.  Fields: `remaining_secs`.
+- `sleep_timer_expired` — timer reached zero.
+
+## Loudness Compensation
+
+- `loudness_mode_changed` — fields: `mode`.
+- `loudness_scan_progress` — fields: `tracks_remaining`, `tracks_total`, `current_track`.
+- `loudness_scan_done` — fields: `scanned`, `failed`.
+- `pre_gain_changed` — fields: `pre_gain_db`.
+
+## Gapless Playback
+
+- `gapless_changed` — fields: `enabled`.
+
+## Dynamic Mode
+
+- `dynamic_mode_changed` — fields: `enabled`, `min_queue_remaining`, `max_history`.
+
+## Scrobbling
+
+- `scrobble_config_changed` — fields: `enabled`.
+- `scrobble_sent` — fields: `track`, `timestamp`.
+- `scrobble_error` — fields: `track_id`, `error`.
+
+## Library Organization
+
+- `library_organized` — fields: `moves_succeeded`, `moves_failed`.
+
+## System
+
+- `heartbeat` — emitted at least every 30 seconds during active playback.
+- `custom` — extensible event type with `name` sub-type field.  Known names:
+  `daemon_quitting`, `backend_error`, `audio_error`, `scan_done`.
+
+# EVENT EXAMPLES
+
+```json
+{"event": "playback_started", "track": {"title": "Song", "artist": "Artist"}, "auto_advanced": false, "time_pos": 0.0, "duration": 240.0}
+{"event": "position_changed", "time_pos": 42.5}
+{"event": "volume_changed", "volume": 75}
+{"event": "queue_changed", "queue": [{"title": "Song 1"}], "cursor": 0}
+{"event": "sleep_timer_tick", "remaining_secs": 120}
+{"event": "loudness_scan_progress", "tracks_remaining": 150, "tracks_total": 500}
+{"event": "scrobble_sent", "track": {"title": "Song"}, "timestamp": 1700000000}
 ```
 
 # SEE ALSO

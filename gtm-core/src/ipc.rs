@@ -131,7 +131,7 @@ pub enum DaemonEvent {
     #[serde(rename = "volume_changed")]
     VolumeChanged { volume: u8 },
     #[serde(rename = "metadata_changed")]
-    MetadataChanged { event: String },
+    MetadataChanged { detail: String },
     #[serde(rename = "queue_changed")]
     QueueChanged { queue: Vec<TrackInfo>, cursor: u128 },
     #[serde(rename = "queue_index_changed")]
@@ -187,8 +187,8 @@ impl DaemonEvent {
             DaemonEvent::VolumeChanged { volume } => {
                 WireEvent::new("volume_changed", serde_json::json!({ "volume": volume }))
             }
-            DaemonEvent::MetadataChanged { event } => {
-                WireEvent::new("metadata_changed", serde_json::json!({ "event": event }))
+            DaemonEvent::MetadataChanged { detail } => {
+                WireEvent::new("metadata_changed", serde_json::json!({ "event": detail }))
             }
             DaemonEvent::QueueChanged { queue, cursor } => {
                 WireEvent::new("queue_changed", serde_json::json!({ "queue": queue, "cursor": cursor }))
@@ -245,6 +245,8 @@ impl DaemonEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DaemonReq {
+    // Handshake
+    Handshake { version: u32, client: String, client_version: Option<String> },
     // Playback
     Play { path: String, start_pos: f64 },
     PlayPause,

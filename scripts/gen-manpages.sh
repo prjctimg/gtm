@@ -5,7 +5,20 @@ outdir="${1:-.}"
 mkdir -p "$outdir/man"
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
-docs_dir="$script_dir/../docs/man"
+repo_root="$script_dir/.."
+
+# Prefer gtm.spec/man/ when cloned alongside (CI or local dev),
+# fall back to local docs/man/ for offline builds.
+if [[ -d "$repo_root/../gtm.spec/man" ]]; then
+  docs_dir="$repo_root/../gtm.spec/man"
+  echo "Using canonical manpage sources from gtm.spec"
+elif [[ -d "$repo_root/gtm.spec/man" ]]; then
+  docs_dir="$repo_root/gtm.spec/man"
+  echo "Using canonical manpage sources from gtm.spec"
+else
+  docs_dir="$repo_root/docs/man"
+  echo "Warning: gtm.spec not found, using local docs/man/"
+fi
 
 if ! command -v pandoc &>/dev/null; then
   echo "Error: pandoc is not installed." >&2

@@ -411,7 +411,7 @@ impl Daemon {
 
         let (reader, writer) = stream.into_split();
         let event_rx = inner.event_tx.subscribe();
-        let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<(u64, DaemonRes)>;
+        let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<(u64, DaemonRes)>();
 
         // Reader task: JSON lines → req_tx
         let r_tx = reply_tx.clone();
@@ -439,7 +439,14 @@ impl Daemon {
                                 continue;
                             }
                         };
-                        if req_tx.send((client_id, wire_req.id, wire_req.req, r_tx.clone())).is_err() {
+                        let daemon_req: DaemonReq = match serde_json::from_value(wire_req.params) {
+                            Ok(r) => r,
+                            Err(e) => {
+                                warn!("client {client_id} bad request params: {e}");
+                                continue;
+                            }
+                        };
+                        if req_tx.send((client_id, wire_req.id, daemon_req, r_tx.clone())).is_err() {
                             break;
                         }
                     }
@@ -463,7 +470,7 @@ impl Daemon {
                     res = reply_rx.recv() => {
                         match res {
                             Some((id, response)) => {
-                                let wire = WireRes { id, res: response };
+                                let wire = response.to_wire(id);
                                 let line = match serde_json::to_string(&wire) {
                                     Ok(s) => s + "\n",
                                     Err(e) => {
@@ -601,7 +608,6 @@ impl Daemon {
             DaemonReq::Crossfade {
                 enabled,
                 duration_secs,
-                easing: _,
             } => Self::cmd_crossfade(inner, *enabled, *duration_secs).await,
             DaemonReq::SetCrossfadeEasing { easing } => Self::cmd_set_crossfade_easing(inner, *easing).await,
             DaemonReq::SetEqPreset { preset } => Self::cmd_set_eq_preset(inner, *preset).await,
@@ -1228,7 +1234,7 @@ impl Daemon {
 
     async fn cmd_list_eq_presets(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let version = inner.state.read().await.version as u32;
-        let presets = state::EQ_PRESETS
+        let presets = gtm_core::state::EQ_PRESETS
             .iter()
             .map(|p| p.to_string())
             .collect::<Vec<String>>();
