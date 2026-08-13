@@ -251,10 +251,16 @@ jobs:
           arch="$(dpkg --print-architecture)"
           version="${{ needs.tag.outputs.version }}"
           for deb in target/debian/gtm-full_*.deb; do
-            mv "$deb" "target/debian/gtm-full_${version}-1_${arch}.deb"
+            dest="target/debian/gtm-full_${version}-1_${arch}.deb"
+            if [ "$deb" != "$dest" ]; then
+              mv "$deb" "$dest"
+            fi
           done
           for deb in target/debian/gtmd_*.deb; do
-            mv "$deb" "target/debian/gtmd_${version}-1_${arch}.deb"
+            dest="target/debian/gtmd_${version}-1_${arch}.deb"
+            if [ "$deb" != "$dest" ]; then
+              mv "$deb" "$dest"
+            fi
           done
           for pkg in gtmd gtm; do
             rm -rf "$pkg/deb-assets"
@@ -336,7 +342,7 @@ jobs:
             target/release/*.tar.gz
             target/aarch64-linux-android/release/gtm-full-*
             target/aarch64-linux-android/release/gtmd-*
-            artifacts/man/*
-            artifacts/completions/*
+            man/*
+            completions/*
             target/debian/*.deb
             ./*.deb

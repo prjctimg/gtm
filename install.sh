@@ -6,6 +6,10 @@
 #   curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash -s -- --type full
 #   curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash -s -- --type deb
 #
+# Without --type/INSTALL_TYPE an interactive menu is shown when /dev/tty is
+# available (↑/↓ or j/k to move, Enter to select, q to cancel). Non-interactive
+# invocations default to a full install.
+#
 # Environment variables:
 #   VERSION        – release tag to install (default: auto-detect from installed gtmd, or latest)
 #   PREFIX         – install prefix (default: $HOME/.local)
@@ -37,6 +41,102 @@ die()   { printf '\033[1;31m✖\033[0m %s\n' "$*" >&2; exit 1; }
 
 command -v curl >/dev/null 2>&1 || die "curl is required but not found"
 command -v tar  >/dev/null 2>&1 || die "tar is required but not found"
+
+# ── Interactive menu ─────────────────────────────────────────────────
+# Single-select menu navigated with ↑/↓ arrow keys or j/k. Keys are read from
+# /dev/tty, never from stdin (which is the script pipe under `curl | bash`).
+# Usage: menu_select "Label" "desc" "Label2" "desc2" ...
+# On success sets REPLY to the 0-based selected index and returns 0. Returns
+# non-zero (REPLY=0) if cancelled or no interactive terminal is available.
+menu_select() {
+  local items=("$@") count=$(( $# / 2 )) i key bytes saved
+  local cur=$(( count > 1 ? 1 : 0 ))
+  local lines=()
+
+  for (( i = 0; i < count; i++ )); do
+    lines+=("$(printf '  \033[1;36m%-10s\033[0m %s' "${items[$((i*2))]}" "${items[$((i*2+1))]}")")
+  done
+
+  if ! ( exec 3< /dev/tty ) 2>/dev/null; then
+    REPLY=0
+    return 1
+  fi
+  exec 3< /dev/tty
+  saved=$(stty -g <&3 2>/dev/null) || saved=""
+  stty -icanon -echo min 1 time 1 <&3 2>/dev/null
+  printf '\e[?25l' >&3
+
+  printf '\n  \033[1mGTM Music Player Installer\033[0m\n'
+  printf '  %s\n' '─────────────────────────────────────'
+  printf '\n  Select installation type:\n'
+  printf '  \033[90m↑/↓ or j/k to move · Enter to select · q to cancel\033[0m\n'
+  if command -v gtmd >/dev/null 2>&1; then
+    printf '  \033[90mgtmd detected on PATH — option 3 will match its version.\033[0m\n'
+  fi
+
+  redraw() {
+    for (( i = 0; i < count; i++ )); do
+      if (( i == cur )); then
+        printf '  \033[7m> %s\033[0m\n' "${lines[$i]}"
+      else
+        printf '  %s\n' "${lines[$i]}"
+      fi
+    done
+  }
+
+  restore() {
+    printf '\e[?25h' >&3 2>/dev/null
+    [ -n "$saved" ] && stty "$saved" <&3 2>/dev/null
+    exec 3<&- 2>/dev/null
+  }
+  trap 'restore; exit 1' INT TERM HUP
+
+  redraw
+
+  while :; do
+    printf '\033[%dA' "$count"
+    key='' bytes=''
+    IFS= read -r -n 1 -d '' key <&3 2>/dev/null || true
+    case "$key" in
+      $'\e')
+        IFS= read -r -n 2 -d '' bytes <&3 2>/dev/null || true
+        case "$bytes" in
+          '[A') key='up' ;;
+          '[B') key='down' ;;
+          *)    key='cancel' ;;
+        esac
+        ;;
+      $'\r'|$'\n') key='enter' ;;
+      j) key='down' ;;
+      k) key='up' ;;
+      q) key='cancel' ;;
+      1) cur=0 ;;
+      2) cur=1 ;;
+      3) cur=2 ;;
+      4) cur=3 ;;
+      *) key='' ;;
+    esac
+    case "$key" in
+      up)   cur=$(( (cur + count - 1) % count )) ;;
+      down) cur=$(( (cur + 1) % count )) ;;
+      enter)
+        printf '\033[%dA\033[J' "$count"
+        restore
+        trap - INT TERM HUP
+        REPLY=$cur
+        return 0
+        ;;
+      cancel)
+        printf '\033[%dA\033[J' "$count"
+        restore
+        trap - INT TERM HUP
+        REPLY=0
+        return 1
+        ;;
+    esac
+    redraw
+  done
+}
 
 # ── Platform detection ──────────────────────────────────────────────
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')
@@ -151,31 +251,21 @@ resolve_deb_asset() {
 
 # ── Installation type ───────────────────────────────────────────────
 if [ -z "$INSTALL_TYPE" ]; then
-  echo ""
-  echo "  GTM Music Player Installer"
-  echo "  ─────────────────────────────────────"
-  echo ""
-  echo "  Select installation type:"
-  echo ""
-  echo "    1) Minimal      – gtmd only (daemon, man pages, completions)"
-  echo "    2) Full         – gtm + gtmd (TUI + daemon, man pages, completions)"
-  echo "    3) TUI only     – gtm only (for existing gtmd installations)"
-  echo "    4) .deb package – dpkg install (Debian/Ubuntu or Termux)"
-  echo ""
-
-  if command -v gtmd >/dev/null 2>&1; then
-    echo "  ℹ  gtmd detected on PATH — option 3 will match its version."
-    echo ""
+  if menu_select \
+      "Minimal"  "gtmd only (daemon, man pages, completions)" \
+      "Full"     "gtm + gtmd (TUI + daemon, man pages, completions)" \
+      "TUI only" "gtm only (for existing gtmd installations)" \
+      ".deb"     "dpkg install (Debian/Ubuntu or Termux)"; then
+    case "$REPLY" in
+      0) INSTALL_TYPE="minimal" ;;
+      1) INSTALL_TYPE="full" ;;
+      2) INSTALL_TYPE="tui-only" ;;
+      3) INSTALL_TYPE="deb" ;;
+    esac
+  else
+    info "Proceeding with 'full' install (no selection made or non-interactive)"
+    INSTALL_TYPE="full"
   fi
-
-  read -r -p "  Choice [1/2/3/4]: " choice
-  case "$choice" in
-    1) INSTALL_TYPE="minimal" ;;
-    2) INSTALL_TYPE="full" ;;
-    3) INSTALL_TYPE="tui-only" ;;
-    4) INSTALL_TYPE="deb" ;;
-    *) die "Invalid choice: $choice (expected 1, 2, 3, or 4)" ;;
-  esac
 fi
 
 case "$INSTALL_TYPE" in
