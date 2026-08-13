@@ -188,15 +188,12 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
         area,
     );
     // help bar shows on Library tab, hidden during pickers
-    let show_help = app.current_tab == Tab::Library && !app.pickers.is_open() && !app.hide_help_bar;
-    let help_height: u16 = if show_help { 1 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Min(0),
-            Constraint::Length(help_height),
             Constraint::Length(1),
         ])
         .split(area);
@@ -204,10 +201,7 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
     render_tabs(f, chunks[0], app);
     render_notifications(f, chunks[1], app);
     render_content(f, chunks[2], app);
-    if show_help {
-        render_help_bar(f, chunks[3], app);
-    }
-    render_footer(f, chunks[4], app);
+    render_footer(f, chunks[3], app);
 
     // Track info popup on Library tab
     if app.current_tab == Tab::Library && app.track_popup_visible && !app.pickers.is_open() {
@@ -287,13 +281,20 @@ fn render_content(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     }
 }
 
-fn render_help_bar(f: &mut ratatui::Frame, area: Rect, app: &App) {
+/// Render the help keybinding hints right-aligned in the footer row so the
+/// TUI keeps a single status line instead of a dedicated help row.
+fn render_footer_help(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    if app.current_tab != Tab::Library || app.pickers.is_open() || app.hide_help_bar {
+        return;
+    }
     let text = if app.terminal_cols < 60 {
         " [Space] Play  [n] Next  [p] Prev  [+/-] Vol  [:] Cmd  [q] Quit "
     } else {
         " [Space] Play/Pause  [n/N] Next  [p/P] Prev  [+/-] Volume  [s] Stop  [:] Command Palette  [q] Quit  [Q/Ctrl+Q] Quit daemon "
     };
-    let para = Paragraph::new(text).style(Style::default().fg(app.theme.fg_dim));
+    let para = Paragraph::new(text)
+        .alignment(Alignment::Right)
+        .style(Style::default().fg(app.theme.fg_dim).bg(app.theme.border));
     f.render_widget(para, area);
 }
 
@@ -638,13 +639,13 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             const COVER_W: u16 = 12;
             const COVER_H: u16 = 6;
 
-            if inner.width >= COVER_W + 4 {
+            if inner.width >= COVER_W + 6 {
                 // Cover on the LEFT, info on the RIGHT
                 let hchunks = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([
                         Constraint::Length(COVER_W),
-                        Constraint::Length(1),
+                        Constraint::Length(2),
                         Constraint::Min(0),
                     ])
                     .split(inner);
@@ -667,18 +668,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
                 let info_area = hchunks[2];
 
-                let info_chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(1),
-                        Constraint::Length(1),
-                        Constraint::Length(1),
-                        Constraint::Length(1),
-                        Constraint::Min(0),
-                    ])
-                    .split(info_area);
-
-                // Row 0: animated title (fav icon + title)
                 let display_title = if track.title.is_empty() {
                     std::path::Path::new(&track.path)
                         .file_stem()
@@ -692,6 +681,34 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 } else {
                     &track.artist
                 };
+
+                // Vertically center the details block against the cover:
+                // title, artist, album (when present), spacer, progress.
+                let has_album = !track.album.is_empty();
+                let content_h: u16 = 4 + u16::from(has_album);
+                let offset = COVER_H.saturating_sub(content_h) / 2;
+                let vchunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(offset),
+                        Constraint::Length(content_h),
+                        Constraint::Min(0),
+                    ])
+                    .split(info_area);
+                let content_area = vchunks[1];
+
+                let info_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                    ])
+                    .split(content_area);
+
+                // Row 0: animated title (fav icon + title)
                 let fav_prefix = if track.favourite { "\u{2665} " } else { "" };
                 let title_text = format!("{}{}", fav_prefix, display_title);
                 let title_avail = info_chunks[0].width as usize;
@@ -705,23 +722,25 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 )]));
                 render_evolving(f, info_chunks[0], title_para, "np", app, true);
 
-                // Row 1: Artist
+                // Row 1: Artist (icon instead of a text label)
                 let artist_para = Paragraph::new(Line::from(vec![
-                    Span::styled("Artist: ", Style::default().fg(app.theme.fg)),
+                    Span::styled("\u{1f3a4} ", Style::default().fg(app.theme.fg)),
                     Span::styled(display_artist, Style::default().fg(app.theme.fg_bright)),
                 ]));
                 f.render_widget(artist_para, info_chunks[1]);
 
-                // Row 2: Album (hide when empty)
-                if !track.album.is_empty() {
+                // Row 2: Album when present (icon instead of a text label),
+                // otherwise a blank spacer row.
+                if has_album {
                     let album_para = Paragraph::new(Line::from(vec![
-                        Span::styled("Album: ", Style::default().fg(app.theme.fg)),
+                        Span::styled("\u{1f4bf} ", Style::default().fg(app.theme.fg)),
                         Span::styled(&track.album, Style::default().fg(app.theme.fg_bright)),
                     ]));
                     f.render_widget(album_para, info_chunks[2]);
                 }
 
-                // Row 3: Progress bar + timestamps
+                // Row 3: spacer (album case) or the progress bar (no album)
+                // Row 4: Progress bar + timestamps (album case)
                 // Prefer the daemon-reported duration: queued/foreign tracks
                 // carry duration 0 in their TrackInfo until played, so the
                 // panel must not show "0:00" when the real duration is known.
@@ -735,13 +754,18 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 let dur_str = format_duration(dur as u64);
                 let ratio = if dur > 0.0 { pos / dur } else { 0.0 };
                 let ts_str = format!("{} / {}", pos_str, dur_str);
+                let bar_row = if has_album {
+                    info_chunks[4]
+                } else {
+                    info_chunks[3]
+                };
                 let bar_width =
-                    (info_chunks[3].width.saturating_sub(ts_str.len() as u16 + 2) as usize).min(40);
+                    (bar_row.width.saturating_sub(ts_str.len() as u16 + 2) as usize).min(40);
                 let bar = render_progress_variant(ratio, bar_width, app);
                 let bar_with_ts = format!("{} {}", bar, ts_str);
                 let bar_para =
                     Paragraph::new(bar_with_ts).style(Style::default().fg(app.theme.accent));
-                f.render_widget(bar_para, info_chunks[3]);
+                f.render_widget(bar_para, bar_row);
             } else {
                 // Terminal too narrow for cover — just show info text
                 let display_title = if track.title.is_empty() {
@@ -774,7 +798,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 let mut row_offset = 1u16;
                 if !track.album.is_empty() {
                     let album_para = Paragraph::new(Line::from(vec![
-                        Span::styled("Album: ", Style::default().fg(app.theme.fg)),
+                        Span::styled("\u{1f4bf} ", Style::default().fg(app.theme.fg)),
                         Span::styled(&track.album, Style::default().fg(app.theme.fg_bright)),
                     ]));
                     let album_area = Rect {
@@ -1943,6 +1967,7 @@ fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             if app.footer_cache.suppress_refresh {
                 if let Some(ref cached) = app.footer_cache.last {
                     crate::footer::draw(f, area, cached);
+                    render_footer_help(f, area, app);
                     return;
                 }
             }
@@ -1956,6 +1981,7 @@ fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 );
             }
             app.footer_cache.last = rendered;
+            render_footer_help(f, area, app);
         }
         InputMode::Searching => {
             f.render_widget(
@@ -2600,6 +2626,23 @@ pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str)] = &[
     ("\u{2576} Progress Style", "P"),
     ("\u{1f3b6} Visualizer", "Ctrl+V"),
     ("\u{1f3b6} Visualizer Preset", "Alt+V"),
+    ("\u{23f9} Stop", "s"),
+    ("\u{23e9} Seek Forward", "."),
+    ("\u{23ea} Seek Backward", ","),
+    ("\u{2665} Toggle Favourite", "F"),
+    ("\u{1f5d1} Clear Queue", "D"),
+    ("\u{2b05} Prev Tab", "Shift+Tab"),
+    ("\u{2611} Multiselect", "v"),
+    ("\u{2795} Add to Queue", "a"),
+    ("\u{1f4dc} Add to Playlist", "A"),
+    ("\u{2715} Delete from List", "x"),
+    ("\u{2b07} Jump to End", "G"),
+    ("\u{270e} Edit Metadata", "e"),
+    ("\u{2753} Toggle Help", "?"),
+    ("\u{1f6ab} Hide Help Bar", "Ctrl+H"),
+    ("\u{1f4cf} Footer Preset", "Alt+F"),
+    ("\u{25c9} Cycle Design", "Alt+D"),
+    ("\u{1fa7a} Health Check", ":"),
 ];
 
 fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {

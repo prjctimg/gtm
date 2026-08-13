@@ -6,7 +6,6 @@
 - **crates.io publishing**: workspace crates (`gtm-core`, `gtm-audio`, `gtm-mpris`, `gtmd`, `gtm`) are now published to crates.io by the release workflow (stable releases only, dependency order, idempotent re-runs via the `GTM_IO` token). Added missing `description` fields, explicit versions on path dependencies, and marked `release-gen` as `publish = false`
 - **More distro packages**: release workflow now publishes `.rpm` (Fedora/RHEL/CentOS, x86_64 + aarch64, binary packaging via `dist/gtm-full.spec`), Arch `.pkg.tar.zst` (`scripts/build-arch-pkg.sh`), and Alpine `.apk` packages plus static musl archives (`scripts/build-alpine-apk.sh`, new `x86_64-linux-musl`/`aarch64-linux-musl` Alpine container jobs)
 - **`checksums.txt`** with SHA-256 of every release asset
-- **`docs/RELEASING.md`** documenting the release process and the asset manifest
 
 ### Changed
 - Release assets are staged per build job into `release-assets/` and collected flat by the release job, fixing the release glob that silently dropped the Linux/macOS archives on v0.1.3

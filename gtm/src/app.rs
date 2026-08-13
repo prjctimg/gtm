@@ -725,9 +725,19 @@ impl App {
             if had_sleep_expired {
                 self.sleep_timer_remaining = None;
                 self.notify(
-                    "Sleep timer expired — playback stopped",
+                    "Sleep timer expired — shutting down",
                     NotificationKind::Info,
                 );
+                // Draw a final frame so the user sees the shutdown message
+                // before the terminal restores.
+                let _ = terminal.draw(|f| ui::render(f, &mut self));
+                tokio::time::sleep(Duration::from_millis(1200)).await;
+                // Await the daemon's reply so the quit request is actually
+                // delivered before the TUI exits. The daemon replies Ok then
+                // shuts down ~200ms later.
+                let c = self.client.clone();
+                let _ = tokio::time::timeout(Duration::from_millis(1500), c.quit()).await;
+                break;
             }
             // Sync sleep_timer_remaining from daemon state
             if let Some(secs) = self.state.sleep_timer {
@@ -3397,6 +3407,12 @@ impl App {
                                     self.send_high(TuiCommand::CycleRepeat(new_mode));
                                 } else if label.starts_with("shuffle") {
                                     self.send_high(TuiCommand::ToggleShuffle);
+                                } else if label.starts_with("quit daemon") {
+                                    let c = self.client.clone();
+                                    let _ =
+                                        tokio::time::timeout(Duration::from_millis(1500), c.quit())
+                                            .await;
+                                    self.pending_quit = true;
                                 } else if label.starts_with("quit") {
                                     self.pending_quit = true;
                                 } else if label.starts_with("tab cycle") {
@@ -3458,6 +3474,202 @@ impl App {
                                         format!("Visualizer: {}", state),
                                         crate::app::NotificationKind::Info,
                                     );
+                                } else if label.starts_with("stop") {
+                                    self.send_high(TuiCommand::Stop);
+                                } else if label.starts_with("seek forward") {
+                                    let pos =
+                                        (self.display_position + 5.0).min(self.state.duration);
+                                    self.send_high(TuiCommand::Seek(pos));
+                                } else if label.starts_with("seek backward") {
+                                    let pos = (self.display_position - 5.0).max(0.0);
+                                    self.send_high(TuiCommand::Seek(pos));
+                                } else if label.starts_with("toggle favourite") {
+                                    if let Some(ref track) = self.state.current_track {
+                                        let track_id = track.id;
+                                        let new_fav = !track.favourite;
+                                        if let Some(ref mut ct) = self.state.current_track {
+                                            ct.favourite = new_fav;
+                                        }
+                                        for t in &mut self.tracks_cache {
+                                            if t.id == track_id {
+                                                t.favourite = new_fav;
+                                                break;
+                                            }
+                                        }
+                                        let tx = self.cmd_tx();
+                                        let _ = tx.send(TuiCommand::AddFavourite(track_id)).await;
+                                        self.notify("Favourite toggled", NotificationKind::Info);
+                                    }
+                                } else if label.starts_with("clear queue") {
+                                    let tx = self.cmd_tx();
+                                    let _ = tx.send(TuiCommand::QueueClear).await;
+                                    self.notify("Queue cleared", NotificationKind::Info);
+                                } else if label.starts_with("prev tab") {
+                                    self.current_tab = match self.current_tab {
+                                        Tab::Library => Tab::Settings,
+                                        Tab::Settings => Tab::Library,
+                                    };
+                                } else if label.starts_with("multiselect") {
+                                    if self.current_tab == Tab::Library && !self.library_pane_focus
+                                    {
+                                        self.multiselect_mode = !self.multiselect_mode;
+                                        if !self.multiselect_mode {
+                                            self.selected_indices.clear();
+                                        }
+                                        let msg = if self.multiselect_mode {
+                                            "Multiselect ON — use v/a/x to queue"
+                                        } else {
+                                            "Multiselect OFF"
+                                        };
+                                        self.notify(msg, NotificationKind::Info);
+                                    }
+                                } else if label.starts_with("add to queue") {
+                                    if self.current_tab == Tab::Library && !self.library_pane_focus
+                                    {
+                                        let tracks = self.filtered_tracks();
+                                        let indices: Vec<usize> = if self.multiselect_mode
+                                            && !self.selected_indices.is_empty()
+                                        {
+                                            self.selected_indices.iter().copied().collect()
+                                        } else {
+                                            vec![self.scroll_offset]
+                                        };
+                                        let mut added = 0;
+                                        for idx in indices {
+                                            if let Some(track) = tracks.get(idx) {
+                                                let c = self.client.clone();
+                                                let path = track.path.clone();
+                                                tokio::spawn(async move {
+                                                    let _ = c.queue_add(&path, None).await;
+                                                });
+                                                added += 1;
+                                            }
+                                        }
+                                        self.fetch_queue().await;
+                                        self.notify(
+                                            format!("Added {added} track(s) to queue"),
+                                            NotificationKind::Info,
+                                        );
+                                    }
+                                } else if label.starts_with("add to playlist") {
+                                    if self.current_tab == Tab::Library && !self.library_pane_focus
+                                    {
+                                        let tracks = self.filtered_tracks();
+                                        let indices: Vec<i64> = if self.multiselect_mode
+                                            && !self.selected_indices.is_empty()
+                                        {
+                                            self.selected_indices
+                                                .iter()
+                                                .filter_map(|i| tracks.get(*i).map(|t| t.id))
+                                                .collect()
+                                        } else {
+                                            tracks
+                                                .get(self.scroll_offset)
+                                                .map(|t| vec![t.id])
+                                                .unwrap_or_default()
+                                        };
+                                        if !indices.is_empty() {
+                                            self.pending_playlist_track_ids = indices;
+                                            self.pickers.open(PickerId::PlaylistSelect);
+                                        }
+                                    }
+                                } else if label.starts_with("delete from list") {
+                                    if self.current_tab == Tab::Library && !self.library_pane_focus
+                                    {
+                                        if self.library_category == 4
+                                            && self.browse_detail.is_some()
+                                        {
+                                            let filtered = self.filtered_tracks();
+                                            if let Some(track) = filtered.get(self.scroll_offset) {
+                                                let track_id = track.id;
+                                                if let Some(pl) =
+                                                    self.playlist_cache.iter().find(|p| {
+                                                        self.browse_detail.as_deref()
+                                                            == Some(&p.name)
+                                                    })
+                                                {
+                                                    let playlist_id = pl.id;
+                                                    let tx = self.cmd_tx();
+                                                    let _ = tx
+                                                        .send(TuiCommand::RemoveFromPlaylist(
+                                                            playlist_id,
+                                                            track_id,
+                                                        ))
+                                                        .await;
+                                                    self.notify(
+                                                        "Removed from playlist",
+                                                        NotificationKind::Info,
+                                                    );
+                                                }
+                                            }
+                                        } else {
+                                            self.notify(
+                                                "Remove from list only available in playlist view",
+                                                NotificationKind::Info,
+                                            );
+                                        }
+                                    }
+                                } else if label.starts_with("jump to end") {
+                                    if self.current_tab == Tab::Library && !self.library_pane_focus
+                                    {
+                                        let max = self.library_list_len().saturating_sub(1);
+                                        self.scroll_offset = max;
+                                    }
+                                } else if label.starts_with("edit metadata") {
+                                    if self.current_tab == Tab::Library && !self.library_pane_focus
+                                    {
+                                        let track_data = {
+                                            let tracks = self.filtered_tracks();
+                                            tracks.get(self.scroll_offset).map(|t| {
+                                                (
+                                                    t.id,
+                                                    t.title.clone(),
+                                                    t.artist.clone(),
+                                                    t.album.clone(),
+                                                    t.genre.clone(),
+                                                    t.year,
+                                                    t.track_number,
+                                                )
+                                            })
+                                        };
+                                        if let Some((
+                                            id,
+                                            title,
+                                            artist,
+                                            album,
+                                            genre,
+                                            year,
+                                            track_num,
+                                        )) = track_data
+                                        {
+                                            self.metadata_edit_track_id = Some(id);
+                                            self.metadata_fields = [
+                                                title,
+                                                artist,
+                                                album,
+                                                String::new(),
+                                                genre,
+                                                year.map_or(String::new(), |y| y.to_string()),
+                                                track_num.map_or(String::new(), |n| n.to_string()),
+                                            ];
+                                            self.metadata_field_idx = 0;
+                                            self.pickers.open(PickerId::EditMetadata);
+                                        }
+                                    }
+                                } else if label.starts_with("toggle help") {
+                                    if self.pickers.top().is_some_and(|o| o.id == PickerId::Help) {
+                                        self.pickers.close_top();
+                                    } else {
+                                        self.pickers.open(PickerId::Help);
+                                    }
+                                } else if label.starts_with("hide help bar") {
+                                    self.hide_help_bar = !self.hide_help_bar;
+                                } else if label.starts_with("footer preset") {
+                                    self.cycle_footer_preset();
+                                } else if label.starts_with("cycle design") {
+                                    self.cycle_design();
+                                } else if label.starts_with("health check") {
+                                    self.send_high(TuiCommand::CheckHealth);
                                 }
                             }
                             self.pickers.close_top();
