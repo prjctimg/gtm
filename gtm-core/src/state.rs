@@ -53,8 +53,70 @@ impl Default for Easing {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LoudnessMode {
+    Off,
+    Track,
+    Album,
+    Auto,
+}
+
+impl Default for LoudnessMode {
+    fn default() -> Self {
+        Self::Off
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DynamicMode {
+    Off,
+    On,
+}
+
+impl Default for DynamicMode {
+    fn default() -> Self {
+        Self::Off
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CrossfadeConfig {
+pub struct DynamicModeConfig {
+    pub enabled: bool,
+    pub min_queue_remaining: u32,
+    pub max_history: u32,
+}
+
+impl Default for DynamicModeConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            min_queue_remaining: 3,
+            max_history: 50,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScrobbleConfig {
+    pub enabled: bool,
+    pub api_key: Option<String>,
+    pub session_token: Option<String>,
+    pub min_play_secs: Option<u32>,
+    pub min_play_pct: Option<f32>,
+}
+
+impl Default for ScrobbleConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_key: None,
+            session_token: None,
+            min_play_secs: None,
+            min_play_pct: None,
+        }
+    }
+}
     pub enabled: bool,
     pub duration_secs: u8,
     pub easing: Easing,
@@ -90,6 +152,11 @@ pub struct DaemonState {
     pub eq_preset: EqPreset,
     pub eq_enabled: bool,
     pub reverb: ReverbConfig,
+    pub loudness_mode: LoudnessMode,
+    pub pre_gain_db: f32,
+    pub gapless: bool,
+    pub dynamic_mode: DynamicModeConfig,
+    pub scrobble: ScrobbleConfig,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -271,6 +338,11 @@ pub struct SavedState {
     pub eq_preset: EqPreset,
     pub eq_enabled: bool,
     pub reverb: ReverbConfig,
+    pub loudness_mode: LoudnessMode,
+    pub pre_gain_db: f32,
+    pub gapless: bool,
+    pub dynamic_mode: DynamicModeConfig,
+    pub scrobble: ScrobbleConfig,
 }
 
 impl SavedState {
@@ -287,11 +359,16 @@ impl SavedState {
             eq_preset: state.eq_preset,
             eq_enabled: state.eq_enabled,
             reverb: state.reverb.clone(),
+            loudness_mode: state.loudness_mode,
+            pre_gain_db: state.pre_gain_db,
+            gapless: state.gapless,
+            dynamic_mode: state.dynamic_mode.clone(),
+            scrobble: state.scrobble.clone(),
         }
     }
 
     /// Apply this saved state to a `DaemonState`, restoring persisted fields.
-    pub fn apply_to(&self, state: &mut DaemonState) {
+pub fn apply_to(&self, state: &mut DaemonState) {
         state.queue = self.queue.clone();
         state.queue_cursor = self.queue_cursor;
         state.volume = self.volume;
@@ -302,6 +379,11 @@ impl SavedState {
         state.eq_preset = self.eq_preset;
         state.eq_enabled = self.eq_enabled;
         state.reverb = self.reverb.clone();
+        state.loudness_mode = self.loudness_mode;
+        state.pre_gain_db = self.pre_gain_db;
+        state.gapless = self.gapless;
+        state.dynamic_mode = self.dynamic_mode.clone();
+        state.scrobble = self.scrobble.clone();
     }
 
     /// Save to a JSON file. Creates parent directories if needed.

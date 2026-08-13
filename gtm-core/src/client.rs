@@ -308,16 +308,65 @@ impl DaemonClient {
         self.send_ok(DaemonReq::SetReverb { enabled, room_size }).await
     }
 
-    pub async fn crossfade(&self, enabled: bool, duration_secs: u8) -> Result<u32> {
+    pub async fn crossfade(&self, enabled: bool, duration_secs: u8, easing: Option<state::Easing>) -> Result<u32> {
         self.send_ok(DaemonReq::Crossfade {
             enabled,
             duration_secs,
+            easing,
         })
         .await
     }
 
-    pub async fn set_crossfade_easing(&self, easing: state::Easing) -> Result<u32> {
-        self.send_ok(DaemonReq::SetCrossfadeEasing { easing }).await
+    pub async fn set_loudness_mode(&self, mode: state::LoudnessMode) -> Result<u32> {
+        self.send_ok(DaemonReq::SetLoudnessMode { mode }).await
+    }
+
+    pub async fn scan_loudness(&self, track_ids: Option<Vec<i64>>, force: Option<bool>) -> Result<u32> {
+        self.send_ok(DaemonReq::ScanLoudness { track_ids, force }).await
+    }
+
+    pub async fn set_pre_gain(&self, pre_gain_db: f32) -> Result<u32> {
+        self.send_ok(DaemonReq::SetPreGain { pre_gain_db }).await
+    }
+
+    pub async fn set_gapless(&self, enabled: bool) -> Result<u32> {
+        self.send_ok(DaemonReq::SetGapless { enabled }).await
+    }
+
+    pub async fn set_dynamic_mode(
+        &self,
+        enabled: bool,
+        min_queue_remaining: Option<u32>,
+        max_history: Option<u32>,
+    ) -> Result<u32> {
+        self.send_ok(DaemonReq::SetDynamicMode {
+            enabled,
+            min_queue_remaining,
+            max_history,
+        })
+        .await
+    }
+
+    pub async fn set_scrobble(
+        &self,
+        enabled: bool,
+        api_key: Option<String>,
+        session_token: Option<String>,
+        min_play_secs: Option<u32>,
+        min_play_pct: Option<f32>,
+    ) -> Result<u32> {
+        self.send_ok(DaemonReq::SetScrobble {
+            enabled,
+            api_key,
+            session_token,
+            min_play_secs,
+            min_play_pct,
+        })
+        .await
+    }
+
+    pub async fn organize_library(&self, dry_run: Option<bool>) -> Result<u32> {
+        self.send_ok(DaemonReq::OrganizeLibrary { dry_run }).await
     }
 
     pub async fn set_sleep_timer(&self, minutes: u32) -> Result<u32> {

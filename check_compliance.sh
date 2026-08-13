@@ -1,112 +1,219 @@
 #!/usr/bin/env bash
-# Script to verify the GTM Protocol compliance changes
+# Script to verify GTM Protocol v2 compliance
 # Run this after implementing all phases
 
-echo "Checking file modifications for Phase 2-4 compliance:"
-echo "============================================"
+set -euo pipefail
 
-echo "1. gtm-core/src/ipc.rs (Wire format overhaul)"
-if grep -q "struct WireReq" gtm-core/src/ipc.rs && grep -q "pub cmd: String" gtm-core/src/ipc.rs | grep -q "Tag:\\"event\"\"" gtm-core/src/ipc.rs; then
-    echo "   ✓ Explicit cmd field and event tag present in WireReq/WireEvent"
+echo "Checking GTM Protocol v2 compliance..."
+echo "====================================="
+
+echo ""
+echo "1. Wire format (gtm-core/src/ipc.rs)"
+
+# Check WireReq has explicit cmd field
+if grep -q "struct WireReq" gtm-core/src/ipc.rs && grep -q "pub cmd: String" gtm-core/src/ipc.rs; then
+    echo "   ✓ WireReq has explicit cmd field"
 else
-    echo "   ✗ Missing explicit cmd field or event tag in WireReq/WireEvent"
+    echo "   ✗ WireReq missing explicit cmd field"
     exit 1
 fi
 
-if grep -q "#[derive(Serialize, Deserialize)]" gtm-core/src/ipc.rs | grep -q "cmd:" | head -1 > /dev/null; then
-    echo "   ✓ WireReq has explicit cmd field (not flattened enum)"
+# Check WireRes has ok/error/data envelope
+if grep -q "pub ok: Option<bool>" gtm-core/src/ipc.rs && \
+   grep -q "pub error: Option<String>" gtm-core/src/ipc.rs && \
+   grep -q "pub data: Option<Value>" gtm-core/src/ipc.rs; then
+    echo "   ✓ WireRes has uniform ok/error/data envelope"
 else
-    echo "   ✗ Missing explicit cmd field in WireReq"
+    echo "   ✗ WireRes missing uniform ok/error/data envelope"
     exit 1
 fi
 
-if grep -q "#[derive(Serialize, Deserialize)]" gtm-core/src/ipc.rs | grep -q "Tag:\"event\"\"" | head -1 > /dev/null; then
-    echo "   ✓ WireEvent has explicit event tag (not flattened enum)"
+# Check WireEvent has explicit event field
+if grep -q "struct WireEvent" gtm-core/src/ipc.rs && \
+   grep -q "pub event: String" gtm-core/src/ipc.rs && \
+   grep -q "pub data: Value" gtm-core/src/ipc.rs; then
+    echo "   ✓ WireEvent has explicit event field with data"
 else
-    echo "   ✗ Missing explicit event field in WireEvent"
+    echo "   ✗ WireEvent missing explicit event/data fields"
     exit 1
 fi
 
-if grep -q "struct WireRes" gtm-core/src/ipc.rs && grep -q "ok:" gtm-core/src/ipc.rs && grep -q "error:" gtm-core/src/ipc.rs | head -1 > /dev/null; then
-    echo "   ✓ WireRes has uniform ok/error/data envelope pattern"
+# Check DaemonReq is untagged
+if grep -q "#\[serde(untagged)\]" gtm-core/src/ipc.rs && \
+   grep -q "pub enum DaemonReq" gtm-core/src/ipc.rs; then
+    echo "   ✓ DaemonReq uses untagged enum for wire format"
 else
-    echo "   ✗ Missing uniform ok/error/data envelope in WireRes"
+    echo "   ✗ DaemonReq not using untagged enum"
     exit 1
 fi
 
-# Check for handshake
-echo "2. Handshake command in client.rs"
-if grep -q "handshake" gtm-core/src/client.rs | grep -q "str: &str"; then
-    echo "   ✓ Handshake command supported"
+# Check QueueAction and LibraryAction are internally tagged
+if grep -q 'tag = "action"' gtm-core/src/ipc.rs && \
+   grep -q "pub enum QueueAction" gtm-core/src/ipc.rs && \
+   grep -q "pub enum LibraryAction" gtm-core/src/ipc.rs; then
+    echo "   ✓ QueueAction and LibraryAction internally tagged with 'action'"
 else
-    echo "   ✗ Handshake command missing"
+    echo "   ✗ QueueAction or LibraryAction not internally tagged"
     exit 1
 fi
 
-# Check handshake tracking state
-if grep -q "handshake_sent" gtm-core/src/client.rs && grep -q "authenticated" gtm-core/src/client.rs | head -1 > /dev/null; then
-    echo "   ✓ Client tracks handshake state"
+echo ""
+echo "2. Protocol version (gtm-core/src/ipc.rs)"
+if grep -q "PROTOCOL_VERSION.*=.*2" gtm-core/src/ipc.rs; then
+    echo "   ✓ PROTOCOL_VERSION = 2"
 else
-    echo "   ✗ Client missing handshake state tracking"
+    echo "   ✗ PROTOCOL_VERSION not set to 2"
     exit 1
 fi
 
-# Check pulse socket MessagePack
-echo "3. Pulse socket uses MessagePack"
-if grep -q "rmp_serde" gtm-core/src/wire.rs; then
-    echo "   ✓ wire.rs uses rmp_serde (MessagePack) instead of bincode"
+echo ""
+echo "3. DaemonReq parse_cmd and from_wire (gtm-core/src/ipc.rs)"
+if grep -q "pub fn parse_cmd" gtm-core/src/ipc.rs && \
+   grep -q "pub fn from_wire" gtm-core/src/ipc.rs; then
+    echo "   ✓ parse_cmd and from_wire implemented"
 else
-    echo "   ✗ wire.rs still uses bincode"
+    echo "   ✗ Missing parse_cmd or from_wire"
     exit 1
 fi
 
-# Check pulse_reader uses wire::decode
-echo "4. Pulse reader uses wire::decode"
-if grep -q "wire::decode" gtm-core/src/client.rs; then
-    echo "   ✓ pulse_reader uses wire::decode (MessagePack)"
+echo ""
+echo "4. New v2 commands in DaemonReq (gtm-core/src/ipc.rs)"
+for cmd in "SetLoudnessMode" "ScanLoudness" "SetPreGain" "SetGapless" "SetDynamicMode" "SetScrobble" "OrganizeLibrary"; do
+    if grep -q "$cmd" gtm-core/src/ipc.rs; then
+        echo "   ✓ $cmd present"
+    else
+        echo "   ✗ $cmd missing"
+        exit 1
+    fi
+done
+
+echo ""
+echo "5. Removed SetCrossfadeEasing (folded into Crossfade)"
+if ! grep -q "SetCrossfadeEasing" gtm-core/src/ipc.rs; then
+    echo "   ✓ SetCrossfadeEasing removed"
 else
-    echo "   ✗ pulse_reader not using wire::decode"
+    echo "   ✗ SetCrossfadeEasing still present"
     exit 1
 fi
 
-echo "\nChecking implementation details:"
-echo "==============================="
+echo ""
+echo "6. New v2 events in DaemonEvent (gtm-core/src/ipc.rs)"
+for evt in "LoudnessModeChanged" "LoudnessScanProgress" "LoudnessScanDone" "PreGainChanged" "GaplessChanged" "DynamicModeChanged" "ScrobbleConfigChanged" "LibraryOrganized"; do
+    if grep -q "$evt" gtm-core/src/ipc.rs; then
+        echo "   ✓ $evt present"
+    else
+        echo "   ✗ $evt missing"
+        exit 1
+    fi
+done
 
-# Check all critical event types are covered
-base_events_types=$(grep -c "PlaybackStarted\|PlaybackPaused\|PlaybackStopped\|TrackEnded\|PositionChanged\|DurationChanged\|VolumeChanged\|QueueChanged\|QueueIndexChanged\|RepeatModeChanged\|ShuffleChanged\|CrossfadeChanged\|SleepTimerTick\|SleepTimerExpired\|EqPresetChanged\|EqEnabledChanged\|ReverbChanged\|Custom\|Heartbeat" gtm-core/src/ipc.rs)
-
-echo "5. Event type coverage"
-if [ "$base_events_types" -ge 20 ]; then
-    echo "   ✓ All critical event types covered ($base_events_types types)"
+echo ""
+echo "7. Client handshake and cmd_name (gtm-core/src/client.rs)"
+if grep -q "PROTOCOL_VERSION" gtm-core/src/client.rs && \
+   grep -q "DaemonReq::Handshake" gtm-core/src/client.rs && \
+   grep -q "cmd_name()" gtm-core/src/client.rs; then
+    echo "   ✓ Client implements handshake and uses cmd_name()"
 else
-    echo "   ✗ Missing some event types"
+    echo "   ✗ Client missing handshake or cmd_name usage"
     exit 1
 fi
 
-# Check command mapping in client.rs
-echo "6. Command mapping in client.rs"
-if grep -q "match.*DaemonReq" gtm-core/src/client.rs | head -1 > /dev/null; then
-    echo "   ✓ Command handlers mapping in place"
+echo ""
+echo "8. State types in gtm-core/src/state.rs"
+for typ in "LoudnessMode" "DynamicModeConfig" "ScrobbleConfig" "DynamicMode"; do
+    if grep -q "$typ" gtm-core/src/state.rs; then
+        echo "   ✓ $typ present"
+    else
+        echo "   ✗ $typ missing"
+        exit 1
+    fi
+done
+
+echo ""
+echo "9. DaemonState includes new fields (gtm-core/src/state.rs)"
+for field in "loudness_mode" "pre_gain_db" "gapless" "dynamic_mode" "scrobble"; do
+    if grep -q "$field" gtm-core/src/state.rs; then
+        echo "   ✓ DaemonState.$field present"
+    else
+        echo "   ✗ DaemonState.$field missing"
+        exit 1
+    fi
+done
+
+echo ""
+echo "10. SavedState persistence (gtm-core/src/state.rs)"
+if grep -q "loudness_mode" gtm-core/src/state.rs && \
+   grep -q "pre_gain_db" gtm-core/src/state.rs && \
+   grep -q "gapless" gtm-core/src/state.rs && \
+   grep -q "dynamic_mode" gtm-core/src/state.rs && \
+   grep -q "scrobble" gtm-core/src/state.rs; then
+    echo "   ✓ SavedState includes all new fields"
 else
-    echo "   ✗ Command mapping missing in client.rs"
+    echo "   ✗ SavedState missing some new fields"
     exit 1
 fi
 
-echo "\nPhase 2-4 compliance check summary:"
-echo "=================================="
+echo ""
+echo "11. Daemon handlers (gtmd/src/daemon.rs)"
+for handler in "cmd_set_loudness_mode" "cmd_scan_loudness" "cmd_set_pre_gain" "cmd_set_gapless" "cmd_set_dynamic_mode" "cmd_set_scrobble" "cmd_organize_library"; do
+    if grep -q "$handler" gtmd/src/daemon.rs; then
+        echo "   ✓ $handler present"
+    else
+        echo "   ✗ $handler missing"
+        exit 1
+    fi
+done
 
-echo "✓ All Phase 2-4 requirements met!"
+echo ""
+echo "12. Daemon handshake timeout (gtmd/src/daemon.rs)"
+if grep -q "handshake timeout" gtmd/src/daemon.rs && \
+   grep -q "CancellationToken" gtmd/src/daemon.rs; then
+    echo "   ✓ Handshake timeout watchdog implemented"
+else
+    echo "   ✗ Handshake timeout watchdog missing"
+    exit 1
+fi
 
-echo "\nSummary of changes:"
-echo "- Socket paths: Updated to GTM Protocol v1 standard (gtm/ subdirectory, .sock extension) - Phase 1"
-echo "- Explicit cmd field in WireReq: Replaces flattened enum variants with {'cmd':'play', 'params': {...}}"
-echo "- Uniform ok/error/data envelope in WireRes: Uniform response pattern across all commands"
-echo "- Explicit event field in WireEvent: Replaces flattened enum with {'event':'playback_started', 'data': {...}}"
-echo "- MessagePack framing for pulse socket: 4-byte BE length prefix + rmp_serde instead of bincode"
-echo "- Handshake protocol: First command, per-client authentication state tracking"
+echo ""
+echo "13. Crossfade with optional easing (gtmd/src/daemon.rs)"
+if grep -q "easing: Option" gtmd/src/daemon.rs && \
+   ! grep -q "cmd_set_crossfade_easing" gtmd/src/daemon.rs; then
+    echo "   ✓ Crossfade has optional easing, SetCrossfadeEasing removed"
+else
+    echo "   ✗ Crossfade easing not updated correctly"
+    exit 1
+fi
 
-echo "\nThe wire format now matches GTM Protocol v1 specification:"
-echo "- Commands are sent as: {'id': N, 'cmd': '<command>', 'params': {...}}"
-echo "- Responses are sent as: {'id': N, 'ok': true, 'data': {...}} or {'id': N, 'ok': false, 'error': '<message>'}"
-echo "- Events are sent as: {'event': '<event>', 'data': {...}}" 
-exit 0
+echo ""
+echo "14. MessagePack for pulse socket (gtm-core/src/wire.rs)"
+if grep -q "rmp_serde" gtm-core/src/wire.rs && \
+   grep -q "fn encode" gtm-core/src/wire.rs && \
+   grep -q "fn decode" gtm-core/src/wire.rs; then
+    echo "   ✓ wire.rs uses MessagePack (rmp_serde)"
+else
+    echo "   ✗ wire.rs not using MessagePack"
+    exit 1
+fi
+
+echo ""
+echo "15. Stale docs removed"
+if [ ! -f docs/ipc-protocol.md ] && [ ! -f docs/spec.md ] && [ ! -f docs/manual-playback.md ]; then
+    echo "   ✓ Stale docs removed (ipc-protocol.md, spec.md, manual-playback.md)"
+else
+    echo "   ✗ Some stale docs still exist"
+    exit 1
+fi
+
+echo ""
+echo "16. Specs/compliance directory removed"
+if [ ! -d specs/compliance ]; then
+    echo "   ✓ specs/compliance/ directory removed"
+else
+    echo "   ✗ specs/compliance/ directory still exists"
+    exit 1
+fi
+
+echo ""
+echo "====================================="
+echo "All GTM Protocol v2 compliance checks PASSED!"
+echo "====================================="

@@ -49,3 +49,6 @@ assets = [
     ["deb-assets/completions/gtmd.ps1", "/usr/share/powershell/completions/gtmd.ps1"],
     ["deb-assets/completions/gtmd.elv", "/usr/share/elvish/completions/gtmd.elv"],
 ]
+
+[dev-dependencies]
+bincode = "1"

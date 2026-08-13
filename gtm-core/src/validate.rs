@@ -4,7 +4,10 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use crate::state::{CrossfadeConfig, DaemonState, PlaybackStatus, RepeatMode, ReverbConfig};
+use crate::state::{
+    CrossfadeConfig, DaemonState, DynamicModeConfig, LoudnessMode, PlaybackStatus, RepeatMode,
+    ReverbConfig, ScrobbleConfig,
+};
 use crate::track::TrackInfo;
 
 impl CrossfadeConfig {
@@ -42,6 +45,11 @@ impl DaemonState {
             eq_preset: crate::state::EqPreset::Flat,
             eq_enabled: true,
             reverb: ReverbConfig::default(),
+            loudness_mode: LoudnessMode::Off,
+            pre_gain_db: 0.0,
+            gapless: false,
+            dynamic_mode: DynamicModeConfig::default(),
+            scrobble: ScrobbleConfig::default(),
         }
     }
 }

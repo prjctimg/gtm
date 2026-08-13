@@ -84,8 +84,32 @@ pub enum DaemonReq {
     ToggleShuffle,
     CycleRepeat { mode: RepeatMode },
     ToggleMute,
-    Crossfade { enabled: bool, duration_secs: u8 },
-    SetCrossfadeEasing { easing: state::Easing },
+    Crossfade {
+        enabled: bool,
+        duration_secs: u8,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        easing: Option<state::Easing>,
+    },
+    SetLoudnessMode { mode: state::LoudnessMode },
+    ScanLoudness {
+        track_ids: Option<Vec<i64>>,
+        force: Option<bool>,
+    },
+    SetPreGain { pre_gain_db: f32 },
+    SetGapless { enabled: bool },
+    SetDynamicMode {
+        enabled: bool,
+        min_queue_remaining: Option<u32>,
+        max_history: Option<u32>,
+    },
+    SetScrobble {
+        enabled: bool,
+        api_key: Option<String>,
+        session_token: Option<String>,
+        min_play_secs: Option<u32>,
+        min_play_pct: Option<f32>,
+    },
+    OrganizeLibrary { dry_run: Option<bool> },
     SetEqPreset { preset: EqPreset },
     SetEqEnabled { enabled: bool },
     SetReverb { enabled: bool, room_size: f32 },
@@ -144,8 +168,20 @@ impl DaemonReq {
             DaemonReq::ToggleShuffle => "toggle_shuffle",
             DaemonReq::CycleRepeat { .. } => "cycle_repeat",
             DaemonReq::ToggleMute => "toggle_mute",
-            DaemonReq::Crossfade { .. } => "crossfade",
-            DaemonReq::SetCrossfadeEasing { .. } => "crossfade",
+            DaemonReq::Crossfade { easing, .. } => {
+                if easing.is_some() {
+                    "crossfade"
+                } else {
+                    "crossfade"
+                }
+            }
+            DaemonReq::SetLoudnessMode { .. } => "set_loudness_mode",
+            DaemonReq::ScanLoudness { .. } => "scan_loudness",
+            DaemonReq::SetPreGain { .. } => "set_pre_gain",
+            DaemonReq::SetGapless { .. } => "set_gapless",
+            DaemonReq::SetDynamicMode { .. } => "set_dynamic_mode",
+            DaemonReq::SetScrobble { .. } => "set_scrobble",
+            DaemonReq::OrganizeLibrary { .. } => "organize_library",
             DaemonReq::SetEqPreset { .. } => "set_eq_preset",
             DaemonReq::SetEqEnabled { .. } => "set_eq_enabled",
             DaemonReq::SetReverb { .. } => "set_reverb",
@@ -230,12 +266,16 @@ impl DaemonReq {
             "toggle_mute" => DaemonReq::ToggleMute,
             "crossfade" => {
                 #[derive(Deserialize)]
-                struct Params { enabled: bool, duration_secs: u8, easing: Option<state::Easing> }
+                struct Params {
+                    enabled: bool,
+                    duration_secs: u8,
+                    easing: Option<state::Easing>,
+                }
                 let x = p(params)?;
-                if let Some(easing) = x.easing {
-                    DaemonReq::SetCrossfadeEasing { easing }
-                } else {
-                    DaemonReq::Crossfade { enabled: x.enabled, duration_secs: x.duration_secs }
+                DaemonReq::Crossfade {
+                    enabled: x.enabled,
+                    duration_secs: x.duration_secs,
+                    easing: x.easing,
                 }
             }
             "set_eq_preset" => {
@@ -350,10 +390,84 @@ impl DaemonReq {
             "get_status" => DaemonReq::GetStatus,
             "check_health" => DaemonReq::CheckHealth,
             "ping" => DaemonReq::Ping,
+            "set_loudness_mode" => {
+                #[derive(Deserialize)]
+                struct Params { mode: state::LoudnessMode }
+                let x = p(params)?;
+                DaemonReq::SetLoudnessMode { mode: x.mode }
+            }
+            "scan_loudness" => {
+                #[derive(Deserialize)]
+                struct Params { track_ids: Option<Vec<i64>>, force: Option<bool> }
+                let x = p(params)?;
+                DaemonReq::ScanLoudness {
+                    track_ids: x.track_ids,
+                    force: x.force,
+                }
+            }
+            "set_pre_gain" => {
+                #[derive(Deserialize)]
+                struct Params { pre_gain_db: f32 }
+                let x = p(params)?;
+                DaemonReq::SetPreGain { pre_gain_db: x.pre_gain_db }
+            }
+            "set_gapless" => {
+                #[derive(Deserialize)]
+                struct Params { enabled: bool }
+                let x = p(params)?;
+                DaemonReq::SetGapless { enabled: x.enabled }
+            }
+            "set_dynamic_mode" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    enabled: bool,
+                    min_queue_remaining: Option<u32>,
+                    max_history: Option<u32>,
+                }
+                let x = p(params)?;
+                DaemonReq::SetDynamicMode {
+                    enabled: x.enabled,
+                    min_queue_remaining: x.min_queue_remaining,
+                    max_history: x.max_history,
+                }
+            }
+            "set_scrobble" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    enabled: bool,
+                    api_key: Option<String>,
+                    session_token: Option<String>,
+                    min_play_secs: Option<u32>,
+                    min_play_pct: Option<f32>,
+                }
+                let x = p(params)?;
+                DaemonReq::SetScrobble {
+                    enabled: x.enabled,
+                    api_key: x.api_key,
+                    session_token: x.session_token,
+                    min_play_secs: x.min_play_secs,
+                    min_play_pct: x.min_play_pct,
+                }
+            }
+            "organize_library" => {
+                #[derive(Deserialize)]
+                struct Params { dry_run: Option<bool> }
+                let x = p(params)?;
+                DaemonReq::OrganizeLibrary { dry_run: x.dry_run }
+            }
             "quit" => DaemonReq::Quit,
             other => return Err(format!("unknown command: {other}")),
         })
     }
+}
+
+/// Wire request: client -> daemon.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireReq {
+    pub id: u64,
+    pub cmd: String,
+    #[serde(flatten)]
+    pub params: Value,
 }
 
 /// Wire response: daemon -> client.
@@ -425,7 +539,32 @@ pub enum DaemonEvent {
     #[serde(rename = "shuffle_changed")]
     ShuffleChanged { enabled: bool },
     #[serde(rename = "crossfade_changed")]
-    CrossfadeChanged { enabled: bool, duration_secs: u8 },
+    CrossfadeChanged {
+        enabled: bool,
+        duration_secs: u8,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        easing: Option<state::Easing>,
+    },
+    #[serde(rename = "loudness_mode_changed")]
+    LoudnessModeChanged { mode: state::LoudnessMode },
+    #[serde(rename = "loudness_scan_progress")]
+    LoudnessScanProgress { scanned: usize, total: usize },
+    #[serde(rename = "loudness_scan_done")]
+    LoudnessScanDone { scanned: usize },
+    #[serde(rename = "pre_gain_changed")]
+    PreGainChanged { pre_gain_db: f32 },
+    #[serde(rename = "gapless_changed")]
+    GaplessChanged { enabled: bool },
+    #[serde(rename = "dynamic_mode_changed")]
+    DynamicModeChanged {
+        enabled: bool,
+        min_queue_remaining: u32,
+        max_history: u32,
+    },
+    #[serde(rename = "scrobble_config_changed")]
+    ScrobbleConfigChanged { enabled: bool },
+    #[serde(rename = "library_organized")]
+    LibraryOrganized { moves: usize },
     #[serde(rename = "sleep_timer_tick")]
     SleepTimerTick { remaining_secs: u32 },
     #[serde(rename = "sleep_timer_expired")]
@@ -486,12 +625,50 @@ impl DaemonEvent {
             DaemonEvent::ShuffleChanged { enabled } => {
                 WireEvent::new("shuffle_changed", serde_json::json!({ "enabled": enabled }))
             }
-            DaemonEvent::CrossfadeChanged { enabled, duration_secs } => {
-                WireEvent::new("crossfade_changed", serde_json::json!({
-                    "enabled": enabled,
-                    "duration_secs": duration_secs,
-                }))
-            }
+            DaemonEvent::CrossfadeChanged {
+                    enabled,
+                    duration_secs,
+                    easing,
+                } => {
+                    let mut data = serde_json::json!({
+                        "enabled": enabled,
+                        "duration_secs": duration_secs,
+                    });
+                    if let Some(e) = easing {
+                        if let serde_json::Value::Object(obj) = &mut data {
+                            obj.insert("easing".into(), serde_json::to_value(e).unwrap());
+                        }
+                    }
+                    WireEvent::new("crossfade_changed", data)
+                }
+                DaemonEvent::LoudnessModeChanged { mode } => {
+                    WireEvent::new("loudness_mode_changed", serde_json::json!({ "mode": mode }))
+                }
+                DaemonEvent::LoudnessScanProgress { scanned, total } => {
+                    WireEvent::new("loudness_scan_progress", serde_json::json!({ "scanned": scanned, "total": total }))
+                }
+                DaemonEvent::LoudnessScanDone { scanned } => {
+                    WireEvent::new("loudness_scan_done", serde_json::json!({ "scanned": scanned }))
+                }
+                DaemonEvent::PreGainChanged { pre_gain_db } => {
+                    WireEvent::new("pre_gain_changed", serde_json::json!({ "pre_gain_db": pre_gain_db }))
+                }
+                DaemonEvent::GaplessChanged { enabled } => {
+                    WireEvent::new("gapless_changed", serde_json::json!({ "enabled": enabled }))
+                }
+                DaemonEvent::DynamicModeChanged { enabled, min_queue_remaining, max_history } => {
+                    WireEvent::new("dynamic_mode_changed", serde_json::json!({
+                        "enabled": enabled,
+                        "min_queue_remaining": min_queue_remaining,
+                        "max_history": max_history,
+                    }))
+                }
+                DaemonEvent::ScrobbleConfigChanged { enabled } => {
+                    WireEvent::new("scrobble_config_changed", serde_json::json!({ "enabled": enabled }))
+                }
+                DaemonEvent::LibraryOrganized { moves } => {
+                    WireEvent::new("library_organized", serde_json::json!({ "moves": moves }))
+                }
             DaemonEvent::SleepTimerTick { remaining_secs } => {
                 WireEvent::new("sleep_timer_tick", serde_json::json!({ "remaining_secs": remaining_secs }))
             }

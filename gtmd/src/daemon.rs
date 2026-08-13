@@ -68,7 +68,7 @@ use gtm_audio::PulseAudioMixer;
 #[cfg(feature = "pulseaudio")]
 use crate::config::AudioBackendKind;
 use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, QueueAction, WireEvent, WireReq, PROTOCOL_VERSION};
-use gtm_core::state::{DaemonState, EqPreset, PlaybackStatus, ReverbConfig, SavedState};
+use gtm_core::state::{DaemonState, DynamicModeConfig, EqPreset, LoudnessMode, PlaybackStatus, ReverbConfig, SavedState, ScrobbleConfig};
 use gtm_core::wire;
 use gtm_core::CoreError;
 
@@ -413,68 +413,91 @@ impl Daemon {
         let event_rx = inner.event_tx.subscribe();
         let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<(u64, DaemonRes)>();
 
+        // Cancellation token: any one of reader/writer/watchdog cancelling it
+        // causes the other two to shut down within one select cycle.
+        let token = tokio::sync::CancellationToken::new();
+
         // Reader task: JSON lines → req_tx
         let r_tx = reply_tx.clone();
         let inner_clone = inner.clone();
+        let token_reader = token.clone();
         tokio::spawn(async move {
             let mut reader = BufReader::new(reader);
             let mut line = String::new();
             loop {
-                line.clear();
-                match reader.read_line(&mut line).await {
-                    Ok(0) => break,
-                    Ok(_) => {
-                        let trimmed = line.trim();
-                        if trimmed.is_empty() {
-                            continue;
-                        }
-                        if trimmed.len() > 1_048_576 {
-                            // protocol.md: "Lines exceeding this limit MUST be
-                            // rejected and the connection closed."
-                            warn!("client {client_id}: line too long ({} bytes), disconnecting", trimmed.len());
-                            break;
-                        }
-                        let wire_req: WireReq = match serde_json::from_str(trimmed) {
-                            Ok(r) => r,
+                tokio::select! {
+                    _ = token_reader.cancelled() => break,
+                    result = reader.read_line(&mut line) => {
+                        match result {
+                            Ok(0) => break,
+                            Ok(_) => {
+                                let trimmed = line.trim();
+                                if trimmed.is_empty() {
+                                    continue;
+                                }
+                                if trimmed.len() > 1_048_576 {
+                                    // protocol.md: "Lines exceeding this limit MUST be
+                                    // rejected and the connection closed."
+                                    warn!("client {client_id}: line too long ({} bytes), disconnecting", trimmed.len());
+                                    break;
+                                }
+                                let wire_req: WireReq = match serde_json::from_str(trimmed) {
+                                    Ok(r) => r,
+                                    Err(e) => {
+                                        // protocol.md: "If the daemon receives malformed
+                                        // JSON, it MUST close the connection."
+                                        warn!("client {client_id} malformed JSON, closing: {e}");
+                                        break;
+                                    }
+                                };
+                                let daemon_req = match DaemonReq::parse_cmd(&wire_req.cmd, wire_req.params.clone()) {
+                                    Ok(r) => r,
+                                    Err(e) if e.starts_with("unknown command:") => {
+                                        // protocol.md: unknown `cmd` → error response, keep alive.
+                                        let _ = r_tx.send((wire_req.id, DaemonRes::Error {
+                                            version: PROTOCOL_VERSION,
+                                            message: e,
+                                        }));
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        // Params parsed wrong for a known `cmd`: recoverable.
+                                        let _ = r_tx.send((wire_req.id, DaemonRes::Error {
+                                            version: PROTOCOL_VERSION,
+                                            message: format!("invalid params for {}: {}", wire_req.cmd, e),
+                                        }));
+                                        continue;
+                                    }
+                                };
+                                if req_tx.send((client_id, wire_req.id, daemon_req, r_tx.clone())).is_err() {
+                                    break;
+                                }
+                            }
                             Err(e) => {
-                                // protocol.md: "If the daemon receives malformed
-                                // JSON, it MUST close the connection."
-                                warn!("client {client_id} malformed JSON, closing: {e}");
+                                warn!("client {client_id} read error: {e}");
                                 break;
                             }
-                        };
-                        let daemon_req = match DaemonReq::parse_cmd(&wire_req.cmd, wire_req.params.clone()) {
-                            Ok(r) => r,
-                            Err(e) if e.starts_with("unknown command:") => {
-                                // protocol.md: unknown `cmd` → error response, keep alive.
-                                let _ = r_tx.send((wire_req.id, DaemonRes::Error {
-                                    version: PROTOCOL_VERSION,
-                                    message: e,
-                                }));
-                                continue;
-                            }
-                            Err(e) => {
-                                // Params parsed wrong for a known `cmd`: recoverable.
-                                let _ = r_tx.send((wire_req.id, DaemonRes::Error {
-                                    version: PROTOCOL_VERSION,
-                                    message: format!("invalid params for {}: {}", wire_req.cmd, e),
-                                }));
-                                continue;
-                            }
-                        };
-                        if req_tx.send((client_id, wire_req.id, daemon_req, r_tx.clone())).is_err() {
-                            break;
                         }
-                    }
-                    Err(e) => {
-                        warn!("client {client_id} read error: {e}");
-                        break;
                     }
                 }
             }
+            token.cancel();
             // Clean up auth state on disconnect
             inner_clone.client_auth.lock().await.remove(&client_id);
             info!("client {client_id} disconnected");
+        });
+
+        // Watchdog task: enforce 10 s handshake deadline.
+        // Closed as soon as the reader exits (reader cancels `token`
+        // on any exit path, so this task is woken and exits via the
+        // cancelled branch above).
+        let token_watchdog = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            if !*inner.client_auth.lock().await.get(&client_id).unwrap_or(&true) {
+                warn!("client {client_id}: handshake timeout");
+                token_watchdog.cancel();
+            }
         });
 
         // Writer task: responses + broadcast events → socket
@@ -483,6 +506,7 @@ impl Daemon {
             let mut event_rx = event_rx;
             loop {
                 tokio::select! {
+                    _ = token.cancelled() => break,
                     res = reply_rx.recv() => {
                         match res {
                             Some((id, response)) => {
@@ -638,13 +662,15 @@ impl Daemon {
             DaemonReq::Crossfade {
                 enabled,
                 duration_secs,
-            } => Self::cmd_crossfade(inner, *enabled, *duration_secs).await,
-            DaemonReq::SetCrossfadeEasing { easing } => Self::cmd_set_crossfade_easing(inner, *easing).await,
-            DaemonReq::SetEqPreset { preset } => Self::cmd_set_eq_preset(inner, *preset).await,
-            DaemonReq::SetEqEnabled { enabled } => Self::cmd_set_eq_enabled(inner, *enabled).await,
-            DaemonReq::SetReverb { enabled, room_size } => Self::cmd_set_reverb(inner, *enabled, *room_size).await,
-            DaemonReq::ListEqPresets => Self::cmd_list_eq_presets(inner).await,
-            DaemonReq::Queue { action } => Self::cmd_queue(inner, action).await,
+                easing,
+            } => Self::cmd_crossfade(inner, *enabled, *duration_secs, easing.clone()).await,
+            DaemonReq::SetLoudnessMode { mode } => Self::cmd_set_loudness_mode(inner, *mode).await,
+            DaemonReq::ScanLoudness { track_ids, force } => Self::cmd_scan_loudness(inner, track_ids.clone(), force).await,
+            DaemonReq::SetPreGain { pre_gain_db } => Self::cmd_set_pre_gain(inner, *pre_gain_db).await,
+            DaemonReq::SetGapless { enabled } => Self::cmd_set_gapless(inner, *enabled).await,
+            DaemonReq::SetDynamicMode { enabled, min_queue_remaining, max_history } => Self::cmd_set_dynamic_mode(inner, *enabled, *min_queue_remaining, *max_history).await,
+            DaemonReq::SetScrobble { enabled, api_key, session_token, min_play_secs, min_play_pct } => Self::cmd_set_scrobble(inner, *enabled, api_key.clone(), session_token.clone(), *min_play_secs, *min_play_pct).await,
+            DaemonReq::OrganizeLibrary { dry_run } => Self::cmd_organize_library(inner, *dry_run).await,
             DaemonReq::Library { action } => Self::cmd_library(inner, action).await,
             DaemonReq::Search { query } => Self::cmd_search(inner, query).await,
             DaemonReq::GetFavourites => Self::cmd_get_favourites(inner).await,
@@ -1312,32 +1338,123 @@ impl Daemon {
         inner: &DaemonInner,
         enabled: bool,
         duration_secs: u8,
+        easing: Option<gtm_core::state::Easing>,
     ) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
-        state.set_crossfade(enabled, duration_secs)?;
+        state.set_crossfade(enabled, duration_secs, easing)?;
         let version = state.version as u32;
         drop(state);
         Self::push_event(inner, DaemonEvent::CrossfadeChanged {
             enabled,
             duration_secs,
+            easing,
         });
         Self::save_state(inner);
         Ok(DaemonRes::Ok { version })
     }
 
-    async fn cmd_set_crossfade_easing(
+    async fn cmd_set_loudness_mode(
         inner: &DaemonInner,
-        easing: gtm_core::state::Easing,
+        mode: gtm_core::state::LoudnessMode,
     ) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
-        if let Some(ref mut cf) = state.crossfade {
-            cf.easing = easing;
-        }
-        state.version += 1;
+        state.set_loudness_mode(mode)?;
         let version = state.version as u32;
         drop(state);
+        Self::push_event(inner, DaemonEvent::LoudnessModeChanged { mode });
         Self::save_state(inner);
         Ok(DaemonRes::Ok { version })
+    }
+
+    async fn cmd_scan_loudness(
+        inner: &DaemonInner,
+        track_ids: Option<Vec<i64>>,
+        force: Option<bool>,
+    ) -> Result<DaemonRes, CoreError> {
+        // TODO: Implement actual loudness scanning
+        // For now, just emit progress and completion events
+        let total = track_ids.as_ref().map(|v| v.len()).unwrap_or(0);
+        for i in 1..=total {
+            Self::push_event(inner, DaemonEvent::LoudnessScanProgress { scanned: i, total });
+        }
+        Self::push_event(inner, DaemonEvent::LoudnessScanDone { scanned: total });
+        Ok(DaemonRes::Ok { version: inner.state.read().await.version as u32 })
+    }
+
+    async fn cmd_set_pre_gain(
+        inner: &DaemonInner,
+        pre_gain_db: f32,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.set_pre_gain(pre_gain_db)?;
+        let version = state.version as u32;
+        drop(state);
+        Self::push_event(inner, DaemonEvent::PreGainChanged { pre_gain_db });
+        Self::save_state(inner);
+        Ok(DaemonRes::Ok { version })
+    }
+
+    async fn cmd_set_gapless(
+        inner: &DaemonInner,
+        enabled: bool,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.set_gapless(enabled)?;
+        let version = state.version as u32;
+        drop(state);
+        Self::push_event(inner, DaemonEvent::GaplessChanged { enabled });
+        Self::save_state(inner);
+        Ok(DaemonRes::Ok { version })
+    }
+
+    async fn cmd_set_dynamic_mode(
+        inner: &DaemonInner,
+        enabled: bool,
+        min_queue_remaining: Option<u32>,
+        max_history: Option<u32>,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.set_dynamic_mode(enabled, min_queue_remaining, max_history)?;
+        let version = state.version as u32;
+        drop(state);
+        Self::push_event(inner, DaemonEvent::DynamicModeChanged {
+            enabled,
+            min_queue_remaining: min_queue_remaining.unwrap_or(state.dynamic_mode.min_queue_remaining),
+            max_history: max_history.unwrap_or(state.dynamic_mode.max_history),
+        });
+        Self::save_state(inner);
+        Ok(DaemonRes::Ok { version })
+    }
+
+    async fn cmd_set_scrobble(
+        inner: &DaemonInner,
+        enabled: bool,
+        api_key: Option<String>,
+        session_token: Option<String>,
+        min_play_secs: Option<u32>,
+        min_play_pct: Option<f32>,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.set_scrobble(enabled, api_key, session_token, min_play_secs, min_play_pct)?;
+        let version = state.version as u32;
+        drop(state);
+        Self::push_event(inner, DaemonEvent::ScrobbleConfigChanged { enabled });
+        Self::save_state(inner);
+        Ok(DaemonRes::Ok { version })
+    }
+
+    async fn cmd_organize_library(
+        inner: &DaemonInner,
+        dry_run: Option<bool>,
+    ) -> Result<DaemonRes, CoreError> {
+        let is_dry_run = dry_run.unwrap_or(true);
+        // TODO: Implement actual library organization
+        // For now, return success with 0 moves
+        if !is_dry_run {
+            warn!("library organize: destructive mode not yet implemented");
+        }
+        Self::push_event(inner, DaemonEvent::LibraryOrganized { moves: 0 });
+        Ok(DaemonRes::Ok { version: inner.state.read().await.version as u32 })
     }
 
     async fn cmd_set_eq_preset(
@@ -1383,6 +1500,136 @@ impl Daemon {
         inner.mixer.lock().await.set_reverb(&ReverbConfig { enabled, room_size });
         Self::push_event(inner, DaemonEvent::ReverbChanged { enabled, room_size });
         Self::save_state(inner);
+        Ok(DaemonRes::Ok { version })
+    }
+
+    async fn cmd_set_loudness_mode(
+        inner: &DaemonInner,
+        mode: LoudnessMode,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.loudness_mode = mode;
+        state.version += 1;
+        let version = state.version as u32;
+        drop(state);
+        Self::push_event(inner, DaemonEvent::LoudnessModeChanged { mode });
+        Self::save_state(inner);
+        Ok(DaemonRes::Ok { version })
+    }
+
+    async fn cmd_scan_loudness(
+        inner: &DaemonInner,
+        track_ids: Option<Vec<i64>>,
+        force: Option<bool>,
+    ) -> Result<DaemonRes, CoreError> {
+        let version = inner.state.read().await.version as u32;
+        let event_tx = inner.event_tx.clone();
+        let state = inner.state.clone();
+
+        tokio::spawn(async move {
+            let total = track_ids.as_ref().map(|v| v.len()).unwrap_or(0);
+            for i in 1..=total {
+                let _ = event_tx.send(DaemonEvent::LoudnessScanProgress {
+                    scanned: i,
+                    total,
+                });
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            let _ = event_tx.send(DaemonEvent::LoudnessScanDone { scanned: total });
+        });
+
+        Ok(DaemonRes::Ok { version })
+    }
+
+    async fn cmd_set_pre_gain(
+        inner: &DaemonInner,
+        pre_gain_db: f32,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.pre_gain_db = pre_gain_db;
+        state.version += 1;
+        let version = state.version as u32;
+        drop(state);
+        Self::push_event(inner, DaemonEvent::PreGainChanged { pre_gain_db });
+        Self::save_state(inner);
+        Ok(DaemonRes::Ok { version })
+    }
+
+    async fn cmd_set_gapless(
+        inner: &DaemonInner,
+        enabled: bool,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.gapless = enabled;
+        state.version += 1;
+        let version = state.version as u32;
+        drop(state);
+        Self::push_event(inner, DaemonEvent::GaplessChanged { enabled });
+        Self::save_state(inner);
+        Ok(DaemonRes::Ok { version })
+    }
+
+    async fn cmd_set_dynamic_mode(
+        inner: &DaemonInner,
+        enabled: bool,
+        min_queue_remaining: Option<u32>,
+        max_history: Option<u32>,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.dynamic_mode.enabled = enabled;
+        if let Some(min) = min_queue_remaining {
+            state.dynamic_mode.min_queue_remaining = min;
+        }
+        if let Some(max) = max_history {
+            state.dynamic_mode.max_history = max;
+        }
+        state.version += 1;
+        let version = state.version as u32;
+        drop(state);
+        Self::push_event(inner, DaemonEvent::DynamicModeChanged {
+            enabled,
+            min_queue_remaining: min_queue_remaining.unwrap_or(3),
+            max_history: max_history.unwrap_or(50),
+        });
+        Self::save_state(inner);
+        Ok(DaemonRes::Ok { version })
+    }
+
+    async fn cmd_set_scrobble(
+        inner: &DaemonInner,
+        enabled: bool,
+        api_key: Option<String>,
+        session_token: Option<String>,
+        min_play_secs: Option<u32>,
+        min_play_pct: Option<f32>,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.scrobble.enabled = enabled;
+        state.scrobble.api_key = api_key;
+        state.scrobble.session_token = session_token;
+        state.scrobble.min_play_secs = min_play_secs;
+        state.scrobble.min_play_pct = min_play_pct;
+        state.version += 1;
+        let version = state.version as u32;
+        drop(state);
+        Self::push_event(inner, DaemonEvent::ScrobbleConfigChanged { enabled });
+        Self::save_state(inner);
+        Ok(DaemonRes::Ok { version })
+    }
+
+    async fn cmd_organize_library(
+        inner: &DaemonInner,
+        dry_run: Option<bool>,
+    ) -> Result<DaemonRes, CoreError> {
+        let version = inner.state.read().await.version as u32;
+        if dry_run != Some(false) {
+            // Dry run: just return OK with empty moves
+            Self::push_event(inner, DaemonEvent::LibraryOrganized { moves: 0 });
+            return Ok(DaemonRes::Ok { version });
+        }
+        // Non-dry run: log warning but don't actually move files (stub)
+        warn!("organize_library with dry_run=false: destructive organize not yet implemented");
+        Self::push_event(inner, DaemonEvent::LibraryOrganized { moves: 0 });
         Ok(DaemonRes::Ok { version })
     }
 

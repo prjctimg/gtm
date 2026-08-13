@@ -20,7 +20,7 @@
 // ```
 
 use crate::ipc::DaemonEvent;
-use crate::state::{CoreError, CrossfadeConfig, DaemonState, PlaybackStatus, RepeatMode};
+use crate::state::{CoreError, CrossfadeConfig, DaemonState, DynamicModeConfig, LoudnessMode, PlaybackStatus, RepeatMode, ScrobbleConfig};
 use crate::track::TrackInfo;
 use crate::tripwire::{self, FailPoint};
 use crate::Result;
@@ -141,22 +141,100 @@ impl DaemonState {
         Ok(())
     }
 
-    pub fn set_crossfade(&mut self, enabled: bool, duration: u8) -> Result<()> {
+    pub fn set_crossfade(&mut self, enabled: bool, duration: u8, easing: Option<crate::state::Easing>) -> Result<()> {
         tripwire::check(FailPoint::CrossfadeApply)?;
         self.crossfade = if enabled {
-            let easing = self
-                .crossfade
-                .as_ref()
-                .map(|c| c.easing)
-                .unwrap_or_default();
+            let easing_val = easing.unwrap_or_else(|| {
+                self.crossfade
+                    .as_ref()
+                    .map(|c| c.easing)
+                    .unwrap_or_default()
+            });
             Some(CrossfadeConfig {
                 enabled: true,
                 duration_secs: duration.min(30),
-                easing,
+                easing: easing_val,
             })
         } else {
             None
         };
+        self.version += 1;
+        #[cfg(debug_assertions)]
+        {
+            self.check_invariants();
+        }
+        Ok(())
+    }
+
+    /// Set loudness mode (Off, Track, Album, Auto).
+    pub fn set_loudness_mode(&mut self, mode: crate::state::LoudnessMode) -> Result<()> {
+        self.loudness_mode = mode;
+        self.version += 1;
+        #[cfg(debug_assertions)]
+        {
+            self.check_invariants();
+        }
+        Ok(())
+    }
+
+    /// Set pre-gain in dB.
+    pub fn set_pre_gain(&mut self, pre_gain_db: f32) -> Result<()> {
+        self.pre_gain_db = pre_gain_db;
+        self.version += 1;
+        #[cfg(debug_assertions)]
+        {
+            self.check_invariants();
+        }
+        Ok(())
+    }
+
+    /// Set gapless playback.
+    pub fn set_gapless(&mut self, enabled: bool) -> Result<()> {
+        self.gapless = enabled;
+        self.version += 1;
+        #[cfg(debug_assertions)]
+        {
+            self.check_invariants();
+        }
+        Ok(())
+    }
+
+    /// Set dynamic mode configuration.
+    pub fn set_dynamic_mode(
+        &mut self,
+        enabled: bool,
+        min_queue_remaining: Option<u32>,
+        max_history: Option<u32>,
+    ) -> Result<()> {
+        self.dynamic_mode.enabled = enabled;
+        if let Some(min) = min_queue_remaining {
+            self.dynamic_mode.min_queue_remaining = min;
+        }
+        if let Some(max) = max_history {
+            self.dynamic_mode.max_history = max;
+        }
+        self.version += 1;
+        #[cfg(debug_assertions)]
+        {
+            self.check_invariants();
+        }
+        Ok(())
+    }
+
+    /// Set scrobble configuration.
+    pub fn set_scrobble(
+        &mut self,
+        enabled: bool,
+        api_key: Option<String>,
+        session_token: Option<String>,
+        min_play_secs: Option<u32>,
+        min_play_pct: Option<f32>,
+    ) -> Result<()> {
+        self.scrobble.enabled = enabled;
+        self.scrobble.api_key = api_key;
+        self.scrobble.session_token = session_token;
+        self.scrobble.min_play_secs = min_play_secs;
+        self.scrobble.min_play_pct = min_play_pct;
         self.version += 1;
         #[cfg(debug_assertions)]
         {
@@ -253,17 +331,19 @@ impl DaemonState {
             DaemonEvent::CrossfadeChanged {
                 enabled,
                 duration_secs,
+                easing,
             } => {
                 self.crossfade = if *enabled {
-                    let easing = self
-                        .crossfade
-                        .as_ref()
-                        .map(|c| c.easing)
-                        .unwrap_or_default();
+                    let easing_val = easing.clone().unwrap_or_else(|| {
+                        self.crossfade
+                            .as_ref()
+                            .map(|c| c.easing)
+                            .unwrap_or_default()
+                    });
                     Some(CrossfadeConfig {
                         enabled: true,
                         duration_secs: *duration_secs,
-                        easing,
+                        easing: easing_val,
                     })
                 } else {
                     None
@@ -278,6 +358,28 @@ impl DaemonState {
             DaemonEvent::EqPresetChanged { preset } => {
                 self.eq_preset = preset.clone();
             }
+            DaemonEvent::LoudnessModeChanged { mode } => {
+                self.loudness_mode = *mode;
+            }
+            DaemonEvent::PreGainChanged { pre_gain_db } => {
+                self.pre_gain_db = *pre_gain_db;
+            }
+            DaemonEvent::GaplessChanged { enabled } => {
+                self.gapless = *enabled;
+            }
+            DaemonEvent::DynamicModeChanged { enabled, min_queue_remaining, max_history } => {
+                self.dynamic_mode.enabled = *enabled;
+                self.dynamic_mode.min_queue_remaining = *min_queue_remaining;
+                self.dynamic_mode.max_history = *max_history;
+            }
+            DaemonEvent::ScrobbleConfigChanged { enabled } => {
+                self.scrobble.enabled = *enabled;
+            }
+            DaemonEvent::LibraryOrganized { moves } => {
+                // No state to update
+            }
+            DaemonEvent::LoudnessScanProgress { scanned, total } => {}
+            DaemonEvent::LoudnessScanDone { scanned } => {}
             _ => {} // MetadataChanged, Custom — no state mirror field
         }
         self.version += 1;
