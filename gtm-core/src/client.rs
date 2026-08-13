@@ -15,10 +15,29 @@ use tokio::net::UnixStream;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction, WireEvent, WireReq, WireRes};
-use gtm_core::state::{DaemonState, EqPreset, RepeatMode, YTFilter};
+use gtm_core::state::{DaemonState, EqPreset, PlaybackStatus, ReverbConfig, SavedState};
 use gtm_core::wire;
 use gtm_core::CoreError;
 use gtm_core::Result;
+
+// Socket location constants for GTM Protocol v1
+const DEFAULT_RUNTIME_DIR: &str = "XDG_RUNTIME_DIR";
+const DEFAULT_TMP_DIR: &str = "TMPDIR";
+const DEFAULT_HOME: &str = "HOME";
+
+fn get_socket_path() -> Result<std::path::PathBuf> {
+    let home = std::env::var(DEFAULT_HOME).unwrap_or_else(|_| "/tmp".into());
+
+    // Try XDG_RUNTIME_DIR first
+    if let Ok(runtime) = std::env::var(DEFAULT_RUNTIME_DIR) {
+        let path = std::path::PathBuf::from(runtime).join("gtm");
+        let _ = std::fs::create_dir_all(&path);
+        return Ok(path);
+    }
+
+    // Fallbacks will be set up by caller
+    Ok(std::path::PathBuf::from("/tmp"))
+}
 
 struct PendingRequest {
     req: DaemonReq,
@@ -66,6 +85,8 @@ impl DaemonClient {
                         consecutive_failures: 0,
                         pending: HashMap::new(),
                         next_id: 0,
+                        handshake_sent: false,
+                        authenticated: Arc::new(AtomicBool::new(false)),
                     };
                     tokio::spawn(worker.run());
 
@@ -567,10 +588,13 @@ struct IpcWorker {
     consecutive_failures: u32,
     pending: HashMap<u64, oneshot::Sender<Result<DaemonRes>>>,
     next_id: u64,
+    handshake_sent: bool,
+    authenticated: Arc<AtomicBool>,
 }
 
 const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 const HEARTBEAT_TIMEOUT_SECS: u64 = 30;
+const HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 
 impl IpcWorker {
     async fn run(mut self) {
@@ -688,6 +712,9 @@ impl IpcWorker {
                     crate::log::log(&format!(
                         "IPC worker reconnected after {attempt} attempts"
                     ));
+                    // Reset handshake tracking after reconnect
+                    self.handshake_sent = false;
+                    self.authenticated.store(false, Ordering::Release);
                     return;
                 }
                 Err(e) => {

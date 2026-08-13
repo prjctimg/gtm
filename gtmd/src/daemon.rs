@@ -51,6 +51,7 @@
 //!                           → auto-advance on track end
 //! ```
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -130,6 +131,8 @@ struct DaemonInner {
     crossfade_loaded_for: tokio::sync::Mutex<Option<String>>,
     sleep_cancel: Arc<AtomicBool>,
     health: Arc<HealthTracker>,
+    /// Per-client authentication state: true = handshake completed
+    client_auth: tokio::sync::Mutex<HashMap<ClientId, bool>>,
 }
 
 pub struct Daemon {
@@ -207,6 +210,7 @@ impl Daemon {
             crossfade_loaded_for: tokio::sync::Mutex::new(None),
             sleep_cancel: Arc::new(AtomicBool::new(false)),
             health: Arc::new(HealthTracker::new(audio_backend_name)),
+            client_auth: tokio::sync::Mutex::new(HashMap::new()),
         });
 
         Ok(Self {
@@ -402,12 +406,16 @@ impl Daemon {
         inner: Arc<DaemonInner>,
         req_tx: mpsc::UnboundedSender<(ClientId, u64, DaemonReq, ReplyTx)>,
     ) {
+        // Initialize client auth state as unauthenticated
+        inner.client_auth.lock().await.insert(client_id, false);
+
         let (reader, writer) = stream.into_split();
         let event_rx = inner.event_tx.subscribe();
-        let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<(u64, DaemonRes)>();
+        let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<(u64, DaemonRes)>;
 
         // Reader task: JSON lines → req_tx
         let r_tx = reply_tx.clone();
+        let inner_clone = inner.clone();
         tokio::spawn(async move {
             let mut reader = BufReader::new(reader);
             let mut line = String::new();
@@ -441,6 +449,8 @@ impl Daemon {
                     }
                 }
             }
+            // Clean up auth state on disconnect
+            inner_clone.client_auth.lock().await.remove(&client_id);
             info!("client {client_id} disconnected");
         });
 
@@ -512,14 +522,12 @@ impl Daemon {
             loop {
                 match event_rx.recv().await {
                     Ok(event) => {
-                        let frame = match wire::encode(&[event]) {
-                            Ok(f) => f,
-                            Err(e) => {
-                                warn!("pulse encode event: {e}");
-                                continue;
-                            }
-                        };
-                        if writer.write_all(&frame).await.is_err() {
+                        let wire_event = event.to_wire_event();
+                        let json = serde_json::to_string(&wire_event).unwrap_or_default();
+                        if writer.write_all(json.as_bytes()).await.is_err()
+                            || writer.write_all(b"\n").await.is_err()
+                            || writer.flush().await.is_err()
+                        {
                             break;
                         }
                     }
@@ -532,8 +540,22 @@ impl Daemon {
         });
     }
 
-    async fn dispatch(inner: Arc<DaemonInner>, _client_id: ClientId, request_id: u64, req: DaemonReq, reply_tx: ReplyTx) {
-        let res = match Self::handle_request(&inner, &req).await {
+    async fn dispatch(inner: Arc<DaemonInner>, client_id: ClientId, request_id: u64, req: DaemonReq, reply_tx: ReplyTx) {
+        // Check if client has completed handshake
+        let authenticated = {
+            inner.client_auth.lock().await.get(&client_id).copied().unwrap_or(false)
+        };
+
+        // Handshake is the only command allowed before authentication
+        if !authenticated && !matches!(req, DaemonReq::Handshake { .. }) {
+            let _ = reply_tx.send((request_id, DaemonRes::Error {
+                version: inner.state.read().await.version as u32,
+                message: "handshake required".to_string(),
+            }));
+            return;
+        }
+
+        let res = match Self::handle_request(&inner, &req, client_id, authenticated).await {
             Ok(res) => res,
             Err(e) => {
                 warn!("command {:?} failed: {e}", req);
@@ -546,8 +568,22 @@ impl Daemon {
         let _ = reply_tx.send((request_id, res));
     }
 
-    async fn handle_request(inner: &DaemonInner, req: &DaemonReq) -> Result<DaemonRes, CoreError> {
+    async fn handle_request(
+        inner: &DaemonInner,
+        req: &DaemonReq,
+        client_id: ClientId,
+        authenticated: bool,
+    ) -> Result<DaemonRes, CoreError> {
         match req {
+            DaemonReq::Handshake { version, client, client_version } => {
+                inner.client_auth.lock().await.insert(client_id, true);
+                info!("client {client_id}: handshake from {client} v{client_version:?}, protocol v{version}");
+                Ok(DaemonRes::Handshake {
+                    version: *version,
+                    daemon: "gtmd-rs".to_string(),
+                    daemon_version: env!("CARGO_PKG_VERSION").to_string(),
+                })
+            }
             DaemonReq::Play { path, start_pos } => Self::cmd_play(inner, path, *start_pos, false).await,
             DaemonReq::PlayPause => Self::cmd_playpause(inner).await,
             DaemonReq::Pause => Self::cmd_pause(inner).await,
@@ -556,14 +592,20 @@ impl Daemon {
             DaemonReq::Prev => Self::cmd_prev(inner).await,
             DaemonReq::Seek { position_secs } => Self::cmd_seek(inner, *position_secs).await,
             DaemonReq::SetVolume { volume } => Self::cmd_set_volume(inner, *volume).await,
+            DaemonReq::GetVolume => Self::cmd_get_volume(inner).await,
             DaemonReq::ToggleShuffle => Self::cmd_toggle_shuffle(inner).await,
             DaemonReq::CycleRepeat { mode } => Self::cmd_cycle_repeat(inner, *mode).await,
             DaemonReq::ToggleMute => Self::cmd_toggle_mute(inner).await,
             DaemonReq::Crossfade {
                 enabled,
                 duration_secs,
+                easing: _,
             } => Self::cmd_crossfade(inner, *enabled, *duration_secs).await,
             DaemonReq::SetCrossfadeEasing { easing } => Self::cmd_set_crossfade_easing(inner, *easing).await,
+            DaemonReq::SetEqPreset { preset } => Self::cmd_set_eq_preset(inner, *preset).await,
+            DaemonReq::SetEqEnabled { enabled } => Self::cmd_set_eq_enabled(inner, *enabled).await,
+            DaemonReq::SetReverb { enabled, room_size } => Self::cmd_set_reverb(inner, *enabled, *room_size).await,
+            DaemonReq::ListEqPresets => Self::cmd_list_eq_presets(inner).await,
             DaemonReq::Queue { action } => Self::cmd_queue(inner, action).await,
             DaemonReq::Library { action } => Self::cmd_library(inner, action).await,
             DaemonReq::Search { query } => Self::cmd_search(inner, query).await,
@@ -574,15 +616,30 @@ impl Daemon {
             DaemonReq::YtSearchPoll => Self::cmd_yt_search_poll(inner).await,
             DaemonReq::YtSearchCancel => Self::cmd_yt_search_cancel(inner).await,
             DaemonReq::YtResolveStream { url } => Self::cmd_yt_resolve_stream(inner, url).await,
-            DaemonReq::GetStatus => Self::cmd_get_status(inner).await,
-            DaemonReq::CheckHealth => Self::cmd_check_health(inner).await,
-            DaemonReq::SetEqPreset { preset } => Self::cmd_set_eq_preset(inner, *preset).await,
-            DaemonReq::SetEqEnabled { enabled } => Self::cmd_set_eq_enabled(inner, *enabled).await,
-            DaemonReq::SetReverb { enabled, room_size } => Self::cmd_set_reverb(inner, *enabled, *room_size).await,
-            DaemonReq::SetSleepTimer { minutes } => Self::cmd_set_sleep_timer(inner, *minutes).await,
-            DaemonReq::CancelSleepTimer => Self::cmd_cancel_sleep_timer(inner).await,
+            DaemonReq::YtDownload { .. } => {
+                Err(CoreError::Daemon("yt_download not yet implemented".into()))
+            }
+            DaemonReq::YtDownloadPoll => {
+                Err(CoreError::Daemon("yt_download_poll not yet implemented".into()))
+            }
+            DaemonReq::YtCancelDownload { .. } => {
+                Err(CoreError::Daemon("yt_cancel_download not yet implemented".into()))
+            }
+            DaemonReq::YtFetchPlaylist { .. } => {
+                Err(CoreError::Daemon("yt_fetch_playlist not yet implemented".into()))
+            }
+            DaemonReq::YtFetchPlaylistPoll => {
+                Err(CoreError::Daemon("yt_fetch_playlist_poll not yet implemented".into()))
+            }
+            DaemonReq::YtSetConfig { .. } => {
+                Err(CoreError::Daemon("yt_set_config not yet implemented".into()))
+            }
             DaemonReq::GetCoverArt { track_id } => Self::cmd_get_cover_art(inner, *track_id).await,
             DaemonReq::GetLyrics { track_id } => Self::cmd_get_lyrics(inner, *track_id).await,
+            DaemonReq::SetSleepTimer { minutes } => Self::cmd_set_sleep_timer(inner, *minutes).await,
+            DaemonReq::CancelSleepTimer => Self::cmd_cancel_sleep_timer(inner).await,
+            DaemonReq::GetStatus => Self::cmd_get_status(inner).await,
+            DaemonReq::CheckHealth => Self::cmd_check_health(inner).await,
             DaemonReq::Ping => Ok(DaemonRes::Pong),
             DaemonReq::Quit => {
                 info!("quit requested");
@@ -612,7 +669,34 @@ impl Daemon {
     }
 
     fn push_event(inner: &DaemonInner, event: DaemonEvent) {
-        let _ = inner.event_tx.send(event);
+        let wire_event = WireEvent {
+            event: match &event {
+                DaemonEvent::PlaybackStarted { .. } => "playback_started",
+                DaemonEvent::PlaybackPaused { .. } => "playback_paused",
+                DaemonEvent::PlaybackStopped => "playback_stopped",
+                DaemonEvent::TrackEnded => "track_ended",
+                DaemonEvent::PositionChanged { .. } => "position_changed",
+                DaemonEvent::DurationChanged { .. } => "duration_changed",
+                DaemonEvent::VolumeChanged { .. } => "volume_changed",
+                DaemonEvent::MetadataChanged { .. } => "metadata_changed",
+                DaemonEvent::QueueChanged { .. } => "queue_changed",
+                DaemonEvent::QueueIndexChanged { .. } => "queue_index_changed",
+                DaemonEvent::RepeatModeChanged { .. } => "repeat_mode_changed",
+                DaemonEvent::ShuffleChanged { .. } => "shuffle_changed",
+                DaemonEvent::CrossfadeChanged { .. } => "crossfade_changed",
+                DaemonEvent::SleepTimerTick { .. } => "sleep_timer_tick",
+                DaemonEvent::SleepTimerExpired => "sleep_timer_expired",
+                DaemonEvent::EqPresetChanged { .. } => "eq_preset_changed",
+                DaemonEvent::EqEnabledChanged { .. } => "eq_enabled_changed",
+                DaemonEvent::ReverbChanged { .. } => "reverb_changed",
+                DaemonEvent::Custom { .. } => "custom",
+                DaemonEvent::Heartbeat => "heartbeat",
+            }
+                .to_string(),
+            data: serde_json::to_value(&event)
+                .unwrap_or_else(|_| serde_json::json!({})),
+        };
+        let _ = inner.event_tx.send(wire_event);
     }
 
     /// Save persistent state to disk. Non-blocking and failure-tolerant.
@@ -1154,6 +1238,26 @@ impl Daemon {
         Self::push_event(inner, DaemonEvent::VolumeChanged { volume });
         Self::save_state(inner);
         Ok(DaemonRes::Ok { version })
+    }
+
+    async fn cmd_get_volume(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let state = inner.state.read().await;
+        let version = state.version as u32;
+        let volume = state.volume;
+        drop(state);
+        Ok(DaemonRes::Value {
+            version,
+            value: serde_json::json!({ "volume": volume }),
+        })
+    }
+
+    async fn cmd_list_eq_presets(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let version = inner.state.read().await.version as u32;
+        let presets = state::EQ_PRESETS
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<String>>();
+        Ok(DaemonRes::EqPresets { version, presets })
     }
 
     async fn cmd_toggle_shuffle(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {

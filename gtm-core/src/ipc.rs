@@ -302,6 +302,7 @@ pub enum DaemonRes {
     Pong,
     HealthReport { version: u32, report: Box<HealthReport> },
     EqPresets { version: u32, presets: Vec<String> },
+    Handshake { version: u32, daemon: String, daemon_version: String },
     Error { version: u32, message: String },
 }
 
@@ -322,6 +323,7 @@ impl DaemonRes {
             DaemonRes::SyncLyricsResult { version, .. } => *version,
             DaemonRes::HealthReport { version, .. } => *version,
             DaemonRes::EqPresets { version, .. } => *version,
+            DaemonRes::Handshake { version, .. } => *version,
             DaemonRes::Error { version, .. } => *version,
             DaemonRes::Pong => 0,
         };
@@ -341,6 +343,7 @@ impl DaemonRes {
             DaemonRes::SyncLyricsResult { synced, total, .. } => Some(serde_json::json!({ "synced": synced, "total": total })),
             DaemonRes::HealthReport { report, .. } => Some(serde_json::json!({ "report": report })),
             DaemonRes::EqPresets { presets, .. } => Some(serde_json::json!({ "presets": presets })),
+            DaemonRes::Handshake { daemon, daemon_version, .. } => Some(serde_json::json!({ "daemon": daemon, "daemon_version": daemon_version })),
             DaemonRes::Error { message, .. } => return WireRes::err(id, message),
             DaemonRes::Pong => None,
         };

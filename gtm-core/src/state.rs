@@ -154,6 +154,11 @@ pub const EQ_FREQUENCIES: [f64; 15] = [
     25.0, 40.0, 63.0, 100.0, 160.0, 250.0, 400.0, 630.0,
     1000.0, 1600.0, 2500.0, 4000.0, 6300.0, 10000.0, 16000.0,
 ];
+/// All available EQ preset names (excluding Custom).
+pub const EQ_PRESETS: &[&str] = &[
+    "flat", "pop", "rock", "jazz", "classical", "bass", "vocal", "electronic",
+    "hiphop", "latin", "acoustic", "podcast", "dance", "headphones", "speaker",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
