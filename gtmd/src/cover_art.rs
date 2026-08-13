@@ -1,3 +1,9 @@
+// Copyright (c) 2025 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// Cover art fetching from Deezer API with disk and LRU cache
+//
+// This is free software released under the GPL-3.0 license.
+
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;

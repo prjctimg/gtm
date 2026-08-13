@@ -1,3 +1,9 @@
+// Copyright (c) 2025 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// Queue management helpers: add, remove, move, clear, scan
+//
+// This is free software released under the GPL-3.0 license.
+
 //! Queue management helpers: add, remove, move, clear, scan.
 //!
 //! Tracks are stored as `Vec<TrackInfo>` in `DaemonState.queue` with a

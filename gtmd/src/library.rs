@@ -1,3 +1,9 @@
+// Copyright (c) 2025 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// Library management: audio file scanning, metadata extraction, and persistence
+//
+// This is free software released under the GPL-3.0 license.
+
 use std::fs;
 use std::fs::File;
 use std::path::PathBuf;
@@ -331,6 +337,22 @@ impl Library {
         Ok(playlist)
     }
 
+    pub fn export_m3u(&self, playlist_id: i64, path: &str) -> Result<(), String> {
+        let playlist = self.get_playlist(playlist_id)?.ok_or("playlist not found")?;
+        let track_ids = self.get_playlist_tracks(playlist_id)?;
+        let mut lines = vec![
+            "#EXTM3U".to_string(),
+            format!("#PLAYLIST: {}", playlist.name),
+        ];
+        for track in &track_ids {
+            let dur_secs = track.duration as u64;
+            lines.push(format!("#EXTINF:{},{} - {}", dur_secs, track.artist, track.title));
+            lines.push(track.path.clone());
+        }
+        std::fs::write(path, lines.join("\n")).map_err(|e| format!("write m3u: {e}"))?;
+        Ok(())
+    }
+
     pub fn scan_directory(&self, dir: &str, recursive: bool, cache_dir: Option<&str>) -> Result<Vec<TrackInfo>, String> {
         let mut added = Vec::new();
         let extensions = ["mp3", "flac", "ogg", "wav", "m4a", "aac", "opus"];
@@ -547,12 +569,40 @@ fn extract_metadata(path: &str, cache_dir: Option<&str>) -> Result<(Metadata, St
         .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
         .unwrap_or(0.0);
 
-    if title.is_empty() {
-        title = std::path::Path::new(path)
+    if artist.is_empty() || title.is_empty() {
+        let stem = std::path::Path::new(path)
             .file_stem()
             .and_then(|s| s.to_str())
-            .unwrap_or("Unknown")
-            .to_string();
+            .unwrap_or("");
+        if let Some(dash_idx) = stem.find(" - ") {
+            if artist.is_empty() && dash_idx > 0 {
+                artist = stem[..dash_idx].trim().to_string();
+            }
+            let after_dash = stem[dash_idx + 3..].trim();
+            let mut clean = after_dash.to_string();
+            loop {
+                let prev = clean.clone();
+                let trimmed = prev.trim_end();
+                let next = if trimmed.ends_with(')') {
+                    trimmed.rfind('(').filter(|&o| o > 0).map(|o| trimmed[..o].trim_end().to_string())
+                } else if trimmed.ends_with(']') {
+                    trimmed.rfind('[').filter(|&o| o > 0).map(|o| trimmed[..o].trim_end().to_string())
+                } else {
+                    None
+                };
+                match next {
+                    Some(s) if !s.is_empty() && s != clean => clean = s,
+                    _ => break,
+                }
+            }
+            if !clean.is_empty() {
+                title = clean;
+            } else if title.is_empty() {
+                title = stem.to_string();
+            }
+        } else if title.is_empty() {
+            title = stem.to_string();
+        }
     }
 
     Ok((

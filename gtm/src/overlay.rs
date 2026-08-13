@@ -1,3 +1,9 @@
+// Copyright (c) 2025 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// Overlay system — floating panels accessible via Alt+key from any tab
+//
+// This is free software released under the GPL-3.0 license.
+
 //! Overlay system — floating panels accessible via Alt+key from any tab.
 //!
 //! Each overlay is a self-contained UI module that renders on top of the
@@ -19,6 +25,7 @@ pub enum OverlayId {
     SleepTimer,
     ThemePicker,
     SoundEffects,
+    Help,
 }
 
 /// Active overlay instance — state + metadata.
@@ -110,6 +117,7 @@ impl OverlayId {
             OverlayId::SleepTimer => "Sleep Timer",
                 OverlayId::ThemePicker => "Theme",
             OverlayId::SoundEffects => "Sound Effects",
+            OverlayId::Help => "Help",
         }
     }
 }

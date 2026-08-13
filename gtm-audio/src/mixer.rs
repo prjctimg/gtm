@@ -1,3 +1,9 @@
+// Copyright (c) 2025 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// Mixer trait and rodio-based implementation with EQ, reverb, and crossfade
+//
+// This is free software released under the GPL-3.0 license.
+
 use std::fs::File;
 use std::io::BufReader;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -7,14 +13,16 @@ use std::time::Instant;
 use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
 
 use crate::backend::{AudioError, AudioEvent, AudioResult};
+use crate::eq::{EqGains, EqSource, ReverbSource};
 use crate::symphonia::SymphoniaSource;
-use gtm_core::state::Easing;
+use gtm_core::state::{Easing, EqPreset, ReverbConfig};
 
 /// Trait abstracting over audio mixer implementations (real or null).
 pub trait Mixer: Send + Sync {
     fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()>;
     fn load_active_decoded(&mut self, source: Box<dyn Source<Item = f32> + Send>, start_pos: f64) -> AudioResult<()>;
     fn load_standby(&mut self, path: &str) -> AudioResult<()>;
+    fn load_standby_decoded(&mut self, source: Box<dyn Source<Item = f32> + Send>) -> AudioResult<()>;
     fn standby_is_loaded(&self) -> bool;
     fn play(&mut self) -> AudioResult<()>;
     fn pause(&mut self) -> AudioResult<()>;
@@ -31,6 +39,11 @@ pub trait Mixer: Send + Sync {
     fn is_crossfading(&self) -> bool;
     fn force_complete_crossfade(&mut self);
     fn poll(&mut self) -> AudioResult<Option<AudioEvent>>;
+
+    // ─── EQ / Reverb ───
+    fn set_eq_preset(&self, preset: &EqPreset);
+    fn set_eq_enabled(&self, enabled: bool);
+    fn set_reverb(&self, config: &ReverbConfig);
 }
 
 /// Dual-player audio mixer with crossfade support.
@@ -71,6 +84,11 @@ pub struct AudioMixer {
     stored_volume: u8,
     last_reported_pos: f64,
     crossfade_easing: Easing,
+    // ─── EQ / Reverb ───
+    pub eq_gains: EqGains,
+    eq_enabled: Arc<AtomicBool>,
+    reverb_enabled: Arc<AtomicBool>,
+    reverb_room_size: Arc<Mutex<f32>>,
 }
 
 struct MixerDeviceSink(rodio::MixerDeviceSink);
@@ -84,6 +102,9 @@ impl Mixer for AudioMixer {
     }
     fn load_standby(&mut self, path: &str) -> AudioResult<()> {
         self.load_standby(path)
+    }
+    fn load_standby_decoded(&mut self, source: Box<dyn Source<Item = f32> + Send>) -> AudioResult<()> {
+        self.load_standby_decoded(source)
     }
     fn standby_is_loaded(&self) -> bool {
         self.standby_is_loaded()
@@ -133,6 +154,19 @@ impl Mixer for AudioMixer {
     fn poll(&mut self) -> AudioResult<Option<AudioEvent>> {
         self.poll()
     }
+
+    fn set_eq_preset(&self, preset: &EqPreset) {
+        self.eq_gains.apply_preset(preset);
+    }
+
+    fn set_eq_enabled(&self, enabled: bool) {
+        self.eq_enabled.store(enabled, Ordering::Relaxed);
+    }
+
+    fn set_reverb(&self, config: &ReverbConfig) {
+        self.reverb_enabled.store(config.enabled, Ordering::Relaxed);
+        *self.reverb_room_size.lock().unwrap() = config.room_size;
+    }
 }
 
 impl AudioMixer {
@@ -166,6 +200,10 @@ impl AudioMixer {
             pause_fade_start: None,
             stored_volume: 100,
             last_reported_pos: f64::NEG_INFINITY,
+            eq_gains: EqGains::new_flat(),
+            eq_enabled: Arc::new(AtomicBool::new(true)),
+            reverb_enabled: Arc::new(AtomicBool::new(false)),
+            reverb_room_size: Arc::new(Mutex::new(0.3)),
         })
     }
 
@@ -199,15 +237,32 @@ impl AudioMixer {
         SymphoniaSource::from_file(path, 0.0)
     }
 
+    /// Wrap a decoded source with EQ and optional reverb.
+    fn wrap_source(&self, source: Box<dyn Source<Item = f32> + Send>) -> Box<dyn Source<Item = f32> + Send> {
+        // Apply EQ only when enabled
+        let boxed: Box<dyn Source<Item = f32> + Send> = if self.eq_enabled.load(Ordering::Relaxed) {
+            Box::new(EqSource::new(source, self.eq_gains.clone()))
+        } else {
+            source
+        };
+        if self.reverb_enabled.load(Ordering::Relaxed) {
+            let room_size = *self.reverb_room_size.lock().unwrap();
+            Box::new(ReverbSource::new(boxed, room_size, self.reverb_enabled.clone()))
+        } else {
+            boxed
+        }
+    }
+
     pub fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()> {
         let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
         self.active().stop();
         self.active().set_volume(vol);
 
-        let source = Self::decode(path)?;
-        if let Some(ref dur) = source.total_duration() {
+        let raw = Self::decode(path)?;
+        if let Some(ref dur) = raw.total_duration() {
             *self.duration.lock().unwrap() = dur.as_secs_f64();
         }
+        let source = self.wrap_source(raw);
         self.active().append(source);
 
         *self.position.lock().unwrap() = start_pos;
@@ -228,6 +283,7 @@ impl AudioMixer {
         if let Some(ref dur) = source.total_duration() {
             *self.duration.lock().unwrap() = dur.as_secs_f64();
         }
+        let source = self.wrap_source(source);
         self.active().append(source);
 
         *self.position.lock().unwrap() = start_pos;
@@ -244,6 +300,15 @@ impl AudioMixer {
         self.standby().set_volume(0.0);
 
         let source = Self::decode(path)?;
+        let source = self.wrap_source(source);
+        self.standby().append(source);
+        Ok(())
+    }
+
+    pub fn load_standby_decoded(&mut self, source: Box<dyn Source<Item = f32> + Send>) -> AudioResult<()> {
+        self.standby().stop();
+        self.standby().set_volume(0.0);
+        let source = self.wrap_source(source);
         self.standby().append(source);
         Ok(())
     }

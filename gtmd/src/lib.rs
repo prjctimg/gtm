@@ -1,3 +1,9 @@
+// Copyright (c) 2025 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// Daemon library root: re-exports all daemon submodules
+//
+// This is free software released under the GPL-3.0 license.
+
 pub mod config;
 pub mod cover_art;
 pub mod daemon;

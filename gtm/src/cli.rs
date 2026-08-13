@@ -1,3 +1,9 @@
+// Copyright (c) 2025 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// CLI mode: dispatches subcommands to the daemon via IPC
+//
+// This is free software released under the GPL-3.0 license.
+
 //! CLI mode: dispatches subcommands to the daemon via IPC.
 //!
 //! ```text
@@ -211,6 +217,11 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
                 .await
                 .map(|v| format!("ok version={v}"))
                 .map_err(|e| e.to_string()),
+            CliCommand::ExportM3u { playlist_id, path } => client
+                .library_export_m3u(*playlist_id, path)
+                .await
+                .map(|v| format!("ok version={v}"))
+                .map_err(|e| e.to_string()),
             CliCommand::Recent { count } => {
                 let res = client
                     .library_get_recent(*count)
@@ -291,7 +302,33 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
                 if json {
                     serde_json::to_string_pretty(&state).map_err(|e| e.to_string())
                 } else {
-                    Ok(format!("{state:?}"))
+                    let status_str = match state.status {
+                        gtm_core::state::PlaybackStatus::Playing => "\x1b[32m▶ Playing\x1b[0m",
+                        gtm_core::state::PlaybackStatus::Paused => "\x1b[33m⏸ Paused\x1b[0m",
+                        gtm_core::state::PlaybackStatus::Stopped => "\x1b[31m⏹ Stopped\x1b[0m",
+                    };
+                    let track_str = state.current_track.as_ref().map(|t| {
+                        let title = if t.title.is_empty() {
+                            std::path::Path::new(&t.path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Unknown".into())
+                        } else {
+                            t.title.clone()
+                        };
+                        if t.artist.is_empty() { title } else { format!("{} — {}", t.artist, title) }
+                    }).unwrap_or_else(|| "No track".into());
+                    let vol_str = format!("\x1b[36m{}%\x1b[0m", state.volume);
+                    let repeat_str = format!("{:?}", state.repeat);
+                    let shuffle_str = if state.shuffle { "\x1b[32mOn\x1b[0m" } else { "Off" };
+                    let queue_str = format!("{} tracks, cursor {}/{}", state.queue.len(), state.queue_cursor + 1, state.queue.len().max(1));
+                    let mute_str = if state.mute { "\x1b[33mMuted\x1b[0m" } else { "Unmuted" };
+                    Ok(format!(
+                        "\x1b[1mPlayback:\x1b[0m  {}\n\
+                         \x1b[1mTrack:\x1b[0m    {}\n\
+                         \x1b[1mVolume:\x1b[0m   {} ({})\n\
+                         \x1b[1mRepeat:\x1b[0m   {}\n\
+                         \x1b[1mShuffle:\x1b[0m  {}\n\
+                         \x1b[1mQueue:\x1b[0m    {}",
+                        status_str, track_str, vol_str, mute_str, repeat_str, shuffle_str, queue_str
+                    ))
                 }
             }
             CliCommand::Ping => {

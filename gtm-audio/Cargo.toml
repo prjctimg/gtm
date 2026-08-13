@@ -9,6 +9,7 @@ gtm-core = { path = "../gtm-core" }
 rodio = { version = "0.22", default-features = false, features = ["playback", "symphonia-all"] }
 symphonia = { version = "0.6", default-features = false, features = ["all-codecs", "all-formats", "all-meta"] }
 symphonia-adapter-libopus = "0.3"
+fundsp = { version = "0.23", default-features = false, features = ["std"] }
 thiserror = "2"
 async-trait = "0.1"
 log = "0.4"

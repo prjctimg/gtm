@@ -1,3 +1,9 @@
+// Copyright (c) 2025 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// IPC client: async daemon communication over Unix sockets
+//
+// This is free software released under the GPL-3.0 license.
+
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -224,6 +230,14 @@ impl DaemonClient {
         self.send_ok(DaemonReq::SetEqPreset { preset }).await
     }
 
+    pub async fn set_eq_enabled(&self, enabled: bool) -> Result<u32> {
+        self.send_ok(DaemonReq::SetEqEnabled { enabled }).await
+    }
+
+    pub async fn set_reverb(&self, enabled: bool, room_size: f32) -> Result<u32> {
+        self.send_ok(DaemonReq::SetReverb { enabled, room_size }).await
+    }
+
     pub async fn crossfade(&self, enabled: bool, duration_secs: u8) -> Result<u32> {
         self.send_ok(DaemonReq::Crossfade {
             enabled,
@@ -355,6 +369,13 @@ impl DaemonClient {
     pub async fn library_import_m3u(&self, path: &str) -> Result<u32> {
         self.send_ok(DaemonReq::Library {
             action: LibraryAction::ImportM3u { path: path.into() },
+        })
+        .await
+    }
+
+    pub async fn library_export_m3u(&self, playlist_id: i64, path: &str) -> Result<u32> {
+        self.send_ok(DaemonReq::Library {
+            action: LibraryAction::ExportM3u { playlist_id, path: path.into() },
         })
         .await
     }
@@ -574,7 +595,10 @@ impl IpcWorker {
         if self.buf.is_empty() {
             return None;
         }
-        if self.buf[0] == b'{' {
+        // JSON responses start with '{' (objects) or '"' (unit-variant strings
+        // like "pong"). Binary WireFrames always start with a 4-byte big-endian
+        // length prefix, whose first byte is 0x00 for payloads <16 MB.
+        if self.buf[0] == b'{' || self.buf[0] == b'"' {
             let pos = self.buf.iter().position(|&b| b == b'\n')?;
             let line = self.buf[..pos].to_vec();
             self.buf.drain(..=pos);

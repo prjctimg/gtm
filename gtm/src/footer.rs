@@ -1,5 +1,12 @@
+// Copyright (c) 2025 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// Footer bar: system info, keybindings, and playback status
+//
+// This is free software released under the GPL-3.0 license.
+
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::Style;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
@@ -81,8 +88,11 @@ pub fn render_preset(f: &mut Frame, area: Rect, app: &App, preset: &FooterPreset
         .chain(preset.z.iter())
         .collect();
 
-    let left_str = render_modules(&left_modules, app);
-    let right_str = render_modules(&right_modules, app);
+    let left_parts = render_modules(&left_modules, app);
+    let right_parts = render_modules(&right_modules, app);
+
+    let left_str: String = left_parts.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>().join(" ");
+    let right_str: String = right_parts.iter().map(|(s, _)| s.as_str()).collect::<Vec<_>>().join(" ");
 
     let left_w = if left_str.is_empty() { 0u16 } else { left_str.len() as u16 + 2 };
     let right_w = if right_str.is_empty() { 0u16 } else { right_str.len() as u16 + 2 };
@@ -91,22 +101,20 @@ pub fn render_preset(f: &mut Frame, area: Rect, app: &App, preset: &FooterPreset
     let is_playing = app.state.status == PlaybackStatus::Playing;
 
     let left_bg = if is_playing { app.theme.accent } else { app.theme.fg_dim };
-    let left_fg = if is_playing {
-        crate::ui::readable_fg(app.theme.accent, app.theme.overlay_bg, app.theme.fg_bright)
-    } else {
-        app.theme.overlay_bg
-    };
 
     if left_w == 0 && right_w == 0 {
         return;
     }
 
     if total_needed as u16 >= area.width {
-        // Only show left side when too narrow
-        let left_text = format!(" {} ", left_str);
+        let mut spans = Vec::new();
+        for (i, (text, color)) in left_parts.iter().enumerate() {
+            if i > 0 { spans.push(Span::raw(" ")); }
+            spans.push(Span::styled(text.clone(), Style::default().fg(*color)));
+        }
         f.render_widget(
-            Paragraph::new(left_text)
-                .style(Style::default().fg(left_fg).bg(left_bg)),
+            Paragraph::new(Line::from(spans))
+                .style(Style::default().bg(left_bg)),
             area,
         );
         return;
@@ -118,47 +126,75 @@ pub fn render_preset(f: &mut Frame, area: Rect, app: &App, preset: &FooterPreset
         .split(area);
 
     if left_w > 0 {
-        let left_text = format!(" {} ", left_str);
+        let mut spans = Vec::new();
+        spans.push(Span::raw(" "));
+        for (i, (text, color)) in left_parts.iter().enumerate() {
+            if i > 0 { spans.push(Span::raw(" ")); }
+            spans.push(Span::styled(text.clone(), Style::default().fg(*color)));
+        }
+        spans.push(Span::raw(" "));
         f.render_widget(
-            Paragraph::new(left_text)
-                .style(Style::default().fg(left_fg).bg(left_bg)),
+            Paragraph::new(Line::from(spans))
+                .style(Style::default().bg(left_bg)),
             chunks[0],
         );
     }
 
     if right_w > 0 {
-        let right_text = format!(" {} ", right_str);
+        let mut spans = Vec::new();
+        spans.push(Span::raw(" "));
+        for (i, (text, color)) in right_parts.iter().enumerate() {
+            if i > 0 { spans.push(Span::raw(" ")); }
+            spans.push(Span::styled(text.clone(), Style::default().fg(*color)));
+        }
+        spans.push(Span::raw(" "));
         f.render_widget(
-            Paragraph::new(right_text)
-                .style(Style::default().fg(app.theme.fg_bright).bg(app.theme.border)),
+            Paragraph::new(Line::from(spans))
+                .style(Style::default().bg(app.theme.border)),
             chunks[1],
         );
     }
 }
 
-fn render_modules(modules: &[&FooterModule], app: &App) -> String {
+fn module_color(m: &FooterModule, theme: &crate::theme::AppTheme) -> ratatui::style::Color {
+    match m {
+        FooterModule::Playback => theme.syn_function,
+        FooterModule::Title => theme.syn_string,
+        FooterModule::Volume => theme.syn_constant,
+        FooterModule::Repeat => theme.syn_keyword,
+        FooterModule::Shuffle => theme.syn_type,
+        FooterModule::Progress => theme.syn_variable,
+        FooterModule::Queue => theme.syn_comment,
+        FooterModule::Clock => theme.fg_dim,
+        FooterModule::KeyAction => theme.warning,
+        FooterModule::Backend => theme.fg_dim,
+        FooterModule::System => theme.fg_dim,
+        FooterModule::Device => theme.fg_dim,
+    }
+}
+
+fn render_modules(modules: &[&FooterModule], app: &App) -> Vec<(String, ratatui::style::Color)> {
     let mut parts = Vec::new();
     for m in modules {
-        match m {
-            FooterModule::Playback => parts.push(render_playback(app)),
-            FooterModule::Title => parts.push(render_title(app)),
-            FooterModule::Volume => parts.push(render_volume(app)),
-            FooterModule::Repeat => parts.push(render_repeat(app)),
-            FooterModule::Shuffle => parts.push(render_shuffle(app)),
-            FooterModule::Progress => parts.push(render_progress(app)),
-            FooterModule::Queue => parts.push(render_queue(app)),
-            FooterModule::Clock => parts.push(render_clock()),
-            FooterModule::KeyAction => parts.push(render_keyaction(app)),
-            FooterModule::Backend => parts.push(render_backend()),
-            FooterModule::System => parts.push(render_system()),
-            FooterModule::Device => parts.push(render_device()),
+        let text = match m {
+            FooterModule::Playback => render_playback(app),
+            FooterModule::Title => render_title(app),
+            FooterModule::Volume => render_volume(app),
+            FooterModule::Repeat => render_repeat(app),
+            FooterModule::Shuffle => render_shuffle(app),
+            FooterModule::Progress => render_progress(app),
+            FooterModule::Queue => render_queue(app),
+            FooterModule::Clock => render_clock(),
+            FooterModule::KeyAction => render_keyaction(app),
+            FooterModule::Backend => render_backend(),
+            FooterModule::System => render_system(),
+            FooterModule::Device => render_device(app),
+        };
+        if !text.is_empty() {
+            parts.push((text, module_color(m, &app.theme)));
         }
     }
-    parts.iter().filter(|s| !s.is_empty()).fold(String::new(), |mut acc, s| {
-        if !acc.is_empty() { acc.push(' '); }
-        acc.push_str(s);
-        acc
-    })
+    parts
 }
 
 fn render_playback(app: &App) -> String {
@@ -170,7 +206,7 @@ fn render_playback(app: &App) -> String {
 }
 
 fn render_title(app: &App) -> String {
-    app.state.current_track.as_ref().map_or_else(
+    let raw = app.state.current_track.as_ref().map_or_else(
         || String::new(),
         |t| {
             if t.artist.is_empty() {
@@ -179,7 +215,13 @@ fn render_title(app: &App) -> String {
                 format!("{} \u{2013} {}", t.artist, t.title)
             }
         },
-    )
+    );
+    if raw.len() > 30 {
+        let s = raw.chars().cycle().skip(app.footer_title_scroll % raw.len()).take(30).collect::<String>();
+        format!("{} \u{2026}", s)
+    } else {
+        raw
+    }
 }
 
 fn render_volume(app: &App) -> String {
@@ -255,13 +297,42 @@ fn render_keyaction(app: &App) -> String {
 }
 
 fn render_backend() -> String {
-    "rodio".into()
+    let rust_ver = option_env!("VERGEN_RUSTC_SEMVER").unwrap_or("?");
+    let crate_ver = option_env!("CARGO_PKG_VERSION").unwrap_or("?");
+    format!("rust {} • v{}", rust_ver, crate_ver)
 }
 
 fn render_system() -> String {
-    String::new()
+    let os = std::env::consts::OS;
+    let arch = std::env::consts::ARCH;
+    let cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
+    let mem = read_process_memory_kb();
+    if let Some(kb) = mem {
+        if kb > 1024 * 1024 {
+            format!("{} {} • {}GB {}CPU", os, arch, kb / (1024 * 1024), cpus)
+        } else {
+            format!("{} {} • {}MB {}CPU", os, arch, kb / 1024, cpus)
+        }
+    } else {
+        format!("{} {} • {}CPU", os, arch, cpus)
+    }
 }
 
-fn render_device() -> String {
-    String::new()
+fn read_process_memory_kb() -> Option<u64> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    for line in status.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            let kb: u64 = rest.trim().split_whitespace().next()?.parse().ok()?;
+            return Some(kb);
+        }
+    }
+    None
+}
+
+fn render_device(app: &App) -> String {
+    let track_count = app.tracks_cache.len();
+    let total_dur: u64 = app.tracks_cache.iter().map(|t| t.duration as u64).sum();
+    let hours = total_dur / 3600;
+    let mins = (total_dur % 3600) / 60;
+    format!("{} tracks • {}h{}m", track_count, hours, mins)
 }

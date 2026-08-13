@@ -1,3 +1,9 @@
+// Copyright (c) 2025 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// Application state machine: input handling, IPC dispatch, crossfade
+//
+// This is free software released under the GPL-3.0 license.
+
 use std::path::Path;
 use std::time::Duration;
 
@@ -7,6 +13,8 @@ use gtm_core::ipc::DaemonRes;
 use gtm_core::state::{DaemonState, Easing, PlaybackStatus, RepeatMode, Tab};
 use gtm_core::track::{Playlist, TrackInfo, YTSearchResult};
 use ratatui::Terminal;
+use ratatui_image::picker::Picker;
+use ratatui_image::protocol::StatefulProtocol;
 use tokio::sync::mpsc;
 
 use base64::Engine;
@@ -64,12 +72,10 @@ fn save_prefs(prefs: &Prefs) {
 pub const NUM_SETTINGS_CATEGORIES: usize = 5;
 pub const LIBRARY_CATEGORIES: &[&str] = &[
     "All Tracks",
+    "♥ Liked",
     "Albums",
     "Artists",
     "Playlists",
-    "Recently Added",
-    "Most Played",
-    "Least Played",
     "Spotify",
     "Downloads",
 ];
@@ -133,6 +139,8 @@ pub struct App {
     pub playback_speed: f64,
     pub current_cover: Option<Vec<u8>>,
     pub last_cover_track_id: Option<i64>,
+    pub cover_picker: Option<Picker>,
+    pub cover_stateful: Option<StatefulProtocol>,
     pub cmd_rx: mpsc::Receiver<TuiCommand>,
     cmd_tx: mpsc::Sender<TuiCommand>,
     high_pri_cmd_rx: mpsc::UnboundedReceiver<TuiCommand>,
@@ -151,6 +159,7 @@ pub struct App {
     pub footer_preset: usize,
     pub hover_delay_secs: u64,
     pub title_scroll: usize,
+    pub footer_title_scroll: usize,
     pub is_ready: bool,
     last_queue_cursor: u128,
     last_track_id_display: Option<i64>,
@@ -160,6 +169,8 @@ pub struct App {
     prev_track_id: Option<i64>,
     prev_status: gtm_core::state::PlaybackStatus,
     prev_volume: u8,
+    prev_cover_id: Option<i64>,
+    cover_art_dirty: bool,
 }
 
 enum IpcResult {
@@ -195,6 +206,7 @@ pub enum TuiCommand {
     YtSearch(String),
     YtDownload(String),
     YtResolve(String),
+    SetEqPreset(gtm_core::state::EqPreset),
     Search(String),
     AddFavourite(i64),
     RemoveFavourite(i64),
@@ -250,6 +262,8 @@ impl App {
             playback_speed: 1.0,
             current_cover: None,
             last_cover_track_id: None,
+            cover_picker: None,
+            cover_stateful: None,
             cmd_rx,
             cmd_tx,
             high_pri_cmd_rx,
@@ -268,6 +282,7 @@ impl App {
             footer_preset: prefs.footer_preset.min(footer::num_presets().saturating_sub(1)),
             hover_delay_secs: prefs.hover_delay_secs.min(5),
             title_scroll: 0,
+            footer_title_scroll: 0,
             is_ready: false,
             last_queue_cursor: initial_cursor,
             last_track_id_display: None,
@@ -277,6 +292,8 @@ impl App {
             prev_track_id: None,
             prev_status: gtm_core::state::PlaybackStatus::Stopped,
             prev_volume: 100,
+            prev_cover_id: None,
+            cover_art_dirty: false,
         })
     }
 
@@ -316,6 +333,14 @@ impl App {
         self.fetch_library_tracks().await;
         self.is_ready = true;
 
+        // Initialize cover image picker (blocking terminal query)
+        let picker = tokio::task::spawn_blocking(|| {
+            Picker::from_query_stdio().ok()
+        })
+        .await
+        .unwrap_or(None);
+        self.cover_picker = picker;
+
         let cmd_tx = self.cmd_tx();
         tokio::spawn(async move {
             loop {
@@ -329,18 +354,6 @@ impl App {
                 self.state.apply_event(&ev);
             }
 
-            // Detect crossfade auto-advance: when queue cursor moves forward
-            // while a track is playing, show "Up Next" notification.
-            if self.state.status == PlaybackStatus::Playing
-                && self.state.queue_cursor > self.last_queue_cursor
-                && self.state.queue_cursor > 0
-            {
-                let idx = self.state.queue_cursor as usize;
-                if idx < self.queue_cache.len() {
-                    let next = &self.queue_cache[idx];
-                    self.notify(format!(" \u{25b6} Up Next: {} — {}", next.artist, next.title), NotificationKind::Info);
-                }
-            }
             self.last_queue_cursor = self.state.queue_cursor;
 
             // If track changed, reset display_position to avoid stale EMA from old track.
@@ -354,9 +367,12 @@ impl App {
 
             // If track changed via daemon event, trigger a cover art fetch.
             // Set last_cover_track_id immediately to prevent redundant spawns.
+            // Clear stale cover immediately so we don't show old art on the new track.
             if current_tid != self.last_cover_track_id && current_tid.is_some() {
                 let tid = current_tid.unwrap();
                 self.last_cover_track_id = Some(tid);
+                self.current_cover = None;
+                self.cover_stateful = None;
                 let client2 = self.client.clone();
                 let ipc_tx2 = self.ipc_tx.clone();
                 tokio::spawn(async move {
@@ -374,12 +390,21 @@ impl App {
                 match result {
                     IpcResult::RefreshDone(state, cover, cover_tid) => {
                         self.state = state;
-                        self.current_cover = cover;
-                        self.last_cover_track_id = cover_tid;
+                        self.client.seed_clock_from_state(&self.state).await;
+                        if let Some(c) = cover {
+                            self.current_cover = Some(c);
+                            self.last_cover_track_id = cover_tid;
+                        } else {
+                            self.current_cover = None;
+                            self.last_cover_track_id = cover_tid;
+                        }
+                        self.sync_cover_stateful();
                     }
                     IpcResult::CoverArt(cover, cover_tid) => {
                         self.current_cover = cover;
                         self.last_cover_track_id = cover_tid;
+                        self.sync_cover_stateful();
+                        self.cover_art_dirty = true;
                     }
                     IpcResult::LibraryTracks(tracks) => self.tracks_cache = tracks,
                     IpcResult::Playlists(playlists) => self.playlist_cache = playlists,
@@ -439,9 +464,11 @@ impl App {
             let current_tid = self.state.current_track.as_ref().map(|t| t.id);
             if current_tid != self.prev_track_id {
                 self.prev_track_id = current_tid;
-                self.effects.add_effect(
-                    fx::coalesce((350, Interpolation::SineOut))
-                );
+                if self.current_tab == Tab::NowPlaying {
+                    self.effects.add_effect(
+                        fx::coalesce((350, Interpolation::SineOut))
+                    );
+                }
             }
             if self.state.status != self.prev_status {
                 self.prev_status = self.state.status;
@@ -454,6 +481,14 @@ impl App {
                 self.effects.add_effect(
                     fx::fade_from_fg(Color::DarkGray, (200, Interpolation::SineOut))
                 );
+            }
+            if self.last_cover_track_id != self.prev_cover_id {
+                self.prev_cover_id = self.last_cover_track_id;
+                if self.current_tab == Tab::NowPlaying {
+                    self.effects.add_effect(
+                        fx::fade_from_fg(Color::Black, (180, Interpolation::QuadOut))
+                    );
+                }
             }
 
             // Hover popup: show immediately on scroll when right-pane focused,
@@ -483,14 +518,19 @@ impl App {
             let frame_count = self.frame_count.wrapping_add(1);
             self.frame_count = frame_count;
             let pos_changed = (self.display_position - self.last_display_position).abs() >= 0.1;
-            // Advance title scroll animation for responsive library
-            self.title_scroll = self.title_scroll.wrapping_add(1);
+            // Advance title scroll animations (every 3rd frame)
+            if frame_count % 3 == 0 {
+                self.title_scroll = self.title_scroll.wrapping_add(1);
+                self.footer_title_scroll = self.footer_title_scroll.wrapping_add(1);
+            }
 
             let is_animating = self.effects.is_running();
             let force_render = pos_changed
                 || !self.notifications.is_empty()
                 || frame_count % 10 == 0
-                || is_animating;
+                || is_animating
+                || self.cover_art_dirty;
+            self.cover_art_dirty = false;
             self.last_display_position = self.display_position;
 
             if force_render {
@@ -521,7 +561,7 @@ impl App {
         });
     }
 
-    /// Filtered tracks for the current library view, respecting search query and browse_detail.
+    /// Filtered tracks for the current library view, respecting search query, browse_detail, and category.
     pub fn filtered_tracks(&self) -> Vec<&TrackInfo> {
         let mut tracks: Vec<&TrackInfo> = self.tracks_cache.iter().collect();
         if !self.search_query.is_empty() {
@@ -539,6 +579,9 @@ impl App {
                     || t.artist.to_lowercase().contains(&detail_lower)
                     || t.title.to_lowercase().contains(&detail_lower)
             });
+        }
+        if self.library_category == 1 {
+            tracks.retain(|t| t.favourite);
         }
         tracks
     }
@@ -579,15 +622,31 @@ impl App {
                             }
                         }
                         _ => {
-                            // retry on next refresh
+                            self.current_cover = None;
+                            self.cover_stateful = None;
                             self.last_cover_track_id = None;
                         }
                     }
                 } else {
                     self.current_cover = None;
+                    self.cover_stateful = None;
                     self.last_cover_track_id = track_id;
                 }
+                self.sync_cover_stateful();
             }
+        }
+    }
+
+    fn sync_cover_stateful(&mut self) {
+        match (&self.current_cover, &self.cover_picker) {
+            (Some(bytes), Some(picker)) => {
+                if let Ok(img) = image::load_from_memory(bytes) {
+                    self.cover_stateful = Some(picker.new_resize_protocol(img));
+                } else {
+                    self.cover_stateful = None;
+                }
+            }
+            _ => self.cover_stateful = None,
         }
     }
 
@@ -793,6 +852,11 @@ impl App {
             TuiCommand::YtResolve(u) => {
                 tokio::spawn(async move {
                     if let Err(e) = client.yt_resolve_stream(&u).await { error_handler2(e); }
+                });
+            }
+            TuiCommand::SetEqPreset(preset) => {
+                tokio::spawn(async move {
+                    if let Err(e) = client.set_eq_preset(preset).await { error_handler(e); }
                 });
             }
             TuiCommand::Search(q) => {
@@ -1054,6 +1118,9 @@ impl App {
                     Some(KeyboardAction::OpenOverlay(id)) => {
                         self.overlays.open(id);
                     }
+                    Some(KeyboardAction::ToggleHelp) => {
+                        self.overlays.open(OverlayId::Help);
+                    }
                     Some(KeyboardAction::PlayPause) => {
                         self.set_last_action("Play/Pause");
                         match self.state.status {
@@ -1194,9 +1261,15 @@ impl App {
                             Tab::Settings => {
                                 self.settings_option = self.settings_option.saturating_sub(1);
                             }
+                            Tab::Library => {
+                                self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                                if self.scroll_offset < self.list_scroll {
+                                    self.list_scroll = self.list_scroll.saturating_sub(1);
+                                }
+                                self.fetch_cover_for_scroll_position().await;
+                            }
                             _ => {
                                 self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                                // Auto-scroll: keep selection visible
                                 if self.scroll_offset < self.list_scroll {
                                     self.list_scroll = self.list_scroll.saturating_sub(1);
                                 }
@@ -1215,10 +1288,17 @@ impl App {
                                 let max = self.settings_options_for_category().saturating_sub(1);
                                 self.settings_option = (self.settings_option + 1).min(max);
                             }
+                            Tab::Library => {
+                                let max_list = self.filtered_tracks().len();
+                                self.scroll_offset = (self.scroll_offset + 1).min(max_list.saturating_sub(1));
+                                if self.scroll_offset >= self.list_scroll + self.viewport_items && self.list_scroll + self.viewport_items < max_list {
+                                    self.list_scroll += 1;
+                                }
+                                self.fetch_cover_for_scroll_position().await;
+                            }
                             _ => {
                                 let max_list = self.filtered_tracks().len();
                                 self.scroll_offset = (self.scroll_offset + 1).min(max_list.saturating_sub(1));
-                                // Auto-scroll: keep selection visible
                                 if self.scroll_offset >= self.list_scroll + self.viewport_items && self.list_scroll + self.viewport_items < max_list {
                                     self.list_scroll += 1;
                                 }
@@ -1240,21 +1320,21 @@ impl App {
                                     tokio::spawn(async move { let _ = c.queue_set(paths, idx as u128).await; });
                                     self.send_high(TuiCommand::Play(path));
                                 }
-                            } else if self.library_category == 1 {
+                            } else if self.library_category == 2 {
                                 // Albums: select album → show its tracks
                                 let albums = self.unique_albums();
                                 if self.scroll_offset < albums.len() {
                                     self.browse_detail = Some(albums[self.scroll_offset].0.clone());
                                     self.scroll_offset = 0;
                                 }
-                            } else if self.library_category == 2 {
+                            } else if self.library_category == 3 {
                                 // Artists: select artist → show its tracks
                                 let artists = self.unique_artists();
                                 if self.scroll_offset < artists.len() {
                                     self.browse_detail = Some(artists[self.scroll_offset].0.clone());
                                     self.scroll_offset = 0;
                                 }
-                            } else if self.library_category == 3 {
+                            } else if self.library_category == 4 {
                                 // Playlists: select playlist → show its tracks
                                 if self.scroll_offset < self.playlist_cache.len() {
                                     self.browse_detail = Some(self.playlist_cache[self.scroll_offset].name.clone());
@@ -1317,6 +1397,12 @@ impl App {
                                         let _ = tx.send(TuiCommand::SetCrossfadeEasing(next)).await;
                                         if let Some(ref mut cf) = self.state.crossfade { cf.easing = next; }
                                     }
+                                    4 => { // EQ Enabled toggle
+                                        let new_enabled = !self.state.eq_enabled;
+                                        self.state.eq_enabled = new_enabled;
+                                        let c = self.client.clone();
+                                        tokio::spawn(async move { let _ = c.set_eq_enabled(new_enabled).await; });
+                                    }
                                     _ => {}
                                 },
                                  3 => match opt {
@@ -1365,7 +1451,7 @@ impl App {
                     Some(KeyboardAction::Delete) => {}
                     None => {
                         match key.code {
-                            KeyCode::Char('q') | KeyCode::Esc => {
+                            KeyCode::Char('q') => {
                                 if self.show_tag_popup {
                                     self.show_tag_popup = false;
                                 } else if self.browse_detail.is_some() {
@@ -1373,6 +1459,14 @@ impl App {
                                     self.scroll_offset = 0;
                                 } else {
                                     return false;
+                                }
+                            }
+                            KeyCode::Esc => {
+                                if self.show_tag_popup {
+                                    self.show_tag_popup = false;
+                                } else if self.browse_detail.is_some() {
+                                    self.browse_detail = None;
+                                    self.scroll_offset = 0;
                                 }
                             }
                             KeyCode::Char('t') => {
@@ -1495,6 +1589,7 @@ impl App {
                     }
                 }
                 self.clamp_overlay_selection();
+                self.apply_eq_on_navigation().await;
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 let has_input = matches!(self.overlays.top().map(|o| o.id), Some(OverlayId::YTSearch) | Some(OverlayId::SearchLibrary) | Some(OverlayId::CommandPalette));
@@ -1515,6 +1610,7 @@ impl App {
                     }
                 }
                 self.clamp_overlay_selection();
+                self.apply_eq_on_navigation().await;
             }
             KeyCode::Enter => {
                 // Dispatch based on overlay type
@@ -1653,6 +1749,8 @@ impl App {
                                 gtm_core::state::EqPreset::Acoustic,
                                 gtm_core::state::EqPreset::Podcast,
                                 gtm_core::state::EqPreset::Dance,
+                                gtm_core::state::EqPreset::Headphones,
+                                gtm_core::state::EqPreset::Speaker,
                             ];
                             let idx = top.selected.min(presets.len() - 1);
                             let c = self.client.clone();
@@ -1687,7 +1785,21 @@ impl App {
                             self.overlays.close_top();
                         }
                         OverlayId::SoundEffects => {
-                            self.overlays.close_top();
+                            let sel = top.selected;
+                            match sel {
+                                1 => {
+                                    // Reverb toggle
+                                    let new_enabled = !self.state.reverb.enabled;
+                                    let room_size = self.state.reverb.room_size;
+                                    self.state.reverb.enabled = new_enabled;
+                                    let c = self.client.clone();
+                                    tokio::spawn(async move { let _ = c.set_reverb(new_enabled, room_size).await; });
+                                    self.overlays.close_top();
+                                }
+                                _ => {
+                                    self.overlays.close_top();
+                                }
+                            }
                         }
                         _ => {}
                     }
@@ -1719,6 +1831,10 @@ impl App {
                         OverlayId::YTSearch | OverlayId::SearchLibrary | OverlayId::CommandPalette => {
                             top.query.push(c);
                             if top.id == OverlayId::YTSearch {
+                                if c == ' ' {
+                                    self.yt_results_cache.clear();
+                                    self.yt_search_loading = false;
+                                }
                                 self.yt_search_debounce = Some(std::time::Instant::now() + Duration::from_millis(500));
                             }
                         }
@@ -1740,6 +1856,54 @@ impl App {
         if self.current_tab == Tab::Library {
             let _ = tx.send(TuiCommand::RefreshLibrary).await;
             let _ = tx.send(TuiCommand::RefreshPlaylists).await;
+        }
+    }
+
+    async fn apply_eq_on_navigation(&mut self) {
+        if let Some(top) = self.overlays.top() {
+            if top.id == OverlayId::Equalizer {
+                let presets = [
+                    gtm_core::state::EqPreset::Flat,
+                    gtm_core::state::EqPreset::Pop,
+                    gtm_core::state::EqPreset::Rock,
+                    gtm_core::state::EqPreset::Jazz,
+                    gtm_core::state::EqPreset::Classical,
+                    gtm_core::state::EqPreset::Bass,
+                    gtm_core::state::EqPreset::Vocal,
+                    gtm_core::state::EqPreset::Electronic,
+                    gtm_core::state::EqPreset::HipHop,
+                    gtm_core::state::EqPreset::Latin,
+                    gtm_core::state::EqPreset::Acoustic,
+                    gtm_core::state::EqPreset::Podcast,
+                    gtm_core::state::EqPreset::Dance,
+                    gtm_core::state::EqPreset::Headphones,
+                    gtm_core::state::EqPreset::Speaker,
+                ];
+                let idx = top.selected.min(presets.len() - 1);
+                self.send_high(TuiCommand::SetEqPreset(presets[idx]));
+                self.state.eq_preset = presets[idx];
+            }
+        }
+    }
+
+    async fn fetch_cover_for_scroll_position(&mut self) {
+        let items = self.filtered_tracks();
+        if let Some(track) = items.get(self.scroll_offset) {
+            let tid = track.id;
+            if self.last_cover_track_id != Some(tid) {
+                self.last_cover_track_id = Some(tid);
+                self.current_cover = None;
+                self.cover_stateful = None;
+                let client2 = self.client.clone();
+                let ipc_tx2 = self.ipc_tx.clone();
+                tokio::spawn(async move {
+                    if let Ok(Some(b64)) = client2.get_cover_art(tid).await {
+                        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
+                            let _ = ipc_tx2.send(IpcResult::CoverArt(Some(bytes), Some(tid)));
+                        }
+                    }
+                });
+            }
         }
     }
 }

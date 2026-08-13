@@ -1,3 +1,9 @@
+// Copyright (c) 2025 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// Keybinding dispatch system with context-aware matching
+//
+// This is free software released under the GPL-3.0 license.
+
 //! Keybinding dispatch system with context-aware matching.
 //!
 //! ```text

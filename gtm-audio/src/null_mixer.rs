@@ -1,3 +1,9 @@
+// Copyright (c) 2025 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// No-op mixer for headless/daemon mode without audio output
+//
+// This is free software released under the GPL-3.0 license.
+
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
 
@@ -5,7 +11,7 @@ use rodio::Source;
 
 use crate::backend::{AudioEvent, AudioResult};
 use crate::mixer::Mixer;
-use gtm_core::state::Easing;
+use gtm_core::state::{Easing, EqPreset, ReverbConfig};
 
 /// A silent no-op mixer for environments without audio hardware (CI, testing).
 pub struct NullMixer {
@@ -44,6 +50,11 @@ impl Mixer for NullMixer {
     }
 
     fn load_standby(&mut self, _path: &str) -> AudioResult<()> {
+        *self.standby_loaded.lock().unwrap() = true;
+        Ok(())
+    }
+
+    fn load_standby_decoded(&mut self, _source: Box<dyn Source<Item = f32> + Send>) -> AudioResult<()> {
         *self.standby_loaded.lock().unwrap() = true;
         Ok(())
     }
@@ -117,4 +128,8 @@ impl Mixer for NullMixer {
     fn poll(&mut self) -> AudioResult<Option<AudioEvent>> {
         Ok(None)
     }
+
+    fn set_eq_preset(&self, _preset: &EqPreset) {}
+    fn set_eq_enabled(&self, _enabled: bool) {}
+    fn set_reverb(&self, _config: &ReverbConfig) {}
 }

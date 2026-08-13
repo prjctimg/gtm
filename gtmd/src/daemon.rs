@@ -1,3 +1,9 @@
+// Copyright (c) 2025 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// Daemon event loop, IPC command handlers, and audio event processing
+//
+// This is free software released under the GPL-3.0 license.
+
 //! Daemon event loop, IPC command handlers, and audio event processing.
 //!
 //! ```text
@@ -56,7 +62,7 @@ use tracing::{error, info, warn};
 
 use gtm_audio::{AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
 use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, QueueAction};
-use gtm_core::state::{DaemonState, EqPreset, PlaybackStatus};
+use gtm_core::state::{DaemonState, EqPreset, PlaybackStatus, ReverbConfig};
 use gtm_core::wire;
 use gtm_core::CoreError;
 
@@ -206,7 +212,7 @@ impl Daemon {
         library_paths: Vec<std::path::PathBuf>,
         data_dir: std::path::PathBuf,
         cache_dir: std::path::PathBuf,
-        req_tx: mpsc::UnboundedSender<(ClientId, DaemonReq, ReplyTx)>,
+        _req_tx: mpsc::UnboundedSender<(ClientId, DaemonReq, ReplyTx)>,
         _event_tx: broadcast::Sender<DaemonEvent>,
     ) {
         if library_paths.is_empty() {
@@ -253,25 +259,7 @@ impl Daemon {
             for track in &tracks {
                 s.queue.push(track.clone());
             }
-            let should_play = s.queue_cursor == 0 && !tracks.is_empty();
-            let first_path = if should_play {
-                Some(tracks[0].path.clone())
-            } else {
-                None
-            };
             drop(s);
-            // Auto-play first track via a synthesized IPC request
-            if let Some(path) = first_path {
-                let (dummy_tx, _) = mpsc::unbounded_channel();
-                let _ = req_tx.send((
-                    0,
-                    DaemonReq::Play {
-                        path,
-                        start_pos: 0.0,
-                    },
-                    dummy_tx,
-                ));
-            }
         }
     }
 
@@ -452,6 +440,8 @@ impl Daemon {
             DaemonReq::YtResolveStream { url } => self.cmd_yt_resolve_stream(url).await,
             DaemonReq::GetStatus => self.cmd_get_status().await,
             DaemonReq::SetEqPreset { preset } => self.cmd_set_eq_preset(*preset).await,
+            DaemonReq::SetEqEnabled { enabled } => self.cmd_set_eq_enabled(*enabled).await,
+            DaemonReq::SetReverb { enabled, room_size } => self.cmd_set_reverb(*enabled, *room_size).await,
             DaemonReq::GetCoverArt { track_id } => self.cmd_get_cover_art(*track_id).await,
             DaemonReq::Ping => Ok(DaemonRes::Pong),
             DaemonReq::Quit => {
@@ -466,7 +456,7 @@ impl Daemon {
         }
     }
 
-    async fn push_event(&self, event: DaemonEvent) {
+    fn push_event(&self, event: DaemonEvent) {
         let _ = self.event_tx.send(event);
     }
 
@@ -550,8 +540,7 @@ impl Daemon {
                                     let _ = s.advance_queue(1);
                                     let idx = s.queue_cursor;
                                     drop(s);
-                                    self.push_event(DaemonEvent::QueueIndexChanged { index: idx })
-                                        .await;
+                                    self.push_event(DaemonEvent::QueueIndexChanged { index: idx });
                                 }
                             }
                         }
@@ -563,8 +552,7 @@ impl Daemon {
                 let mut state = self.state.write().await;
                 state.duration = dur;
                 drop(state);
-                self.push_event(DaemonEvent::DurationChanged { duration: dur })
-                    .await;
+                self.push_event(DaemonEvent::DurationChanged { duration: dur });
             }
             // Track finished — if we were crossfading the next track is already
             // playing on the swapped player.  Emit PlaybackStarted so the
@@ -583,25 +571,31 @@ impl Daemon {
                             Some(state.queue[state.queue_cursor as usize].clone());
                     }
                     let track = state.current_track.clone();
-                    let dur = state.duration;
                     drop(state);
                     if let Some(t) = track {
                         self.push_event(DaemonEvent::PlaybackStarted {
-                            track: t,
+                            track: t.clone(),
                             auto_advanced: true,
                             time_pos: actual,
-                            duration: dur,
-                        })
-                        .await;
+                            duration: t.duration as f64,
+                        });
                     }
                 } else {
+                    // No crossfade — try advancing to the next track.
+                    // Don't push TrackEnded yet; cmd_next() will either
+                    // push PlaybackStarted (crossfade or play) or we push
+                    // TrackEnded if there's no next track.
                     let mut state = self.state.write().await;
                     state.status = PlaybackStatus::Stopped;
                     state.time_pos = 0.0;
                     state.current_track = None;
                     drop(state);
-                    self.push_event(DaemonEvent::TrackEnded).await;
-                    let _ = self.cmd_next().await;
+                    let res = self.cmd_next().await;
+                    // If cmd_next didn't start playback (end of queue, error),
+                    // notify the client.
+                    if res.is_err() || self.state.read().await.status == PlaybackStatus::Stopped {
+                        self.push_event(DaemonEvent::TrackEnded);
+                    }
                 }
             }
             AudioEvent::Error(msg) => {
@@ -609,8 +603,7 @@ impl Daemon {
                 self.push_event(DaemonEvent::Custom {
                     name: "audio_error".into(),
                     data: [("error".into(), msg)].into(),
-                })
-                .await;
+                });
             }
         }
     }
@@ -714,8 +707,7 @@ impl Daemon {
             auto_advanced: false,
             time_pos: start_pos,
             duration: dur,
-        })
-        .await;
+        });
         Ok(DaemonRes::Ok { version })
     }
 
@@ -763,8 +755,7 @@ impl Daemon {
                     auto_advanced: false,
                     time_pos,
                     duration,
-                })
-                .await;
+                });
                 Ok(DaemonRes::Ok { version })
             } else if !path.is_empty() {
                 self.cmd_play(&path, 0.0).await
@@ -793,7 +784,7 @@ impl Daemon {
         let version = state.version as u32;
         let time_pos = state.time_pos;
         drop(state);
-        self.push_event(DaemonEvent::PlaybackPaused { time_pos }).await;
+        self.push_event(DaemonEvent::PlaybackPaused { time_pos });
         Ok(DaemonRes::Ok { version })
     }
 
@@ -809,7 +800,7 @@ impl Daemon {
         }
         let version = state.version as u32;
         drop(state);
-        self.push_event(DaemonEvent::PlaybackStopped).await;
+        self.push_event(DaemonEvent::PlaybackStopped);
         Ok(DaemonRes::Ok { version })
     }
 
@@ -839,16 +830,28 @@ impl Daemon {
                     self.state.read().await.current_track.as_ref().map(|t| t.path.clone())
                         .unwrap_or_default()
                 );
-                self.push_event(DaemonEvent::QueueIndexChanged { index: idx })
-                    .await;
+                self.push_event(DaemonEvent::QueueIndexChanged { index: idx });
+                let dur = self.mixer.duration();
+                {
+                    let mut st = self.state.write().await;
+                    st.status = PlaybackStatus::Playing;
+                    st.current_track = Some(track.clone());
+                    st.time_pos = 0.0;
+                    st.duration = dur;
+                }
+                self.push_event(DaemonEvent::PlaybackStarted {
+                    track,
+                    auto_advanced: true,
+                    time_pos: 0.0,
+                    duration: dur,
+                });
                 return Ok(DaemonRes::Ok { version: self.state.read().await.version as u32 });
             }
         }
         self.crossfade_loaded_for = None;
         let path = track.path.clone();
         let res = self.cmd_play(&path, 0.0).await?;
-        self.push_event(DaemonEvent::QueueIndexChanged { index: idx })
-            .await;
+        self.push_event(DaemonEvent::QueueIndexChanged { index: idx });
         Ok(res)
     }
 
@@ -881,16 +884,28 @@ impl Daemon {
                     self.state.read().await.current_track.as_ref().map(|t| t.path.clone())
                         .unwrap_or_default()
                 );
-                self.push_event(DaemonEvent::QueueIndexChanged { index: idx })
-                    .await;
+                self.push_event(DaemonEvent::QueueIndexChanged { index: idx });
+                let dur = self.mixer.duration();
+                {
+                    let mut st = self.state.write().await;
+                    st.status = PlaybackStatus::Playing;
+                    st.current_track = Some(track.clone());
+                    st.time_pos = 0.0;
+                    st.duration = dur;
+                }
+                self.push_event(DaemonEvent::PlaybackStarted {
+                    track,
+                    auto_advanced: true,
+                    time_pos: 0.0,
+                    duration: dur,
+                });
                 return Ok(DaemonRes::Ok { version: self.state.read().await.version as u32 });
             }
         }
         self.crossfade_loaded_for = None;
         let path = track.path.clone();
         let res = self.cmd_play(&path, 0.0).await?;
-        self.push_event(DaemonEvent::QueueIndexChanged { index: idx })
-            .await;
+        self.push_event(DaemonEvent::QueueIndexChanged { index: idx });
         Ok(res)
     }
 
@@ -918,7 +933,7 @@ impl Daemon {
         state.set_volume(volume)?;
         let version = state.version as u32;
         drop(state);
-        self.push_event(DaemonEvent::VolumeChanged { volume }).await;
+        self.push_event(DaemonEvent::VolumeChanged { volume });
         Ok(DaemonRes::Ok { version })
     }
 
@@ -928,8 +943,7 @@ impl Daemon {
         let enabled = state.shuffle;
         let version = state.version as u32;
         drop(state);
-        self.push_event(DaemonEvent::ShuffleChanged { enabled })
-            .await;
+        self.push_event(DaemonEvent::ShuffleChanged { enabled });
         Ok(DaemonRes::Ok { version })
     }
 
@@ -942,8 +956,7 @@ impl Daemon {
         let m = state.repeat;
         let version = state.version as u32;
         drop(state);
-        self.push_event(DaemonEvent::RepeatModeChanged { mode: m })
-            .await;
+        self.push_event(DaemonEvent::RepeatModeChanged { mode: m });
         Ok(DaemonRes::Ok { version })
     }
 
@@ -974,8 +987,7 @@ impl Daemon {
         self.push_event(DaemonEvent::CrossfadeChanged {
             enabled,
             duration_secs,
-        })
-        .await;
+        });
         Ok(DaemonRes::Ok { version })
     }
 
@@ -1002,7 +1014,37 @@ impl Daemon {
         state.version += 1;
         let version = state.version as u32;
         drop(state);
-        self.push_event(DaemonEvent::EqPresetChanged { preset }).await;
+        self.mixer.set_eq_preset(&preset);
+        self.push_event(DaemonEvent::EqPresetChanged { preset });
+        Ok(DaemonRes::Ok { version })
+    }
+
+    async fn cmd_set_eq_enabled(
+        &mut self,
+        enabled: bool,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = self.state.write().await;
+        state.eq_enabled = enabled;
+        state.version += 1;
+        let version = state.version as u32;
+        drop(state);
+        self.mixer.set_eq_enabled(enabled);
+        self.push_event(DaemonEvent::EqEnabledChanged { enabled });
+        Ok(DaemonRes::Ok { version })
+    }
+
+    async fn cmd_set_reverb(
+        &mut self,
+        enabled: bool,
+        room_size: f32,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = self.state.write().await;
+        state.reverb = ReverbConfig { enabled, room_size };
+        state.version += 1;
+        let version = state.version as u32;
+        drop(state);
+        self.mixer.set_reverb(&ReverbConfig { enabled, room_size });
+        self.push_event(DaemonEvent::ReverbChanged { enabled, room_size });
         Ok(DaemonRes::Ok { version })
     }
 
@@ -1040,8 +1082,7 @@ impl Daemon {
                 let queue = state.queue.clone();
                 let cursor = state.queue_cursor;
                 drop(state);
-                self.push_event(DaemonEvent::QueueChanged { queue, cursor })
-                    .await;
+                self.push_event(DaemonEvent::QueueChanged { queue, cursor });
                 return Ok(DaemonRes::Ok { version });
             }
             QueueAction::Remove { index } => {
@@ -1051,8 +1092,7 @@ impl Daemon {
                 let queue = state.queue.clone();
                 let cursor = state.queue_cursor;
                 drop(state);
-                self.push_event(DaemonEvent::QueueChanged { queue, cursor })
-                    .await;
+                self.push_event(DaemonEvent::QueueChanged { queue, cursor });
                 return Ok(DaemonRes::Ok { version });
             }
             QueueAction::Move { from, to } => {
@@ -1062,8 +1102,7 @@ impl Daemon {
                 let queue = state.queue.clone();
                 let cursor = state.queue_cursor;
                 drop(state);
-                self.push_event(DaemonEvent::QueueChanged { queue, cursor })
-                    .await;
+                self.push_event(DaemonEvent::QueueChanged { queue, cursor });
                 return Ok(DaemonRes::Ok { version });
             }
             QueueAction::Add { path, position } => {
@@ -1075,10 +1114,11 @@ impl Daemon {
                     let queue = state.queue.clone();
                     let cursor = state.queue_cursor;
                     drop(state);
-                    self.push_event(DaemonEvent::QueueChanged { queue, cursor })
-                        .await;
+                    self.push_event(DaemonEvent::QueueChanged { queue, cursor });
                     if was_empty {
-                        return self.cmd_play(path, 0.0).await;
+                        // Auto-play; if it fails (e.g. file missing), still
+                        // report success for the queue operation.
+                        let _ = self.cmd_play(path, 0.0).await;
                     }
                 }
                 let version = self.state.read().await.version as u32;
@@ -1095,10 +1135,9 @@ impl Daemon {
                     let queue = state.queue.clone();
                     let cursor = state.queue_cursor;
                     drop(state);
-                    self.push_event(DaemonEvent::QueueChanged { queue, cursor })
-                        .await;
+                    self.push_event(DaemonEvent::QueueChanged { queue, cursor });
                     if was_empty {
-                        return self.cmd_play(&first_path, 0.0).await;
+                        let _ = self.cmd_play(&first_path, 0.0).await;
                     }
                 }
                 let version = self.state.read().await.version as u32;
@@ -1122,8 +1161,7 @@ impl Daemon {
                     let queue = state.queue.clone();
                     let cursor = state.queue_cursor;
                     drop(state);
-                    self.push_event(DaemonEvent::QueueChanged { queue, cursor })
-                        .await;
+                    self.push_event(DaemonEvent::QueueChanged { queue, cursor });
                     // If queue was empty and stopped, auto-play the first track
                     if was_empty {
                         return self.cmd_play(&first_path, 0.0).await;
@@ -1139,8 +1177,7 @@ impl Daemon {
                 let queue = state.queue.clone();
                 let cursor = state.queue_cursor;
                 drop(state);
-                self.push_event(DaemonEvent::QueueChanged { queue, cursor })
-                    .await;
+                self.push_event(DaemonEvent::QueueChanged { queue, cursor });
                 Ok(DaemonRes::Ok { version })
             }
         }
@@ -1339,6 +1376,21 @@ impl Daemon {
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
                     Ok((synced, total)) => DaemonRes::SyncCoversResult { version, synced, total },
+                    Err(e) => DaemonRes::Error { version, message: e },
+                }
+            }
+            gtm_core::ipc::LibraryAction::ExportM3u { playlist_id, path } => {
+                let playlist_id = *playlist_id;
+                let export_path = path.clone();
+                let data_dir = self.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.export_m3u(playlist_id, &export_path)
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(_) => DaemonRes::Ok { version },
                     Err(e) => DaemonRes::Error { version, message: e },
                 }
             }

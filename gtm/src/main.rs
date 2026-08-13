@@ -1,3 +1,9 @@
+// Copyright (c) 2025 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// GTM music player — single binary, TUI + CLI modes
+//
+// This is free software released under the GPL-3.0 license.
+
 //! GTM music player — single binary, TUI + CLI modes.
 //!
 //! ```text
@@ -85,6 +91,7 @@ enum CliCommand {
     DeletePlaylist { id: i64 },
     AddToPlaylist { playlist_id: i64, track_ids: Vec<i64> },
     ImportM3u { path: String },
+    ExportM3u { playlist_id: i64, path: String },
     Recent { count: u128 },
     Favourites,
     FavouriteAdd { track_id: i64 },

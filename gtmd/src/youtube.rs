@@ -1,3 +1,9 @@
+// Copyright (c) 2025 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// YouTube search via yt-dlp with rate limiting and timeout
+//
+// This is free software released under the GPL-3.0 license.
+
 use std::time::Duration;
 
 use tokio::io::AsyncBufReadExt;

@@ -51,6 +51,10 @@ pub enum LibraryAction {
     ImportM3u {
         path: String,
     },
+    ExportM3u {
+        playlist_id: i64,
+        path: String,
+    },
     GetRecent {
         count: u128,
     },
@@ -134,6 +138,13 @@ pub enum DaemonEvent {
     EqPresetChanged {
         preset: state::EqPreset,
     },
+    EqEnabledChanged {
+        enabled: bool,
+    },
+    ReverbChanged {
+        enabled: bool,
+        room_size: f32,
+    },
     Custom {
         name: String,
         data: HashMap<String, String>,
@@ -173,6 +184,13 @@ pub enum DaemonReq {
     },
     SetEqPreset {
         preset: state::EqPreset,
+    },
+    SetEqEnabled {
+        enabled: bool,
+    },
+    SetReverb {
+        enabled: bool,
+        room_size: f32,
     },
 
     // ─── Queue ───

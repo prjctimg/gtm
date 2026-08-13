@@ -1,3 +1,9 @@
+// Copyright (c) 2025 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// Rodio-based audio mixer: playback, volume, seek, and crossfade
+//
+// This is free software released under the GPL-3.0 license.
+
 use std::fs::File;
 use std::io::BufReader;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};

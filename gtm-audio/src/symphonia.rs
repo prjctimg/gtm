@@ -1,3 +1,9 @@
+// Copyright (c) 2025 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// Symphonia-based audio decoder for seeking and format detection
+//
+// This is free software released under the GPL-3.0 license.
+
 use std::fs::File;
 use std::num::{NonZeroU16, NonZeroU32};
 use std::time::Duration;

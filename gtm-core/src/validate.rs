@@ -4,7 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use crate::state::{CrossfadeConfig, DaemonState, PlaybackStatus, RepeatMode};
+use crate::state::{CrossfadeConfig, DaemonState, PlaybackStatus, RepeatMode, ReverbConfig};
 use crate::track::TrackInfo;
 
 impl CrossfadeConfig {
@@ -40,6 +40,8 @@ impl DaemonState {
             duration: 0.0,
             sleep_timer: None,
             eq_preset: crate::state::EqPreset::Flat,
+            eq_enabled: true,
+            reverb: ReverbConfig::default(),
         }
     }
 }

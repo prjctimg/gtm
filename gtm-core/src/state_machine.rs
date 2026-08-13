@@ -240,6 +240,9 @@ impl DaemonState {
                 self.current_track = None;
                 self.time_pos = 0.0;
             }
+            DaemonEvent::EqEnabledChanged { enabled } => {
+                self.eq_enabled = *enabled;
+            }
             _ => {} // MetadataChanged, Custom — no state mirror field
         }
         self.version += 1;

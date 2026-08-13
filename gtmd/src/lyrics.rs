@@ -1,3 +1,9 @@
+// Copyright (c) 2025 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// LRC lyrics fetching from lrclib.net
+//
+// This is free software released under the GPL-3.0 license.
+
 use std::path::Path;
 
 use reqwest::Client;
