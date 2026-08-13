@@ -194,9 +194,11 @@ fn parse_yt_json(line: &str) -> Result<YTSearchResult, String> {
         serde_json::from_str(line).map_err(|e| format!("json: {e}"))?;
     let id = v.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
     let is_playlist = v.get("_type").and_then(|v| v.as_str()) == Some("playlist");
+    let raw_title = v.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let (_artist, title) = crate::metadata_cleaner::clean_youtube_title(&raw_title);
     Ok(YTSearchResult {
         id: id.clone(),
-        title: v.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        title,
         url: if is_playlist {
             format!("https://www.youtube.com/playlist?list={id}")
         } else {

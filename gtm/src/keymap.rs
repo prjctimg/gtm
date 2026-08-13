@@ -29,7 +29,6 @@
 //! ```
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use gtm_core::state::Tab;
 
 use crate::overlay::OverlayId;
 
@@ -50,7 +49,6 @@ pub enum KeyboardAction {
     // Tab switching
     NextTab,
     PrevTab,
-    SwitchTab(Tab),
 
     // Cursor
     MoveUp,
@@ -116,6 +114,7 @@ pub enum KeyboardAction {
     QuitDaemon,
     ReloadConfig,
     ToggleHelp,
+    HideHelpBar,
     CycleFooterPreset,
     CycleProgressStyle,
     ToggleVisualizer,
@@ -219,6 +218,15 @@ pub fn default_keybindings() -> Keybindings {
                     action: KeyboardAction::ToggleHelp,
                     contexts: vec![KeyContext::Global, KeyContext::Normal],
                     description: "Toggle help",
+                },
+            ),
+            // Ctrl+H — hide/show help bar in library view
+            (
+                KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
+                BoundCommand {
+                    action: KeyboardAction::HideHelpBar,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Toggle help bar",
                 },
             ),
             // Command palette (:)
@@ -510,23 +518,6 @@ pub fn default_keybindings() -> Keybindings {
                     action: KeyboardAction::Delete,
                     contexts: vec![KeyContext::List, KeyContext::Normal],
                     description: "Delete item",
-                },
-            ),
-            // Direct tab switching by number — 1 through 2
-            (
-                KeyCode::Char('1').into(),
-                BoundCommand {
-                    action: KeyboardAction::SwitchTab(Tab::Library),
-                    contexts: vec![KeyContext::Normal],
-                    description: "Library tab",
-                },
-            ),
-            (
-                KeyCode::Char('2').into(),
-                BoundCommand {
-                    action: KeyboardAction::SwitchTab(Tab::Settings),
-                    contexts: vec![KeyContext::Normal],
-                    description: "Settings tab",
                 },
             ),
             // Overlay triggers — Alt+key

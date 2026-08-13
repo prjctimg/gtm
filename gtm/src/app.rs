@@ -200,6 +200,7 @@ pub struct App {
     pub lyrics_fetching: bool,
     last_lyrics_track_id: Option<i64>,
     pub show_lyrics: bool,
+    pub hide_help_bar: bool,
     pub lyrics_manual_scroll: bool,
     pub lyrics_last_scroll_time: std::time::Instant,
 }
@@ -354,6 +355,7 @@ impl App {
             lyrics_fetching: false,
             last_lyrics_track_id: None,
             show_lyrics: false,
+            hide_help_bar: false,
             lyrics_manual_scroll: false,
             lyrics_last_scroll_time: std::time::Instant::now(),
         })
@@ -1023,6 +1025,7 @@ impl App {
                         .arg("--extract-audio")
                         .arg("--audio-format")
                         .arg("mp3")
+                        .arg("--restrict-filenames")
                         .arg("-o")
                         .arg(template.to_string_lossy().as_ref())
                         .arg(&url)
@@ -1436,12 +1439,6 @@ impl App {
                         }
                         self.dismiss_track_popup();
                     }
-                    Some(KeyboardAction::SwitchTab(tab)) => {
-                        self.current_tab = tab;
-                        self.suppress_footer_refresh = true;
-                        self.dismiss_track_popup();
-                        self.refresh_tab().await;
-                    }
                     Some(KeyboardAction::OpenOverlay(id)) => {
                         self.overlays.open(id);
                         self.dismiss_track_popup();
@@ -1449,6 +1446,9 @@ impl App {
                     Some(KeyboardAction::ToggleHelp) => {
                         self.overlays.open(OverlayId::Help);
                         self.dismiss_track_popup();
+                    }
+                    Some(KeyboardAction::HideHelpBar) => {
+                        self.hide_help_bar = !self.hide_help_bar;
                     }
                     Some(KeyboardAction::PlayPause) => {
                         self.set_last_action("Play/Pause");
@@ -2514,14 +2514,6 @@ impl App {
                 }
             }
             _ => {}
-        }
-    }
-
-    async fn refresh_tab(&mut self) {
-        let tx = self.cmd_tx();
-        if self.current_tab == Tab::Library {
-            let _ = tx.send(TuiCommand::RefreshLibrary).await;
-            let _ = tx.send(TuiCommand::RefreshPlaylists).await;
         }
     }
 

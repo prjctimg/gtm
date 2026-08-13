@@ -5,6 +5,8 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
+use crate::theme::AppTheme;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum VisualizerStyle {
@@ -101,18 +103,26 @@ impl AudioVisualizer {
             }
         }
 
-        let decay = if is_playing { 0.25 } else { 0.08 };
+        // Snap bars to target when paused (no sweep/decay animation)
+        let decay = if is_playing { 0.25 } else { 1.0 };
         for (bar, target) in self.bars.iter_mut().zip(self.target_bars.iter()) {
             let diff = target - *bar;
             *bar += diff * decay as f32 * (dt * 60.0) as f32;
-            if !is_playing {
-                *bar *= 0.92_f32;
-            }
             *bar = bar.clamp(0.0, 1.0);
         }
     }
 
-    pub fn render(&self, area: Rect) -> Option<Lines<'_>> {
+    fn amplitude_color(&self, val: f32, theme: &AppTheme) -> Color {
+        if val > 0.7 {
+            theme.accent
+        } else if val > 0.4 {
+            theme.fg_bright
+        } else {
+            theme.fg_dim
+        }
+    }
+
+    pub fn render(&self, area: Rect, theme: &AppTheme) -> Option<Lines<'_>> {
         if !self.enabled || area.width < 4 || area.height < 3 {
             return None;
         }
@@ -122,15 +132,15 @@ impl AudioVisualizer {
         let num_bars = w.min(self.bars.len());
 
         let lines = match self.style {
-            VisualizerStyle::Bars => self.render_bars(num_bars, h),
-            VisualizerStyle::Dots => self.render_dots(num_bars, h),
-            VisualizerStyle::Braille => self.render_braille(num_bars, h),
-            VisualizerStyle::Wave => self.render_wave(num_bars, h),
+            VisualizerStyle::Bars => self.render_bars(num_bars, h, theme),
+            VisualizerStyle::Dots => self.render_dots(num_bars, h, theme),
+            VisualizerStyle::Braille => self.render_braille(num_bars, h, theme),
+            VisualizerStyle::Wave => self.render_wave(num_bars, h, theme),
         };
         Some(lines)
     }
 
-    fn render_bars(&self, num_bars: usize, height: usize) -> Lines<'_> {
+    fn render_bars(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
         let chars = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
         let mut lines: Vec<Line<'static>> = Vec::new();
         for row in (0..height).rev() {
@@ -142,13 +152,7 @@ impl AudioVisualizer {
                     let seg = ((val - threshold) * height as f32).min(1.0);
                     let ci = (seg * (chars.len() - 1) as f32).round() as usize;
                     let ch = chars[ci.min(chars.len() - 1)];
-                    let color = if val > 0.7 {
-                        Color::Rgb(0, 200, 80)
-                    } else if val > 0.4 {
-                        Color::Rgb(0, 180, 120)
-                    } else {
-                        Color::Rgb(0, 150, 150)
-                    };
+                    let color = self.amplitude_color(val, theme);
                     spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
                 } else {
                     spans.push(Span::raw(" "));
@@ -159,7 +163,7 @@ impl AudioVisualizer {
         Lines(lines)
     }
 
-    fn render_dots(&self, num_bars: usize, height: usize) -> Lines<'_> {
+    fn render_dots(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
         let mut lines: Vec<Line<'static>> = Vec::new();
         for row in (0..height).rev() {
             let mut spans: Vec<Span<'static>> = Vec::new();
@@ -167,13 +171,7 @@ impl AudioVisualizer {
             for i in 0..num_bars {
                 let val = *self.bars.get(i).unwrap_or(&0.0);
                 if val >= threshold {
-                    let color = if val > 0.7 {
-                        Color::Rgb(0, 200, 80)
-                    } else if val > 0.4 {
-                        Color::Rgb(0, 180, 120)
-                    } else {
-                        Color::Rgb(0, 150, 150)
-                    };
+                    let color = self.amplitude_color(val, theme);
                     spans.push(Span::styled("●", Style::default().fg(color)));
                 } else {
                     spans.push(Span::raw(" "));
@@ -184,7 +182,7 @@ impl AudioVisualizer {
         Lines(lines)
     }
 
-    fn render_braille(&self, num_bars: usize, height: usize) -> Lines<'_> {
+    fn render_braille(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
         let mut lines: Vec<Line<'static>> = Vec::new();
         let braille_fill = '⣿';
         let braille_empty = '⠀';
@@ -194,13 +192,7 @@ impl AudioVisualizer {
             for i in 0..num_bars {
                 let val = *self.bars.get(i).unwrap_or(&0.0);
                 if val >= threshold {
-                    let color = if val > 0.7 {
-                        Color::Rgb(0, 200, 80)
-                    } else if val > 0.4 {
-                        Color::Rgb(0, 180, 120)
-                    } else {
-                        Color::Rgb(0, 150, 150)
-                    };
+                    let color = self.amplitude_color(val, theme);
                     spans.push(Span::styled(
                         braille_fill.to_string(),
                         Style::default().fg(color),
@@ -208,7 +200,7 @@ impl AudioVisualizer {
                 } else {
                     spans.push(Span::styled(
                         braille_empty.to_string(),
-                        Style::default().fg(Color::Rgb(30, 30, 30)),
+                        Style::default().fg(theme.bg),
                     ));
                 }
             }
@@ -217,7 +209,7 @@ impl AudioVisualizer {
         Lines(lines)
     }
 
-    fn render_wave(&self, num_bars: usize, height: usize) -> Lines<'_> {
+    fn render_wave(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
         let mid = height / 2;
         let mut lines: Vec<Line<'static>> = Vec::new();
         for row in 0..height {
@@ -228,8 +220,13 @@ impl AudioVisualizer {
                 let wave_pos = val * mid as f32;
                 if dist_from_mid <= wave_pos {
                     let proximity = 1.0 - (dist_from_mid / wave_pos.max(1.0));
-                    let color_val = (proximity * 200.0) as u8;
-                    let color = Color::Rgb(0, color_val.min(200), (100 + color_val / 2).min(200));
+                    let color = if proximity > 0.7 {
+                        theme.accent
+                    } else if proximity > 0.4 {
+                        theme.fg_bright
+                    } else {
+                        theme.fg_dim
+                    };
                     let ch = if dist_from_mid < 0.5 { '━' } else { '─' };
                     spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
                 } else {

@@ -129,7 +129,7 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
         area,
     );
     // help bar shows on Library tab, hidden during overlays
-    let show_help = app.current_tab == Tab::Library && !app.overlays.is_open();
+    let show_help = app.current_tab == Tab::Library && !app.overlays.is_open() && !app.hide_help_bar;
     let help_height: u16 = if show_help { 1 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -377,12 +377,21 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             .constraints([Constraint::Length(lib_width), Constraint::Min(0), Constraint::Length(lib_width)])
             .split(chunks[1])
             .to_vec()
-    } else if app.show_lyrics && is_narrow {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(0)])
-            .split(chunks[1])
-            .to_vec()
+    } else if is_narrow {
+        // Half-width: show only the focused pane at full width
+        if app.library_pane_focus {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(0), Constraint::Length(0)])
+                .split(chunks[1])
+                .to_vec()
+        } else {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(0), Constraint::Min(0)])
+                .split(chunks[1])
+                .to_vec()
+        }
     } else {
         Layout::default()
             .direction(Direction::Horizontal)
@@ -557,7 +566,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             .border_style(Style::default().fg(app.theme.fg_dim));
         let vis_inner = vis_block.inner(vis_a);
         f.render_widget(vis_block, vis_a);
-        if let Some(lines) = app.visualizer.render(vis_inner) {
+        if let Some(lines) = app.visualizer.render(vis_inner, &app.theme) {
             f.render_widget(lines, vis_inner);
         }
     }
@@ -618,6 +627,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             f.render_widget(indicator, indicator_area);
         }
     }
+    // end library rendering
 
     // ── Stats at bottom of left pane ──
     let category_label = LIBRARY_CATEGORIES.get(app.library_category).unwrap_or(&"All Tracks");
@@ -812,6 +822,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let inner = right_block.inner(panes[1]);
     f.render_widget(right_block, panes[1]);
     f.render_widget(right_para, inner);
+    // end content rendering
 
     // ── Right lyrics pane (toggleable) ──
     if app.show_lyrics {
@@ -1604,7 +1615,6 @@ fn render_help_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
         "",
         " Navigation",
         "   Tab          Toggle left/right pane focus",
-        "   1 / 2        Switch to Library / Settings",
         "   j/k / arrows Move up/down",
         "   h/l          Focus left/right pane",
         "   ?            Toggle this help",
@@ -2026,7 +2036,7 @@ fn render_theme_picker_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
 /// Return the local time using the system clock and timezone.
 pub fn local_time_str() -> String {
     let now = chrono::Local::now();
-    format!(" {},{} {} | {} {} ", now.format("%a"), now.format("%d"), now.format("%B"), now.format("%H:%M"), now.format("%Z"))
+    format!(" {} | {} ", now.format("%H:%M"), now.format("%Z"))
 }
 
 fn format_duration(secs: u64) -> String {

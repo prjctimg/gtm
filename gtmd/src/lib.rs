@@ -9,6 +9,7 @@ pub mod cover_art;
 pub mod daemon;
 pub mod library;
 pub mod lyrics;
+pub mod metadata_cleaner;
 pub mod queue;
 pub mod youtube;
 

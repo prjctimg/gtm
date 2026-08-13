@@ -596,33 +596,42 @@ fn extract_metadata(path: &str, cache_dir: Option<&str>) -> Result<(Metadata, St
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("");
-        if let Some(dash_idx) = stem.find(" - ") {
-            if artist.is_empty() && dash_idx > 0 {
-                artist = stem[..dash_idx].trim().to_string();
-            }
-            let after_dash = stem[dash_idx + 3..].trim();
-            let mut clean = after_dash.to_string();
-            loop {
-                let prev = clean.clone();
-                let trimmed = prev.trim_end();
-                let next = if trimmed.ends_with(')') {
-                    trimmed.rfind('(').filter(|&o| o > 0).map(|o| trimmed[..o].trim_end().to_string())
-                } else if trimmed.ends_with(']') {
-                    trimmed.rfind('[').filter(|&o| o > 0).map(|o| trimmed[..o].trim_end().to_string())
-                } else {
-                    None
-                };
-                match next {
-                    Some(s) if !s.is_empty() && s != clean => clean = s,
-                    _ => break,
+        // Use metadata_cleaner for comprehensive YouTube title cleaning
+        let (cleaned_artist, cleaned_title) = crate::metadata_cleaner::clean_youtube_title(stem);
+        if title.is_empty() && !cleaned_title.is_empty() {
+            title = cleaned_title;
+        }
+        if artist.is_empty() {
+            if let Some(a) = cleaned_artist {
+                artist = a;
+            } else if let Some(dash_idx) = stem.find(" - ") {
+                // Fallback: split on first " - "
+                if dash_idx > 0 {
+                    artist = stem[..dash_idx].trim().to_string();
+                }
+                let after_dash = stem[dash_idx + 3..].trim();
+                let mut clean = after_dash.to_string();
+                loop {
+                    let prev = clean.clone();
+                    let trimmed = prev.trim_end();
+                    let next = if trimmed.ends_with(')') {
+                        trimmed.rfind('(').filter(|&o| o > 0).map(|o| trimmed[..o].trim_end().to_string())
+                    } else if trimmed.ends_with(']') {
+                        trimmed.rfind('[').filter(|&o| o > 0).map(|o| trimmed[..o].trim_end().to_string())
+                    } else {
+                        None
+                    };
+                    match next {
+                        Some(s) if !s.is_empty() && s != clean => clean = s,
+                        _ => break,
+                    }
+                }
+                if !clean.is_empty() && title.is_empty() {
+                    title = clean;
                 }
             }
-            if !clean.is_empty() {
-                title = clean;
-            } else if title.is_empty() {
-                title = stem.to_string();
-            }
-        } else if title.is_empty() {
+        }
+        if title.is_empty() {
             title = stem.to_string();
         }
     }
