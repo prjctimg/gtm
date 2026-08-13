@@ -223,6 +223,7 @@ pub enum DaemonReq {
     YtFetchPlaylistPoll,
     YtSetConfig {
         cookie_source: Option<String>,
+        cookie_file: Option<String>,
         js_runtime: Option<String>,
         download_dir: Option<String>,
         max_concurrent: Option<u32>,
@@ -500,6 +501,7 @@ impl DaemonReq {
                 #[derive(Deserialize)]
                 struct Params {
                     cookie_source: Option<String>,
+                    cookie_file: Option<String>,
                     js_runtime: Option<String>,
                     download_dir: Option<String>,
                     max_concurrent: Option<u32>,
@@ -507,6 +509,7 @@ impl DaemonReq {
                 let x: Params = p(params)?;
                 DaemonReq::YtSetConfig {
                     cookie_source: x.cookie_source,
+                    cookie_file: x.cookie_file,
                     js_runtime: x.js_runtime,
                     download_dir: x.download_dir,
                     max_concurrent: x.max_concurrent,

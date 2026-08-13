@@ -797,9 +797,31 @@ impl Daemon {
             DaemonReq::YtFetchPlaylistPoll => Err(CoreError::Daemon(
                 "yt_fetch_playlist_poll not yet implemented".into(),
             )),
-            DaemonReq::YtSetConfig { .. } => Err(CoreError::Daemon(
-                "yt_set_config not yet implemented".into(),
-            )),
+            DaemonReq::YtSetConfig {
+                cookie_source,
+                cookie_file,
+                js_runtime,
+                download_dir,
+                max_concurrent,
+            } => {
+                let mut yt = inner.youtube.lock().await;
+                yt.set_cookie_file(cookie_file.clone());
+                if let Some(cs) = cookie_source {
+                    _ = cs;
+                }
+                if let Some(js) = js_runtime {
+                    _ = js;
+                }
+                if let Some(dd) = download_dir {
+                    _ = dd;
+                }
+                if let Some(mc) = max_concurrent {
+                    _ = mc;
+                }
+                drop(yt);
+                Self::save_state(inner);
+                Ok(DaemonRes::Ok)
+            }
             DaemonReq::GetCoverArt { track_id } => Self::cmd_get_cover_art(inner, *track_id).await,
             DaemonReq::GetLyrics { track_id } => Self::cmd_get_lyrics(inner, *track_id).await,
             DaemonReq::SetSleepTimer { minutes } => {

@@ -630,6 +630,24 @@ impl DaemonClient {
             .await
     }
 
+    pub async fn yt_set_config(
+        &self,
+        cookie_source: Option<String>,
+        cookie_file: Option<String>,
+        js_runtime: Option<String>,
+        download_dir: Option<String>,
+        max_concurrent: Option<u32>,
+    ) -> Result<()> {
+        self.send_ok(DaemonReq::YtSetConfig {
+            cookie_source,
+            cookie_file,
+            js_runtime,
+            download_dir,
+            max_concurrent,
+        })
+        .await
+    }
+
     // ─── System ───
 
     pub async fn get_status(&self) -> Result<DaemonState> {

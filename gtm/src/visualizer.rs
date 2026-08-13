@@ -73,7 +73,7 @@ impl AudioVisualizer {
     }
 
     pub fn tick(&mut self, is_playing: bool, width: u16) {
-        if !self.enabled {
+        if !self.enabled || width == 0 {
             return;
         }
         let now = Instant::now();
@@ -253,7 +253,11 @@ impl<'a> Widget for Lines<'a> {
                     if x >= area.x + area.width {
                         break;
                     }
-                    if let Some(cell) = buf.cell_mut((x, area.y + row as u16)) {
+                    let cell_y = area.y + row as u16;
+                    if x >= buf.area.width || cell_y >= buf.area.height {
+                        break;
+                    }
+                    if let Some(cell) = buf.cell_mut((x, cell_y)) {
                         cell.set_symbol(&ch.to_string()).set_style(span.style);
                     }
                     x += 1;

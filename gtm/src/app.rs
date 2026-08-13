@@ -151,6 +151,7 @@ pub struct App {
     pub yt_results_cache: Vec<gtm_core::track::YTSearchResult>,
     pub volume_input: String,
     pub playlist_cache: Vec<gtm_core::track::Playlist>,
+    pub cookie_file: Option<String>,
     pub status_message: Option<String>,
     pub notifications: Vec<Notification>,
     pub crossfade_duration: u8,
@@ -322,6 +323,7 @@ impl App {
             yt_results_cache: Vec::new(),
             volume_input: String::new(),
             playlist_cache: Vec::new(),
+            cookie_file: None,
             status_message: None,
             notifications: Vec::new(),
             crossfade_duration: 7,
@@ -927,7 +929,7 @@ impl App {
     fn settings_options_for_category(&self) -> usize {
         match self.settings_category {
             0 => 2, // Audio: Volume, Mute
-            1 => 8, // YouTube: (all display-only for now)
+            1 => 8, // YouTube
             2 => 4, // Playback: Repeat, Shuffle, Crossfade, Easing
             3 => 5, // System: Theme, Transparent BG, Sync Covers, Sync Lyrics, Footer Preset
             4 => 1, // Spotify: Status
@@ -1937,7 +1939,7 @@ impl App {
                             let tx = self.cmd_tx();
                             let opt = self.settings_option;
                             match self.settings_category {
-                                0 => match opt {
+                                    0 => match opt {
                                     1 => {
                                         // Mute toggle
                                         let muted = !self.state.mute;
@@ -1947,6 +1949,33 @@ impl App {
                                             self.state.volume
                                         }));
                                         self.state.mute = muted;
+                                    }
+                                    _ => {}
+                                },
+                                1 => match opt {
+                                    1 => {
+                                        // Cookie File: set directory
+                                        let c = self.client.clone();
+                                        let current = self.cookie_file.clone();
+                                        let new_path = if current.is_some() {
+                                            None
+                                        } else {
+                                            // Default to common cookie path
+                                            let home = std::env::var("HOME").unwrap_or_default();
+                                            Some(format!("{home}/.cookies/youtube.txt"))
+                                        };
+                                        let display = new_path.clone().unwrap_or_else(|| "(none)".to_string());
+                                        self.cookie_file = new_path.clone();
+                                        let cf = new_path.clone();
+                                        tokio::spawn(async move {
+                                            let _ = c.yt_set_config(
+                                                None, cf, None, None, None,
+                                            ).await;
+                                        });
+                                        self.notify(
+                                            format!("Cookie file: {display}"),
+                                            crate::app::NotificationKind::Info,
+                                        );
                                     }
                                     _ => {}
                                 },

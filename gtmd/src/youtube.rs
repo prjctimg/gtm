@@ -4,6 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use tokio::io::AsyncBufReadExt;
@@ -23,6 +24,7 @@ pub struct YoutubeManager {
     task: Option<oneshot::Sender<()>>,
     results: Vec<YTSearchResult>,
     semaphore: Semaphore,
+    cookie_file: Option<PathBuf>,
 }
 
 impl YoutubeManager {
@@ -31,7 +33,12 @@ impl YoutubeManager {
             task: None,
             results: Vec::new(),
             semaphore: Semaphore::new(MAX_CONCURRENT),
+            cookie_file: None,
         }
+    }
+
+    pub fn set_cookie_file(&mut self, path: Option<String>) {
+        self.cookie_file = path.map(PathBuf::from);
     }
 
     pub async fn search(&mut self, query: &str, _filter: Option<YTFilter>) -> Result<(), String> {

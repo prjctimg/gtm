@@ -389,27 +389,20 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         28
     };
 
-    // Full-height lyrics mode: lyrics get a right column spanning the entire area.
+    // Lyrics always get a right column spanning the full height.
     // Left side has Now Playing on top + Library/Content below.
-    let full_height_lyrics = app.show_lyrics && !is_narrow && !show_vis;
+    let lyrics_takes_full_height = app.show_lyrics && !is_narrow;
 
-    let (left_area, vis_area, lyrics_full_area) = if full_height_lyrics {
+    let (left_area, lyrics_area) = if lyrics_takes_full_height {
         let lyrics_w = area.width / 3;
         let left_w = area.width - lyrics_w;
         let h = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(left_w), Constraint::Length(lyrics_w)])
             .split(area);
-        (h[0], None, Some(h[1]))
-    } else if show_vis {
-        let vis_w = area.width / 3;
-        let h = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(0), Constraint::Length(vis_w)])
-            .split(area);
-        (h[0], Some(h[1]), None)
+        (h[0], Some(h[1]))
     } else {
-        (area, None, None)
+        (area, None)
     };
 
     let chunks = Layout::default()
@@ -417,7 +410,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .constraints([Constraint::Length(np_height), Constraint::Min(1)])
         .split(left_area);
 
-    let (np_area, vis_area) = if show_vis && !full_height_lyrics {
+    let (np_area, vis_area) = if show_vis {
         let vis_w = app.terminal_cols / 3;
         let h = Layout::default()
             .direction(Direction::Horizontal)
@@ -425,28 +418,10 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             .split(chunks[0]);
         (h[0], Some(h[1]))
     } else {
-        (chunks[0], vis_area)
+        (chunks[0], None)
     };
 
-    let panes = if app.show_lyrics && !is_narrow && !show_vis {
-        // Full-height lyrics mode: just [Library | Content] on the left side
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(lib_width), Constraint::Min(0)])
-            .split(chunks[1])
-            .to_vec()
-    } else if app.show_lyrics && !is_narrow {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([
-                Constraint::Length(lib_width),
-                Constraint::Min(0),
-                Constraint::Length(lib_width),
-            ])
-            .split(chunks[1])
-            .to_vec()
-    } else if is_narrow {
-        // Half-width: show only the focused pane at full width
+    let panes = if is_narrow {
         if app.library_pane_focus {
             Layout::default()
                 .direction(Direction::Horizontal)
@@ -672,19 +647,21 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
     // ── Visualizer (right of Now Playing) ──
     if let Some(vis_a) = vis_area {
-        app.visualizer.tick(
-            app.state.status == gtm_core::state::PlaybackStatus::Playing,
-            vis_a.width,
-        );
-        let vis_block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Visualizer ")
-            .border_type(BorderType::Plain)
-            .border_style(Style::default().fg(app.theme.fg_dim));
-        let vis_inner = vis_block.inner(vis_a);
-        f.render_widget(vis_block, vis_a);
-        if let Some(lines) = app.visualizer.render(vis_inner, &app.theme) {
-            f.render_widget(lines, vis_inner);
+        if vis_a.width >= 4 && vis_a.height >= 3 {
+            app.visualizer.tick(
+                app.state.status == gtm_core::state::PlaybackStatus::Playing,
+                vis_a.width,
+            );
+            let vis_block = Block::default()
+                .borders(Borders::ALL)
+                .title(" Visualizer ")
+                .border_type(BorderType::Plain)
+                .border_style(Style::default().fg(app.theme.fg_dim));
+            let vis_inner = vis_block.inner(vis_a);
+            f.render_widget(vis_block, vis_a);
+            if let Some(lines) = app.visualizer.render(vis_inner, &app.theme) {
+                f.render_widget(lines, vis_inner);
+            }
         }
     }
 
@@ -1000,17 +977,10 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     f.render_widget(right_para, inner);
     // end content rendering
 
-    // ── Right lyrics pane (toggleable) ──
-    if app.show_lyrics {
-        if let Some(full_lyrics) = lyrics_full_area {
-            // Full-height lyrics mode (no visualizer)
-            render_lyrics_pane(f, full_lyrics, app);
-        } else if panes.len() > 2 {
-            render_lyrics_pane(f, panes[2], app);
-        }
-    }
-    // In narrow mode with lyrics, show lyrics replacing the library pane
-    if app.show_lyrics && panes.len() == 1 && lyrics_full_area.is_none() {
+    // ── Right lyrics pane (full height) ──
+    if let Some(lyrics_area) = lyrics_area {
+        render_lyrics_pane(f, lyrics_area, app);
+    } else if app.show_lyrics && panes.len() == 1 {
         render_lyrics_pane(f, panes[0], app);
     }
 }
@@ -1090,7 +1060,10 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         ],
         1 => vec![
             format!("Cookie Source   [ chromium   ▶ ]"),
-            format!("Cookie File     [ (none)     ▶ ]"),
+            format!(
+                "Cookie File     [ {} ]",
+                app.cookie_file.as_deref().unwrap_or("(none)")
+            ),
             format!("JS Runtime      [ deno       ▶ ]"),
             format!("Max Downloads   [{:-<13}]  3", "█".repeat(9)),
             format!("Results/Page    10"),
