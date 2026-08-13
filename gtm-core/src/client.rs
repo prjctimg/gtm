@@ -18,6 +18,7 @@ struct PendingRequest {
     response_tx: Option<oneshot::Sender<Result<DaemonRes>>>,
 }
 
+#[derive(Clone)]
 pub struct DaemonClient {
     cmd_tx: mpsc::UnboundedSender<PendingRequest>,
     events: Arc<Mutex<Vec<DaemonEvent>>>,

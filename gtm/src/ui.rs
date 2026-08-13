@@ -118,7 +118,7 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
             Constraint::Length(2),
             Constraint::Length(1),
             Constraint::Min(0),
-            Constraint::Length(3),
+            Constraint::Length(1),
         ])
         .split(area);
 
@@ -137,7 +137,7 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
 
 fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let version = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0");
-    let tab_items = [("1", "Now Playing", Tab::NowPlaying), ("2", "Library", Tab::Library), ("3", "Settings", Tab::Settings)];
+    let tab_items = [("1", "▶ Now Playing", Tab::NowPlaying), ("2", "☰ Library", Tab::Library), ("3", "⚙ Settings", Tab::Settings)];
 
     let mut span_data: Vec<(bool, String)> = Vec::new();
     for (num, name, tab) in &tab_items {
@@ -165,7 +165,7 @@ fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let pad = remaining.saturating_sub(spans.iter().map(|s| s.width() as u16).sum::<u16>());
     if pad > version_str.len() as u16 + 1 {
         spans.push(Span::raw(" ".repeat((pad - version_str.len() as u16) as usize)));
-        spans.push(Span::styled(version_str, Style::default().fg(app.theme.fg_dim)));
+        spans.push(Span::styled(version_str, Style::default().fg(app.theme.fg)));
     }
 
     let tab_line = Paragraph::new(Line::from(spans))
@@ -211,7 +211,7 @@ fn render_now_playing(f: &mut ratatui::Frame, area: Rect, app: &App) {
         None => {
             let p = Paragraph::new("No track playing")
                 .alignment(Alignment::Center)
-                .style(Style::default().fg(app.theme.fg_dim));
+                .style(Style::default().fg(app.theme.fg));
             f.render_widget(p, area);
             return;
         }
@@ -232,7 +232,7 @@ fn render_now_playing(f: &mut ratatui::Frame, area: Rect, app: &App) {
             .borders(Borders::ALL)
             .title(" Cover ")
             .border_type(BorderType::Plain)
-            .style(Style::default().fg(app.theme.fg_dim));
+            .style(Style::default().fg(app.theme.fg));
         f.render_widget(placeholder, cover_area);
     }
 
@@ -258,21 +258,30 @@ fn render_now_playing(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
     // Separator
     let sep = Paragraph::new("─".repeat(right[1].width as usize))
-        .style(Style::default().fg(app.theme.fg_dim));
+        .style(Style::default().fg(app.theme.fg));
     f.render_widget(sep, right[1]);
 
-    // Track title
+    // Track title (fallback to filename)
+    let display_title = if track.title.is_empty() {
+        std::path::Path::new(&track.path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default()
+    } else {
+        track.title.clone()
+    };
     let fav_prefix = if track.favourite { "\u{2665} " } else { "" };
     let title = Paragraph::new(Line::from(vec![
         Span::styled(fav_prefix, Style::default().fg(app.theme.error)),
-        Span::styled(&track.title, Style::default().fg(app.theme.fg_bright).add_modifier(Modifier::BOLD)),
+        Span::styled(&display_title, Style::default().fg(app.theme.fg_bright).add_modifier(Modifier::BOLD)),
     ]));
     f.render_widget(title, right[2]);
 
     // Artist
+    let display_artist = if track.artist.is_empty() { "Unknown" } else { &track.artist };
     let artist = Paragraph::new(Line::from(vec![
-        Span::styled("Artist: ", Style::default().fg(app.theme.fg_dim)),
-        Span::styled(&track.artist, Style::default().fg(app.theme.fg)),
+        Span::styled("Artist: ", Style::default().fg(app.theme.fg)),
+        Span::styled(display_artist, Style::default().fg(app.theme.fg_bright)),
     ]));
     f.render_widget(artist, right[3]);
 
@@ -290,16 +299,17 @@ fn render_now_playing(f: &mut ratatui::Frame, area: Rect, app: &App) {
     };
     if !format_chip.is_empty() {
         let fmt = Paragraph::new(Line::from(vec![
-            Span::styled("Format: ", Style::default().fg(app.theme.fg_dim)),
+            Span::styled("Format: ", Style::default().fg(app.theme.fg)),
             Span::styled(fmt_parts.join(" | "), Style::default().fg(app.theme.accent)),
         ]));
         f.render_widget(fmt, right[4]);
     }
 
     // Album
+    let display_album = if track.album.is_empty() { "Unknown" } else { &track.album };
     let album = Paragraph::new(Line::from(vec![
-        Span::styled("Album:  ", Style::default().fg(app.theme.fg_dim)),
-        Span::styled(&track.album, Style::default().fg(app.theme.fg)),
+        Span::styled("Album:  ", Style::default().fg(app.theme.fg)),
+        Span::styled(display_album, Style::default().fg(app.theme.fg_bright)),
     ]));
     f.render_widget(album, right[5]);
 
@@ -311,7 +321,7 @@ fn render_now_playing(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let ratio = if dur > 0.0 { (pos / dur) as f64 } else { 0.0 };
     let ts_str = format!("{} / {}", pos_str, dur_str);
     let bar_width = right[6].width.saturating_sub(2) as usize;
-    let bar = render_progress_line(ratio, bar_width);
+    let bar = render_progress_variant(ratio, bar_width, app);
     let bar_with_ts = format!("{} {}", bar, ts_str);
     let bar_para = Paragraph::new(bar_with_ts)
         .style(Style::default().fg(app.theme.accent));
@@ -332,7 +342,7 @@ fn render_now_playing(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let controls = Paragraph::new(
         " [Space]P/P  [n/N]Next  [p/P]Prev  [s]Stop  [+/-]Vol  [m]Mute  [r/R]Repeat  [S]Shuffle  [t]Info  [:]Cmd  [q]Quit ",
     )
-    .style(Style::default().fg(app.theme.fg_dim));
+    .style(Style::default().fg(app.theme.fg));
     f.render_widget(controls, bottom_chunks[1]);
 }
 
@@ -372,7 +382,7 @@ const LIBRARY_ICONS_NERD: &[&str] = &[
     "\u{f0510}", "\u{f010d}", "\u{f010e}", "\u{f04c7}", "\u{f39d8}",
 ];
 
-const LIBRARY_ICONS_ASCII: &[&str] = &["♪", "▤", "♪", "≡", "⏱", "★", "☆", "☊", "▼"];
+const LIBRARY_ICONS_ASCII: &[&str] = &["♫", "▤", "♪", "≡", "⏱", "★", "☆", "☊", "▼"];
 
 fn use_nerd_fonts() -> bool {
     match std::env::var("GTM_NERD_FONTS") {
@@ -404,6 +414,9 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &App) {
             let icon = lib_icons.get(i).unwrap_or(&" ");
             let count = match *cat {
                 "All Tracks" => app.tracks_cache.len(),
+                "Albums" => app.unique_albums().len(),
+                "Artists" => app.unique_artists().len(),
+                "Playlists" => app.playlist_cache.len(),
                 _ => 0,
             };
             let num = i + 1;
@@ -418,7 +431,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &App) {
             } else if is_active {
                 Style::default().fg(app.theme.accent)
             } else {
-                Style::default().fg(app.theme.fg_dim)
+                Style::default().fg(app.theme.fg)
             };
             ListItem::new(label).style(style)
         })
@@ -448,94 +461,174 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &App) {
         }
     }
 
-    // ── Right pane: track table ──
-    let filtered: Vec<&gtm_core::track::TrackInfo> = if app.search_query.is_empty() {
-        app.tracks_cache.iter().collect()
-    } else {
-        let q = app.search_query.to_lowercase();
-        app.tracks_cache
-            .iter()
-            .filter(|t| {
-                t.title.to_lowercase().contains(&q)
-                    || t.artist.to_lowercase().contains(&q)
-                    || t.album.to_lowercase().contains(&q)
-            })
-            .collect()
-    };
-
+    // ── Right pane: browse list or track table ──
     let category_label = LIBRARY_CATEGORIES.get(app.library_category).unwrap_or(&"All Tracks");
-    let total_dur: u64 = filtered.iter().map(|t| t.duration as u64).sum();
-    let hours = total_dur / 3600;
-    let mins = (total_dur % 3600) / 60;
-    let stats_line = format!(
-        " {} tracks | {}h {}m ",
-        filtered.len(),
-        hours,
-        mins,
-    );
 
-    let sel = app.scroll_offset.min(filtered.len().saturating_sub(1));
-
-    // Up Next header
-    let current_id = app.state.current_track.as_ref().map(|t| t.id);
-    let up_next = if let (Some(t), Some(_)) = (app.state.current_track.as_ref(), current_id.and_then(|id| filtered.iter().position(|ft| ft.id == id))) {
-        format!(" Up Next: {} - {}    {}", t.artist, t.title, stats_line)
-    } else if !filtered.is_empty() {
-        format!(" {} · {} tracks", category_label, filtered.len())
-    } else {
-        format!(" {} · 0 tracks", category_label)
-    };
-
-    // Column widths
-    let pane_w = panes[1].width as usize;
-    let num_w = 4;   // "#  "
-    let dur_w = 9;   // " 00:00:00" or " 99:99"
-    let br_w = 8;    // " 320kbps"
-    let title_w = pane_w.saturating_sub(num_w + dur_w + br_w + 4).max(10);
-
-    let header_fmt = format!(
-        "{:>w1$}│ {:<w2$} │ {:>w3$} │ {:>w4$}",
-        "#", "Title / Artist / Album", "Duration", "Bitrate",
-        w1 = num_w - 1, w2 = title_w, w3 = dur_w - 1, w4 = br_w - 1
-    );
-    let sep_line = format!(
-        "{:─>w1$}┼{:─>w2$}┼{:─>w3$}┼{:─>w4$}",
-        "", "", "", "",
-        w1 = num_w + 1, w2 = title_w + 2, w3 = dur_w + 1, w4 = br_w
-    );
-
-    let mut right_lines = vec![
-        Line::from(Span::styled(up_next, Style::default().fg(app.theme.fg_dim))),
-        Line::from(""),
-        Line::from(Span::styled(header_fmt, Style::default().fg(app.theme.fg_dim))),
-        Line::from(Span::styled(sep_line, Style::default().fg(app.theme.fg_dim))),
-    ];
-
-    for (i, track) in filtered.iter().enumerate() {
-        let is_current = app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
-        let is_sel = i == sel && !left_focus;
-        let prefix = if is_current { ">" } else if is_sel { " " } else { " " };
-        let num_str = format!("{}{:02}", prefix, i + 1);
-        let dur = format_duration_short(track.duration as u64);
-        let br = track.bitrate.map(|b| format!("{}kbps", b)).unwrap_or_default();
-        let title_artist = format!("{} - {}", track.artist, track.title);
-
-        let row = format!(
-            "{:<w1$}│ {:<w2$} │ {:>w3$} │ {:>w4$}",
-            num_str, title_artist, dur, br,
-            w1 = num_w, w2 = title_w, w3 = dur_w, w4 = br_w
-        );
-
-        let style = if is_current {
-            Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD)
-        } else if is_sel {
-            Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
+    let (right_lines, stats_line) = if app.browse_detail.is_some() {
+        // Detail view: show tracks filtered by album/artist/playlist
+        let filtered = app.filtered_tracks();
+        let total_dur: u64 = filtered.iter().map(|t| t.duration as u64).sum();
+        let hours = total_dur / 3600;
+        let mins = (total_dur % 3600) / 60;
+        let st_line = format!(" {} tracks | {}h {}m ", filtered.len(), hours, mins);
+        let sel = app.scroll_offset.min(filtered.len().saturating_sub(1));
+        let detail_name = app.browse_detail.as_deref().unwrap_or("");
+        let current_id = app.state.current_track.as_ref().map(|t| t.id);
+        let header_text = if let (Some(t), Some(_)) = (app.state.current_track.as_ref(), current_id.and_then(|id| filtered.iter().position(|ft| ft.id == id))) {
+            format!(" Up Next: {} - {}    {}", t.artist, t.title, st_line)
         } else {
-            Style::default()
+            format!(" {} · {} tracks", detail_name, filtered.len())
         };
 
-        right_lines.push(Line::from(Span::styled(row, style)));
-    }
+        let pane_w = panes[1].width as usize;
+        let num_w = 4; let dur_w = 9; let br_w = 8;
+        let title_w = pane_w.saturating_sub(num_w + dur_w + br_w + 4).max(10);
+
+        let header_fmt = format!("{:>w1$}│ {:<w2$} │ {:>w3$} │ {:>w4$}",
+            "#", "Title / Artist / Album", "Duration", "Bitrate",
+            w1 = num_w - 1, w2 = title_w, w3 = dur_w - 1, w4 = br_w - 1);
+        let sep_line = format!("{:─>w1$}┼{:─>w2$}┼{:─>w3$}┼{:─>w4$}",
+            "", "", "", "", w1 = num_w + 1, w2 = title_w + 2, w3 = dur_w + 1, w4 = br_w);
+
+        let mut lines = vec![
+            Line::from(Span::styled(header_text, Style::default().fg(app.theme.fg))),
+            Line::from(""),
+            Line::from(Span::styled(header_fmt, Style::default().fg(app.theme.fg))),
+            Line::from(Span::styled(sep_line, Style::default().fg(app.theme.fg))),
+        ];
+
+        for (i, track) in filtered.iter().enumerate() {
+            let is_current = app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
+            let is_sel = i == sel && !left_focus;
+            let prefix = if is_current { ">" } else if is_sel { " " } else { " " };
+            let num_str = format!("{}{:02}", prefix, i + 1);
+            let dur = format_duration_short(track.duration as u64);
+            let br = track.bitrate.map(|b| format!("{}kbps", b)).unwrap_or_default();
+            let title_artist = format!("{} - {}", track.artist, track.title);
+            let row = format!("{:<w1$}│ {:<w2$} │ {:>w3$} │ {:>w4$}",
+                num_str, title_artist, dur, br, w1 = num_w, w2 = title_w, w3 = dur_w, w4 = br_w);
+            let style = if is_current {
+                Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD)
+            } else if is_sel {
+                Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
+            } else {
+                Style::default()
+            };
+            lines.push(Line::from(Span::styled(row, style)));
+        }
+        (lines, st_line)
+    } else if app.library_category == 1 {
+        // Albums browse
+        let albums = app.unique_albums();
+        let sel = app.scroll_offset.min(albums.len().saturating_sub(1));
+        let st_line = format!(" {} albums ", albums.len());
+        let mut lines = vec![
+            Line::from(Span::styled(format!(" {} · {} albums", category_label, albums.len()), Style::default().fg(app.theme.fg))),
+            Line::from(""),
+        ];
+        for (i, (name, count)) in albums.iter().enumerate() {
+            let prefix = if i == sel && !left_focus { " >" } else { "  " };
+            let style = if i == sel && !left_focus {
+                Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
+            } else {
+                Style::default().fg(app.theme.fg)
+            };
+            lines.push(Line::from(Span::styled(format!("{}{:<40} {:>4} tracks", prefix, name, count), style)));
+        }
+        (lines, st_line)
+    } else if app.library_category == 2 {
+        // Artists browse
+        let artists = app.unique_artists();
+        let sel = app.scroll_offset.min(artists.len().saturating_sub(1));
+        let st_line = format!(" {} artists ", artists.len());
+        let mut lines = vec![
+            Line::from(Span::styled(format!(" {} · {} artists", category_label, artists.len()), Style::default().fg(app.theme.fg))),
+            Line::from(""),
+        ];
+        for (i, (name, count)) in artists.iter().enumerate() {
+            let prefix = if i == sel && !left_focus { " >" } else { "  " };
+            let style = if i == sel && !left_focus {
+                Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
+            } else {
+                Style::default().fg(app.theme.fg)
+            };
+            lines.push(Line::from(Span::styled(format!("{}{:<40} {:>4} tracks", prefix, name, count), style)));
+        }
+        (lines, st_line)
+    } else if app.library_category == 3 {
+        // Playlists browse
+        let playlists = &app.playlist_cache;
+        let sel = app.scroll_offset.min(playlists.len().saturating_sub(1));
+        let st_line = format!(" {} playlists ", playlists.len());
+        let mut lines = vec![
+            Line::from(Span::styled(format!(" {} · {} playlists", category_label, playlists.len()), Style::default().fg(app.theme.fg))),
+            Line::from(""),
+        ];
+        for (i, pl) in playlists.iter().enumerate() {
+            let prefix = if i == sel && !left_focus { " >" } else { "  " };
+            let style = if i == sel && !left_focus {
+                Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
+            } else {
+                Style::default().fg(app.theme.fg)
+            };
+            lines.push(Line::from(Span::styled(format!("{}{:<40} {:>4} tracks", prefix, pl.name, pl.track_count), style)));
+        }
+        (lines, st_line)
+    } else {
+        // All Tracks or other: flat track table
+        let filtered = app.filtered_tracks();
+        let total_dur: u64 = filtered.iter().map(|t| t.duration as u64).sum();
+        let hours = total_dur / 3600;
+        let mins = (total_dur % 3600) / 60;
+        let st_line = format!(" {} tracks | {}h {}m ", filtered.len(), hours, mins);
+        let sel = app.scroll_offset.min(filtered.len().saturating_sub(1));
+        let current_id = app.state.current_track.as_ref().map(|t| t.id);
+        let header_text = if let (Some(t), Some(_)) = (app.state.current_track.as_ref(), current_id.and_then(|id| filtered.iter().position(|ft| ft.id == id))) {
+            format!(" Up Next: {} - {}    {}", t.artist, t.title, st_line)
+        } else if !filtered.is_empty() {
+            format!(" {} · {} tracks", category_label, filtered.len())
+        } else {
+            format!(" {} · 0 tracks", category_label)
+        };
+
+        let pane_w = panes[1].width as usize;
+        let num_w = 4; let dur_w = 9; let br_w = 8;
+        let title_w = pane_w.saturating_sub(num_w + dur_w + br_w + 4).max(10);
+
+        let header_fmt = format!("{:>w1$}│ {:<w2$} │ {:>w3$} │ {:>w4$}",
+            "#", "Title / Artist / Album", "Duration", "Bitrate",
+            w1 = num_w - 1, w2 = title_w, w3 = dur_w - 1, w4 = br_w - 1);
+        let sep_line = format!("{:─>w1$}┼{:─>w2$}┼{:─>w3$}┼{:─>w4$}",
+            "", "", "", "", w1 = num_w + 1, w2 = title_w + 2, w3 = dur_w + 1, w4 = br_w);
+
+        let mut lines = vec![
+            Line::from(Span::styled(header_text, Style::default().fg(app.theme.fg))),
+            Line::from(""),
+            Line::from(Span::styled(header_fmt, Style::default().fg(app.theme.fg))),
+            Line::from(Span::styled(sep_line, Style::default().fg(app.theme.fg))),
+        ];
+
+        for (i, track) in filtered.iter().enumerate() {
+            let is_current = app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
+            let is_sel = i == sel && !left_focus;
+            let prefix = if is_current { ">" } else if is_sel { " " } else { " " };
+            let num_str = format!("{}{:02}", prefix, i + 1);
+            let dur = format_duration_short(track.duration as u64);
+            let br = track.bitrate.map(|b| format!("{}kbps", b)).unwrap_or_default();
+            let title_artist = format!("{} - {}", track.artist, track.title);
+            let row = format!("{:<w1$}│ {:<w2$} │ {:>w3$} │ {:>w4$}",
+                num_str, title_artist, dur, br, w1 = num_w, w2 = title_w, w3 = dur_w, w4 = br_w);
+            let style = if is_current {
+                Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD)
+            } else if is_sel {
+                Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
+            } else {
+                Style::default()
+            };
+            lines.push(Line::from(Span::styled(row, style)));
+        }
+        (lines, st_line)
+    };
 
     let right_para = Paragraph::new(right_lines);
     let right_block = Block::default()
@@ -555,13 +648,13 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &App) {
     // ── Stats bar ──
     let stats = Paragraph::new(Line::from(vec![
         Span::raw("  "),
-        Span::styled(stats_line, Style::default().fg(app.theme.fg_dim)),
+        Span::styled(stats_line, Style::default().fg(app.theme.fg)),
     ]));
     f.render_widget(stats, stats_area);
 }
 
-const SETTINGS_ICONS: &[&str] = &["♫", "▶", "✧", "⚙", "☊"];
-const SETTINGS_CATEGORIES: &[&str] = &["Audio", "YouTube", "Appearance", "System", "Spotify"];
+const SETTINGS_ICONS: &[&str] = &["♫", "▶", "↻", "⚙", "☊"];
+const SETTINGS_CATEGORIES: &[&str] = &["Audio", "YouTube", "Playback", "System", "Spotify"];
 
 fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let panes = Layout::default()
@@ -582,7 +675,7 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
             } else if is_active {
                 Style::default().fg(app.theme.accent)
             } else {
-                Style::default().fg(app.theme.fg_dim)
+                Style::default().fg(app.theme.fg)
             };
             ListItem::new(format!(" {} {}", icon, cat)).style(style)
         })
@@ -654,6 +747,7 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(right_block, panes[1]);
 
     let mut lines = Vec::new();
+    let sel = app.settings_option;
     for (i, item) in items.iter().enumerate() {
         if i == 1 && app.settings_category == 1 {
             lines.push(Line::from(Span::styled(
@@ -661,15 +755,21 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
                 Style::default().fg(app.theme.accent),
             )));
         }
-        lines.push(Line::from(Span::styled(item, Style::default().fg(app.theme.fg))));
+        let is_sel = i == sel && !settings_focus;
+        let style = if is_sel {
+            Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
+        } else {
+            Style::default().fg(app.theme.fg)
+        };
+        lines.push(Line::from(Span::styled(item, style)));
     }
     lines.push(Line::from(""));
     match app.settings_category {
-        0 => lines.push(Line::from(Span::styled(" Volume: Adjust playback volume. Mute: Toggle mute.", Style::default().fg(app.theme.fg_dim)))),
-        1 => lines.push(Line::from(Span::styled(" YouTube integration: JS runtime, download limits, search prefs.", Style::default().fg(app.theme.fg_dim)))),
-        2 => lines.push(Line::from(Span::styled(" Repeat/Shuffle/Crossfade playback settings.", Style::default().fg(app.theme.fg_dim)))),
-        3 => lines.push(Line::from(Span::styled(" Theme and notification display settings.", Style::default().fg(app.theme.fg_dim)))),
-        4 => lines.push(Line::from(Span::styled(" Spotify integration status.", Style::default().fg(app.theme.fg_dim)))),
+        0 => lines.push(Line::from(Span::styled(" Volume: Adjust playback volume. Mute: Toggle mute.", Style::default().fg(app.theme.fg)))),
+        1 => lines.push(Line::from(Span::styled(" YouTube integration: JS runtime, download limits, search prefs.", Style::default().fg(app.theme.fg)))),
+        2 => lines.push(Line::from(Span::styled(" Repeat/Shuffle/Crossfade playback controls.", Style::default().fg(app.theme.fg)))),
+        3 => lines.push(Line::from(Span::styled(" Theme and notification display settings.", Style::default().fg(app.theme.fg)))),
+        4 => lines.push(Line::from(Span::styled(" Spotify integration status.", Style::default().fg(app.theme.fg)))),
         _ => {}
     }
 
@@ -924,61 +1024,107 @@ fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
             let vol_str = if app.state.mute { "MUTE".into() } else { format!("{:>3}%", app.state.volume) };
             let repeat_str = match app.state.repeat {
                 RepeatMode::Off => "",
-                RepeatMode::One => " [1]",
-                RepeatMode::All => " [A]",
+                RepeatMode::One => " 1",
+                RepeatMode::All => " A",
             };
-            let shuffle_str = if app.state.shuffle { " [S]" } else { "" };
-            let vol_ratio = if app.state.mute { 0.0 } else { app.state.volume as f64 / 100.0 };
-            let vol_bar = render_progress_line(vol_ratio, 8);
-            let status_text = format!(" {} {} {} {}{}", status_icon, vol_bar, vol_str, repeat_str, shuffle_str);
+            let shuffle_str = if app.state.shuffle { " S" } else { "" };
 
-            // Left segment: fixed width for compact status bar
-            let left_w = (status_text.len() as u16 + 2).min(area.width.saturating_sub(20));
+            // Neon-style left section with icon, volume %, repeat/shuffle
+            let left_text = format!(" {} {} {}{}", status_icon, vol_str, repeat_str, shuffle_str);
+            let left_w = (left_text.len() as u16 + 2).min(area.width.saturating_sub(16));
+
             let chunks = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(left_w), Constraint::Min(0)])
                 .split(area);
 
-            // Left: status
-            let status_bg = if is_playing { app.theme.accent } else { app.theme.fg_dim };
-            let status_fg = if is_playing { app.theme.fg_bright } else { app.theme.overlay_bg };
-            let status_para = Paragraph::new(status_text)
-                .style(Style::default().fg(status_fg).bg(status_bg));
-            f.render_widget(status_para, chunks[0]);
+            // Left: lualine-style section with colored bg
+            let left_bg = if is_playing { app.theme.accent } else { app.theme.fg_dim };
+            let left_fg = if is_playing { app.theme.fg_bright } else { app.theme.overlay_bg };
+            f.render_widget(
+                Paragraph::new(left_text)
+                    .style(Style::default().fg(left_fg).bg(left_bg)),
+                chunks[0],
+            );
 
-            // Right: progress + clock
-            let right_area = chunks[1];
+            // Right: neon progress + clock on dark bg
             let clock_str = local_time_str();
             if let Some(ref track) = app.state.current_track {
                 let pos = app.display_position as u64;
                 let dur = track.duration as u64;
                 let ratio = if dur > 0 { pos as f64 / dur as f64 } else { 0.0 };
-                let time_str = format!(" {} / {} ", format_duration(pos), format_duration(dur));
-                let clock_w = clock_str.len() as u16;
-                let bar_w = right_area.width.saturating_sub(time_str.len() as u16 + clock_w + 2).max(4) as usize;
-                let bar = render_progress_line(ratio, bar_w);
-                let progress_text = format!(" {} {} {}", bar, time_str, clock_str);
-                let progress_para = Paragraph::new(progress_text)
-                    .style(Style::default().fg(app.theme.fg).bg(app.theme.border));
-                f.render_widget(progress_para, right_area);
+                let time_str = format!(" {} / {}", format_duration(pos), format_duration(dur));
+                let progress = render_progress_variant(ratio, 14, app);
+                let right_text = format!(" {} {}  {}", progress, time_str, clock_str);
+                f.render_widget(
+                    Paragraph::new(right_text)
+                        .style(Style::default().fg(app.theme.fg_bright).bg(app.theme.border)),
+                    chunks[1],
+                );
             } else {
-                let progress_text = format!(" \u{25a0} stopped  {}", clock_str);
-                let progress_para = Paragraph::new(progress_text)
-                    .style(Style::default().fg(app.theme.fg_dim).bg(app.theme.border));
-                f.render_widget(progress_para, right_area);
+                f.render_widget(
+                    Paragraph::new(format!(" \u{25a0} stopped  {}", clock_str))
+                        .style(Style::default().fg(app.theme.fg_dim).bg(app.theme.border)),
+                    chunks[1],
+                );
             }
         }
         InputMode::Searching => {
-            let input = Paragraph::new(format!(" > {}_", app.search_query))
-                .style(Style::default().fg(app.theme.fg));
-            f.render_widget(input, area);
+            f.render_widget(
+                Paragraph::new(format!(" > {}_", app.search_query))
+                    .style(Style::default().fg(app.theme.fg_bright).bg(app.theme.border)),
+                area,
+            );
         }
         InputMode::Command => {
-            let input = Paragraph::new(format!(" :{}_", app.search_query))
-                .style(Style::default().fg(app.theme.fg));
-            f.render_widget(input, area);
+            f.render_widget(
+                Paragraph::new(format!(" :{}_", app.search_query))
+                    .style(Style::default().fg(app.theme.fg_bright).bg(app.theme.border)),
+                area,
+            );
         }
     }
+}
+
+fn render_progress_variant(ratio: f64, width: usize, app: &App) -> String {
+    let inner_w = width.saturating_sub(2).max(4);
+    let filled = (ratio.clamp(0.0, 1.0) * inner_w as f64).round() as usize;
+    let mut line = String::with_capacity(width);
+    match app.theme_index % 3 {
+        0 => {
+            // Braille dots variant
+            line.push('⡀');
+            for i in 0..inner_w {
+                if i < filled {
+                    line.push('⣿');
+                } else {
+                    line.push('⣀');
+                }
+            }
+            line.push('⠤');
+        }
+        1 => {
+            // Seek-head line variant
+            line.push('─');
+            for i in 0..inner_w {
+                if i == filled {
+                    line.push('●');
+                } else {
+                    line.push('─');
+                }
+            }
+            line.push('─');
+        }
+        _ => {
+            // Classic bracket variant
+            line.push('[');
+            for i in 0..inner_w {
+                line.push(if i < filled { '█' } else { '░' });
+            }
+            line.push(']');
+        }
+    }
+    line
 }
 
 fn render_about_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -1156,40 +1302,13 @@ fn render_equalizer_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
         ListItem::new(format!("{prefix}{}", name)).style(style)
     }).collect();
 
-    let graph = render_eq_graph();
-    let all_items: Vec<ListItem> = list_items.into_iter().chain(
-        std::iter::once(ListItem::new(""))
-            .chain(std::iter::once(ListItem::new(graph).style(Style::default().fg(app.theme.accent))))
-    ).collect();
-
-    let list = List::new(all_items).block(
+    let list = List::new(list_items).block(
         Block::default()
             .borders(Borders::ALL)
             .title(" Equalizer ")
             .border_type(BorderType::Plain),
     );
     f.render_widget(list, area);
-}
-
-fn render_eq_graph() -> String {
-    let bands = ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
-    let bar_height = 5usize;
-    let mut lines = Vec::new();
-    for row in (0..=bar_height).rev() {
-        let mut line = String::new();
-        for _ in bands.iter() {
-            if row == 0 {
-                line.push_str(" ├─┤ ");
-            } else if row == bar_height / 2 {
-                line.push_str(" ─── ");
-            } else {
-                line.push_str("     ");
-            }
-        }
-        lines.push(line);
-    }
-    lines.push(bands.join(" "));
-    lines.join("\n")
 }
 
 fn render_sound_effects_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {

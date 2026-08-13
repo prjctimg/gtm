@@ -403,15 +403,7 @@ pub fn default_keybindings() -> Keybindings {
                     description: "Cycle repeat",
                 },
             ),
-            // Shuffle — s, Shift+S
-            (
-                KeyCode::Char('s').into(),
-                BoundCommand {
-                    action: KeyboardAction::ToggleShuffle,
-                    contexts: vec![KeyContext::Normal],
-                    description: "Toggle shuffle",
-                },
-            ),
+            // Shuffle — Shift+S only (s is reserved for Stop)
             (
                 KeyCode::Char('S').into(),
                 BoundCommand {
@@ -547,7 +539,7 @@ pub fn default_keybindings() -> Keybindings {
                 },
             ),
             (
-                KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT),
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT),
                 BoundCommand {
                     action: KeyboardAction::OpenOverlay(OverlayId::ThemePicker),
                     contexts: vec![KeyContext::Normal],

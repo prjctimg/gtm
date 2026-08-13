@@ -64,6 +64,7 @@ use crate::config::DaemonConfig;
 use crate::cover_art::CoverCache;
 use crate::library::Library;
 use crate::queue;
+use crate::youtube::YoutubeManager;
 
 type ClientId = u64;
 type ReplyTx = mpsc::UnboundedSender<DaemonRes>;
@@ -77,6 +78,7 @@ pub struct Daemon {
     pub event_tx: broadcast::Sender<DaemonEvent>,
     pub library: Option<Library>,
     pub cover_cache: Option<CoverCache>,
+    pub youtube: YoutubeManager,
     req_tx: mpsc::UnboundedSender<(ClientId, DaemonReq, ReplyTx)>,
     req_rx: mpsc::UnboundedReceiver<(ClientId, DaemonReq, ReplyTx)>,
     next_client_id: ClientId,
@@ -136,6 +138,7 @@ impl Daemon {
             crossfade_loaded_for: None,
             library,
             cover_cache: Some(CoverCache::new(cache_dir)),
+            youtube: YoutubeManager::new(),
         })
     }
 
@@ -1251,26 +1254,49 @@ impl Daemon {
 
     async fn cmd_yt_search(
         &mut self,
-        _query: &str,
-        _filter: Option<gtm_core::state::YTFilter>,
+        query: &str,
+        filter: Option<gtm_core::state::YTFilter>,
     ) -> Result<DaemonRes, CoreError> {
         let version = self.state.read().await.version as u32;
-        Ok(DaemonRes::Ok { version })
+        match self.youtube.search(query, filter).await {
+            Ok(()) => Ok(DaemonRes::Ok { version }),
+            Err(e) => Ok(DaemonRes::Error {
+                version,
+                message: e,
+            }),
+        }
     }
 
     async fn cmd_yt_search_poll(&mut self) -> Result<DaemonRes, CoreError> {
         let version = self.state.read().await.version as u32;
-        Ok(DaemonRes::Ok { version })
+        match self.youtube.poll_results().await {
+            Ok(Some(results)) => Ok(DaemonRes::YtSearchResults { version, results }),
+            Ok(None) => Ok(DaemonRes::Ok { version }),
+            Err(e) => Ok(DaemonRes::Error {
+                version,
+                message: e,
+            }),
+        }
     }
 
     async fn cmd_yt_search_cancel(&mut self) -> Result<DaemonRes, CoreError> {
         let version = self.state.read().await.version as u32;
+        self.youtube.cancel().await;
         Ok(DaemonRes::Ok { version })
     }
 
-    async fn cmd_yt_resolve_stream(&mut self, _url: &str) -> Result<DaemonRes, CoreError> {
+    async fn cmd_yt_resolve_stream(&mut self, url: &str) -> Result<DaemonRes, CoreError> {
         let version = self.state.read().await.version as u32;
-        Ok(DaemonRes::Ok { version })
+        match self.youtube.resolve_stream(url).await {
+            Ok(info) => Ok(DaemonRes::StreamInfo {
+                version,
+                info: Box::new(info),
+            }),
+            Err(e) => Ok(DaemonRes::Error {
+                version,
+                message: e,
+            }),
+        }
     }
 
     async fn cmd_get_status(&mut self) -> Result<DaemonRes, CoreError> {
