@@ -152,6 +152,12 @@ impl DaemonConfig {
         std::fs::create_dir_all(&self.data_dir)?;
         std::fs::create_dir_all(&self.cache_dir)?;
         std::fs::create_dir_all(&self.config_dir)?;
+        if let Some(parent) = self.socket_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if let Some(parent) = self.socket_pulse_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         if let Some(ref log) = self.log_file {
             if let Some(parent) = log.parent() {
                 std::fs::create_dir_all(parent)?;

@@ -30,6 +30,9 @@ pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>>
 
     ensure_daemon_running(&socket_path)?;
 
+    // Redirect stderr to log file so diagnostic messages don't break the TUI
+    let _original_stderr = gtm_core::log::redirect_stderr_to_log();
+
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         color_eyre::install()?;
@@ -67,6 +70,10 @@ fn ensure_daemon_running(socket_path: &std::path::Path) -> Result<(), Box<dyn st
                 return Ok(());
             }
         }
+    }
+
+    if let Some(parent) = socket_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
     }
 
     let gtmd_path = find_gtmd_binary()?;
@@ -115,7 +122,7 @@ fn find_gtmd_binary() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> 
 
 // ─── Layout ───
 
-pub fn render(f: &mut ratatui::Frame, app: &mut App, dt: std::time::Duration) {
+pub fn render(f: &mut ratatui::Frame, app: &mut App) {
     let area = f.area();
     // Explicit background fill — the TUI defines its own background
     f.render_widget(
@@ -155,15 +162,14 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App, dt: std::time::Duration) {
         render_hover_popup(f, area, app);
     }
 
-    // Apply tachyonfx animations over the rendered buffer
-    app.effects.process_effects(dt.into(), f.buffer_mut(), area);
+
 }
 
 // ─── Tab Bar ───
 
 fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let version = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0");
-    let tab_items = [("1", "▶ Now Playing", Tab::NowPlaying), ("2", "󰎈 Library", Tab::Library), ("3", "⚙ Settings", Tab::Settings)];
+    let tab_items = [("1", "▶ Now Playing", Tab::NowPlaying), ("2", "♫ Library", Tab::Library), ("3", "⚙ Settings", Tab::Settings)];
 
     let mut span_data: Vec<(bool, String)> = Vec::new();
     for (num, name, tab) in &tab_items {
@@ -384,11 +390,12 @@ fn render_cover(
     current_cover: Option<&[u8]>,
     fg: Color,
 ) {
-    // Skip image rendering entirely in Neovim terminal (no protocol passthrough)
-    if std::env::var("NVIM").is_ok() {
+    // Skip image rendering in terminals without protocol passthrough
+    if std::env::var("NVIM").is_ok() || std::env::var("ZELLIJ").is_ok() {
+        let terminal_name = if std::env::var("ZELLIJ").is_ok() { "Zellij" } else { "Neovim" };
         let placeholder = Block::default()
             .borders(Borders::ALL)
-            .title(" Cover art unavailable in Neovim ")
+            .title(format!(" Cover art unavailable in {terminal_name} "))
             .style(Style::default().fg(fg));
         f.render_widget(placeholder, area);
         return;
@@ -496,10 +503,12 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 "Playlists" => app.playlist_cache.len(),
                 _ => 0,
             };
+            // Skip icon for "Liked" — the heart is redundant with the name
+            let display_icon = if *cat == "Liked" { " " } else { *icon };
             let label = if count > 0 {
-                format!(" {icon}  {:<14} {:>4}", cat, count)
+                format!(" {display_icon}  {:<14} {:>4}", cat, count)
             } else {
-                format!(" {icon}  {}", cat)
+                format!(" {display_icon}  {}", cat)
             };
             let is_active = i == app.library_category;
             let style = if is_active && left_focus {
@@ -1752,7 +1761,10 @@ pub fn braille_spinner(frame: usize) -> char {
 
 /// Floating hover info popup — appears after 3s of no key press.
 fn render_hover_popup(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let cover_cols = if app.cover_stateful.is_some() { 10u16 } else { 0u16 };
+    // Use scroll_cover_stateful in Library tab (so cover follows scroll),
+    // otherwise use the currently playing track's cover.
+    let scroll_cover = app.current_tab == Tab::Library && app.scroll_cover_stateful.is_some();
+    let cover_cols = if scroll_cover || app.cover_stateful.is_some() { 10u16 } else { 0u16 };
 
     let (display_title, album, artist, duration, bitrate): (String, String, String, String, String) = {
         let track: Option<&TrackInfo> = match app.current_tab {
@@ -1807,7 +1819,12 @@ fn render_hover_popup(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(cover_cols), Constraint::Length(2), Constraint::Min(0)])
             .split(inner);
-        if let Some(ref mut protocol) = app.cover_stateful {
+        if scroll_cover {
+            if let Some(ref mut protocol) = app.scroll_cover_stateful {
+                let image = StatefulImage::new();
+                f.render_stateful_widget(image, hchunks[0], protocol);
+            }
+        } else if let Some(ref mut protocol) = app.cover_stateful {
             let image = StatefulImage::new();
             f.render_stateful_widget(image, hchunks[0], protocol);
         }
@@ -1868,7 +1885,7 @@ fn volume_icon(volume: u8) -> &'static str {
 
 /// Pick the foreground colour that has enough contrast against `bg`.
 /// Uses simple luminance formula (BT.601) to decide between `dark` and `light`.
-pub fn readable_fg(bg: ratatui::style::Color, dark: ratatui::style::Color, light: ratatui::style::Color) -> ratatui::style::Color {
+pub fn readable_fg(bg: ratatui::style::Color, _dark: ratatui::style::Color, _light: ratatui::style::Color) -> ratatui::style::Color {
     fn luminance(c: &ratatui::style::Color) -> f64 {
         match c {
             ratatui::style::Color::Rgb(r, g, b) => {
@@ -1877,7 +1894,11 @@ pub fn readable_fg(bg: ratatui::style::Color, dark: ratatui::style::Color, light
             _ => 128.0,
         }
     }
-    if luminance(&bg) > 128.0 { dark } else { light }
+    if luminance(&bg) > 128.0 {
+        ratatui::style::Color::Rgb(20, 20, 20)
+    } else {
+        ratatui::style::Color::Rgb(240, 240, 240)
+    }
 }
 
 /// Scroll text horizontally if it exceeds max_width, using a frame-based offset.

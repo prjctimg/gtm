@@ -122,6 +122,11 @@ jobs:
       #   ├── man/                     # daemon manpages
       #   └── dist/gtmd.service        # systemd service unit
       #
+      #   gtm-{platform}.tar.gz
+      #   ├── gtm-{platform}           # TUI+CLI binary (only)
+      #   ├── man/gtm.1                # client manpage
+      #   └── completions/             # client shell completions
+      #
       - name: Create component archives
         shell: bash
         run: |
@@ -150,6 +155,15 @@ jobs:
             ../../artifacts/man/gtmd.1 \
             ../../artifacts/man/gtmd-ipc.1 \
             ../../dist/gtmd.service
+          # gtm: TUI+CLI binary only + gtm manpage + gtm completions
+          tar czf "gtm-${platform}.tar.gz" \
+            "gtm-${platform}" \
+            ../../artifacts/man/gtm.1 \
+            ../../artifacts/completions/gtm.bash \
+            ../../artifacts/completions/_gtm \
+            ../../artifacts/completions/gtm.fish \
+            ../../artifacts/completions/gtm.ps1 \
+            ../../artifacts/completions/gtm.elv
 
       # Debian package layout:
       #
@@ -235,6 +249,7 @@ jobs:
             target/release/gtmd-*-darwin
             target/release/gtm-full-*.tar.gz
             target/release/gtmd-*.tar.gz
+            target/release/gtm-*.tar.gz
             artifacts/man/*
             artifacts/completions/*
             target/debian/*.deb

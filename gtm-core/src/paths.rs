@@ -30,11 +30,17 @@ pub fn default_socket_path() -> PathBuf {
     }
     if is_termux() {
         if let Ok(prefix) = std::env::var("PREFIX") {
-            return PathBuf::from(prefix).join("tmp").join("gtmd.socket");
+            let p = PathBuf::from(prefix).join("tmp").join("gtmd.socket");
+            if p.parent().map_or(false, |d| d.exists()) {
+                return p;
+            }
+        }
+        if let Ok(home) = std::env::var("HOME") {
+            return PathBuf::from(home).join(".gtm").join("gtmd.socket");
         }
     }
     let tmp = std::env::temp_dir().join("gtmd.socket");
-    if tmp.parent().and_then(|p| p.to_str()).unwrap_or("") != "/tmp" || is_termux() {
+    if tmp.parent().and_then(|p| p.to_str()).unwrap_or("") != "/tmp" {
         return tmp;
     }
     if let Ok(home) = std::env::var("HOME") {

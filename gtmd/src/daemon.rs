@@ -451,7 +451,11 @@ impl Daemon {
             DaemonReq::Quit => {
                 info!("quit requested");
                 let _ = self.cmd_stop().await;
-                // Remove the socket files so a fresh daemon can bind.
+                let _ = self.event_tx.send(DaemonEvent::Custom {
+                    name: "daemon_quitting".into(),
+                    data: [].into(),
+                });
+                tokio::time::sleep(Duration::from_millis(50)).await;
                 let _ = std::fs::remove_file(&self.config.socket_path);
                 let pulse_path = format!("{}.pulse", self.config.socket_path.display());
                 let _ = std::fs::remove_file(&pulse_path);
@@ -1409,6 +1413,55 @@ impl Daemon {
                 let result = tokio::task::spawn_blocking(move || {
                     let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
                     lib.export_m3u(playlist_id, &export_path)
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(_) => DaemonRes::Ok { version },
+                    Err(e) => DaemonRes::Error { version, message: e },
+                }
+            }
+            gtm_core::ipc::LibraryAction::RemoveFromPlaylist { playlist_id, track_id } => {
+                let playlist_id = *playlist_id;
+                let track_id = *track_id;
+                let data_dir = self.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.remove_from_playlist(playlist_id, track_id)
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(()) => DaemonRes::Ok { version },
+                    Err(e) => DaemonRes::Error { version, message: e },
+                }
+            }
+            gtm_core::ipc::LibraryAction::RemoveTrack { id } => {
+                let id = *id;
+                let data_dir = self.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.remove_track(id)
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(()) => DaemonRes::Ok { version },
+                    Err(e) => DaemonRes::Error { version, message: e },
+                }
+            }
+            gtm_core::ipc::LibraryAction::UpdateMetadata { track_id, title, artist, album, genre, year, track_number } => {
+                let track_id = *track_id;
+                let t = title.clone();
+                let a = artist.clone();
+                let al = album.clone();
+                let g = genre.clone();
+                let y = *year;
+                let tn = *track_number;
+                let data_dir = self.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.update_metadata(track_id, t.as_deref(), a.as_deref(), al.as_deref(), g.as_deref(), y, tn)
                 })
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
