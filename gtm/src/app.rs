@@ -146,6 +146,8 @@ pub struct App {
     pub last_cover_track_id: Option<i64>,
     pub cover_picker: Option<Picker>,
     pub cover_stateful: Option<StatefulProtocol>,
+    pub terminal_cols: u16,
+    pub terminal_rows: u16,
     pub cmd_rx: mpsc::Receiver<TuiCommand>,
     cmd_tx: mpsc::Sender<TuiCommand>,
     high_pri_cmd_rx: mpsc::UnboundedReceiver<TuiCommand>,
@@ -290,6 +292,8 @@ impl App {
             last_cover_track_id: None,
             cover_picker: None,
             cover_stateful: None,
+            terminal_cols: 80,
+            terminal_rows: 24,
             cmd_rx,
             cmd_tx,
             high_pri_cmd_rx,
@@ -628,6 +632,8 @@ impl App {
 
             if force_render {
                 let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+                self.terminal_cols = cols;
+                self.terminal_rows = rows;
                 if cols < 40 || rows < 10 {
                     let _ = terminal.draw(|f| {
                         let msg = Paragraph::new("Terminal too small (min 40x10)")
@@ -1172,7 +1178,7 @@ impl App {
                         commands.len()
                     } else {
                         commands.iter().filter(|c| {
-                            let lower = c.to_lowercase();
+                            let lower = c.0.to_lowercase();
                             let mut qi = 0usize;
                             for ch in lower.chars() {
                                 if qi < q.len() && ch == q.as_bytes()[qi] as char {
@@ -2071,11 +2077,11 @@ impl App {
                         OverlayId::CommandPalette => {
                             let commands = crate::ui::COMMAND_PALETTE_COMMANDS;
                             let query = top.query.to_lowercase();
-                            let filtered: Vec<&&str> = if query.is_empty() {
+                            let filtered: Vec<&(&str, &str)> = if query.is_empty() {
                                 commands.iter().collect()
                             } else {
                                 commands.iter().filter(|c| {
-                                    let lower = c.to_lowercase();
+                                    let lower = c.0.to_lowercase();
                                     let mut qi = 0usize;
                                     for ch in lower.chars() {
                                         if qi < query.len() && ch == query.as_bytes()[qi] as char {
@@ -2087,7 +2093,9 @@ impl App {
                             };
                             let idx = top.selected.min(filtered.len().saturating_sub(1));
                             if let Some(cmd) = filtered.get(idx) {
-                                let label = cmd.to_lowercase();
+                                let raw = cmd.0.to_lowercase();
+                                // Strip leading icon (skip to first ASCII letter)
+                                let label = raw.chars().skip_while(|c| !c.is_ascii_alphabetic()).collect::<String>();
                                 if label.starts_with("play/pause") {
                                     self.send_high(TuiCommand::PlayPause);
                                 } else if label.starts_with("next track") {
@@ -2145,8 +2153,6 @@ impl App {
                                 } else if label.starts_with("fetch lyrics") {
                                     self.show_lyrics = true;
                                     self.send_high(TuiCommand::FetchLyrics);
-                                } else if label.starts_with("cmd palette") {
-                                    // Already here — just close
                                 }
                             }
                             self.overlays.close_top();
