@@ -1,62 +1,58 @@
 # gtm-rs
 
-A terminal-based music player with daemon architecture, SQLite library, Symphonia audio decoding,
-LRC lyrics, YouTube integration, and MPRIS D-Bus remote control.
+[![CI](https://github.com/skchr/gtm-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/skchr/gtm-rs/actions/workflows/ci.yml)
+[![Release](https://github.com/skchr/gtm-rs/actions/workflows/release.yml/badge.svg)](https://github.com/skchr/gtm-rs/actions/workflows/release.yml)
+[![License](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 
-Rewrite of [gtm](https://github.com/prjctimg/gtm) from Nim to Rust.
+A modular terminal-based music player daemon and client suite written in Rust.
 
-## Crate Architecture
+## Crate Overview
 
-```
-┌─────────────────────────────────────────────────┐
-│                 gtm-tui (TUI binary)              │
-│  ┌──────────┐  ┌──────────┐  ┌───────────────┐  │
-│  │ ratatui  │  │ crossterm│  │ gtm-core      │  │
-│  │ (widgets)│  │ (input)  │  │ (types, IPC)  │  │
-│  └──────────┘  └──────────┘  └───────┬───────┘  │
-│                                      │          │
-│                             ┌────────▼───────┐  │
-│                             │ gtm-audio      │  │
-│                             │ (symphonia)    │  │
-│                             └────────────────┘  │
-└─────────────────────────────────────────────────┘
-                        │ IPC (Unix socket, JSON + binary)
-                        ▼
-┌─────────────────────────────────────────────────┐
-│              gtmd (daemon binary)                 │
-│  ┌──────────┐  ┌──────────┐  ┌───────────────┐  │
-│  │ gtm-core │  │ gtm-audio│  │ gtm-mpris     │  │
-│  │ (types)  │  │ (backend)│  │ (zbus D-Bus)  │  │
-│  └──────────┘  └──────────┘  └───────────────┘  │
-│  ┌──────────┐  ┌──────────┐                     │
-│  │ rusqlite │  │ reqwest  │                     │
-│  │ (lib)    │  │ (HTTP)   │                     │
-│  └──────────┘  └──────────┘                     │
-└─────────────────────────────────────────────────┘
+| Crate | Description |
+|---|---|
+| `gtm-core` | Shared types, IPC protocol, state machine, and `DaemonClient` |
+| `gtm-audio` | Audio playback backend (rodio + symphonia) |
+| `gtmd` | Daemon — manages queue, library, IPC socket |
+| `gtm-cli` | Command-line client for the daemon |
+| `gtm-tui` | Terminal UI client (ratatui) |
+| `gtm-mpris` | MPRIS D-Bus interface (optional) |
+
+## Build
+
+Requires Rust 1.81+.
+
+```bash
+# Build everything
+cargo build --release
+
+# Run tests
+cargo test --workspace
 ```
 
-| Crate | Type | Description |
-|-------|------|-------------|
-| `gtm-core` | lib | Shared types, IPC protocol enums, wire format |
-| `gtm-audio` | lib | AudioBackend trait, Symphonia decoder, cpal output |
-| `gtmd` | lib+bin | Background daemon, SQLite library, queue, yt-dlp |
-| `gtm-tui` | bin | Ratatui TUI client with 6 tabs and overlays |
-| `gtm-cli` | bin | Headless CLI controller for scripting |
-| `gtm-mpris` | lib | MPRIS D-Bus server (optional, zbus) |
+### Feature flags
 
-## Building
+- `gtmd` — `mpris` (default): enables the MPRIS D-Bus interface
+- `gtm-cli` — `completions`: generates shell completions
+- `gtm-core` — `debug-fail`: enables debug/test failure injection
 
-```
-cargo build --workspace
-cargo build -p gtm-tui          # TUI binary only
-cargo build -p gtmd             # daemon binary only
+## Usage
+
+```bash
+# Start the daemon
+gtmd
+
+# CLI client
+gtm status
+gtm play /path/to/track.opus
+gtm next
+
+# Terminal UI
+gtm-tui
 ```
 
 ## IPC Protocol
 
-Communication between the TUI/CLI and daemon uses a Unix domain socket with two wire formats:
-- **JSON lines** for request/response (human-debuggable)
-- **Binary frames** (bincode) for daemon event streaming
+See [`docs/ipc-protocol.md`](docs/ipc-protocol.md) for the full protocol reference.
 
 ## License
 

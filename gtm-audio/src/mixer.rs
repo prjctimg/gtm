@@ -1,0 +1,406 @@
+use std::fs::File;
+use std::io::BufReader;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
+use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
+
+use crate::backend::{AudioError, AudioEvent, AudioResult};
+use crate::symphonia::SymphoniaSource;
+
+/// Trait abstracting over audio mixer implementations (real or null).
+pub trait Mixer: Send + Sync {
+    fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()>;
+    fn load_standby(&mut self, path: &str) -> AudioResult<()>;
+    fn standby_is_loaded(&self) -> bool;
+    fn play(&mut self) -> AudioResult<()>;
+    fn pause(&mut self) -> AudioResult<()>;
+    fn stop(&mut self) -> AudioResult<()>;
+    fn seek(&mut self, position_secs: f64) -> AudioResult<()>;
+    fn set_volume(&mut self, volume: u8) -> AudioResult<()>;
+    fn volume(&self) -> u8;
+    fn is_playing(&self) -> bool;
+    fn current_position(&self) -> f64;
+    fn duration(&self) -> f64;
+    fn active_remaining(&self) -> f64;
+    fn start_crossfade(&mut self, duration_secs: f64);
+    fn is_crossfading(&self) -> bool;
+    fn force_complete_crossfade(&mut self);
+    fn poll(&mut self) -> AudioResult<Option<AudioEvent>>;
+}
+
+/// Dual-player audio mixer with crossfade support.
+///
+/// Two `rodio::Player`s feed the same hardware mixer.  During normal playback
+/// only the *active* player is audible.  During crossfade the *standby* player
+/// fades in while the active fades out, then they swap roles.
+pub struct AudioMixer {
+    #[allow(dead_code)]
+    sink: Arc<MixerDeviceSink>,
+    player_a: Player,
+    player_b: Player,
+    is_a_active: bool,
+    position: Arc<Mutex<f64>>,
+    duration: Arc<Mutex<f64>>,
+    playing: Arc<AtomicBool>,
+    volume: Arc<AtomicU8>,
+    start_time: Arc<Mutex<Option<Instant>>>,
+    start_pos: Arc<Mutex<f64>>,
+    crossfade_start: Option<Instant>,
+    crossfade_duration: f64,
+}
+
+struct MixerDeviceSink(rodio::MixerDeviceSink);
+
+impl Mixer for AudioMixer {
+    fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()> {
+        self.load_active(path, start_pos)
+    }
+    fn load_standby(&mut self, path: &str) -> AudioResult<()> {
+        self.load_standby(path)
+    }
+    fn standby_is_loaded(&self) -> bool {
+        self.standby_is_loaded()
+    }
+    fn play(&mut self) -> AudioResult<()> {
+        self.play()
+    }
+    fn pause(&mut self) -> AudioResult<()> {
+        self.pause()
+    }
+    fn stop(&mut self) -> AudioResult<()> {
+        self.stop()
+    }
+    fn seek(&mut self, position_secs: f64) -> AudioResult<()> {
+        self.seek(position_secs)
+    }
+    fn set_volume(&mut self, volume: u8) -> AudioResult<()> {
+        self.set_volume(volume)
+    }
+    fn volume(&self) -> u8 {
+        self.volume()
+    }
+    fn is_playing(&self) -> bool {
+        self.is_playing()
+    }
+    fn current_position(&self) -> f64 {
+        self.current_position()
+    }
+    fn duration(&self) -> f64 {
+        self.duration()
+    }
+    fn active_remaining(&self) -> f64 {
+        self.active_remaining()
+    }
+    fn start_crossfade(&mut self, duration_secs: f64) {
+        self.start_crossfade(duration_secs)
+    }
+    fn is_crossfading(&self) -> bool {
+        self.is_crossfading()
+    }
+    fn force_complete_crossfade(&mut self) {
+        self.force_complete_crossfade()
+    }
+    fn poll(&mut self) -> AudioResult<Option<AudioEvent>> {
+        self.poll()
+    }
+}
+
+impl AudioMixer {
+    pub fn new() -> AudioResult<Self> {
+        let mut sink = DeviceSinkBuilder::open_default_sink()
+            .map_err(|e| AudioError::OutputError(e.to_string()))?;
+        sink.log_on_drop(false);
+        let sink = Arc::new(MixerDeviceSink(sink));
+        let mixer = sink.0.mixer();
+        let a = Player::connect_new(&mixer);
+        let b = Player::connect_new(&mixer);
+
+        b.set_volume(0.0);
+        b.pause();
+
+        Ok(Self {
+            sink,
+            player_a: a,
+            player_b: b,
+            is_a_active: true,
+            position: Arc::new(Mutex::new(0.0)),
+            duration: Arc::new(Mutex::new(0.0)),
+            playing: Arc::new(AtomicBool::new(false)),
+            volume: Arc::new(AtomicU8::new(100)),
+            start_time: Arc::new(Mutex::new(None)),
+            start_pos: Arc::new(Mutex::new(0.0)),
+            crossfade_start: None,
+            crossfade_duration: 0.0,
+        })
+    }
+
+    fn active(&self) -> &Player {
+        if self.is_a_active {
+            &self.player_a
+        } else {
+            &self.player_b
+        }
+    }
+
+    fn standby(&self) -> &Player {
+        if self.is_a_active {
+            &self.player_b
+        } else {
+            &self.player_a
+        }
+    }
+
+    fn decode(path: &str) -> AudioResult<Box<dyn Source<Item = f32> + Send>> {
+        let file = File::open(path).map_err(|e| AudioError::OpenFailed(e.to_string()))?;
+        let reader = BufReader::new(file);
+        if let Ok(source) = Decoder::new(reader) {
+            return Ok(Box::new(source));
+        }
+        SymphoniaSource::from_file(path, 0.0)
+    }
+
+    pub fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()> {
+        let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
+        self.active().stop();
+        self.active().set_volume(vol);
+
+        let source = Self::decode(path)?;
+        if let Some(ref dur) = source.total_duration() {
+            *self.duration.lock().unwrap() = dur.as_secs_f64();
+        }
+        self.active().append(source);
+
+        *self.position.lock().unwrap() = start_pos;
+        *self.start_time.lock().unwrap() = None;
+        *self.start_pos.lock().unwrap() = start_pos;
+        self.playing.store(false, Ordering::SeqCst);
+        self.crossfade_start = None;
+
+        Ok(())
+    }
+
+    pub fn load_standby(&mut self, path: &str) -> AudioResult<()> {
+        self.standby().stop();
+        self.standby().set_volume(0.0);
+
+        let source = Self::decode(path)?;
+        self.standby().append(source);
+        Ok(())
+    }
+
+    pub fn standby_is_loaded(&self) -> bool {
+        !self.standby().empty()
+    }
+
+    pub fn play(&mut self) -> AudioResult<()> {
+        if self.active().is_paused() {
+            self.active().play();
+        }
+        *self.start_time.lock().unwrap() = Some(Instant::now());
+        self.playing.store(true, Ordering::SeqCst);
+        Ok(())
+    }
+
+    pub fn pause(&mut self) -> AudioResult<()> {
+        if !self.active().is_paused() {
+            self.active().pause();
+        }
+        let elapsed = self
+            .start_time
+            .lock()
+            .unwrap()
+            .map(|t| t.elapsed().as_secs_f64())
+            .unwrap_or(0.0);
+        let current = *self.start_pos.lock().unwrap();
+        *self.position.lock().unwrap() = current + elapsed;
+        self.playing.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+
+    pub fn stop(&mut self) -> AudioResult<()> {
+        self.player_a.stop();
+        self.player_b.stop();
+        *self.position.lock().unwrap() = 0.0;
+        self.playing.store(false, Ordering::SeqCst);
+        *self.start_time.lock().unwrap() = None;
+        *self.start_pos.lock().unwrap() = 0.0;
+        self.crossfade_start = None;
+        Ok(())
+    }
+
+    pub fn seek(&mut self, position_secs: f64) -> AudioResult<()> {
+        let pos = std::time::Duration::from_secs_f64(position_secs);
+        self.active()
+            .try_seek(pos)
+            .map_err(|_| AudioError::SeekError("seek failed".into()))?;
+        *self.position.lock().unwrap() = position_secs;
+        *self.start_time.lock().unwrap() = (position_secs > 0.0).then(|| Instant::now());
+        *self.start_pos.lock().unwrap() = position_secs;
+        Ok(())
+    }
+
+    pub fn set_volume(&mut self, volume: u8) -> AudioResult<()> {
+        let vol = volume.min(100) as f32 / 100.0;
+        self.volume.store(volume.min(100), Ordering::SeqCst);
+        self.active().set_volume(vol);
+        Ok(())
+    }
+
+    pub fn volume(&self) -> u8 {
+        self.volume.load(Ordering::SeqCst)
+    }
+
+    pub fn is_playing(&self) -> bool {
+        self.playing.load(Ordering::SeqCst)
+    }
+
+    pub fn current_position(&self) -> f64 {
+        let elapsed = self
+            .start_time
+            .lock()
+            .unwrap()
+            .map(|t| t.elapsed().as_secs_f64())
+            .unwrap_or(0.0);
+        let start = *self.start_pos.lock().unwrap();
+        let total = *self.duration.lock().unwrap();
+        (start + elapsed).min(total)
+    }
+
+    pub fn duration(&self) -> f64 {
+        *self.duration.lock().unwrap()
+    }
+
+    pub fn active_remaining(&self) -> f64 {
+        let total = *self.duration.lock().unwrap();
+        if total <= 0.0 {
+            return 0.0;
+        }
+        (total - self.current_position()).max(0.0)
+    }
+
+    pub fn start_crossfade(&mut self, duration_secs: f64) {
+        if self.standby().empty() {
+            return;
+        }
+        self.standby().set_volume(0.0);
+        self.standby().play();
+        self.crossfade_start = Some(Instant::now());
+        self.crossfade_duration = duration_secs.max(1.0);
+    }
+
+    pub fn is_crossfading(&self) -> bool {
+        self.crossfade_start.is_some()
+    }
+
+    pub fn force_complete_crossfade(&mut self) {
+        if self.crossfade_start.is_none() {
+            return;
+        }
+        self.crossfade_start = None;
+        let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
+        if self.is_a_active {
+            self.player_a.set_volume(0.0);
+            self.player_a.stop();
+            self.player_b.set_volume(vol);
+        } else {
+            self.player_b.set_volume(0.0);
+            self.player_b.stop();
+            self.player_a.set_volume(vol);
+        }
+        self.is_a_active = !self.is_a_active;
+        *self.start_time.lock().unwrap() = Some(Instant::now());
+        *self.start_pos.lock().unwrap() = 0.0;
+        self.playing.store(true, Ordering::SeqCst);
+
+        let new_standby = if self.is_a_active {
+            &self.player_b
+        } else {
+            &self.player_a
+        };
+        new_standby.stop();
+        new_standby.set_volume(0.0);
+        new_standby.pause();
+    }
+
+    fn step_crossfade(&mut self) -> bool {
+        let start = match self.crossfade_start {
+            Some(s) => s,
+            None => return false,
+        };
+        let elapsed = start.elapsed().as_secs_f64();
+        let progress = (elapsed / self.crossfade_duration).min(1.0);
+        let vol = self.volume.load(Ordering::SeqCst) as f64 / 100.0;
+        let base = vol.min(1.0);
+
+        self.player_a.set_volume(if self.is_a_active {
+            (1.0 - progress) * base
+        } else {
+            progress * base
+        } as f32);
+        self.player_b.set_volume(if self.is_a_active {
+            progress * base
+        } else {
+            (1.0 - progress) * base
+        } as f32);
+
+        if progress >= 1.0 {
+            let old_active = if self.is_a_active {
+                &self.player_a
+            } else {
+                &self.player_b
+            };
+            old_active.stop();
+            self.is_a_active = !self.is_a_active;
+            self.crossfade_start = None;
+            *self.start_time.lock().unwrap() = Some(Instant::now());
+            *self.start_pos.lock().unwrap() = 0.0;
+            self.playing.store(true, Ordering::SeqCst);
+
+            let new_standby = if self.is_a_active {
+                &self.player_b
+            } else {
+                &self.player_a
+            };
+            new_standby.stop();
+            new_standby.set_volume(0.0);
+            new_standby.pause();
+            return true;
+        }
+        false
+    }
+
+    pub fn poll(&mut self) -> AudioResult<Option<AudioEvent>> {
+        if self.crossfade_start.is_some() {
+            self.step_crossfade();
+        }
+
+        if self.active().empty() {
+            if self.crossfade_start.is_some() {
+                self.force_complete_crossfade();
+            }
+            if self.playing.load(Ordering::SeqCst) {
+                self.playing.store(false, Ordering::SeqCst);
+                return Ok(Some(AudioEvent::Finished));
+            }
+            return Ok(None);
+        }
+
+        if !self.active().is_paused() {
+            let elapsed = self
+                .start_time
+                .lock()
+                .unwrap()
+                .map(|t| t.elapsed().as_secs_f64())
+                .unwrap_or(0.0);
+            let start = *self.start_pos.lock().unwrap();
+            let total = *self.duration.lock().unwrap();
+            let pos = (start + elapsed).min(total);
+            *self.position.lock().unwrap() = pos;
+            return Ok(Some(AudioEvent::Position(pos)));
+        }
+
+        Ok(None)
+    }
+}

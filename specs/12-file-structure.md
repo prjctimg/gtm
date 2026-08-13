@@ -1,148 +1,110 @@
 # 12 — Full Workspace File Structure
 
+> **Status**: 🔶 Partial — reflects current repo; many files listed are stubs or aspirational.
+
 ```
 gtm-rs/
 │
 ├── Cargo.toml                      # workspace root (pure workspace, no [package])
 ├── Cargo.lock
-├── README.md
 ├── .gitignore
-├── .github/
-│   └── workflows/
-│       ├── ci.yml                  # cargo test, cargo clippy, cargo fmt
-│       └── release.yml             # build + deploy binaries
 │
-├── docs/
-│   ├── ipc.md                      # IPC protocol specification
-│   ├── architecture.md             # high-level architecture diagram
-│   └── theme.md                    # theme customization guide
-│
-├── assets/
-│   └── default_cover.png           # fallback album art image
-│
-├── specs/                          # ← this directory (15 files, ~6000 LOC total)
+├── specs/                          # 13 spec files, ~5500 LOC
 │   ├── INDEX.md
-│   ├── 00-overview.md
-│   ├── 01-gtm-core.md              # Shared types, IPC enums, wire protocol
-│   ├── 02-gtm-audio.md             # Audio backend trait, symphonia/ffmpeg
-│   ├── 03-gtm-daemon.md            # Daemon struct, event loop, dispatch
-│   ├── 04-gtm-daemon-library.md    # SQLite library, schema, queries
-│   ├── 05-gtm-daemon-features.md   # yt-dlp, cover art, lyrics, queue, crossfade
-│   ├── 06-gtm-tui-architecture.md  # TUI event loop, layout, AppState, DaemonClient
-│   ├── 07-gtm-tui-tabs.md          # 6 TabWidget implementations, view states
-│   ├── 08-gtm-tui-overlays.md      # 6 overlay states, fuzzy matching
-│   ├── 09-gtm-tui-features.md      # Theme, keybindings, Kitty protocol, footer
-│   ├── 10-gtm-cli.md               # CLI subcommand tree, IPC dispatch
-│   ├── 11-gtm-mpris.md             # MPRIS D-Bus server, zbus interfaces
-│   ├── 12-file-structure.md        # Full file tree (this file)
-│   ├── 13-development-phases.md    # Phase breakdown, checklist, risks
-│   └── 14-migration-decisions.md   # Architecture decisions, Nim→Rust mapping
+│   ├── 00-overview.md              ✅ project overview
+│   ├── 03-gtm-daemon.md            🔶 daemon (core impl done, subsystems stubbed)
+│   ├── 04-gtm-daemon-library.md    📋 library plan
+│   ├── 05-gtm-daemon-features.md   📋 features plan
+│   ├── 06-gtm-tui-architecture.md  📋 TUI plan
+│   ├── 07-gtm-tui-tabs.md          📋 TUI tabs plan
+│   ├── 08-gtm-tui-overlays.md      📋 TUI overlays plan
+│   ├── 09-gtm-tui-features.md      📋 TUI features plan
+│   ├── 10-gtm-cli.md               📋 CLI plan
+│   ├── 11-gtm-mpris.md             📋 MPRIS plan
+│   ├── 12-file-structure.md        🔶 this file
+│   ├── 13-development-phases.md    ✅ development phases
+│   └── 14-migration-decisions.md   ✅ architecture decisions
 │
-├── gtm-core/                       # Shared types & IPC protocol
-│   ├── Cargo.toml                  # serde, serde_json, bincode, thiserror, chrono, uuid
+├── gtm-core/                       # Shared types & IPC protocol       ✅ complete
+│   ├── Cargo.toml                  # serde, serde_json, bincode, thiserror
 │   └── src/
 │       ├── lib.rs                  # re-exports all public types
-│       ├── ipc.rs                  # DaemonRequest, DaemonResponse, DaemonEvent
-│       ├── wire.rs                 # WireFrame, encode_frame, decode_frame
+│       ├── ipc.rs                  # DaemonReq, DaemonRes, DaemonEvent
+│       ├── wire.rs                 # WireFrame, encode, decode
 │       ├── track.rs                # TrackInfo, Playlist, LrcLine, LrcData
-│       └── state.rs                # DaemonState, PlaybackStatus, RepeatMode, CoreError
+│       ├── state.rs                # DaemonState, PlaybackStatus, RepeatMode
+│       ├── state_machine.rs        # state transition logic
+│       ├── validate.rs             # validation helpers
+│       └── tripwire.rs             # tripwire utility
 │
-├── gtm-audio/                      # Audio backend abstraction
-│   ├── Cargo.toml                  # symphonia, cpal, rubato, crossbeam, async-trait
+├── gtm-audio/                      # Audio backend abstraction        ✅ complete
+│   ├── Cargo.toml                  # symphonia 0.6, symphonia-adapter-libopus, rodio
 │   └── src/
 │       ├── lib.rs                  # re-exports
 │       ├── backend.rs              # AudioBackend trait, AudioEvent, AudioError
-│       ├── symphonia.rs            # SymphoniaBackend
-│       └── ffmpeg.rs               # FfmpegBackend (feature-gated)
+│       ├── symphonia.rs            # SymphoniaBackend (pure Rust, incl. opus)
+│       ├── rodio.rs                # RodioBackend (rodio-only, no symphonia)
+│       └── ffmpeg.rs               # FfmpegBackend (ffmpeg CLI, feature-gated)
 │
-├── gtmd/                           # Daemon binary + library
-│   ├── Cargo.toml                  # gtm-core, gtm-audio, rusqlite, tokio, reqwest, tracing, clap
+├── gtmd/                           # Daemon binary + library          🔶 partial
+│   ├── Cargo.toml                  # gtm-core, gtm-audio, rusqlite, tokio, reqwest
 │   └── src/
-│       ├── main.rs                 # gtmd binary entrypoint
-│       ├── lib.rs                  # re-exports for integration tests
-│       ├── daemon.rs               # Daemon struct, main loop, state machine
-│       ├── ipc.rs                  # ClientHandle, read/write helpers
-│       ├── dispatch.rs             # request → handler dispatch
-│       ├── library.rs              # Library (rusqlite wrapper, schema, queries)
-│       ├── queue.rs                # QueueManager (cursor, shuffle, repeat)
-│       ├── youtube.rs              # YoutubeManager (yt-dlp subprocess)
-│       ├── cover_art.rs            # CoverCache (Deezer API, LRU + disk)
-│       ├── lyrics.rs               # LyricsManager (sidecar, LRCLIB, cache)
-│       └── config.rs               # DaemonConfig, DaemonArgs, XDG path resolution
+│       ├── main.rs                 # gtmd binary entrypoint           ✅
+│       ├── lib.rs                  # module declarations              ✅
+│       ├── daemon.rs               # Daemon struct, loop, handlers    ✅
+│       ├── config.rs               # DaemonConfig, DaemonArgs, XDG    ✅
+│       ├── ipc.rs                  # IPC handling                     📋 stub
+│       ├── dispatch.rs             # request dispatch                 📋 stub
+│       ├── library.rs              # Library (rusqlite)               📋 stub
+│       ├── queue.rs                # QueueManager                     📋 stub
+│       ├── youtube.rs              # YtManager (yt-dlp)               📋 stub
+│       ├── cover_art.rs            # CoverCache (Deezer)              📋 stub
+│       └── lyrics.rs               # LyricsManager (LRCLIB)           📋 stub
 │
-├── gtm-tui/                        # TUI binary
-│   ├── Cargo.toml                  # ratatui, crossterm, tokio, gtm-core, gtm-audio, image, base64
+├── gtm-tui/                        # TUI binary                      📋 stub
+│   ├── Cargo.toml                  # ratatui, crossterm, tokio, gtm-core
 │   └── src/
-│       ├── main.rs                 # gtm binary: args, terminal init, event loop
-│       ├── app.rs                  # App struct, render(), terminal.draw()
-│       ├── state.rs                # AppState, per-tab view states
-│       ├── daemon_client.rs        # DaemonClient (IPC transport + state mirror)
-│       ├── keymap.rs               # Keybindings, parse_keycode, KeyboardAction
-│       ├── theme.rs                # Theme struct, presets, hsl_to_rgb
-│       ├── graphics.rs             # KittyGraphics (probe, transmit, delete, place)
-│       ├── icons.rs                # IconSet, NERD_FONT, EMOJI constants
-│       ├── footer.rs               # FooterBar, FooterModule enum
-│       ├── tabs/
-│       │   ├── mod.rs              # TabWidget trait, Tab enum, Action enum
-│       │   ├── library.rs          # LibraryTab
-│       │   ├── queue.rs            # QueueTab
-│       │   ├── now_playing.rs      # NowPlayingTab
-│       │   ├── youtube.rs          # YouTubeTab
-│       │   ├── settings.rs         # SettingsTab
-│       │   └── help.rs             # HelpTab
-│       └── overlays/
-│           ├── mod.rs              # Overlay enum + dispatch + centered_rect
-│           ├── command_palette.rs   # CommandPaletteState
-│           ├── fuzzy_finder.rs     # FuzzyFinderState, fuzzy_score algorithm
-│           ├── queue_picker.rs     # QueuePickerState
-│           ├── theme_picker.rs     # ThemePickerState
-│           ├── confirm_dialog.rs   # ConfirmState
-│           └── track_detail.rs     # TrackDetailState
+│       └── main.rs                 # stub main()
 │
-├── gtm-cli/                        # CLI controller binary
-│   ├── Cargo.toml                  # clap (derive), gtm-core, tokio
+├── gtm-cli/                        # CLI controller binary            📋 stub
+│   ├── Cargo.toml                  # clap, gtm-core, tokio
 │   └── src/
-│       ├── main.rs                 # CLI parser, dispatch, output formatting
-│       └── completions.rs          # Shell completions (feature-gated)
+│       └── main.rs                 # stub main()
 │
-├── gtm-mpris/                      # MPRIS D-Bus server library
-│   ├── Cargo.toml                  # zbus (tokio), zvariant, gtm-core, thiserror
-│   └── src/
-│       └── lib.rs                  # MprisServer, zbus interface impls
-│
-└── tests/
-    ├── integration/
-    │   ├── daemon_ipc.rs           # spawn daemon, send requests, verify responses
-    │   └── wire_protocol.rs        # binary frame encode/decode roundtrips
-    └── fixtures/
-        ├── sample.mp3
-        ├── sample.flac
-        ├── sample.ogg
-        ├── sample.wav
-        └── sample.lrc
+└── gtm-mpris/                      # MPRIS D-Bus server library       📋 stub
+    ├── Cargo.toml                  # zbus, zvariant, gtm-core
+    └── src/
+        └── lib.rs                  # stub
 ```
 
-## Summary
+## Legend
 
-| Area | Files | Lines (est.) |
-|------|-------|-------------|
-| Specs | 15 | ~6,000 |
-| gtm-core | 5 | ~800 |
-| gtm-audio | 4 | ~600 |
-| gtmd | 10 | ~3,000 |
-| gtm-tui | 20+ | ~5,000+ |
-| gtm-cli | 3 | ~300 |
-| gtm-mpris | 2 | ~400 |
-| Tests | 3+ | ~500 |
-| **Total** | **~62** | **~16,600** |
+| Icon | Meaning |
+|------|---------|
+| ✅ | Complete — passes `cargo check`, tested |
+| 🔶 | Partial — core logic works, some features stubbed |
+| 📋 | Plan — spec exists, impl is stub or absent |
 
 ## Key Configuration Paths
 
 ```
-Socket:     $XDG_RUNTIME_DIR/gtmd.socket       (/run/user/$UID/gtmd.socket)
+Socket:     $XDG_RUNTIME_DIR/gtmd.socket       (/run/user/$UID/gtmd.socket)  → /run/user/1000/gtmd.socket
 Database:   $XDG_DATA_HOME/gtm/library.db      (~/.local/share/gtm/library.db)
-Config:     $XDG_CONFIG_HOME/gtm/config.toml   (~/.config/gtm/config.toml)
+Config:     $XDG_CONFIG_HOME/gtm/              (~/.config/gtm/)
 Cache:      $XDG_CACHE_HOME/gtm/               (~/.cache/gtm/)
 Covers:     $XDG_CACHE_HOME/gtm/covers/
-Log:        $XDG_STATE_HOME/gtm/gtmd.log       (~/.local/state/gtm/gtmd.log)
+Log:        $XDG_DATA_HOME/gtm/gtmd.log        (~/.local/share/gtm/gtmd.log)
+Audio:      $XDG_DATA_HOME/gtm/audio/          (~/.local/share/gtm/audio/) — test fixtures
 ```
+
+## Summary
+
+| Area | Files | Status |
+|------|-------|--------|
+| Specs | 13 | 3 final, 3 partial, 7 plans |
+| gtm-core | 8 | ✅ 8 |
+| gtm-audio | 5 | ✅ 5 |
+| gtmd | 10 | 4 implemented, 6 stubs |
+| gtm-tui | 1 | 📋 stub |
+| gtm-cli | 1 | 📋 stub |
+| gtm-mpris | 1 | 📋 stub |

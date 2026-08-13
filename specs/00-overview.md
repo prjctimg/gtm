@@ -5,8 +5,8 @@ Rewrite **gtm** (terminal music player) from Nim → Rust.
 | Aspect | Nim Original | Rust Rewrite |
 |--------|-------------|--------------|
 | TUI framework | `nimwave` / `illwave` | `ratatui` + `crossterm` |
-| Audio decode | FFmpeg subprocess | `symphonia` (pure Rust) + optional `ffmpeg-next` |
-| Audio output | ALSA (Linux only) | `cpal` (cross-platform) |
+| Audio decode | FFmpeg subprocess | `symphonia 0.6` + `symphonia-adapter-libopus` (pure Rust); `ffmpeg` CLI fallback |
+| Audio output | ALSA (Linux only) | `rodio` + `cpal` (cross-platform) |
 | SQLite | vendored `sqlite3.c` | `rusqlite` (bundled) |
 | HTTP | `httpclient` stdin pipe | `reqwest` (async) |
 | Serialization | `json` module | `serde` + `serde_json` + `bincode` |
@@ -49,7 +49,7 @@ Rewrite **gtm** (terminal music player) from Nim → Rust.
 | Crate | Type | Deps In | Deps Out | Key Crates |
 |-------|------|---------|----------|------------|
 | `gtm-core` | lib | all | — | `serde`, `bincode`, `thiserror` |
-| `gtm-audio` | lib | daemon, TUI | `gtm-core` | `symphonia`, `cpal`, `crossbeam` |
+| `gtm-audio` | lib | daemon, TUI | `gtm-core` | `symphonia 0.6`, `symphonia-adapter-libopus`, `rodio` |
 | `gtmd` | lib+bin | — | `gtm-core`, `gtm-audio`, `gtm-mpris` | `rusqlite`, `tokio`, `reqwest` |
 | `gtm-tui` | bin | — | `gtm-core`, `gtm-audio` | `ratatui`, `crossterm`, `tokio` |
 | `gtm-cli` | bin | — | `gtm-core` | `clap`, `tokio` |

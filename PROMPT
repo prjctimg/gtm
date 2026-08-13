@@ -1,0 +1,26 @@
+## Implement the TUI and CLI  
+
+Design a responsive and functional TUI and CLI with all the defined views (tabs,overlays,the customizable themed footer, fuzzy finding)
+
+
+- Add IPC command full support, docs and tests that also serve as examples in tghe docs. 
+
+## gtm-audio
+
+
+### Broken folder import support
+
+- The feature to add an entire folder to the queue is broken because I would expect playback to start immediately. This would also allow me to test crossfade and see if tracks play end to end with no issue.
+- Also it says there's an error in the command even when I follow the instructions as listed.
+
+### Simplify playback functions
+
+- Some of the playback functions like `stop()` seem to have counterintuitive approaches e.g pausing a backend and resetting the volume to zero even when we stopped it. Is it necessary
+
+### Broken seek feature  
+
+Trying to seek the currently plaaying track yields an error. Verify the logic and see that it works as expected. 
+
+## Misc 
+- Ensure that the daemon exposes all the endpoints/handling for all the IPC commands properly. Ensure that the gtm-daemon and gtm-audio are fully implemented and functional
+- Remove any dependency or mention of ffmpeg, rely on Rust solutions.

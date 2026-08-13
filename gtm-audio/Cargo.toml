@@ -6,12 +6,13 @@ license.workspace = true
 
 [dependencies]
 gtm-core = { path = "../gtm-core" }
-symphonia = { version = "0.6", default-features = false, features = ["mp3", "flac", "ogg", "wav", "vorbis", "pcm"] }
-cpal = "0.15"
-rubato = "3"
-log = "0.4"
+rodio = { version = "0.22", default-features = false, features = ["playback", "symphonia-all"] }
+symphonia = { version = "0.6", default-features = false, features = ["all-codecs", "all-formats", "all-meta"] }
+symphonia-adapter-libopus = "0.3"
 thiserror = "2"
+async-trait = "0.1"
+log = "0.4"
 
-[features]
-default = []
-ffmpeg = []
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }
+shellexpand = "3"

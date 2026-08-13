@@ -8,41 +8,36 @@ It is the single source of truth.
 
 Depends on: `gtm-core`, `gtm-audio`, `gtm-mpris` (optional), `rusqlite`, `tokio`, `reqwest`, `tracing`, `clap`
 
-## Daemon Struct
+> **Status**: 🔶 Partial implementation. Core daemon + audio backend + IPC are complete.
+> Library/queue/yt/cover/lyrics subsystems have stub files only — details in [05](05-gtm-daemon-features.md).
+
+## Daemon Struct (current implementation)
 
 ```rust
 pub struct Daemon {
-    // Shared state (read by IPC clients, MPRIS, etc.)
     pub state: Arc<RwLock<DaemonState>>,
-
-    // Audio
     pub backend: Box<dyn AudioBackend>,
-
-    // Library
-    pub library: Option<Library>,
-
-    // IPC
     pub listener: UnixListener,
-    pub clients: Vec<ClientHandle>,
-
-    // Event broadcast
-    pub event_tx: broadcast::Sender<DaemonEvent>,
-    pub event_rx: broadcast::Receiver<DaemonEvent>,
-
-    // Subsystems
-    pub yt_manager: YoutubeManager,
-    pub cover_cache: CoverCache,
-    pub lyrics_manager: LyricsManager,
-    pub sleep_timer: Option<tokio::time::Instant>,
-    pub sleep_timer_future: Option<tokio::task::JoinHandle<()>>,
-
-    // Config
     pub config: DaemonConfig,
-
-    // State version counter (monotonic, incremented on every mutation)
-    pub version: u32,
+    pub event_tx: broadcast::Sender<DaemonEvent>,
+    req_tx: mpsc::UnboundedSender<(ClientId, DaemonReq)>,
+    req_rx: mpsc::UnboundedReceiver<(ClientId, DaemonReq)>,
+    next_client_id: ClientId,
 }
+```
 
+### Aspirational fields (not yet implemented)
+- `library: Option<Library>` — see [04-gtm-daemon-library.md](04-gtm-daemon-library.md)
+- `clients: Vec<ClientHandle>` — per-client writer tracking for event broadcast
+- `yt_manager: YoutubeManager` — see [05-gtm-daemon-features.md](05-gtm-daemon-features.md)
+- `cover_cache: CoverCache` — see [05-gtm-daemon-features.md](05-gtm-daemon-features.md)
+- `lyrics_manager: LyricsManager` — see [05-gtm-daemon-features.md](05-gtm-daemon-features.md)
+- `sleep_timer` / `sleep_timer_future`
+- `version: u32` — monotonic state version counter
+
+## DaemonConfig
+
+```rust
 pub struct DaemonConfig {
     pub socket_path: PathBuf,
     pub library_path: PathBuf,
@@ -56,17 +51,14 @@ pub struct DaemonConfig {
 }
 
 pub enum AudioBackendKind {
-    Symphonia,
-    Ffmpeg,
-}
-
-pub struct ClientHandle {
-    pub writer: tokio::io::BufWriter<tokio::net::UnixStream>,
-    pub reader: tokio::io::BufReader<tokio::net::UnixStream>,
-    pub peer_addr: String,
-    pub connected: bool,
+    Symphonia,     // pure-Rust via symphonia 0.6 + symphonia-adapter-libopus
+    Ffmpeg,        // ffmpeg CLI subprocess fallback
 }
 ```
+
+Default: `AudioBackendKind::Ffmpeg` (backward compatible; Symphonia is functional but less tested).
+
+CLI `--backend` flag accepts `symphonia` or `ffmpeg`.
 
 ## Daemon Architecture
 
@@ -85,27 +77,37 @@ pub struct ClientHandle {
 │    loop {                                                        │
 │        tokio::select! {                                          │
 │            conn = listener.accept()  => {                        │
-│                let (handle, events) = accept_client(conn);       │
-│                clients.push(handle);                             │
-│                // Subscribe new client to event broadcast        │
-│                spawn client_event_writer(handle, event_rx);      │
+│                accept_client(conn).await;                         │
+│                // spawns reader task + writer task per client    │
 │            }                                                     │
-│            req = next_client_request() => {                      │
-│                dispatch(req).await;                              │
-│                flush_events().await;  // broadcast to all        │
+│            Some((client_id, req)) = req_rx.recv() => {           │
+│                dispatch(client_id, req).await;                   │
+│                // response is currently discarded (no per-client │
+│                // writer channel yet — FUTURE: add backpressure) │
 │            }                                                     │
 │            ev = backend.poll() => {                              │
 │                handle_audio_event(ev).await;                     │
-│                flush_events().await;                             │
-│            }                                                     │
-│            _ = sleep_timer_future => {                           │
-│                handle_sleep_timer();                              │
-│                flush_events().await;                             │
 │            }                                                     │
 │        }                                                         │
 │    }                                                             │
 └──────────────────────────────────────────────────────────────────┘
 ```
+
+### Current client connection flow
+
+```
+client connects →
+  accept_client() →
+    spawn reader task (JSON lines → mpsc::UnboundedSender)
+    spawn writer task (broadcast::Receiver → binary WireFrame frames)
+```
+
+Notes:
+- Requests are sent as JSON lines; response is NOT yet sent back to the originating client
+  (future: add per-client response channel with backpressure).
+- Events are broadcast to ALL clients via `tokio::sync::broadcast`.
+- No `flush_events()` yet — events are pushed directly to `event_tx` and the writer task
+  reads them asynchronously.
 
 ## Daemon::run() method signatures
 
@@ -114,22 +116,16 @@ impl Daemon {
     pub fn new(config: DaemonConfig) -> Result<Self>;
     pub async fn run(&mut self) -> Result<()>;
 
-    // Accept a new client connection
-    async fn accept_client(&mut self, stream: UnixStream) -> ClientHandle;
-
-    // Read a JSON request line from any client
-    async fn next_client_request(&mut self) -> Option<(ClientId, DaemonRequest)>;
-
-    // Dispatch request to appropriate handler
-    async fn dispatch(&mut self, client_id: ClientId, req: DaemonRequest) -> Result<()>;
-
-    /// Broadcast pending events to all connected clients.
-    /// Serializes accumulated events into binary frames.
-    async fn flush_events(&mut self);
+    async fn accept_client(&mut self, stream: UnixStream);
+    async fn dispatch(&mut self, client_id: ClientId, req: DaemonReq);
+    async fn handle_request(&mut self, req: &DaemonReq) -> Result<(), CoreError>;
+    async fn handle_audio_event(&mut self, result: AudioResult<Option<AudioEvent>>);
+    async fn push_event(&self, event: DaemonEvent);
 
     // ─── Request handlers ───
     async fn cmd_play(&mut self, path: &str, start_pos: f64);
     async fn cmd_playpause(&mut self);
+    async fn cmd_pause(&mut self);
     async fn cmd_stop(&mut self);
     async fn cmd_next(&mut self);
     async fn cmd_prev(&mut self);
@@ -139,43 +135,53 @@ impl Daemon {
     async fn cmd_cycle_repeat(&mut self, mode: RepeatMode);
     async fn cmd_toggle_mute(&mut self);
     async fn cmd_crossfade(&mut self, enabled: bool, duration_secs: u8);
-    async fn cmd_queue(&mut self, action: QueueAction);
-    async fn cmd_library(&mut self, action: LibraryAction);
-    async fn cmd_search(&mut self, query: &str);
-    async fn cmd_yt_search(&mut self, query: &str, filter: Option<YtFilter>);
-    async fn cmd_get_status(&mut self) -> DaemonState;
-    async fn cmd_quit(&mut self);
+    async fn cmd_queue(&mut self, action: &QueueAction);        // stub
+    async fn cmd_library(&mut self, action: &LibraryAction);    // stub
+    async fn cmd_search(&mut self, query: &str);                // stub
+    async fn cmd_get_favourites(&mut self);                     // stub
+    async fn cmd_add_favourite(&mut self, track_id: i64);       // stub
+    async fn cmd_remove_favourite(&mut self, track_id: i64);    // stub
+    async fn cmd_yt_search(&mut self, query: &str, filter: Option<YTFilter>);  // stub
+    async fn cmd_yt_search_poll(&mut self);                     // stub
+    async fn cmd_yt_search_cancel(&mut self);                   // stub
+    async fn cmd_yt_resolve_stream(&mut self, url: &str);       // stub
+    async fn cmd_get_status(&mut self);
 }
 ```
+
+### Aspirational methods (not yet implemented)
+- `async fn next_client_request(&mut self)` — currently uses mpsc channel directly
+- `async fn flush_events(&mut self)` — currently events are pushed to broadcast channel directly
 
 ## Request Dispatch Table
 
 ```
-Request                    → Handler Implementation
-─────────────────────────────────────────────────────────
-Play{path}                 │ cmd_play(path, 0.0)
-PlayPause                  │ if playing → cmd_pause() else cmd_resume()
-Stop                       │ cmd_stop()
-Next                       │ advance_queue(1)
-Prev                       │ advance_queue(-1)
-Seek{pos}                  │ backend.seek(pos); state.time_pos = pos
-SetVolume{v}               │ backend.set_volume(v); state.volume = v
-ToggleShuffle              │ state.shuffle = !state.shuffle; reshuffle_queue()
-CycleRepeat{m}             │ state.repeat = m
-ToggleMute                 │ if mute: restore_volume else: backend.set_volume(0)
-Crossfade{enab, dur}       │ state.crossfade = Some/None based on enabled
-Queue{action}              │ dispatch_queue_action(action)
-Library{action}            │ dispatch_library_action(action)
-Search{query}              │ library.search_tracks(query) → respond
-GetFavourites              │ library.get_favourites() → respond
-AddFavourite{id}           │ library.add_favourite(id)
-RemoveFavourite{id}        │ library.remove_favourite(id)
-YtSearch{query, filter}    │ yt_manager.search(query, filter) → spawn yt-dlp
-YtSearchPoll               │ yt_manager.poll_results() → respond
-YtSearchCancel             │ yt_manager.cancel() → kill subprocess
-YtResolveStream{url}       │ yt_manager.resolve_stream(url) → respond
-Ping                       │ respond DaemonResponse::Pong
-Quit                       │ shutdown() → stop backend, close socket, exit
+Request                    → Handler Implementation          Status
+─────────────────────────────────────────────────────────────────────
+Play{path}                 │ cmd_play(path, 0.0)             ✅
+PlayPause                  │ cmd_playpause()                 ✅
+Pause                      │ cmd_pause()                     ✅
+Stop                       │ cmd_stop()                      ✅
+Next                       │ cmd_next()                      ✅
+Prev                       │ cmd_prev()                      ✅
+Seek{pos}                  │ backend.seek(pos)               ✅
+SetVolume{v}               │ backend.set_volume(v)           ✅
+ToggleShuffle              │ state.shuffle = !state.shuffle  ✅
+CycleRepeat{m}             │ state.repeat = m                ✅
+ToggleMute                 │ toggle + set_volume             ✅
+Crossfade{enab, dur}       │ state.crossfade = ...           ✅
+Queue{action}              │ dispatch_queue_action(action)   📋 stub
+Library{action}            │ dispatch_library_action(action) 📋 stub
+Search{query}              │ library.search_tracks(query)    📋 stub
+GetFavourites              │ library.get_favourites()        📋 stub
+AddFavourite{id}           │ library.add_favourite(id)       📋 stub
+RemoveFavourite{id}        │ library.remove_favourite(id)    📋 stub
+YtSearch{query, filter}    │ yt_manager.search()             📋 stub
+YtSearchPoll               │ yt_manager.poll_results()       📋 stub
+YtSearchCancel             │ yt_manager.cancel()             📋 stub
+YtResolveStream{url}       │ yt_manager.resolve_stream()     📋 stub
+Ping                       │ Ok(())                          ✅
+Quit                       │ stop + exit                     ✅
 ```
 
 ## State Machine
@@ -199,65 +205,25 @@ Quit                       │ shutdown() → stop backend, close socket, exit
          └──────────────────────────────────────────
 ```
 
-## Event Broadcasting
-
-```rust
-impl Daemon {
-    /// Flush accumulated events to all connected clients.
-    /// Serializes events into one or more binary frames.
-    async fn flush_events(&mut self) {
-        // 1. Collect pending events from event_tx buffer
-        let mut events: Vec<DaemonEvent> = Vec::new();
-        while let Ok(ev) = self.event_rx.try_recv() {
-            events.push(ev);
-        }
-        if events.is_empty() {
-            return;
-        }
-
-        // 2. Increment state version
-        self.version += 1;
-
-        // 3. Serialize frame
-        let frame = encode_frame(&events).unwrap();
-
-        // 4. Write to each connected client
-        self.clients.retain(|client| client.connected);
-        for client in &mut self.clients {
-            if let Err(e) = client.writer.write_all(&frame).await {
-                warn!("write to {} failed: {}", client.peer_addr, e);
-                client.connected = false;
-            }
-        }
-    }
-
-    /// Push an event. Called by dispatchers after mutating state.
-    fn push_event(&mut self, event: DaemonEvent) {
-        let _ = self.event_tx.send(event);
-    }
-}
-```
-
-## IPC Server
+## IPC Protocol
 
 ```
-Unix Socket: /run/user/$UID/gtmd.socket
-(or $XDG_RUNTIME_DIR/gtmd.socket → $TMPDIR/gtmd-XXXX.sock)
+Transport: Unix Stream Socket
+Socket path: $XDG_RUNTIME_DIR/gtmd.socket  →  /run/user/1000/gtmd.socket (fallback)
 
-Request flow:
-  client writes JSON line → parsed as DaemonRequest
-  → dispatch() → handler → response written as JSON line
+Request flow (JSON lines):
+  client → "{"Play":{"path":"/path/to/file.opus"}}\n"
+  daemon → "{"Ok":{"version":1}}\n"
 
-Event flow:
-  Daemon::flush_events() → serialize WireFrame → write to all clients
+Event flow (binary WireFrame):
+  daemon → [u32 big-endian length][bincode::serialize(&WireFrame)]
+  where WireFrame { version: u32, flags: u32, events: Vec<DaemonEvent> }
 ```
 
 ## DaemonConfig loading
 
 ```rust
 impl DaemonConfig {
-    /// Load config from CLI args + XDG paths.
-    /// Priority: CLI overrides > config file > defaults.
     pub fn load(args: &DaemonArgs) -> Self;
 }
 
@@ -267,23 +233,25 @@ pub struct DaemonArgs {
     pub config: Option<String>,
     pub verbose: bool,
     pub test_mode: bool,
+    pub backend: Option<String>,
 }
 ```
 
-## File Structure
+## File Structure (current)
 
 ```
 gtmd/
 ├── Cargo.toml
 └── src/
-    ├── main.rs           # gtmd binary: CLI parsing, Daemon init, Daemon::run()
-    ├── daemon.rs         # Daemon struct, run loop, state machine
-    ├── ipc.rs            # IpcServer, ClientHandle, read/write helpers
-    ├── dispatch.rs       # request → handler dispatch
-    ├── library.rs        # Library (rusqlite wrapper, queries)
-    ├── queue.rs          # QueueManager (cursor, shuffle, repeat)
-    ├── youtube.rs        # YoutubeManager (yt-dlp subprocess)
-    ├── cover_art.rs      # CoverCache (Deezer API, LRU + disk)
-    ├── lyrics.rs         # LyricsManager (sidecar, LRCLIB, cache)
-    └── config.rs         # DaemonConfig, DaemonArgs, XDG path resolution
+    ├── main.rs           # gtmd binary entrypoint          ✅
+    ├── lib.rs            # module declarations + re-exports ✅
+    ├── daemon.rs         # Daemon struct, run loop          ✅
+    ├── config.rs         # DaemonConfig, DaemonArgs, XDG    ✅
+    ├── ipc.rs            # IPC connection handling          📋 stub (5 lines)
+    ├── dispatch.rs       # request dispatch                 📋 stub (5 lines)
+    ├── library.rs        # Library (rusqlite)               📋 stub (5 lines)
+    ├── queue.rs          # QueueManager                     📋 stub (5 lines)
+    ├── youtube.rs        # YtManager (yt-dlp)               📋 stub (5 lines)
+    ├── cover_art.rs      # CoverCache (Deezer)              📋 stub (5 lines)
+    └── lyrics.rs         # LyricsManager (LRCLIB)           📋 stub (5 lines)
 ```

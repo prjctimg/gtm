@@ -1,0 +1,134 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version (e.g. 0.1.0)"
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.set-tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Derive tag
+        id: set-tag
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            version="${{ github.event.inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Delete and recreate tag
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          tag="${{ steps.set-tag.outputs.tag }}"
+          git tag -d "${tag}" 2>/dev/null || true
+          git push origin ":refs/tags/${tag}" 2>/dev/null || true
+          git tag "${tag}"
+          git push origin "${tag}" --force
+
+  build:
+    needs: tag
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build release binaries
+        run: cargo build --release
+
+      - name: Generate manpages and shell completions
+        run: cargo run --release --bin release-gen all artifacts
+
+      - name: Package binaries
+        shell: bash
+        run: |
+          arch="$(uname -m)"
+          os="${{ matrix.os }}"
+          case "${os}" in
+            ubuntu-latest)   platform="x86_64-linux" ;;
+            ubuntu-24.04-arm) platform="${arch}-linux" ;;
+            macos-latest)    platform="${arch}-darwin" ;;
+          esac
+          ext=""
+          cd target/release
+          for bin in gtmd gtm gtm-tui; do
+            cp "${bin}${ext}" "${bin}-${platform}"
+          done
+          echo "platform=${platform}" >> "$GITHUB_ENV"
+
+      - name: Build Debian packages (Linux only)
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          cargo install cargo-deb
+          cargo deb --package gtmd --package gtm-cli --package gtm-tui
+          # Rename deb to include arch
+          arch="$(uname -m)"
+          for deb in target/debian/*.deb; do
+            base="$(basename "$deb" .deb)"
+            mv "$deb" "target/debian/${base}_${arch}.deb"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.os }}
+          path: |
+            target/release/gtm-*
+            target/release/gtmd-*
+            target/release/gtm-tui-*
+            artifacts/
+            target/debian/*.deb
+
+  release:
+    needs: [tag, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: artifacts-*
+          merge-multiple: true
+
+      - name: Collect release files
+        run: |
+          echo "=== Release artifacts ==="
+          find . -type f \( -name "gtm-*" -o -name "gtmd-*" -o -name "gtm-tui-*" -o -name "*.deb" -o -path "*/man/*" -o -path "*/completions/*" \) | sort
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.tag.outputs.tag }}
+          name: ${{ needs.tag.outputs.tag }}
+          generate_release_notes: true
+          files: |
+            gtm-*-linux
+            gtm-*-darwin
+            gtmd-*-linux
+            gtmd-*-darwin
+            gtm-tui-*-linux
+            gtm-tui-*-darwin
+            man/*
+            completions/*
+            *.deb

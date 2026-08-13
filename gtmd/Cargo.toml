@@ -18,7 +18,30 @@ serde = "1"
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
+walkdir = "2"
+symphonia = { version = "0.6", default-features = false, features = ["all-codecs", "all-formats", "all-meta"] }
+lru = "0.12"
+hex = "0.4"
 
 [features]
 default = ["mpris"]
 mpris = ["gtm-mpris"]
+
+[package.metadata.deb]
+maintainer = "prjctimg <prjctimg@outlook.com>"
+copyright = "2025 prjctimg"
+license-file = ["../LICENSE"]
+extended-description = "GTM background audio daemon. Manages playback, library, and IPC for the GTM music player."
+section = "sound"
+priority = "optional"
+depends = "$auto"
+systemd-units = { gtmd = { enable = false } }
+assets = [
+    ["../dist/gtmd.service", "/usr/lib/systemd/user/gtmd.service"],
+    ["../artifacts/man/gtmd.1", "/usr/share/man/man1/"],
+    ["../artifacts/completions/gtmd.bash", "/usr/share/bash-completion/completions/gtmd"],
+    ["../artifacts/completions/_gtmd", "/usr/share/zsh/vendor-completions/_gtmd"],
+    ["../artifacts/completions/gtmd.fish", "/usr/share/fish/vendor_completions.d/gtmd.fish"],
+    ["../artifacts/completions/gtmd.ps1", "/usr/share/powershell/completions/gtmd.ps1"],
+    ["../artifacts/completions/gtmd.elv", "/usr/share/elvish/completions/gtmd.elv"],
+]

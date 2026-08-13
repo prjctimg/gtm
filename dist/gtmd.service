@@ -1,0 +1,12 @@
+[Unit]
+Description=GTM Music Daemon
+After=network.target sound.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/gtmd
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

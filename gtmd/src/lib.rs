@@ -1,9 +1,10 @@
-pub mod daemon;
-pub mod ipc;
-pub mod dispatch;
-pub mod queue;
-pub mod library;
-pub mod youtube;
-pub mod cover_art;
-pub mod lyrics;
 pub mod config;
+pub mod cover_art;
+pub mod daemon;
+pub mod library;
+pub mod lyrics;
+pub mod queue;
+pub mod youtube;
+
+pub use config::DaemonConfig;
+pub use daemon::Daemon;

@@ -4,7 +4,7 @@
 
 | # | Decision | Rationale | Alternative Considered |
 |---|----------|-----------|----------------------|
-| 1 | **symphonia primary, ffmpeg-next fallback** | Pure Rust → no C build dependency, faster compiles, better portability | `ffmpeg-next` everywhere (original Nim approach) |
+| 1 | **symphonia 0.6 + symphonia-adapter-libopus primary, ffmpeg CLI fallback** | Pure Rust for most formats; opus via system libopus; ffmpeg CLI subprocess for WAV/streaming fallback | `ffmpeg-next` (C bindings); Nim's ffmpeg subprocess |
 | 2 | **Keep binary IPC for events** | Proven in Nim: compact, fast, deterministic. Events are high-frequency (position at 10Hz) | Full JSON streaming (slow to parse); protobuf (heavy dep) |
 | 3 | **JSON for request/response** | Human-debuggable, easy to test with `socat`, low volume (1 per user action) | Binary for everything (hard to debug); custom format (waste) |
 | 4 | **State mirror pattern** | TUI caches daemon state, updated via events. Same as Nim, proven correct. | TUI queries daemon on each render (latency); shared memory (complex) |
