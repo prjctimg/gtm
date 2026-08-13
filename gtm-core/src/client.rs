@@ -14,11 +14,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
-use crate::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction, WireReq, WireRes};
-use crate::state::{DaemonState, EqPreset, RepeatMode, YTFilter};
-use crate::wire;
-use crate::CoreError;
-use crate::Result;
+use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction, WireEvent, WireReq, WireRes};
+use gtm_core::state::{DaemonState, EqPreset, RepeatMode, YTFilter};
+use gtm_core::wire;
+use gtm_core::CoreError;
+use gtm_core::Result;
 
 struct PendingRequest {
     req: DaemonReq,
@@ -161,8 +161,8 @@ impl DaemonClient {
     /// Seed the clock-skewing state from a full daemon state snapshot
     /// (e.g. after `GetStatus` on reconnect).  This ensures the position
     /// estimate is correct before the first event arrives.
-    pub async fn seed_clock_from_state(&self, state: &crate::state::DaemonState) {
-        let is_playing = state.status == crate::state::PlaybackStatus::Playing;
+    pub async fn seed_clock_from_state(&self, state: &DaemonState) {
+        let is_playing = state.status == PlaybackStatus::Playing;
         *self.base_pos.lock().await = state.time_pos;
         *self.base_time.lock().await = if is_playing { Some(Instant::now()) } else { None };
         self.is_playing.store(is_playing, Ordering::Release);
@@ -263,7 +263,7 @@ impl DaemonClient {
         .await
     }
 
-    pub async fn set_crossfade_easing(&self, easing: crate::state::Easing) -> Result<u32> {
+    pub async fn set_crossfade_easing(&self, easing: state::Easing) -> Result<u32> {
         self.send_ok(DaemonReq::SetCrossfadeEasing { easing }).await
     }
 
@@ -441,10 +441,14 @@ impl DaemonClient {
     }
 
     pub async fn library_update_metadata(
-        &self, track_id: i64,
-        title: Option<String>, artist: Option<String>,
-        album: Option<String>, genre: Option<String>,
-        year: Option<i32>, track_number: Option<i32>,
+        &self,
+        track_id: i64,
+        title: Option<String>,
+        artist: Option<String>,
+        album: Option<String>,
+        genre: Option<String>,
+        year: Option<i32>,
+        track_number: Option<i32>,
     ) -> Result<u32> {
         self.send_ok(DaemonReq::Library {
             action: LibraryAction::UpdateMetadata {
@@ -531,7 +535,7 @@ impl DaemonClient {
         }
     }
 
-    pub async fn get_lyrics(&self, track_id: i64) -> Result<Option<crate::track::LrcData>> {
+    pub async fn get_lyrics(&self, track_id: i64) -> Result<Option<track::LrcData>> {
         let res = self.send_raw(DaemonReq::GetLyrics { track_id }).await?;
         match res {
             DaemonRes::Lyrics { lyrics, .. } => Ok(lyrics),
@@ -540,7 +544,7 @@ impl DaemonClient {
         }
     }
 
-    pub async fn check_health(&self) -> Result<crate::ipc::HealthReport> {
+    pub async fn check_health(&self) -> Result<gtm_core::ipc::HealthReport> {
         let res = self.send_raw(DaemonReq::CheckHealth).await?;
         match res {
             DaemonRes::HealthReport { report, .. } => Ok(*report),
@@ -643,7 +647,7 @@ impl IpcWorker {
             }
 
             // Read from socket with a small timeout so we can loop back
-            // to drain more requests.
+            // to check for requests.
             match self.read_with_timeout(&mut tmp).await {
                 Ok(true) => {
                     self.last_event_time = Instant::now();
@@ -718,8 +722,79 @@ impl IpcWorker {
     }
 
     async fn send_request_by_id(&mut self, id: u64, pending: &PendingRequest) -> Result<()> {
-        let wire = WireReq { id, req: pending.req.clone() };
-        let mut line = serde_json::to_string(&wire)?;
+        let mut line = serde_json::to_string(WireReq {
+            id,
+            cmd: match &pending.req {
+                DaemonReq::Handshake { .. } => "handshake",
+                DaemonReq::Play { .. } => "play",
+                DaemonReq::PlayPause => "play_pause",
+                DaemonReq::Pause => "pause",
+                DaemonReq::Stop => "stop",
+                DaemonReq::Next => "next",
+                DaemonReq::Prev => "prev",
+                DaemonReq::Seek { .. } => "seek",
+                DaemonReq::SetVolume { .. } => "set_volume",
+                DaemonReq::GetVolume => "get_volume",
+                DaemonReq::ToggleShuffle => "toggle_shuffle",
+                DaemonReq::CycleRepeat { .. } => "cycle_repeat",
+                DaemonReq::ToggleMute => "toggle_mute",
+                DaemonReq::Crossfade { .. } => "crossfade",
+                DaemonReq::SetCrossfadeEasing { .. } => "crossfade",
+                DaemonReq::SetEqPreset { .. } => "set_eq_preset",
+                DaemonReq::SetEqEnabled { .. } => "set_eq_enabled",
+                DaemonReq::SetReverb { .. } => "set_reverb",
+                DaemonReq::ListEqPresets => "list_eq_presets",
+                DaemonReq::Queue { action } => match action {
+                    QueueAction::List => "queue",
+                    QueueAction::Clear => "queue",
+                    QueueAction::Remove { .. } => "queue",
+                    QueueAction::Move { .. } => "queue",
+                    QueueAction::Add { .. } => "queue",
+                    QueueAction::AddMany { .. } => "queue",
+                    QueueAction::AddFolder { .. } => "queue",
+                    QueueAction::Set { .. } => "queue",
+                },
+                DaemonReq::Library { action } => match action {
+                    LibraryAction::Scan { .. } => "library",
+                    LibraryAction::GetTracks { .. } => "library",
+                    LibraryAction::GetPlaylists => "library",
+                    LibraryAction::CreatePlaylist { .. } => "library",
+                    LibraryAction::DeletePlaylist { .. } => "library",
+                    LibraryAction::AddToPlaylist { .. } => "library",
+                    LibraryAction::ImportM3u { .. } => "library",
+                    LibraryAction::ExportM3u { .. } => "library",
+                    LibraryAction::GetRecent { .. } => "library",
+                    LibraryAction::SyncCovers => "library",
+                    LibraryAction::SyncLyrics => "library",
+                    LibraryAction::RemoveFromPlaylist { .. } => "library",
+                    LibraryAction::RemoveTrack { .. } => "library",
+                    LibraryAction::UpdateMetadata { .. } => "library",
+                },
+                DaemonReq::Search { .. } => "search",
+                DaemonReq::GetFavourites => "get_favourites",
+                DaemonReq::AddFavourite { .. } => "add_favourite",
+                DaemonReq::RemoveFavourite { .. } => "remove_favourite",
+                DaemonReq::YtSearch { .. } => "yt_search",
+                DaemonReq::YtSearchPoll => "yt_search_poll",
+                DaemonReq::YtSearchCancel => "yt_search_cancel",
+                DaemonReq::YtResolveStream { .. } => "yt_resolve_stream",
+                DaemonReq::YtDownload { .. } => "yt_download",
+                DaemonReq::YtDownloadPoll => "yt_download_poll",
+                DaemonReq::YtCancelDownload { .. } => "yt_cancel_download",
+                DaemonReq::YtFetchPlaylist { .. } => "yt_fetch_playlist",
+                DaemonReq::YtFetchPlaylistPoll => "yt_fetch_playlist_poll",
+                DaemonReq::YtSetConfig { .. } => "yt_set_config",
+                DaemonReq::GetCoverArt { .. } => "get_cover_art",
+                DaemonReq::GetLyrics { .. } => "get_lyrics",
+                DaemonReq::SetSleepTimer { .. } => "set_sleep_timer",
+                DaemonReq::CancelSleepTimer => "cancel_sleep_timer",
+                DaemonReq::GetStatus => "get_status",
+                DaemonReq::CheckHealth => "check_health",
+                DaemonReq::Ping => "ping",
+                DaemonReq::Quit => "quit",
+            },
+            params: serde_json::to_value(pending.req.clone())?,
+        })?;
         line.push('\n');
         match tokio::time::timeout(Duration::from_secs(5), self.writer.write_all(line.as_bytes())).await {
             Ok(Ok(())) => {}
@@ -741,26 +816,93 @@ impl IpcWorker {
         self.buf.drain(..=pos);
         if let Ok(wire_res) = serde_json::from_slice::<WireRes>(&line) {
             if let Some(tx) = self.pending.remove(&wire_res.id) {
-                let _ = tx.send(Ok(wire_res.res));
+                let response = match (wire_res.ok, wire_res.data) {
+                    (Some(true), Some(data)) => DaemonRes::Value { version: 0, value: data },
+                    (Some(true), None) => DaemonRes::Ok { version: 0 },
+                    (Some(false), Some(_)) => DaemonRes::Error { version: 0, message: "unknown error".into() },
+                    _ => DaemonRes::Error { version: 0, message: "unknown error".into() },
+                };
+                let _ = tx.send(Ok(response));
             }
             return true;
         }
-        if let Ok(event) = serde_json::from_slice::<DaemonEvent>(&line) {
-            if matches!(event, DaemonEvent::Heartbeat) {
-                *self.last_heartbeat_at.lock().unwrap() = Instant::now();
+        if let Ok(wire_event) = serde_json::from_slice::<WireEvent>(&line) {
+            let event = match wire_event.event.as_str() {
+                "playback_started" => serde_json::from_value(wire_event.data)
+                    .map(|data| DaemonEvent::PlaybackStarted { ..data })
+                    .ok(),
+                "playback_paused" => serde_json::from_value(wire_event.data)
+                    .map(|data| DaemonEvent::PlaybackPaused { ..data })
+                    .ok(),
+                "playback_stopped" => Some(DaemonEvent::PlaybackStopped),
+                "track_ended" => Some(DaemonEvent::TrackEnded),
+                "position_changed" => serde_json::from_value(wire_event.data)
+                    .map(|data| DaemonEvent::PositionChanged { ..data })
+                    .ok(),
+                "duration_changed" => serde_json::from_value(wire_event.data)
+                    .map(|data| DaemonEvent::DurationChanged { ..data })
+                    .ok(),
+                "volume_changed" => serde_json::from_value(wire_event.data)
+                    .map(|data| DaemonEvent::VolumeChanged { ..data })
+                    .ok(),
+                "metadata_changed" => serde_json::from_value(wire_event.data)
+                    .map(|data| DaemonEvent::MetadataChanged { ..data })
+                    .ok(),
+                "queue_changed" => serde_json::from_value(wire_event.data)
+                    .map(|data| DaemonEvent::QueueChanged { ..data })
+                    .ok(),
+                "queue_index_changed" => serde_json::from_value(wire_event.data)
+                    .map(|data| DaemonEvent::QueueIndexChanged { ..data })
+                    .ok(),
+                "repeat_mode_changed" => serde_json::from_value(wire_event.data)
+                    .map(|data| DaemonEvent::RepeatModeChanged { ..data })
+                    .ok(),
+                "shuffle_changed" => serde_json::from_value(wire_event.data)
+                    .map(|data| DaemonEvent::ShuffleChanged { ..data })
+                    .ok(),
+                "crossfade_changed" => serde_json::from_value(wire_event.data)
+                    .map(|data| DaemonEvent::CrossfadeChanged { ..data })
+                    .ok(),
+                "sleep_timer_tick" => serde_json::from_value(wire_event.data)
+                    .map(|data| DaemonEvent::SleepTimerTick { ..data })
+                    .ok(),
+                "sleep_timer_expired" => Some(DaemonEvent::SleepTimerExpired),
+                "eq_preset_changed" => serde_json::from_value(wire_event.data)
+                    .map(|data| DaemonEvent::EqPresetChanged { ..data })
+                    .ok(),
+                "eq_enabled_changed" => serde_json::from_value(wire_event.data)
+                    .map(|data| DaemonEvent::EqEnabledChanged { ..data })
+                    .ok(),
+                "reverb_changed" => serde_json::from_value(wire_event.data)
+                    .map(|data| DaemonEvent::ReverbChanged { ..data })
+                    .ok(),
+                "custom" => {
+                    let name = wire_event.data.get("name").and_then(|v| v.as_str()).unwrap_or("unknown").to_string();
+                    let mut map = HashMap::new();
+                    if let Some(obj) = wire_event.data.as_object() {
+                        for (k, v) in obj {
+                            if k != "name" {
+                                map.insert(k.clone(), v.as_str().unwrap_or("").to_string());
+                            }
+                        }
+                    }
+                    Some(DaemonEvent::Custom { name, data: map })
+                }
+                "heartbeat" => Some(DaemonEvent::Heartbeat),
+                _ => None,
+            };
+            if let Some(event) = event {
+                if matches!(event, DaemonEvent::Heartbeat) {
+                    *self.last_heartbeat_at.lock().unwrap() = Instant::now();
+                }
+                let mut events = self.events.lock().await;
+                events.push(event);
             }
-            let mut events = self.events.lock().await;
-            events.push(event);
         }
         true
     }
 }
 
-/// Background reader task for the dedicated pulse socket.
-///
-/// Continuously reads bincode-encoded DaemonEvent frames from the pulse
-/// socket and pushes them into the shared event queue. Reconnects
-/// automatically on failure with exponential backoff.
 async fn pulse_reader(
     pulse_path: &std::path::Path,
     events: Arc<Mutex<Vec<DaemonEvent>>>,
@@ -804,8 +946,8 @@ async fn pulse_reader(
             };
             buf.extend_from_slice(&tmp[..n]);
             loop {
-                let (frame, consumed) = match wire::decode(&buf) {
-                    Ok(Some((f, c))) => (f, c),
+                let (events, consumed) = match wire::decode(&buf) {
+                    Ok(Some((e, c))) => (e, c),
                     Ok(None) => break,
                     Err(e) => {
                         crate::log::log(&format!("pulse decode error: {e}"));
@@ -814,11 +956,11 @@ async fn pulse_reader(
                     }
                 };
                 buf.drain(..consumed as usize);
-                if frame.events.iter().any(|e| matches!(e, DaemonEvent::Heartbeat)) {
+                if events.iter().any(|e| matches!(e, DaemonEvent::Heartbeat)) {
                     *last_heartbeat_at.lock().unwrap() = Instant::now();
                 }
                 let mut evs = events.lock().await;
-                evs.extend(frame.events);
+                evs.extend(events);
             }
         }
         tokio::time::sleep(Duration::from_millis(500)).await;

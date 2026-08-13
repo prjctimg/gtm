@@ -66,7 +66,7 @@ use gtm_audio::{AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
 use gtm_audio::PulseAudioMixer;
 #[cfg(feature = "pulseaudio")]
 use crate::config::AudioBackendKind;
-use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, QueueAction, WireReq, WireRes};
+use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, QueueAction, WireEvent, WireReq, WireRes};
 use gtm_core::state::{DaemonState, EqPreset, PlaybackStatus, ReverbConfig, SavedState};
 use gtm_core::wire;
 use gtm_core::CoreError;

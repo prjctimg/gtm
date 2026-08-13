@@ -13,54 +13,89 @@ fn is_termux() -> bool {
     std::env::var("PREFIX").is_ok() || std::env::var("TERMUX_VERSION").is_ok()
 }
 
-/// Return the default daemon socket path, resolved from the environment.
+/// Return the state directory for runtime files (sockets, PID).
 ///
 /// Resolution order:
-/// 1. `$XDG_RUNTIME_DIR/gtmd.socket`
-/// 2. `$TMPDIR/gtmd.socket`
-/// 3. Termux fallback: `$PREFIX/tmp/gtmd.socket`
-/// 4. `std::env::temp_dir().join("gtmd.socket")`
-/// 5. Last resort: `$HOME/.gtm/gtmd.socket`
-pub fn default_socket_path() -> PathBuf {
+/// 1. `$XDG_RUNTIME_DIR/gtm/`
+/// 2. `/tmp/gtm-$USER/gtm/`
+/// 3. `$TMPDIR/gtm/`
+/// 4. Termux fallback: `$PREFIX/tmp/gtm/`
+/// 5. `$HOME/.gtm/gtm/`
+fn state_dir() -> PathBuf {
     if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
-        let p = PathBuf::from(runtime).join("gtmd.socket");
+        let p = PathBuf::from(&runtime).join("gtm");
         if p.parent().map_or(false, |d| d.exists()) {
+            let _ = std::fs::create_dir_all(&p);
             return p;
         }
     }
+    if let Ok(user) = std::env::var("USER") {
+        let p = PathBuf::from("/tmp").join(format!("gtm-{}", user)).join("gtm");
+        if let Some(parent) = p.parent() {
+            if parent.exists() {
+                let _ = std::fs::create_dir_all(&p);
+                return p;
+            }
+        }
+    }
     if let Ok(tmpdir) = std::env::var("TMPDIR") {
-        let p = PathBuf::from(tmpdir).join("gtmd.socket");
+        let p = PathBuf::from(&tmpdir).join("gtm");
         if p.parent().map_or(false, |d| d.exists()) {
+            let _ = std::fs::create_dir_all(&p);
             return p;
         }
     }
     if is_termux() {
         if let Ok(prefix) = std::env::var("PREFIX") {
-            let p = PathBuf::from(prefix).join("tmp").join("gtmd.socket");
+            let p = PathBuf::from(prefix).join("tmp").join("gtm");
             if p.parent().map_or(false, |d| d.exists()) {
+                let _ = std::fs::create_dir_all(&p);
                 return p;
             }
         }
-        if let Ok(home) = std::env::var("HOME") {
-            let p = PathBuf::from(home).join(".gtm").join("gtmd.socket");
-            if let Some(parent) = p.parent() {
-                let _ = std::fs::create_dir_all(parent);
-            }
-            return p;
-        }
-    }
-    let tmp = std::env::temp_dir().join("gtmd.socket");
-    if tmp.parent().and_then(|p| p.to_str()).unwrap_or("") != "/tmp" {
-        return tmp;
     }
     if let Ok(home) = std::env::var("HOME") {
-        let p = PathBuf::from(home).join(".gtm").join("gtmd.socket");
-        if let Some(parent) = p.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
+        let p = PathBuf::from(&home).join(".gtm").join("gtm");
+        let _ = std::fs::create_dir_all(&p);
         return p;
     }
-    tmp
+    let p = std::env::temp_dir().join("gtm");
+    let _ = std::fs::create_dir_all(&p);
+    p
+}
+
+/// Return the default daemon command socket path.
+///
+/// Resolution order:
+/// 1. `$XDG_RUNTIME_DIR/gtm/gtmd.sock`
+/// 2. `/tmp/gtm-$USER/gtm/gtmd.sock`
+/// 3. `$TMPDIR/gtm/gtmd.sock`
+/// 4. Termux fallback: `$PREFIX/tmp/gtm/gtmd.sock`
+/// 5. `$HOME/.gtm/gtm/gtmd.sock`
+pub fn resolve_command_socket() -> PathBuf {
+    state_dir().join("gtmd.sock")
+}
+
+/// Return the default daemon pulse socket path.
+pub fn resolve_pulse_socket() -> PathBuf {
+    state_dir().join("gtmd.pulse")
+}
+
+/// Return the default daemon PID file path.
+pub fn resolve_pid_file() -> PathBuf {
+    state_dir().join("gtmd.pid")
+}
+
+/// Return the default daemon socket path (alias for resolve_command_socket).
+///
+/// Resolution order:
+/// 1. `$XDG_RUNTIME_DIR/gtm/gtmd.sock`
+/// 2. `/tmp/gtm-$USER/gtm/gtmd.sock`
+/// 3. `$TMPDIR/gtm/gtmd.sock`
+/// 4. Termux fallback: `$PREFIX/tmp/gtm/gtmd.sock`
+/// 5. `$HOME/.gtm/gtm/gtmd.sock`
+pub fn default_socket_path() -> PathBuf {
+    resolve_command_socket()
 }
 
 /// Return Termux-specific music library paths (if any exist).

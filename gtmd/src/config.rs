@@ -101,13 +101,15 @@ impl DaemonConfig {
         let socket_path = if let Some(ref s) = args.socket {
             PathBuf::from(s)
         } else {
-            gtm_core::default_socket_path()
+            gtm_core::resolve_command_socket()
         };
 
-        let socket_pulse_path = {
-            let mut p = socket_path.clone();
-            p.set_extension("pulse");
+        let socket_pulse_path = if let Some(ref s) = args.socket {
+            let mut p = PathBuf::from(s);
+            p.set_file_name("gtmd.pulse");
             p
+        } else {
+            gtm_core::resolve_pulse_socket()
         };
 
         let library_path = if let Some(ref l) = args.library {

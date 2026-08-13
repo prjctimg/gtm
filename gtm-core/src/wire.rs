@@ -1,31 +1,24 @@
 // Copyright (c) 2025 - present
 // Author: prjctimg <prjctimg@outlook.com>
-// Binary wire protocol (bincode framing) for DaemonEvent streaming
+// Binary wire protocol (MessagePack framing) for DaemonEvent streaming
 //
 // This is free software released under the GPL-3.0 license.
 
 use crate::ipc::DaemonEvent;
+use rmp_serde::{Deserializer, Serializer};
+use serde::{Deserialize, Serialize};
 
-#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
-pub struct WireFrame {
-    pub version: u32,
-    pub events: Vec<DaemonEvent>,
+pub fn encode(events: &[DaemonEvent]) -> Result<Vec<u8>, rmp_serde::encode::Error> {
+    let mut buf = Vec::with_capacity(1024);
+    events.serialize(&mut Serializer::new(&mut buf))?;
+    let len = buf.len() as u32;
+    let mut out = Vec::with_capacity(4 + len);
+    out.extend_from_slice(&len.to_be_bytes());
+    out.extend_from_slice(&buf);
+    Ok(out)
 }
 
-pub fn encode(events: &[DaemonEvent]) -> Result<Vec<u8>, bincode::Error> {
-    let frame = WireFrame {
-        version: 1,
-        events: events.to_vec(),
-    };
-    let payload = bincode::serialize(&frame)?;
-    let len = payload.len() as u32;
-    let mut buf = Vec::with_capacity(4 + len as usize);
-    buf.extend_from_slice(&len.to_be_bytes());
-    buf.extend_from_slice(&payload);
-    Ok(buf)
-}
-
-pub fn decode(buf: &[u8]) -> Result<Option<(WireFrame, u128)>, bincode::Error> {
+pub fn decode(buf: &[u8]) -> Result<Option<(Vec<DaemonEvent>, u128)>, rmp_serde::decode::Error> {
     if buf.len() < 4 {
         return Ok(None);
     }
@@ -35,6 +28,8 @@ pub fn decode(buf: &[u8]) -> Result<Option<(WireFrame, u128)>, bincode::Error> {
     if buf.len() < 4 + total_len {
         return Ok(None);
     }
-    let frame: WireFrame = bincode::deserialize(&buf[4..4 + total_len])?;
-    Ok(Some((frame, 4 + total_len as u128)))
+
+    let mut deserializer = Deserializer::new(&buf[4..4 + total_len]);
+    let events: Vec<DaemonEvent> = Deserialize::deserialize(&mut deserializer)?;
+    Ok(Some((events, (4 + total_len) as u128)))
 }

@@ -15,7 +15,7 @@ pub mod tripwire;
 pub mod validate;
 pub mod wire;
 
-pub use paths::{default_socket_path, termux_music_dirs};
+pub use paths::{default_socket_path, resolve_command_socket, resolve_pid_file, resolve_pulse_socket, termux_music_dirs};
 pub use state::{CoreError, CrossfadeConfig, DaemonState, Easing, EqBand, EQ_FREQUENCIES, ReverbConfig};
 pub use track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
 
