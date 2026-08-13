@@ -18,16 +18,20 @@ use gtm_core::state::DaemonState;
 use gtm_core::track::TrackInfo;
 
 /// Build a bare TrackInfo from a file path.  The title is derived from
-/// the file stem; all other fields are left empty/default.
+/// the file stem; all other fields are left empty/default.  The path is
+/// canonicalised so path-equality checks against `daemon::resolve_track_meta`
+/// results (queue consumption, Play/Prev tracking) stay consistent.
 pub fn resolve_track(path: &str) -> TrackInfo {
-    let stem = Path::new(path)
+    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
+    let path_str = canonical.to_string_lossy().into_owned();
+    let stem = canonical
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_string();
     TrackInfo {
         id: 0,
-        path: path.to_string(),
+        path: path_str,
         title: stem,
         artist: String::new(),
         album: String::new(),

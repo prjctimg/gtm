@@ -17,7 +17,7 @@ use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::Color;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Terminal;
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::StatefulImage;
@@ -221,6 +221,10 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
     if app.show_health_panel {
         render_health_panel(f, area, app);
     }
+
+    // The animation trigger fires once per track change: keep it set for this
+    // frame only, then let the EffectManager carry the effect to completion.
+    app.track_anim_trigger = false;
 }
 
 fn render_notifications(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -268,19 +272,14 @@ fn render_cover(
     area: Rect,
     cover_stateful: Option<&mut StatefulProtocol>,
     current_cover: Option<&[u8]>,
-    fg: Color,
+    placeholder_fg: Color,
 ) {
     // Skip image rendering in terminals without protocol passthrough
     if std::env::var("NVIM").is_ok() || std::env::var("ZELLIJ").is_ok() {
-        let terminal_name = if std::env::var("ZELLIJ").is_ok() {
-            "Zellij"
-        } else {
-            "Neovim"
-        };
-        let placeholder = Block::default()
-            .borders(Borders::ALL)
-            .title(format!(" Cover art unavailable in {terminal_name} "))
-            .style(Style::default().fg(fg));
+        let placeholder = Paragraph::new(Span::styled(
+            " \u{266b} Cover art unavailable in this terminal ",
+            Style::default().fg(placeholder_fg),
+        ));
         f.render_widget(placeholder, area);
         return;
     }
@@ -290,9 +289,10 @@ fn render_cover(
     } else if let Some(cover_bytes) = current_cover {
         render_cover_block(f, area, cover_bytes);
     } else {
-        let placeholder = Block::default()
-            .borders(Borders::ALL)
-            .style(Style::default().fg(fg));
+        let placeholder = Paragraph::new(Span::styled(
+            " \u{266b} ",
+            Style::default().fg(placeholder_fg),
+        ));
         f.render_widget(placeholder, area);
     }
 }
@@ -381,6 +381,128 @@ fn centered_scroll(sel: usize, available: usize, total: usize) -> (usize, usize)
     (scroll, end)
 }
 
+/// Render `widget` into `area`, applying a tachyonfx evolve animation on the
+/// first frame and on each track change.  The effect is (re)started only when
+/// `app.track_anim_trigger` is set; while it is running, subsequent refresh
+/// frames keep advancing it (keyed uniquely) until it completes, at which
+/// point rendering returns to the plain `render_widget` path.  The scratch
+/// buffer isolates the effect to `area` so it never leaks into neighbours.
+fn render_evolving<W: ratatui::widgets::Widget>(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    widget: W,
+    key: &'static str,
+    app: &mut App,
+) {
+    if !app.track_anim_trigger && !app.anim_fx.is_running() {
+        f.render_widget(widget, area);
+        return;
+    }
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    widget.render(area, &mut buf);
+    if app.track_anim_trigger {
+        app.anim_fx.add_unique_effect(
+            key,
+            tachyonfx::fx::evolve_into(
+                tachyonfx::fx::EvolveSymbolSet::Circles,
+                (350, tachyonfx::Interpolation::QuadInOut),
+            )
+            .with_area(area)
+            .with_filter(tachyonfx::CellFilter::All),
+        );
+    }
+    app.anim_fx
+        .process_effects(tachyonfx::Duration::from_millis(16), &mut buf, area);
+    f.buffer_mut().merge(&buf);
+}
+
+/// Borderless pane header (C1/C2): a 1-row BOLD label — `accent` + a `▎`
+/// edge bar when `focused`, `fg_bright` otherwise — with an optional muted
+/// separator beneath.  When `left_rule` is set a thin `muted_border` vertical
+/// rule is drawn along the pane's left edge and content is indented past it.
+/// Returns the content rect (1-cell horizontal padding) below the header.
+fn render_pane_header(
+    f: &mut ratatui::Frame,
+    area: Rect,
+    app: &App,
+    label: &str,
+    focused: bool,
+    sep: bool,
+    left_rule: bool,
+) -> Rect {
+    if left_rule {
+        let rule = Block::default()
+            .borders(Borders::LEFT)
+            .border_style(Style::default().fg(app.theme.muted_border));
+        f.render_widget(rule, area);
+    }
+    let inset: u16 = if left_rule { 1 } else { 0 };
+    let text_x = area.x + inset;
+    let text_w = area.width.saturating_sub(inset);
+    if focused {
+        let bar = Paragraph::new(Span::styled(
+            "\u{258e}",
+            Style::default().fg(app.theme.accent),
+        ));
+        f.render_widget(
+            bar,
+            Rect {
+                x: area.x,
+                y: area.y,
+                width: 1,
+                height: 1,
+            },
+        );
+    }
+    let label_style = if focused {
+        Style::default()
+            .fg(app.theme.accent)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(app.theme.fg_bright)
+            .add_modifier(Modifier::BOLD)
+    };
+    let header = Paragraph::new(Line::from(Span::styled(format!(" {label} "), label_style)));
+    f.render_widget(
+        header,
+        Rect {
+            x: text_x,
+            y: area.y,
+            width: text_w,
+            height: 1,
+        },
+    );
+    let mut content = Rect {
+        x: text_x + 1,
+        y: area.y.saturating_add(1),
+        width: text_w.saturating_sub(2),
+        height: area.height.saturating_sub(1),
+    };
+    if sep && content.height > 0 {
+        let rule = Line::from(Span::styled(
+            "\u{2500}".repeat(content.width as usize),
+            Style::default().fg(app.theme.muted_border),
+        ));
+        f.render_widget(
+            Paragraph::new(rule),
+            Rect {
+                x: content.x,
+                y: content.y,
+                width: content.width,
+                height: 1,
+            },
+        );
+        content = Rect {
+            x: content.x,
+            y: content.y.saturating_add(1),
+            width: content.width,
+            height: content.height.saturating_sub(1),
+        };
+    }
+    content
+}
+
 fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let is_narrow = app.terminal_cols < 60;
     let show_vis = app.visualizer.is_enabled() && app.terminal_cols >= 80;
@@ -412,7 +534,11 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(np_height), Constraint::Min(1)])
+        .constraints([
+            Constraint::Length(np_height),
+            Constraint::Length(1),
+            Constraint::Min(1),
+        ])
         .split(left_area);
 
     let (np_area, vis_area) = if show_vis {
@@ -431,20 +557,20 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Min(0), Constraint::Length(0)])
-                .split(chunks[1])
+                .split(chunks[2])
                 .to_vec()
         } else {
             Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(0), Constraint::Min(0)])
-                .split(chunks[1])
+                .split(chunks[2])
                 .to_vec()
         }
     } else {
         Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(lib_width), Constraint::Min(0)])
-            .split(chunks[1])
+            .split(chunks[2])
             .to_vec()
     };
 
@@ -452,15 +578,14 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
     // ── Now Playing section ──
     {
-        let np_block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Now Playing ")
-            .border_type(BorderType::Plain)
-            .border_style(Style::default().fg(app.theme.fg));
+        // Borderless pane: bold header + muted separator, content below.
+        let np_inner = render_pane_header(f, np_area, app, "NOW PLAYING", false, true, false);
 
-        if let Some(track) = app.state.current_track.as_ref() {
-            let inner = np_block.inner(np_area);
-            f.render_widget(np_block, np_area);
+        // Clone the current track out of the app state so the render calls
+        // below (which borrow `app` mutably for the evolve animation) can
+        // coexist with the track lookup.
+        if let Some(track) = app.state.current_track.clone() {
+            let inner = np_inner;
 
             const COVER_W: u16 = 12;
             const COVER_H: u16 = 6;
@@ -487,7 +612,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     cover_area,
                     app.cover_stateful.as_mut(),
                     app.current_cover.as_deref(),
-                    app.theme.fg,
+                    app.theme.fg_dim,
                 );
 
                 let info_area = hchunks[2];
@@ -503,7 +628,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     ])
                     .split(info_area);
 
-                // Row 0: animated title (fav icon + artist — title)
+                // Row 0: animated title (fav icon + title)
                 let display_title = if track.title.is_empty() {
                     std::path::Path::new(&track.path)
                         .file_stem()
@@ -518,10 +643,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     &track.artist
                 };
                 let fav_prefix = if track.favourite { "\u{2665} " } else { "" };
-                let title_text = format!(
-                    "{}{} \u{2014} {}",
-                    fav_prefix, display_artist, display_title
-                );
+                let title_text = format!("{}{}", fav_prefix, display_title);
                 let title_avail = info_chunks[0].width as usize;
                 let animated_title =
                     scroll_text(&title_text, title_avail, app.np_title_scroll, true);
@@ -531,7 +653,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                         .fg(app.theme.fg_bright)
                         .add_modifier(Modifier::BOLD),
                 )]));
-                f.render_widget(title_para, info_chunks[0]);
+                render_evolving(f, info_chunks[0], title_para, "np", app);
 
                 // Row 1: Artist
                 let artist_para = Paragraph::new(Line::from(vec![
@@ -580,16 +702,8 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 } else {
                     track.title.clone()
                 };
-                let display_artist = if track.artist.is_empty() {
-                    "Unknown"
-                } else {
-                    &track.artist
-                };
                 let fav_prefix = if track.favourite { "\u{2665} " } else { "" };
-                let title_text = format!(
-                    "{}{} \u{2014} {}",
-                    fav_prefix, display_artist, display_title
-                );
+                let title_text = format!("{}{}", fav_prefix, display_title);
                 let title_avail = inner.width as usize;
                 let animated_title =
                     scroll_text(&title_text, title_avail, app.np_title_scroll, true);
@@ -599,15 +713,13 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                         .fg(app.theme.fg_bright)
                         .add_modifier(Modifier::BOLD),
                 )]));
-                f.render_widget(
-                    title_para,
-                    Rect {
-                        x: inner.x,
-                        y: inner.y,
-                        width: inner.width,
-                        height: 1,
-                    },
-                );
+                let title_area = Rect {
+                    x: inner.x,
+                    y: inner.y,
+                    width: inner.width,
+                    height: 1,
+                };
+                render_evolving(f, title_area, title_para, "np", app);
 
                 let mut row_offset = 1u16;
                 if !track.album.is_empty() {
@@ -646,8 +758,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 f.render_widget(bar_para, bar_area);
             }
         } else {
-            let inner = np_block.inner(np_area);
-            f.render_widget(np_block, np_area);
+            let inner = np_inner;
             let msg = Paragraph::new("It's awfully quiet here... ")
                 .alignment(Alignment::Center)
                 .style(Style::default().fg(app.theme.fg));
@@ -662,13 +773,27 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 app.state.status == gtm_core::state::PlaybackStatus::Playing,
                 vis_a.width,
             );
-            let vis_block = Block::default()
-                .borders(Borders::ALL)
-                .title(" Visualizer ")
-                .border_type(BorderType::Plain)
-                .border_style(Style::default().fg(app.theme.fg_dim));
-            let vis_inner = vis_block.inner(vis_a);
-            f.render_widget(vis_block, vis_a);
+            let vis_header = Paragraph::new(Line::from(Span::styled(
+                " VISUALIZER ",
+                Style::default()
+                    .fg(app.theme.fg_dim)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            f.render_widget(
+                vis_header,
+                Rect {
+                    x: vis_a.x,
+                    y: vis_a.y,
+                    width: vis_a.width,
+                    height: 1,
+                },
+            );
+            let vis_inner = Rect {
+                x: vis_a.x + 1,
+                y: vis_a.y + 1,
+                width: vis_a.width.saturating_sub(2),
+                height: vis_a.height.saturating_sub(1),
+            };
             if let Some(lines) = app.visualizer.render(vis_inner, &app.theme) {
                 f.render_widget(lines, vis_inner);
             }
@@ -715,18 +840,8 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         })
         .collect();
 
-    let left_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Library ")
-        .border_type(BorderType::Plain)
-        .border_style(if left_focus {
-            Style::default().fg(app.theme.border_active)
-        } else {
-            Style::default().fg(app.theme.border)
-        });
-
-    let left_inner = left_block.inner(panes[0]);
-    f.render_widget(List::new(left_items).block(left_block), panes[0]);
+    let left_inner = render_pane_header(f, panes[0], app, "LIBRARY", left_focus, false, false);
+    f.render_widget(List::new(left_items), left_inner);
 
     // Active category left-border indicator picker
     if app.library_category < LIBRARY_CATEGORIES.len() {
@@ -774,11 +889,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             for (i, tr) in tracks[app.list_scroll..end].iter().enumerate() {
                 let real_i = app.list_scroll + i;
                 let is_sel = real_i == sel && !left_focus;
-                let label = if tr.artists.is_empty() {
-                    tr.name.clone()
-                } else {
-                    format!("{} \u{2014} {}", tr.artists, tr.name)
-                };
+                let label = tr.name.clone();
                 let avail = pane_w.saturating_sub(2);
                 let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
                 let dur = tr
@@ -786,13 +897,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     .map(|d| format_duration_short(d / 1000))
                     .unwrap_or_default();
                 let prefix = if is_sel { " >" } else { "  " };
-                let row = format!(
-                    "{}{:<width$}  {:>6}",
-                    prefix,
-                    display_label,
-                    dur,
-                    width = avail.saturating_sub(9)
-                );
+                let name_pad = avail.saturating_sub(9);
                 let style = if is_sel {
                     Style::default()
                         .fg(app.theme.selection_fg)
@@ -800,7 +905,20 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 } else {
                     Style::default().fg(app.theme.fg)
                 };
-                lines.push(Line::from(Span::styled(row, style)));
+                let dur_style = if is_sel {
+                    Style::default()
+                        .fg(app.theme.selection_fg)
+                        .bg(app.theme.selection_bg)
+                } else {
+                    Style::default().fg(app.theme.fg_dim)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("{prefix}{:<width$}", display_label, width = name_pad),
+                        style,
+                    ),
+                    Span::styled(format!("  {:>6}", dur), dur_style),
+                ]));
             }
             (lines, st_line)
         }
@@ -835,11 +953,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 let real_i = app.list_scroll + i;
                 let is_current = app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
                 let is_sel = real_i == sel && !left_focus;
-                let label = if track.artist.is_empty() {
-                    track.title.clone()
-                } else {
-                    format!("{}  {}", track.artist, track.title)
-                };
+                let label = track.title.clone();
                 let avail = pane_w.saturating_sub(2);
                 let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
                 let prefix = if is_current { "> " } else { "  " };
@@ -1020,11 +1134,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             let real_i = app.list_scroll + i;
             let is_current = app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
             let is_sel = real_i == sel && !left_focus;
-            let label = if track.artist.is_empty() {
-                track.title.clone()
-            } else {
-                format!("{}  {}", track.artist, track.title)
-            };
+            let label = track.title.clone();
             let avail = pane_w.saturating_sub(2);
             let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
             let prefix = if is_current { "> " } else { "  " };
@@ -1062,19 +1172,9 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     }
 
     let right_para = Paragraph::new(right_lines);
-    let right_block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" {} ", category_label))
-        .border_type(BorderType::Plain)
-        .border_style(if !left_focus {
-            Style::default().fg(app.theme.border_active)
-        } else {
-            Style::default().fg(app.theme.border)
-        });
-
-    let inner = right_block.inner(panes[1]);
-    f.render_widget(right_block, panes[1]);
-    f.render_widget(right_para, inner);
+    let right_inner =
+        render_pane_header(f, panes[1], app, category_label, !left_focus, false, true);
+    render_evolving(f, right_inner, right_para, "lib", app);
     // end content rendering
 
     // ── Right lyrics pane (full height) ──
@@ -1090,10 +1190,14 @@ const SETTINGS_ICONS_ASCII: &[&str] = &["♪", "YT", "▶", "⚙", "★"];
 const SETTINGS_CATEGORIES: &[&str] = &["Audio", "YouTube", "Playback", "System", "Spotify"];
 
 fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(0)])
+        .split(area);
     let panes = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(22), Constraint::Min(0)])
-        .split(area);
+        .split(chunks[1]);
 
     // ── Left pane: categories with icons ──
     let settings_icons = if use_nerd_fonts() {
@@ -1121,13 +1225,8 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         })
         .collect();
 
-    let left_block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Settings ")
-        .border_type(BorderType::Plain);
-
-    let left_inner = left_block.inner(panes[0]);
-    f.render_widget(List::new(left_items).block(left_block), panes[0]);
+    let left_inner = render_pane_header(f, panes[0], app, "SETTINGS", settings_focus, false, false);
+    f.render_widget(List::new(left_items), left_inner);
 
     // Active category left-border indicator
     if app.settings_category < SETTINGS_CATEGORIES.len() {
@@ -1272,13 +1371,15 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let category_label = SETTINGS_CATEGORIES
         .get(app.settings_category)
         .unwrap_or(&"");
-    let right_block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(" {} ", category_label))
-        .border_type(BorderType::Plain);
-
-    let inner = right_block.inner(panes[1]);
-    f.render_widget(right_block, panes[1]);
+    let right_inner = render_pane_header(
+        f,
+        panes[1],
+        app,
+        category_label,
+        !settings_focus,
+        false,
+        true,
+    );
 
     let mut lines = Vec::new();
     let sel = app.settings_option;
@@ -1301,41 +1402,41 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
     lines.push(Line::from(""));
     match (app.settings_category, sel) {
-        (0, 0) => lines.push(Line::from(Span::styled(" Master Volume: Press Enter to cycle (caps maximum loudness).", Style::default().fg(app.theme.fg)))),
-        (0, 1) => lines.push(Line::from(Span::styled(" Volume: Use +/- keys to adjust playback volume.", Style::default().fg(app.theme.fg)))),
-        (0, 2) => lines.push(Line::from(Span::styled(" Mute: Press Enter to toggle mute on/off.", Style::default().fg(app.theme.fg)))),
-        (1, _) => lines.push(Line::from(Span::styled(" YouTube: Configure JS runtime, download limits & search preferences.", Style::default().fg(app.theme.fg)))),
-        (2, 0) => lines.push(Line::from(Span::styled(format!(" Repeat: Press Enter to cycle (current: {:?}).", app.state.repeat), Style::default().fg(app.theme.fg)))),
-        (2, 1) => lines.push(Line::from(Span::styled(" Shuffle: Press Enter to toggle shuffle on/off.", Style::default().fg(app.theme.fg)))),
+        (0, 0) => lines.push(Line::from(Span::styled(" Master Volume: Press Enter to cycle (caps maximum loudness).", Style::default().fg(app.theme.fg_dim)))),
+        (0, 1) => lines.push(Line::from(Span::styled(" Volume: Use +/- keys to adjust playback volume.", Style::default().fg(app.theme.fg_dim)))),
+        (0, 2) => lines.push(Line::from(Span::styled(" Mute: Press Enter to toggle mute on/off.", Style::default().fg(app.theme.fg_dim)))),
+        (1, _) => lines.push(Line::from(Span::styled(" YouTube: Configure JS runtime, download limits & search preferences.", Style::default().fg(app.theme.fg_dim)))),
+        (2, 0) => lines.push(Line::from(Span::styled(format!(" Repeat: Press Enter to cycle (current: {:?}).", app.state.repeat), Style::default().fg(app.theme.fg_dim)))),
+        (2, 1) => lines.push(Line::from(Span::styled(" Shuffle: Press Enter to toggle shuffle on/off.", Style::default().fg(app.theme.fg_dim)))),
         (2, 2) => {
             let cf_on = app.state.crossfade.as_ref().map(|c| c.enabled).unwrap_or(false);
-            lines.push(Line::from(Span::styled(if cf_on { " Crossfade: On. Press Enter to toggle off or use C to change duration." } else { " Crossfade: Off. Press Enter to toggle on." }, Style::default().fg(app.theme.fg))));
+            lines.push(Line::from(Span::styled(if cf_on { " Crossfade: On. Press Enter to toggle off or use C to change duration." } else { " Crossfade: Off. Press Enter to toggle on." }, Style::default().fg(app.theme.fg_dim))));
         }
         (2, 3) => {
             let easing = app.state.crossfade.as_ref().map(|c| c.easing.name()).unwrap_or("N/A");
-            lines.push(Line::from(Span::styled(format!(" Easing: Press Enter to cycle (current: {}). Controls crossfade volume curve.", easing), Style::default().fg(app.theme.fg))));
+            lines.push(Line::from(Span::styled(format!(" Easing: Press Enter to cycle (current: {}). Controls crossfade volume curve.", easing), Style::default().fg(app.theme.fg_dim))));
         }
         (2, 4) => {
             let eq_on = app.state.eq_enabled;
-            lines.push(Line::from(Span::styled(if eq_on { " EQ: On. Press Enter to disable the equalizer." } else { " EQ: Off. Press Enter to enable the equalizer." }, Style::default().fg(app.theme.fg))));
+            lines.push(Line::from(Span::styled(if eq_on { " EQ: On. Press Enter to disable the equalizer." } else { " EQ: Off. Press Enter to enable the equalizer." }, Style::default().fg(app.theme.fg_dim))));
         }
-        (3, 0) => lines.push(Line::from(Span::styled(" Theme: Press Enter to open the Theme Picker (Alt+C). Drop custom themes in ~/.config/gtm/themes/*.toml.", Style::default().fg(app.theme.fg)))),
-        (3, 1) => lines.push(Line::from(Span::styled(" Transparent BG: Press Enter to toggle. When on, picker backgrounds become transparent.", Style::default().fg(app.theme.fg)))),
-        (3, 2) => lines.push(Line::from(Span::styled(" Sync Covers: Download missing cover art from Deezer for all library tracks.", Style::default().fg(app.theme.fg)))),
-        (3, 3) => lines.push(Line::from(Span::styled(" Sync Lyrics: Fetch and save lyrics files alongside all library tracks.", Style::default().fg(app.theme.fg)))),
-        (3, 4) => lines.push(Line::from(Span::styled(" Sync Metadata: Resolve unreliable track metadata via Deezer and embed clean tags (title, artist, album, genre, year, track, cover) into the files.", Style::default().fg(app.theme.fg)))),
-        (3, 5) => lines.push(Line::from(Span::styled(" Footer Preset: Press Enter to cycle. Also toggled via Alt+F. Add or override presets in ~/.config/gtm/footer.toml.", Style::default().fg(app.theme.fg)))),
-        (4, 0) => lines.push(Line::from(Span::styled(" Spotify: Integration status for the linked account.", Style::default().fg(app.theme.fg)))),
-        (4, 1) => lines.push(Line::from(Span::styled(" Account: Display name of the linked Spotify user.", Style::default().fg(app.theme.fg)))),
-        (4, 2) => lines.push(Line::from(Span::styled(" Playlists: Number of playlists synced by the daemon.", Style::default().fg(app.theme.fg)))),
-        (4, 3) => lines.push(Line::from(Span::styled(" Link Account: Press Enter to paste a Spotify access token (OAuth). Token is stored at ~/.config/gtm/spotify.json.", Style::default().fg(app.theme.fg)))),
-        (4, 4) => lines.push(Line::from(Span::styled(" Sync Now: Re-fetch playlists from the Spotify Web API.", Style::default().fg(app.theme.fg)))),
-        (4, 5) => lines.push(Line::from(Span::styled(" Unlink: Remove the token and disconnect the account.", Style::default().fg(app.theme.fg)))),
+        (3, 0) => lines.push(Line::from(Span::styled(" Theme: Press Enter to open the Theme Picker (Alt+C). Drop custom themes in ~/.config/gtm/themes/*.toml.", Style::default().fg(app.theme.fg_dim)))),
+        (3, 1) => lines.push(Line::from(Span::styled(" Transparent BG: Press Enter to toggle. When on, picker backgrounds become transparent.", Style::default().fg(app.theme.fg_dim)))),
+        (3, 2) => lines.push(Line::from(Span::styled(" Sync Covers: Download missing cover art from Deezer for all library tracks.", Style::default().fg(app.theme.fg_dim)))),
+        (3, 3) => lines.push(Line::from(Span::styled(" Sync Lyrics: Fetch and save lyrics files alongside all library tracks.", Style::default().fg(app.theme.fg_dim)))),
+        (3, 4) => lines.push(Line::from(Span::styled(" Sync Metadata: Resolve unreliable track metadata via Deezer and embed clean tags (title, artist, album, genre, year, track, cover) into the files.", Style::default().fg(app.theme.fg_dim)))),
+        (3, 5) => lines.push(Line::from(Span::styled(" Footer Preset: Press Enter to cycle. Also toggled via Alt+F. Add or override presets in ~/.config/gtm/footer.toml.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 0) => lines.push(Line::from(Span::styled(" Spotify: Integration status for the linked account.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 1) => lines.push(Line::from(Span::styled(" Account: Display name of the linked Spotify user.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 2) => lines.push(Line::from(Span::styled(" Playlists: Number of playlists synced by the daemon.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 3) => lines.push(Line::from(Span::styled(" Link Account: Press Enter to paste a Spotify access token (OAuth). Token is stored at ~/.config/gtm/spotify.json.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 4) => lines.push(Line::from(Span::styled(" Sync Now: Re-fetch playlists from the Spotify Web API.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 5) => lines.push(Line::from(Span::styled(" Unlink: Remove the token and disconnect the account.", Style::default().fg(app.theme.fg_dim)))),
         _ => {}
     }
 
     let right_para = Paragraph::new(lines);
-    f.render_widget(right_para, inner);
+    f.render_widget(right_para, right_inner);
 }
 
 // ─── Overlay Rendering ───
@@ -1347,6 +1448,16 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
     let picker_area = if top.id == PickerId::Help {
         area
+    } else if top.id == PickerId::CommandPalette {
+        // Command palette floats at 60% x 40%, centered.
+        let w = ((area.width as f64 * 0.6) as u16).min(area.width);
+        let h = ((area.height as f64 * 0.4) as u16).min(area.height);
+        Rect {
+            x: area.width.saturating_sub(w) / 2,
+            y: area.height.saturating_sub(h) / 2,
+            width: w,
+            height: h,
+        }
     } else {
         // Overlay box: centered, 60% width, 70% height, with minimum size
         let picker_width = ((area.width as f64 * 0.6) as u16).max(50).min(area.width);
@@ -1362,11 +1473,6 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         }
     };
 
-    let picker_box_bg = if app.transparent_bg {
-        ratatui::style::Color::Reset
-    } else {
-        app.theme.picker_bg
-    };
     f.render_widget(Clear, picker_area);
 
     match top.id {
@@ -1383,11 +1489,7 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         PickerId::PlaylistSelect => render_playlist_select_picker(f, picker_area, app),
         PickerId::EditMetadata => render_edit_metadata_picker(f, picker_area, app),
         PickerId::SpotifySearch => {
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Plain)
-                .title(" Spotify Link Token ")
-                .style(Style::default().bg(picker_box_bg));
+            let block = picker_panel(app, " Spotify Link Token ");
             let inner = block.inner(picker_area);
             f.render_widget(block, picker_area);
 
@@ -1432,8 +1534,13 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 }
 
 fn picker_help(f: &mut ratatui::Frame, area: Rect, text: &str, app: &App) {
-    let help = Paragraph::new(Span::styled(text, Style::default().fg(app.theme.fg_dim)))
-        .style(Style::default().bg(app.theme.picker_bg));
+    let help = Paragraph::new(Span::styled(text, Style::default().fg(app.theme.fg_dim))).style(
+        Style::default().bg(if app.transparent_bg {
+            ratatui::style::Color::Reset
+        } else {
+            app.theme.elevated_bg
+        }),
+    );
     let help_area = Rect {
         x: area.x,
         y: area.y + area.height - 1,
@@ -1443,18 +1550,24 @@ fn picker_help(f: &mut ratatui::Frame, area: Rect, text: &str, app: &App) {
     f.render_widget(help, help_area);
 }
 
-fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let sel = app.pickers.top().map_or(0, |o| o.selected);
-
-    let block = Block::default()
+/// Elevated floating panel (C4): `elevated_bg` fill (Reset when transparent)
+/// framed by a `muted_border` box instead of a loud full-border picker.
+fn picker_panel<'a>(app: &App, title: &'a str) -> Block<'a> {
+    Block::default()
         .borders(Borders::ALL)
-        .title(" Queue ")
-        .border_type(BorderType::Plain)
+        .title(title)
+        .border_style(Style::default().fg(app.theme.muted_border))
         .style(Style::default().bg(if app.transparent_bg {
             ratatui::style::Color::Reset
         } else {
-            app.theme.picker_bg
-        }));
+            app.theme.elevated_bg
+        }))
+}
+
+fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let sel = app.pickers.top().map_or(0, |o| o.selected);
+
+    let block = picker_panel(app, " Queue ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -1479,10 +1592,13 @@ fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let prefix = if is_current { ">" } else { " " };
         let num_str = format!("{}{:02}", prefix, i + 1);
         let dur = format_duration_short(track.duration as u64);
-        let label = if track.artist.is_empty() {
-            track.title.clone()
+        let label = if track.title.is_empty() {
+            std::path::Path::new(&track.path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| track.path.clone())
         } else {
-            format!("{}  {}", track.artist, track.title)
+            track.title.clone()
         };
 
         let row = format!(
@@ -1519,15 +1635,7 @@ fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 fn render_yt_search_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" YouTube Search ")
-        .border_type(BorderType::Plain)
-        .style(Style::default().bg(if app.transparent_bg {
-            ratatui::style::Color::Reset
-        } else {
-            app.theme.picker_bg
-        }));
+    let block = picker_panel(app, " YouTube Search ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -1594,7 +1702,7 @@ fn render_yt_search_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     .style(Style::default().bg(if app.transparent_bg {
         ratatui::style::Color::Reset
     } else {
-        app.theme.picker_bg
+        app.theme.elevated_bg
     }));
     let help_area = Rect {
         x: inner.x,
@@ -1606,15 +1714,7 @@ fn render_yt_search_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Tracks ")
-        .border_type(BorderType::Plain)
-        .style(Style::default().bg(if app.transparent_bg {
-            ratatui::style::Color::Reset
-        } else {
-            app.theme.picker_bg
-        }));
+    let block = picker_panel(app, " Tracks ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -1738,14 +1838,7 @@ pub fn render_progress_variant(ratio: f64, width: usize, app: &App) -> String {
 
 /// Time-synced lyrics pane on the right side of the library view.
 fn render_lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Lyrics ")
-        .border_type(BorderType::Plain)
-        .border_style(Style::default().fg(app.theme.border));
-
-    let inner = block.inner(area);
-    f.render_widget(block, area);
+    let inner = render_pane_header(f, area, app, "LYRICS", app.lyrics_pane_focus, false, true);
 
     let Some(ref lyrics) = app.current_lyrics else {
         let msg_text = if app.lyrics_fetching {
@@ -1774,21 +1867,16 @@ fn render_lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     }
 
     let total = lyrics.lines.len();
-    let visible = inner.height as usize;
-    let current = app.lyrics_scroll;
-    let scroll_start = if total <= visible {
-        0
-    } else if current >= visible / 2 {
-        (current - visible / 2).min(total - visible)
-    } else {
-        0
-    };
-    let scroll_end = (scroll_start + visible).min(total);
-
-    let mut lines = Vec::new();
-    for i in scroll_start..scroll_end {
-        let line_text = &lyrics.lines[i].text;
-        let is_current = i == current;
+    let width = inner.width.max(1) as usize;
+    // A lyric line renders as "<marker> <text>" (" > " for the active line).
+    // B7 wraps long lines, so compute per-line display-row heights and keep
+    // the scroll window in display-row space (not logical LRC lines).
+    let mut row_offsets = Vec::with_capacity(total);
+    let mut text = Vec::with_capacity(total);
+    let mut cumulative = 0usize;
+    for (i, line) in lyrics.lines.iter().enumerate() {
+        let is_current = i == app.lyrics_scroll;
+        let marker = if is_current { "> " } else { "  " };
         let style = if is_current {
             Style::default()
                 .fg(app.theme.fg_bright)
@@ -1796,9 +1884,29 @@ fn render_lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         } else {
             Style::default().fg(app.theme.fg_dim)
         };
-        lines.push(Line::from(Span::styled(format!(" {} ", line_text), style)));
+        row_offsets.push(cumulative);
+        let rendered = format!("{marker}{}", line.text);
+        cumulative += (rendered.chars().count().max(1)).div_ceil(width);
+        text.push(Line::from(Span::styled(rendered, style)));
     }
-    let para = Paragraph::new(lines);
+    let total_rows = cumulative;
+    let visible = inner.height as usize;
+    let anchor = app.lyrics_scroll.min(total - 1);
+    let scroll_display = if total_rows <= visible {
+        0
+    } else if app.lyrics_manual_scroll {
+        // Free manual scroll keeps the active line roughly centered.
+        row_offsets[anchor]
+            .saturating_sub(visible / 2)
+            .min(total_rows - visible)
+    } else {
+        // Auto-follow: active line pinned to the top of the pane.
+        row_offsets[anchor].min(total_rows - visible)
+    };
+
+    let para = Paragraph::new(text)
+        .wrap(Wrap { trim: false })
+        .scroll((scroll_display as u16, 0));
     f.render_widget(para, inner);
 }
 
@@ -1862,10 +1970,13 @@ fn render_track_popup(f: &mut ratatui::Frame, content_area: Rect, app: &mut App)
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Plain)
         .title(format!(" Track Info{} ", fav))
         .border_style(Style::default().fg(app.theme.accent))
-        .style(Style::default().bg(app.theme.picker_bg));
+        .style(Style::default().bg(if app.transparent_bg {
+            ratatui::style::Color::Reset
+        } else {
+            app.theme.elevated_bg
+        }));
 
     let inner = block.inner(popup_area);
     f.render_widget(Clear, popup_area);
@@ -1990,15 +2101,7 @@ fn render_track_popup(f: &mut ratatui::Frame, content_area: Rect, app: &mut App)
 }
 
 fn render_about_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" About ")
-        .border_type(BorderType::Plain)
-        .style(Style::default().bg(if app.transparent_bg {
-            ratatui::style::Color::Reset
-        } else {
-            app.theme.picker_bg
-        }));
+    let block = picker_panel(app, " About ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2206,19 +2309,8 @@ fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let picker_bg = if app.transparent_bg {
-        ratatui::style::Color::Reset
-    } else {
-        app.theme.picker_bg
-    };
-
     if app.sleep_timer_input_mode {
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title(" Sleep Timer — Manual Input ")
-            .border_type(BorderType::Plain)
-            .border_style(Style::default().fg(app.theme.border))
-            .style(Style::default().bg(picker_bg));
+        let block = picker_panel(app, " Sleep Timer — Manual Input ");
         let inner = block.inner(area);
         f.render_widget(block, area);
         let label = Paragraph::new(Line::from(vec![
@@ -2235,12 +2327,7 @@ fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         return;
     }
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Sleep Timer ")
-        .border_type(BorderType::Plain)
-        .border_style(Style::default().fg(app.theme.border))
-        .style(Style::default().bg(picker_bg));
+    let block = picker_panel(app, " Sleep Timer ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2405,15 +2492,7 @@ fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
     // Sort by score descending (longer match = better)
     filtered.sort_by_key(|b| std::cmp::Reverse(b.1));
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Commands ")
-        .border_type(BorderType::Plain)
-        .style(Style::default().bg(if app.transparent_bg {
-            ratatui::style::Color::Reset
-        } else {
-            app.theme.picker_bg
-        }));
+    let block = picker_panel(app, " Commands ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2444,29 +2523,38 @@ fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
         .min(inner.width.saturating_sub(8) as usize);
 
     let mut lines: Vec<Line> = vec![search_line];
+    let row_w = inner.width as usize;
     for (i, ((name, key), _score)) in filtered
         .iter()
         .enumerate()
         .take(scroll_end)
         .skip(scroll_start)
     {
-        let prefix = if i == sel { " > " } else { "   " };
-        let style = if i == sel {
+        let is_sel = i == sel;
+        let prefix = if is_sel { " > " } else { "   " };
+        let style = if is_sel {
             Style::default()
                 .fg(app.theme.selection_fg)
                 .bg(app.theme.selection_bg)
         } else {
             Style::default()
         };
+        let key_style = if is_sel {
+            Style::default()
+                .fg(app.theme.selection_fg)
+                .bg(app.theme.selection_bg)
+        } else {
+            Style::default().fg(app.theme.fg_dim)
+        };
+        // Selected row highlights edge-to-edge: pad the name to fill the width.
+        let pad = if is_sel {
+            row_w.saturating_sub(prefix.len() + key.len() + 4)
+        } else {
+            name_w
+        };
         lines.push(Line::from(vec![
-            Span::styled(
-                format!("{prefix}{name:<width$}", name = name, width = name_w),
-                style,
-            ),
-            Span::styled(
-                format!("  [{key}]", key = key),
-                Style::default().fg(app.theme.fg_dim),
-            ),
+            Span::styled(format!("{prefix}{:<pad$}", name, pad = pad), style),
+            Span::styled(format!("  [{key}]", key = key), key_style),
         ]));
     }
 
@@ -2499,15 +2587,7 @@ fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .top()
         .map_or(0, |o| o.selected.min(presets.len() - 1));
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Equalizer ")
-        .border_type(BorderType::Plain)
-        .style(Style::default().bg(if app.transparent_bg {
-            ratatui::style::Color::Reset
-        } else {
-            app.theme.picker_bg
-        }));
+    let block = picker_panel(app, " Equalizer ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2515,18 +2595,6 @@ fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let total = presets.len();
     let (scroll_start, _) = centered_scroll(sel, visible, total);
     let scroll_end = (scroll_start + visible).min(total);
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Equalizer ")
-        .border_type(BorderType::Plain)
-        .style(Style::default().bg(if app.transparent_bg {
-            ratatui::style::Color::Reset
-        } else {
-            app.theme.picker_bg
-        }));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
 
     let list_items: Vec<ListItem> = presets
         .iter()
@@ -2553,15 +2621,7 @@ fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 fn render_sound_effects_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Sound Effects ")
-        .border_type(BorderType::Plain)
-        .style(Style::default().bg(if app.transparent_bg {
-            ratatui::style::Color::Reset
-        } else {
-            app.theme.picker_bg
-        }));
+    let block = picker_panel(app, " Sound Effects ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2623,15 +2683,7 @@ fn render_sound_effects_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Theme ")
-        .border_type(BorderType::Plain)
-        .style(Style::default().bg(if app.transparent_bg {
-            ratatui::style::Color::Reset
-        } else {
-            app.theme.picker_bg
-        }));
+    let block = picker_panel(app, " Theme ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2786,15 +2838,7 @@ fn scroll_text(text: &str, max_width: usize, frame: usize, is_selected: bool) ->
 // ─── Library Motion Overlays ───
 
 fn render_playlist_select_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Select Playlist ")
-        .border_type(BorderType::Plain)
-        .style(Style::default().bg(if app.transparent_bg {
-            ratatui::style::Color::Reset
-        } else {
-            app.theme.picker_bg
-        }));
+    let block = picker_panel(app, " Select Playlist ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2827,15 +2871,7 @@ fn render_playlist_select_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
 }
 
 fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Edit Metadata ")
-        .border_type(BorderType::Plain)
-        .style(Style::default().bg(if app.transparent_bg {
-            ratatui::style::Color::Reset
-        } else {
-            app.theme.picker_bg
-        }));
+    let block = picker_panel(app, " Edit Metadata ");
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2896,7 +2932,11 @@ fn render_health_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let block = Block::default()
         .title(" Health Check ")
         .borders(Borders::ALL)
-        .style(Style::default().fg(app.theme.fg).bg(app.theme.bg));
+        .style(Style::default().fg(app.theme.fg).bg(if app.transparent_bg {
+            ratatui::style::Color::Reset
+        } else {
+            app.theme.elevated_bg
+        }));
 
     let inner = block.inner(rect);
     f.render_widget(block, rect);

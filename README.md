@@ -1,9 +1,30 @@
 # gtm.rs 🦀
 
-[![Version](https://img.shields.io/github/v/release/prjctimg/gtm)](https://github.com/prjctimg/gtm.rs/releases/latest)
+[![CI](https://img.shields.io/github/actions/workflow/status/prjctimg/gtm.rs/ci.yml)](https://github.com/prjctimg/gtm.rs/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/github/v/release/prjctimg/gtm.rs)](https://github.com/prjctimg/gtm.rs/releases/latest)
+[![License](https://img.shields.io/github/license/prjctimg/gtm.rs)](https://github.com/prjctimg/gtm.rs/blob/main/LICENSE)
 [![Rust](https://img.shields.io/badge/rustc-1.81+-orange.svg)](https://www.rust-lang.org)
 
-Feature rich terminal audio player with background playback support and YouTube/Spotify integration. Rust implementation of the [gtm spec](https://github.com/prjctimg/gtm.spec).
+> Feature rich terminal audio player with background playback support and
+> YouTube/Spotify integration. Rust implementation of the
+> [gtm spec](https://github.com/prjctimg/gtm.spec).
+
+<img src="assets/screenshots/library.png" alt="gtm library view" width="640">
+
+> Demo GIF placeholder — regenerate with VHS, see [`tapes/VHS.md`](tapes/VHS.md).
+
+## Features
+
+- **Background daemon** (`gtmd`) — playback survives terminal close; control it
+  from the TUI, the CLI, or MPRIS.
+- **YouTube, Spotify, Deezer** integration — search, download, and resolve
+  tracks, sync Spotify playlists, and fetch missing metadata/lyrics/cover art.
+- **Equalizer** — 16 presets plus per-band gain, headroom stage, and a
+  spectrum visualizer.
+- **Cover art** — rendered inline via the kitty/terminal image protocol.
+- **Themes** — 12 built-in themes (light and dark) plus user TOML themes.
+- **MPRIS** — media player controls via D-Bus (optional feature).
+- **Termux / Android** — runs on Android via PulseAudio (optional feature).
 
 ## Install
 
@@ -32,6 +53,17 @@ cargo build --release
 sudo make install
 ```
 
+To install just the client binary (for example to try the TUI against an
+already-running daemon), or to install without system packages:
+
+```bash
+cargo install --path gtm
+```
+
+## Screenshots
+
+<img src="assets/screenshots/command-palette.png" alt="gtm command palette" width="640">
+
 ## Crates
 
 The audio player is split into separate crates, allowing you to easily pick which component of the player you want to tweak.
@@ -47,30 +79,19 @@ The audio player is split into separate crates, allowing you to easily pick whic
 ## Documentation
 
 - [Wiki](https://github.com/prjctimg/gtm.rs/wiki)
-
 - [gtm.spec](https://github.com/prjctimg/gtm.spec)
 - [gtm-config(1)](https://github.com/prjctimg/gtm.spec.wiki/Manpages)
 - [gtm-keybindings(1)](https://github.com/prjctimg/gtm.spec.wiki/Manpages)
 
-## Dependencies
-
-The Rust implementation relies on the following crates:
-
-| Crate | External dependencies |
-|---|---|
-| `gtm-core` | serde, serde_json, rmp-serde, chrono, libc, thiserror, uuid, tokio, tracing |
-| `gtm-audio` | rodio, symphonia, symphonia-adapter-libopus, fundsp, thiserror, log, pulseaudio (optional) |
-| `gtmd` | rusqlite, tokio, tokio-util, futures, reqwest, rspotify, clap, sha2, walkdir, symphonia, lru, hex, base64, dirs, fastrand, chrono, serde, serde_json, uuid, tracing, tracing-subscriber |
-| `gtm` | ratatui, crossterm, tokio, clap, color-eyre, image, ratatui-image, base64, chrono, serde, serde_json, toml, tracing, tracing-subscriber |
-| `gtm-mpris` | zbus, zvariant, serde, tracing |
-
-External system libraries required at build time: ALSA development headers (`libasound2-dev` on Debian/Ubuntu) and, for the optional MPRIS feature, a D-Bus development library.
-
 ## Contributing
 
-I'm currently unable to handle external contributions because I'm actively working on it and any bugs or issues you may notice  may well already be noted. Also I am doing this for fun and learning reasons.
+> [!note]
+>
+> This is a hobby project but is feature complete and stable enough to use as my daily driver.
+> However its still largely a WIP.
+>
 
-Feel free to [fork off](https://github.com/prjctimg/gtm.rs/fork) though and on your way out don't forget to  checkout the [gtm spec](https://github.com/prjctimg/gtm.spec) for some domain specific notes on the reasons why the code is structured as it is.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions, the crate layout and the green gates (fmt / clippy / test).
 
 ---
 
@@ -79,5 +100,3 @@ Feel free to [fork off](https://github.com/prjctimg/gtm.rs/fork) though and on y
 > (c) 2025 - present, [prjctimg](https://prjctimg.me)
 >
 > This is free software, released under the GPL-3.0 license.
-
----

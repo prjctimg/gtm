@@ -18,6 +18,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Terminal;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
+use tachyonfx::EffectManager;
 use tokio::sync::mpsc;
 
 use base64::Engine;
@@ -248,6 +249,12 @@ pub struct App {
     pub metadata_field_idx: usize,
     pub pending_quit: bool,
     pub np_title_scroll: usize,
+    /// Set on the first frame and on each track change; the render layer
+    /// (re)starts the library/Now-Playing evolve animation once per trigger.
+    pub track_anim_trigger: bool,
+    /// Tachyonfx effect manager carrying the running evolve animation; kept
+    /// alive across refresh frames until the effect completes.
+    pub anim_fx: EffectManager<&'static str>,
     pub track_popup_visible: bool,
     pub track_popup_track_id: Option<i64>,
     pub track_popup_cover: Option<Vec<u8>>,
@@ -257,6 +264,10 @@ pub struct App {
     pub lyrics_scroll: usize,
     pub lyrics_fetching: bool,
     pub show_lyrics: bool,
+    /// Whether the lyrics pane holds focus (B7).  While true, MoveUp/Down,
+    /// PageUp/Down, Top/Bottom scroll the lyrics and take over from the
+    /// time-sync driver until focus is released.
+    pub lyrics_pane_focus: bool,
     pub show_health_panel: bool,
     pub health_report: Option<gtm_core::ipc::HealthReport>,
     pub hide_help_bar: bool,
@@ -474,6 +485,8 @@ impl App {
             metadata_field_idx: 0,
             pending_quit: false,
             np_title_scroll: 0,
+            track_anim_trigger: false,
+            anim_fx: EffectManager::default(),
             track_popup_visible: false,
             track_popup_track_id: None,
             track_popup_cover: None,
@@ -483,6 +496,7 @@ impl App {
             lyrics_scroll: 0,
             lyrics_fetching: false,
             show_lyrics: false,
+            lyrics_pane_focus: false,
             show_health_panel: false,
             health_report: None,
             hide_help_bar: false,
@@ -605,6 +619,10 @@ impl App {
 
         self.is_ready = true;
 
+        // Animate the initial frame so the library list and Now Playing pane
+        // evolve into view on startup.
+        self.track_anim_trigger = true;
+
         // Render the initial frame immediately, before the main loop, so
         // the user never sees a blank alternate screen on startup.
         let _ = terminal.draw(|f| ui::render(f, &mut self));
@@ -681,6 +699,7 @@ impl App {
                 let raw = self.client.estimated_position().await;
                 self.display_position = raw;
                 self.last_display_position = raw;
+                self.track_anim_trigger = true;
             }
 
             // Clear stale cover immediately so we don't show old art on the
@@ -926,7 +945,9 @@ impl App {
             let force_render = pos_changed
                 || !self.notifications.is_empty()
                 || frame_count.is_multiple_of(10)
-                || self.cover_art_dirty;
+                || self.cover_art_dirty
+                || self.track_anim_trigger
+                || self.anim_fx.is_running();
             self.cover_art_dirty = false;
             self.last_display_position = self.display_position;
 
@@ -2038,30 +2059,65 @@ impl App {
                     Some(KeyboardAction::CheckHealth) => {
                         self.send_high(TuiCommand::CheckHealth);
                     }
-                    Some(KeyboardAction::FocusLeft) => match self.current_tab {
-                        Tab::Library => self.library_pane_focus = true,
-                        Tab::Settings => self.settings_pane_focus = true,
-                    },
-                    Some(KeyboardAction::FocusRight) => match self.current_tab {
-                        Tab::Library => self.library_pane_focus = false,
-                        Tab::Settings => self.settings_pane_focus = false,
-                    },
-                    Some(KeyboardAction::Back) => {
-                        let is_narrow = self.terminal_cols < 60;
-                        if is_narrow && self.show_lyrics {
-                            self.show_lyrics = false;
-                        } else if self.browse_detail.is_some() {
-                            self.browse_detail = None;
-                            self.scroll_offset = 0;
-                            if self.library_category == 5 {
-                                self.spotify_playlist_tracks_cache.clear();
+                    Some(KeyboardAction::FocusLeft) => {
+                        if self.show_lyrics && self.current_tab == Tab::Library {
+                            if self.lyrics_pane_focus {
+                                // lyrics → right (track) pane
+                                self.lyrics_pane_focus = false;
+                                self.lyrics_manual_scroll = false;
+                                self.library_pane_focus = false;
+                            } else {
+                                self.library_pane_focus = true;
                             }
-                        } else if !self.library_pane_focus && self.current_tab == Tab::Library {
-                            self.library_pane_focus = true;
+                        } else {
+                            match self.current_tab {
+                                Tab::Library => self.library_pane_focus = true,
+                                Tab::Settings => self.settings_pane_focus = true,
+                            }
+                        }
+                    }
+                    Some(KeyboardAction::FocusRight) => {
+                        if self.show_lyrics && self.current_tab == Tab::Library {
+                            if self.library_pane_focus {
+                                // left → right (track) pane
+                                self.library_pane_focus = false;
+                            } else {
+                                // right pane → lyrics pane
+                                self.lyrics_pane_focus = true;
+                            }
+                        } else {
+                            match self.current_tab {
+                                Tab::Library => self.library_pane_focus = false,
+                                Tab::Settings => self.settings_pane_focus = false,
+                            }
+                        }
+                    }
+                    Some(KeyboardAction::Back) => {
+                        if self.lyrics_pane_focus {
+                            // Exit lyrics focus back to the track pane.
+                            self.lyrics_pane_focus = false;
+                            self.lyrics_manual_scroll = false;
+                        } else {
+                            let is_narrow = self.terminal_cols < 60;
+                            if is_narrow && self.show_lyrics {
+                                self.show_lyrics = false;
+                            } else if self.browse_detail.is_some() {
+                                self.browse_detail = None;
+                                self.scroll_offset = 0;
+                                if self.library_category == 5 {
+                                    self.spotify_playlist_tracks_cache.clear();
+                                }
+                            } else if !self.library_pane_focus && self.current_tab == Tab::Library {
+                                self.library_pane_focus = true;
+                            }
                         }
                     }
                     Some(KeyboardAction::FetchLyrics) => {
                         self.show_lyrics = !self.show_lyrics;
+                        if !self.show_lyrics {
+                            self.lyrics_pane_focus = false;
+                            self.lyrics_manual_scroll = false;
+                        }
                         if self.show_lyrics && self.current_lyrics.is_none() {
                             self.lyrics_fetching = true;
                             self.send_high(TuiCommand::FetchLyrics);
@@ -2072,59 +2128,93 @@ impl App {
                         self.input_mode = InputMode::Searching;
                         self.dismiss_track_popup();
                     }
-                    Some(KeyboardAction::MoveUp) => match self.current_tab {
-                        Tab::Library if self.library_pane_focus => {
-                            let new_cat = self.library_category.saturating_sub(1);
-                            if new_cat != self.library_category {
-                                self.browse_detail = None;
-                                self.scroll_offset = 0;
+                    Some(KeyboardAction::MoveUp) => {
+                        if self.lyrics_pane_focus && self.show_lyrics {
+                            self.lyrics_manual_scroll = true;
+                            self.lyrics_scroll = self.lyrics_scroll.saturating_sub(1);
+                        } else {
+                            match self.current_tab {
+                                Tab::Library if self.library_pane_focus => {
+                                    let new_cat = self.library_category.saturating_sub(1);
+                                    if new_cat != self.library_category {
+                                        self.browse_detail = None;
+                                        self.scroll_offset = 0;
+                                    }
+                                    self.library_category = new_cat;
+                                }
+                                Tab::Settings if self.settings_pane_focus => {
+                                    self.settings_category =
+                                        self.settings_category.saturating_sub(1);
+                                }
+                                Tab::Settings => {
+                                    self.settings_option = self.settings_option.saturating_sub(1);
+                                }
+                                Tab::Library => {
+                                    self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                                    self.update_track_popup();
+                                }
                             }
-                            self.library_category = new_cat;
                         }
-                        Tab::Settings if self.settings_pane_focus => {
-                            self.settings_category = self.settings_category.saturating_sub(1);
-                        }
-                        Tab::Settings => {
-                            self.settings_option = self.settings_option.saturating_sub(1);
-                        }
-                        Tab::Library => {
-                            self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                            self.update_track_popup();
-                        }
-                    },
-                    Some(KeyboardAction::MoveDown) => match self.current_tab {
-                        Tab::Library if self.library_pane_focus => {
-                            let new_cat =
-                                (self.library_category + 1).min(LIBRARY_CATEGORIES.len() - 1);
-                            if new_cat != self.library_category {
-                                self.browse_detail = None;
-                                self.scroll_offset = 0;
+                    }
+                    Some(KeyboardAction::MoveDown) => {
+                        if self.lyrics_pane_focus && self.show_lyrics {
+                            self.lyrics_manual_scroll = true;
+                            let max = self
+                                .current_lyrics
+                                .as_ref()
+                                .map(|l| l.lines.len().saturating_sub(1))
+                                .unwrap_or(0);
+                            self.lyrics_scroll = (self.lyrics_scroll + 1).min(max);
+                        } else {
+                            match self.current_tab {
+                                Tab::Library if self.library_pane_focus => {
+                                    let new_cat = (self.library_category + 1)
+                                        .min(LIBRARY_CATEGORIES.len() - 1);
+                                    if new_cat != self.library_category {
+                                        self.browse_detail = None;
+                                        self.scroll_offset = 0;
+                                    }
+                                    self.library_category = new_cat;
+                                }
+                                Tab::Settings if self.settings_pane_focus => {
+                                    self.settings_category = (self.settings_category + 1)
+                                        .min(NUM_SETTINGS_CATEGORIES.saturating_sub(1));
+                                }
+                                Tab::Settings => {
+                                    let max =
+                                        self.settings_options_for_category().saturating_sub(1);
+                                    self.settings_option = (self.settings_option + 1).min(max);
+                                }
+                                Tab::Library => {
+                                    let max_list = self.library_list_len().saturating_sub(1);
+                                    self.scroll_offset = (self.scroll_offset + 1).min(max_list);
+                                    self.update_track_popup();
+                                }
                             }
-                            self.library_category = new_cat;
                         }
-                        Tab::Settings if self.settings_pane_focus => {
-                            self.settings_category = (self.settings_category + 1)
-                                .min(NUM_SETTINGS_CATEGORIES.saturating_sub(1));
-                        }
-                        Tab::Settings => {
-                            let max = self.settings_options_for_category().saturating_sub(1);
-                            self.settings_option = (self.settings_option + 1).min(max);
-                        }
-                        Tab::Library => {
-                            let max_list = self.library_list_len().saturating_sub(1);
-                            self.scroll_offset = (self.scroll_offset + 1).min(max_list);
-                            self.update_track_popup();
-                        }
-                    },
+                    }
                     Some(KeyboardAction::PageUp) => {
-                        if self.current_tab == Tab::Library && !self.library_pane_focus {
+                        if self.lyrics_pane_focus && self.show_lyrics {
+                            self.lyrics_manual_scroll = true;
+                            let page = self.viewport_items.max(1);
+                            self.lyrics_scroll = self.lyrics_scroll.saturating_sub(page);
+                        } else if self.current_tab == Tab::Library && !self.library_pane_focus {
                             let page = self.viewport_items.max(1);
                             self.scroll_offset = self.scroll_offset.saturating_sub(page);
                             self.update_track_popup();
                         }
                     }
                     Some(KeyboardAction::PageDown) => {
-                        if self.current_tab == Tab::Library && !self.library_pane_focus {
+                        if self.lyrics_pane_focus && self.show_lyrics {
+                            self.lyrics_manual_scroll = true;
+                            let page = self.viewport_items.max(1);
+                            let max = self
+                                .current_lyrics
+                                .as_ref()
+                                .map(|l| l.lines.len().saturating_sub(1))
+                                .unwrap_or(0);
+                            self.lyrics_scroll = (self.lyrics_scroll + page).min(max);
+                        } else if self.current_tab == Tab::Library && !self.library_pane_focus {
                             let page = self.viewport_items.max(1);
                             let max_list = self.library_list_len().saturating_sub(1);
                             self.scroll_offset = (self.scroll_offset + page).min(max_list);
@@ -2132,12 +2222,23 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::Top) => {
-                        if self.current_tab == Tab::Library && !self.library_pane_focus {
+                        if self.lyrics_pane_focus && self.show_lyrics {
+                            self.lyrics_manual_scroll = true;
+                            self.lyrics_scroll = 0;
+                        } else if self.current_tab == Tab::Library && !self.library_pane_focus {
                             self.scroll_offset = 0;
                         }
                     }
                     Some(KeyboardAction::Bottom) => {
-                        if self.current_tab == Tab::Library && !self.library_pane_focus {
+                        if self.lyrics_pane_focus && self.show_lyrics {
+                            self.lyrics_manual_scroll = true;
+                            let max = self
+                                .current_lyrics
+                                .as_ref()
+                                .map(|l| l.lines.len().saturating_sub(1))
+                                .unwrap_or(0);
+                            self.lyrics_scroll = max;
+                        } else if self.current_tab == Tab::Library && !self.library_pane_focus {
                             let max_list = self.library_list_len().saturating_sub(1);
                             self.scroll_offset = max_list;
                         }

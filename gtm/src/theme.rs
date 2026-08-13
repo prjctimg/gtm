@@ -13,6 +13,10 @@ use std::borrow::Cow;
 pub struct AppTheme {
     pub bg: Color,
     pub picker_bg: Color,
+    /// Floating-panel fill, one step darker/lighter than `picker_bg`.
+    pub elevated_bg: Color,
+    /// Quiet separator used for pane-edge rules and flat panel borders.
+    pub muted_border: Color,
     pub fg: Color,
     pub fg_dim: Color,
     pub fg_bright: Color,
@@ -80,6 +84,8 @@ fn chadrula() -> AppTheme {
     AppTheme {
         bg: hex(0x24283b),
         picker_bg: hex(0x1f2335),
+        elevated_bg: hex(0x1a1e2e),
+        muted_border: hex(0x3b4261),
         fg: hex(0xc0caf5),
         fg_dim: hex(0x565f89),
         fg_bright: hex(0xe0e6ff),
@@ -103,6 +109,8 @@ fn one_dark() -> AppTheme {
     AppTheme {
         bg: hex(0x282c34),
         picker_bg: hex(0x21252b),
+        elevated_bg: hex(0x1c2026),
+        muted_border: hex(0x3e4451),
         fg: hex(0xabb2bf),
         fg_dim: hex(0x5c6370),
         fg_bright: hex(0xe6e6e6),
@@ -126,6 +134,8 @@ fn tokyonight() -> AppTheme {
     AppTheme {
         bg: hex(0x1a1b26),
         picker_bg: hex(0x16161e),
+        elevated_bg: hex(0x12121a),
+        muted_border: hex(0x292e42),
         fg: hex(0xa9b1d6),
         fg_dim: hex(0x565f89),
         fg_bright: hex(0xc0caf5),
@@ -159,6 +169,8 @@ fn catppuccin_mocha() -> AppTheme {
     AppTheme {
         bg: hex(0x1e1e2e),
         picker_bg: hex(0x181825),
+        elevated_bg: hex(0x141422),
+        muted_border: hex(0x313244),
         fg: hex(0xcdd6f4),
         fg_dim: hex(0x6c7086),
         fg_bright: hex(0xf5f5ff),
@@ -182,6 +194,8 @@ fn gruvbox_dark() -> AppTheme {
     AppTheme {
         bg: hex(0x282828),
         picker_bg: hex(0x1d2021),
+        elevated_bg: hex(0x181b1c),
+        muted_border: hex(0x504945),
         fg: hex(0xebdbb2),
         fg_dim: hex(0x928374),
         fg_bright: hex(0xfbf1c7),
@@ -205,6 +219,8 @@ fn nord() -> AppTheme {
     AppTheme {
         bg: hex(0x2e3440),
         picker_bg: hex(0x2b303b),
+        elevated_bg: hex(0x262b35),
+        muted_border: hex(0x3b4252),
         fg: hex(0xd8dee9),
         fg_dim: hex(0x4c566a),
         fg_bright: hex(0xeceff4),
@@ -228,6 +244,8 @@ fn rose_pine() -> AppTheme {
     AppTheme {
         bg: hex(0x191724),
         picker_bg: hex(0x11111b),
+        elevated_bg: hex(0x0d0d16),
+        muted_border: hex(0x26233a),
         fg: hex(0xe0def4),
         fg_dim: hex(0x6e6a86),
         fg_bright: hex(0xf0edf6),
@@ -251,6 +269,8 @@ fn everforest() -> AppTheme {
     AppTheme {
         bg: hex(0x2d353b),
         picker_bg: hex(0x273036),
+        elevated_bg: hex(0x232a30),
+        muted_border: hex(0x414b52),
         fg: hex(0xd3c6aa),
         fg_dim: hex(0x7a8478),
         fg_bright: hex(0xeae4c9),
@@ -274,6 +294,8 @@ fn kanagawa() -> AppTheme {
     AppTheme {
         bg: hex(0x1f1f28),
         picker_bg: hex(0x181820),
+        elevated_bg: hex(0x14141b),
+        muted_border: hex(0x727169),
         fg: hex(0xdcd7ba),
         fg_dim: hex(0x727169),
         fg_bright: hex(0xc8c0b3),
@@ -297,6 +319,8 @@ fn catppuccin_latte() -> AppTheme {
     AppTheme {
         bg: hex(0xeff1f5),
         picker_bg: hex(0xe6e9ef),
+        elevated_bg: hex(0xdde1e9),
+        muted_border: hex(0xccd0da),
         fg: hex(0x4c4f69),
         fg_dim: hex(0x9ca0b0),
         fg_bright: hex(0x1e1e2e),
@@ -320,6 +344,8 @@ fn kanagawa_lotus() -> AppTheme {
     AppTheme {
         bg: hex(0xf2ecbc),
         picker_bg: hex(0xeae4c9),
+        elevated_bg: hex(0xe3dcc2),
+        muted_border: hex(0xdcdbc4),
         fg: hex(0x545464),
         fg_dim: hex(0x949494),
         fg_bright: hex(0x434343),
@@ -429,6 +455,12 @@ struct UserThemeFile {
     light: bool,
     bg: String,
     picker_bg: String,
+    /// Optional for backward compatibility with pre-C0 theme TOMLs.
+    #[serde(default)]
+    elevated_bg: Option<String>,
+    /// Optional for backward compatibility with pre-C0 theme TOMLs.
+    #[serde(default)]
+    muted_border: Option<String>,
     fg: String,
     fg_dim: String,
     fg_bright: String,
@@ -451,6 +483,14 @@ impl UserThemeFile {
         Ok(AppTheme {
             bg: parse_color(&self.bg)?,
             picker_bg: parse_color(&self.picker_bg)?,
+            elevated_bg: parse_color(
+                self.elevated_bg
+                    .as_deref()
+                    .unwrap_or(self.picker_bg.as_str()),
+            )?,
+            muted_border: parse_color(
+                self.muted_border.as_deref().unwrap_or(self.border.as_str()),
+            )?,
             fg: parse_color(&self.fg)?,
             fg_dim: parse_color(&self.fg_dim)?,
             fg_bright: parse_color(&self.fg_bright)?,
@@ -596,6 +636,8 @@ mod tests {
             light = true
             bg = "#eff1f5"
             picker_bg = "#e6e9ef"
+            elevated_bg = "#dde1e9"
+            muted_border = "#ccd0da"
             fg = "#4c4f69"
             fg_dim = "#9ca0b0"
             fg_bright = "#1e1e2e"
@@ -616,6 +658,38 @@ mod tests {
         let theme = parsed.into_theme().unwrap();
         assert_eq!(theme.bg, Color::Rgb(0xef, 0xf1, 0xf5));
         assert_eq!(theme.accent, Color::Rgb(0x1e, 0x66, 0xf5));
+        assert_eq!(theme.elevated_bg, Color::Rgb(0xdd, 0xe1, 0xe9));
+        assert_eq!(theme.muted_border, Color::Rgb(0xcc, 0xd0, 0xda));
+    }
+
+    #[test]
+    fn user_theme_missing_c0_fields_fall_back() {
+        // Pre-C0 TOML without elevated_bg/muted_border must still parse.
+        let toml = r##"
+            name = "Legacy"
+            light = false
+            bg = "#1a1b26"
+            picker_bg = "#16161e"
+            fg = "#a9b1d6"
+            fg_dim = "#565f89"
+            fg_bright = "#c0caf5"
+            accent = "#7aa2f7"
+            error = "#f7768e"
+            warning = "#ff9e64"
+            success = "#9ece6a"
+            selection_fg = "#1a1b26"
+            selection_bg = "#7aa2f7"
+            border = "#292e42"
+            border_active = "#7aa2f7"
+            volume_low = "#9ece6a"
+            volume_medium = "#ff9e64"
+            volume_high = "#f7768e"
+            sidebar_active_border = "#7aa2f7"
+        "##;
+        let parsed: UserThemeFile = toml::from_str(toml).unwrap();
+        let theme = parsed.into_theme().unwrap();
+        assert_eq!(theme.elevated_bg, theme.picker_bg);
+        assert_eq!(theme.muted_border, theme.border);
     }
 
     #[test]

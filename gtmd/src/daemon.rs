@@ -1269,6 +1269,74 @@ impl Daemon {
         true
     }
 
+    /// Resolve the full metadata for a track that is about to play, treating
+    /// the library as the single source of truth.  Used by both `cmd_play`
+    /// and crossfade auto-advance so queued tracks never carry bare
+    /// (filename-stem) metadata into `PlaybackStarted` / `state.current_track`.
+    ///
+    /// Resolution order:
+    ///   1. exact `Library::track_by_path` match (after canonicalisation)
+    ///   2. substring path match against the library
+    ///   3. cleaned filename stem + `Unknown Artist` / `Unknown Album`
+    ///
+    /// The caller-provided `dur` is always stamped on, since the mixer probes
+    /// it from the decoded source.  The path is canonicalised so the result
+    /// agrees with `queue::resolve_track`'s canonicalisation on later
+    /// path-equality checks (queue consumption, Play/Prev tracking).
+    fn resolve_track_meta(inner: &DaemonInner, path: &std::path::Path, dur: f64) -> TrackInfo {
+        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+        let path_str = path.to_string_lossy().into_owned();
+
+        let mut track = gtm_core::track::TrackInfo {
+            id: 0,
+            path: path_str.clone(),
+            title: path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Unknown")
+                .to_string(),
+            artist: "Unknown Artist".to_string(),
+            album: "Unknown Album".to_string(),
+            duration: dur,
+            track_number: None,
+            genre: String::new(),
+            year: None,
+            bitrate: None,
+            samplerate: None,
+            hash: String::new(),
+            cover_path: None,
+            favourite: false,
+            ..Default::default()
+        };
+
+        if inner.config.test_mode {
+            return track;
+        }
+
+        let lib = match Library::new(inner.config.data_dir.to_str().unwrap_or("")) {
+            Ok(lib) => lib,
+            Err(_) => return track,
+        };
+        if let Ok(Some(mut t)) = lib.track_by_path(&path_str) {
+            t.duration = dur;
+            return t;
+        }
+        if let Ok(tracks) = lib.list_tracks() {
+            if let Some(matched) = tracks
+                .iter()
+                .find(|t| path_str.contains(&t.path) || t.path.contains(&path_str))
+            {
+                track.id = matched.id;
+                track.title = matched.title.clone();
+                track.artist = matched.artist.clone();
+                track.album = matched.album.clone();
+                track.cover_path = matched.cover_path.clone();
+                track.favourite = matched.favourite;
+            }
+        }
+        track
+    }
+
     /// Finalize a crossfade: the standby (next) track is already playing on
     /// the mixer, so only the state must be advanced and reported.
     async fn finish_crossfade(inner: &DaemonInner) {
@@ -1279,7 +1347,7 @@ impl Daemon {
                 let dur = inner.mixer.lock().await.duration();
                 // Stamp the real duration onto the TrackInfo so the queued
                 // track's metadata isn't left at 0 after a crossfade.
-                next.duration = dur;
+                next = Self::resolve_track_meta(inner, std::path::Path::new(&next.path), dur);
                 {
                     let mut state = inner.state.write().await;
                     state.status = PlaybackStatus::Playing;
@@ -1364,7 +1432,7 @@ impl Daemon {
                 drop(state);
 
                 if let Some(cf) = crossfade {
-                    if cf.enabled && dur > 0.0 && (dur - pos) <= cf.duration_secs as f64 + 0.5 {
+                    if cf.enabled && dur > 0.0 && (dur - pos) <= cf.duration_secs as f64 + 0.15 {
                         if let Some(track) = next {
                             let _ = Self::try_start_crossfade(inner, &track).await;
                         }
@@ -1453,98 +1521,7 @@ impl Daemon {
         };
         let mut state = inner.state.write().await;
 
-        let track = if !inner.config.test_mode {
-            let lib = Library::new(inner.config.data_dir.to_str().unwrap_or("")).ok();
-            if let Some(ref lib) = lib {
-                match lib.track_by_path(&path_owned) {
-                    Ok(Some(mut t)) => {
-                        t.duration = dur;
-                        t
-                    }
-                    _ => {
-                        // Fallback: search by path substring
-                        let mut fallback = gtm_core::track::TrackInfo {
-                            id: 0,
-                            path: path_owned.clone(),
-                            title: std::path::Path::new(&path_owned)
-                                .file_stem()
-                                .and_then(|s| s.to_str())
-                                .unwrap_or("Unknown")
-                                .to_string(),
-                            artist: "Unknown Artist".to_string(),
-                            album: "Unknown Album".to_string(),
-                            duration: dur,
-                            track_number: None,
-                            genre: String::new(),
-                            year: None,
-                            bitrate: None,
-                            samplerate: None,
-                            hash: String::new(),
-                            cover_path: None,
-                            favourite: false,
-                            ..Default::default()
-                        };
-                        if let Ok(tracks) = lib.list_tracks() {
-                            if let Some(matched) = tracks.iter().find(|t| {
-                                path_owned.contains(&t.path) || t.path.contains(&path_owned)
-                            }) {
-                                fallback.id = matched.id;
-                                fallback.title = matched.title.clone();
-                                fallback.artist = matched.artist.clone();
-                                fallback.album = matched.album.clone();
-                                fallback.cover_path = matched.cover_path.clone();
-                                fallback.favourite = matched.favourite;
-                            }
-                        }
-                        fallback
-                    }
-                }
-            } else {
-                gtm_core::track::TrackInfo {
-                    id: 0,
-                    path: path_owned.clone(),
-                    title: std::path::Path::new(&path_owned)
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("Unknown")
-                        .to_string(),
-                    artist: "Unknown Artist".to_string(),
-                    album: "Unknown Album".to_string(),
-                    duration: dur,
-                    track_number: None,
-                    genre: String::new(),
-                    year: None,
-                    bitrate: None,
-                    samplerate: None,
-                    hash: String::new(),
-                    cover_path: None,
-                    favourite: false,
-                    ..Default::default()
-                }
-            }
-        } else {
-            gtm_core::track::TrackInfo {
-                id: 0,
-                path: path_owned.clone(),
-                title: std::path::Path::new(&path_owned)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("Unknown")
-                    .to_string(),
-                artist: "Unknown Artist".to_string(),
-                album: "Unknown Album".to_string(),
-                duration: dur,
-                track_number: None,
-                genre: String::new(),
-                year: None,
-                bitrate: None,
-                samplerate: None,
-                hash: String::new(),
-                cover_path: None,
-                favourite: false,
-                ..Default::default()
-            }
-        };
+        let track = Self::resolve_track_meta(inner, std::path::Path::new(&path_owned), dur);
         // Rotate the user queue so the explicitly-played track sits at index
         // 0 (the one-time queue consumes from the head).  No-op when the track
         // isn't queued (standalone interruption) or already at the head.

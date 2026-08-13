@@ -98,11 +98,11 @@ impl DecodeThread {
         }
     }
 
-    pub fn spawn(self) -> JoinHandle<()> {
+    pub fn spawn(self) -> Result<JoinHandle<()>, String> {
         std::thread::Builder::new()
             .name("gtm-decode".into())
             .spawn(move || self.run())
-            .expect("failed to spawn decode thread")
+            .map_err(|e| format!("failed to spawn decode thread: {e}"))
     }
 }
 
@@ -148,7 +148,10 @@ impl DecodeThread {
 
             // Build reverb state
             let mut reverb_state = {
-                let room = *self.reverb_room_size.lock().unwrap();
+                let room = *self
+                    .reverb_room_size
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner());
                 Some(ReverbState::new(sr, room))
             };
 

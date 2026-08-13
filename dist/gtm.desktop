@@ -2,6 +2,7 @@
 Name=GTM Music Player
 Comment=Terminal-based music player daemon and client
 Exec=gtm
+Icon=gtm
 Terminal=true
 Type=Application
 Categories=Audio;Music;Player;

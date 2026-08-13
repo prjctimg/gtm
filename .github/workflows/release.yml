@@ -211,7 +211,9 @@ jobs:
             ../../artifacts/completions/gtmd.fish \
             ../../artifacts/completions/gtmd.ps1 \
             ../../artifacts/completions/gtmd.elv \
-            ../../dist/gtmd.service
+            ../../dist/gtmd.service \
+            ../../dist/gtm.desktop \
+            ../../assets/gtm.svg
 
       - name: Create Android archive
         if: matrix.platform == 'aarch64-android'
@@ -230,6 +232,8 @@ jobs:
           cp -r artifacts/completions/* gtm/deb-assets/completions/
           cp target/release/gtmd gtm/deb-assets/gtmd
           cp dist/gtmd.service gtm/deb-assets/
+          cp dist/gtm.desktop gtm/deb-assets/
+          cp assets/gtm.svg gtm/deb-assets/
           # Single combined package: auto-adds the gtm binary ("$auto"), the
           # gtmd binary is a staged asset, plus manpages/completions/service.
           cargo deb --package gtm

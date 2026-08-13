@@ -4,12 +4,18 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "GTM music player client - TUI and CLI modes"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme.workspace = true
 
 [dependencies]
 gtm-core = { path = "../gtm-core" }
 gtm-audio = { path = "../gtm-audio" }
 ratatui = "0.30"
 crossterm = "0.28"
+tachyonfx = "0.22"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6"
@@ -35,6 +41,8 @@ assets = [
     "$auto",
     { source = "deb-assets/gtmd", dest = "/usr/bin/gtmd", mode = "755" },
     { source = "deb-assets/gtmd.service", dest = "/usr/lib/systemd/user/gtmd.service" },
+    { source = "deb-assets/gtm.desktop", dest = "/usr/share/applications/gtm.desktop" },
+    { source = "deb-assets/gtm.svg", dest = "/usr/share/icons/hicolor/scalable/apps/gtm.svg" },
     { source = "deb-assets/man/gtm.1", dest = "/usr/share/man/man1/" },
     { source = "deb-assets/man/gtmd.1", dest = "/usr/share/man/man1/" },
     { source = "deb-assets/man/gtmd-ipc.1", dest = "/usr/share/man/man1/" },
