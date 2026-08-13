@@ -28,6 +28,8 @@ pub enum FooterModule {
     Backend,
     System,
     Device,
+    EqPreset,
+    SleepTimer,
 }
 
 #[derive(Debug, Clone)]
@@ -46,29 +48,29 @@ pub fn presets() -> Vec<FooterPreset> {
         FooterPreset {
             name: "Default",
             a: vec![FooterModule::Playback],
-            b: vec![FooterModule::Title],
-            c: vec![FooterModule::Volume, FooterModule::Queue],
-            x: vec![],
+            b: vec![FooterModule::Volume, FooterModule::EqPreset],
+            c: vec![FooterModule::Queue],
+            x: vec![FooterModule::Repeat, FooterModule::Shuffle],
             y: vec![FooterModule::KeyAction],
-            z: vec![FooterModule::Clock, FooterModule::Progress],
+            z: vec![FooterModule::Clock, FooterModule::SleepTimer],
         },
         FooterPreset {
             name: "Minimal",
             a: vec![FooterModule::Playback],
             b: vec![FooterModule::Title],
-            c: vec![],
+            c: vec![FooterModule::EqPreset],
             x: vec![],
             y: vec![],
-            z: vec![FooterModule::Clock],
+            z: vec![FooterModule::SleepTimer, FooterModule::Clock],
         },
         FooterPreset {
             name: "Full",
             a: vec![FooterModule::Playback],
             b: vec![FooterModule::Title],
-            c: vec![FooterModule::Volume, FooterModule::Repeat, FooterModule::Shuffle],
+            c: vec![FooterModule::Volume, FooterModule::Repeat, FooterModule::Shuffle, FooterModule::EqPreset],
             x: vec![FooterModule::Backend, FooterModule::Device],
             y: vec![FooterModule::KeyAction],
-            z: vec![FooterModule::System, FooterModule::Clock, FooterModule::Progress],
+            z: vec![FooterModule::System, FooterModule::Clock, FooterModule::SleepTimer, FooterModule::Progress],
         },
     ]
 }
@@ -197,6 +199,8 @@ fn module_color(m: &FooterModule, theme: &crate::theme::AppTheme) -> ratatui::st
         FooterModule::Backend => theme.fg_dim,
         FooterModule::System => theme.fg_dim,
         FooterModule::Device => theme.fg_dim,
+        FooterModule::EqPreset => theme.syn_type,
+        FooterModule::SleepTimer => theme.syn_keyword,
     }
 }
 
@@ -216,6 +220,8 @@ fn render_modules(modules: &[&FooterModule], app: &App) -> Vec<(String, ratatui:
             FooterModule::Backend => render_backend(),
             FooterModule::System => render_system(),
             FooterModule::Device => render_device(app),
+            FooterModule::EqPreset => render_eq_preset(app),
+            FooterModule::SleepTimer => render_sleep_timer(app),
         };
         if !text.is_empty() {
             parts.push((text, module_color(m, &app.theme)));
@@ -269,6 +275,24 @@ fn render_repeat(app: &App) -> String {
 
 fn render_shuffle(app: &App) -> String {
     if app.state.shuffle { "S".into() } else { String::new() }
+}
+
+fn render_eq_preset(app: &App) -> String {
+    if app.state.eq_enabled {
+        format!("EQ:{}", app.state.eq_preset.label())
+    } else {
+        String::new()
+    }
+}
+
+fn render_sleep_timer(app: &App) -> String {
+    if let Some(secs) = app.state.sleep_timer {
+        let m = secs / 60;
+        let s = secs % 60;
+        format!("zzz {}:{:02}", m, s)
+    } else {
+        String::new()
+    }
 }
 
 fn render_progress(app: &App) -> String {

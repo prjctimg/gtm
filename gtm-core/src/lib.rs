@@ -6,6 +6,7 @@
 
 pub mod client;
 pub mod ipc;
+pub mod log;
 pub mod paths;
 pub mod state;
 pub mod state_machine;

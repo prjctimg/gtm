@@ -118,6 +118,10 @@ impl Daemon {
             .map_err(|e| CoreError::Daemon(format!("bind socket: {e}")))?;
 
         let pulse_path = Path::new(&config.socket_pulse_path);
+        if let Some(parent) = pulse_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| CoreError::Daemon(format!("create pulse socket dir: {e}")))?;
+        }
         if pulse_path.exists() {
             std::fs::remove_file(pulse_path)
                 .map_err(|e| CoreError::Daemon(format!("remove stale pulse socket: {e}")))?;
@@ -350,14 +354,14 @@ impl Daemon {
                     event = event_rx.recv() => {
                         match event {
                             Ok(event) => {
-                                let frame = match wire::encode(&[event]) {
-                                    Ok(f) => f,
+                                let line = match serde_json::to_string(&event) {
+                                    Ok(s) => s + "\n",
                                     Err(e) => {
-                                        warn!("encode event: {e}");
+                                        warn!("serialize event: {e}");
                                         continue;
                                     }
                                 };
-                                if writer.write_all(&frame).await.is_err()
+                                if writer.write_all(line.as_bytes()).await.is_err()
                                     || writer.flush().await.is_err()
                                 {
                                     break;

@@ -250,6 +250,9 @@ impl DaemonState {
             DaemonEvent::EqEnabledChanged { enabled } => {
                 self.eq_enabled = *enabled;
             }
+            DaemonEvent::EqPresetChanged { preset } => {
+                self.eq_preset = preset.clone();
+            }
             _ => {} // MetadataChanged, Custom — no state mirror field
         }
         self.version += 1;

@@ -228,7 +228,6 @@ pub struct Image {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Tab {
-    NowPlaying,
     Library,
     Settings,
 }

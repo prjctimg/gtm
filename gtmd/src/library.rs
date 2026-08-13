@@ -149,6 +149,28 @@ impl Library {
         Ok(())
     }
 
+    pub fn update_metadata(
+        &self, id: i64,
+        title: Option<&str>, artist: Option<&str>,
+        album: Option<&str>, genre: Option<&str>,
+        year: Option<i32>, track_number: Option<i32>,
+    ) -> Result<(), String> {
+        let mut sets = Vec::new();
+        if title.is_some() { sets.push("title = ?2"); }
+        if artist.is_some() { sets.push("artist = ?3"); }
+        if album.is_some() { sets.push("album = ?4"); }
+        if genre.is_some() { sets.push("genre = ?5"); }
+        if year.is_some() { sets.push("year = ?6"); }
+        if track_number.is_some() { sets.push("track_number = ?7"); }
+        if sets.is_empty() { return Ok(()); }
+        let sql = format!("UPDATE tracks SET {} WHERE id = ?1", sets.join(", "));
+        self.conn.execute(
+            &sql,
+            params![id, title, artist, album, genre, year, track_number],
+        ).map_err(|e| format!("update metadata: {e}"))?;
+        Ok(())
+    }
+
     pub fn toggle_favourite(&self, id: i64) -> Result<bool, String> {
         self.conn
             .execute(

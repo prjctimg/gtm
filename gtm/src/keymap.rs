@@ -472,7 +472,7 @@ pub fn default_keybindings() -> Keybindings {
                     description: "Select item",
                 },
             ),
-            // Delete — Del / d
+            // Delete — Del / D (uppercase, with confirmation)
             (
                 KeyCode::Delete.into(),
                 BoundCommand {
@@ -482,24 +482,16 @@ pub fn default_keybindings() -> Keybindings {
                 },
             ),
             (
-                KeyCode::Char('d').into(),
+                KeyCode::Char('D').into(),
                 BoundCommand {
                     action: KeyboardAction::Delete,
                     contexts: vec![KeyContext::List, KeyContext::Normal],
                     description: "Delete item",
                 },
             ),
-            // Direct tab switching by number — 1 through 3
+            // Direct tab switching by number — 1 through 2
             (
                 KeyCode::Char('1').into(),
-                BoundCommand {
-                    action: KeyboardAction::SwitchTab(Tab::NowPlaying),
-                    contexts: vec![KeyContext::Normal],
-                    description: "Now Playing tab",
-                },
-            ),
-            (
-                KeyCode::Char('2').into(),
                 BoundCommand {
                     action: KeyboardAction::SwitchTab(Tab::Library),
                     contexts: vec![KeyContext::Normal],
@@ -507,7 +499,7 @@ pub fn default_keybindings() -> Keybindings {
                 },
             ),
             (
-                KeyCode::Char('3').into(),
+                KeyCode::Char('2').into(),
                 BoundCommand {
                     action: KeyboardAction::SwitchTab(Tab::Settings),
                     contexts: vec![KeyContext::Normal],
@@ -641,15 +633,8 @@ pub fn default_keybindings() -> Keybindings {
                     description: "Delete from list",
                 },
             ),
-            // gg — jump to start
-            (
-                KeyCode::Char('g').into(),
-                BoundCommand {
-                    action: KeyboardAction::JumpToStart,
-                    contexts: vec![KeyContext::Normal],
-                    description: "Jump to start",
-                },
-            ),
+            // gg — jump to start (handled via pending_motion in app.rs)
+            // g alone is not bound; the app checks for double-press.
             // G (Shift) — jump to end
             (
                 KeyCode::Char('G').into(),

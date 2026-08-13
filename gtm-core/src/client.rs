@@ -669,29 +669,15 @@ impl IpcWorker {
         if self.buf.is_empty() {
             return None;
         }
-        // JSON responses start with '{' (objects) or '"' (unit-variant strings
-        // like "pong"). Binary WireFrames always start with a 4-byte big-endian
-        // length prefix, whose first byte is 0x00 for payloads <16 MB.
-        if self.buf[0] == b'{' || self.buf[0] == b'"' {
-            let pos = self.buf.iter().position(|&b| b == b'\n')?;
-            let line = self.buf[..pos].to_vec();
-            self.buf.drain(..=pos);
-            let res: DaemonRes = serde_json::from_slice(&line).ok()?;
+        let pos = self.buf.iter().position(|&b| b == b'\n')?;
+        let line = self.buf[..pos].to_vec();
+        self.buf.drain(..=pos);
+        if let Ok(res) = serde_json::from_slice::<DaemonRes>(&line) {
             return Some(Frame::Response(res));
         }
-        if self.buf.len() < 4 {
-            return None;
-        }
-        let len =
-            u32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
-        if self.buf.len() < 4 + len {
-            return None;
-        }
-        let frame: wire::WireFrame = bincode::deserialize(&self.buf[4..4 + len]).ok()?;
-        self.buf.drain(..4 + len);
-        for ev in frame.events {
+        if let Ok(event) = serde_json::from_slice::<DaemonEvent>(&line) {
             let mut events = self.events.lock().await;
-            events.push(ev);
+            events.push(event);
         }
         None
     }

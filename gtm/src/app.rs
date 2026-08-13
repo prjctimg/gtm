@@ -44,23 +44,21 @@ struct Prefs {
     transparent_bg: bool,
     #[serde(default)]
     footer_preset: usize,
-    #[serde(default)]
-    hover_delay_secs: u64,
 }
 
 fn load_prefs() -> Prefs {
     let path = prefs_path();
     let s = match std::fs::read_to_string(path) {
         Ok(s) => s,
-        Err(_) => return Prefs { theme_index: 0, transparent_bg: false, footer_preset: 0, hover_delay_secs: 0 },
+        Err(_) => return Prefs { theme_index: 0, transparent_bg: false, footer_preset: 0 },
     };
     if let Ok(p) = serde_json::from_str::<Prefs>(&s) {
         return p;
     }
     if let Ok(idx) = serde_json::from_str::<usize>(&s) {
-        return Prefs { theme_index: idx.min(crate::theme::THEMES.len().saturating_sub(1)), transparent_bg: false, footer_preset: 0, hover_delay_secs: 0 };
+        return Prefs { theme_index: idx.min(crate::theme::THEMES.len().saturating_sub(1)), transparent_bg: false, footer_preset: 0 };
     }
-    Prefs { theme_index: 0, transparent_bg: false, footer_preset: 0, hover_delay_secs: 0 }
+    Prefs { theme_index: 0, transparent_bg: false, footer_preset: 0 }
 }
 
 fn save_prefs(prefs: &Prefs) {
@@ -147,9 +145,6 @@ pub struct App {
     pub last_cover_track_id: Option<i64>,
     pub cover_picker: Option<Picker>,
     pub cover_stateful: Option<StatefulProtocol>,
-    pub scroll_cover: Option<Vec<u8>>,
-    pub scroll_cover_track_id: Option<i64>,
-    pub scroll_cover_stateful: Option<StatefulProtocol>,
     pub cmd_rx: mpsc::Receiver<TuiCommand>,
     cmd_tx: mpsc::Sender<TuiCommand>,
     high_pri_cmd_rx: mpsc::UnboundedReceiver<TuiCommand>,
@@ -158,16 +153,11 @@ pub struct App {
     ipc_tx: mpsc::UnboundedSender<IpcResult>,
     keybindings: crate::keymap::Keybindings,
     pub theme_index: usize,
-    pub show_tag_popup: bool,
-    pub hover_start: Option<std::time::Instant>,
-    pub show_hover_info: bool,
     pub list_scroll: usize,
     pub viewport_items: usize,
     pub transparent_bg: bool,
     pub last_action_name: Option<(String, std::time::Instant)>,
     pub footer_preset: usize,
-    pub hover_delay_secs: u64,
-    pub title_scroll: usize,
     pub footer_title_scroll: usize,
     pub is_ready: bool,
     last_queue_cursor: u128,
@@ -189,12 +179,17 @@ pub struct App {
     pub metadata_fields: [String; 7],
     pub metadata_field_idx: usize,
     pub pending_quit: bool,
+    pub np_title_scroll: usize,
+    pub track_popup_visible: bool,
+    pub track_popup_track_id: Option<i64>,
+    pub track_popup_cover: Option<Vec<u8>>,
+    last_popup_cover_fetch_id: Option<i64>,
 }
 
 enum IpcResult {
     RefreshDone(DaemonState, Option<Vec<u8>>, Option<i64>),
     CoverArt(Option<Vec<u8>>, Option<i64>),
-    ScrollCoverArt(Option<Vec<u8>>, Option<i64>),
+    PopupCoverArt(Option<Vec<u8>>, i64),
     LibraryTracks(Vec<TrackInfo>),
     Playlists(Vec<Playlist>),
     Queue(Vec<TrackInfo>, usize),
@@ -255,7 +250,7 @@ impl App {
             display_position: 0.0,
             last_display_position: 0.0,
             frame_count: 0,
-            current_tab: Tab::NowPlaying,
+            current_tab: Tab::Library,
             input_mode: InputMode::Normal,
             search_query: String::new(),
             scroll_offset: 0,
@@ -286,9 +281,6 @@ impl App {
             last_cover_track_id: None,
             cover_picker: None,
             cover_stateful: None,
-            scroll_cover: None,
-            scroll_cover_track_id: None,
-            scroll_cover_stateful: None,
             cmd_rx,
             cmd_tx,
             high_pri_cmd_rx,
@@ -297,21 +289,16 @@ impl App {
             ipc_tx,
             keybindings,
             theme_index: prefs.theme_index,
-            show_tag_popup: false,
-            hover_start: None,
-            show_hover_info: false,
             list_scroll: 0,
             viewport_items: 20,
             transparent_bg: prefs.transparent_bg,
             last_action_name: None,
             footer_preset: prefs.footer_preset.min(footer::num_presets().saturating_sub(1)),
-            hover_delay_secs: prefs.hover_delay_secs.min(5),
-            title_scroll: 0,
             footer_title_scroll: 0,
             is_ready: false,
             last_queue_cursor: initial_cursor,
             last_track_id_display: None,
-            prev_tab: Tab::NowPlaying,
+            prev_tab: Tab::Library,
             prev_track_id: None,
             prev_status: gtm_core::state::PlaybackStatus::Stopped,
             prev_volume: 100,
@@ -328,6 +315,11 @@ impl App {
             metadata_fields: Default::default(),
             metadata_field_idx: 0,
             pending_quit: false,
+            np_title_scroll: 0,
+            track_popup_visible: false,
+            track_popup_track_id: None,
+            track_popup_cover: None,
+            last_popup_cover_fetch_id: None,
         })
     }
 
@@ -482,13 +474,6 @@ impl App {
                             self.cover_art_dirty = true;
                         }
                     }
-                    IpcResult::ScrollCoverArt(cover, cover_tid) => {
-                        if !no_image_protocol() {
-                            self.scroll_cover = cover;
-                            self.scroll_cover_track_id = cover_tid;
-                            self.sync_scroll_cover_stateful();
-                        }
-                    }
                     IpcResult::LibraryTracks(tracks) => self.tracks_cache = tracks,
                     IpcResult::Playlists(playlists) => self.playlist_cache = playlists,
                     IpcResult::Queue(tracks, cursor) => {
@@ -508,6 +493,11 @@ impl App {
                         });
                     }
                     IpcResult::Error(e) => self.error_message = Some(e),
+                    IpcResult::PopupCoverArt(cover, track_id) => {
+                        if !no_image_protocol() && self.track_popup_track_id == Some(track_id) {
+                            self.track_popup_cover = cover;
+                        }
+                    }
                 }
             }
 
@@ -555,21 +545,6 @@ impl App {
                 self.prev_cover_id = self.last_cover_track_id;
             }
 
-            // Hover popup: show immediately on scroll when right-pane focused,
-            // or after hover_delay_secs of inactivity when not scrolling.
-            if self.current_tab == Tab::Library && !self.library_pane_focus && !self.overlays.is_open() && !self.show_tag_popup {
-                let delay = Duration::from_secs(self.hover_delay_secs);
-                match self.hover_start {
-                    Some(t) if t.elapsed() >= delay => {
-                        self.show_hover_info = true;
-                    }
-                    None => self.hover_start = Some(now),
-                    _ => {}
-                }
-            } else {
-                self.show_hover_info = false;
-            }
-
             let raw_pos = self.client.estimated_position().await;
             // Monotonic guard: prevent large backward jumps from clock skew.
             // Allow at most 0.5s of regression to avoid visible stutter.
@@ -584,8 +559,8 @@ impl App {
             let pos_changed = (self.display_position - self.last_display_position).abs() >= 0.1;
             // Advance title scroll animations (every 3rd frame)
             if frame_count % 3 == 0 {
-                self.title_scroll = self.title_scroll.wrapping_add(1);
                 self.footer_title_scroll = self.footer_title_scroll.wrapping_add(1);
+                self.np_title_scroll = self.np_title_scroll.wrapping_add(1);
             }
 
             let force_render = pos_changed
@@ -620,6 +595,54 @@ impl App {
             kind,
             expires_at,
         });
+    }
+
+    /// Update the track popup to show the currently selected track in the library list.
+    pub fn update_track_popup(&mut self) {
+        let maybe_track_id = {
+            let filtered = self.filtered_tracks();
+            if self.scroll_offset < filtered.len() {
+                Some(filtered[self.scroll_offset].id)
+            } else {
+                None
+            }
+        };
+
+        if let Some(tid) = maybe_track_id {
+            self.track_popup_track_id = Some(tid);
+            self.track_popup_visible = true;
+
+            let current_tid = self.state.current_track.as_ref().map(|t| t.id);
+            if current_tid == Some(tid) {
+                self.track_popup_cover = self.current_cover.clone();
+                self.last_popup_cover_fetch_id = None;
+            } else if self.last_popup_cover_fetch_id != Some(tid) && !no_image_protocol() {
+                self.last_popup_cover_fetch_id = Some(tid);
+                self.track_popup_cover = None;
+                let client2 = self.client.clone();
+                let ipc_tx2 = self.ipc_tx.clone();
+                tokio::spawn(async move {
+                    if let Ok(Some(b64)) = client2.get_cover_art(tid).await {
+                        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
+                            let _ = ipc_tx2.send(IpcResult::PopupCoverArt(Some(bytes), tid));
+                        }
+                    }
+                });
+            }
+        } else {
+            self.track_popup_visible = false;
+            self.track_popup_track_id = None;
+            self.track_popup_cover = None;
+            self.last_popup_cover_fetch_id = None;
+        }
+    }
+
+    /// Dismiss the track popup.
+    pub fn dismiss_track_popup(&mut self) {
+        self.track_popup_visible = false;
+        self.track_popup_track_id = None;
+        self.track_popup_cover = None;
+        self.last_popup_cover_fetch_id = None;
     }
 
     /// Filtered tracks for the current library view, respecting search query, browse_detail, and category.
@@ -711,25 +734,12 @@ impl App {
         }
     }
 
-    fn sync_scroll_cover_stateful(&mut self) {
-        match (&self.scroll_cover, &self.cover_picker) {
-            (Some(bytes), Some(picker)) => {
-                if let Ok(img) = image::load_from_memory(bytes) {
-                    self.scroll_cover_stateful = Some(picker.new_resize_protocol(img));
-                } else {
-                    self.scroll_cover_stateful = None;
-                }
-            }
-            _ => self.scroll_cover_stateful = None,
-        }
-    }
-
     fn settings_options_for_category(&self) -> usize {
         match self.settings_category {
             0 => 2,  // Audio: Volume, Mute
             1 => 8,  // YouTube: (all display-only for now)
             2 => 4,  // Playback: Repeat, Shuffle, Crossfade, Easing
-            3 => 5,  // System: Theme, Transparent BG, Sync Covers, Footer Preset, Hover Delay
+            3 => 4,  // System: Theme, Transparent BG, Sync Covers, Footer Preset
             4 => 1,  // Spotify: Status
             _ => 0,
         }
@@ -1019,6 +1029,9 @@ impl App {
                         error_handler(e);
                     } else {
                         let _ = ipc_tx.send(IpcResult::Notification("Track deleted".to_string(), NotificationKind::Success));
+                        if let Ok(DaemonRes::Tracks { tracks, .. }) = client.library_get_tracks(None, None).await {
+                            let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
+                        }
                     }
                 });
             }
@@ -1028,6 +1041,9 @@ impl App {
                         error_handler(e);
                     } else {
                         let _ = ipc_tx.send(IpcResult::Notification("Removed from playlist".to_string(), NotificationKind::Success));
+                        if let Ok(DaemonRes::Playlists { playlists, .. }) = client.library_get_playlists().await {
+                            let _ = ipc_tx.send(IpcResult::Playlists(playlists));
+                        }
                     }
                 });
             }
@@ -1082,8 +1098,6 @@ impl App {
     }
 
     async fn handle_key(&mut self, key: event::KeyEvent) -> bool {
-        self.hover_start = None;
-        self.show_hover_info = false;
         // Reset pending_motion if the key is not 'g'
         if key.code != KeyCode::Char('g') {
             self.pending_motion = None;
@@ -1198,7 +1212,7 @@ impl App {
                         // Second 'g' — execute jump to start
                         self.pending_motion = None;
                         self.scroll_offset = 0;
-                        self.fetch_cover_for_scroll_position().await;
+
                         return true;
                     } else {
                         // First 'g' — wait for second press
@@ -1219,7 +1233,6 @@ impl App {
                     }
                     let max = self.filtered_tracks().len().saturating_sub(1);
                     self.scroll_offset = (self.scroll_offset + 1).min(max);
-                    self.fetch_cover_for_scroll_position().await;
                     let count = self.selected_indices.len();
                     self.notify(format!("{count} selected"), NotificationKind::Info);
                     return true;
@@ -1239,15 +1252,8 @@ impl App {
                             Tab::Settings => {
                                 self.settings_pane_focus = !self.settings_pane_focus;
                             }
-                            _ => {
-                                self.current_tab = match self.current_tab {
-                                    Tab::NowPlaying => Tab::Library,
-                                    _ => Tab::NowPlaying,
-                                };
-                                self.suppress_footer_refresh = true;
-                                self.refresh_tab().await;
-                            }
                         }
+                        self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::PrevTab) => {
                         match self.current_tab {
@@ -1257,23 +1263,22 @@ impl App {
                             Tab::Settings => {
                                 self.settings_pane_focus = !self.settings_pane_focus;
                             }
-                            _ => {
-                                self.current_tab = Tab::Settings;
-                                self.suppress_footer_refresh = true;
-                                self.refresh_tab().await;
-                            }
                         }
+                        self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::SwitchTab(tab)) => {
                         self.current_tab = tab;
                         self.suppress_footer_refresh = true;
+                        self.dismiss_track_popup();
                         self.refresh_tab().await;
                     }
                     Some(KeyboardAction::OpenOverlay(id)) => {
                         self.overlays.open(id);
+                        self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::ToggleHelp) => {
                         self.overlays.open(OverlayId::Help);
+                        self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::PlayPause) => {
                         self.set_last_action("Play/Pause");
@@ -1362,8 +1367,19 @@ impl App {
                     Some(KeyboardAction::ToggleFavourite) => {
                         self.set_last_action("Toggle Favourite");
                         if let Some(ref track) = self.state.current_track {
+                            let track_id = track.id;
+                            let new_fav = !track.favourite;
+                            if let Some(ref mut ct) = self.state.current_track {
+                                ct.favourite = new_fav;
+                            }
+                            for t in &mut self.tracks_cache {
+                                if t.id == track_id {
+                                    t.favourite = new_fav;
+                                    break;
+                                }
+                            }
                             let tx = self.cmd_tx();
-                            let _ = tx.send(TuiCommand::AddFavourite(track.id)).await;
+                            let _ = tx.send(TuiCommand::AddFavourite(track_id)).await;
                             self.notify("Favourite toggled", NotificationKind::Info);
                         }
                     }
@@ -1381,28 +1397,27 @@ impl App {
                             theme_index: self.theme_index,
                             transparent_bg: self.transparent_bg,
                             footer_preset: self.footer_preset,
-                            hover_delay_secs: self.hover_delay_secs,
                         });
                     }
                     Some(KeyboardAction::FocusLeft) => {
                         match self.current_tab {
                             Tab::Library => self.library_pane_focus = true,
                             Tab::Settings => self.settings_pane_focus = true,
-                            _ => {}
                         }
                     }
                     Some(KeyboardAction::FocusRight) => {
                         match self.current_tab {
                             Tab::Library => self.library_pane_focus = false,
                             Tab::Settings => self.settings_pane_focus = false,
-                            _ => {}
                         }
                     }
                     Some(KeyboardAction::EnterFilter) => {
                         self.input_mode = InputMode::Searching;
+                        self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::EnterCommand) => {
                         self.input_mode = InputMode::Command;
+                        self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::MoveUp) => {
                         match self.current_tab {
@@ -1417,10 +1432,7 @@ impl App {
                             }
                             Tab::Library => {
                                 self.scroll_offset = self.scroll_offset.saturating_sub(1);
-                                self.fetch_cover_for_scroll_position().await;
-                            }
-                            _ => {
-                                self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                                self.update_track_popup();
                             }
                         }
                     }
@@ -1439,11 +1451,7 @@ impl App {
                             Tab::Library => {
                                 let max_list = self.filtered_tracks().len();
                                 self.scroll_offset = (self.scroll_offset + 1).min(max_list.saturating_sub(1));
-                                self.fetch_cover_for_scroll_position().await;
-                            }
-                            _ => {
-                                let max_list = self.filtered_tracks().len();
-                                self.scroll_offset = (self.scroll_offset + 1).min(max_list.saturating_sub(1));
+                                self.update_track_popup();
                             }
                         }
                     }
@@ -1554,7 +1562,7 @@ impl App {
                                 3 => match opt {
                                     1 => { // Transparent BG toggle
                                         self.transparent_bg = !self.transparent_bg;
-                                        save_prefs(&Prefs { theme_index: self.theme_index, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, hover_delay_secs: self.hover_delay_secs });
+                                        save_prefs(&Prefs { theme_index: self.theme_index, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset });
                                     }
                                     2 => { // Sync Covers
                                         let ipc_tx = self.ipc_tx.clone();
@@ -1578,15 +1586,8 @@ impl App {
                                     3 => { // Footer Preset cycle
                                         self.footer_preset = (self.footer_preset + 1) % footer::num_presets();
                                         let name = footer::presets()[self.footer_preset].name;
-                                        save_prefs(&Prefs { theme_index: self.theme_index, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, hover_delay_secs: self.hover_delay_secs });
+                                        save_prefs(&Prefs { theme_index: self.theme_index, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset });
                                         self.notify(format!("Footer: {}", name), NotificationKind::Info);
-                                    }
-                                    4 => { // Hover Delay cycle
-                                        let delays = [0u64, 1, 2, 3, 5];
-                                        let idx = delays.iter().position(|d| *d == self.hover_delay_secs).unwrap_or(0);
-                                        self.hover_delay_secs = delays[(idx + 1) % delays.len()];
-                                        save_prefs(&Prefs { theme_index: self.theme_index, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, hover_delay_secs: self.hover_delay_secs });
-                                        self.notify(format!("Hover Delay: {}s", self.hover_delay_secs), NotificationKind::Info);
                                     }
                                     _ => {}
                                 },
@@ -1626,7 +1627,7 @@ impl App {
                             }
                             let max = self.filtered_tracks().len().saturating_sub(1);
                             self.scroll_offset = (self.scroll_offset + 1).min(max);
-                            self.fetch_cover_for_scroll_position().await;
+    
                         }
                     }
                     Some(KeyboardAction::AddToQueue) => {
@@ -1686,14 +1687,14 @@ impl App {
                     Some(KeyboardAction::JumpToStart) => {
                         if self.current_tab == Tab::Library && !self.library_pane_focus {
                             self.scroll_offset = 0;
-                            self.fetch_cover_for_scroll_position().await;
+    
                         }
                     }
                     Some(KeyboardAction::JumpToEnd) => {
                         if self.current_tab == Tab::Library && !self.library_pane_focus {
                             let max = self.filtered_tracks().len().saturating_sub(1);
                             self.scroll_offset = max;
-                            self.fetch_cover_for_scroll_position().await;
+    
                         }
                     }
                     Some(KeyboardAction::EditMetadata) => {
@@ -1724,9 +1725,7 @@ impl App {
                     None => {
                         match key.code {
                             KeyCode::Char('q') => {
-                                if self.show_tag_popup {
-                                    self.show_tag_popup = false;
-                                } else if self.browse_detail.is_some() {
+                                if self.browse_detail.is_some() {
                                     self.browse_detail = None;
                                     self.scroll_offset = 0;
                                 } else {
@@ -1734,15 +1733,10 @@ impl App {
                                 }
                             }
                             KeyCode::Esc => {
-                                if self.show_tag_popup {
-                                    self.show_tag_popup = false;
-                                } else if self.browse_detail.is_some() {
+                                if self.browse_detail.is_some() {
                                     self.browse_detail = None;
                                     self.scroll_offset = 0;
                                 }
-                            }
-                            KeyCode::Char('t') => {
-                                self.show_tag_popup = !self.show_tag_popup;
                             }
                             KeyCode::Char('c') if self.current_tab == Tab::Settings => {
                                 // Toggle crossfade in Settings tab
@@ -1844,6 +1838,13 @@ impl App {
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 let has_input = matches!(self.overlays.top().map(|o| o.id), Some(OverlayId::YTSearch) | Some(OverlayId::SearchLibrary) | Some(OverlayId::CommandPalette));
+                let is_metadata = matches!(self.overlays.top().map(|o| o.id), Some(OverlayId::EditMetadata));
+                if is_metadata {
+                    if self.metadata_field_idx > 0 {
+                        self.metadata_field_idx -= 1;
+                    }
+                    return;
+                }
                 if has_input && key.code != KeyCode::Up {
                     // Add 'k' to the query instead of navigating
                     if let Some(top) = self.overlays.top_mut() {
@@ -1857,7 +1858,7 @@ impl App {
                         let idx = top.selected.min(THEMES.len().saturating_sub(1));
                         self.theme = (THEMES[idx].builder)();
                         self.theme_index = idx;
-                        save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, hover_delay_secs: self.hover_delay_secs });
+                        save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset });
                     }
                 }
                 self.clamp_overlay_selection();
@@ -1865,6 +1866,13 @@ impl App {
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 let has_input = matches!(self.overlays.top().map(|o| o.id), Some(OverlayId::YTSearch) | Some(OverlayId::SearchLibrary) | Some(OverlayId::CommandPalette));
+                let is_metadata = matches!(self.overlays.top().map(|o| o.id), Some(OverlayId::EditMetadata));
+                if is_metadata {
+                    if self.metadata_field_idx < 6 {
+                        self.metadata_field_idx += 1;
+                    }
+                    return;
+                }
                 if has_input && key.code != KeyCode::Down {
                     // Add 'j' to the query instead of navigating
                     if let Some(top) = self.overlays.top_mut() {
@@ -1878,11 +1886,36 @@ impl App {
                         let idx = top.selected.min(THEMES.len().saturating_sub(1));
                         self.theme = (THEMES[idx].builder)();
                         self.theme_index = idx;
-                        save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, hover_delay_secs: self.hover_delay_secs });
+                        save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset });
                     }
                 }
                 self.clamp_overlay_selection();
                 self.apply_eq_on_navigation().await;
+            }
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if matches!(self.overlays.top().map(|o| o.id), Some(OverlayId::EditMetadata)) {
+                    if let Some(track_id) = self.metadata_edit_track_id {
+                        let title = self.metadata_fields[0].clone();
+                        let artist = self.metadata_fields[1].clone();
+                        let album = self.metadata_fields[2].clone();
+                        let genre = self.metadata_fields[4].clone();
+                        let year = self.metadata_fields[5].parse::<i32>().ok();
+                        let track_number = self.metadata_fields[6].parse::<i32>().ok();
+                        let client = self.client.clone();
+                        let ipc_tx = self.ipc_tx.clone();
+                        tokio::spawn(async move {
+                            let _ = client.library_update_metadata(
+                                track_id,
+                                Some(title), Some(artist),
+                                Some(album), Some(genre),
+                                year, track_number,
+                            ).await;
+                            let _ = ipc_tx.send(IpcResult::Notification("Metadata saved".to_string(), NotificationKind::Success));
+                        });
+                        self.metadata_edit_track_id = None;
+                    }
+                    self.overlays.close_top();
+                }
             }
             KeyCode::Enter => {
                 // Dispatch based on overlay type
@@ -1973,12 +2006,9 @@ impl App {
                                     self.pending_quit = true;
                                 } else if label.starts_with("tab cycle") {
                                     self.current_tab = match self.current_tab {
-                                        Tab::NowPlaying => Tab::Library,
                                         Tab::Library => Tab::Settings,
-                                        Tab::Settings => Tab::NowPlaying,
+                                        Tab::Settings => Tab::Library,
                                     };
-                                } else if label.starts_with("nowplaying") {
-                                    self.current_tab = Tab::NowPlaying;
                                 } else if label.starts_with("library") {
                                     self.current_tab = Tab::Library;
                                 } else if label.starts_with("settings") {
@@ -2037,7 +2067,7 @@ impl App {
                             let idx = top.selected.min(THEMES.len().saturating_sub(1));
                             self.theme = (THEMES[idx].builder)();
                             self.theme_index = idx;
-                            save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset, hover_delay_secs: self.hover_delay_secs });
+                            save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg, footer_preset: self.footer_preset });
                             self.overlays.close_top();
                         }
                         OverlayId::SearchLibrary => {
@@ -2078,27 +2108,31 @@ impl App {
                             }
                         }
                         OverlayId::EditMetadata => {
-                            if let Some(track_id) = self.metadata_edit_track_id {
-                                let title = self.metadata_fields[0].clone();
-                                let artist = self.metadata_fields[1].clone();
-                                let album = self.metadata_fields[2].clone();
-                                let genre = self.metadata_fields[4].clone();
-                                let year = self.metadata_fields[5].parse::<i32>().ok();
-                                let track_number = self.metadata_fields[6].parse::<i32>().ok();
-                                let client = self.client.clone();
-                                let ipc_tx = self.ipc_tx.clone();
-                                tokio::spawn(async move {
-                                    let _ = client.library_update_metadata(
-                                        track_id,
-                                        Some(title), Some(artist),
-                                        Some(album), Some(genre),
-                                        year, track_number,
-                                    ).await;
-                                    let _ = ipc_tx.send(IpcResult::Notification("Metadata saved".to_string(), NotificationKind::Success));
-                                });
-                                self.metadata_edit_track_id = None;
+                            if self.metadata_field_idx < 6 {
+                                self.metadata_field_idx += 1;
+                            } else {
+                                if let Some(track_id) = self.metadata_edit_track_id {
+                                    let title = self.metadata_fields[0].clone();
+                                    let artist = self.metadata_fields[1].clone();
+                                    let album = self.metadata_fields[2].clone();
+                                    let genre = self.metadata_fields[4].clone();
+                                    let year = self.metadata_fields[5].parse::<i32>().ok();
+                                    let track_number = self.metadata_fields[6].parse::<i32>().ok();
+                                    let client = self.client.clone();
+                                    let ipc_tx = self.ipc_tx.clone();
+                                    tokio::spawn(async move {
+                                        let _ = client.library_update_metadata(
+                                            track_id,
+                                            Some(title), Some(artist),
+                                            Some(album), Some(genre),
+                                            year, track_number,
+                                        ).await;
+                                        let _ = ipc_tx.send(IpcResult::Notification("Metadata saved".to_string(), NotificationKind::Success));
+                                    });
+                                    self.metadata_edit_track_id = None;
+                                }
+                                self.overlays.close_top();
                             }
-                            self.overlays.close_top();
                         }
                         _ => {}
                     }
@@ -2195,30 +2229,6 @@ impl App {
                 let idx = top.selected.min(presets.len() - 1);
                 self.send_high(TuiCommand::SetEqPreset(presets[idx]));
                 self.state.eq_preset = presets[idx];
-            }
-        }
-    }
-
-    async fn fetch_cover_for_scroll_position(&mut self) {
-        if self.show_tag_popup || no_image_protocol() {
-            return;
-        }
-        let items = self.filtered_tracks();
-        if let Some(track) = items.get(self.scroll_offset) {
-            let tid = track.id;
-            if self.scroll_cover_track_id != Some(tid) {
-                self.scroll_cover_track_id = Some(tid);
-                self.scroll_cover = None;
-                self.scroll_cover_stateful = None;
-                let client2 = self.client.clone();
-                let ipc_tx2 = self.ipc_tx.clone();
-                tokio::spawn(async move {
-                    if let Ok(Some(b64)) = client2.get_cover_art(tid).await {
-                        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                            let _ = ipc_tx2.send(IpcResult::ScrollCoverArt(Some(bytes), Some(tid)));
-                        }
-                    }
-                });
             }
         }
     }

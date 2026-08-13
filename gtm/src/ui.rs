@@ -21,7 +21,6 @@ use crate::app::{App, InputMode, LIBRARY_CATEGORIES};
 use crate::overlay::OverlayId;
 use crate::theme::THEMES;
 use gtm_core::state::{EqPreset, Tab};
-use gtm_core::track::TrackInfo;
 
 pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = socket
@@ -130,13 +129,12 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
             .style(ratatui::style::Style::default().bg(app.theme.bg)),
         area,
     );
-    // help bar only shows on Now Playing tab, hidden during overlays
-    let show_help = app.current_tab == Tab::NowPlaying && !app.overlays.is_open();
+    // help bar shows on Library tab, hidden during overlays
+    let show_help = app.current_tab == Tab::Library && !app.overlays.is_open();
     let help_height: u16 = if show_help { 1 } else { 0 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
             Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(help_height),
@@ -144,69 +142,24 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
         ])
         .split(area);
 
-    render_tabs(f, chunks[0], app);
-    render_notifications(f, chunks[1], app);
-    render_content(f, chunks[2], app);
+    render_notifications(f, chunks[0], app);
+    render_content(f, chunks[1], app);
     if show_help {
-        render_help_bar(f, chunks[3], app);
+        render_help_bar(f, chunks[2], app);
     }
-    render_footer(f, chunks[4], app);
+    render_footer(f, chunks[3], app);
+
+    // Track info popup on Library tab
+    if app.current_tab == Tab::Library && app.track_popup_visible && !app.overlays.is_open() {
+        render_track_popup(f, chunks[1], app);
+    }
 
     // Render overlays on top of everything
     if app.overlays.is_open() {
         render_overlay(f, area, app);
     }
 
-    // Floating hover info popup after 3s
-    if app.show_hover_info && !app.overlays.is_open() {
-        render_hover_popup(f, area, app);
-    }
 
-
-}
-
-// ─── Tab Bar ───
-
-fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let version = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0");
-    let tab_items = [("1", "▶ Now Playing", Tab::NowPlaying), ("2", "♫ Library", Tab::Library), ("3", "⚙ Settings", Tab::Settings)];
-
-    let mut span_data: Vec<(bool, String)> = Vec::new();
-    for (num, name, tab) in &tab_items {
-        let label = format!("[{}] {}  ", num, name);
-        span_data.push((*tab == app.current_tab, label));
-    }
-
-    let mut spans: Vec<Span> = vec![Span::raw(" ")];
-    for (is_active, label) in &span_data {
-        if *is_active {
-            spans.push(Span::styled(
-                label.clone(),
-                Style::default()
-                    .fg(app.theme.tab_active_fg)
-                    .bg(app.theme.tab_active_bg)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        } else {
-            spans.push(Span::styled(label.clone(), Style::default().fg(app.theme.tab_inactive_fg)));
-        }
-    }
-
-    let version_str = format!("gtm {version}");
-    let remaining = area.width.saturating_sub(3);
-    let pad = remaining.saturating_sub(spans.iter().map(|s| s.width() as u16).sum::<u16>());
-    if pad > version_str.len() as u16 + 1 {
-        spans.push(Span::raw(" ".repeat((pad - version_str.len() as u16) as usize)));
-        spans.push(Span::styled(version_str, Style::default().fg(app.theme.fg)));
-    }
-
-    let tab_line = Paragraph::new(Line::from(spans))
-        .style(Style::default().bg(app.theme.tab_bar_bg));
-    f.render_widget(tab_line, Rect { x: area.x, y: area.y, width: area.width, height: 1 });
-
-    let sep = Paragraph::new("─".repeat(area.width as usize))
-        .style(Style::default().fg(app.theme.border));
-    f.render_widget(sep, Rect { x: area.x, y: area.y + 1, width: area.width, height: 1 });
 }
 
 fn render_notifications(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -235,7 +188,6 @@ fn render_content(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         return;
     }
     match app.current_tab {
-        Tab::NowPlaying => render_now_playing(f, area, app),
         Tab::Library => render_library(f, area, app),
         Tab::Settings => render_settings(f, area, app),
     }
@@ -246,141 +198,6 @@ fn render_help_bar(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let para = Paragraph::new(text)
         .style(Style::default().fg(app.theme.fg_dim));
     f.render_widget(para, area);
-}
-
-fn render_now_playing(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    if app.show_tag_popup {
-        return render_track_info_popup(f, area, app);
-    }
-    if app.state.current_track.is_none() {
-        let p = Paragraph::new("No track playing")
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(app.theme.fg));
-        f.render_widget(p, area);
-        return;
-    }
-
-    let cover_h = 12u16.min(area.height.saturating_sub(2) / 2);
-    let cover_w = (cover_h * 2).min(area.width / 3);
-    let vchunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(cover_h), Constraint::Min(0)])
-        .margin(1)
-        .split(area);
-
-    let hchunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(cover_w),
-            Constraint::Length(2),
-            Constraint::Min(0),
-        ])
-        .split(vchunks[0]);
-
-    // ── Cover Art ──
-    let cover_area = hchunks[0];
-    render_cover(
-        f,
-        cover_area,
-        app.cover_stateful.as_mut(),
-        app.current_cover.as_deref(),
-        app.theme.fg,
-    );
-
-    let track = app.state.current_track.as_ref().unwrap();
-
-    // ── Info + Progress (right column) ──
-    let right = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),  // NOW PLAYING header
-            Constraint::Length(1),  // separator
-            Constraint::Length(1),  // title
-            Constraint::Length(1),  // artist
-            Constraint::Length(1),  // format chip
-            Constraint::Length(1),  // album
-            Constraint::Length(1),  // progress bar
-        ])
-        .split(hchunks[2]);
-
-    // NOW PLAYING header
-    let header = Paragraph::new("NOW PLAYING")
-        .style(Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD));
-    f.render_widget(header, right[0]);
-
-    // Separator
-    let sep = Paragraph::new("─".repeat(right[1].width as usize))
-        .style(Style::default().fg(app.theme.fg));
-    f.render_widget(sep, right[1]);
-
-    // Track title (fallback to filename)
-    let display_title = if track.title.is_empty() {
-        std::path::Path::new(&track.path)
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_default()
-    } else {
-        track.title.clone()
-    };
-    let fav_prefix = if track.favourite { "\u{2665} " } else { "" };
-    let title = Paragraph::new(Line::from(vec![
-        Span::styled(fav_prefix, Style::default().fg(app.theme.error)),
-        Span::styled(&display_title, Style::default().fg(app.theme.fg_bright).add_modifier(Modifier::BOLD)),
-    ]));
-    f.render_widget(title, right[2]);
-
-    // Artist
-    let display_artist = if track.artist.is_empty() { "Unknown" } else { &track.artist };
-    let artist = Paragraph::new(Line::from(vec![
-        Span::styled("Artist: ", Style::default().fg(app.theme.fg)),
-        Span::styled(display_artist, Style::default().fg(app.theme.fg_bright)),
-    ]));
-    f.render_widget(artist, right[3]);
-
-    // Format chip
-    let fmt_parts: Vec<String> = {
-        let mut p = Vec::new();
-        if let Some(b) = track.bitrate { p.push(format!("{}kbps", b)); }
-        if let Some(s) = track.samplerate { p.push(format!("{}kHz", (s as f64 / 1000.0).round() as u32)); }
-        p
-    };
-    let format_chip = if !fmt_parts.is_empty() {
-        format!("Format: [ {} ]", fmt_parts.join(" | "))
-    } else {
-        String::new()
-    };
-    if !format_chip.is_empty() {
-        let fmt = Paragraph::new(Line::from(vec![
-            Span::styled("Format: ", Style::default().fg(app.theme.fg)),
-            Span::styled(fmt_parts.join(" | "), Style::default().fg(app.theme.accent)),
-        ]));
-        f.render_widget(fmt, right[4]);
-    }
-
-    // Album
-    let display_album = if track.album.is_empty() { "Unknown" } else { &track.album };
-    let album = Paragraph::new(Line::from(vec![
-        Span::styled("Album:  ", Style::default().fg(app.theme.fg)),
-        Span::styled(display_album, Style::default().fg(app.theme.fg_bright)),
-    ]));
-    f.render_widget(album, right[5]);
-
-    // Hashtag progress bar with timestamps inline
-    let dur = track.duration;
-    let pos = app.display_position;
-    let pos_str = format_duration(pos as u64);
-    let dur_str = format_duration(dur as u64);
-    let ratio = if dur > 0.0 { (pos / dur) as f64 } else { 0.0 };
-    let ts_str = format!("{} / {}", pos_str, dur_str);
-    let max_bar = (area.width as f64 * 0.5) as usize;
-    let bar_width = (right[6].width.saturating_sub(2) as usize).min(max_bar);
-    let bar = render_progress_variant(ratio, bar_width, app);
-    let bar_with_ts = format!("{} {}", bar, ts_str);
-    let bar_para = Paragraph::new(bar_with_ts)
-        .style(Style::default().fg(app.theme.accent));
-    f.render_widget(bar_para, right[6]);
-
-
 }
 
 fn render_cover(
@@ -476,18 +293,170 @@ fn centered_scroll(sel: usize, available: usize, total: usize) -> (usize, usize)
 }
 
 fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let version = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0");
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(1), Constraint::Length(1)])
+        .constraints([Constraint::Length(8), Constraint::Min(1)])
         .split(area);
+
+    let np_area = chunks[0];
 
     let panes = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Length(28), Constraint::Min(0)])
-        .split(chunks[0]);
+        .split(chunks[1]);
 
-    let stats_area = chunks[1];
     let left_focus = app.library_pane_focus;
+
+    // ── Now Playing section ──
+    {
+        let np_block = Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" Now Playing  ·  gtm {} ", version))
+            .border_type(BorderType::Plain)
+            .border_style(Style::default().fg(app.theme.border));
+
+        if app.state.current_track.is_none() {
+            let inner = np_block.inner(np_area);
+            f.render_widget(np_block, np_area);
+            let msg = Paragraph::new("No track playing")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(app.theme.fg_dim));
+            f.render_widget(msg, inner);
+        } else {
+            let inner = np_block.inner(np_area);
+            f.render_widget(np_block, np_area);
+
+            const COVER_W: u16 = 12;
+            const COVER_H: u16 = 6;
+
+            if inner.width >= COVER_W + 4 {
+                // Cover on the LEFT, info on the RIGHT
+                let hchunks = Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Length(COVER_W), Constraint::Min(0)])
+                    .split(inner);
+
+                let cover_area = Rect {
+                    x: hchunks[0].x,
+                    y: hchunks[0].y,
+                    width: hchunks[0].width,
+                    height: COVER_H.min(hchunks[0].height),
+                };
+                render_cover(
+                    f,
+                    cover_area,
+                    app.cover_stateful.as_mut(),
+                    app.current_cover.as_deref(),
+                    app.theme.fg,
+                );
+
+                let info_area = hchunks[0];
+                let track = app.state.current_track.as_ref().unwrap();
+
+                let info_chunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Min(0),
+                    ])
+                    .split(info_area);
+
+                // Row 0: animated title (fav icon + artist — title)
+                let display_title = if track.title.is_empty() {
+                    std::path::Path::new(&track.path)
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                } else {
+                    track.title.clone()
+                };
+                let display_artist = if track.artist.is_empty() { "Unknown" } else { &track.artist };
+                let fav_prefix = if track.favourite { "\u{2665} " } else { "" };
+                let title_text = format!("{}{} \u{2014} {}", fav_prefix, display_artist, display_title);
+                let title_avail = info_chunks[0].width as usize;
+                let animated_title = scroll_text(&title_text, title_avail, app.np_title_scroll, true);
+                let title_para = Paragraph::new(Line::from(vec![
+                    Span::styled(&animated_title, Style::default().fg(app.theme.fg_bright).add_modifier(Modifier::BOLD)),
+                ]));
+                f.render_widget(title_para, info_chunks[0]);
+
+                // Row 1: Artist
+                let artist_para = Paragraph::new(Line::from(vec![
+                    Span::styled("Artist: ", Style::default().fg(app.theme.fg)),
+                    Span::styled(display_artist, Style::default().fg(app.theme.fg_bright)),
+                ]));
+                f.render_widget(artist_para, info_chunks[1]);
+
+                // Row 2: Album
+                let display_album = if track.album.is_empty() { "Unknown" } else { &track.album };
+                let album_para = Paragraph::new(Line::from(vec![
+                    Span::styled("Album: ", Style::default().fg(app.theme.fg)),
+                    Span::styled(display_album, Style::default().fg(app.theme.fg_bright)),
+                ]));
+                f.render_widget(album_para, info_chunks[2]);
+
+                // Row 3: Progress bar + timestamps
+                let dur = track.duration;
+                let pos = app.display_position;
+                let pos_str = format_duration(pos as u64);
+                let dur_str = format_duration(dur as u64);
+                let ratio = if dur > 0.0 { (pos / dur) as f64 } else { 0.0 };
+                let ts_str = format!("{} / {}", pos_str, dur_str);
+                let bar_width = (info_chunks[3].width.saturating_sub(ts_str.len() as u16 + 2) as usize).min(40);
+                let bar = render_progress_variant(ratio, bar_width, app);
+                let bar_with_ts = format!("{} {}", bar, ts_str);
+                let bar_para = Paragraph::new(bar_with_ts)
+                    .style(Style::default().fg(app.theme.accent));
+                f.render_widget(bar_para, info_chunks[3]);
+            } else {
+                // Terminal too narrow for cover — just show info text
+                let track = app.state.current_track.as_ref().unwrap();
+                let display_title = if track.title.is_empty() {
+                    std::path::Path::new(&track.path)
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                } else {
+                    track.title.clone()
+                };
+                let display_artist = if track.artist.is_empty() { "Unknown" } else { &track.artist };
+                let fav_prefix = if track.favourite { "\u{2665} " } else { "" };
+                let title_text = format!("{}{} \u{2014} {}", fav_prefix, display_artist, display_title);
+                let title_avail = inner.width as usize;
+                let animated_title = scroll_text(&title_text, title_avail, app.np_title_scroll, true);
+                let title_para = Paragraph::new(Line::from(vec![
+                    Span::styled(&animated_title, Style::default().fg(app.theme.fg_bright).add_modifier(Modifier::BOLD)),
+                ]));
+                f.render_widget(title_para, Rect { x: inner.x, y: inner.y, width: inner.width, height: 1 });
+
+                let display_album = if track.album.is_empty() { "Unknown" } else { &track.album };
+                let album_para = Paragraph::new(Line::from(vec![
+                    Span::styled("Album: ", Style::default().fg(app.theme.fg)),
+                    Span::styled(display_album, Style::default().fg(app.theme.fg_bright)),
+                ]));
+                let album_area = Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 };
+                f.render_widget(album_para, album_area);
+
+                let dur = track.duration;
+                let pos = app.display_position;
+                let pos_str = format_duration(pos as u64);
+                let dur_str = format_duration(dur as u64);
+                let ratio = if dur > 0.0 { (pos / dur) as f64 } else { 0.0 };
+                let ts_str = format!("{} / {}", pos_str, dur_str);
+                let bar_width = (inner.width.saturating_sub(ts_str.len() as u16 + 2) as usize).min(40);
+                let bar = render_progress_variant(ratio, bar_width, app);
+                let bar_with_ts = format!("{} {}", bar, ts_str);
+                let bar_para = Paragraph::new(bar_with_ts)
+                    .style(Style::default().fg(app.theme.accent));
+                let bar_area = Rect { x: inner.x, y: inner.y + 2, width: inner.width, height: 1 };
+                f.render_widget(bar_para, bar_area);
+            }
+        }
+    }
 
     // ── Left pane: categories with icons ──
     let lib_icons = if use_nerd_fonts() { LIBRARY_ICONS_NERD } else { LIBRARY_ICONS_ASCII };
@@ -546,7 +515,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         }
     }
 
-    // ── Right pane: browse list or track table ──
+    // ── Stats at bottom of left pane ──
     let category_label = LIBRARY_CATEGORIES.get(app.library_category).unwrap_or(&"All Tracks");
 
     let (right_lines, stats_line) = if app.browse_detail.is_some() {
@@ -577,7 +546,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             let is_sel = real_i == sel && !left_focus;
             let label = if track.artist.is_empty() { track.title.clone() } else { format!("{}  {}", track.artist, track.title) };
             let avail = pane_w.saturating_sub(2);
-            let display_label = scroll_text(&label, avail, app.title_scroll, is_sel);
+            let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
             let prefix = if is_current { "> " } else if is_sel { "  " } else { "  " };
             let row = format!("{}{}", prefix, display_label);
             let style = if is_current {
@@ -666,7 +635,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         }
         (lines, st_line)
     } else {
-        // All Tracks or other: flat track table (no bitrate column)
+        // All Tracks or other: flat track table
         let (total_len, total_dur) = {
             let f = app.filtered_tracks();
             let dur: u64 = f.iter().map(|t| t.duration as u64).sum();
@@ -695,7 +664,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             let is_sel = real_i == sel && !left_focus;
             let label = if track.artist.is_empty() { track.title.clone() } else { format!("{}  {}", track.artist, track.title) };
             let avail = pane_w.saturating_sub(2);
-            let display_label = scroll_text(&label, avail, app.title_scroll, is_sel);
+            let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
             let prefix = if is_current { "> " } else if is_sel { "  " } else { "  " };
             let row = format!("{}{}", prefix, display_label);
             let style = if is_current {
@@ -709,6 +678,21 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         }
         (lines, st_line)
     };
+
+    // Render stats at the bottom of the left pane
+    if left_inner.height > 0 {
+        let stats_y = left_inner.y + left_inner.height - 1;
+        let stats_area = Rect {
+            x: left_inner.x,
+            y: stats_y,
+            width: left_inner.width,
+            height: 1,
+        };
+        let stats = Paragraph::new(Line::from(vec![
+            Span::styled(stats_line.trim(), Style::default().fg(app.theme.fg_dim)),
+        ]));
+        f.render_widget(stats, stats_area);
+    }
 
     let right_para = Paragraph::new(right_lines);
     let right_block = Block::default()
@@ -724,13 +708,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let inner = right_block.inner(panes[1]);
     f.render_widget(right_block, panes[1]);
     f.render_widget(right_para, inner);
-
-    // ── Stats bar ──
-    let stats = Paragraph::new(Line::from(vec![
-        Span::raw("  "),
-        Span::styled(stats_line, Style::default().fg(app.theme.fg)),
-    ]));
-    f.render_widget(stats, stats_area);
 }
 
 const SETTINGS_ICONS_NERD: &[&str] = &["\u{f028}", "\u{f16a}", "\u{f04b}", "\u{f013}", "\u{f1bc}"];
@@ -816,13 +793,11 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         }
         3 => {
             let preset_name = crate::footer::presets().get(app.footer_preset).map(|p| p.name).unwrap_or("Default");
-            let hover_str = if app.hover_delay_secs == 0 { "Immediate".to_string() } else { format!("{}s", app.hover_delay_secs) };
             vec![
                 "Theme           [ Cyberdeck  ▶ ]".to_string(),
                 format!("Transparent BG  [ {} ]", if app.transparent_bg { "●" } else { "○" }),
                 "Sync Covers     [ Enter  ▶ ]".to_string(),
                 format!("Footer Preset   [ {:>8} ▶ ]", preset_name),
-                format!("Hover Delay     [ {:>9} ]", hover_str),
             ]
         },
         4 => vec!["Spotify Status  [ Disconnected ▶ ]".to_string()],
@@ -878,7 +853,6 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         (3, 1) => lines.push(Line::from(Span::styled(" Transparent BG: Press Enter to toggle. When on, overlay backgrounds become transparent.", Style::default().fg(app.theme.fg)))),
         (3, 2) => lines.push(Line::from(Span::styled(" Sync Covers: Download missing cover art from Deezer for all library tracks.", Style::default().fg(app.theme.fg)))),
         (3, 3) => lines.push(Line::from(Span::styled(" Footer Preset: Press Enter to cycle (Default, Minimal, Full). Also toggled via Alt+F.", Style::default().fg(app.theme.fg)))),
-        (3, 4) => lines.push(Line::from(Span::styled(" Hover Delay: Delay before track info popup appears (0s = immediate, max 5s).", Style::default().fg(app.theme.fg)))),
         (4, 0) => lines.push(Line::from(Span::styled(" Spotify: Integration status — requires daemon restart.", Style::default().fg(app.theme.fg)))),
         _ => {}
     }
@@ -1218,6 +1192,134 @@ pub fn render_progress_variant(ratio: f64, width: usize, app: &App) -> String {
     line
 }
 
+/// Floating track info popup shown when scrolling in the Library list.
+fn render_track_popup(f: &mut ratatui::Frame, content_area: Rect, app: &App) {
+    let track_id = match app.track_popup_track_id {
+        Some(id) => id,
+        None => return,
+    };
+    let track = match app.tracks_cache.iter().find(|t| t.id == track_id) {
+        Some(t) => t,
+        None => return,
+    };
+
+    let has_cover = app.track_popup_cover.is_some();
+    const COVER_W: u16 = 6;
+    const COVER_H: u16 = 6;
+    let text_margin = 2u16;
+
+    let popup_w = if has_cover {
+        (COVER_W + 1 + 38 + text_margin).min(content_area.width.saturating_sub(2))
+    } else {
+        48u16.min(content_area.width.saturating_sub(4))
+    };
+    let popup_h = if has_cover { COVER_H + 2 } else { 7u16 };
+    if popup_w < 20 || popup_h > content_area.height {
+        return;
+    }
+
+    // Position at bottom-right of content area
+    let popup_x = content_area.x + content_area.width.saturating_sub(popup_w + 1);
+    let popup_y = content_area.y + content_area.height.saturating_sub(popup_h + 1);
+    let popup_area = Rect { x: popup_x, y: popup_y, width: popup_w, height: popup_h };
+
+    let display_title = if track.title.is_empty() {
+        std::path::Path::new(&track.path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default()
+    } else {
+        track.title.clone()
+    };
+    let display_artist = if track.artist.is_empty() { "Unknown" } else { &track.artist };
+    let display_album = if track.album.is_empty() { "Unknown" } else { &track.album };
+    let dur = format_duration(track.duration as u64);
+    let fav = if track.favourite { " \u{2665}" } else { "" };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Plain)
+        .title(format!(" Track Info{} ", fav))
+        .border_style(Style::default().fg(app.theme.accent))
+        .style(Style::default().bg(app.theme.overlay_bg));
+
+    let inner = block.inner(popup_area);
+    f.render_widget(Clear, popup_area);
+    f.render_widget(block, popup_area);
+
+    if has_cover && inner.width > COVER_W + 1 {
+        // Side-by-side: cover on left, text on right
+        let split = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(COVER_W + 1), Constraint::Min(0)])
+            .split(inner);
+
+        let cover_area = Rect {
+            x: split[0].x,
+            y: split[0].y,
+            width: COVER_W,
+            height: COVER_H.min(split[0].height),
+        };
+        if let Some(ref cover_bytes) = app.track_popup_cover {
+            render_cover_block(f, cover_area, cover_bytes);
+        }
+
+        let text_area = split[1];
+        let lines = vec![
+            Line::from(Span::styled(
+                format!(" {}", display_title),
+                Style::default().fg(app.theme.fg_bright).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                format!(" {}", display_artist),
+                Style::default().fg(app.theme.fg),
+            )),
+            Line::from(Span::styled(
+                format!(" {}", display_album),
+                Style::default().fg(app.theme.fg),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!(" Duration: {}", dur),
+                Style::default().fg(app.theme.fg_dim),
+            )),
+            Line::from(Span::styled(
+                format!(" Path: {}", track.path),
+                Style::default().fg(app.theme.fg_dim),
+            )),
+        ];
+        let para = Paragraph::new(lines);
+        f.render_widget(para, text_area);
+    } else {
+        // Text only (no cover or too narrow)
+        let lines = vec![
+            Line::from(Span::styled(
+                format!("  {}", display_title),
+                Style::default().fg(app.theme.fg_bright).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                format!("  {}", display_artist),
+                Style::default().fg(app.theme.fg),
+            )),
+            Line::from(Span::styled(
+                format!("  {}", display_album),
+                Style::default().fg(app.theme.fg),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                format!("  Duration: {}", dur),
+                Style::default().fg(app.theme.fg_dim),
+            )),
+            Line::from(Span::styled(
+                format!("  Path: {}", track.path),
+                Style::default().fg(app.theme.fg_dim),
+            )),
+        ];
+        let para = Paragraph::new(lines);
+        f.render_widget(para, inner);
+    }
+}
+
 fn render_about_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let version = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0");
     let commit = option_env!("VERGEN_GIT_SHA").unwrap_or("unknown");
@@ -1312,9 +1414,8 @@ fn render_help_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
         "   /            Filter mode",
         "",
         " Navigation",
-        "   Tab          Next tab",
-        "   Shift+Tab    Previous tab",
-        "   1-3          Switch to tab 1-3",
+        "   Tab          Toggle left/right pane focus",
+        "   1 / 2        Switch to Library / Settings",
         "   j/k / arrows Move up/down",
         "   h/l          Focus left/right pane",
         "   ?            Toggle this help",
@@ -1429,9 +1530,8 @@ pub const COMMAND_PALETTE_COMMANDS: &[&str] = &[
     "Shuffle      [S]",
     "Quit         [Q]",
     "Tab Cycle    [Tab]",
-    "NowPlaying   [1]",
-    "Library      [2]",
-    "Settings     [3]",
+    "Library      [1]",
+    "Settings     [2]",
     "Search       [/]",
     "Queue O/L    [Alt+Q]",
     "YouTube O/L  [Alt+Y]",
@@ -1639,85 +1739,6 @@ fn render_theme_picker_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(list, area);
 }
 
-fn render_track_info_popup(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let Some(ref track) = app.state.current_track else {
-        let p = Paragraph::new("No track playing")
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(app.theme.fg_dim));
-        f.render_widget(p, area);
-        return;
-    };
-
-    let fav_symbol = if track.favourite { "\u{2665}" } else { "\u{2661}" };
-    let fmt_parts: Vec<String> = {
-        let mut p = Vec::new();
-        if let Some(b) = track.bitrate { p.push(format!("{}kbps", b)); }
-        if let Some(s) = track.samplerate { p.push(format!("{}kHz", (s as f64 / 1000.0).round() as u32)); }
-        p
-    };
-    let format_str = if fmt_parts.is_empty() { "Unknown".into() } else { fmt_parts.join(" | ") };
-    let genre_str = if track.genre.is_empty() { "Unknown".into() } else { track.genre.clone() };
-    let year_str = track.year.map(|y| y.to_string()).unwrap_or_else(|| "Unknown".into());
-    let track_num = track.track_number.map(|n| n.to_string()).unwrap_or_else(|| "-".into());
-    let pos = format_duration(app.display_position as u64);
-    let dur = format_duration(track.duration as u64);
-
-    let lines = vec![
-        Line::from(Span::styled(" Track Info", Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD))),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled(" Title:   ", Style::default().fg(app.theme.fg_dim)),
-            Span::styled(&track.title, Style::default().fg(app.theme.fg_bright).add_modifier(Modifier::BOLD)),
-        ]),
-        Line::from(vec![
-            Span::styled(" Artist:  ", Style::default().fg(app.theme.fg_dim)),
-            Span::styled(&track.artist, Style::default().fg(app.theme.fg)),
-        ]),
-        Line::from(vec![
-            Span::styled(" Album:   ", Style::default().fg(app.theme.fg_dim)),
-            Span::styled(&track.album, Style::default().fg(app.theme.fg)),
-        ]),
-        Line::from(vec![
-            Span::styled(" Genre:   ", Style::default().fg(app.theme.fg_dim)),
-            Span::styled(genre_str, Style::default().fg(app.theme.fg)),
-        ]),
-        Line::from(vec![
-            Span::styled(" Year:    ", Style::default().fg(app.theme.fg_dim)),
-            Span::styled(year_str, Style::default().fg(app.theme.fg)),
-        ]),
-        Line::from(vec![
-            Span::styled(" Track #: ", Style::default().fg(app.theme.fg_dim)),
-            Span::styled(track_num, Style::default().fg(app.theme.fg)),
-        ]),
-        Line::from(vec![
-            Span::styled(" Format:  ", Style::default().fg(app.theme.fg_dim)),
-            Span::styled(format_str, Style::default().fg(app.theme.accent)),
-        ]),
-        Line::from(vec![
-            Span::styled(" Favourite:", Style::default().fg(app.theme.fg_dim)),
-            Span::styled(format!(" {}", fav_symbol), Style::default().fg(if track.favourite { app.theme.error } else { app.theme.fg_dim })),
-        ]),
-        Line::from(vec![
-            Span::styled(" Progress:", Style::default().fg(app.theme.fg_dim)),
-            Span::styled(format!(" {} / {}", pos, dur), Style::default().fg(app.theme.fg)),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled(" [t] Close  ", Style::default().fg(app.theme.fg_dim))),
-    ];
-
-    let p = Paragraph::new(lines)
-        .alignment(Alignment::Left)
-        .style(Style::default().bg(app.theme.overlay_bg));
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Track Info ")
-        .border_type(BorderType::Plain)
-        .style(Style::default().bg(app.theme.overlay_bg));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-    f.render_widget(p, inner);
-}
-
 /// Return the local time as " HH:MM " using the system clock.
 pub fn local_time_str() -> String {
     let now = chrono::Local::now();
@@ -1756,103 +1777,6 @@ const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦
 #[allow(dead_code)]
 pub fn braille_spinner(frame: usize) -> char {
     SPINNER_FRAMES[frame % SPINNER_FRAMES.len()]
-}
-
-/// Floating hover info popup — appears after 3s of no key press.
-fn render_hover_popup(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    // Use scroll_cover_stateful in Library tab (so cover follows scroll),
-    // otherwise use the currently playing track's cover.
-    let scroll_cover = app.current_tab == Tab::Library && app.scroll_cover_stateful.is_some();
-    let cover_cols = if scroll_cover || app.cover_stateful.is_some() { 10u16 } else { 0u16 };
-
-    let (display_title, album, artist, duration, bitrate): (String, String, String, String, String) = {
-        let track: Option<&TrackInfo> = match app.current_tab {
-            Tab::NowPlaying => app.state.current_track.as_ref(),
-            Tab::Library | Tab::Settings => {
-                let items = app.filtered_tracks();
-                let idx = app.scroll_offset;
-                items.get(idx).copied()
-            }
-        };
-
-        let track = match track {
-            Some(t) => t,
-            None => return,
-        };
-
-        let display_title = if track.title.is_empty() {
-            std::path::Path::new(&track.path)
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default()
-        } else {
-            track.title.clone()
-        };
-        let album = if track.album.is_empty() { "Unknown Album".to_string() } else { track.album.clone() };
-        let artist = if track.artist.is_empty() { "Unknown Artist".to_string() } else { track.artist.clone() };
-        let duration_secs = track.duration as u64;
-        let duration = format!("{}:{:02}", duration_secs / 60, duration_secs % 60);
-        let bitrate = track.bitrate.map(|b| format!("{} kbps", b)).unwrap_or_else(|| "?".into());
-        (display_title, album, artist, duration, bitrate)
-    };
-
-    let text_rows = 5u16;
-    let popup_w = (cover_cols + 2 + 40).min(area.width.saturating_sub(4));
-    let popup_h = text_rows.max(cover_cols / 2).max(5) + 2;
-    let x = area.width.saturating_sub(popup_w + 2);
-    let y = area.height.saturating_sub(popup_h + 4);
-    let popup_area = Rect::new(x, y, popup_w, popup_h);
-
-    let block = Block::default()
-        .title(" Track Info ")
-        .title_alignment(Alignment::Center)
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(app.theme.accent))
-        .style(Style::default().bg(app.theme.overlay_bg));
-    let inner = block.inner(popup_area);
-    f.render_widget(Clear, popup_area);
-    f.render_widget(block, popup_area);
-
-    if cover_cols > 0 {
-        let hchunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(cover_cols), Constraint::Length(2), Constraint::Min(0)])
-            .split(inner);
-        if scroll_cover {
-            if let Some(ref mut protocol) = app.scroll_cover_stateful {
-                let image = StatefulImage::new();
-                f.render_stateful_widget(image, hchunks[0], protocol);
-            }
-        } else if let Some(ref mut protocol) = app.cover_stateful {
-            let image = StatefulImage::new();
-            f.render_stateful_widget(image, hchunks[0], protocol);
-        }
-        let lines = vec![
-            Line::from(vec![
-                Span::styled("♪ ", Style::default().fg(app.theme.accent)),
-                Span::styled(&display_title, Style::default().fg(app.theme.fg_bright).add_modifier(Modifier::BOLD)),
-            ]),
-            Line::from(Span::styled(&artist, Style::default().fg(app.theme.fg_dim))),
-            Line::from(Span::styled(format!("{}  •  {}", album, duration), Style::default().fg(app.theme.fg))),
-            Line::from(""),
-            Line::from(Span::styled(format!("Bitrate: {}", bitrate), Style::default().fg(app.theme.fg_dim))),
-        ];
-        let para = Paragraph::new(lines).style(Style::default().fg(app.theme.fg));
-        f.render_widget(para, hchunks[2]);
-    } else {
-        let lines = vec![
-            Line::from(vec![
-                Span::styled("♪ ", Style::default().fg(app.theme.accent)),
-                Span::styled(&display_title, Style::default().fg(app.theme.fg_bright).add_modifier(Modifier::BOLD)),
-            ]),
-            Line::from(Span::styled(&artist, Style::default().fg(app.theme.fg_dim))),
-            Line::from(Span::styled(format!("{}  •  {}", album, duration), Style::default().fg(app.theme.fg))),
-            Line::from(""),
-            Line::from(Span::styled(format!("Bitrate: {}", bitrate), Style::default().fg(app.theme.fg_dim))),
-        ];
-        let para = Paragraph::new(lines).style(Style::default().fg(app.theme.fg));
-        f.render_widget(para, inner);
-    }
 }
 
 /// Build a single-line progress bar string in bracket style:
@@ -1979,6 +1903,6 @@ fn render_edit_metadata_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let para = Paragraph::new(lines);
     f.render_widget(para, chunks[0]);
 
-    let help_text = " [Tab] Next field  [Enter] Save  [Esc] Cancel";
+    let help_text = " [j/k] Navigate fields  [Tab] Next  [Enter] Next/Save  [Ctrl+Enter] Save  [Esc] Cancel";
     overlay_help(f, chunks[1], help_text, app);
 }

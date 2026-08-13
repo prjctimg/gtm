@@ -59,6 +59,22 @@ pub enum LibraryAction {
         count: u128,
     },
     SyncCovers,
+    RemoveFromPlaylist {
+        playlist_id: i64,
+        track_id: i64,
+    },
+    RemoveTrack {
+        id: i64,
+    },
+    UpdateMetadata {
+        track_id: i64,
+        title: Option<String>,
+        artist: Option<String>,
+        album: Option<String>,
+        genre: Option<String>,
+        year: Option<i32>,
+        track_number: Option<i32>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

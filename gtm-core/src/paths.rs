@@ -23,10 +23,16 @@ fn is_termux() -> bool {
 /// 5. Last resort: `$HOME/.gtm/gtmd.socket`
 pub fn default_socket_path() -> PathBuf {
     if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
-        return PathBuf::from(runtime).join("gtmd.socket");
+        let p = PathBuf::from(runtime).join("gtmd.socket");
+        if p.parent().map_or(false, |d| d.exists()) {
+            return p;
+        }
     }
     if let Ok(tmpdir) = std::env::var("TMPDIR") {
-        return PathBuf::from(tmpdir).join("gtmd.socket");
+        let p = PathBuf::from(tmpdir).join("gtmd.socket");
+        if p.parent().map_or(false, |d| d.exists()) {
+            return p;
+        }
     }
     if is_termux() {
         if let Ok(prefix) = std::env::var("PREFIX") {
@@ -36,7 +42,11 @@ pub fn default_socket_path() -> PathBuf {
             }
         }
         if let Ok(home) = std::env::var("HOME") {
-            return PathBuf::from(home).join(".gtm").join("gtmd.socket");
+            let p = PathBuf::from(home).join(".gtm").join("gtmd.socket");
+            if let Some(parent) = p.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            return p;
         }
     }
     let tmp = std::env::temp_dir().join("gtmd.socket");
@@ -44,7 +54,11 @@ pub fn default_socket_path() -> PathBuf {
         return tmp;
     }
     if let Ok(home) = std::env::var("HOME") {
-        return PathBuf::from(home).join(".gtm").join("gtmd.socket");
+        let p = PathBuf::from(home).join(".gtm").join("gtmd.socket");
+        if let Some(parent) = p.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        return p;
     }
     tmp
 }
