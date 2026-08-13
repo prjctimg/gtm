@@ -16,6 +16,8 @@ arch="${3:?arch required}"
 
 cd /work
 
+export RUSTFLAGS="-C target-feature=-crt-static"
+
 apk add --no-cache \
   ca-certificates curl build-base cmake musl-dev \
   pkgconfig alsa-lib-dev pandoc

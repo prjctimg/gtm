@@ -30,7 +30,7 @@ entry, and a systemd user service.
 cp -a %{gtm_staging}/. %{buildroot}/
 
 %files
-%license usr/share/licenses/gtm-full/LICENSE
+%{_datadir}/licenses/gtm-full/LICENSE
 %{_bindir}/gtm
 %{_bindir}/gtmd
 %{_userunitdir}/gtmd.service
@@ -66,5 +66,5 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 
 %changelog
-* %{lua:print(strftime("%a %b %d %Y"))} prjctimg <prjctimg@outlook.com> - %{gtm_version}-1
+* %{gtm_changelog_date} prjctimg <prjctimg@outlook.com> - %{gtm_version}-1
 - Initial binary package release

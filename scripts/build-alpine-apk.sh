@@ -43,5 +43,7 @@ depend = alsa-lib
 EOF
 
 # apk is a gzipped tar with .PKGINFO first and data entries prefixed with ./.
-tar -czf "$out" --owner=root --group=root --numeric-owner -C "$root" .
+# The container build runs as root, so no owner/group remapping is needed
+# (busybox tar has no --owner=root).
+tar -czf "$out" --numeric-owner -C "$root" .
 echo "built $out ($(du -h "$out" | cut -f1))"

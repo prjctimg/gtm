@@ -114,6 +114,11 @@ jobs:
     needs: tag
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
+    # Alpine ships no static libasound, so the musl targets must link
+    # dynamically against the container's musl libc and libasound.so.2
+    # (the .apk and archives declare an alsa-lib runtime dependency).
+    env:
+      RUSTFLAGS: ${{ contains(matrix.platform, 'musl') && '-C target-feature=-crt-static' || '' }}
     strategy:
       fail-fast: false
       matrix:
@@ -178,7 +183,14 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
 
       - uses: actions/checkout@v4
-      - uses: Swatinem/rust-cache@v2
+      - name: Cache cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          # Keep each matrix entry's cache isolated: the default key is shared
+          # across all Linux/x64 runners, so e.g. the Android job (ubuntu-latest,
+          # glibc 2.39) could poison the cache of the ubuntu-22.04 (glibc 2.35)
+          # jobs with incompatible host build-script binaries.
+          key: release-${{ matrix.platform }}
 
       - name: Install system dependencies (Linux)
         if: startsWith(matrix.os, 'ubuntu') && matrix.container == null && matrix.family == 'debian'
@@ -228,7 +240,7 @@ jobs:
           cmake --build termux-elf-cleaner/build -j
 
       - name: Build release binaries
-        if: matrix.family != 'android'
+        if: matrix.family != 'android' && matrix.family != 'alpine-arm'
         run: cargo build --release
 
       - name: Build Android release binaries
@@ -244,9 +256,11 @@ jobs:
           termux-elf-cleaner/build/termux-elf-cleaner target/aarch64-linux-android/release/gtm
 
       - name: Generate manpages (pandoc)
+        if: matrix.family != 'alpine-arm'
         run: ./scripts/gen-manpages.sh artifacts
 
       - name: Generate shell completions
+        if: matrix.family != 'alpine-arm'
         run: cargo run --release --bin release-gen completions artifacts
 
       # ── Complete per-target archive (bin + man + completions + service) ──
@@ -306,6 +320,7 @@ jobs:
       # ── Native Linux packages (from a common rootfs-style stage tree) ──
       - name: Build Debian/Ubuntu .deb
         if: matrix.family == 'debian'
+        shell: bash
         run: |
           set -euo pipefail
           version="${{ needs.tag.outputs.version }}"
@@ -360,6 +375,7 @@ jobs:
 
       - name: Build Fedora/RHEL .rpm
         if: matrix.family == 'debian'
+        shell: bash
         run: |
           set -euo pipefail
           version="${{ needs.tag.outputs.version }}"
@@ -368,11 +384,13 @@ jobs:
             --define "_topdir $PWD/rpmbuild" \
             --define "gtm_version $version" \
             --define "gtm_staging $PWD/stage" \
+            --define "gtm_changelog_date $(date -u +'%a %b %d %Y')" \
             dist/gtm-full.spec
           cp rpmbuild/RPMS/*/*.rpm "release-assets/gtm-full-${version}-1.${rpm_arch}.rpm"
 
       - name: Build Arch Linux package
         if: matrix.family == 'debian'
+        shell: bash
         run: |
           set -euo pipefail
           version="${{ needs.tag.outputs.version }}"
@@ -416,6 +434,7 @@ jobs:
 
       - name: Build Alpine .apk
         if: matrix.family == 'alpine'
+        shell: bash
         run: |
           set -euo pipefail
           version="${{ needs.tag.outputs.version }}"
