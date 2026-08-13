@@ -58,6 +58,7 @@ impl DaemonClient {
                         buf: Vec::with_capacity(4096),
                         socket_path: path.clone(),
                         last_event_time: Instant::now(),
+                        consecutive_failures: 0,
                     };
                     tokio::spawn(worker.run());
 
@@ -395,6 +396,34 @@ impl DaemonClient {
         .await
     }
 
+    pub async fn library_remove_from_playlist(&self, playlist_id: i64, track_id: i64) -> Result<u32> {
+        self.send_ok(DaemonReq::Library {
+            action: LibraryAction::RemoveFromPlaylist { playlist_id, track_id },
+        })
+        .await
+    }
+
+    pub async fn library_remove_track(&self, id: i64) -> Result<u32> {
+        self.send_ok(DaemonReq::Library {
+            action: LibraryAction::RemoveTrack { id },
+        })
+        .await
+    }
+
+    pub async fn library_update_metadata(
+        &self, track_id: i64,
+        title: Option<String>, artist: Option<String>,
+        album: Option<String>, genre: Option<String>,
+        year: Option<i32>, track_number: Option<i32>,
+    ) -> Result<u32> {
+        self.send_ok(DaemonReq::Library {
+            action: LibraryAction::UpdateMetadata {
+                track_id, title, artist, album, genre, year, track_number,
+            },
+        })
+        .await
+    }
+
     // ─── Search / Favourites ───
 
     pub async fn search(&self, query: &str) -> Result<DaemonRes> {
@@ -488,16 +517,32 @@ struct IpcWorker {
     buf: Vec<u8>,
     socket_path: std::path::PathBuf,
     last_event_time: Instant,
+    consecutive_failures: u32,
 }
+
+const MAX_CONSECUTIVE_FAILURES: u32 = 3;
 
 impl IpcWorker {
     async fn run(mut self) {
         let mut tmp = [0u8; 4096];
         loop {
-            // Health check: if no events received for 10s, force reconnect
+            // Health check: only force reconnect after MAX_CONSECUTIVE_FAILURES
+            // timeouts, to tolerate brief daemon stalls during prev/next.
             if self.last_event_time.elapsed() > Duration::from_secs(10) {
-                eprintln!("IPC worker: no events for 10s, forcing reconnect");
-                self.reconnect().await;
+                self.consecutive_failures += 1;
+                if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+                    crate::log::log(&format!(
+                        "IPC worker: no events for 10s ({} consecutive), forcing reconnect",
+                        self.consecutive_failures
+                    ));
+                    self.reconnect().await;
+                    self.consecutive_failures = 0;
+                } else {
+                    crate::log::log(&format!(
+                        "IPC worker: no events for 10s ({}/{} failures), waiting",
+                        self.consecutive_failures, MAX_CONSECUTIVE_FAILURES
+                    ));
+                }
                 self.last_event_time = Instant::now();
                 continue;
             }
@@ -506,7 +551,7 @@ impl IpcWorker {
             // events are never starved by a burst of commands.
             if let Ok(pending) = self.cmd_rx.try_recv() {
                 if let Err(e) = self.send_request(pending).await {
-                    eprintln!("IPC worker send error: {e}");
+                    crate::log::log(&format!("IPC worker send error: {e}"));
                     self.reconnect().await;
                     continue;
                 }
@@ -516,11 +561,12 @@ impl IpcWorker {
             match self.read_with_timeout(&mut tmp).await {
                 Ok(true) => {
                     self.last_event_time = Instant::now();
+                    self.consecutive_failures = 0;
                     // Parse all complete frames
                     while let Some(frame) = self.parse().await {
                         match frame {
                             Frame::Response(_) => {
-                                eprintln!("IPC worker: unexpected response with no pending request");
+                                crate::log::log("IPC worker: unexpected response with no pending request");
                                 self.reconnect().await;
                                 continue;
                             }
@@ -530,7 +576,7 @@ impl IpcWorker {
                 }
                 Ok(false) => {} // timeout, loop back to check for requests
                 Err(e) => {
-                    eprintln!("IPC worker read error: {e}");
+                    crate::log::log(&format!("IPC worker read error: {e}"));
                     self.reconnect().await;
                     continue;
                 }
@@ -549,15 +595,15 @@ impl IpcWorker {
                     self.writer = writer;
                     self.buf.clear();
                     self.connected.store(true, Ordering::Release);
-                    eprintln!("IPC worker reconnected");
+                    crate::log::log("IPC worker reconnected");
                     return;
                 }
                 Err(e) => {
-                    eprintln!("IPC worker reconnect attempt {i} failed: {e}");
+                    crate::log::log(&format!("IPC worker reconnect attempt {i} failed: {e}"));
                 }
             }
         }
-        eprintln!("IPC worker: giving up after 30 reconnect attempts");
+        crate::log::log("IPC worker: giving up after 30 reconnect attempts");
     }
 
     async fn read_with_timeout(&mut self, tmp: &mut [u8; 4096]) -> Result<bool> {
@@ -567,6 +613,10 @@ impl IpcWorker {
                     Err(CoreError::Daemon("connection closed".into()))
                 } else {
                     self.buf.extend_from_slice(&tmp[..n]);
+                    if self.buf.len() > 16_777_216 {
+                        self.buf.clear();
+                        return Err(CoreError::Daemon("buffer exceeded 16MB".into()));
+                    }
                     Ok(true)
                 }
             }
@@ -602,11 +652,16 @@ impl IpcWorker {
                 return Ok(res);
             }
             let mut tmp = [0u8; 4096];
-            let n = self.reader.read(&mut tmp).await?;
-            if n == 0 {
-                return Err(CoreError::Daemon("connection closed".into()));
+            match tokio::time::timeout(Duration::from_secs(15), self.reader.read(&mut tmp)).await {
+                Ok(Ok(n)) => {
+                    if n == 0 {
+                        return Err(CoreError::Daemon("connection closed".into()));
+                    }
+                    self.buf.extend_from_slice(&tmp[..n]);
+                }
+                Ok(Err(e)) => return Err(CoreError::Daemon(format!("read error: {e}"))),
+                Err(_) => return Err(CoreError::Daemon("response timeout".into())),
             }
-            self.buf.extend_from_slice(&tmp[..n]);
         }
     }
 
@@ -650,7 +705,7 @@ async fn pulse_reader(pulse_path: &std::path::Path, events: Arc<Mutex<Vec<Daemon
     let stream = match UnixStream::connect(pulse_path).await {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("pulse connect failed: {e}");
+            crate::log::log(&format!("pulse connect failed: {e}"));
             return;
         }
     };
@@ -662,7 +717,7 @@ async fn pulse_reader(pulse_path: &std::path::Path, events: Arc<Mutex<Vec<Daemon
             Ok(0) => break,
             Ok(n) => n,
             Err(e) => {
-                eprintln!("pulse read error: {e}");
+                crate::log::log(&format!("pulse read error: {e}"));
                 break;
             }
         };
@@ -672,7 +727,7 @@ async fn pulse_reader(pulse_path: &std::path::Path, events: Arc<Mutex<Vec<Daemon
                 Ok(Some((f, c))) => (f, c),
                 Ok(None) => break,
                 Err(e) => {
-                    eprintln!("pulse decode error: {e}");
+                    crate::log::log(&format!("pulse decode error: {e}"));
                     buf.clear();
                     break;
                 }

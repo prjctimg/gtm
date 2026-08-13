@@ -20,7 +20,7 @@
 // ```
 
 use crate::ipc::DaemonEvent;
-use crate::state::{CoreError, CrossfadeConfig, DaemonState, PlaybackStatus};
+use crate::state::{CoreError, CrossfadeConfig, DaemonState, PlaybackStatus, RepeatMode};
 use crate::track::TrackInfo;
 use crate::tripwire::{self, FailPoint};
 use crate::Result;
@@ -171,20 +171,27 @@ impl DaemonState {
         if self.queue.is_empty() {
             return Ok(None);
         }
-        let len = self.queue.len() as u128;
-        let signed_dir = if dir >= 0 {
-            dir as u128
+        let len = self.queue.len() as i128;
+        let new = self.queue_cursor as i128 + dir as i128;
+        if new >= len {
+            if matches!(self.repeat, RepeatMode::Off) {
+                return Ok(None);
+            }
+            self.queue_cursor = 0;
+        } else if new < 0 {
+            if matches!(self.repeat, RepeatMode::Off) {
+                return Ok(None);
+            }
+            self.queue_cursor = (len - 1) as u128;
         } else {
-            len - ((-dir) as u128 % len)
-        };
-        let new = (self.queue_cursor + signed_dir) % len;
-        self.queue_cursor = new;
+            self.queue_cursor = new as u128;
+        }
         self.version += 1;
         #[cfg(debug_assertions)]
         {
             self.check_invariants();
         }
-        Ok(self.queue.get(new as usize))
+        Ok(self.queue.get(self.queue_cursor as usize))
     }
 
     /// Apply a DaemonEvent to mirror daemon state on the client side.

@@ -296,6 +296,10 @@ impl Daemon {
                         if trimmed.is_empty() {
                             continue;
                         }
+                        if trimmed.len() > 1_048_576 {
+                            warn!("client {client_id}: line too long ({} bytes), disconnecting", trimmed.len());
+                            break;
+                        }
                         let req: DaemonReq = match serde_json::from_str(trimmed) {
                             Ok(r) => r,
                             Err(e) => {
@@ -353,7 +357,9 @@ impl Daemon {
                                         continue;
                                     }
                                 };
-                                if writer.write_all(&frame).await.is_err() {
+                                if writer.write_all(&frame).await.is_err()
+                                    || writer.flush().await.is_err()
+                                {
                                     break;
                                 }
                             }
