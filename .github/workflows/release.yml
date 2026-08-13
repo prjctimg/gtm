@@ -2,8 +2,8 @@
 #
 # Pipeline:
 #
-#   tag job         → derive version, ensure tag exists
-#     │
+#   tag job         → derive tag/version; force-point tag at the build commit
+#     │               (stable: vX.Y.Z, nightly: `nightly` at latest main)
 #     ▼
 #   build job       → for each OS/arch:
 #     │                1. cargo build --release (or cargo-ndk for Android)
@@ -12,12 +12,13 @@
 #     │                   gtm-full-{platform}.tar.gz  (gtm + gtmd + man + completions)
 #     │                   gtmd-{platform}.tar.gz      (gtmd + daemon manpages + service)
 #     │                4. Build .deb packages:
-#     │                   gtm-full_{version}_{arch}.deb (gtm + gtmd + service)
+#     │                   gtm-full_{version}_{arch}.deb (gtm + gtmd + service, Linux)
 #     │                   gtmd_{version}_{arch}.deb
+#     │                   gtm_{version}_{arch}.deb       (Termux, PulseAudio backend)
 #     │                5. Upload build artifacts
 #     │
 #     ▼
-#   release job     → create GitHub Release with all archives + debs + manpages
+#   release job     → create/update GitHub Release with all archives + debs + manpages
 #
 name: Release
 
@@ -26,9 +27,18 @@ on:
     tags: ["v*.*.*"]
   workflow_dispatch:
     inputs:
+      release_type:
+        description: "Release type"
+        required: false
+        default: "stable"
+        type: choice
+        options:
+          - stable
+          - nightly
       version:
-        description: "Release version (e.g. 0.1.0)"
-        required: true
+        description: "Release version (e.g. 0.1.2) for stable releases"
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -40,6 +50,8 @@ jobs:
       contents: write
     outputs:
       tag: ${{ steps.set-tag.outputs.tag }}
+      version: ${{ steps.set-tag.outputs.version }}
+      nightly: ${{ steps.set-tag.outputs.nightly }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,11 +61,27 @@ jobs:
         id: set-tag
         run: |
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            version="${{ github.event.inputs.version }}"
+            if [[ "${{ github.event.inputs.release_type }}" == "nightly" ]]; then
+              tag="nightly"
+              version="$(grep -m1 '^version = ' Cargo.toml | sed 's/^version = "\(.*\)"/\1/')"
+              nightly="true"
+            else
+              version="${{ github.event.inputs.version }}"
+              if [[ -z "$version" ]]; then
+                echo "::error::version input is required for stable releases" >&2
+                exit 1
+              fi
+              tag="v${version}"
+              nightly="false"
+            fi
           else
-            version="${GITHUB_REF_NAME#v}"
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#v}"
+            nightly="false"
           fi
-          echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "nightly=${nightly}" >> "$GITHUB_OUTPUT"
 
       - name: Delete and recreate tag
         run: |
@@ -91,8 +119,11 @@ jobs:
         if: startsWith(matrix.os, 'macos')
         run: brew install pkg-config pandoc
 
+      - name: Install pandoc (Android build)
+        if: matrix.platform == 'aarch64-android'
+        run: sudo apt-get update && sudo apt-get install -y pandoc
+
       - name: Clone gtm.spec (manpage sources)
-        if: matrix.platform != 'aarch64-android'
         run: git clone --depth 1 https://github.com/prjctimg/gtm.spec.git ../gtm.spec
 
       - name: Install Android NDK + tools
@@ -107,9 +138,12 @@ jobs:
           rustup target add aarch64-linux-android
           cargo install cargo-ndk
 
-      - name: Install termux-elf-cleaner
+      - name: Build termux-elf-cleaner
         if: matrix.platform == 'aarch64-android'
-        run: pip install termux-elf-cleaner
+        run: |
+          git clone --depth 1 --branch v3.0.1 https://github.com/termux/termux-elf-cleaner.git
+          cmake -S termux-elf-cleaner -B termux-elf-cleaner/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build termux-elf-cleaner/build -j
 
       - name: Build release binaries
         if: matrix.platform != 'aarch64-android'
@@ -124,15 +158,13 @@ jobs:
       - name: Clean Android ELF sections
         if: matrix.platform == 'aarch64-android'
         run: |
-          termux-elf-cleaner target/aarch64-linux-android/release/gtmd
-          termux-elf-cleaner target/aarch64-linux-android/release/gtm
+          termux-elf-cleaner/build/termux-elf-cleaner target/aarch64-linux-android/release/gtmd
+          termux-elf-cleaner/build/termux-elf-cleaner target/aarch64-linux-android/release/gtm
 
       - name: Generate manpages (pandoc)
-        if: matrix.platform != 'aarch64-android'
         run: ./scripts/gen-manpages.sh artifacts
 
       - name: Generate shell completions
-        if: matrix.platform != 'aarch64-android'
         run: cargo run --release --bin release-gen completions artifacts
 
       - name: Package binaries (desktop)
@@ -216,15 +248,13 @@ jobs:
           cp dist/gtmd.service gtmd/deb-assets/
           cargo deb --package gtm
           cargo deb --package gtmd
-          arch="$(uname -m)"
-          version="${{ needs.tag.outputs.tag }}"
-          version="${version#v}"
-          for deb in target/debian/gtm_*.deb; do
+          arch="$(dpkg --print-architecture)"
+          version="${{ needs.tag.outputs.version }}"
+          for deb in target/debian/gtm-full_*.deb; do
             mv "$deb" "target/debian/gtm-full_${version}-1_${arch}.deb"
           done
           for deb in target/debian/gtmd_*.deb; do
-            base="$(basename "$deb" .deb)"
-            mv "$deb" "target/debian/${base}_${arch}.deb"
+            mv "$deb" "target/debian/gtmd_${version}-1_${arch}.deb"
           done
           for pkg in gtmd gtm; do
             rm -rf "$pkg/deb-assets"
@@ -234,30 +264,45 @@ jobs:
         if: matrix.platform == 'aarch64-android'
         run: |
           pip install termux-create-package
-          mkdir -p target/aarch64-linux-android/termux-pkg/bin
-          cp target/aarch64-linux-android/release/gtmd target/aarch64-linux-android/termux-pkg/bin/
-          cp target/aarch64-linux-android/release/gtm  target/aarch64-linux-android/termux-pkg/bin/
-          version="${{ needs.tag.outputs.tag }}"
-          version="${version#v}"
-          cd target/aarch64-linux-android/termux-pkg
-          termux-create-package --architecture aarch64 --version "$version" ../../../termux
-          mv ./*.deb "$GITHUB_WORKSPACE/" 2>/dev/null || true
+          version="${{ needs.tag.outputs.version }}"
+          files="target/aarch64-linux-android/termux-pkg/files"
+          mkdir -p "$files/bin" "$files/share/man/man1"
+          cp target/aarch64-linux-android/release/gtmd "$files/bin/"
+          cp target/aarch64-linux-android/release/gtm  "$files/bin/"
+          cp artifacts/man/gtm.1 artifacts/man/gtmd.1 artifacts/man/gtmd-ipc.1 "$files/share/man/man1/"
+          termux-create-package \
+            --pkg-version "$version" \
+            --pkg-arch aarch64 \
+            --files-dir "$files" \
+            --deb-dir "$GITHUB_WORKSPACE" \
+            termux/gtm.yml
 
-      # Upload per-OS build artifacts so the release job can collect them
+      # Upload per-OS build artifacts so the release job can collect them.
+      # Manpages + completions are identical across platforms, so they are
+      # uploaded once (x86_64-linux) to keep `merge-multiple` conflict-free.
       - uses: actions/upload-artifact@v4
         with:
           name: artifacts-${{ matrix.platform }}
           path: |
             target/release/gtm-full-*
             target/release/gtmd-*
+            target/release/gtm-*
             target/aarch64-linux-android/release/gtm-full-*
             target/aarch64-linux-android/release/gtmd-*
-            artifacts/
             target/debian/*.deb
             ./*.deb
 
+      - uses: actions/upload-artifact@v4
+        if: matrix.platform == 'x86_64-linux'
+        with:
+          name: artifacts-docs
+          path: |
+            artifacts/man
+            artifacts/completions
+
   # Collects all platform artifacts and creates a single GitHub Release
   # with platform-specific binaries, archives, debs, manpages, and completions.
+  # For `nightly` runs this updates the existing `nightly` prerelease.
   release:
     needs: [tag, build]
     runs-on: ubuntu-latest
@@ -280,15 +325,14 @@ jobs:
         with:
           tag_name: ${{ needs.tag.outputs.tag }}
           name: ${{ needs.tag.outputs.tag }}
+          prerelease: ${{ needs.tag.outputs.nightly == 'true' }}
           generate_release_notes: true
           files: |
             target/release/gtm-full-*-linux
             target/release/gtm-full-*-darwin
             target/release/gtmd-*-linux
             target/release/gtmd-*-darwin
-            target/release/gtm-full-*.tar.gz
-            target/release/gtmd-*.tar.gz
-            target/release/gtm-*.tar.gz
+            target/release/*.tar.gz
             target/aarch64-linux-android/release/gtm-full-*
             target/aarch64-linux-android/release/gtmd-*
             artifacts/man/*

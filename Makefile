@@ -102,5 +102,5 @@ termux-clean:
 # Build Termux .deb package (requires termux-create-package)
 deb-termux: termux termux-elf
 	@command -v termux-create-package >/dev/null 2>&1 || \
-		{ echo "termux-create-package not found. Install via Termux: pkg install termux-tools"; exit 1; }
+		{ echo "termux-create-package not found. Install with: pip install termux-create-package"; exit 1; }
 	./scripts/build-termux-deb.sh

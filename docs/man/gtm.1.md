@@ -17,8 +17,8 @@ the **\--cli** flag, it opens a full-screen Terminal User Interface (TUI) with
 keyboard-driven navigation.  With **\--cli** (or **-c**), it acts as a
 command-line client for scripting and headless control.
 
-For the universal TUI keybinding reference, see **gtm-keybindings**(1).
-For configuration, see **gtm-config**(1).
+The TUI provides a built-in help buffer accessible with **?** that covers
+all keybindings, configuration options, and setup instructions.
 
 # TUI MODE (default)
 
@@ -147,11 +147,23 @@ daemon and prints the result.  Use **\--json** for machine-readable output.
 **add-to-playlist** *playlist_id* *track_ids*...
 :   Add tracks to a playlist.
 
+**import-m3u** *path*
+:   Import an M3U playlist file into the library.
+
+**export-m3u** *playlist_id* *path*
+:   Export a playlist to an M3U file.
+
 **recent** *count*
 :   Show recently added tracks.
 
 **search** *query*
 :   Search the library.
+
+**lyrics** *query*
+:   Fetch lyrics for an "Artist - Title" query via lrclib.
+
+**check-health**
+:   Check daemon connectivity and return version info.
 
 ## Favourites
 
@@ -218,4 +230,4 @@ daemon and prints the result.  Use **\--json** for machine-readable output.
 
 # SEE ALSO
 
-**gtmd**(1), **gtmd-ipc**(1), **gtm-keybindings**(1), **gtm-config**(1)
+**gtmd**(1), **gtmd-ipc**(1)

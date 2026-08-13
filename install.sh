@@ -2,17 +2,18 @@
 # GTM installer — pipe-to-shell
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm-rs/main/install.sh | bash
-#   curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm-rs/main/install.sh | bash -s -- --type full
+#   curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash -s -- --type full
+#   curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash -s -- --type deb
 #
 # Environment variables:
 #   VERSION        – release tag to install (default: auto-detect from installed gtmd, or latest)
 #   PREFIX         – install prefix (default: $HOME/.local)
-#   INSTALL_TYPE   – minimal | full | tui-only (skips interactive prompt)
+#   INSTALL_TYPE   – minimal | full | tui-only | deb (skips interactive prompt)
 #
 set -euo pipefail
 
-REPO="prjctimg/gtm-rs"
+REPO="prjctimg/gtm.rs"
 VERSION="${VERSION:-}"
 PREFIX="${PREFIX:-$HOME/.local}"
 INSTALL_TYPE="${INSTALL_TYPE:-}"
@@ -21,6 +22,7 @@ INSTALL_TYPE="${INSTALL_TYPE:-}"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --type) INSTALL_TYPE="$2"; shift 2 ;;
+    --deb) INSTALL_TYPE="deb"; shift ;;
     --version) VERSION="$2"; shift 2 ;;
     --prefix) PREFIX="$2"; shift 2 ;;
     *) echo "Unknown option: $1"; exit 1 ;;
@@ -60,17 +62,16 @@ info "Platform: ${PLATFORM}"
 # ── Version resolution ──────────────────────────────────────────────
 resolve_version() {
   if [ -n "$VERSION" ]; then
+    VERSION="${VERSION#v}"
     echo "$VERSION"
     return
   fi
 
   # Try to detect from installed gtmd
   if command -v gtmd >/dev/null 2>&1; then
-    local raw
-    raw=$(gtmd --version 2>/dev/null || true)
-    # Expect "gtmd X.Y.Z" — extract the version part
-    local ver
-    ver=$(echo "$raw" | awk '{print $NF}')
+    local raw ver
+    raw=$(gtmd --version 2>/dev/null | head -n1 || true)
+    ver=$(printf '%s\n' "$raw" | awk '{print $2}')
     if [[ "$ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
       info "Detected installed gtmd version: ${ver}"
       echo "$ver"
@@ -89,9 +90,30 @@ VERSION=$(resolve_version)
 TMPDIR=$(mktemp -d)
 trap 'rm -rf "$TMPDIR"' EXIT
 
-# ── Resolve archive name from version ───────────────────────────────
-# GitHub returns 404 for /releases/latest/download/ if latest is a pre-release.
-# Fall back to the GitHub API to find the true latest non-pre-release tag.
+# ── GitHub release helpers ──────────────────────────────────────────
+# GitHub returns 404 for /releases/latest/download/ if the latest release is a
+# pre-release (e.g. the `nightly` build), so we fall back to the API to find the
+# newest non-prerelease tag.
+resolve_latest_tag() {
+  local tag
+  tag=$(curl -sf "https://api.github.com/repos/${REPO}/releases?per_page=20" \
+    | grep -o '"tag_name":"v[^"]*"' \
+    | grep -v -e '-rc' -e '-beta' -e '-alpha' -e '-dev' \
+    | head -1 \
+    | sed 's/"tag_name":"v//;s/"//' || true)
+
+  # If every release is a prerelease, fall back to the newest tag of all.
+  if [ -z "$tag" ]; then
+    tag=$(curl -sf "https://api.github.com/repos/${REPO}/releases?per_page=20" \
+      | grep -o '"tag_name":"v[^"]*"' \
+      | head -1 \
+      | sed 's/"tag_name":"v//;s/"//' || true)
+  fi
+
+  [ -n "$tag" ] || die "Could not resolve latest release tag from GitHub"
+  echo "$tag"
+}
+
 resolve_download_url() {
   local archive="$1"  # e.g. gtm-full or gtmd or gtm
   local url
@@ -106,25 +128,25 @@ resolve_download_url() {
       return
     fi
 
-    # Latest is a pre-release — query the API for the newest non-pre-release tag
+    # Latest is a pre-release — query the API for the newest stable tag
     info "Latest GitHub release is a pre-release — querying API..."
-    local api_url="https://api.github.com/repos/${REPO}/releases?per_page=20"
-    local tag
-    tag=$(curl -sf "$api_url" \
-      | grep -o '"tag_name":"v[^"]*"' \
-      | grep -v -e '-rc' -e '-beta' -e '-alpha' -e '-dev' \
-      | head -1 \
-      | sed 's/"tag_name":"v//;s/"//' || true)
-
-    if [ -n "$tag" ]; then
-      echo "https://github.com/${REPO}/releases/download/v${tag}/${archive}-${PLATFORM}.tar.gz"
-      return
-    fi
-
-    die "Could not resolve latest release tag from GitHub"
-  else
-    echo "https://github.com/${REPO}/releases/download/v${VERSION}/${archive}-${PLATFORM}.tar.gz"
+    VERSION=$(resolve_latest_tag)
+    info "Latest stable release: v${VERSION}"
   fi
+
+  echo "https://github.com/${REPO}/releases/download/v${VERSION}/${archive}-${PLATFORM}.tar.gz"
+}
+
+resolve_deb_asset() {
+  local tag="$1" prefix="$2" deb_arch="$3" n assets
+  assets=$(curl -sf "https://api.github.com/repos/${REPO}/releases/tags/v${tag}" \
+    | grep -o '"name":"[^"]*\.deb"' \
+    | sed 's/"name":"//;s/"$//' || true)
+  for n in $assets; do
+    case "$n" in
+      "${prefix}"*"${deb_arch}".deb) echo "$n"; return ;;
+    esac
+  done
 }
 
 # ── Installation type ───────────────────────────────────────────────
@@ -135,9 +157,10 @@ if [ -z "$INSTALL_TYPE" ]; then
   echo ""
   echo "  Select installation type:"
   echo ""
-  echo "    1) Minimal   – gtmd only (daemon, man pages, completions)"
-  echo "    2) Full      – gtm + gtmd (TUI + daemon, man pages, completions)"
-  echo "    3) TUI only  – gtm only (for existing gtmd installations)"
+  echo "    1) Minimal      – gtmd only (daemon, man pages, completions)"
+  echo "    2) Full         – gtm + gtmd (TUI + daemon, man pages, completions)"
+  echo "    3) TUI only     – gtm only (for existing gtmd installations)"
+  echo "    4) .deb package – dpkg install (Debian/Ubuntu or Termux)"
   echo ""
 
   if command -v gtmd >/dev/null 2>&1; then
@@ -145,18 +168,19 @@ if [ -z "$INSTALL_TYPE" ]; then
     echo ""
   fi
 
-  read -r -p "  Choice [1/2/3]: " choice
+  read -r -p "  Choice [1/2/3/4]: " choice
   case "$choice" in
     1) INSTALL_TYPE="minimal" ;;
     2) INSTALL_TYPE="full" ;;
     3) INSTALL_TYPE="tui-only" ;;
-    *) die "Invalid choice: $choice (expected 1, 2, or 3)" ;;
+    4) INSTALL_TYPE="deb" ;;
+    *) die "Invalid choice: $choice (expected 1, 2, 3, or 4)" ;;
   esac
 fi
 
 case "$INSTALL_TYPE" in
-  minimal|full|tui-only) ;;
-  *) die "Invalid install type: $INSTALL_TYPE (expected minimal, full, or tui-only)" ;;
+  minimal|full|tui-only|deb) ;;
+  *) die "Invalid install type: $INSTALL_TYPE (expected minimal, full, tui-only, or deb)" ;;
 esac
 
 info "Install type: ${INSTALL_TYPE}"
@@ -166,6 +190,7 @@ case "$INSTALL_TYPE" in
   minimal)  ARCHIVE_NAME="gtmd" ;;
   full)     ARCHIVE_NAME="gtm-full" ;;
   tui-only) ARCHIVE_NAME="gtm" ;;
+  deb)      ARCHIVE_NAME="" ;;
 esac
 
 # ── Validate tui-only requires gtmd ─────────────────────────────────
@@ -175,7 +200,59 @@ if [ "$INSTALL_TYPE" = "tui-only" ] && [ "$VERSION" = "latest" ]; then
   fi
 fi
 
-# ── Download ────────────────────────────────────────────────────────
+# ── .deb installation ───────────────────────────────────────────────
+if [ "$INSTALL_TYPE" = "deb" ]; then
+  command -v dpkg >/dev/null 2>&1 || die "dpkg not found — .deb install requires Debian/Ubuntu or Termux"
+
+  if [ "$OS" = "android" ]; then
+    deb_arch="aarch64"
+    deb_prefix="gtm_"
+  else
+    deb_arch=$(dpkg --print-architecture 2>/dev/null || true)
+    case "$deb_arch" in
+      amd64|arm64) ;;
+      *) die "Unsupported deb architecture: $deb_arch (expected amd64 or arm64)" ;;
+    esac
+    deb_prefix="gtm-full_"
+  fi
+
+  local_tag="$VERSION"
+  if [ "$local_tag" = "latest" ]; then
+    local_tag=$(resolve_latest_tag)
+    info "Latest stable release: v${local_tag}"
+  fi
+
+  asset=$(resolve_deb_asset "$local_tag" "$deb_prefix" "$deb_arch")
+  [ -n "$asset" ] || die "No matching .deb asset found for ${deb_prefix}*${deb_arch}.deb on v${local_tag}"
+
+  DEB="${TMPDIR}/${asset}"
+  info "Downloading: https://github.com/${REPO}/releases/download/v${local_tag}/${asset}"
+  curl -#fL "https://github.com/${REPO}/releases/download/v${local_tag}/${asset}" -o "$DEB"
+
+  info "Installing ${asset}..."
+  if [ "$OS" = "android" ]; then
+    dpkg -i "$DEB" || {
+      info "Fixing dependencies..."
+      pkg install -y -f 2>/dev/null || true
+      dpkg -i "$DEB"
+    }
+  else
+    if [ "$(id -u)" != "0" ]; then
+      command -v sudo >/dev/null 2>&1 || die "sudo is required to install the .deb package"
+      sudo dpkg -i "$DEB"
+      sudo apt-get -f install -y >/dev/null 2>&1 || true
+    else
+      dpkg -i "$DEB"
+      apt-get -f install -y >/dev/null 2>&1 || true
+    fi
+  fi
+
+  echo ""
+  ok "Installation complete!"
+  exit 0
+fi
+
+# ── Download (tarball) ──────────────────────────────────────────────
 DOWNLOAD_URL=$(resolve_download_url "$ARCHIVE_NAME")
 TARBALL="${TMPDIR}/${ARCHIVE_NAME}-${PLATFORM}.tar.gz"
 

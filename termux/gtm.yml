@@ -1,0 +1,33 @@
+# Termux package manifest for termux-create-package.
+# Bundles the pre-compiled aarch64-linux-android binaries (PulseAudio backend)
+# produced by the release workflow or `make termux-release`.
+control:
+    Package: gtm
+    Version: 0.1.2
+    Architecture: aarch64
+    Maintainer: prjctimg <prjctimg@outlook.com>
+    Depends: libpulseaudio
+    Recommends: pulseaudio
+    Homepage: https://github.com/prjctimg/gtm.rs
+    Description: |-
+        Terminal music player (TUI + CLI) and daemon with PulseAudio backend.
+        .
+        GTM is a terminal-based music player with a TUI client, a background
+        daemon, and optional MPRIS D-Bus integration. This package bundles
+        both the gtm client and the gtmd daemon.
+
+data_files:
+    bin/gtmd:
+        source: bin/gtmd
+
+    bin/gtm:
+        source: bin/gtm
+
+    share/man/man1/gtm.1:
+        source: share/man/man1/gtm.1
+
+    share/man/man1/gtmd.1:
+        source: share/man/man1/gtmd.1
+
+    share/man/man1/gtmd-ipc.1:
+        source: share/man/man1/gtmd-ipc.1

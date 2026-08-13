@@ -1,10 +1,11 @@
 // Copyright (c) 2025 - present
 // Author: prjctimg <prjctimg@outlook.com>
-// NvChad-inspired color themes for the TUI
+// NvChad-inspired color themes for the TUI, with TOML user-theme support.
 //
 // This is free software released under the GPL-3.0 license.
 
 use ratatui::style::Color;
+use std::borrow::Cow;
 
 /// Central theme — all UI colors flow through here.
 /// The TUI renders its own explicit `bg` behind everything.
@@ -27,14 +28,6 @@ pub struct AppTheme {
     pub volume_medium: Color,
     pub volume_high: Color,
     pub sidebar_active_border: Color,
-    // Syntax-highlighting-inspired colors repurposed as footer module accents
-    pub syn_keyword: Color,
-    pub syn_string: Color,
-    pub syn_function: Color,
-    pub syn_variable: Color,
-    pub syn_comment: Color,
-    pub syn_constant: Color,
-    pub syn_type: Color,
 }
 
 impl AppTheme {
@@ -49,14 +42,38 @@ impl AppTheme {
     }
 }
 
-// ─── Presets ──────────────────────────────────────────────────────────
+/// A theme registry entry. `name` is `Cow<'static, str>` so built-ins borrow
+/// `&'static str` literals while user-loaded themes own their names.
+#[derive(Clone)]
+pub struct ThemeEntry {
+    pub name: Cow<'static, str>,
+    pub light: bool,
+    pub theme: AppTheme,
+}
+
+// ─── Color helpers ────────────────────────────────────────────────────
 
 fn hex(c: u32) -> Color {
-    let r = ((c >> 16) & 0xFF) as u8;
-    let g = ((c >> 8) & 0xFF) as u8;
-    let b = (c & 0xFF) as u8;
-    Color::Rgb(r, g, b)
+    Color::Rgb(
+        ((c >> 16) & 0xFF) as u8,
+        ((c >> 8) & 0xFF) as u8,
+        (c & 0xFF) as u8,
+    )
 }
+
+/// Parse a `#rrggbb` (or bare `rrggbb`) hex string into a `Color::Rgb`.
+pub fn parse_color(s: &str) -> Result<Color, String> {
+    let s = s.strip_prefix('#').unwrap_or(s);
+    if s.len() != 6 {
+        return Err(format!("expected 6 hex chars, got {s:?}"));
+    }
+    let r = u8::from_str_radix(&s[0..2], 16).map_err(|e| e.to_string())?;
+    let g = u8::from_str_radix(&s[2..4], 16).map_err(|e| e.to_string())?;
+    let b = u8::from_str_radix(&s[4..6], 16).map_err(|e| e.to_string())?;
+    Ok(Color::Rgb(r, g, b))
+}
+
+// ─── Built-in presets ─────────────────────────────────────────────────
 
 /// Chadrula — NvChad default
 fn chadrula() -> AppTheme {
@@ -78,13 +95,6 @@ fn chadrula() -> AppTheme {
         volume_medium: hex(0xe0af68),
         volume_high: hex(0xf7768e),
         sidebar_active_border: hex(0x7aa2f7),
-        syn_keyword: hex(0xbb9af7),
-        syn_string: hex(0x9ece6a),
-        syn_function: hex(0x7aa2f7),
-        syn_variable: hex(0xc0caf5),
-        syn_comment: hex(0x565f89),
-        syn_constant: hex(0xff9e64),
-        syn_type: hex(0x2ac3de),
     }
 }
 
@@ -108,13 +118,6 @@ fn one_dark() -> AppTheme {
         volume_medium: hex(0xe5c07b),
         volume_high: hex(0xe06c75),
         sidebar_active_border: hex(0x61afef),
-        syn_keyword: hex(0xc678dd),
-        syn_string: hex(0x98c379),
-        syn_function: hex(0x61afef),
-        syn_variable: hex(0xe06c75),
-        syn_comment: hex(0x5c6370),
-        syn_constant: hex(0xd19a66),
-        syn_type: hex(0xe5c07b),
     }
 }
 
@@ -138,14 +141,17 @@ fn tokyonight() -> AppTheme {
         volume_medium: hex(0xff9e64),
         volume_high: hex(0xf7768e),
         sidebar_active_border: hex(0x7aa2f7),
-        syn_keyword: hex(0xbb9af7),
-        syn_string: hex(0x9ece6a),
-        syn_function: hex(0x7aa2f7),
-        syn_variable: hex(0xc0caf5),
-        syn_comment: hex(0x565f89),
-        syn_constant: hex(0xff9e64),
-        syn_type: hex(0x2ac3de),
     }
+}
+
+/// Tokyo Night Storm — derived from Chadrula with a dimmer fg and a warmer
+/// warning/volume-medium pair.
+fn tokyonight_storm() -> AppTheme {
+    let mut t = chadrula();
+    t.fg = hex(0xa9b1d6);
+    t.warning = hex(0xff9e64);
+    t.volume_medium = hex(0xff9e64);
+    t
 }
 
 /// Catppuccin Mocha — NvChad palette
@@ -168,13 +174,6 @@ fn catppuccin_mocha() -> AppTheme {
         volume_medium: hex(0xfab387),
         volume_high: hex(0xf38ba8),
         sidebar_active_border: hex(0x89b4fa),
-        syn_keyword: hex(0xcbafc7),
-        syn_string: hex(0xa6e3a1),
-        syn_function: hex(0x89b4fa),
-        syn_variable: hex(0xf5c2e7),
-        syn_comment: hex(0x6c7086),
-        syn_constant: hex(0xfab387),
-        syn_type: hex(0xf9e2af),
     }
 }
 
@@ -198,13 +197,6 @@ fn gruvbox_dark() -> AppTheme {
         volume_medium: hex(0xfe8019),
         volume_high: hex(0xfb4934),
         sidebar_active_border: hex(0xd3869b),
-        syn_keyword: hex(0xfb4934),
-        syn_string: hex(0xb8bb26),
-        syn_function: hex(0xb8bb26),
-        syn_variable: hex(0xebdbb2),
-        syn_comment: hex(0x928374),
-        syn_constant: hex(0xd3869b),
-        syn_type: hex(0x83a598),
     }
 }
 
@@ -228,13 +220,6 @@ fn nord() -> AppTheme {
         volume_medium: hex(0xd08770),
         volume_high: hex(0xbf616a),
         sidebar_active_border: hex(0x88c0d0),
-        syn_keyword: hex(0x81a1c1),
-        syn_string: hex(0xa3be8c),
-        syn_function: hex(0x88c0d0),
-        syn_variable: hex(0xd8dee9),
-        syn_comment: hex(0x4c566a),
-        syn_constant: hex(0xb48ead),
-        syn_type: hex(0x8fbcbb),
     }
 }
 
@@ -258,13 +243,6 @@ fn rose_pine() -> AppTheme {
         volume_medium: hex(0xf6c177),
         volume_high: hex(0xeb6f92),
         sidebar_active_border: hex(0xc4a7e7),
-        syn_keyword: hex(0xc4a7e7),
-        syn_string: hex(0x9ccfd8),
-        syn_function: hex(0xc4a7e7),
-        syn_variable: hex(0xebbcba),
-        syn_comment: hex(0x6e6a86),
-        syn_constant: hex(0xf6c177),
-        syn_type: hex(0xea9a97),
     }
 }
 
@@ -288,13 +266,6 @@ fn everforest() -> AppTheme {
         volume_medium: hex(0xe69875),
         volume_high: hex(0xe67e80),
         sidebar_active_border: hex(0xa7c080),
-        syn_keyword: hex(0xd3c6aa),
-        syn_string: hex(0xa7c080),
-        syn_function: hex(0x7fbbb3),
-        syn_variable: hex(0xd3c6aa),
-        syn_comment: hex(0x7a8478),
-        syn_constant: hex(0xdbcbb7),
-        syn_type: hex(0xeaedc9),
     }
 }
 
@@ -318,13 +289,6 @@ fn kanagawa() -> AppTheme {
         volume_medium: hex(0xe6c384),
         volume_high: hex(0xc34043),
         sidebar_active_border: hex(0x7e9cd8),
-        syn_keyword: hex(0xc47ea0),
-        syn_string: hex(0x98bb6c),
-        syn_function: hex(0x7e9cd8),
-        syn_variable: hex(0x7e9cd8),
-        syn_comment: hex(0x727169),
-        syn_constant: hex(0xff9e64),
-        syn_type: hex(0x7fb4ca),
     }
 }
 
@@ -348,43 +312,6 @@ fn catppuccin_latte() -> AppTheme {
         volume_medium: hex(0xfe640b),
         volume_high: hex(0xd20f39),
         sidebar_active_border: hex(0x1e66f5),
-        syn_keyword: hex(0x8839ef),
-        syn_string: hex(0x40a02b),
-        syn_function: hex(0x1e66f5),
-        syn_variable: hex(0xea76cb),
-        syn_comment: hex(0x9ca0b0),
-        syn_constant: hex(0xfe640b),
-        syn_type: hex(0x04a5e5),
-    }
-}
-
-/// Tokyo Night Storm — NvChad palette
-fn tokyonight_storm() -> AppTheme {
-    AppTheme {
-        bg: hex(0x24283b),
-        picker_bg: hex(0x1f2335),
-        fg: hex(0xa9b1d6),
-        fg_dim: hex(0x565f89),
-        fg_bright: hex(0xc0caf5),
-        accent: hex(0x7aa2f7),
-        error: hex(0xf7768e),
-        warning: hex(0xff9e64),
-        success: hex(0x9ece6a),
-        selection_fg: hex(0x24283b),
-        selection_bg: hex(0x7aa2f7),
-        border: hex(0x3b4261),
-        border_active: hex(0x7aa2f7),
-        volume_low: hex(0x9ece6a),
-        volume_medium: hex(0xff9e64),
-        volume_high: hex(0xf7768e),
-        sidebar_active_border: hex(0x7aa2f7),
-        syn_keyword: hex(0xbb9af7),
-        syn_string: hex(0x9ece6a),
-        syn_function: hex(0x7aa2f7),
-        syn_variable: hex(0xc0caf5),
-        syn_comment: hex(0x565f89),
-        syn_constant: hex(0xff9e64),
-        syn_type: hex(0x2ac3de),
     }
 }
 
@@ -408,69 +335,300 @@ fn kanagawa_lotus() -> AppTheme {
         volume_medium: hex(0xb47e2b),
         volume_high: hex(0xc84053),
         sidebar_active_border: hex(0x2d6a9f),
-        syn_keyword: hex(0x8f4f8f),
-        syn_string: hex(0x6a9589),
-        syn_function: hex(0x2d6a9f),
-        syn_variable: hex(0x396a6f),
-        syn_comment: hex(0x949494),
-        syn_constant: hex(0xb47e2b),
-        syn_type: hex(0x396a6f),
     }
 }
 
-/// Theme registry — name + constructor
-pub struct ThemeEntry {
-    pub name: &'static str,
-    pub builder: fn() -> AppTheme,
+/// Built-in theme table, constructed once and cached for the process lifetime.
+pub fn builtin_themes() -> &'static [ThemeEntry] {
+    static BUILTINS: std::sync::OnceLock<Vec<ThemeEntry>> = std::sync::OnceLock::new();
+    BUILTINS
+        .get_or_init(|| {
+            vec![
+                ThemeEntry {
+                    name: Cow::Borrowed("Chadrula"),
+                    light: false,
+                    theme: chadrula(),
+                },
+                ThemeEntry {
+                    name: Cow::Borrowed("One Dark"),
+                    light: false,
+                    theme: one_dark(),
+                },
+                ThemeEntry {
+                    name: Cow::Borrowed("Tokyo Night"),
+                    light: false,
+                    theme: tokyonight(),
+                },
+                ThemeEntry {
+                    name: Cow::Borrowed("Tokyo Night Storm"),
+                    light: false,
+                    theme: tokyonight_storm(),
+                },
+                ThemeEntry {
+                    name: Cow::Borrowed("Catppuccin Mocha"),
+                    light: false,
+                    theme: catppuccin_mocha(),
+                },
+                ThemeEntry {
+                    name: Cow::Borrowed("Catppuccin Latte"),
+                    light: true,
+                    theme: catppuccin_latte(),
+                },
+                ThemeEntry {
+                    name: Cow::Borrowed("Gruvbox Dark"),
+                    light: false,
+                    theme: gruvbox_dark(),
+                },
+                ThemeEntry {
+                    name: Cow::Borrowed("Nord"),
+                    light: false,
+                    theme: nord(),
+                },
+                ThemeEntry {
+                    name: Cow::Borrowed("Rose Pine"),
+                    light: false,
+                    theme: rose_pine(),
+                },
+                ThemeEntry {
+                    name: Cow::Borrowed("Everforest"),
+                    light: false,
+                    theme: everforest(),
+                },
+                ThemeEntry {
+                    name: Cow::Borrowed("Kanagawa"),
+                    light: false,
+                    theme: kanagawa(),
+                },
+                ThemeEntry {
+                    name: Cow::Borrowed("Kanagawa Lotus"),
+                    light: true,
+                    theme: kanagawa_lotus(),
+                },
+            ]
+        })
+        .as_slice()
 }
 
-pub const THEMES: &[ThemeEntry] = &[
-    ThemeEntry {
-        name: "Chadrula",
-        builder: chadrula,
-    },
-    ThemeEntry {
-        name: "One Dark",
-        builder: one_dark,
-    },
-    ThemeEntry {
-        name: "Tokyo Night",
-        builder: tokyonight,
-    },
-    ThemeEntry {
-        name: "Tokyo Night Storm",
-        builder: tokyonight_storm,
-    },
-    ThemeEntry {
-        name: "Catppuccin Mocha",
-        builder: catppuccin_mocha,
-    },
-    ThemeEntry {
-        name: "Catppuccin Latte",
-        builder: catppuccin_latte,
-    },
-    ThemeEntry {
-        name: "Gruvbox Dark",
-        builder: gruvbox_dark,
-    },
-    ThemeEntry {
-        name: "Nord",
-        builder: nord,
-    },
-    ThemeEntry {
-        name: "Rose Pine",
-        builder: rose_pine,
-    },
-    ThemeEntry {
-        name: "Everforest",
-        builder: everforest,
-    },
-    ThemeEntry {
-        name: "Kanagawa",
-        builder: kanagawa,
-    },
-    ThemeEntry {
-        name: "Kanagawa Lotus",
-        builder: kanagawa_lotus,
-    },
-];
+// ─── User themes (TOML) ───────────────────────────────────────────────
+
+/// `~/.config/gtm/themes/*.toml` directory.
+pub fn user_themes_dir() -> std::path::PathBuf {
+    let config = std::env::var("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            std::path::PathBuf::from(home).join(".config")
+        });
+    config.join("gtm").join("themes")
+}
+
+#[derive(serde::Deserialize)]
+struct UserThemeFile {
+    name: String,
+    #[serde(default)]
+    light: bool,
+    bg: String,
+    picker_bg: String,
+    fg: String,
+    fg_dim: String,
+    fg_bright: String,
+    accent: String,
+    error: String,
+    warning: String,
+    success: String,
+    selection_fg: String,
+    selection_bg: String,
+    border: String,
+    border_active: String,
+    volume_low: String,
+    volume_medium: String,
+    volume_high: String,
+    sidebar_active_border: String,
+}
+
+impl UserThemeFile {
+    fn into_theme(self) -> Result<AppTheme, String> {
+        Ok(AppTheme {
+            bg: parse_color(&self.bg)?,
+            picker_bg: parse_color(&self.picker_bg)?,
+            fg: parse_color(&self.fg)?,
+            fg_dim: parse_color(&self.fg_dim)?,
+            fg_bright: parse_color(&self.fg_bright)?,
+            accent: parse_color(&self.accent)?,
+            error: parse_color(&self.error)?,
+            warning: parse_color(&self.warning)?,
+            success: parse_color(&self.success)?,
+            selection_fg: parse_color(&self.selection_fg)?,
+            selection_bg: parse_color(&self.selection_bg)?,
+            border: parse_color(&self.border)?,
+            border_active: parse_color(&self.border_active)?,
+            volume_low: parse_color(&self.volume_low)?,
+            volume_medium: parse_color(&self.volume_medium)?,
+            volume_high: parse_color(&self.volume_high)?,
+            sidebar_active_border: parse_color(&self.sidebar_active_border)?,
+        })
+    }
+}
+
+/// Load every `*.toml` theme file under [`user_themes_dir`]. Unparseable
+/// files are silently skipped so a single corrupt file doesn't kill the TUI.
+pub fn load_user_themes() -> Vec<ThemeEntry> {
+    let dir = match std::fs::read_dir(user_themes_dir()) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for entry in dir.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("toml") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(mut parsed) = toml::from_str::<UserThemeFile>(&text) else {
+            continue;
+        };
+        let name = std::mem::take(&mut parsed.name);
+        let declared_light = parsed.light;
+        let Ok(theme) = parsed.into_theme() else {
+            continue;
+        };
+        // Trust the explicit flag; fall back to a luminance heuristic so a
+        // user-authored light theme without `light = true` still renders
+        // correctly in the picker.
+        let light = declared_light || theme_light(&theme);
+        out.push(ThemeEntry {
+            name: Cow::Owned(name),
+            light,
+            theme,
+        });
+    }
+    out
+}
+
+/// Heuristic: classify a theme as light if its `bg` luminance is high.
+/// Used as a fallback for user themes that omit the explicit `light` flag.
+fn theme_light(t: &AppTheme) -> bool {
+    if let Color::Rgb(r, g, b) = t.bg {
+        0.299 * r as f64 + 0.587 * g as f64 + 0.114 * b as f64 > 128.0
+    } else {
+        false
+    }
+}
+
+/// Built-in themes followed by user themes; user themes replace built-ins on
+/// name collision so users can override defaults without deleting files.
+pub fn merged_themes() -> Vec<ThemeEntry> {
+    let mut v: Vec<ThemeEntry> = builtin_themes().to_vec();
+    for ut in load_user_themes() {
+        if let Some(existing) = v.iter_mut().find(|t| t.name == ut.name) {
+            *existing = ut;
+        } else {
+            v.push(ut);
+        }
+    }
+    v
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_color_accepts_hash_hex() {
+        assert_eq!(parse_color("#7aa2f7").unwrap(), Color::Rgb(0x7a, 0xa2, 0xf7));
+        assert_eq!(parse_color("7aa2f7").unwrap(), Color::Rgb(0x7a, 0xa2, 0xf7));
+    }
+
+    #[test]
+    fn parse_color_rejects_bad_input() {
+        assert!(parse_color("#abc").is_err());
+        assert!(parse_color("zzzzzz").is_err());
+        assert!(parse_color("").is_err());
+    }
+
+    #[test]
+    fn builtin_themes_have_unique_names() {
+        let names: Vec<&str> = builtin_themes().iter().map(|t| t.name.as_ref()).collect();
+        let mut sorted = names.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names.len(), "duplicate theme names");
+    }
+
+    #[test]
+    fn tokyonight_storm_derives_from_chadrula() {
+        let base = chadrula();
+        let storm = tokyonight_storm();
+        // Shared fields stay in sync with the base.
+        assert_eq!(storm.bg, base.bg);
+        assert_eq!(storm.accent, base.accent);
+        assert_eq!(storm.success, base.success);
+        // Overridden fields differ.
+        assert_ne!(storm.fg, base.fg);
+        assert_ne!(storm.warning, base.warning);
+    }
+
+    #[test]
+    fn light_themes_are_flagged() {
+        for t in builtin_themes() {
+            let luma = match t.theme.bg {
+                Color::Rgb(r, g, b) => 0.299 * r as f64 + 0.587 * g as f64 + 0.114 * b as f64,
+                _ => 0.0,
+            };
+            let expected_light = luma > 128.0;
+            assert_eq!(
+                t.light, expected_light,
+                "theme {} flagged light={} but bg luma is {:.0}",
+                t.name, t.light, luma
+            );
+        }
+    }
+
+    #[test]
+    fn user_theme_round_trip() {
+        let toml = r##"
+            name = "Test"
+            light = true
+            bg = "#eff1f5"
+            picker_bg = "#e6e9ef"
+            fg = "#4c4f69"
+            fg_dim = "#9ca0b0"
+            fg_bright = "#1e1e2e"
+            accent = "#1e66f5"
+            error = "#d20f39"
+            warning = "#fe640b"
+            success = "#40a02b"
+            selection_fg = "#eff1f5"
+            selection_bg = "#1e66f5"
+            border = "#ccd0da"
+            border_active = "#1e66f5"
+            volume_low = "#40a02b"
+            volume_medium = "#fe640b"
+            volume_high = "#d20f39"
+            sidebar_active_border = "#1e66f5"
+        "##;
+        let parsed: UserThemeFile = toml::from_str(toml).unwrap();
+        let theme = parsed.into_theme().unwrap();
+        assert_eq!(theme.bg, Color::Rgb(0xef, 0xf1, 0xf5));
+        assert_eq!(theme.accent, Color::Rgb(0x1e, 0x66, 0xf5));
+    }
+
+    #[test]
+    fn merged_themes_replaces_on_collision() {
+        let mut v: Vec<ThemeEntry> = builtin_themes().to_vec();
+        let custom = ThemeEntry {
+            name: Cow::Borrowed("Chadrula"),
+            light: true,
+            theme: chadrula(),
+        };
+        if let Some(existing) = v.iter_mut().find(|t| t.name == custom.name) {
+            *existing = custom.clone();
+        } else {
+            v.push(custom);
+        }
+        assert_eq!(v.len(), builtin_themes().len());
+        assert!(v.iter().find(|t| t.name == "Chadrula").unwrap().light);
+    }
+}

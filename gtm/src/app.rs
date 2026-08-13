@@ -25,7 +25,7 @@ use base64::Engine;
 use crate::footer;
 use crate::keymap::{default_keybindings, KeyContext, KeyboardAction};
 use crate::picker::{PickerId, PickerManager};
-use crate::theme::{AppTheme, THEMES};
+use crate::theme::{AppTheme, ThemeEntry};
 use crate::ui;
 
 fn prefs_path() -> std::path::PathBuf {
@@ -40,47 +40,82 @@ fn prefs_path() -> std::path::PathBuf {
     dir.join("prefs.json")
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct Prefs {
-    theme_index: usize,
+    #[serde(default = "default_theme_name")]
+    theme_name: String,
     #[serde(default)]
     transparent_bg: bool,
-    #[serde(default)]
-    footer_preset: usize,
+    #[serde(default = "default_footer_preset_name")]
+    footer_preset_name: String,
     #[serde(default)]
     progress_style: crate::progress::ProgressStyle,
 }
 
+fn default_theme_name() -> String {
+    "Chadrula".into()
+}
+
+fn default_footer_preset_name() -> String {
+    "Default".into()
+}
+
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            theme_name: default_theme_name(),
+            transparent_bg: false,
+            footer_preset_name: default_footer_preset_name(),
+            progress_style: crate::progress::ProgressStyle::default(),
+        }
+    }
+}
+
 fn load_prefs() -> Prefs {
     let path = prefs_path();
-    let s = match std::fs::read_to_string(path) {
-        Ok(s) => s,
-        Err(_) => {
-            return Prefs {
-                theme_index: 0,
-                transparent_bg: false,
-                footer_preset: 0,
-                progress_style: crate::progress::ProgressStyle::default(),
-            }
-        }
+    let Ok(s) = std::fs::read_to_string(path) else {
+        return Prefs::default();
     };
     if let Ok(p) = serde_json::from_str::<Prefs>(&s) {
         return p;
     }
-    if let Ok(idx) = serde_json::from_str::<usize>(&s) {
+    // Legacy v2 format: { theme_index: usize, footer_preset: usize, ... }
+    #[derive(serde::Deserialize)]
+    struct OldPrefs {
+        #[serde(default)]
+        theme_index: Option<usize>,
+        #[serde(default)]
+        transparent_bg: bool,
+        #[serde(default)]
+        footer_preset: Option<usize>,
+        #[serde(default)]
+        progress_style: crate::progress::ProgressStyle,
+    }
+    if let Ok(old) = serde_json::from_str::<OldPrefs>(&s) {
         return Prefs {
-            theme_index: idx.min(crate::theme::THEMES.len().saturating_sub(1)),
-            transparent_bg: false,
-            footer_preset: 0,
-            progress_style: crate::progress::ProgressStyle::default(),
+            theme_name: old
+                .theme_index
+                .and_then(|i| crate::theme::builtin_themes().get(i).map(|t| t.name.to_string()))
+                .unwrap_or_else(default_theme_name),
+            transparent_bg: old.transparent_bg,
+            footer_preset_name: old
+                .footer_preset
+                .and_then(|i| footer::presets().get(i).map(|p| p.name.to_string()))
+                .unwrap_or_else(default_footer_preset_name),
+            progress_style: old.progress_style,
         };
     }
-    Prefs {
-        theme_index: 0,
-        transparent_bg: false,
-        footer_preset: 0,
-        progress_style: crate::progress::ProgressStyle::default(),
+    // Legacy v1 format: bare integer theme_index.
+    if let Ok(idx) = serde_json::from_str::<usize>(&s) {
+        return Prefs {
+            theme_name: crate::theme::builtin_themes()
+                .get(idx)
+                .map(|t| t.name.to_string())
+                .unwrap_or_else(default_theme_name),
+            ..Default::default()
+        };
     }
+    Prefs::default()
 }
 
 fn save_prefs(prefs: &Prefs) {
@@ -127,6 +162,7 @@ pub struct Notification {
 
 pub struct App {
     pub theme: AppTheme,
+    pub themes: Vec<ThemeEntry>,
     pub client: DaemonClient,
     pub state: DaemonState,
     pub display_position: f64,
@@ -182,6 +218,7 @@ pub struct App {
     pub viewport_items: usize,
     pub transparent_bg: bool,
     pub last_action_name: Option<(String, std::time::Instant)>,
+    pub footer_presets: Vec<footer::FooterPreset>,
     pub footer_preset: usize,
     pub footer_title_scroll: usize,
     pub is_ready: bool,
@@ -193,12 +230,7 @@ pub struct App {
     prev_volume: u8,
     prev_cover_id: Option<i64>,
     cover_art_dirty: bool,
-    pub suppress_footer_refresh: bool,
-    pub cached_footer_spans: Option<(
-        Vec<ratatui::text::Span<'static>>,
-        ratatui::style::Color,
-        ratatui::style::Color,
-    )>,
+    pub footer_cache: crate::footer::FooterCache,
     last_event_time: std::time::Instant,
     pub multiselect_mode: bool,
     pub progress_style: crate::progress::ProgressStyle,
@@ -290,15 +322,28 @@ impl App {
         let keybindings = default_keybindings();
         let prefs = tokio::task::spawn_blocking(load_prefs)
             .await
-            .unwrap_or_else(|_| Prefs {
-                theme_index: 0,
-                transparent_bg: false,
-                footer_preset: 0,
-                progress_style: crate::progress::ProgressStyle::default(),
-            });
+            .unwrap_or_else(|_| Prefs::default());
         let initial_cursor = state.queue_cursor;
+
+        // Build the merged theme + footer preset tables (built-ins overridden
+        // by user-supplied files under ~/.config/gtm/). Resolve the persisted
+        // prefs by name so adding/removing a built-in never shifts the saved
+        // theme off its slot.
+        let themes = crate::theme::merged_themes();
+        let theme_index = themes
+            .iter()
+            .position(|t| t.name == prefs.theme_name)
+            .unwrap_or(0);
+        let theme = themes[theme_index].theme;
+        let footer_presets = footer::merged_presets();
+        let footer_preset = footer_presets
+            .iter()
+            .position(|p| p.name == prefs.footer_preset_name)
+            .unwrap_or(0);
+
         Ok(Self {
-            theme: (THEMES[prefs.theme_index].builder)(),
+            theme,
+            themes,
             client,
             state,
             display_position: 0.0,
@@ -349,14 +394,13 @@ impl App {
             ipc_rx,
             ipc_tx,
             keybindings,
-            theme_index: prefs.theme_index,
+            theme_index,
             list_scroll: 0,
             viewport_items: 20,
             transparent_bg: prefs.transparent_bg,
             last_action_name: None,
-            footer_preset: prefs
-                .footer_preset
-                .min(footer::num_presets().saturating_sub(1)),
+            footer_presets,
+            footer_preset,
             footer_title_scroll: 0,
             is_ready: false,
             last_queue_cursor: initial_cursor,
@@ -367,11 +411,10 @@ impl App {
             prev_volume: 100,
             prev_cover_id: None,
             cover_art_dirty: false,
-            suppress_footer_refresh: false,
-            cached_footer_spans: None,
+            footer_cache: crate::footer::FooterCache::default(),
             last_event_time: std::time::Instant::now(),
             multiselect_mode: false,
-            progress_style: crate::progress::ProgressStyle::Braille,
+            progress_style: prefs.progress_style,
             visualizer: crate::visualizer::AudioVisualizer::new(),
             selected_indices: std::collections::HashSet::new(),
             pending_motion: None,
@@ -403,6 +446,45 @@ impl App {
 
     pub fn send_high(&self, cmd: TuiCommand) {
         let _ = self.high_pri_cmd_tx.send(cmd);
+    }
+
+    /// Snapshot of the user-facing preferences resolved from current indices.
+    /// Stored by name (not index) so adding/removing built-in themes or
+    /// footer presets doesn't shift what was saved.
+    fn current_prefs(&self) -> Prefs {
+        Prefs {
+            theme_name: self
+                .themes
+                .get(self.theme_index)
+                .map(|t| t.name.to_string())
+                .unwrap_or_else(default_theme_name),
+            transparent_bg: self.transparent_bg,
+            footer_preset_name: self
+                .footer_presets
+                .get(self.footer_preset)
+                .map(|p| p.name.to_string())
+                .unwrap_or_else(default_footer_preset_name),
+            progress_style: self.progress_style,
+        }
+    }
+
+    /// Cycle footer preset, persist, and announce the new name.
+    fn cycle_footer_preset(&mut self) {
+        let n = self.footer_presets.len().max(1);
+        self.footer_preset = (self.footer_preset + 1) % n;
+        if let Some(p) = self.footer_presets.get(self.footer_preset) {
+            self.set_last_action(&format!("Footer: {}", p.name));
+        }
+        save_prefs(&self.current_prefs());
+    }
+
+    /// Apply a theme picker selection by index, persist by name, and refresh
+    /// the live `theme` field.
+    fn apply_theme_index(&mut self, idx: usize) {
+        let idx = idx.min(self.themes.len().saturating_sub(1));
+        self.theme = self.themes[idx].theme;
+        self.theme_index = idx;
+        save_prefs(&self.current_prefs());
     }
 
     pub async fn run(
@@ -769,7 +851,7 @@ impl App {
                         f.render_widget(msg, f.area());
                     });
                 } else if terminal.draw(|f| ui::render(f, &mut self)).is_ok() {
-                    self.suppress_footer_refresh = false;
+                    self.footer_cache.suppress_refresh = false;
                 }
             }
 
@@ -1430,9 +1512,9 @@ impl App {
                 PickerId::ThemePicker => {
                     let q = top.query.to_lowercase();
                     if q.is_empty() {
-                        THEMES.len()
+                        self.themes.len()
                     } else {
-                        THEMES
+                        self.themes
                             .iter()
                             .filter(|entry| {
                                 let lower = entry.name.to_lowercase();
@@ -1473,6 +1555,80 @@ impl App {
                 _ => usize::MAX,
             };
             top.selected = top.selected.min(max);
+        }
+    }
+
+    fn help_picker_total(&self) -> usize {
+        let help_lines = [
+            ("topic", "Playback"),
+            ("key", "   Space        Play / Pause"),
+            ("key", "   n / Ctrl+N   Next track"),
+            ("key", "   p / Ctrl+P   Previous track"),
+            ("key", "   s            Stop"),
+            ("key", "   . / ,        Seek forward / back"),
+            ("", ""),
+            ("topic", "Volume"),
+            ("key", "   + / =        Volume up"),
+            ("key", "   -            Volume down"),
+            ("key", "   m            Toggle mute"),
+            ("", ""),
+            ("topic", "Queue & Library"),
+            ("key", "   Enter        Play selected / drill-down"),
+            ("key", "   d / Del      Remove item"),
+            ("key", "   F            Toggle favourite"),
+            ("key", "   D            Clear queue"),
+            ("key", "   /            Filter mode"),
+            ("", ""),
+            ("topic", "Navigation"),
+            ("key", "   Tab          Toggle left/right pane focus"),
+            ("key", "   j/k / arrows Move up/down"),
+            ("key", "   h/l          Focus left/right pane"),
+            ("key", "   ?            Toggle this help"),
+            ("", ""),
+            ("topic", "Overlays (Alt+key)"),
+            ("key", "   Alt+Q        Queue"),
+            ("key", "   Alt+Y        YouTube Search"),
+            ("key", "   Alt+F        Search Library"),
+            ("key", "   Alt+A        About"),
+            ("key", "   Alt+C        Theme Picker"),
+            ("key", "   Alt+E        Equalizer"),
+            ("key", "   Alt+P        Command Palette"),
+            ("key", "   Alt+Z        Sleep Timer"),
+            ("key", "   Alt+X        Sound Effects"),
+            ("key", "   Alt+S        Spotify Search"),
+            ("", ""),
+            ("topic", "Other"),
+            ("key", "   q            Quit"),
+            ("key", "   Q            Quit & stop daemon"),
+            ("key", "   S            Toggle shuffle"),
+            ("key", "   r / R        Cycle repeat"),
+            ("key", "   :            Command palette"),
+            ("key", "   Alt+F        Cycle footer preset"),
+            ("", ""),
+            ("topic", "Help"),
+            ("key", "   ?            Toggle this help"),
+            ("key", "   gg / G       Jump to top / bottom"),
+            ("key", "   0 / $        Jump to first / last line"),
+            ("key", "   /            Search"),
+            ("key", "   n / N        Next / previous match"),
+            ("key", "   Esc / q      Close"),
+        ];
+        if let Some(top) = self.pickers.top() {
+            if top.id == PickerId::Help {
+                let q = top.query.to_lowercase();
+                if q.is_empty() {
+                    help_lines.len()
+                } else {
+                    help_lines
+                        .iter()
+                        .filter(|(_, l)| l.to_lowercase().contains(&q))
+                        .count()
+                }
+            } else {
+                0
+            }
+        } else {
+            0
         }
     }
 
@@ -1632,8 +1788,12 @@ impl App {
                         self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::ToggleHelp) => {
-                        self.pickers.open(PickerId::Help);
-                        self.dismiss_track_popup();
+                        if self.pickers.top().map_or(false, |o| o.id == PickerId::Help) {
+                            self.pickers.close_top();
+                        } else {
+                            self.pickers.open(PickerId::Help);
+                            self.dismiss_track_popup();
+                        }
                     }
                     Some(KeyboardAction::HideHelpBar) => {
                         self.hide_help_bar = !self.hide_help_bar;
@@ -1743,15 +1903,7 @@ impl App {
                         self.notify("Queue cleared", NotificationKind::Info);
                     }
                     Some(KeyboardAction::CycleFooterPreset) => {
-                        self.footer_preset = (self.footer_preset + 1) % footer::num_presets();
-                        let name = footer::presets()[self.footer_preset].name;
-                        self.set_last_action(&format!("Footer: {}", name));
-                        save_prefs(&Prefs {
-                            theme_index: self.theme_index,
-                            transparent_bg: self.transparent_bg,
-                            footer_preset: self.footer_preset,
-                            progress_style: self.progress_style,
-                        });
+                        self.cycle_footer_preset();
                     }
                     Some(KeyboardAction::CycleProgressStyle) => {
                         self.progress_style = self.progress_style.next();
@@ -2135,12 +2287,7 @@ impl App {
                                     1 => {
                                         // Transparent BG toggle
                                         self.transparent_bg = !self.transparent_bg;
-                                        save_prefs(&Prefs {
-                                            theme_index: self.theme_index,
-                                            transparent_bg: self.transparent_bg,
-                                            footer_preset: self.footer_preset,
-                                            progress_style: self.progress_style,
-                                        });
+                                        save_prefs(&self.current_prefs());
                                     }
                                     2 => {
                                         // Sync Covers
@@ -2210,19 +2357,13 @@ impl App {
                                     }
                                     4 => {
                                         // Footer Preset cycle
-                                        self.footer_preset =
-                                            (self.footer_preset + 1) % footer::num_presets();
-                                        let name = footer::presets()[self.footer_preset].name;
-                                        save_prefs(&Prefs {
-                                            theme_index: self.theme_index,
-                                            transparent_bg: self.transparent_bg,
-                                            footer_preset: self.footer_preset,
-                                            progress_style: self.progress_style,
-                                        });
-                                        self.notify(
-                                            format!("Footer: {}", name),
-                                            NotificationKind::Info,
-                                        );
+                                        self.cycle_footer_preset();
+                                        if let Some(p) = self.footer_presets.get(self.footer_preset) {
+                                            self.notify(
+                                                format!("Footer: {}", p.name),
+                                                NotificationKind::Info,
+                                            );
+                                        }
                                     }
                                     _ => {}
                                 },
@@ -2647,6 +2788,65 @@ impl App {
                 }
                 self.pickers.close_top();
             }
+            // Help picker vim motions
+            KeyCode::Char('g') if key.modifiers == KeyModifiers::CONTROL => {
+                if let Some(top) = self.pickers.top_mut() {
+                    if top.id == PickerId::Help {
+                        top.selected = 0;
+                    }
+                }
+            }
+            KeyCode::Char('G') => {
+                let is_help = self.pickers.top().map_or(false, |t| t.id == PickerId::Help);
+                let total = if is_help { self.help_picker_total() } else { 0 };
+                if let Some(top) = self.pickers.top_mut() {
+                    if top.id == PickerId::Help {
+                        top.selected = total.saturating_sub(1);
+                    }
+                }
+            }
+            KeyCode::Char('0') => {
+                if let Some(top) = self.pickers.top_mut() {
+                    if top.id == PickerId::Help {
+                        top.selected = 0;
+                    }
+                }
+            }
+            KeyCode::Char('$') => {
+                let is_help = self.pickers.top().map_or(false, |t| t.id == PickerId::Help);
+                let total = if is_help { self.help_picker_total() } else { 0 };
+                if let Some(top) = self.pickers.top_mut() {
+                    if top.id == PickerId::Help {
+                        top.selected = total.saturating_sub(1);
+                    }
+                }
+            }
+            KeyCode::Char('/') => {
+                if let Some(top) = self.pickers.top_mut() {
+                    if top.id == PickerId::Help {
+                        top.query.clear();
+                    }
+                }
+            }
+            KeyCode::Char('n') => {
+                if self.pickers.top().map_or(false, |t| t.id == PickerId::Help) {
+                    let total = self.help_picker_total();
+                    if let Some(top) = self.pickers.top_mut() {
+                        if top.id == PickerId::Help && total > 0 {
+                            top.selected = (top.selected + 1).min(total - 1);
+                        }
+                    }
+                }
+            }
+            KeyCode::Char('N') => {
+                if self.pickers.top().map_or(false, |t| t.id == PickerId::Help) {
+                    if let Some(top) = self.pickers.top_mut() {
+                        if top.id == PickerId::Help {
+                            top.selected = top.selected.saturating_sub(1);
+                        }
+                    }
+                }
+            }
             // Queue move up/down (Ctrl+K/J) must come before plain k/j
             KeyCode::Char('k') if key.modifiers == KeyModifiers::CONTROL => {
                 if let Some(top) = self.pickers.top() {
@@ -2703,16 +2903,10 @@ impl App {
                 }
                 if let Some(top) = self.pickers.top_mut() {
                     top.selected = top.selected.saturating_sub(1);
-                    if top.id == PickerId::ThemePicker {
-                        let idx = top.selected.min(THEMES.len().saturating_sub(1));
-                        self.theme = (THEMES[idx].builder)();
-                        self.theme_index = idx;
-                        save_prefs(&Prefs {
-                            theme_index: idx,
-                            transparent_bg: self.transparent_bg,
-                            footer_preset: self.footer_preset,
-                            progress_style: self.progress_style,
-                        });
+                    let is_theme = top.id == PickerId::ThemePicker;
+                    let selected = top.selected;
+                    if is_theme {
+                        self.apply_theme_index(selected);
                     }
                 }
                 self.clamp_picker_selection();
@@ -2744,16 +2938,10 @@ impl App {
                 }
                 if let Some(top) = self.pickers.top_mut() {
                     top.selected += 1;
-                    if top.id == PickerId::ThemePicker {
-                        let idx = top.selected.min(THEMES.len().saturating_sub(1));
-                        self.theme = (THEMES[idx].builder)();
-                        self.theme_index = idx;
-                        save_prefs(&Prefs {
-                            theme_index: idx,
-                            transparent_bg: self.transparent_bg,
-                            footer_preset: self.footer_preset,
-                            progress_style: self.progress_style,
-                        });
+                    let is_theme = top.id == PickerId::ThemePicker;
+                    let selected = top.selected;
+                    if is_theme {
+                        self.apply_theme_index(selected);
                     }
                 }
                 self.clamp_picker_selection();
@@ -2999,15 +3187,8 @@ impl App {
                             self.pickers.close_top();
                         }
                         PickerId::ThemePicker => {
-                            let idx = top.selected.min(THEMES.len().saturating_sub(1));
-                            self.theme = (THEMES[idx].builder)();
-                            self.theme_index = idx;
-                            save_prefs(&Prefs {
-                                theme_index: idx,
-                                transparent_bg: self.transparent_bg,
-                                footer_preset: self.footer_preset,
-                                progress_style: self.progress_style,
-                            });
+                            let idx = top.selected;
+                            self.apply_theme_index(idx);
                             self.pickers.close_top();
                         }
                         PickerId::SearchLibrary => {
@@ -3120,7 +3301,8 @@ let patch = gtm_core::MetadataPatch {
                         PickerId::YTSearch
                         | PickerId::SearchLibrary
                         | PickerId::CommandPalette
-                        | PickerId::ThemePicker => {
+                        | PickerId::ThemePicker
+                        | PickerId::Help => {
                             top.query.push(c);
                             if top.id == PickerId::YTSearch {
                                 if c == ' ' {

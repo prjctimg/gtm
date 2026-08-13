@@ -8,7 +8,6 @@ use std::path::PathBuf;
 
 use crate::app::{App, InputMode, LIBRARY_CATEGORIES};
 use crate::picker::PickerId;
-use crate::theme::THEMES;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -1218,12 +1217,18 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
             ]
         }
         3 => {
-            let preset_name = crate::footer::presets()
+            let preset_name = app
+                .footer_presets
                 .get(app.footer_preset)
-                .map(|p| p.name)
+                .map(|p| p.name.as_ref())
                 .unwrap_or("Default");
+            let theme_name = app
+                .themes
+                .get(app.theme_index)
+                .map(|t| t.name.as_ref())
+                .unwrap_or("Chadrula");
             vec![
-                "Theme           [ Cyberdeck  ▶ ]".to_string(),
+                format!("Theme           [ {:>8} ▶ ]", theme_name),
                 format!(
                     "Transparent BG  [ {} ]",
                     if app.transparent_bg { "●" } else { "○" }
@@ -1312,11 +1317,11 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
             let eq_on = app.state.eq_enabled;
             lines.push(Line::from(Span::styled(if eq_on { " EQ: On. Press Enter to disable the equalizer." } else { " EQ: Off. Press Enter to enable the equalizer." }, Style::default().fg(app.theme.fg))));
         }
-        (3, 0) => lines.push(Line::from(Span::styled(" Theme: Press Enter to open the Theme Picker picker (Alt+C).", Style::default().fg(app.theme.fg)))),
+        (3, 0) => lines.push(Line::from(Span::styled(" Theme: Press Enter to open the Theme Picker (Alt+C). Drop custom themes in ~/.config/gtm/themes/*.toml.", Style::default().fg(app.theme.fg)))),
         (3, 1) => lines.push(Line::from(Span::styled(" Transparent BG: Press Enter to toggle. When on, picker backgrounds become transparent.", Style::default().fg(app.theme.fg)))),
         (3, 2) => lines.push(Line::from(Span::styled(" Sync Covers: Download missing cover art from Deezer for all library tracks.", Style::default().fg(app.theme.fg)))),
         (3, 3) => lines.push(Line::from(Span::styled(" Sync Lyrics: Fetch and save lyrics files alongside all library tracks.", Style::default().fg(app.theme.fg)))),
-        (3, 4) => lines.push(Line::from(Span::styled(" Footer Preset: Press Enter to cycle (Default, Minimal, Full). Also toggled via Alt+F.", Style::default().fg(app.theme.fg)))),
+        (3, 4) => lines.push(Line::from(Span::styled(" Footer Preset: Press Enter to cycle. Also toggled via Alt+F. Add or override presets in ~/.config/gtm/footer.toml.", Style::default().fg(app.theme.fg)))),
         (4, 0) => lines.push(Line::from(Span::styled(" Spotify: Integration status for the linked account.", Style::default().fg(app.theme.fg)))),
         (4, 1) => lines.push(Line::from(Span::styled(" Account: Display name of the linked Spotify user.", Style::default().fg(app.theme.fg)))),
         (4, 2) => lines.push(Line::from(Span::styled(" Playlists: Number of playlists synced by the daemon.", Style::default().fg(app.theme.fg)))),
@@ -1337,17 +1342,21 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         return;
     };
 
-    // Overlay box: centered, 60% width, 70% height, with minimum size
-    let picker_width = ((area.width as f64 * 0.6) as u16).max(50).min(area.width);
-    let picker_height = ((area.height as f64 * 0.7) as u16).max(15).min(area.height);
-    let picker_x = (area.width.saturating_sub(picker_width)) / 2;
-    let picker_y = (area.height.saturating_sub(picker_height)) / 3;
+    let picker_area = if top.id == PickerId::Help {
+        area
+    } else {
+        // Overlay box: centered, 60% width, 70% height, with minimum size
+        let picker_width = ((area.width as f64 * 0.6) as u16).max(50).min(area.width);
+        let picker_height = ((area.height as f64 * 0.7) as u16).max(15).min(area.height);
+        let picker_x = (area.width.saturating_sub(picker_width)) / 2;
+        let picker_y = (area.height.saturating_sub(picker_height)) / 3;
 
-    let picker_area = Rect {
-        x: picker_x,
-        y: picker_y,
-        width: picker_width,
-        height: picker_height,
+        Rect {
+            x: picker_x,
+            y: picker_y,
+            width: picker_width,
+            height: picker_height,
+        }
     };
 
     let picker_box_bg = if app.transparent_bg {
@@ -1671,33 +1680,22 @@ fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         InputMode::Normal => {
             // During tab transitions, preserve the last footer render to avoid
             // visual jumps from stale state becoming momentarily visible.
-            if app.suppress_footer_refresh {
-                if let Some((ref spans, left_bg, right_bg)) = app.cached_footer_spans {
-                    let left_w: u16 = spans.iter().map(|s| s.width() as u16).sum::<u16>() + 4;
-                    let right_w = area.width.saturating_sub(left_w);
-                    let chunks = Layout::default()
-                        .direction(Direction::Horizontal)
-                        .constraints([Constraint::Length(left_w), Constraint::Min(right_w)])
-                        .split(area);
-                    f.render_widget(
-                        Paragraph::new(Line::from(spans.clone()))
-                            .style(Style::default().bg(left_bg)),
-                        chunks[0],
-                    );
-                    if right_w > 0 {
-                        f.render_widget(
-                            Paragraph::new(Line::from("")).style(Style::default().bg(right_bg)),
-                            chunks[1],
-                        );
-                    }
+            if app.footer_cache.suppress_refresh {
+                if let Some(ref cached) = app.footer_cache.last {
+                    crate::footer::draw(f, area, cached);
                     return;
                 }
             }
-            let presets = crate::footer::presets();
-            let idx = app.footer_preset.min(presets.len().saturating_sub(1));
-            crate::footer::render_preset(f, area, app, &presets[idx]);
-            // Cache the rendered footer spans for the next frame
-            app.cached_footer_spans = crate::footer::collect_preset_spans(app, &presets[idx]);
+            let rendered = crate::footer::render(app);
+            if let Some(ref out) = rendered {
+                crate::footer::draw(f, area, out);
+            } else {
+                f.render_widget(
+                    Paragraph::new("").style(Style::default().bg(app.theme.border)),
+                    area,
+                );
+            }
+            app.footer_cache.last = rendered;
         }
         InputMode::Searching => {
             f.render_widget(
@@ -2064,83 +2062,74 @@ fn render_about_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
     let help_lines = vec![
-        " Playback",
-        "   Space        Play / Pause",
-        "   n / Ctrl+N   Next track",
-        "   p / Ctrl+P   Previous track",
-        "   s            Stop",
-        "   . / ,        Seek forward / back",
-        "",
-        " Volume",
-        "   + / =        Volume up",
-        "   -            Volume down",
-        "   m            Toggle mute",
-        "",
-        " Queue & Library",
-        "   Enter        Play selected / drill-down",
-        "   d / Del      Remove item",
-        "   F            Toggle favourite",
-        "   D            Clear queue",
-        "   /            Filter mode",
-        "",
-        " Navigation",
-        "   Tab          Toggle left/right pane focus",
-        "   j/k / arrows Move up/down",
-        "   h/l          Focus left/right pane",
-        "   ?            Toggle this help",
-        "",
-        " Overlays (Alt+key)",
-        "   Alt+Q        Queue",
-        "   Alt+Y        YouTube Search",
-        "   Alt+F        Search Library",
-        "   Alt+A        About",
-        "   Alt+C        Theme Picker",
-        "   Alt+E        Equalizer",
-        "   Alt+P        Command Palette",
-        "   Alt+Z        Sleep Timer",
-        "   Alt+X        Sound Effects",
-        "   Alt+S        Spotify Search",
-        "",
-        " Other",
-        "   q            Quit",
-        "   Q            Quit & stop daemon",
-        "   S            Toggle shuffle",
-        "   r / R        Cycle repeat",
-        "   :            Command palette",
-        "   Alt+F        Cycle footer preset",
+        ("topic", "Playback"),
+        ("key", "   Space        Play / Pause"),
+        ("key", "   n / Ctrl+N   Next track"),
+        ("key", "   p / Ctrl+P   Previous track"),
+        ("key", "   s            Stop"),
+        ("key", "   . / ,        Seek forward / back"),
+        ("", ""),
+        ("topic", "Volume"),
+        ("key", "   + / =        Volume up"),
+        ("key", "   -            Volume down"),
+        ("key", "   m            Toggle mute"),
+        ("", ""),
+        ("topic", "Queue & Library"),
+        ("key", "   Enter        Play selected / drill-down"),
+        ("key", "   d / Del      Remove item"),
+        ("key", "   F            Toggle favourite"),
+        ("key", "   D            Clear queue"),
+        ("key", "   /            Filter mode"),
+        ("", ""),
+        ("topic", "Navigation"),
+        ("key", "   Tab          Toggle left/right pane focus"),
+        ("key", "   j/k / arrows Move up/down"),
+        ("key", "   h/l          Focus left/right pane"),
+        ("key", "   ?            Toggle this help"),
+        ("", ""),
+        ("topic", "Overlays (Alt+key)"),
+        ("key", "   Alt+Q        Queue"),
+        ("key", "   Alt+Y        YouTube Search"),
+        ("key", "   Alt+F        Search Library"),
+        ("key", "   Alt+A        About"),
+        ("key", "   Alt+C        Theme Picker"),
+        ("key", "   Alt+E        Equalizer"),
+        ("key", "   Alt+P        Command Palette"),
+        ("key", "   Alt+Z        Sleep Timer"),
+        ("key", "   Alt+X        Sound Effects"),
+        ("key", "   Alt+S        Spotify Search"),
+        ("", ""),
+        ("topic", "Other"),
+        ("key", "   q            Quit"),
+        ("key", "   Q            Quit & stop daemon"),
+        ("key", "   S            Toggle shuffle"),
+        ("key", "   r / R        Cycle repeat"),
+        ("key", "   :            Command palette"),
+        ("key", "   Alt+F        Cycle footer preset"),
+        ("", ""),
+        ("topic", "Help"),
+        ("key", "   ?            Toggle this help"),
+        ("key", "   gg / G       Jump to top / bottom"),
+        ("key", "   0 / $        Jump to first / last line"),
+        ("key", "   /            Search"),
+        ("key", "   n / N        Next / previous match"),
+        ("key", "   Esc / q      Close"),
     ];
 
-    let filtered: Vec<&str> = if query.is_empty() {
-        help_lines.to_vec()
+    let filtered: Vec<( &str, &str)> = if query.is_empty() {
+        help_lines.iter().map(|(t, l)| (*t, *l)).collect()
     } else {
         let q = query.to_lowercase();
         help_lines
             .iter()
-            .filter(|l| l.to_lowercase().contains(&q))
-            .copied()
+            .filter(|(_, l)| l.to_lowercase().contains(&q))
+            .map(|(t, l)| (*t, *l))
             .collect()
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Keybindings ")
-        .border_type(BorderType::Plain)
-        .style(Style::default().bg(if app.transparent_bg {
-            ratatui::style::Color::Reset
-        } else {
-            app.theme.picker_bg
-        }));
-    let inner = block.inner(area);
-    f.render_widget(block, area);
-
-    let search_line = Line::from(Span::styled(
-        format!(" > {}_", query),
-        Style::default().fg(app.theme.fg),
-    ));
-
     let total = filtered.len();
-    let visible = inner.height.saturating_sub(1) as usize;
     let sel = app.pickers.top().map_or(0, |o| o.selected);
+    let visible = area.height.saturating_sub(1) as usize;
     let (scroll_start, _) = if total > 0 {
         centered_scroll(sel, visible, total)
     } else {
@@ -2148,15 +2137,23 @@ fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     };
     let scroll_end = (scroll_start + visible).min(total);
 
-    let mut lines: Vec<Line> = vec![search_line];
-    for (i, line) in filtered.iter().enumerate().take(scroll_end).skip(scroll_start) {
-        let is_header = line.starts_with(|c: char| c.is_uppercase()) && !line.starts_with("   ");
+    let mut lines: Vec<Line> = Vec::new();
+
+    let title = Line::from(Span::styled(
+        " KEYBINDINGS ",
+        Style::default()
+            .fg(app.theme.accent)
+            .add_modifier(Modifier::BOLD),
+    ));
+    lines.push(title);
+
+    for (i, (kind, line)) in filtered.iter().enumerate().take(scroll_end).skip(scroll_start) {
         let is_sel = i == sel;
         let style = if is_sel {
             Style::default()
                 .fg(app.theme.selection_fg)
                 .bg(app.theme.selection_bg)
-        } else if is_header {
+        } else if *kind == "topic" {
             Style::default()
                 .fg(app.theme.accent)
                 .add_modifier(Modifier::BOLD)
@@ -2167,8 +2164,14 @@ fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
 
     let para = Paragraph::new(lines);
-    f.render_widget(para, inner);
-    picker_help(f, inner, " [Esc] Close  Type to search  j/k Navigate", app);
+    f.render_widget(para, area);
+
+    let footer = if !query.is_empty() {
+        format!(" /{}  [Esc] Close  ? Toggle  gg/G Top/Bottom  0/$ First/Last  n/N Next/Prev", query)
+    } else {
+        "[Esc] Close  ? Toggle  gg/G Top/Bottom  0/$ First/Last  / Search  n/N Next/Prev".to_string()
+    };
+    picker_help(f, area, &footer, app);
 }
 
 fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -2596,9 +2599,9 @@ fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let q = query.to_lowercase();
 
     let filtered: Vec<_> = if q.is_empty() {
-        THEMES.iter().enumerate().collect()
+        app.themes.iter().enumerate().collect()
     } else {
-        THEMES
+        app.themes
             .iter()
             .enumerate()
             .filter(|(_, entry)| {
@@ -2638,7 +2641,9 @@ fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let is_active = i == app.theme_index;
         let prefix = if i == sel { " > " } else { "   " };
         let check = if is_active { " \u{2713}" } else { "" };
-        let content = format!("{}{}{}", prefix, entry.name, check);
+        // Badge light themes so users can spot them at a glance.
+        let light_badge = if entry.light { " \u{2600}" } else { "" };
+        let content = format!("{}{}{}{}", prefix, entry.name, light_badge, check);
         let style = if i == sel {
             Style::default()
                 .fg(app.theme.selection_fg)
@@ -2696,13 +2701,11 @@ pub fn braille_spinner(frame: usize) -> char {
     SPINNER_FRAMES[frame % SPINNER_FRAMES.len()]
 }
 
-/// Pick the foreground colour that has enough contrast against `bg`.
-/// Uses simple luminance formula (BT.601) to decide between `dark` and `light`.
-pub fn readable_fg(
-    bg: ratatui::style::Color,
-    _dark: ratatui::style::Color,
-    _light: ratatui::style::Color,
-) -> ratatui::style::Color {
+/// Pick the foreground colour with enough contrast against `bg`. If the
+/// requested `fg` already has sufficient contrast it is preserved — this
+/// lets the footer's per-module colour mapping do something rather than
+/// being thrown away in favour of a monochrome fallback.
+pub fn readable_fg(fg: ratatui::style::Color, bg: ratatui::style::Color) -> ratatui::style::Color {
     fn luminance(c: &ratatui::style::Color) -> f64 {
         match c {
             ratatui::style::Color::Rgb(r, g, b) => {
@@ -2711,7 +2714,12 @@ pub fn readable_fg(
             _ => 128.0,
         }
     }
-    if luminance(&bg) > 128.0 {
+    let fg_l = luminance(&fg);
+    let bg_l = luminance(&bg);
+    const CONTRAST_THRESHOLD: f64 = 90.0;
+    if (fg_l - bg_l).abs() >= CONTRAST_THRESHOLD {
+        fg
+    } else if bg_l > 128.0 {
         ratatui::style::Color::Rgb(20, 20, 20)
     } else {
         ratatui::style::Color::Rgb(240, 240, 240)

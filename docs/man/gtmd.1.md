@@ -21,8 +21,13 @@ For the IPC protocol reference, see **gtmd-ipc**(1).
 For configuration, see **gtm-config**(1).
 
 Audio playback is handled by the **rodio** backend with **symphonia** for
-format decoding. The daemon supports MP3, FLAC, Ogg Vorbis, Opus, WAV,
-AAC, ALAC, and MKV/WebM containers.
+format decoding. When the `pulseaudio` feature is enabled, **PulseAudio** is
+also supported as an audio backend. On Termux (Android), the daemon
+automatically falls back to PulseAudio when the `pulseaudio` feature is
+compiled in.
+
+The daemon supports MP3, FLAC, Ogg Vorbis, Opus, WAV, AAC, ALAC, and
+MKV/WebM containers.
 
 # INTERNAL ARCHITECTURE
 
@@ -145,8 +150,9 @@ Stopped → Playing
 :   Run in test mode: use an ephemeral socket path, skip daemonization,
     and enable additional debug output.
 
-**\--backend**=rodio
-:   Audio backend to use. Currently only `rodio` is supported.
+**\--backend**=backend
+:   Audio backend to use. Supported values: `rodio` (default),
+    `pulseaudio` (requires the `pulseaudio` feature flag).
 
 # SIGNALS
 
@@ -172,4 +178,4 @@ Stopped → Playing
 
 # SEE ALSO
 
-**gtm**(1), **gtmd-ipc**(1), **gtm-config**(1)
+**gtm**(1), **gtmd-ipc**(1)

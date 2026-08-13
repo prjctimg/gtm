@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2] – 2026-08-05
+
+### Added
+- **Release pipeline fixes**: Termux builds now compile `termux-elf-cleaner` from source; Termux `.deb` built via `termux-create-package` manifest; TUI-only archives (`gtm-*.tar.gz`) published; `nightly` prerelease trigger (force-tagged `nightly`)
+- **install.sh**: added `--deb`/`--type deb` path for Debian/Ubuntu and Termux; fixed version detection and latest-tag resolution (prerelease-aware)
+- **Wiki**: moved to a dedicated wiki repository (https://github.com/prjctimg/gtm.rs/wiki)
+
 ## [0.1.0] – 2025-07-10
 
 ### Added

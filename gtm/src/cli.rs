@@ -27,10 +27,136 @@
 
 use std::path::PathBuf;
 
+use clap::{Parser, Subcommand};
 use gtm_core::client::DaemonClient;
 use gtm_core::state::RepeatMode;
 
-use crate::CliCommand;
+#[derive(Parser)]
+#[command(
+    name = "gtm",
+    version = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0"),
+    about = "GTM music player"
+)]
+pub struct Args {
+    #[arg(long, short, help = "Run in CLI mode instead of TUI")]
+    pub cli: bool,
+
+    #[arg(long, short, global = true, help = "Daemon socket path")]
+    pub socket: Option<String>,
+
+    #[arg(long, short, global = true, help = "Output as JSON (CLI mode only)")]
+    pub json: bool,
+
+    #[command(subcommand)]
+    pub command: Option<CliCommand>,
+}
+
+#[derive(Subcommand)]
+pub enum CliCommand {
+    Play {
+        path: String,
+        start_pos: Option<f64>,
+    },
+    PlayPause,
+    Pause,
+    Stop,
+    Next,
+    Prev,
+    Seek {
+        position_secs: f64,
+    },
+    Volume {
+        volume: u8,
+    },
+    Shuffle,
+    Repeat {
+        mode: String,
+    },
+    Mute,
+    Crossfade {
+        enabled: bool,
+        duration_secs: Option<u8>,
+    },
+    Queue,
+    QueueAdd {
+        path: String,
+        position: Option<u64>,
+    },
+    QueueAddMany {
+        paths: Vec<String>,
+    },
+    QueueAddFolder {
+        path: String,
+    },
+    QueueRemove {
+        index: u64,
+    },
+    QueueMove {
+        from: u64,
+        to: u64,
+    },
+    QueueClear,
+    QueueSet {
+        paths: Vec<String>,
+        start_idx: u64,
+    },
+    Scan {
+        path: String,
+    },
+    Tracks {
+        filter: Option<String>,
+        sort: Option<String>,
+    },
+    Playlists,
+    CreatePlaylist {
+        name: String,
+    },
+    DeletePlaylist {
+        id: i64,
+    },
+    AddToPlaylist {
+        playlist_id: i64,
+        track_ids: Vec<i64>,
+    },
+    ImportM3u {
+        path: String,
+    },
+    ExportM3u {
+        playlist_id: i64,
+        path: String,
+    },
+    Recent {
+        count: u64,
+    },
+    Favourites,
+    FavouriteAdd {
+        track_id: i64,
+    },
+    FavouriteRemove {
+        track_id: i64,
+    },
+    YtSearch {
+        query: String,
+        filter: Option<String>,
+    },
+    YtPoll,
+    YtCancel,
+    YtResolve {
+        url: String,
+    },
+    /// Fetch lyrics for an "Artist - Title" query via lrclib
+    Lyrics {
+        /// Search query in the form "Artist - Title"
+        query: String,
+    },
+    Search {
+        query: String,
+    },
+    Status,
+    CheckHealth,
+    Ping,
+    Quit,
+}
 
 pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
     let rt = tokio::runtime::Runtime::new().unwrap();
