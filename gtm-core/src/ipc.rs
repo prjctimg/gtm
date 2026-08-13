@@ -167,6 +167,7 @@ pub enum DaemonEvent {
         name: String,
         data: HashMap<String, String>,
     },
+    Heartbeat,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

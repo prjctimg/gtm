@@ -269,9 +269,20 @@ impl Daemon {
             Self::background_scan(bg_state, bg_lib_paths, bg_data_dir, bg_cache_dir, bg_req_tx, bg_event_tx, bg_health).await;
         });
 
+        // Periodic heartbeat so clients can detect stale connections
+        let hb_event_tx = self.inner.event_tx.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(10));
+            loop {
+                interval.tick().await;
+                let _ = hb_event_tx.send(DaemonEvent::Heartbeat);
+            }
+        });
+
         let mut poll_interval = tokio::time::interval(Duration::from_millis(16));
         loop {
             tokio::select! {
+                biased;
                 _ = poll_interval.tick() => {
                     let result = { self.inner.mixer.lock().await.poll() };
                     Self::handle_audio_event(&self.inner, result).await;
@@ -438,9 +449,7 @@ impl Daemon {
             let mut writer = writer;
             let mut event_rx = event_rx;
             loop {
-                // biased: responses take priority over events
                 tokio::select! {
-                    biased;
                     res = reply_rx.recv() => {
                         match res {
                             Some((id, response)) => {
@@ -578,14 +587,25 @@ impl Daemon {
             DaemonReq::Quit => {
                 info!("quit requested");
                 let _ = Self::cmd_stop(inner).await;
+                // Save state before shutdown
+                if !inner.config.test_mode {
+                    let s = inner.state.read().await;
+                    let saved = SavedState::from_state(&s);
+                    drop(s);
+                    if let Err(e) = saved.save(&inner.config.state_file) {
+                        warn!("failed to save state on quit: {e}");
+                    }
+                }
                 let _ = inner.event_tx.send(DaemonEvent::Custom {
                     name: "daemon_quitting".into(),
                     data: [].into(),
                 });
-                tokio::time::sleep(Duration::from_millis(50)).await;
+                // Give clients time to receive the quitting event
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                // Clean up socket files
                 let _ = std::fs::remove_file(&inner.config.socket_path);
-                let pulse_path = format!("{}.pulse", inner.config.socket_path.display());
-                let _ = std::fs::remove_file(&pulse_path);
+                let _ = std::fs::remove_file(&inner.config.socket_pulse_path);
+                info!("daemon shut down cleanly");
                 std::process::exit(0);
             }
         }
