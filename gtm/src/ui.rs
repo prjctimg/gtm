@@ -6,7 +6,7 @@
 
 use std::path::PathBuf;
 
-use crate::app::{App, InputMode, LIBRARY_CATEGORIES};
+use crate::app::{App, Design, InputMode, LIBRARY_CATEGORIES};
 use crate::picker::{Picker, PickerId};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -194,22 +194,24 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
+            Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(help_height),
             Constraint::Length(1),
         ])
         .split(area);
 
-    render_notifications(f, chunks[0], app);
-    render_content(f, chunks[1], app);
+    render_tabs(f, chunks[0], app);
+    render_notifications(f, chunks[1], app);
+    render_content(f, chunks[2], app);
     if show_help {
-        render_help_bar(f, chunks[2], app);
+        render_help_bar(f, chunks[3], app);
     }
-    render_footer(f, chunks[3], app);
+    render_footer(f, chunks[4], app);
 
     // Track info popup on Library tab
     if app.current_tab == Tab::Library && app.track_popup_visible && !app.pickers.is_open() {
-        render_track_popup(f, chunks[1], app);
+        render_track_popup(f, chunks[2], app);
     }
 
     // Render pickers on top of everything
@@ -225,6 +227,33 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
     // The animation trigger fires once per track change: keep it set for this
     // frame only, then let the EffectManager carry the effect to completion.
     app.track_anim_trigger = false;
+}
+
+fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let tabs: [(u16, Tab, &str); 2] =
+        [(1, Tab::Library, "Library"), (2, Tab::Settings, "Settings")];
+    let mut spans: Vec<Span> = Vec::new();
+    for (num, tab, label) in tabs {
+        let active = app.current_tab == tab;
+        let text = format!(" {num} {label} ");
+        let style = if active {
+            if app.design == Design::Classic {
+                Style::default()
+                    .fg(app.theme.selection_fg)
+                    .bg(app.theme.selection_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            }
+        } else {
+            Style::default().fg(app.theme.fg_dim)
+        };
+        spans.push(Span::styled(text, style));
+    }
+    let para = Paragraph::new(Line::from(spans));
+    f.render_widget(para, area);
 }
 
 fn render_notifications(f: &mut ratatui::Frame, area: Rect, app: &App) {

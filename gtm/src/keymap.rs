@@ -31,6 +31,7 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::picker::PickerId;
+use gtm_core::state::Tab;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyContext {
@@ -44,6 +45,7 @@ pub enum KeyboardAction {
     // Tab switching
     NextTab,
     PrevTab,
+    SwitchTab(Tab),
 
     // Cursor
     MoveUp,
@@ -190,6 +192,21 @@ pub fn default_keybindings() -> Keybindings {
                 KeyCode::BackTab.into(),
                 BoundCommand {
                     action: KeyboardAction::PrevTab,
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
+            // Numbered tab switching — 1 = Library, 2 = Settings
+            (
+                KeyCode::Char('1').into(),
+                BoundCommand {
+                    action: KeyboardAction::SwitchTab(Tab::Library),
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
+            (
+                KeyCode::Char('2').into(),
+                BoundCommand {
+                    action: KeyboardAction::SwitchTab(Tab::Settings),
                     contexts: vec![KeyContext::Normal],
                 },
             ),
@@ -667,6 +684,18 @@ mod tests {
         assert!(matches!(
             dispatch(KeyCode::Char('D').into(), KeyContext::Normal),
             Some(KeyboardAction::ClearQueue)
+        ));
+    }
+
+    #[test]
+    fn numbered_tabs_switch_views() {
+        assert!(matches!(
+            dispatch(KeyCode::Char('1').into(), KeyContext::Normal),
+            Some(KeyboardAction::SwitchTab(Tab::Library))
+        ));
+        assert!(matches!(
+            dispatch(KeyCode::Char('2').into(), KeyContext::Normal),
+            Some(KeyboardAction::SwitchTab(Tab::Settings))
         ));
     }
 

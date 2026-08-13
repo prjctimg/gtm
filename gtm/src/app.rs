@@ -1965,6 +1965,16 @@ impl App {
                         }
                         self.dismiss_track_popup();
                     }
+                    Some(KeyboardAction::SwitchTab(tab)) => {
+                        if self.current_tab != tab {
+                            self.current_tab = tab;
+                            self.library_pane_focus = false;
+                            self.settings_pane_focus = false;
+                            self.browse_detail = None;
+                            self.scroll_offset = 0;
+                        }
+                        self.dismiss_track_popup();
+                    }
                     Some(KeyboardAction::OpenOverlay(id)) => {
                         self.pickers.open(id);
                         self.dismiss_track_popup();

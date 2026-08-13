@@ -133,8 +133,8 @@ mod tests {
     fn test_roundtrip_write_and_read() {
         use std::process::{Command, Stdio};
 
-        // Skip unless a wav encoder is available to synthesize a fixture.
-        if Command::new("which").arg("ffmpeg").output().is_err() {
+        // Skip unless ffmpeg is available to synthesize a wav fixture.
+        if Command::new("ffmpeg").arg("-version").output().is_err() {
             return;
         }
         let dir = std::env::temp_dir().join(format!("gtm_tags_test_{}", std::process::id()));

@@ -17,7 +17,7 @@ repository = "https://github.com/prjctimg/gtm.rs"
 homepage = "https://github.com/prjctimg/gtm.rs"
 keywords = ["music", "player", "tui", "audio", "youtube"]
 categories = ["command-line-utilities", "multimedia::audio"]
-readme = "../README.md"
+readme = "README.md"
 
 [profile.release]
 lto = "thin"
