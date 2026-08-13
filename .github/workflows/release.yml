@@ -1,3 +1,24 @@
+# Release pipeline — builds gtm + gtmd for Linux (x86_64, ARM) and macOS.
+#
+# Pipeline:
+#
+#   tag job         → derive version, ensure tag exists
+#     │
+#     ▼
+#   build job       → for each OS/arch:
+#     │                1. cargo build --release
+#     │                2. Generate manpages (pandoc) + completions (release-gen)
+#     │                3. Package archives:
+#     │                   gtm-full-{platform}.tar.gz  (gtm + gtmd + man + completions)
+#     │                   gtmd-{platform}.tar.gz      (gtmd + daemon manpages + service)
+#     │                4. Build .deb packages:
+#     │                   gtm-full_{version}_{arch}.deb (gtm + gtmd + service)
+#     │                   gtmd_{version}_{arch}.deb
+#     │                5. Upload build artifacts
+#     │
+#     ▼
+#   release job     → create GitHub Release with all archives + debs + manpages
+#
 name: Release
 
 on:
@@ -83,64 +104,107 @@ jobs:
           esac
           ext=""
           cd target/release
-          for bin in gtmd gtm gtm-tui; do
+          for bin in gtmd gtm; do
             cp "${bin}${ext}" "${bin}-${platform}"
           done
           echo "platform=${platform}" >> "$GITHUB_ENV"
 
+      # Archive layout:
+      #
+      #   gtm-full-{platform}.tar.gz
+      #   ├── gtm-{platform}           # combined TUI+CLI binary
+      #   ├── gtmd-{platform}          # daemon binary
+      #   ├── man/                     # all manpages (gtm.1, gtmd.1, gtmd-ipc.1)
+      #   └── completions/             # shell completions for both binaries
+      #
+      #   gtmd-{platform}.tar.gz
+      #   ├── gtmd-{platform}          # daemon binary (only)
+      #   ├── man/                     # daemon manpages
+      #   └── dist/gtmd.service        # systemd service unit
+      #
       - name: Create component archives
         shell: bash
         run: |
           cd target/release
-          # gtm
-          tar czf "gtm-${platform}.tar.gz" \
+          platform="${{ env.platform }}"
+          # gtm-full: gtm + gtmd binaries + completions + all manpages
+          tar czf "gtm-full-${platform}.tar.gz" \
             "gtm-${platform}" \
-            ../../artifacts/man/gtm.1
-          # gtmd
+            "gtmd-${platform}" \
+            ../../artifacts/man/gtm.1 \
+            ../../artifacts/man/gtmd.1 \
+            ../../artifacts/man/gtmd-ipc.1 \
+            ../../artifacts/completions/gtm.bash \
+            ../../artifacts/completions/_gtm \
+            ../../artifacts/completions/gtm.fish \
+            ../../artifacts/completions/gtm.ps1 \
+            ../../artifacts/completions/gtm.elv \
+            ../../artifacts/completions/gtmd.bash \
+            ../../artifacts/completions/_gtmd \
+            ../../artifacts/completions/gtmd.fish \
+            ../../artifacts/completions/gtmd.ps1 \
+            ../../artifacts/completions/gtmd.elv
+          # gtmd: daemon binary + daemon manpages + systemd service
           tar czf "gtmd-${platform}.tar.gz" \
             "gtmd-${platform}" \
             ../../artifacts/man/gtmd.1 \
+            ../../artifacts/man/gtmd-ipc.1 \
             ../../dist/gtmd.service
-          # gtm-tui
-          tar czf "gtm-tui-${platform}.tar.gz" \
-            "gtm-tui-${platform}"
 
+      # Debian package layout:
+      #
+      #   gtm-full_{version}_{arch}.deb      ← renamed from gtm crate
+      #   ├── usr/bin/gtm                    # combined TUI+CLI binary
+      #   ├── usr/bin/gtmd                   # daemon binary (extra asset)
+      #   ├── usr/lib/systemd/user/          # systemd service
+      #   ├── usr/share/man/                 # all manpages
+      #   └── usr/share/completions/         # shell completions
+      #
+      #   gtmd_{version}_{arch}.deb
+      #   ├── usr/bin/gtmd                   # daemon binary (only)
+      #   ├── usr/lib/systemd/user/          # systemd service
+      #   └── usr/share/man/                 # daemon manpages
+      #
       - name: Install cargo-deb and build Debian packages (Linux only)
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           cargo install cargo-deb
-          # Copy generated assets into each package's deb-assets/ directory
-          # (cargo deb does not support ../ in asset paths)
-          for pkg in gtmd gtm-cli gtm-tui; do
+          for pkg in gtmd gtm; do
             mkdir -p "$pkg/deb-assets/man" "$pkg/deb-assets/completions"
             cp -r artifacts/man/* "$pkg/deb-assets/man/"
             cp -r artifacts/completions/* "$pkg/deb-assets/completions/"
           done
+          cp target/release/gtmd gtm/deb-assets/gtmd
+          cp dist/gtmd.service gtm/deb-assets/
           cp dist/gtmd.service gtmd/deb-assets/
-          for pkg in gtmd gtm-cli gtm-tui; do
-            cargo deb --package "$pkg"
-          done
-          # Rename debs to include arch
+          cargo deb --package gtm
+          cargo deb --package gtmd
           arch="$(uname -m)"
-          for deb in target/debian/*.deb; do
+          version="${{ needs.tag.outputs.tag }}"
+          version="${version#v}"
+          for deb in target/debian/gtm_*.deb; do
+            mv "$deb" "target/debian/gtm-full_${version}-1_${arch}.deb"
+          done
+          for deb in target/debian/gtmd_*.deb; do
             base="$(basename "$deb" .deb)"
             mv "$deb" "target/debian/${base}_${arch}.deb"
           done
-          # Clean up deb-assets dirs
-          for pkg in gtmd gtm-cli gtm-tui; do
+          for pkg in gtmd gtm; do
             rm -rf "$pkg/deb-assets"
           done
 
+      # Upload per-OS build artifacts so the release job can collect them
       - uses: actions/upload-artifact@v4
         with:
           name: artifacts-${{ matrix.os }}
           path: |
-            target/release/gtm-*
+            target/release/gtm-full-*
             target/release/gtmd-*
-            target/release/gtm-tui-*
             artifacts/
             target/debian/*.deb
 
+  # Collects all platform artifacts and creates a single GitHub Release
+  # with platform-specific binaries, archives, debs, manpages, and completions.
   release:
     needs: [tag, build]
     runs-on: ubuntu-latest
@@ -157,7 +221,7 @@ jobs:
       - name: Collect release files
         run: |
           echo "=== Release artifacts ==="
-          find . -type f \( -name "gtm-*" -o -name "gtmd-*" -o -name "gtm-tui-*" -o -name "*.deb" -o -path "*/man/*" -o -path "*/completions/*" \) | sort
+          find . -type f \( -name "gtm-full-*" -o -name "gtmd-*" -o -name "*.deb" -o -path "*/man/*" -o -path "*/completions/*" \) | sort
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -165,15 +229,12 @@ jobs:
           name: ${{ needs.tag.outputs.tag }}
           generate_release_notes: true
           files: |
-            target/release/gtm-*-linux
-            target/release/gtm-*-darwin
+            target/release/gtm-full-*-linux
+            target/release/gtm-full-*-darwin
             target/release/gtmd-*-linux
             target/release/gtmd-*-darwin
-            target/release/gtm-tui-*-linux
-            target/release/gtm-tui-*-darwin
-            target/release/gtm-*.tar.gz
+            target/release/gtm-full-*.tar.gz
             target/release/gtmd-*.tar.gz
-            target/release/gtm-tui-*.tar.gz
             artifacts/man/*
             artifacts/completions/*
             target/debian/*.deb

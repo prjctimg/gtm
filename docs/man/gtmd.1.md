@@ -15,7 +15,7 @@ gtmd - background music playback daemon
 
 **gtmd** is a background daemon that provides music playback, queue
 management, and library management services. It listens on a Unix socket
-for commands from clients such as **gtm**(1) and **gtm-tui**(1).
+for commands from clients such as **gtm**(1).
 
 Audio playback is handled by the **rodio** backend with **symphonia** for
 format decoding. The daemon supports MP3, FLAC, Ogg Vorbis, Opus, WAV,
@@ -31,8 +31,8 @@ The daemon is built around an event-driven, multi-threaded core:
                         │                                  │
   ┌──────────┐          │  ┌────────────┐                  │
   │ Clients  │  bincode │  │   IPC      │  ┌────────────┐  │
-  │ (gtm,    │─────────▶│  │  Listener  │──│  Router    │  │
-  │  gtm-tui)│          │  │  (tokio)   │  └─────┬──────┘  │
+  │ (gtm)    │─────────▶│  │  Listener  │──│  Router    │  │
+  │          │          │  │  (tokio)   │  └─────┬──────┘  │
   └──────────┘          │  └────────────┘        │         │
                         │                        │         │
                         │                ┌───────▼──────┐  │
@@ -169,4 +169,4 @@ Stopped → Playing
 
 # SEE ALSO
 
-**gtm**(1), **gtm-tui**(1)
+**gtm**(1), **gtmd-ipc**(1)

@@ -1,0 +1,425 @@
+//! Keybinding dispatch system with context-aware matching.
+//!
+//! ```text
+//!  Key press
+//!      │
+//!      ▼
+//!  ┌──────────────────────┐
+//!  │ key_matches()        │  Scan binding list for matching KeyEvent
+//!  │ && context matches   │  AND current KeyContext (Normal, Filter, etc.)
+//!  └──────────┬───────────┘
+//!             │ hit
+//!             ▼
+//!  ┌──────────────────────┐
+//!  │ KeyboardAction enum  │  → e.g. PlayPause, NextTab, Quit, VolumeUp
+//!  └──────────────────────┘
+//!
+//!  Contexts:
+//!    Global  — active everywhere (q, space, ?)
+//!    Normal  — main view mode (tab, cursor, volume)
+//!    List    — when a list widget has focus (j/k, enter)
+//!    Filter  — typing a search query
+//!    Overlay — modal overlay is open
+//! ```
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use gtm_core::state::Tab;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyContext {
+    Global,
+    Normal,
+    Filter,
+    Overlay,
+    List,
+    MoveMode,
+}
+
+#[derive(Debug, Clone)]
+pub enum KeyboardAction {
+    // Tab switching
+    NextTab,
+    PrevTab,
+    SwitchTab(Tab),
+
+    // Cursor
+    MoveUp,
+    MoveDown,
+    PageUp,
+    PageDown,
+    Top,
+    Bottom,
+
+    // Selection / action
+    Select,
+    EnqueueNext,
+    EnqueueEnd,
+    Delete,
+    Move,
+
+    // Filter
+    EnterFilter,
+    EnterCommand,
+    ClearFilter,
+    Confirm,
+
+    // Playback
+    PlayPause,
+    Next,
+    Prev,
+    VolumeUp,
+    VolumeDown,
+    SeekForward,
+    SeekBackward,
+    ToggleShuffle,
+    CycleRepeat,
+    ToggleMute,
+
+    // Navigation
+    Back,
+
+    // Meta
+    Quit,
+    ReloadConfig,
+    ToggleHelp,
+    Custom(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct BoundCommand {
+    pub action: KeyboardAction,
+    pub contexts: Vec<KeyContext>,
+    pub description: &'static str,
+}
+
+#[derive(Debug, Clone)]
+pub struct Keybindings {
+    pub bindings: Vec<(KeyEvent, BoundCommand)>,
+}
+
+impl Keybindings {
+    /// Find the first binding whose KeyEvent matches and whose contexts
+    /// include the current `context`.  Returns `None` if no binding matches.
+    pub fn dispatch(&self, key: KeyEvent, context: KeyContext) -> Option<KeyboardAction> {
+        for (binding_key, cmd) in &self.bindings {
+            if key_matches(&key, binding_key) && cmd.contexts.contains(&context) {
+                return Some(cmd.action.clone());
+            }
+        }
+        None
+    }
+}
+
+fn key_matches(event: &KeyEvent, binding: &KeyEvent) -> bool {
+    event.code == binding.code && event.modifiers == binding.modifiers
+}
+
+/// Parse a key name string into a KeyEvent.  Used for configurability
+/// (e.g. from a config file) though currently only called from tests.
+pub fn parse_keycode(name: &str) -> KeyEvent {
+    match name {
+        "tab" | "Tab" => KeyCode::Tab.into(),
+        "backtab" | "BackTab" => KeyCode::BackTab.into(),
+        "enter" | "Enter" => KeyCode::Enter.into(),
+        "esc" | "Escape" => KeyCode::Esc.into(),
+        "space" => KeyCode::Char(' ').into(),
+        "up" | "Up" => KeyCode::Up.into(),
+        "down" | "Down" => KeyCode::Down.into(),
+        "left" | "Left" => KeyCode::Left.into(),
+        "right" | "Right" => KeyCode::Right.into(),
+        "home" | "Home" => KeyCode::Home.into(),
+        "end" | "End" => KeyCode::End.into(),
+        "pageup" | "PageUp" => KeyCode::PageUp.into(),
+        "pagedown" | "PageDown" => KeyCode::PageDown.into(),
+        "delete" | "Del" => KeyCode::Delete.into(),
+        "backspace" | "BS" => KeyCode::Backspace.into(),
+        "f1" => KeyCode::F(1).into(),
+        "f2" => KeyCode::F(2).into(),
+        "f3" => KeyCode::F(3).into(),
+        "f4" => KeyCode::F(4).into(),
+        "f5" => KeyCode::F(5).into(),
+        "f6" => KeyCode::F(6).into(),
+        "f7" => KeyCode::F(7).into(),
+        "f8" => KeyCode::F(8).into(),
+        "f9" => KeyCode::F(9).into(),
+        "f10" => KeyCode::F(10).into(),
+        "f11" => KeyCode::F(11).into(),
+        "f12" => KeyCode::F(12).into(),
+        "ctrl-c" | "CtrlC" => KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+        "ctrl-d" | "CtrlD" => KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        "ctrl-u" | "CtrlU" => KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        "ctrl-r" | "CtrlR" => KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+        s if s.len() == 1 => KeyCode::Char(s.chars().next().unwrap()).into(),
+        _ => KeyCode::Char('?').into(),
+    }
+}
+
+/// Build the default set of key bindings.  Layered by context:
+///
+///   Global  — q (quit), ? (help), space (play/pause)
+///   Normal  — tab switching, cursor, volume, filters, playback control
+///   List    — j/k, enter, delete
+///
+/// Bindings are scanned in order; the first match wins.
+pub fn default_keybindings() -> Keybindings {
+    Keybindings {
+        bindings: vec![
+            // Global — Quit
+            (
+                KeyCode::Char('q').into(),
+                BoundCommand {
+                    action: KeyboardAction::Quit,
+                    contexts: vec![KeyContext::Global, KeyContext::Normal],
+                    description: "Quit",
+                },
+            ),
+            // Global — ToggleHelp
+            (
+                KeyCode::Char('?').into(),
+                BoundCommand {
+                    action: KeyboardAction::ToggleHelp,
+                    contexts: vec![KeyContext::Global, KeyContext::Normal],
+                    description: "Toggle help",
+                },
+            ),
+            // Command palette (:)
+            (
+                KeyCode::Char(':').into(),
+                BoundCommand {
+                    action: KeyboardAction::EnterCommand,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Open command palette",
+                },
+            ),
+            // Tab switching — Tab / Shift-Tab
+            (
+                KeyCode::Tab.into(),
+                BoundCommand {
+                    action: KeyboardAction::NextTab,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Next tab",
+                },
+            ),
+            (
+                KeyCode::BackTab.into(),
+                BoundCommand {
+                    action: KeyboardAction::PrevTab,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Previous tab",
+                },
+            ),
+            // Cursor — arrow keys
+            (
+                KeyCode::Up.into(),
+                BoundCommand {
+                    action: KeyboardAction::MoveUp,
+                    contexts: vec![KeyContext::List, KeyContext::Normal],
+                    description: "Move up",
+                },
+            ),
+            (
+                KeyCode::Down.into(),
+                BoundCommand {
+                    action: KeyboardAction::MoveDown,
+                    contexts: vec![KeyContext::List, KeyContext::Normal],
+                    description: "Move down",
+                },
+            ),
+            // Cursor — vim-style j/k
+            (
+                KeyCode::Char('k').into(),
+                BoundCommand {
+                    action: KeyboardAction::MoveUp,
+                    contexts: vec![KeyContext::List, KeyContext::Normal],
+                    description: "Move up",
+                },
+            ),
+            (
+                KeyCode::Char('j').into(),
+                BoundCommand {
+                    action: KeyboardAction::MoveDown,
+                    contexts: vec![KeyContext::List, KeyContext::Normal],
+                    description: "Move down",
+                },
+            ),
+            // Playback — space, n, p
+            (
+                KeyCode::Char(' ').into(),
+                BoundCommand {
+                    action: KeyboardAction::PlayPause,
+                    contexts: vec![KeyContext::Global, KeyContext::Normal],
+                    description: "Play / Pause",
+                },
+            ),
+            (
+                KeyCode::Char('n').into(),
+                BoundCommand {
+                    action: KeyboardAction::Next,
+                    contexts: vec![KeyContext::Global, KeyContext::Normal],
+                    description: "Next track",
+                },
+            ),
+            (
+                KeyCode::Char('p').into(),
+                BoundCommand {
+                    action: KeyboardAction::Prev,
+                    contexts: vec![KeyContext::Global, KeyContext::Normal],
+                    description: "Previous track",
+                },
+            ),
+            // Volume — +, =, -
+            (
+                KeyCode::Char('+').into(),
+                BoundCommand {
+                    action: KeyboardAction::VolumeUp,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Volume up",
+                },
+            ),
+            (
+                KeyCode::Char('=').into(),
+                BoundCommand {
+                    action: KeyboardAction::VolumeUp,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Volume up",
+                },
+            ),
+            (
+                KeyCode::Char('-').into(),
+                BoundCommand {
+                    action: KeyboardAction::VolumeDown,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Volume down",
+                },
+            ),
+            // Mute — m
+            (
+                KeyCode::Char('m').into(),
+                BoundCommand {
+                    action: KeyboardAction::ToggleMute,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Toggle mute",
+                },
+            ),
+            // Repeat — r
+            (
+                KeyCode::Char('r').into(),
+                BoundCommand {
+                    action: KeyboardAction::CycleRepeat,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Cycle repeat",
+                },
+            ),
+            // Shuffle — s
+            (
+                KeyCode::Char('s').into(),
+                BoundCommand {
+                    action: KeyboardAction::ToggleShuffle,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Toggle shuffle",
+                },
+            ),
+            // Seek — left/right arrows
+            (
+                KeyCode::Right.into(),
+                BoundCommand {
+                    action: KeyboardAction::SeekForward,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Seek forward",
+                },
+            ),
+            (
+                KeyCode::Left.into(),
+                BoundCommand {
+                    action: KeyboardAction::SeekBackward,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Seek backward",
+                },
+            ),
+            // Filter mode — /
+            (
+                KeyCode::Char('/').into(),
+                BoundCommand {
+                    action: KeyboardAction::EnterFilter,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Enter filter mode",
+                },
+            ),
+            // Select — Enter
+            (
+                KeyCode::Enter.into(),
+                BoundCommand {
+                    action: KeyboardAction::Select,
+                    contexts: vec![KeyContext::List, KeyContext::Normal],
+                    description: "Select item",
+                },
+            ),
+            // Delete — Del / d
+            (
+                KeyCode::Delete.into(),
+                BoundCommand {
+                    action: KeyboardAction::Delete,
+                    contexts: vec![KeyContext::List, KeyContext::Normal],
+                    description: "Delete item",
+                },
+            ),
+            (
+                KeyCode::Char('d').into(),
+                BoundCommand {
+                    action: KeyboardAction::Delete,
+                    contexts: vec![KeyContext::List, KeyContext::Normal],
+                    description: "Delete item",
+                },
+            ),
+            // Direct tab switching by number — 1 through 6
+            (
+                KeyCode::Char('1').into(),
+                BoundCommand {
+                    action: KeyboardAction::SwitchTab(Tab::NowPlaying),
+                    contexts: vec![KeyContext::Normal],
+                    description: "Now Playing tab",
+                },
+            ),
+            (
+                KeyCode::Char('2').into(),
+                BoundCommand {
+                    action: KeyboardAction::SwitchTab(Tab::Library),
+                    contexts: vec![KeyContext::Normal],
+                    description: "Library tab",
+                },
+            ),
+            (
+                KeyCode::Char('3').into(),
+                BoundCommand {
+                    action: KeyboardAction::SwitchTab(Tab::Queue),
+                    contexts: vec![KeyContext::Normal],
+                    description: "Queue tab",
+                },
+            ),
+            (
+                KeyCode::Char('4').into(),
+                BoundCommand {
+                    action: KeyboardAction::SwitchTab(Tab::YouTube),
+                    contexts: vec![KeyContext::Normal],
+                    description: "YouTube tab",
+                },
+            ),
+            (
+                KeyCode::Char('5').into(),
+                BoundCommand {
+                    action: KeyboardAction::SwitchTab(Tab::Settings),
+                    contexts: vec![KeyContext::Normal],
+                    description: "Settings tab",
+                },
+            ),
+            (
+                KeyCode::Char('6').into(),
+                BoundCommand {
+                    action: KeyboardAction::SwitchTab(Tab::Help),
+                    contexts: vec![KeyContext::Normal],
+                    description: "Help tab",
+                },
+            ),
+        ],
+    }
+}

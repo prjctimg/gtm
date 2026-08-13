@@ -1,13 +1,77 @@
-use gtm_core::state::{PlaybackStatus, RepeatMode, Tab};
+//! TUI rendering with ratatui — 3-row layout with tabs, content, and footer.
+//!
+//! ```text
+//!  ┌───────────────────────────────────────────┐
+//!  │  Tab bar: [1]NowPlaying [2]Library ...    │  ← render_tabs()
+//!  │  Status: ▶ Vol: 80%                       │
+//!  ├───────────────────────────────────────────┤
+//!  │                                           │
+//!  │  Content area (per-tab):                  │  ← render_content()
+//!  │  • NowPlaying: metadata, progress, vol    │
+//!  │  • Library/Queue: filterable track list   │
+//!  │  • YouTube: search results                │
+//!  │  • Settings: volume/repeat/shuffle/etc    │
+//!  │  • Help: keyboard reference               │
+//!  │                                           │
+//!  ├───────────────────────────────────────────┤
+//!  │  Footer: key hints / search input / cmd   │  ← render_footer()
+//!  │  Error bar (overlaid, red background)     │
+//!  └───────────────────────────────────────────┘
+//! ```
+
+use std::path::PathBuf;
+
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
+use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Gauge, List, ListItem, Paragraph, Tabs};
-use ratatui::Frame;
+use ratatui::Terminal;
+use tokio::io;
 
 use crate::app::{App, InputMode};
+use gtm_core::state::{PlaybackStatus, RepeatMode, Tab};
 
-pub fn render(f: &mut Frame, app: &mut App) {
+pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+    let socket_path = socket
+        .map(PathBuf::from)
+        .unwrap_or_else(default_socket);
+
+    let rt = tokio::runtime::Runtime::new()?;
+    rt.block_on(async {
+        color_eyre::install()?;
+
+        enable_raw_mode()?;
+        let mut stdout = io::stdout();
+        crossterm::execute!(stdout, EnterAlternateScreen)?;
+        let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+
+        let panic_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |panic| {
+            let _ = disable_raw_mode();
+            let mut stdout = io::stdout();
+            let _ = crossterm::execute!(stdout, LeaveAlternateScreen);
+            panic_hook(panic);
+        }));
+
+        let res = App::new(&socket_path).await?.run(&mut terminal).await;
+
+        let _ = disable_raw_mode();
+        let mut stdout = io::stdout();
+        let _ = crossterm::execute!(stdout, LeaveAlternateScreen);
+
+        res
+    })
+}
+
+fn default_socket() -> PathBuf {
+    let runtime =
+        std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".into());
+    PathBuf::from(runtime).join("gtmd.socket")
+}
+
+pub fn render(f: &mut ratatui::Frame, app: &mut App) {
     let area = f.area();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -23,7 +87,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     render_footer(f, chunks[2], app);
 }
 
-fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
+fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let tab_names = vec![
         " NowPlaying ",
         " Library ",
@@ -71,7 +135,11 @@ fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
         RepeatMode::All => " \u{1F500}",
     };
 
-    let shuffle_icon = if app.state.shuffle { " \u{1F500}" } else { "" };
+    let shuffle_icon = if app.state.shuffle {
+        " \u{1F500}"
+    } else {
+        ""
+    };
 
     let status_line = format!(" {status_icon} Vol:{vol}{repeat_icon}{shuffle_icon} ");
 
@@ -95,15 +163,12 @@ fn render_tabs(f: &mut Frame, area: Rect, app: &App) {
 
     f.render_widget(tabs, title_chunks[0]);
 
-    let status_para = Paragraph::new(status_line).style(
-        Style::default()
-            .fg(Color::Green)
-            .add_modifier(Modifier::BOLD),
-    );
+    let status_para = Paragraph::new(status_line)
+        .style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD));
     f.render_widget(status_para, title_chunks[1]);
 }
 
-fn render_content(f: &mut Frame, area: Rect, app: &mut App) {
+fn render_content(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     match app.current_tab {
         Tab::NowPlaying => render_now_playing(f, area, app),
         Tab::Library => render_list(f, area, app, "Library", &app.tracks_cache),
@@ -114,7 +179,7 @@ fn render_content(f: &mut Frame, area: Rect, app: &mut App) {
     }
 }
 
-fn render_now_playing(f: &mut Frame, area: Rect, app: &App) {
+fn render_now_playing(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -126,7 +191,6 @@ fn render_now_playing(f: &mut Frame, area: Rect, app: &App) {
         .margin(2)
         .split(area);
 
-    // Track info
     let track = match &app.state.current_track {
         Some(t) => t,
         None => {
@@ -172,7 +236,6 @@ fn render_now_playing(f: &mut Frame, area: Rect, app: &App) {
     let info_para = Paragraph::new(info_text).block(info_block);
     f.render_widget(info_para, chunks[0]);
 
-    // Progress bar
     let dur = track.duration;
     let pos = app.state.time_pos;
     let ratio = if dur > 0.0 { (pos / dur) as f64 } else { 0.0 };
@@ -195,7 +258,6 @@ fn render_now_playing(f: &mut Frame, area: Rect, app: &App) {
         .ratio(ratio);
     f.render_widget(gauge, chunks[1]);
 
-    // Volume bar
     let vol_ratio = if app.state.mute {
         0.0
     } else {
@@ -222,9 +284,8 @@ fn render_now_playing(f: &mut Frame, area: Rect, app: &App) {
         .ratio(vol_ratio);
     f.render_widget(vol_gauge, chunks[2]);
 
-    // Controls hint
     let controls = Paragraph::new(
-        "[Space] Play/Pause  [n] Next  [b] Prev  [+/-] Volume  [m] Mute  [r] Repeat  [h] Shuffle  [:] Cmd",
+        " [Space]Play/Pause  [n]Next  [p]Prev  [+/-]Vol  [m]Mute  [r]Repeat  [h]Shuffle  [:]Cmd  [q]Quit ",
     )
     .alignment(Alignment::Center)
     .style(Style::default().fg(Color::DarkGray));
@@ -232,7 +293,7 @@ fn render_now_playing(f: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_list(
-    f: &mut Frame,
+    f: &mut ratatui::Frame,
     area: Rect,
     app: &App,
     title: &str,
@@ -280,25 +341,31 @@ fn render_list(
     f.render_widget(list, area);
 }
 
-fn render_queue(f: &mut Frame, area: Rect, app: &mut App) {
-    let filtered: Vec<(usize, &gtm_core::track::TrackInfo)> = if app.search_query.is_empty() {
-        app.queue_cache.iter().enumerate().collect()
-    } else {
-        let q = app.search_query.to_lowercase();
-        app.queue_cache
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| {
-                t.title.to_lowercase().contains(&q) || t.artist.to_lowercase().contains(&q)
-            })
-            .collect()
-    };
+fn render_queue(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let filtered: Vec<(usize, &gtm_core::track::TrackInfo)> =
+        if app.search_query.is_empty() {
+            app.queue_cache.iter().enumerate().collect()
+        } else {
+            let q = app.search_query.to_lowercase();
+            app.queue_cache
+                .iter()
+                .enumerate()
+                .filter(|(_, t)| {
+                    t.title.to_lowercase().contains(&q)
+                        || t.artist.to_lowercase().contains(&q)
+                })
+                .collect()
+        };
 
     let list_items: Vec<ListItem> = filtered
         .iter()
         .map(|(idx, track)| {
             let is_current = *idx == app.queue_cursor;
-            let prefix = if is_current { " \u{25B6} " } else { "   " };
+            let prefix = if is_current {
+                " \u{25B6} "
+            } else {
+                "   "
+            };
             let dur = format_duration(track.duration as u64);
             let content = format!(
                 "{prefix}#{} {} - {} [{}]",
@@ -323,7 +390,7 @@ fn render_queue(f: &mut Frame, area: Rect, app: &mut App) {
     f.render_widget(list, area);
 }
 
-fn render_yt_results(f: &mut Frame, area: Rect, app: &App) {
+fn render_yt_results(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let len = app.yt_results_cache.len();
     let sel = if len > 0 {
         app.scroll_offset.min(len - 1)
@@ -357,7 +424,7 @@ fn render_yt_results(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(list, area);
 }
 
-fn render_settings(f: &mut Frame, area: Rect, app: &App) {
+fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let items = vec![
         format!(
             "Volume:    {}% {}",
@@ -365,24 +432,17 @@ fn render_settings(f: &mut Frame, area: Rect, app: &App) {
             if app.state.mute { "(MUTED)" } else { "" }
         ),
         format!("Repeat:    {:?}", app.state.repeat),
-        format!(
-            "Shuffle:   {}",
-            if app.state.shuffle { "ON" } else { "OFF" }
-        ),
+        format!("Shuffle:   {}", if app.state.shuffle { "ON" } else { "OFF" }),
         format!("Mute:      {}", if app.state.mute { "ON" } else { "OFF" }),
         format!(
             "Crossfade: {} ({}s)",
-            if app
-                .state
+            app.state
                 .crossfade
                 .as_ref()
                 .map(|c| c.enabled)
                 .unwrap_or(false)
-            {
-                "ON"
-            } else {
-                "OFF"
-            },
+                .then_some("ON")
+                .unwrap_or("OFF"),
             app.state
                 .crossfade
                 .as_ref()
@@ -405,7 +465,7 @@ fn render_settings(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(list, area);
 }
 
-fn render_help(f: &mut Frame, area: Rect) {
+fn render_help(f: &mut ratatui::Frame, area: Rect) {
     let help_text = vec![
         Line::from(Span::styled(
             "Keyboard Shortcuts",
@@ -413,51 +473,63 @@ fn render_help(f: &mut Frame, area: Rect) {
         )),
         Line::from(""),
         Line::from(vec![
-            Span::styled("1-6    ", Style::default().fg(Color::Cyan)),
+            Span::styled("1-6      ", Style::default().fg(Color::Cyan)),
             Span::from("Switch tabs"),
         ]),
         Line::from(vec![
-            Span::styled("Space/p", Style::default().fg(Color::Cyan)),
+            Span::styled("Tab/Shft ", Style::default().fg(Color::Cyan)),
+            Span::from("Next/Prev tab"),
+        ]),
+        Line::from(vec![
+            Span::styled("Space/p  ", Style::default().fg(Color::Cyan)),
             Span::from("Play / Pause"),
         ]),
         Line::from(vec![
-            Span::styled("s      ", Style::default().fg(Color::Cyan)),
+            Span::styled("s    ", Style::default().fg(Color::Cyan)),
             Span::from("Search/filter current tab"),
         ]),
         Line::from(vec![
-            Span::styled("n/b    ", Style::default().fg(Color::Cyan)),
+            Span::styled("n / p    ", Style::default().fg(Color::Cyan)),
             Span::from("Next / Previous track"),
         ]),
         Line::from(vec![
-            Span::styled("+/-    ", Style::default().fg(Color::Cyan)),
+            Span::styled("+/-      ", Style::default().fg(Color::Cyan)),
             Span::from("Volume up/down"),
         ]),
         Line::from(vec![
-            Span::styled("m      ", Style::default().fg(Color::Cyan)),
+            Span::styled("m        ", Style::default().fg(Color::Cyan)),
             Span::from("Toggle mute"),
         ]),
         Line::from(vec![
-            Span::styled("r      ", Style::default().fg(Color::Cyan)),
+            Span::styled("r        ", Style::default().fg(Color::Cyan)),
             Span::from("Cycle repeat mode"),
         ]),
         Line::from(vec![
-            Span::styled("h      ", Style::default().fg(Color::Cyan)),
+            Span::styled("h        ", Style::default().fg(Color::Cyan)),
             Span::from("Toggle shuffle"),
         ]),
         Line::from(vec![
-            Span::styled("d/Del  ", Style::default().fg(Color::Cyan)),
+            Span::styled("d/Del    ", Style::default().fg(Color::Cyan)),
             Span::from("Remove from queue"),
         ]),
         Line::from(vec![
-            Span::styled("Enter  ", Style::default().fg(Color::Cyan)),
+            Span::styled("Enter    ", Style::default().fg(Color::Cyan)),
             Span::from("Play selected item"),
         ]),
         Line::from(vec![
-            Span::styled(":      ", Style::default().fg(Color::Cyan)),
-            Span::from("Command mode (e.g. :100 to set volume)"),
+            Span::styled("j/k/↑/↓  ", Style::default().fg(Color::Cyan)),
+            Span::from("Navigate lists"),
         ]),
         Line::from(vec![
-            Span::styled("q/Esc  ", Style::default().fg(Color::Cyan)),
+            Span::styled(":        ", Style::default().fg(Color::Cyan)),
+            Span::from("Command mode"),
+        ]),
+        Line::from(vec![
+            Span::styled("?        ", Style::default().fg(Color::Cyan)),
+            Span::from("Toggle this help"),
+        ]),
+        Line::from(vec![
+            Span::styled("q/Esc    ", Style::default().fg(Color::Cyan)),
             Span::from("Quit"),
         ]),
     ];
@@ -473,11 +545,11 @@ fn render_help(f: &mut Frame, area: Rect) {
     f.render_widget(p, area);
 }
 
-fn render_footer(f: &mut Frame, area: Rect, app: &App) {
+fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
     match app.input_mode {
         InputMode::Normal => {
             let footer = Paragraph::new(
-                " [1]NowPlaying [2]Library [3]Queue [4]YouTube [5]Settings [6]Help | Space:Pause n:Next b:Prev +/-:Vol :Cmd q:Quit ",
+                " [1]NowPlaying [2]Library [3]Queue [4]YouTube [5]Settings [6]Help | Space:Pause n:Next p:Prev +/-:Vol :Cmd ?:Help q:Quit ",
             )
             .style(
                 Style::default()
@@ -502,7 +574,6 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
         }
     }
 
-    // Error overlay
     if let Some(ref err) = app.error_message {
         let err_text = format!(" Error: {err} ");
         let err_area = Rect {
@@ -511,8 +582,8 @@ fn render_footer(f: &mut Frame, area: Rect, app: &App) {
             width: err_text.len() as u16,
             height: 1,
         };
-        let err_para = Paragraph::new(err_text.clone())
-            .style(Style::default().fg(Color::White).bg(Color::Red));
+        let err_para =
+            Paragraph::new(err_text.clone()).style(Style::default().fg(Color::White).bg(Color::Red));
         f.render_widget(Clear, err_area);
         f.render_widget(err_para, err_area);
     }

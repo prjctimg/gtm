@@ -14,8 +14,7 @@ A modular terminal-based music player daemon and client suite written in Rust.
 | `gtm-core` | Shared types, IPC protocol, state machine, and `DaemonClient` |
 | `gtm-audio` | Audio playback backend (rodio + symphonia) |
 | `gtmd` | Daemon — manages queue, library, IPC socket |
-| `gtm-cli` | Command-line client for the daemon |
-| `gtm-tui` | Terminal UI client (ratatui) |
+| `gtm` | Client — Terminal UI (TUI) and command-line interface |
 | `gtm-mpris` | MPRIS D-Bus interface (optional) |
 
 ## Build
@@ -33,7 +32,7 @@ cargo test --workspace
 ### Feature flags
 
 - `gtmd` — `mpris` (default): enables the MPRIS D-Bus interface
-- `gtm-cli` — `completions`: generates shell completions
+- `gtm` — `completions`: generates shell completions
 - `gtm-core` — `debug-fail`: enables debug/test failure injection
 
 ## Usage
@@ -42,13 +41,13 @@ cargo test --workspace
 # Start the daemon
 gtmd
 
-# CLI client
-gtm status
-gtm play /path/to/track.opus
-gtm next
+# Terminal UI (default, no args)
+gtm
 
-# Terminal UI
-gtm-tui
+# CLI mode (-c flag)
+gtm -c status
+gtm -c play /path/to/track.opus
+gtm -c next
 ```
 
 ## IPC Protocol

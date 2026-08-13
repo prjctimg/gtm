@@ -3,6 +3,21 @@
 // Daemon state machine: transitions, event application, and debug invariants
 //
 // This is free software released under the GPL-3.0 license.
+//
+// ```text
+//  Playback state machine:
+//
+//  ┌──────────┐   play()    ┌─────────┐   pause()   ┌────────┐
+//  │  Stopped  │───────────▶│ Playing │────────────▶│ Paused │
+//  └──────────┘             └─────────┘             └────────┘
+//       ▲                       │                       │
+//       │                       │ stop()                │ stop()
+//       │                       ▼                       ▼
+//       └───────────────────────────────────────────────┘
+//
+//  All transitions increment `version` for optimistic concurrency.
+//  `check_invariants()` (debug-only) asserts safety properties.
+// ```
 
 use crate::ipc::DaemonEvent;
 use crate::state::{CrossfadeConfig, DaemonState, PlaybackStatus};

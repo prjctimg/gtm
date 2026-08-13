@@ -1,3 +1,50 @@
+//! Daemon event loop, IPC command handlers, and audio event processing.
+//!
+//! ```text
+//!  ┌─────────────────────────────────────────────────────────┐
+//!  │  Daemon event loop (run)                               │
+//!  │                                                         │
+//!  │  tokio::select! waits on three sources:                 │
+//!  │                                                         │
+//!  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
+//!  │  │ Unix socket  │  │ Request chan │  │ Audio mixer  │  │
+//!  │  │ listener     │  │ (req_rx)     │  │ (poll)       │  │
+//!  │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  │
+//!  │         │                 │                  │          │
+//!  │         ▼                 ▼                  ▼          │
+//!  │  accept_client()    dispatch()          handle_        │
+//!  │  spawn read+write   → cmd_play,        audio_event()   │
+//!  │  tasks per client      cmd_queue,      Position/Dur/   │
+//!  │                        cmd_seek,       Finished/Error  │
+//!  │                        cmd_stop etc.                   │
+//!  └─────────────────────────────────────────────────────────┘
+//! ```
+//!
+//! ## Per-client architecture
+//!
+//! Each connected client gets two spawned tokio tasks:
+//!
+//! ```text
+//!  Client ──→ Reader task: read JSON lines, send to req_tx
+//!           ──→ Writer task: recv responses + broadcast events,
+//!               write JSON frames back to client
+//! ```
+//!
+//! ## Audio event flow
+//!
+//! ```text
+//!  AudioMixer::poll()  ──→  AudioEvent::Position(pos)
+//!                        ──→  AudioEvent::Duration(dur)
+//!                        ──→  AudioEvent::Finished
+//!                        ──→  AudioEvent::Error(msg)
+//!                                  │
+//!                                  ▼
+//!                           handle_audio_event()
+//!                           → update state, push DaemonEvent
+//!                           → crossfade trigger
+//!                           → auto-advance on track end
+//! ```
+
 use std::path::Path;
 use std::sync::Arc;
 
@@ -68,6 +115,11 @@ impl Daemon {
         })
     }
 
+    /// Main daemon event loop — multiplexes three sources:
+    ///
+    ///   1. **new connections**  — accept_client() spawns per-client read/write tasks
+    ///   2. **IPC requests**     — dispatch() → handle_request() → cmd_*()
+    ///   3. **audio events**     — handle_audio_event() updates state, pushes events
     pub async fn run(&mut self) -> Result<(), CoreError> {
         info!("daemon started on {}", self.config.socket_path.display());
 
@@ -93,6 +145,12 @@ impl Daemon {
         }
     }
 
+    /// Accept a new client connection and spawn two background tasks:
+    ///
+    ///   **Reader task** — reads JSON lines from the Unix socket,
+    ///                    deserializes into DaemonReq, sends to req_tx.
+    ///   **Writer task** — receives responses (via reply_rx) and broadcast
+    ///                    events (via event_rx), writes JSON back to socket.
     async fn accept_client(&mut self, stream: UnixStream) {
         let client_id = self.next_client_id;
         self.next_client_id += 1;
@@ -102,7 +160,7 @@ impl Daemon {
         let event_rx = self.event_tx.subscribe();
         let (reply_tx, mut reply_rx) = mpsc::unbounded_channel();
 
-        // Spawn task: read JSON lines from client → send as requests
+        // Reader task: JSON lines → req_tx
         let r_tx = reply_tx.clone();
         tokio::spawn(async move {
             let mut reader = BufReader::new(reader);
@@ -136,11 +194,12 @@ impl Daemon {
             info!("client {client_id} disconnected");
         });
 
-        // Spawn task: write responses + broadcast events to client
+        // Writer task: responses + broadcast events → socket
         tokio::spawn(async move {
             let mut writer = writer;
             let mut event_rx = event_rx;
             loop {
+                // biased: responses take priority over events
                 tokio::select! {
                     biased;
                     res = reply_rx.recv() => {
@@ -237,11 +296,28 @@ impl Daemon {
         let _ = self.event_tx.send(event);
     }
 
+    /// Process an audio event from the mixer backend.
+    ///
+    /// ```text
+    ///  ┌──────────────┐
+    ///  │ AudioEvent   │
+    ///  ├──────────────┤
+    ///  │ Position(p)  │──→ update state.time_pos
+    ///  │              │──→ check crossfade trigger
+    ///  │              │──→ push PositionChanged event
+    ///  ├──────────────┤
+    ///  │ Duration(d)  │──→ update state.duration, push DurationChanged
+    ///  ├──────────────┤
+    ///  │ Finished     │──→ mark Stopped, push TrackEnded
+    ///  │              │──→ auto-advance → cmd_next() (unless crossfading)
+    ///  ├──────────────┤
+    ///  │ Error(msg)   │──→ log + push Custom event
+    ///  └──────────────┘
+    /// ```
     async fn handle_audio_event(&mut self, result: AudioResult<Option<AudioEvent>>) {
         let ev = match result {
             Ok(Some(e)) => e,
             Ok(None) => {
-                // Yield to prevent busy-spin when backend is idle
                 tokio::task::yield_now().await;
                 return;
             }
@@ -265,7 +341,10 @@ impl Daemon {
                 let queue_len = state.queue.len();
                 drop(state);
 
-                // Trigger crossfade when nearing end of track
+                // Crossfade logic: when the track is within (duration_secs + 0.5s)
+                // of the end, load the next track on the standby player and start
+                // fading.  The standby player was already advanced (queue_cursor + 1)
+                // so it's ready to go.
                 if let Some(cf) = crossfade {
                     if cf.enabled
                         && dur > 0.0
@@ -274,6 +353,7 @@ impl Daemon {
                         && self.crossfade_loaded_for.is_none()
                         && (dur - pos) <= cf.duration_secs as f64 + 0.5
                     {
+                        // Determine which track comes next (considering repeat-all)
                         let next_path = {
                             let s = self.state.read().await;
                             if s.queue_cursor + 1 < s.queue.len() as u128 {
@@ -290,7 +370,7 @@ impl Daemon {
                             if self.mixer.load_standby(path).is_ok() {
                                 self.mixer.start_crossfade(cf.duration_secs as f64);
                                 self.crossfade_loaded_for = cur_path.clone();
-                                // Advance the queue cursor
+                                // Advance the queue cursor to the next track
                                 if let Ok(mut s) = self.state.try_write() {
                                     let _ = s.advance_queue(1);
                                     let idx = s.queue_cursor;
@@ -313,6 +393,8 @@ impl Daemon {
                 self.push_event(DaemonEvent::DurationChanged { duration: dur })
                     .await;
             }
+            // Track finished — if we were crossfading the next track is already
+            // playing on the standby player, so don't auto-advance.
             AudioEvent::Finished => {
                 let was_crossfading = self.crossfade_loaded_for.is_some();
                 self.crossfade_loaded_for = None;
@@ -322,7 +404,6 @@ impl Daemon {
                 drop(state);
                 self.push_event(DaemonEvent::TrackEnded).await;
                 if !was_crossfading {
-                    // Auto-advance to next track (not needed during crossfade)
                     let _ = self.cmd_next().await;
                 }
             }
@@ -337,10 +418,21 @@ impl Daemon {
         }
     }
 
-    // ─── Command handlers ───
+    // ─── Command handlers ──────────────────────────────────────────────
+    //
+    // Each cmd_* method implements one IPC command.  The pattern is:
+    //
+    //   1. Perform the action on the audio mixer
+    //   2. Update the daemon state (behind RwLock)
+    //   3. Push a DaemonEvent to the broadcast channel for all clients
+    //   4. Return a DaemonRes to the requesting client
 
+    /// Play a track from `path` (absolute or relative to daemon CWD),
+    /// optionally starting at `start_pos` seconds.
+    ///
+    /// Stops any current playback first, then loads and plays the new track.
+    /// Creates a minimal TrackInfo (metadata extraction is future work).
     async fn cmd_play(&mut self, path: &str, start_pos: f64) -> Result<DaemonRes, CoreError> {
-        // Stop current playback before loading a new track
         self.mixer.stop()?;
         self.crossfade_loaded_for = None;
         {
@@ -385,6 +477,12 @@ impl Daemon {
         Ok(DaemonRes::Ok { version })
     }
 
+    /// Smart play/pause toggle:
+    ///
+    ///   - If mixer is playing → pause
+    ///   - If paused → resume (no reload, just unpause backend)
+    ///   - If stopped with a current track → play from beginning
+    ///   - If stopped with no track → no-op
     async fn cmd_playpause(&mut self) -> Result<DaemonRes, CoreError> {
         let is_playing = self.mixer.is_playing();
         if is_playing {
@@ -400,7 +498,7 @@ impl Daemon {
             drop(state);
 
             if is_paused && !path.is_empty() {
-                // Resume from paused — just unpause the backend without reloading
+                // Resume from paused — unpause backend without reloading
                 self.mixer.play()?;
                 let mut state = self.state.write().await;
                 let track = state.current_track.clone().unwrap();
@@ -437,13 +535,14 @@ impl Daemon {
         Ok(DaemonRes::Ok { version })
     }
 
+    /// Stop playback: stops the mixer backend, transitions state to Stopped,
+    /// and broadcasts PlaybackStopped.  Safe to call when already stopped
+    /// (checks status before calling state.stop() to avoid assert).
     async fn cmd_stop(&mut self) -> Result<DaemonRes, CoreError> {
-        let is_active =
-            self.mixer.is_playing() || self.state.read().await.status != PlaybackStatus::Stopped;
         self.mixer.stop()?;
         self.crossfade_loaded_for = None;
         let mut state = self.state.write().await;
-        if is_active {
+        if state.status != PlaybackStatus::Stopped {
             state.stop()?;
         }
         let version = state.version as u32;
@@ -452,6 +551,9 @@ impl Daemon {
         Ok(DaemonRes::Ok { version })
     }
 
+    /// Advance to next track in the queue.  Advances cursor via
+    /// state.advance_queue(1), then plays the track at the new cursor.
+    /// Returns Ok if no next track (already at end).
     async fn cmd_next(&mut self) -> Result<DaemonRes, CoreError> {
         let mut state = self.state.write().await;
         let track = match state.advance_queue(1)? {
@@ -471,10 +573,11 @@ impl Daemon {
         Ok(res)
     }
 
+    /// Go to previous track.  If cursor is at 0 or queue is empty,
+    /// seek to beginning of current track instead.
     async fn cmd_prev(&mut self) -> Result<DaemonRes, CoreError> {
         let mut state = self.state.write().await;
         if state.queue.is_empty() || state.queue_cursor == 0 {
-            // Already at start — seek to beginning of current track
             drop(state);
             return self.cmd_seek(0.0).await;
         }
@@ -495,13 +598,24 @@ impl Daemon {
         Ok(res)
     }
 
+    /// Seek to absolute position in seconds.  Errors if status is Stopped.
+    /// Reports the *actual* position (mixer.current_position()) in the event,
+    /// which may differ from the requested pos due to clamping.
     async fn cmd_seek(&mut self, pos: f64) -> Result<DaemonRes, CoreError> {
+        let state = self.state.read().await;
+        if state.status == PlaybackStatus::Stopped {
+            return Err(CoreError::Daemon(
+                "cannot seek while stopped".into(),
+            ));
+        }
+        drop(state);
         self.mixer.seek(pos)?;
+        let actual = self.mixer.current_position();
         let mut state = self.state.write().await;
-        state.seek(self.mixer.current_position())?;
+        state.seek(actual)?;
         let version = state.version as u32;
         drop(state);
-        self.push_event(DaemonEvent::PositionChanged { time_pos: pos })
+        self.push_event(DaemonEvent::PositionChanged { time_pos: actual })
             .await;
         Ok(DaemonRes::Ok { version })
     }
@@ -568,6 +682,19 @@ impl Daemon {
         Ok(DaemonRes::Ok { version })
     }
 
+    /// Queue command dispatcher.
+    ///
+    /// ```text
+    ///  QueueAction
+    ///  ├── List       → return current queue + cursor
+    ///  ├── Clear      → clear queue, push QueueChanged
+    ///  ├── Remove(i)  → remove at index, push QueueChanged
+    ///  ├── Move(f,t)  → move from→to, push QueueChanged
+    ///  ├── Add(path)  → add single track, auto-play if empty
+    ///  ├── AddMany    → add multiple, auto-play first
+    ///  ├── AddFolder  → scan folder, add all audio files, auto-play first
+    ///  └── Set        → replace entire queue
+    /// ```
     async fn cmd_queue(&mut self, action: &QueueAction) -> Result<DaemonRes, CoreError> {
         match action {
             QueueAction::List => {

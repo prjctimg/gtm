@@ -3,6 +3,24 @@
 // IPC protocol enums: DaemonReq, DaemonRes, DaemonEvent, and action types
 //
 // This is free software released under the GPL-3.0 license.
+//
+// ```text
+//  Client (gtm)                      Server (gtmd)
+//  ────────────                      ────────────
+//  DaemonReq (JSON line) ──────▶     handle_request()
+//                                    └── cmd_*() handler
+//  DaemonRes (JSON line)  ◀──────    reply_tx.send(response)
+//
+//  Additionally, the server pushes broadcast events to all connected
+//  clients via DaemonEvent frames (bincode-encoded) sent over the
+//  same Unix socket:
+//
+//  DaemonEvent ◀───────              event_tx.send(event)
+//    (bincode frame)
+//
+//  Event types: PlaybackStarted, PlaybackPaused, PlaybackStopped,
+//  PositionChanged, DurationChanged, VolumeChanged, QueueChanged, etc.
+// ```
 
 use crate::state::{self, DaemonState, RepeatMode};
 use crate::track::{LrcData, Playlist, StreamInfo, TrackInfo, YTSearchResult};

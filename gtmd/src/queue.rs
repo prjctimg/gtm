@@ -1,8 +1,17 @@
+//! Queue management helpers: add, remove, move, clear, scan.
+//!
+//! Tracks are stored as `Vec<TrackInfo>` in `DaemonState.queue` with a
+//! `queue_cursor` pointing to the currently-playing entry.  Metadata
+//! resolution is minimal (file stem → title); full metadata extraction
+//! is future work.
+
 use std::path::Path;
 
 use gtm_core::state::DaemonState;
 use gtm_core::track::TrackInfo;
 
+/// Build a bare TrackInfo from a file path.  The title is derived from
+/// the file stem; all other fields are left empty/default.
 pub fn resolve_track(path: &str) -> TrackInfo {
     let stem = Path::new(path)
         .file_stem()

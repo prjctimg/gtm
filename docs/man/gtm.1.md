@@ -1,64 +1,72 @@
-% GTM(1) GTM CLI Client Manual
+% GTM(1) GTM Client Manual
 % prjctimg
 % 2025
 
 # NAME
 
-gtm - command-line interface for the GTM music daemon
+gtm - terminal user interface and command-line client for the GTM music daemon
 
 # SYNOPSIS
 
-**gtm** [*socket-path*] *command* [*args*]
+**gtm** [**\--socket**=*path*] [**\--cli**] [*command* [*args*]]
 
 # DESCRIPTION
 
-**gtm** is a CLI client for the **gtmd**(1) music daemon. It communicates
-with the daemon over a Unix socket using a bincode-based IPC protocol.
-Commands control playback, queue management, library browsing, and more.
+**gtm** is the client for the **gtmd**(1) music daemon.  When invoked without
+the **\--cli** flag, it opens a full-screen Terminal User Interface (TUI) with
+keyboard-driven navigation.  With **\--cli** (or **-c**), it acts as a
+command-line client for scripting and headless control.
 
-# ARCHITECTURE
+# TUI MODE (default)
 
-The following diagram shows the communication flow between **gtm** and the
-daemon:
+The TUI provides six tabs accessed via the **1**–**6** keys:
 
-```
-                         ┌──────────────────────────────────────┐
-                         │            gtmd daemon              │
-                         │                                      │
-                         │  ┌─────────┐  ┌──────────────────┐  │
-  ┌──────────┐           │  │  IPC    │  │  Command Router  │  │
-  │  gtm-cli │  bincode  │  │  Socket │──│  (dispatch to    │  │
-  │          │──────────▶│  │  Listener│  │   handler)      │  │
-  │  ┌──────┐│  request  │  └────┬────┘  └────────┬─────────┘  │
-  │  │ IPC  ││           │       │                │            │
-  │  │ Send ││           │       │          ┌─────▼──────┐     │
-  │  └──┬───┘│           │       │          │  Playback  │     │
-  │     │    │           │       │          │  Manager   │     │
-  │  ┌──▼───┐│           │       │          └─────┬──────┘     │
-  │  │ IPC  ││           │       │                │            │
-  │  │ Recv ││◀──────────│───────┘          ┌─────▼──────┐     │
-  │  └──────┘│  response │                  │  Queue     │     │
-  └──────────┘           │                  │  Manager   │     │
-                         │                  └─────┬──────┘     │
-                         │                        │            │
-                         │                  ┌─────▼──────┐     │
-                         │                  │  Library   │     │
-                         │                  │  Manager   │     │
-                         │                  └────────────┘     │
-                         └──────────────────────────────────────┘
-```
+## Now Playing (1)
+Shows current track info, a progress bar, volume gauge, and control hints.
+Keys: Space (play/pause), n (next), p (prev), +/- (volume), m (mute),
+r (repeat), s (shuffle), h/l (seek).
 
-## Data Flow
+## Library (2)
+Browse tracks, playlists, favourites, and recent additions.
+Keys: j/k or up/down (navigate), Enter (play), / (filter), d (detail),
+f (favourite), s (sort).
 
-1. **gtm** serializes a command (e.g. `Play`, `QueueAdd`) into a bincode
-   packet and writes it to the Unix socket.
-2. **gtmd** 's IPC listener accepts the connection, reads the packet, and
-   routes it to the appropriate handler.
-3. The handler executes the operation (playback, queue mutation, library
-   query, etc.) and writes a response back through the socket.
-4. **gtm** reads the response and displays it to the user.
+## Queue (3)
+View and manage the playback queue.
+Keys: j/k (navigate), Enter (play), d (delete), m (move mode),
+C (clear), s (save as playlist).
 
-# COMMANDS
+## YouTube (4)
+Search YouTube and browse results.
+Keys: / (search), Enter (play stream), a (add to queue), j/k (navigate).
+
+## Settings (5)
+View and adjust playback settings.
+
+## Help (6)
+Keyboard shortcut reference.
+
+## Global Keys
+
+| Key | Action |
+|-----|--------|
+| `1`-`6` | Switch to tab |
+| `Tab` / `Shift+Tab` | Next / Previous tab |
+| `Space` | Play / Pause |
+| `n` / `p` | Next / Previous track |
+| `+` / `-` | Volume up / down |
+| `m` | Toggle mute |
+| `r` | Cycle repeat mode |
+| `s` | Toggle shuffle |
+| `:` | Command mode |
+| `/` | Filter / search |
+| `?` | Toggle help |
+| `q` / `Esc` | Quit |
+
+# CLI MODE
+
+With the **\--cli** (or **-c**) flag, **gtm** sends a single command to the
+daemon and prints the result.  Use **\--json** for machine-readable output.
 
 ## Playback
 
@@ -94,12 +102,10 @@ daemon:
 :   Toggle shuffle mode for the queue.
 
 **repeat** {Off|One|All}
-:   Set repeat mode. Off disables repeating, One repeats the current
-    track, All repeats the entire queue.
+:   Set repeat mode.
 
 **crossfade** *enabled* [*duration_secs*]
-:   Enable or disable crossfade between tracks. Optionally set the
-    crossfade duration in seconds.
+:   Enable or disable crossfade between tracks.
 
 ## Queue
 
@@ -107,43 +113,56 @@ daemon:
 :   Display the current playback queue.
 
 **queue-add** *path* [*position*]
-:   Add a track to the queue. Optionally specify a position index.
+:   Add a track to the queue.
 
 **queue-add-many** *paths*...
-:   Add multiple tracks to the queue at once.
+:   Add multiple tracks at once.
 
 **queue-add-folder** *path*
-:   Add all tracks in a folder to the queue.
+:   Add all tracks in a folder.
 
 **queue-remove** *index*
-:   Remove a track from the queue by its index.
+:   Remove a track by index.
 
 **queue-move** *from* *to*
-:   Move a track from one queue position to another.
+:   Move a track between positions.
 
 **queue-clear**
 :   Clear the entire queue.
 
 **queue-set** *paths*... *start_idx*
-:   Replace the entire queue with a new set of paths.
+:   Replace the entire queue.
 
 ## Library
 
 **scan** *path*
-:   Scan a directory for music files and add them to the library.
+:   Scan a directory for music files.
 
 **tracks** [*filter*] [*sort*]
-:   List tracks in the library. Optionally filter by string and sort by
-    field (e.g. `title`, `artist`, `album`).
+:   List tracks in the library.
+
+**playlists**
+:   List saved playlists.
+
+**create-playlist** *name*
+:   Create a new playlist.
+
+**delete-playlist** *id*
+:   Delete a playlist by ID.
+
+**add-to-playlist** *playlist_id* *track_ids*...
+:   Add tracks to a playlist.
 
 **recent** *count*
-:   Show the most recently added tracks.
+:   Show recently added tracks.
 
 **search** *query*
-:   Search the library for tracks matching a query.
+:   Search the library.
+
+## Favourites
 
 **favourites**
-:   List all favourite tracks.
+:   List favourite tracks.
 
 **favourite-add** *track_id*
 :   Add a track to favourites.
@@ -151,59 +170,52 @@ daemon:
 **favourite-remove** *track_id*
 :   Remove a track from favourites.
 
-## Playlists
-
-**playlists**
-:   List all saved playlists.
-
-**create-playlist** *name*
-:   Create a new empty playlist.
-
-**delete-playlist** *id*
-:   Delete a playlist by its ID.
-
-**add-to-playlist** *playlist_id* *track_ids*...
-:   Add one or more tracks to a playlist.
-
-**import-m3u** *path*
-:   Import an M3U playlist file.
-
 ## YouTube
 
 **yt-search** *query* [*filter*]
-:   Search YouTube for tracks matching a query.
+:   Search YouTube.
 
 **yt-poll**
-:   Poll for pending YouTube search results.
+:   Poll for pending YouTube results.
 
 **yt-cancel**
-:   Cancel an in-progress YouTube search.
+:   Cancel a YouTube search.
 
 **yt-resolve** *url*
-:   Resolve a YouTube stream URL to a playable audio stream.
+:   Resolve a YouTube URL to a playable stream.
 
 ## Daemon
 
 **status**
-:   Show daemon status (playing, paused, stopped, current track, volume,
-    etc.).
+:   Show daemon status.
 
 **ping**
-:   Ping the daemon to verify it is running.
+:   Ping the daemon.
 
 **quit**
-:   Tell the daemon to shut down gracefully.
+:   Shut down the daemon.
 
 # OPTIONS
 
-**--socket** *path*
-:   Path to the daemon's Unix socket. Default:
-    `/run/user/1000/gtmd.socket`.
+**\--socket**, **-s** *path*
+:   Path to the daemon's Unix socket.
+
+**\--cli**, **-c**
+:   Run in CLI mode instead of TUI.
+
+**\--json**, **-j**
+:   Output as JSON (CLI mode only).
+
+**\--version**, **-V**
+:   Show version information.
+
+**\--help**, **-h**
+:   Show help message.
 
 # ENVIRONMENT
 
 `XDG_RUNTIME_DIR`
-:   Used to derive the default socket path when `--socket` is not given.
+:   Used to derive the default socket path.
 
 # FILES
 
@@ -212,4 +224,4 @@ daemon:
 
 # SEE ALSO
 
-**gtmd**(1)
+**gtmd**(1), **gtmd-ipc**(1)

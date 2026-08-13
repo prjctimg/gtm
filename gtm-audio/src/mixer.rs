@@ -32,9 +32,23 @@ pub trait Mixer: Send + Sync {
 
 /// Dual-player audio mixer with crossfade support.
 ///
-/// Two `rodio::Player`s feed the same hardware mixer.  During normal playback
-/// only the *active* player is audible.  During crossfade the *standby* player
-/// fades in while the active fades out, then they swap roles.
+/// ```text
+///  Normal playback:                    Crossfade:
+///
+///  Player A (active) ───▶ Mixer ──▶   A: volume ▓▓░░░░ 0%  (fade out)
+///  Player B (standby) ───┤  Sink      B: volume ░░░░▓▓ 100% (fade in)
+///                          Sink
+///                                    After crossfade completes:
+///  swap() flips active/standby
+///  so the just-faded-in player       Player A (standby) ─ stopped
+///  becomes the active one.           Player B (active)   ─ playing
+/// ```
+///
+/// Two `rodio::Player`s feed the same hardware mixer (`rodio::MixerDeviceSink`).
+/// During normal playback only the *active* player is audible at full volume.
+/// During crossfade the *standby* player fades in while the active fades out
+/// (implemented by `step_crossfade()` called from `poll()`), then they swap
+/// roles via `force_complete_crossfade()`.
 pub struct AudioMixer {
     #[allow(dead_code)]
     sink: Arc<MixerDeviceSink>,

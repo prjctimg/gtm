@@ -1,48 +1,44 @@
 [package]
-name = "gtmd"
+name = "gtm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "GTM background audio daemon"
+description = "GTM music player client - TUI and CLI modes"
 
 [dependencies]
 gtm-core = { path = "../gtm-core" }
 gtm-audio = { path = "../gtm-audio" }
-gtm-mpris = { path = "../gtm-mpris", optional = true }
-rusqlite = { version = "0.31", features = ["bundled"] }
+ratatui = "0.30"
+crossterm = "0.28"
 tokio = { version = "1", features = ["full"] }
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
+color-eyre = "0.6"
+image = "0.25"
+base64 = "0.22"
 serde = "1"
 serde_json = "1"
-uuid = { version = "1", features = ["v4"] }
-sha2 = "0.10"
-walkdir = "2"
-symphonia = { version = "0.6", default-features = false, features = ["all-codecs", "all-formats", "all-meta"] }
-lru = "0.12"
-hex = "0.4"
-
-[features]
-default = ["mpris"]
-mpris = ["gtm-mpris"]
+tracing = "0.1"
+tracing-subscriber = "0.3"
 
 [package.metadata.deb]
+package-name = "gtm-full"
 maintainer = "prjctimg <prjctimg@outlook.com>"
 copyright = "2025 prjctimg"
 license-file = ["../LICENSE"]
-extended-description = "GTM background audio daemon. Manages playback, library, and IPC for the GTM music player."
+extended-description = "GTM music player client - provides both a Terminal UI (TUI) and command-line interface for controlling the GTM music daemon."
 section = "sound"
 priority = "optional"
 depends = "$auto"
 assets = [
+    ["deb-assets/gtmd", "/usr/bin/", "755"],
     ["deb-assets/gtmd.service", "/usr/lib/systemd/user/gtmd.service"],
+    ["deb-assets/man/gtm.1", "/usr/share/man/man1/"],
     ["deb-assets/man/gtmd.1", "/usr/share/man/man1/"],
     ["deb-assets/man/gtmd-ipc.1", "/usr/share/man/man1/"],
+    ["deb-assets/completions/gtm.bash", "/usr/share/bash-completion/completions/gtm"],
+    ["deb-assets/completions/_gtm", "/usr/share/zsh/vendor-completions/_gtm"],
+    ["deb-assets/completions/gtm.fish", "/usr/share/fish/vendor_completions.d/gtm.fish"],
     ["deb-assets/completions/gtmd.bash", "/usr/share/bash-completion/completions/gtmd"],
     ["deb-assets/completions/_gtmd", "/usr/share/zsh/vendor-completions/_gtmd"],
     ["deb-assets/completions/gtmd.fish", "/usr/share/fish/vendor_completions.d/gtmd.fish"],
-    ["deb-assets/completions/gtmd.ps1", "/usr/share/powershell/completions/gtmd.ps1"],
-    ["deb-assets/completions/gtmd.elv", "/usr/share/elvish/completions/gtmd.elv"],
 ]

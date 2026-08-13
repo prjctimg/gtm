@@ -3,95 +3,60 @@ use std::fs;
 use clap::{Parser, Subcommand};
 use clap_complete::Shell;
 
-/// GTM CLI client
+/// GTM music player client
 #[derive(Parser)]
 #[command(name = "gtm")]
 struct Cli {
-    #[arg(long, default_value = "/run/user/1000/gtmd.socket", help = "Daemon socket path")]
-    socket: String,
+    #[arg(long, short, help = "Run in CLI mode instead of TUI")]
+    cli: bool,
+    #[arg(long, short, global = true, help = "Daemon socket path")]
+    socket: Option<String>,
+    #[arg(long, short, global = true, help = "Output as JSON")]
+    json: bool,
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
 enum Command {
-    /// Play a track by path or URL
     Play { path: String, start_pos: Option<f64> },
-    /// Toggle play/pause
     PlayPause,
-    /// Pause playback
     Pause,
-    /// Stop playback
     Stop,
-    /// Next track
     Next,
-    /// Previous track
     Prev,
-    /// Seek to position in seconds
     Seek { position_secs: f64 },
-    /// Set volume (0-100)
     Volume { volume: u8 },
-    /// Toggle shuffle mode
     Shuffle,
-    /// Set repeat mode (Off, One, All)
     Repeat { mode: String },
-    /// Toggle mute
     Mute,
-    /// Set crossfade
     Crossfade { enabled: bool, duration_secs: Option<u8> },
-    /// Show the current queue
     Queue,
-    /// Add a track to the queue
     QueueAdd { path: String, position: Option<u128> },
-    /// Add multiple tracks to the queue
     QueueAddMany { paths: Vec<String> },
-    /// Add a folder of tracks to the queue
     QueueAddFolder { path: String },
-    /// Remove a track from the queue by index
     QueueRemove { index: u128 },
-    /// Move a track in the queue
     QueueMove { from: u128, to: u128 },
-    /// Clear the queue
     QueueClear,
-    /// Replace the queue with a new set of paths
     QueueSet { paths: Vec<String>, start_idx: u128 },
-    /// Scan a directory for music files
     Scan { path: String },
-    /// List tracks with optional filter and sort
     Tracks { filter: Option<String>, sort: Option<String> },
-    /// List playlists
     Playlists,
-    /// Create a new playlist
     CreatePlaylist { name: String },
-    /// Delete a playlist
     DeletePlaylist { id: i64 },
-    /// Add tracks to a playlist
     AddToPlaylist { playlist_id: i64, track_ids: Vec<i64> },
-    /// Import an M3U file as a playlist
     ImportM3u { path: String },
-    /// Get recently added tracks
     Recent { count: u128 },
-    /// List favourite tracks
     Favourites,
-    /// Add a track to favourites
     FavouriteAdd { track_id: i64 },
-    /// Remove a track from favourites
     FavouriteRemove { track_id: i64 },
-    /// Search YouTube
     YtSearch { query: String, filter: Option<String> },
-    /// Poll for YouTube search results
     YtPoll,
-    /// Cancel a YouTube search
     YtCancel,
-    /// Resolve a YouTube stream URL
     YtResolve { url: String },
-    /// Search the local library
     Search { query: String },
-    /// Show daemon status
     Status,
-    /// Ping the daemon
     Ping,
-    /// Quit the daemon
     Quit,
 }
 

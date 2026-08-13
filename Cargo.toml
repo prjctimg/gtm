@@ -4,8 +4,7 @@ members = [
     "gtm-core",
     "gtm-audio",
     "gtmd",
-    "gtm-tui",
-    "gtm-cli",
+    "gtm",
     "gtm-mpris",
     "release-gen",
 ]
