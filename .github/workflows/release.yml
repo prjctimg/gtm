@@ -238,7 +238,7 @@ jobs:
             -w /work \
             -e HOME=/root \
             alpine:3.22 \
-            /bin/sh -c "apk add --no-cache bash && /bin/bash /work/scripts/build-musl-in-container.sh \
+            /bin/sh -c "apk add --no-cache bash && /bin/bash /work/scripts/build/build-musl-in-container.sh \
               aarch64-linux-musl ${{ needs.tag.outputs.version }} aarch64"
 
       - name: Install Android NDK + tools
@@ -294,7 +294,7 @@ jobs:
 
       - name: Generate manpages (pandoc)
         if: matrix.family != 'alpine-arm'
-        run: ./scripts/gen-manpages.sh artifacts
+        run: ./scripts/build/gen-manpages.sh artifacts
 
       - name: Generate shell completions
         if: matrix.family != 'alpine-arm'
@@ -432,7 +432,7 @@ jobs:
           set -euo pipefail
           version="${{ needs.tag.outputs.version }}"
           rpm_arch="$(rpmbuild --eval '%{_target_cpu}')"
-          ./scripts/build-arch-pkg.sh "$version" "$rpm_arch" stage \
+          ./scripts/build/build-arch-pkg.sh "$version" "$rpm_arch" stage \
             "release-assets/gtm-${version}-1-${rpm_arch}.pkg.tar.zst"
 
       - name: Stage rootfs tree (Alpine .apk)
@@ -477,7 +477,7 @@ jobs:
           version="${{ needs.tag.outputs.version }}"
           arch="x86_64"
           [[ "${{ matrix.platform }}" == "aarch64-linux-musl" ]] && arch="aarch64"
-          ./scripts/build-alpine-apk.sh "$version" "$arch" stage \
+          ./scripts/build/build-alpine-apk.sh "$version" "$arch" stage \
             "release-assets/gtm-${version}-r0-${arch}.apk"
 
       - name: Build Termux .deb packages

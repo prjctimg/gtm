@@ -4,7 +4,7 @@ set -euo pipefail
 # Build an Arch Linux .pkg.tar.zst from a rootfs-style stage tree.
 #
 # Usage:
-#   build-arch-pkg.sh <version> <arch> <stage> <out.pkg.tar.zst>
+#   arch-pkg.sh <version> <arch> <stage> <out.pkg.tar.zst>
 #
 # The stage tree is a normal rootfs layout (usr/bin/gtm, usr/share/man/man1,
 # ...) assembled by the release workflow. Requires bsdtar (libarchive) and

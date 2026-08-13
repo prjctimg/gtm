@@ -15,8 +15,8 @@ use rodio::Source;
 
 use gtm_core::state::{EQ_DEFAULT_Q, EQ_FREQUENCIES};
 
+use crate::buffer::{DecodeControl, SharedRingBuffer, PREBUFFER_SAMPLES};
 use crate::eq::EqGains;
-use crate::ring_buffer::{DecodeControl, SharedRingBuffer, PREBUFFER_SAMPLES};
 use crate::symphonia::SymphoniaSource;
 
 // ---------------------------------------------------------------------------
@@ -148,10 +148,7 @@ impl DecodeThread {
 
             // Build reverb state
             let mut reverb_state = {
-                let room = *self
-                    .reverb_room_size
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
+                let room = *self.reverb_room_size.lock().unwrap();
                 Some(ReverbState::new(sr, room))
             };
 
@@ -179,9 +176,10 @@ impl DecodeThread {
                     break; // restart decoder at new position
                 }
 
-                // Check ring buffer space: if nearly full, yield to avoid spinning
+                // Check ring buffer space: when nearly full, sleep briefly so
+                // the consumer can drain — spinning burns a core under load.
                 if self.shared.free_space() < 1024 {
-                    std::thread::yield_now();
+                    std::thread::sleep(std::time::Duration::from_millis(1));
                     continue;
                 }
 
@@ -250,8 +248,8 @@ impl DecodeThread {
                                         let (out_l, out_r) =
                                             rev.process_stereo(eq_sample, right_eq);
                                         // Write left now, push right to ring buffer
-                                        let _ = self.shared.push(out_l);
-                                        let _ = self.shared.push(out_r);
+                                        self.shared.push_blocking(out_l);
+                                        self.shared.push_blocking(out_r);
                                         sample_count += 1;
                                         prebuffer_check(
                                             &self.shared,
@@ -260,8 +258,8 @@ impl DecodeThread {
                                         );
                                         continue; // both channels written
                                     } else {
-                                        let _ = self.shared.push(eq_sample);
-                                        let _ = self.shared.push(right_eq);
+                                        self.shared.push_blocking(eq_sample);
+                                        self.shared.push_blocking(right_eq);
                                         sample_count += 1;
                                         prebuffer_check(
                                             &self.shared,
@@ -272,7 +270,7 @@ impl DecodeThread {
                                     }
                                 }
                                 None => {
-                                    let _ = self.shared.push(eq_sample);
+                                    self.shared.push_blocking(eq_sample);
                                     self.shared.set_finished(true);
                                     self.control.ready.store(true, Ordering::Release);
                                     return;
@@ -294,7 +292,7 @@ impl DecodeThread {
                     eq_sample
                 };
 
-                let _ = self.shared.push(final_sample);
+                self.shared.push_blocking(final_sample);
                 sample_count += 1;
                 prebuffer_check(&self.shared, &self.control, &mut prebuffered);
             }

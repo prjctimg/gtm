@@ -80,7 +80,7 @@ use gtm_core::wire;
 use gtm_core::CoreError;
 
 use crate::config::DaemonConfig;
-use crate::cover_art::CoverCache;
+use crate::cover::CoverCache;
 use crate::library::Library;
 use crate::lyrics::LyricsManager;
 use crate::queue;
@@ -1353,7 +1353,7 @@ impl Daemon {
         // Final fallback: parse an "Artist - Title" pair from the filename so
         // even untagged files render a meaningful artist instead of the raw
         // stem.
-        let (cleaned_artist, cleaned_title) = crate::metadata_cleaner::clean_filename_stem(&stem);
+        let (cleaned_artist, cleaned_title) = crate::cleaner::clean_filename_stem(&stem);
         let title = if cleaned_title.is_empty() {
             stem
         } else {
@@ -1515,6 +1515,43 @@ impl Daemon {
     //   2. Update the daemon state (behind RwLock)
     //   3. Push a DaemonEvent to the broadcast channel for all clients
     //   4. Return a DaemonRes to the requesting client
+
+    /// If a crossfade is in flight with a loaded standby, cut the outgoing
+    /// (fading-out) active track and promote the standby into the active
+    /// slot.  Returns the promoted track's path when a promotion happened.
+    async fn promote_crossfade(inner: &DaemonInner) -> Option<String> {
+        let mut mixer = inner.mixer.lock().await;
+        if !mixer.is_crossfading() || !mixer.standby_is_loaded() {
+            return None;
+        }
+        mixer.drop_active();
+        drop(mixer);
+        inner.crossfade_loaded_for.lock().await.take()
+    }
+
+    /// Stamp a promoted crossfade standby in as the current track and report
+    /// it, so the daemon model matches the mixer after `promote_crossfade`.
+    async fn report_promoted(inner: &DaemonInner, path: &str) {
+        let dur = inner.mixer.lock().await.duration();
+        let track = Self::resolve_track_meta(inner, std::path::Path::new(path), dur);
+        {
+            let mut state = inner.state.write().await;
+            state.status = PlaybackStatus::Playing;
+            state.time_pos = 0.0;
+            state.current_track = Some(track.clone());
+            state.duration = dur;
+        }
+        Self::push_event(
+            inner,
+            DaemonEvent::PlaybackStarted {
+                track,
+                auto_advanced: true,
+                time_pos: 0.0,
+                duration: dur,
+            },
+        );
+        Self::push_queue_state(inner).await;
+    }
 
     /// Play a track from `path` (absolute or relative to daemon CWD),
     /// optionally starting at `start_pos` seconds.
@@ -1683,6 +1720,17 @@ impl Daemon {
     /// entry, then play the next queued / default-list / freshly-built
     /// fallback track.  Stops playback when there is nothing left to play.
     async fn cmd_next(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        // Mid-crossfade navigation: the mixer is already fading the standby
+        // in.  Drop the outgoing (fading-out) track and promote the standby
+        // instead of restarting it, so rapid next/prev through a crossfade
+        // chain of 2+ tracks is never rejected or clipped.
+        if let Some(path) = Self::promote_crossfade(inner).await {
+            // The promoted standby is already playing: consume the outgoing
+            // track from the model so history/cursor stay consistent.
+            let _ = Self::step_next(inner).await;
+            Self::report_promoted(inner, &path).await;
+            return Ok(DaemonRes::Ok);
+        }
         // Clear any in-progress crossfade state before starting a new one
         // so连续 prev/next works with >2 tracks (spec 09.1).
         *inner.crossfade_loaded_for.lock().await = None;
@@ -1720,6 +1768,12 @@ impl Daemon {
     /// user-queue entries and into the default list.  If the current track
     /// has been playing for a while, restart it instead.
     async fn cmd_prev(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        // Cancel any in-flight crossfade by promoting the standby so the
+        // prev logic operates on a stable single-player state (and reports
+        // the promoted track if it ends up being restarted via seek).
+        if let Some(path) = Self::promote_crossfade(inner).await {
+            Self::report_promoted(inner, &path).await;
+        }
         let pos = inner.mixer.lock().await.current_position();
         if pos > RESTART_THRESHOLD_SECS {
             return Self::cmd_seek(inner, 0.0).await;
@@ -2389,14 +2443,42 @@ impl Daemon {
             gtm_core::ipc::LibraryAction::RemoveTrack { id } => {
                 let id = *id;
                 let data_dir = inner.config.data_dir.clone();
+                let library_dirs = inner.config.library_paths.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    lib.remove_track(id)
+                    lib.remove_track_full(id, &library_dirs)
                 })
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(()) => DaemonRes::Ok,
+                    Ok(Some(removed_path)) => {
+                        // Drop the deleted track from the daemon's queue so a
+                        // stale entry can't be played back, then let the TUI
+                        // refresh its library and queue live.
+                        let mut state = inner.state.write().await;
+                        state.queue.retain(|t| t.path != removed_path);
+                        if state
+                            .current_track
+                            .as_ref()
+                            .is_some_and(|t| t.path == removed_path)
+                        {
+                            state.current_track = None;
+                            state.status = PlaybackStatus::Stopped;
+                        }
+                        drop(state);
+                        Self::push_queue_state(inner).await;
+                        Self::push_event(
+                            inner,
+                            DaemonEvent::Custom {
+                                name: "library_changed".into(),
+                                data: Default::default(),
+                            },
+                        );
+                        DaemonRes::Ok
+                    }
+                    Ok(None) => DaemonRes::Error {
+                        message: "track not found".to_string(),
+                    },
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
@@ -3048,8 +3130,8 @@ fn metadata_query_for(track: &TrackInfo) -> (String, String) {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    let (cleaned_artist, cleaned_title) = crate::metadata_cleaner::clean_filename_stem(stem);
-    let title_unreliable = crate::metadata_cleaner::is_filename_like(stem, &track.title);
+    let (cleaned_artist, cleaned_title) = crate::cleaner::clean_filename_stem(stem);
+    let title_unreliable = crate::cleaner::is_filename_like(stem, &track.title);
     let query_artist = if track.artist.is_empty() {
         cleaned_artist.unwrap_or_default()
     } else {
@@ -3077,7 +3159,7 @@ fn run_covers_sync(
     let total = tracks.len();
     progress.total.store(total, Ordering::Relaxed);
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("runtime: {e}"))?;
-    let mut cache = crate::cover_art::CoverCache::new(cache_dir.clone());
+    let mut cache = crate::cover::CoverCache::new(cache_dir.clone());
     let mut synced = 0usize;
     for track in &tracks {
         let missing_cover = track.cover_path.is_none()
@@ -3099,7 +3181,7 @@ fn run_covers_sync(
             &track.album
         };
         if rt.block_on(cache.get_cover(artist, album)).is_some() {
-            let key = crate::cover_art::CoverCache::cache_key(artist, album);
+            let key = crate::cover::CoverCache::cache_key(artist, album);
             let cover_file = cache_dir.join("covers").join(format!("{key}.jpg"));
             if cover_file.exists() {
                 let path_str = cover_file.to_string_lossy().to_string();
@@ -3172,7 +3254,7 @@ fn run_metadata_sync(
             if track.path != *only {
                 continue;
             }
-        } else if !crate::metadata_cleaner::title_is_unreliable(
+        } else if !crate::cleaner::title_is_unreliable(
             stem,
             &track.title,
             &track.artist,
@@ -3236,13 +3318,12 @@ fn run_metadata_sync(
         } else {
             // No verified Deezer match: fall back to the cleaned filename stem
             // so the library shows a real title/artist instead of the raw name.
-            let (cleaned_artist, cleaned_title) =
-                crate::metadata_cleaner::clean_filename_stem(stem);
+            let (cleaned_artist, cleaned_title) = crate::cleaner::clean_filename_stem(stem);
             if !cleaned_title.is_empty() || cleaned_artist.is_some() {
                 let patch = gtm_core::MetadataPatch {
                     title: (!cleaned_title.is_empty())
-                        .then(|| crate::metadata_cleaner::sanitize_text(&cleaned_title)),
-                    artist: cleaned_artist.map(|a| crate::metadata_cleaner::sanitize_text(&a)),
+                        .then(|| crate::cleaner::sanitize_text(&cleaned_title)),
+                    artist: cleaned_artist.map(|a| crate::cleaner::sanitize_text(&a)),
                     ..Default::default()
                 };
                 if patch.title.is_some() || patch.artist.is_some() {

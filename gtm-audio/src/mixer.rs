@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
 
 use crate::backend::{AudioError, AudioEvent, AudioResult};
-use crate::decode_thread::DecodeThread;
+use crate::buffer::{DecodeControl, RingBufferInner, RingBufferSource, BUFFER_CAPACITY_SAMPLES};
+use crate::decoder::DecodeThread;
 use crate::eq::{EqGains, EqSource, ReverbSource};
-use crate::ring_buffer::{DecodeControl, RingBufferInner, RingBufferSource};
 use crate::symphonia::SymphoniaSource;
 use gtm_core::state::{Easing, EqPreset, ReverbConfig};
 
@@ -47,6 +47,10 @@ pub trait Mixer: Send + Sync {
     fn set_crossfade_easing(&mut self, easing: Easing);
     fn is_crossfading(&self) -> bool;
     fn force_complete_crossfade(&mut self);
+    /// Cut the fading-out (active) track and promote the fading-in standby
+    /// to active immediately.  Used when next/prev arrives mid-crossfade so
+    /// navigation is never rejected while the mixer is already fading.
+    fn drop_active(&mut self);
     fn poll(&mut self) -> AudioResult<Option<AudioEvent>>;
 
     // ─── EQ / Reverb ───
@@ -191,6 +195,9 @@ impl Mixer for AudioMixer {
     fn force_complete_crossfade(&mut self) {
         self.force_complete_crossfade()
     }
+    fn drop_active(&mut self) {
+        self.drop_active()
+    }
     fn poll(&mut self) -> AudioResult<Option<AudioEvent>> {
         self.poll()
     }
@@ -205,10 +212,7 @@ impl Mixer for AudioMixer {
 
     fn set_reverb(&self, config: &ReverbConfig) {
         self.reverb_enabled.store(config.enabled, Ordering::Relaxed);
-        *self
-            .reverb_room_size
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = config.room_size;
+        *self.reverb_room_size.lock().unwrap() = config.room_size;
     }
 }
 
@@ -334,10 +338,7 @@ impl AudioMixer {
             source
         };
         if self.reverb_enabled.load(Ordering::Relaxed) {
-            let room_size = *self
-                .reverb_room_size
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let room_size = *self.reverb_room_size.lock().unwrap();
             Box::new(ReverbSource::new(
                 boxed,
                 room_size,
@@ -361,7 +362,7 @@ impl AudioMixer {
         std::thread::JoinHandle<()>,
     )> {
         let control = Arc::new(DecodeControl::new());
-        let shared = Arc::new(RingBufferInner::new(44100 * 2 * 3));
+        let shared = Arc::new(RingBufferInner::new(BUFFER_CAPACITY_SAMPLES));
 
         let thread = DecodeThread::new(
             path.to_string(),
@@ -401,7 +402,7 @@ impl AudioMixer {
         // Probe duration
         let dur = Self::probe_duration(path)?;
         if dur > 0.0 {
-            *self.duration.lock().unwrap_or_else(|p| p.into_inner()) = dur;
+            *self.duration.lock().unwrap() = dur;
         }
 
         // Start decode thread + ring buffer
@@ -418,9 +419,9 @@ impl AudioMixer {
         self.active_control = Some(control);
         self.active_decode_handle = Some(handle);
 
-        *self.position.lock().unwrap_or_else(|p| p.into_inner()) = start_pos;
-        *self.start_time.lock().unwrap_or_else(|p| p.into_inner()) = None;
-        *self.start_pos.lock().unwrap_or_else(|p| p.into_inner()) = start_pos;
+        *self.position.lock().unwrap() = start_pos;
+        *self.start_time.lock().unwrap() = None;
+        *self.start_pos.lock().unwrap() = start_pos;
         self.playing.store(false, Ordering::SeqCst);
         self.crossfade_start = None;
 
@@ -443,16 +444,16 @@ impl AudioMixer {
             .set_volume(vol * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0));
 
         if let Some(ref dur) = source.total_duration() {
-            *self.duration.lock().unwrap_or_else(|p| p.into_inner()) = dur.as_secs_f64();
+            *self.duration.lock().unwrap() = dur.as_secs_f64();
         }
         let source = self.wrap_source(source);
         self.active().append(source);
 
         self.active_control = None;
 
-        *self.position.lock().unwrap_or_else(|p| p.into_inner()) = start_pos;
-        *self.start_time.lock().unwrap_or_else(|p| p.into_inner()) = None;
-        *self.start_pos.lock().unwrap_or_else(|p| p.into_inner()) = start_pos;
+        *self.position.lock().unwrap() = start_pos;
+        *self.start_time.lock().unwrap() = None;
+        *self.start_pos.lock().unwrap() = start_pos;
         self.playing.store(false, Ordering::SeqCst);
         self.crossfade_start = None;
 
@@ -518,7 +519,7 @@ impl AudioMixer {
             self.active()
                 .set_volume(vol * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0));
         }
-        *self.start_time.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
+        *self.start_time.lock().unwrap() = Some(Instant::now());
         self.playing.store(true, Ordering::SeqCst);
         Ok(())
     }
@@ -536,10 +537,10 @@ impl AudioMixer {
     pub fn stop(&mut self) -> AudioResult<()> {
         self.player_a.stop();
         self.player_b.stop();
-        *self.position.lock().unwrap_or_else(|p| p.into_inner()) = 0.0;
+        *self.position.lock().unwrap() = 0.0;
         self.playing.store(false, Ordering::SeqCst);
-        *self.start_time.lock().unwrap_or_else(|p| p.into_inner()) = None;
-        *self.start_pos.lock().unwrap_or_else(|p| p.into_inner()) = 0.0;
+        *self.start_time.lock().unwrap() = None;
+        *self.start_pos.lock().unwrap() = 0.0;
         self.crossfade_start = None;
         Ok(())
     }
@@ -549,10 +550,9 @@ impl AudioMixer {
             return Ok(());
         };
         ctrl.signal_seek(position_secs);
-        *self.position.lock().unwrap_or_else(|p| p.into_inner()) = position_secs;
-        *self.start_time.lock().unwrap_or_else(|p| p.into_inner()) =
-            (position_secs > 0.0).then(Instant::now);
-        *self.start_pos.lock().unwrap_or_else(|p| p.into_inner()) = position_secs;
+        *self.position.lock().unwrap() = position_secs;
+        *self.start_time.lock().unwrap() = (position_secs > 0.0).then(Instant::now);
+        *self.start_pos.lock().unwrap() = position_secs;
         Ok(())
     }
 
@@ -591,17 +591,17 @@ impl AudioMixer {
             .unwrap()
             .map(|t| t.elapsed().as_secs_f64())
             .unwrap_or(0.0);
-        let start = *self.start_pos.lock().unwrap_or_else(|p| p.into_inner());
-        let total = *self.duration.lock().unwrap_or_else(|p| p.into_inner());
+        let start = *self.start_pos.lock().unwrap();
+        let total = *self.duration.lock().unwrap();
         (start + elapsed).min(total)
     }
 
     pub fn duration(&self) -> f64 {
-        *self.duration.lock().unwrap_or_else(|p| p.into_inner())
+        *self.duration.lock().unwrap()
     }
 
     pub fn active_remaining(&self) -> f64 {
-        let total = *self.duration.lock().unwrap_or_else(|p| p.into_inner());
+        let total = *self.duration.lock().unwrap();
         if total <= 0.0 {
             return 0.0;
         }
@@ -626,6 +626,55 @@ impl AudioMixer {
         self.crossfade_start.is_some()
     }
 
+    /// Immediately cut the fading-out (active) player and promote the
+    /// fading-in standby to active.  This is the "drop oldest" path used
+    /// when next/prev arrives mid-crossfade: instead of rejecting the
+    /// navigation (the mixer only ever fades between two players), the
+    /// outgoing track is dropped so the fade-in finishes seamlessly.
+    pub fn drop_active(&mut self) {
+        let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
+        let master = self.master_volume.load(Ordering::SeqCst) as f32 / 100.0;
+        let outgoing = if self.is_a_active {
+            &self.player_a
+        } else {
+            &self.player_b
+        };
+        let incoming = if self.is_a_active {
+            &self.player_b
+        } else {
+            &self.player_a
+        };
+        outgoing.stop();
+        outgoing.set_volume(0.0);
+        incoming.set_volume(vol * master);
+
+        self.is_a_active = !self.is_a_active;
+        if self.standby_duration > 0.0 {
+            *self.duration.lock().unwrap() = self.standby_duration;
+        }
+        *self.start_time.lock().unwrap() = Some(Instant::now());
+        *self.start_pos.lock().unwrap() = 0.0;
+        self.crossfade_start = None;
+        self.playing.store(true, Ordering::SeqCst);
+        self.underrun_since = None;
+
+        // Roles swapped: the promoted standby now owns the active slot, so
+        // the decode-thread bookkeeping must follow it.
+        std::mem::swap(&mut self.active_control, &mut self.standby_control);
+        std::mem::swap(
+            &mut self.active_decode_handle,
+            &mut self.standby_decode_handle,
+        );
+        let new_standby = if self.is_a_active {
+            &self.player_b
+        } else {
+            &self.player_a
+        };
+        new_standby.set_volume(0.0);
+        new_standby.pause();
+        Self::stop_decode_thread(&self.standby_control, &mut self.standby_decode_handle);
+    }
+
     pub fn force_complete_crossfade(&mut self) {
         if self.crossfade_start.is_none() {
             return;
@@ -644,10 +693,10 @@ impl AudioMixer {
         }
         self.is_a_active = !self.is_a_active;
         if self.standby_duration > 0.0 {
-            *self.duration.lock().unwrap_or_else(|p| p.into_inner()) = self.standby_duration;
+            *self.duration.lock().unwrap() = self.standby_duration;
         }
-        *self.start_time.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
-        *self.start_pos.lock().unwrap_or_else(|p| p.into_inner()) = 0.0;
+        *self.start_time.lock().unwrap() = Some(Instant::now());
+        *self.start_pos.lock().unwrap() = 0.0;
         self.playing.store(true, Ordering::SeqCst);
 
         let new_standby = if self.is_a_active {
@@ -724,10 +773,10 @@ impl AudioMixer {
             // duration to its value so position tracking and the daemon's
             // `finish_crossfade` see the new track's length.
             if self.standby_duration > 0.0 {
-                *self.duration.lock().unwrap_or_else(|p| p.into_inner()) = self.standby_duration;
+                *self.duration.lock().unwrap() = self.standby_duration;
             }
-            *self.start_time.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
-            *self.start_pos.lock().unwrap_or_else(|p| p.into_inner()) = 0.0;
+            *self.start_time.lock().unwrap() = Some(Instant::now());
+            *self.start_pos.lock().unwrap() = 0.0;
             self.playing.store(true, Ordering::SeqCst);
 
             let new_standby = if self.is_a_active {
@@ -769,11 +818,11 @@ impl AudioMixer {
                     .unwrap()
                     .map(|t| t.elapsed().as_secs_f64())
                     .unwrap_or(0.0);
-                let current = *self.start_pos.lock().unwrap_or_else(|p| p.into_inner());
+                let current = *self.start_pos.lock().unwrap();
                 let paused_pos = current + elapsed_time;
-                *self.position.lock().unwrap_or_else(|p| p.into_inner()) = paused_pos;
-                *self.start_pos.lock().unwrap_or_else(|p| p.into_inner()) = paused_pos;
-                *self.start_time.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                *self.position.lock().unwrap() = paused_pos;
+                *self.start_pos.lock().unwrap() = paused_pos;
+                *self.start_time.lock().unwrap() = None;
                 self.playing.store(false, Ordering::SeqCst);
             } else {
                 let progress = elapsed / FADE_MS;
@@ -817,10 +866,10 @@ impl AudioMixer {
                 .unwrap()
                 .map(|t| t.elapsed().as_secs_f64())
                 .unwrap_or(0.0);
-            let start = *self.start_pos.lock().unwrap_or_else(|p| p.into_inner());
-            let total = *self.duration.lock().unwrap_or_else(|p| p.into_inner());
+            let start = *self.start_pos.lock().unwrap();
+            let total = *self.duration.lock().unwrap();
             let pos = (start + elapsed).min(total);
-            *self.position.lock().unwrap_or_else(|p| p.into_inner()) = pos;
+            *self.position.lock().unwrap() = pos;
             if (pos - self.last_reported_pos).abs() >= 0.05 {
                 self.last_reported_pos = pos;
                 return Ok(Some(AudioEvent::Position(pos)));

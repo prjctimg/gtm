@@ -292,7 +292,7 @@ fn parse_yt_json(line: &str) -> Result<YTSearchResult, String> {
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let (_artist, title) = crate::metadata_cleaner::clean_youtube_title(&raw_title);
+    let (_artist, title) = crate::cleaner::clean_youtube_title(&raw_title);
     Ok(YTSearchResult {
         id: id.clone(),
         title,

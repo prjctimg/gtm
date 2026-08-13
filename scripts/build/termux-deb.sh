@@ -3,7 +3,7 @@
 # Requires: termux-create-package, cross-compiled binaries in target/aarch64-linux-android/release/
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 VERSION="${1:-$(grep -m1 '^version = ' "$REPO_ROOT/Cargo.toml" | sed 's/^version = "\(.*\)"/\1/')}"
 ARCH="aarch64"
 

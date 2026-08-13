@@ -18,8 +18,12 @@ use rodio::Source;
 /// Sentinel value for "no seek request pending".
 pub const NO_SEEK: u64 = u64::MAX;
 
-/// Prebuffer threshold in samples (0.75 seconds at 44100 stereo).
-pub const PREBUFFER_SAMPLES: usize = 44100 * 2 * 3 / 4; // 66150
+/// Prebuffer threshold in samples (1.5 seconds at 44100 stereo).
+pub const PREBUFFER_SAMPLES: usize = 44100 * 2 * 3 / 2; // 132300
+
+/// Ring buffer capacity (6 seconds at 44100 stereo) so the decode thread
+/// can push well ahead of the consumer on slow disks or EQ-heavy tracks.
+pub const BUFFER_CAPACITY_SAMPLES: usize = 44100 * 2 * 6; // 529200
 
 // SAFETY: RingBufferInner uses UnsafeCell for SPSC lock-free access.
 // - Only one producer thread calls push()
@@ -80,6 +84,33 @@ impl RingBufferInner {
         }
         self.write_pos.store(w + 1, Ordering::Release);
         true
+    }
+
+    /// Write a single sample, waiting (bounded) for space instead of silently
+    /// dropping.  The wait is short — a few milliseconds of yield — then it
+    /// falls back to dropping so a wedged consumer can never hang the
+    /// producer.  Prefer this over `push` on the decode thread so an overrun
+    /// never clips audio.
+    /// SAFETY: Only the producer thread calls push_blocking(), so no data
+    /// race with pop().
+    pub fn push_blocking(&self, sample: f32) {
+        let mut waits = 0u32;
+        loop {
+            let w = self.write_pos.load(Ordering::Relaxed);
+            let r = self.read_pos.load(Ordering::Acquire);
+            if w - r < self.capacity {
+                unsafe {
+                    self.buf_ptr.add(w & self.mask).write(sample);
+                }
+                self.write_pos.store(w + 1, Ordering::Release);
+                return;
+            }
+            waits += 1;
+            if waits >= 100 {
+                return;
+            }
+            std::thread::sleep(Duration::from_micros(50));
+        }
     }
 
     /// Read a single sample. Returns None if empty.

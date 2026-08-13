@@ -144,6 +144,61 @@ impl Library {
         Ok(())
     }
 
+    /// Permanently remove a track from the library and clean up after it:
+    ///
+    /// - deletes the `tracks` row (and its playlist membership)
+    /// - removes the audio file **only** when it lives under one of the
+    ///   managed library dirs (files outside are left untouched)
+    /// - purges the cached cover art and the `.lrc` sidecar
+    ///
+    /// Returns `Ok(None)` when no such row exists (a repeat/race delete is
+    /// harmless rather than a scary error); `Ok(Some(path))` is the removed
+    /// track's path so the caller can drop it from its playback queue.
+    pub fn remove_track_full(
+        &self,
+        id: i64,
+        library_dirs: &[PathBuf],
+    ) -> Result<Option<String>, String> {
+        let track = self.get_track(id).map_err(|e| format!("lookup: {e}"))?;
+        let Some(track) = track else {
+            return Ok(None);
+        };
+
+        // Explicit playlist membership cleanup (works even without FK pragma).
+        self.conn
+            .execute(
+                "DELETE FROM playlist_tracks WHERE track_id = ?1",
+                params![id],
+            )
+            .map_err(|e| format!("delete playlist rows: {e}"))?;
+
+        self.conn
+            .execute("DELETE FROM tracks WHERE id = ?1", params![id])
+            .map_err(|e| format!("delete: {e}"))?;
+
+        let path = std::path::Path::new(&track.path);
+        let managed = library_dirs.iter().any(|d| path.starts_with(d));
+        if managed {
+            if let Err(e) = fs::remove_file(path) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    warn!("delete audio file {}: {e}", track.path);
+                }
+            }
+        }
+
+        // Purge cached cover art (lives under the cache covers dir).
+        if let Some(cover) = &track.cover_path {
+            if cover.contains("covers") {
+                let _ = fs::remove_file(cover);
+            }
+        }
+
+        // Purge the .lrc sidecar written next to the audio file.
+        let _ = fs::remove_file(path.with_extension("lrc"));
+
+        Ok(Some(track.path))
+    }
+
     pub fn update_cover_path(&self, id: i64, cover_path: &str) -> Result<(), String> {
         let affected = self
             .conn
@@ -665,16 +720,16 @@ pub(crate) fn extract_metadata(
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("");
-        // Use metadata_cleaner for comprehensive YouTube title cleaning
+        // Use the cleaner module for comprehensive YouTube title cleaning
         // (handles yt-dlp underscore-separated filenames too).
-        let (cleaned_artist, cleaned_title) = crate::metadata_cleaner::clean_filename_stem(stem);
-        let cleaned_title = crate::metadata_cleaner::sanitize_text(&cleaned_title);
+        let (cleaned_artist, cleaned_title) = crate::cleaner::clean_filename_stem(stem);
+        let cleaned_title = crate::cleaner::sanitize_text(&cleaned_title);
         if title.is_empty() && !cleaned_title.is_empty() {
             title = cleaned_title;
         }
         if artist.is_empty() {
             if let Some(a) = cleaned_artist {
-                artist = crate::metadata_cleaner::sanitize_text(&a);
+                artist = crate::cleaner::sanitize_text(&a);
             } else if let Some(dash_idx) = stem.find(" - ") {
                 // Fallback: split on first " - "
                 if dash_idx > 0 {

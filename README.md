@@ -96,7 +96,8 @@ sudo make install
 This is a hobby project. It is feature complete and stable enough to use as a
 daily driver, though still largely a WIP. See [CONTRIBUTING.md](CONTRIBUTING.md)
 for build instructions, the crate layout, and the green gates (fmt / clippy /
-test).
+test). People who have contributed code are listed in
+[CONTRIBUTORS.md](CONTRIBUTORS.md).
 
 ---
 

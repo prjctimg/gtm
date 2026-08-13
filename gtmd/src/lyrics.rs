@@ -280,14 +280,14 @@ impl LyricsManager {
 
 /// Derive `(artist, title)` from a file path when track tags are missing.
 /// Parses "Artist - Title" from the file stem and strips common filler tags
-/// via [`crate::metadata_cleaner::clean_filename_stem`].
+/// via [`crate::cleaner::clean_filename_stem`].
 pub fn meta_from_filename(path: &str) -> (String, String) {
     let stem = Path::new(path)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_string();
-    let (artist, title) = crate::metadata_cleaner::clean_filename_stem(&stem);
+    let (artist, title) = crate::cleaner::clean_filename_stem(&stem);
     (artist.unwrap_or_default(), title)
 }
 

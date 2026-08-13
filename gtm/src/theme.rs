@@ -37,6 +37,8 @@ pub struct AppTheme {
     pub volume_medium: Color,
     pub volume_high: Color,
     pub sidebar_active_border: Color,
+    /// Solid border used by the floating notification cards.
+    pub notification_border: Color,
     /// When true, all accent colors derive from `accent` with brightness
     /// variations.  The footer and progress bars use this to create a
     /// cohesive single-hue appearance.
@@ -113,6 +115,7 @@ fn chadrula() -> AppTheme {
         volume_medium: hex(0xe0af68),
         volume_high: hex(0xf7768e),
         sidebar_active_border: hex(0x7aa2f7),
+        notification_border: hex(0x7aa2f7),
         monochromatic: false,
     }
 }
@@ -142,6 +145,7 @@ fn one_dark() -> AppTheme {
         volume_medium: hex(0xe5c07b),
         volume_high: hex(0xe06c75),
         sidebar_active_border: hex(0x61afef),
+        notification_border: hex(0x61afef),
         monochromatic: false,
     }
 }
@@ -171,6 +175,7 @@ fn tokyonight() -> AppTheme {
         volume_medium: hex(0xff9e64),
         volume_high: hex(0xf7768e),
         sidebar_active_border: hex(0x7aa2f7),
+        notification_border: hex(0x7aa2f7),
         monochromatic: false,
     }
 }
@@ -211,6 +216,7 @@ fn catppuccin_mocha() -> AppTheme {
         volume_medium: hex(0xfab387),
         volume_high: hex(0xf38ba8),
         sidebar_active_border: hex(0x89b4fa),
+        notification_border: hex(0x89b4fa),
         monochromatic: false,
     }
 }
@@ -240,6 +246,7 @@ fn gruvbox_dark() -> AppTheme {
         volume_medium: hex(0xfe8019),
         volume_high: hex(0xfb4934),
         sidebar_active_border: hex(0xd3869b),
+        notification_border: hex(0xd3869b),
         monochromatic: false,
     }
 }
@@ -269,6 +276,7 @@ fn nord() -> AppTheme {
         volume_medium: hex(0xd08770),
         volume_high: hex(0xbf616a),
         sidebar_active_border: hex(0x88c0d0),
+        notification_border: hex(0x88c0d0),
         monochromatic: false,
     }
 }
@@ -298,6 +306,7 @@ fn rose_pine() -> AppTheme {
         volume_medium: hex(0xf6c177),
         volume_high: hex(0xeb6f92),
         sidebar_active_border: hex(0xc4a7e7),
+        notification_border: hex(0xc4a7e7),
         monochromatic: false,
     }
 }
@@ -327,6 +336,7 @@ fn everforest() -> AppTheme {
         volume_medium: hex(0xe69875),
         volume_high: hex(0xe67e80),
         sidebar_active_border: hex(0xa7c080),
+        notification_border: hex(0xa7c080),
         monochromatic: false,
     }
 }
@@ -356,6 +366,7 @@ fn kanagawa() -> AppTheme {
         volume_medium: hex(0xe6c384),
         volume_high: hex(0xc34043),
         sidebar_active_border: hex(0x7e9cd8),
+        notification_border: hex(0x7e9cd8),
         monochromatic: false,
     }
 }
@@ -368,9 +379,9 @@ fn catppuccin_latte() -> AppTheme {
         picker_bg: hex(0xe6e9ef),
         elevated_bg: hex(0xdde1e9),
         muted_border: hex(0xccd0da),
-        fg: hex(0x4c4f69),
-        fg_dim: hex(0x9ca0b0),
-        fg_bright: hex(0x1e1e2e),
+        fg: hex(0x2c2f3e),
+        fg_dim: hex(0x4a5063),
+        fg_bright: hex(0x14161d),
         accent: hex(0x1e66f5),
         secondary_accent: hex(0x40a02b),
         tertiary_accent: hex(0xfe640b),
@@ -385,6 +396,7 @@ fn catppuccin_latte() -> AppTheme {
         volume_medium: hex(0xfe640b),
         volume_high: hex(0xd20f39),
         sidebar_active_border: hex(0x1e66f5),
+        notification_border: hex(0x1e66f5),
         monochromatic: false,
     }
 }
@@ -397,9 +409,9 @@ fn kanagawa_lotus() -> AppTheme {
         picker_bg: hex(0xeae4c9),
         elevated_bg: hex(0xe3dcc2),
         muted_border: hex(0xdcdbc4),
-        fg: hex(0x545464),
-        fg_dim: hex(0x949494),
-        fg_bright: hex(0x434343),
+        fg: hex(0x33333d),
+        fg_dim: hex(0x4f4f5a),
+        fg_bright: hex(0x23232b),
         accent: hex(0x2d6a9f),
         secondary_accent: hex(0x6a9589),
         tertiary_accent: hex(0xb47e2b),
@@ -414,6 +426,7 @@ fn kanagawa_lotus() -> AppTheme {
         volume_medium: hex(0xb47e2b),
         volume_high: hex(0xc84053),
         sidebar_active_border: hex(0x2d6a9f),
+        notification_border: hex(0x2d6a9f),
         monochromatic: false,
     }
 }
@@ -443,6 +456,7 @@ fn classic() -> AppTheme {
         volume_medium: hex(0xffaa00),
         volume_high: hex(0xff4444),
         sidebar_active_border: hex(0xff8800),
+        notification_border: hex(0xff8800),
         monochromatic: false,
     }
 }
@@ -474,6 +488,7 @@ fn monochrome() -> AppTheme {
         volume_medium: hex(0xe0af68),
         volume_high: hex(0xe06c75),
         sidebar_active_border: accent,
+        notification_border: accent,
         monochromatic: true,
     }
 }
@@ -610,6 +625,9 @@ struct UserThemeFile {
     volume_medium: String,
     volume_high: String,
     sidebar_active_border: String,
+    /// Optional; defaults to `accent`.
+    #[serde(default)]
+    notification_border: Option<String>,
     /// Optional; defaults to `false`.
     #[serde(default)]
     monochromatic: bool,
@@ -654,6 +672,11 @@ impl UserThemeFile {
             volume_medium: parse_color(&self.volume_medium)?,
             volume_high: parse_color(&self.volume_high)?,
             sidebar_active_border: parse_color(&self.sidebar_active_border)?,
+            notification_border: parse_color(
+                self.notification_border
+                    .as_deref()
+                    .unwrap_or(self.accent.as_str()),
+            )?,
             monochromatic: self.monochromatic,
         })
     }
@@ -802,6 +825,7 @@ mod tests {
             volume_medium = "#fe640b"
             volume_high = "#d20f39"
             sidebar_active_border = "#1e66f5"
+            notification_border = "#1e66f5"
         "##;
         let parsed: UserThemeFile = toml::from_str(toml).unwrap();
         let theme = parsed.into_theme().unwrap();

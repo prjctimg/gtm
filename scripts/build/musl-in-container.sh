@@ -7,7 +7,7 @@
 #
 # Usage (from the runner host):
 #   docker run --rm -v "$PWD":/work -w /work -e HOME=/root alpine:3.22 \
-#     /bin/sh -c "apk add --no-cache bash && /bin/bash /work/scripts/build-musl-in-container.sh <platform> <version> <arch>"
+#     /bin/sh -c "apk add --no-cache bash && /bin/bash /work/scripts/musl-in-container.sh <platform> <version> <arch>"
 set -euo pipefail
 
 platform="${1:?platform required}"
@@ -19,7 +19,7 @@ cd /work
 export RUSTFLAGS="-C target-feature=-crt-static"
 
 apk add --no-cache \
-  ca-certificates curl build-base cmake musl-dev \
+  ca-certificates curl base cmake musl-dev \
   pkgconfig alsa-lib-dev pandoc
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
@@ -27,7 +27,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 cargo build --release
 
-./scripts/gen-manpages.sh artifacts
+./scripts/manpages.sh artifacts
 cargo run --release --bin release-gen completions artifacts
 
 # ── Complete per-target archive ──
@@ -75,7 +75,7 @@ cp dist/gtm.desktop stage/usr/share/applications/
 cp assets/gtm.svg stage/usr/share/icons/hicolor/scalable/apps/
 cp LICENSE stage/usr/share/licenses/gtm/
 
-bash /work/scripts/build-alpine-apk.sh "$version" "$arch" stage \
+bash /work/scripts/alpine-apk.sh "$version" "$arch" stage \
   "release-assets/gtm-${version}-r0-${arch}.apk"
 
 echo "musl build complete: $(ls -1 release-assets)"

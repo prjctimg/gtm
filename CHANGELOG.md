@@ -25,7 +25,7 @@
 
 ### Added
 - **crates.io publishing**: workspace crates (`gtm-core`, `gtm-audio`, `gtm-mpris`, `gtmd`, `gtm`) are now published to crates.io by the release workflow (stable releases only, dependency order, idempotent re-runs via the `GTM_IO` token). Added missing `description` fields, explicit versions on path dependencies, and marked `release-gen` as `publish = false`
-- **More distro packages**: release workflow now publishes `.rpm` (Fedora/RHEL/CentOS, x86_64 + aarch64, binary packaging via `dist/gtm-full.spec`), Arch `.pkg.tar.zst` (`scripts/build-arch-pkg.sh`), and Alpine `.apk` packages plus static musl archives (`scripts/build-alpine-apk.sh`, new `x86_64-linux-musl`/`aarch64-linux-musl` Alpine container jobs)
+- **More distro packages**: release workflow now publishes `.rpm` (Fedora/RHEL/CentOS, x86_64 + aarch64, binary packaging via `dist/gtm-full.spec`), Arch `.pkg.tar.zst` (`scripts/arch-pkg.sh`), and Alpine `.apk` packages plus static musl archives (`scripts/alpine-apk.sh`, new `x86_64-linux-musl`/`aarch64-linux-musl` Alpine container jobs)
 - **`checksums.txt`** with SHA-256 of every release asset
 
 ### Changed
@@ -42,7 +42,7 @@
 ## [0.1.4] – 2026-08-09
 
 ### Fixed
-- **Manpage generation in release pipeline**: the `docs/man` manpage sources (gtm.1, gtmd.1, gtmd-ipc.1) were removed while the gtm.spec repo still carries no `man/` tree, so `gen-manpages.sh` produced zero manpages and the release build failed. Restored the local `docs/man/*.1.md` sources and made the script fail with a clear diagnostic when no manpages can be generated
+- **Manpage generation in release pipeline**: the `docs/man` manpage sources (gtm.1, gtmd.1, gtmd-ipc.1) were removed while the gtm.spec repo still carries no `man/` tree, so `manpages.sh` produced zero manpages and the release build failed. Restored the local `docs/man/*.1.md` sources and made the script fail with a clear diagnostic when no manpages can be generated
 - **CI formatting gate**: `cargo fmt --check` was failing on the Design-toggle additions in `gtm/src/ui.rs`; reformatted
 
 ### Changed

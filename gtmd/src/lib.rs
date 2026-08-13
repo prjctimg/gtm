@@ -4,13 +4,13 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+pub mod cleaner;
 pub mod config;
-pub mod cover_art;
+pub mod cover;
 pub mod daemon;
 pub mod deezer;
 pub mod library;
 pub mod lyrics;
-pub mod metadata_cleaner;
 pub mod queue;
 pub mod spotify;
 pub mod tags;

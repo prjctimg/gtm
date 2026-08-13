@@ -4,7 +4,7 @@ set -euo pipefail
 # Build an unsigned Alpine .apk from a rootfs-style stage tree.
 #
 # Usage:
-#   build-alpine-apk.sh <version> <arch> <stage> <out.apk>
+#   alpine-apk.sh <version> <arch> <stage> <out.apk>
 #
 # The stage tree is a normal rootfs layout (usr/bin/gtm, usr/share/man/man1,
 # ...) assembled by the release workflow. The output apk carries no signature,

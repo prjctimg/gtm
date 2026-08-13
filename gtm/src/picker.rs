@@ -27,11 +27,46 @@ pub enum PickerId {
     EditMetadata,
 }
 
+/// Which list a fuzzy-finder picker searches. `Tab` cycles through these.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PickerSource {
+    #[default]
+    All,
+    Tracks,
+    Artists,
+    Albums,
+    Playlists,
+}
+
+impl PickerSource {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Tracks => "Tracks",
+            Self::Artists => "Artists",
+            Self::Albums => "Albums",
+            Self::Playlists => "Playlists",
+        }
+    }
+
+    pub fn next(&self) -> Self {
+        match self {
+            Self::All => Self::Tracks,
+            Self::Tracks => Self::Artists,
+            Self::Artists => Self::Albums,
+            Self::Albums => Self::Playlists,
+            Self::Playlists => Self::All,
+        }
+    }
+}
+
 /// Active picker instance: state + metadata.
 pub struct Picker {
     pub id: PickerId,
     pub query: String,
     pub selected: usize,
+    /// List the fuzzy finder filters over (`Tab` cycles it).
+    pub source: PickerSource,
 }
 
 impl Picker {
@@ -40,6 +75,7 @@ impl Picker {
             id,
             query: String::new(),
             selected: 0,
+            source: PickerSource::default(),
         }
     }
 }

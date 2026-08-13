@@ -14,10 +14,10 @@ use pulseaudio::protocol;
 use pulseaudio::{Client, PlaybackSource};
 
 use crate::backend::{AudioError, AudioEvent, AudioResult};
-use crate::decode_thread::DecodeThread;
+use crate::buffer::{DecodeControl, RingBufferInner, SharedRingBuffer, PREBUFFER_SAMPLES};
+use crate::decoder::DecodeThread;
 use crate::eq::{EqGains, EqSource, ReverbSource};
 use crate::mixer::Mixer;
-use crate::ring_buffer::{DecodeControl, RingBufferInner, SharedRingBuffer, PREBUFFER_SAMPLES};
 use crate::symphonia::SymphoniaSource;
 use gtm_core::state::{Easing, EqPreset, ReverbConfig};
 use rodio::Source;
@@ -322,8 +322,8 @@ impl PulseAudioMixer {
         self.active_mut().control = self.standby_mut().control.take();
         self.active_mut().decode_handle = self.standby_mut().decode_handle.take();
 
-        *self.start_time.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
-        *self.start_pos.lock().unwrap_or_else(|p| p.into_inner()) = 0.0;
+        *self.start_time.lock().unwrap() = Some(Instant::now());
+        *self.start_pos.lock().unwrap() = 0.0;
         self.playing.store(true, Ordering::SeqCst);
     }
 
@@ -342,7 +342,7 @@ impl Mixer for PulseAudioMixer {
 
         let dur = Self::probe_duration(path)?;
         if dur > 0.0 {
-            *self.duration.lock().unwrap_or_else(|p| p.into_inner()) = dur;
+            *self.duration.lock().unwrap() = dur;
         }
 
         let (control, handle) = Self::start_decode(
@@ -359,9 +359,9 @@ impl Mixer for PulseAudioMixer {
 
         self.active().uncork();
 
-        *self.position.lock().unwrap_or_else(|p| p.into_inner()) = start_pos;
-        *self.start_time.lock().unwrap_or_else(|p| p.into_inner()) = None;
-        *self.start_pos.lock().unwrap_or_else(|p| p.into_inner()) = start_pos;
+        *self.position.lock().unwrap() = start_pos;
+        *self.start_time.lock().unwrap() = None;
+        *self.start_pos.lock().unwrap() = start_pos;
         self.playing.store(false, Ordering::SeqCst);
         self.crossfade_start = None;
 
@@ -380,7 +380,7 @@ impl Mixer for PulseAudioMixer {
         Self::set_stream_volume(&self.active(), 0);
 
         if let Some(ref dur) = source.total_duration() {
-            *self.duration.lock().unwrap_or_else(|p| p.into_inner()) = dur.as_secs_f64();
+            *self.duration.lock().unwrap() = dur.as_secs_f64();
         }
 
         let source = if self.eq_enabled.load(Ordering::Relaxed) {
@@ -389,10 +389,7 @@ impl Mixer for PulseAudioMixer {
             source
         };
         let source = if self.reverb_enabled.load(Ordering::Relaxed) {
-            let room_size = *self
-                .reverb_room_size
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let room_size = *self.reverb_room_size.lock().unwrap();
             Box::new(ReverbSource::new(
                 source,
                 room_size,
@@ -420,9 +417,9 @@ impl Mixer for PulseAudioMixer {
 
         self.active().uncork();
 
-        *self.position.lock().unwrap_or_else(|p| p.into_inner()) = start_pos;
-        *self.start_time.lock().unwrap_or_else(|p| p.into_inner()) = None;
-        *self.start_pos.lock().unwrap_or_else(|p| p.into_inner()) = start_pos;
+        *self.position.lock().unwrap() = start_pos;
+        *self.start_time.lock().unwrap() = None;
+        *self.start_pos.lock().unwrap() = start_pos;
         self.playing.store(false, Ordering::SeqCst);
         self.crossfade_start = None;
 
@@ -468,10 +465,7 @@ impl Mixer for PulseAudioMixer {
             source
         };
         let source = if self.reverb_enabled.load(Ordering::Relaxed) {
-            let room_size = *self
-                .reverb_room_size
-                .lock()
-                .unwrap_or_else(|p| p.into_inner());
+            let room_size = *self.reverb_room_size.lock().unwrap();
             Box::new(ReverbSource::new(
                 source,
                 room_size,
@@ -518,7 +512,7 @@ impl Mixer for PulseAudioMixer {
             Self::set_stream_volume(&self.active(), self.stored_volume);
         }
 
-        *self.start_time.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
+        *self.start_time.lock().unwrap() = Some(Instant::now());
         self.playing.store(true, Ordering::SeqCst);
         Ok(())
     }
@@ -540,10 +534,10 @@ impl Mixer for PulseAudioMixer {
         self.standby().cork();
         self.active().flush();
         self.standby().flush();
-        *self.position.lock().unwrap_or_else(|p| p.into_inner()) = 0.0;
+        *self.position.lock().unwrap() = 0.0;
         self.playing.store(false, Ordering::SeqCst);
-        *self.start_time.lock().unwrap_or_else(|p| p.into_inner()) = None;
-        *self.start_pos.lock().unwrap_or_else(|p| p.into_inner()) = 0.0;
+        *self.start_time.lock().unwrap() = None;
+        *self.start_pos.lock().unwrap() = 0.0;
         self.crossfade_start = None;
         Ok(())
     }
@@ -558,10 +552,9 @@ impl Mixer for PulseAudioMixer {
             std::thread::sleep(Duration::from_millis(5));
         }
         self.active().flush();
-        *self.position.lock().unwrap_or_else(|p| p.into_inner()) = position_secs;
-        *self.start_time.lock().unwrap_or_else(|p| p.into_inner()) =
-            (position_secs > 0.0).then(|| Instant::now());
-        *self.start_pos.lock().unwrap_or_else(|p| p.into_inner()) = position_secs;
+        *self.position.lock().unwrap() = position_secs;
+        *self.start_time.lock().unwrap() = (position_secs > 0.0).then(|| Instant::now());
+        *self.start_pos.lock().unwrap() = position_secs;
         Ok(())
     }
 
@@ -601,17 +594,17 @@ impl Mixer for PulseAudioMixer {
             .unwrap()
             .map(|t| t.elapsed().as_secs_f64())
             .unwrap_or(0.0);
-        let start = *self.start_pos.lock().unwrap_or_else(|p| p.into_inner());
-        let total = *self.duration.lock().unwrap_or_else(|p| p.into_inner());
+        let start = *self.start_pos.lock().unwrap();
+        let total = *self.duration.lock().unwrap();
         (start + elapsed).min(total)
     }
 
     fn duration(&self) -> f64 {
-        *self.duration.lock().unwrap_or_else(|p| p.into_inner())
+        *self.duration.lock().unwrap()
     }
 
     fn active_remaining(&self) -> f64 {
-        let total = *self.duration.lock().unwrap_or_else(|p| p.into_inner());
+        let total = *self.duration.lock().unwrap();
         if total <= 0.0 {
             return 0.0;
         }
@@ -658,8 +651,36 @@ impl Mixer for PulseAudioMixer {
         self.active_mut().control = self.standby_mut().control.take();
         self.active_mut().decode_handle = self.standby_mut().decode_handle.take();
 
-        *self.start_time.lock().unwrap_or_else(|p| p.into_inner()) = Some(Instant::now());
-        *self.start_pos.lock().unwrap_or_else(|p| p.into_inner()) = 0.0;
+        *self.start_time.lock().unwrap() = Some(Instant::now());
+        *self.start_pos.lock().unwrap() = 0.0;
+        self.playing.store(true, Ordering::SeqCst);
+    }
+
+    fn drop_active(&mut self) {
+        if self.crossfade_start.is_none() {
+            return;
+        }
+        self.crossfade_start = None;
+        let vol = self.active().stream_volume.load(Ordering::Relaxed);
+
+        self.active_mut().stop_decode();
+        Self::set_stream_volume(&self.active(), 0);
+        self.active().cork();
+
+        self.is_a_active = !self.is_a_active;
+
+        Self::set_stream_volume(&self.active(), vol);
+        self.active().uncork();
+
+        self.standby().flush();
+        Self::set_stream_volume(&self.standby(), 0);
+        self.standby().cork();
+
+        self.active_mut().control = self.standby_mut().control.take();
+        self.active_mut().decode_handle = self.standby_mut().decode_handle.take();
+
+        *self.start_time.lock().unwrap() = Some(Instant::now());
+        *self.start_pos.lock().unwrap() = 0.0;
         self.playing.store(true, Ordering::SeqCst);
     }
 
@@ -667,7 +688,6 @@ impl Mixer for PulseAudioMixer {
         if self.crossfade_start.is_some() {
             self.step_crossfade();
         }
-
         if self.pending_pause {
             let fade_start = match self.pause_fade_start {
                 Some(s) => s,
@@ -685,11 +705,11 @@ impl Mixer for PulseAudioMixer {
                     .unwrap()
                     .map(|t| t.elapsed().as_secs_f64())
                     .unwrap_or(0.0);
-                let current = *self.start_pos.lock().unwrap_or_else(|p| p.into_inner());
+                let current = *self.start_pos.lock().unwrap();
                 let paused_pos = current + elapsed_time;
-                *self.position.lock().unwrap_or_else(|p| p.into_inner()) = paused_pos;
-                *self.start_pos.lock().unwrap_or_else(|p| p.into_inner()) = paused_pos;
-                *self.start_time.lock().unwrap_or_else(|p| p.into_inner()) = None;
+                *self.position.lock().unwrap() = paused_pos;
+                *self.start_pos.lock().unwrap() = paused_pos;
+                *self.start_time.lock().unwrap() = None;
                 self.playing.store(false, Ordering::SeqCst);
             } else {
                 let progress = elapsed / FADE_MS;
@@ -708,7 +728,7 @@ impl Mixer for PulseAudioMixer {
                 }
             }
             if self.playing.load(Ordering::SeqCst) {
-                let total = *self.duration.lock().unwrap_or_else(|p| p.into_inner());
+                let total = *self.duration.lock().unwrap();
                 let pos = self.current_position();
                 if total > 0.0 && pos < total - 0.5 {
                     return Ok(None);
@@ -726,10 +746,10 @@ impl Mixer for PulseAudioMixer {
                 .unwrap()
                 .map(|t| t.elapsed().as_secs_f64())
                 .unwrap_or(0.0);
-            let start = *self.start_pos.lock().unwrap_or_else(|p| p.into_inner());
-            let total = *self.duration.lock().unwrap_or_else(|p| p.into_inner());
+            let start = *self.start_pos.lock().unwrap();
+            let total = *self.duration.lock().unwrap();
             let pos = (start + elapsed).min(total);
-            *self.position.lock().unwrap_or_else(|p| p.into_inner()) = pos;
+            *self.position.lock().unwrap() = pos;
             if (pos - self.last_reported_pos).abs() >= 0.05 {
                 self.last_reported_pos = pos;
                 return Ok(Some(AudioEvent::Position(pos)));
@@ -749,10 +769,7 @@ impl Mixer for PulseAudioMixer {
 
     fn set_reverb(&self, config: &ReverbConfig) {
         self.reverb_enabled.store(config.enabled, Ordering::Relaxed);
-        *self
-            .reverb_room_size
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = config.room_size;
+        *self.reverb_room_size.lock().unwrap() = config.room_size;
     }
 }
 

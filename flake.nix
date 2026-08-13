@@ -50,7 +50,7 @@
 
             # Man pages
             mkdir -p artifacts/man
-            bash scripts/gen-manpages.sh artifacts
+            bash scripts/build/manpages.sh artifacts
             install -Dm 0644 artifacts/man/gtmd.1     $out/share/man/man1/gtmd.1
             install -Dm 0644 artifacts/man/gtmd-ipc.1 $out/share/man/man1/gtmd-ipc.1
             install -Dm 0644 artifacts/man/gtm.1      $out/share/man/man1/gtm.1

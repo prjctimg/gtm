@@ -17,7 +17,7 @@ control:
         both the gtm client and the gtmd daemon.
 
 # files_dir and deb_dir are resolved relative to the current working
-# directory. Both the release workflow and scripts/build-termux-deb.sh run
+# directory. Both the release workflow and scripts/build/termux-deb.sh run
 # termux-create-package from the repository root.
 files_dir: target/aarch64-linux-android/termux-pkg/files
 deb_dir: .

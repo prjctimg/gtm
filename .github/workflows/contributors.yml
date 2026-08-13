@@ -1,0 +1,28 @@
+name: Update CONTRIBUTORS
+on:
+  push:
+    branches: [main]
+permissions:
+  contents: write
+env:
+  # Never fall back to the deprecated Node 20 runtime: force every action
+  # onto the current Node (24+).
+  ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'false'
+jobs:
+  update-contributors:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Regenerate CONTRIBUTORS.md
+        run: bash scripts/build/gen-contributors.sh
+      - name: Commit if changed
+        run: |
+          if ! git diff --quiet CONTRIBUTORS.md; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add CONTRIBUTORS.md
+            git commit -m "docs: update CONTRIBUTORS"
+            git push
+          fi

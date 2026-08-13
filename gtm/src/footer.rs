@@ -348,11 +348,11 @@ fn module_color(m: FooterModule, theme: &crate::theme::AppTheme) -> Color {
         FooterModule::Repeat => theme.accent,
         FooterModule::Shuffle => theme.tertiary_accent,
         FooterModule::Progress => theme.secondary_accent,
-        FooterModule::Queue => theme.fg_dim,
+        FooterModule::Queue => theme.accent,
         FooterModule::KeyAction => theme.tertiary_accent,
-        FooterModule::Backend => theme.fg_dim,
-        FooterModule::System => theme.fg_dim,
-        FooterModule::Device => theme.fg_dim,
+        FooterModule::Backend => theme.secondary_accent,
+        FooterModule::System => theme.accent,
+        FooterModule::Device => theme.tertiary_accent,
         FooterModule::EqPreset => theme.secondary_accent,
         FooterModule::SleepTimer => theme.accent,
     }
@@ -484,7 +484,7 @@ fn render_progress(app: &App) -> Option<String> {
     Some(format!("{} {}", progress, time_str))
 }
 
-fn format_duration(secs: u64) -> String {
+pub fn format_duration(secs: u64) -> String {
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
     let s = secs % 60;
@@ -501,19 +501,7 @@ fn render_queue(app: &App) -> Option<String> {
         return None;
     }
     let cursor = app.queue_cursor;
-    let next = if cursor + 1 < len {
-        format!(
-            " \u{2192} {}",
-            app.queue_cache[cursor + 1]
-                .title
-                .chars()
-                .take(20)
-                .collect::<String>()
-        )
-    } else {
-        String::new()
-    };
-    Some(format!("[{}/{}]{}", cursor + 1, len, next))
+    Some(format!("[{}/{}]", cursor + 1, len))
 }
 
 fn render_keyaction(app: &App) -> Option<String> {

@@ -46,7 +46,7 @@ impl NullMixer {
 
 impl Mixer for NullMixer {
     fn load_active(&mut self, _path: &str, start_pos: f64) -> AudioResult<()> {
-        *self.position.lock().unwrap_or_else(|p| p.into_inner()) = start_pos;
+        *self.position.lock().unwrap() = start_pos;
         self.playing.store(false, Ordering::SeqCst);
         Ok(())
     }
@@ -56,16 +56,13 @@ impl Mixer for NullMixer {
         _source: Box<dyn Source<Item = f32> + Send>,
         start_pos: f64,
     ) -> AudioResult<()> {
-        *self.position.lock().unwrap_or_else(|p| p.into_inner()) = start_pos;
+        *self.position.lock().unwrap() = start_pos;
         self.playing.store(false, Ordering::SeqCst);
         Ok(())
     }
 
     fn load_standby(&mut self, _path: &str) -> AudioResult<()> {
-        *self
-            .standby_loaded
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = true;
+        *self.standby_loaded.lock().unwrap() = true;
         Ok(())
     }
 
@@ -73,18 +70,12 @@ impl Mixer for NullMixer {
         &mut self,
         _source: Box<dyn Source<Item = f32> + Send>,
     ) -> AudioResult<()> {
-        *self
-            .standby_loaded
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = true;
+        *self.standby_loaded.lock().unwrap() = true;
         Ok(())
     }
 
     fn standby_is_loaded(&self) -> bool {
-        *self
-            .standby_loaded
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
+        *self.standby_loaded.lock().unwrap()
     }
 
     fn play(&mut self) -> AudioResult<()> {
@@ -99,17 +90,14 @@ impl Mixer for NullMixer {
 
     fn stop(&mut self) -> AudioResult<()> {
         self.playing.store(false, Ordering::SeqCst);
-        *self.position.lock().unwrap_or_else(|p| p.into_inner()) = 0.0;
-        *self.crossfading.lock().unwrap_or_else(|p| p.into_inner()) = false;
-        *self
-            .standby_loaded
-            .lock()
-            .unwrap_or_else(|p| p.into_inner()) = false;
+        *self.position.lock().unwrap() = 0.0;
+        *self.crossfading.lock().unwrap() = false;
+        *self.standby_loaded.lock().unwrap() = false;
         Ok(())
     }
 
     fn seek(&mut self, position_secs: f64) -> AudioResult<()> {
-        *self.position.lock().unwrap_or_else(|p| p.into_inner()) = position_secs;
+        *self.position.lock().unwrap() = position_secs;
         Ok(())
     }
 
@@ -136,11 +124,11 @@ impl Mixer for NullMixer {
     }
 
     fn current_position(&self) -> f64 {
-        *self.position.lock().unwrap_or_else(|p| p.into_inner())
+        *self.position.lock().unwrap()
     }
 
     fn duration(&self) -> f64 {
-        *self.duration.lock().unwrap_or_else(|p| p.into_inner())
+        *self.duration.lock().unwrap()
     }
 
     fn active_remaining(&self) -> f64 {
@@ -148,17 +136,22 @@ impl Mixer for NullMixer {
     }
 
     fn start_crossfade(&mut self, _duration_secs: f64) {
-        *self.crossfading.lock().unwrap_or_else(|p| p.into_inner()) = true;
+        *self.crossfading.lock().unwrap() = true;
     }
 
     fn set_crossfade_easing(&mut self, _easing: Easing) {}
 
     fn is_crossfading(&self) -> bool {
-        *self.crossfading.lock().unwrap_or_else(|p| p.into_inner())
+        *self.crossfading.lock().unwrap()
     }
 
     fn force_complete_crossfade(&mut self) {
-        *self.crossfading.lock().unwrap_or_else(|p| p.into_inner()) = false;
+        *self.crossfading.lock().unwrap() = false;
+    }
+
+    fn drop_active(&mut self) {
+        *self.crossfading.lock().unwrap() = false;
+        *self.standby_loaded.lock().unwrap() = false;
     }
 
     fn poll(&mut self) -> AudioResult<Option<AudioEvent>> {

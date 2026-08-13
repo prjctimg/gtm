@@ -41,7 +41,7 @@ clean:
 	cargo clean
 
 man:
-	./scripts/gen-manpages.sh artifacts
+	./scripts/build/manpages.sh artifacts
 
 completions: release
 	cargo run --release --bin release-gen completions artifacts
@@ -103,4 +103,4 @@ termux-clean:
 deb-termux: termux termux-elf
 	@command -v termux-create-package >/dev/null 2>&1 || \
 		{ echo "termux-create-package not found. Install with: pip install termux-create-package"; exit 1; }
-	./scripts/build-termux-deb.sh
+	./scripts/build/termux-deb.sh

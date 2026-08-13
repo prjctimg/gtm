@@ -5,7 +5,7 @@ outdir="${1:-.}"
 mkdir -p "$outdir/man"
 
 script_dir="$(cd "$(dirname "$0")" && pwd)"
-repo_root="$script_dir/.."
+repo_root="$script_dir/../.."
 
 # Prefer gtm.spec/man/ when cloned alongside (CI or local dev),
 # falling back to local docs/man/ for offline builds. Spec pages win;

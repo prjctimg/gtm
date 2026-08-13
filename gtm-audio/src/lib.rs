@@ -5,22 +5,21 @@
 // This is free software released under the GPL-3.0 license.
 
 pub mod backend;
-pub mod decode_thread;
+pub mod buffer;
+pub mod decoder;
 pub mod eq;
-pub mod null_mixer;
-pub mod ring_buffer;
+pub mod mixer;
+pub mod silent;
 pub mod symphonia;
 
 #[cfg(feature = "pulseaudio")]
-pub mod pulse_mixer;
+pub mod pulse;
 
 pub use backend::{AudioError, AudioEvent, AudioResult};
+pub use buffer::{DecodeControl, RingBufferSource};
 pub use eq::{EqGains, EqSource, ReverbSource};
 pub use mixer::{AudioMixer, Mixer};
-pub use null_mixer::NullMixer;
-pub use ring_buffer::{DecodeControl, RingBufferSource};
+pub use silent::NullMixer;
 
 #[cfg(feature = "pulseaudio")]
-pub use pulse_mixer::PulseAudioMixer;
-
-pub mod mixer;
+pub use pulse::PulseAudioMixer;

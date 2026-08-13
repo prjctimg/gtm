@@ -48,7 +48,7 @@ install -Dpm 0644 dist/gtmd.service %{buildroot}%{_userunitdir}/gtmd.service
 
 # Man pages (generate from Markdown)
 mkdir -p artifacts/man
-./scripts/gen-manpages.sh artifacts
+./scripts/build/manpages.sh artifacts
 install -Dpm 0644 artifacts/man/gtmd.1     %{buildroot}%{_mandir}/man1/gtmd.1
 install -Dpm 0644 artifacts/man/gtmd-ipc.1 %{buildroot}%{_mandir}/man1/gtmd-ipc.1
 install -Dpm 0644 artifacts/man/gtm.1      %{buildroot}%{_mandir}/man1/gtm.1

@@ -305,13 +305,6 @@ pub fn default_keybindings() -> Keybindings {
                 },
             ),
             (
-                KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
-                BoundCommand {
-                    action: KeyboardAction::Next,
-                    contexts: vec![KeyContext::Global, KeyContext::Normal],
-                },
-            ),
-            (
                 KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
                 BoundCommand {
                     action: KeyboardAction::Prev,
@@ -370,9 +363,9 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Global, KeyContext::Normal],
                 },
             ),
-            // Favourite: F
+            // Favourite: f
             (
-                KeyCode::Char('F').into(),
+                KeyCode::Char('f').into(),
                 BoundCommand {
                     action: KeyboardAction::ToggleFavourite,
                     contexts: vec![KeyContext::Normal],

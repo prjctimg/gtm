@@ -38,7 +38,7 @@ and communicates with clients over a Unix domain socket.
 | `queue.rs` | QueueManager (shuffle, repeat, cursor) |
 | `library.rs` | SQLite library wrapper (rusqlite, bundled) |
 | `youtube.rs` | yt-dlp subprocess manager |
-| `cover_art.rs` | Deezer API cover art cache (LRU + disk) |
+| `cover.rs` | Deezer API cover art cache (LRU + disk) |
 | `lyrics.rs` | LRC sidecar + LRCLIB API resolver |
 | `config.rs` | XDG config loading |
 
