@@ -17,10 +17,14 @@ use std::path::Path;
 use gtm_core::state::DaemonState;
 use gtm_core::track::TrackInfo;
 
-/// Build a bare TrackInfo from a file path.  The title is derived from
+/// Build a TrackInfo from a file path.  The title is derived from
 /// the file stem; all other fields are left empty/default.  The path is
 /// canonicalised so path-equality checks against `daemon::resolve_track_meta`
 /// results (queue consumption, Play/Prev tracking) stay consistent.
+///
+/// When the file carries audio tags they are read so queued entries show
+/// clean metadata (title/artist/album) instead of the raw filename.  Untagged
+/// or unprobeable files fall back to the file stem.
 pub fn resolve_track(path: &str) -> TrackInfo {
     let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| Path::new(path).to_path_buf());
     let path_str = canonical.to_string_lossy().into_owned();
@@ -29,6 +33,39 @@ pub fn resolve_track(path: &str) -> TrackInfo {
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_string();
+
+    if let Ok((meta, hash)) = crate::library::extract_metadata(&path_str, None) {
+        return TrackInfo {
+            id: 0,
+            path: path_str,
+            title: if meta.title.is_empty() {
+                stem.clone()
+            } else {
+                meta.title
+            },
+            artist: if meta.artist.is_empty() {
+                String::new()
+            } else {
+                meta.artist
+            },
+            album: if meta.album.is_empty() {
+                String::new()
+            } else {
+                meta.album
+            },
+            duration: meta.duration,
+            track_number: meta.track_number,
+            genre: meta.genre,
+            year: meta.year,
+            bitrate: meta.bitrate,
+            samplerate: meta.samplerate,
+            hash,
+            cover_path: meta.cover_path,
+            favourite: false,
+            ..Default::default()
+        };
+    }
+
     TrackInfo {
         id: 0,
         path: path_str,

@@ -1,7 +1,12 @@
 # Release pipeline — builds gtm + gtmd for Linux (x86_64, ARM), macOS, and Android (Termux).
 #
-# Linux builds run on Ubuntu 22.04 (glibc 2.35) so the released binaries run on
-# any system with glibc >= 2.35 (covers Debian 12 / Ubuntu 22.04 and later).
+# Linux x86_64 builds run on Ubuntu 22.04 (glibc 2.35) so the released binaries
+# run on any system with glibc >= 2.35.
+#
+# Linux ARM64 (aarch64) builds run inside a `debian:12` (bookworm) container, so
+# the released binaries link against glibc 2.36 and are guaranteed to run on
+# Debian 12 ARM64 (glibc 2.36) as well as any newer ARM64 Linux.  The container
+# pins the glibc floor regardless of which ARM64 runner image GitHub provides.
 #
 # Pipeline:
 #
@@ -98,23 +103,46 @@ jobs:
   build:
     needs: tag
     runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
     strategy:
       matrix:
         include:
           - os: ubuntu-22.04
             platform: x86_64-linux
-          - os: ubuntu-22.04-arm
+            container: null
+          - os: ubuntu-24.04-arm
             platform: aarch64-linux
+            container: debian:12
           - os: macos-latest
             platform: aarch64-darwin
+            container: null
           - os: ubuntu-latest
             platform: aarch64-android
+            container: null
     steps:
+      # Debian 12 container jobs start with a bare bookworm image (no git,
+      # no Rust), so bootstrap tooling before checkout.  Runner-hosted jobs
+      # already have git + Rust and skip these steps.
+      - name: Install tooling (Debian 12 container)
+        if: matrix.container
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates curl git pkg-config \
+            libasound2-dev pandoc dpkg-dev \
+            build-essential liblzma-dev
+
+      - name: Install Rust (Debian 12 container)
+        if: matrix.container
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies (Linux)
-        if: startsWith(matrix.os, 'ubuntu') && matrix.platform != 'aarch64-android'
+        if: startsWith(matrix.os, 'ubuntu') && matrix.platform != 'aarch64-android' && !matrix.container
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev pandoc
 
       - name: Install system dependencies (macOS)
@@ -126,7 +154,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y pandoc
 
       - name: Clone gtm.spec (manpage sources)
-        run: git clone --depth 1 https://github.com/prjctimg/gtm.spec.git ../gtm.spec
+        run: git clone --depth 1 https://github.com/prjctimg/gtm.spec.git gtm.spec
 
       - name: Install Android NDK + tools
         if: matrix.platform == 'aarch64-android'

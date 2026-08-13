@@ -750,7 +750,14 @@ impl App {
                         // Only apply if the new state is at least as recent as ours.
                         // A stale get_status() response can arrive after a PlaybackStarted
                         // event and overwrite the newer state if we don't guard this.
-                        if state.version >= self.state.version {
+                        //
+                        // Exception: a large backward version jump means the daemon
+                        // restarted (its counter resets to 0).  The fresh snapshot is
+                        // authoritative even though its version is lower than the local
+                        // mirror, so it must not be dropped forever.
+                        let restarted = state.version < self.state.version
+                            && self.state.version.saturating_sub(state.version) > 1000;
+                        if state.version >= self.state.version || restarted {
                             self.state = *state;
                             self.client.seed_clock_from_state(&self.state).await;
                             // Cover art is fetched on track-change events only.
@@ -822,7 +829,10 @@ impl App {
                     IpcResult::Lyrics(lyrics) => {
                         self.current_lyrics = lyrics;
                         self.lyrics_fetching = false;
-                        self.lyrics_scroll = 0;
+                        // Snap to the lyric line matching the current playback
+                        // position so opening lyrics mid-track doesn't start
+                        // with the first line highlighted.
+                        self.lyrics_scroll = self.current_lyric_index();
                     }
                     IpcResult::HealthReport(report) => {
                         self.health_report = Some(report);
@@ -907,28 +917,11 @@ impl App {
             // EMA smoothing
             self.display_position = self.display_position * 0.85 + raw_pos * 0.15;
 
-            // Auto-scroll lyrics to current playback position
-            if !self.lyrics_manual_scroll
-                && self.show_lyrics
-                && self.state.status == PlaybackStatus::Playing
-            {
-                if let Some(ref lyrics) = self.current_lyrics {
-                    if !lyrics.lines.is_empty() {
-                        let pos = self.display_position;
-                        let mut current_idx = 0;
-                        for (i, line) in lyrics.lines.iter().enumerate() {
-                            if line.timestamp < 0.0 {
-                                continue;
-                            }
-                            if line.timestamp <= pos {
-                                current_idx = i;
-                            } else {
-                                break;
-                            }
-                        }
-                        self.lyrics_scroll = current_idx;
-                    }
-                }
+            // Auto-scroll lyrics to current playback position.  Not gated on
+            // `status == Playing` so a mirrored-status desync (e.g. after a
+            // daemon restart) can't freeze the highlight at the first line.
+            if !self.lyrics_manual_scroll && self.show_lyrics && self.current_lyrics.is_some() {
+                self.lyrics_scroll = self.current_lyric_index();
             }
 
             // Dirty-render: skip redraw if position hasn't changed meaningfully
@@ -977,6 +970,31 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Index of the time-synced lyric line for the current playback position.
+    /// Untimed lines (timestamp < 0) are skipped for matching but keep their
+    /// index so the highlight tracks timed lines correctly.
+    pub fn current_lyric_index(&self) -> usize {
+        let Some(ref lyrics) = self.current_lyrics else {
+            return 0;
+        };
+        if lyrics.lines.is_empty() {
+            return 0;
+        }
+        let pos = self.display_position;
+        let mut current_idx = 0;
+        for (i, line) in lyrics.lines.iter().enumerate() {
+            if line.timestamp < 0.0 {
+                continue;
+            }
+            if line.timestamp <= pos {
+                current_idx = i;
+            } else {
+                break;
+            }
+        }
+        current_idx
     }
 
     pub fn notify(&mut self, message: impl Into<String>, kind: NotificationKind) {

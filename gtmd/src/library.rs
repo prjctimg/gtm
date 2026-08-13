@@ -519,17 +519,17 @@ impl Library {
     }
 }
 
-struct Metadata {
-    title: String,
-    artist: String,
-    album: String,
-    genre: String,
-    year: Option<i32>,
-    track_number: Option<i32>,
-    duration: f64,
-    bitrate: Option<i32>,
-    samplerate: Option<i32>,
-    cover_path: Option<String>,
+pub(crate) struct Metadata {
+    pub(crate) title: String,
+    pub(crate) artist: String,
+    pub(crate) album: String,
+    pub(crate) genre: String,
+    pub(crate) year: Option<i32>,
+    pub(crate) track_number: Option<i32>,
+    pub(crate) duration: f64,
+    pub(crate) bitrate: Option<i32>,
+    pub(crate) samplerate: Option<i32>,
+    pub(crate) cover_path: Option<String>,
 }
 
 fn tag_title(dst: &mut String, tag: &symphonia::core::meta::Tag) {
@@ -539,7 +539,15 @@ fn tag_title(dst: &mut String, tag: &symphonia::core::meta::Tag) {
     *dst = tag.raw.value.to_string();
 }
 
-fn extract_metadata(path: &str, cache_dir: Option<&str>) -> Result<(Metadata, String), String> {
+/// Read audio tags (title/artist/album/genre/year/duration/cover) directly
+/// from a file.  `cache_dir` (when given) is the base cache directory used to
+/// persist any embedded front cover.  Reused by the daemon for by-path/foreign
+/// tracks so the Now Playing pane and footer show clean tags instead of the
+/// raw filename.
+pub(crate) fn extract_metadata(
+    path: &str,
+    cache_dir: Option<&str>,
+) -> Result<(Metadata, String), String> {
     let cache_base = cache_dir
         .map(PathBuf::from)
         .unwrap_or_else(|| {

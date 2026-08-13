@@ -1286,55 +1286,89 @@ impl Daemon {
     fn resolve_track_meta(inner: &DaemonInner, path: &std::path::Path, dur: f64) -> TrackInfo {
         let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let path_str = path.to_string_lossy().into_owned();
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Unknown")
+            .to_string();
 
-        let mut track = gtm_core::track::TrackInfo {
-            id: 0,
-            path: path_str.clone(),
-            title: path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("Unknown")
-                .to_string(),
-            artist: "Unknown Artist".to_string(),
-            album: "Unknown Album".to_string(),
-            duration: dur,
-            track_number: None,
-            genre: String::new(),
-            year: None,
-            bitrate: None,
-            samplerate: None,
-            hash: String::new(),
-            cover_path: None,
-            favourite: false,
-            ..Default::default()
-        };
+        if !inner.config.test_mode {
+            // Prefer the library row (full tags + favourite + cover) when the
+            // track has been scanned.
+            if let Ok(lib) = Library::new(inner.config.data_dir.to_str().unwrap_or("")) {
+                if let Ok(Some(mut t)) = lib.track_by_path(&path_str) {
+                    t.duration = dur;
+                    return t;
+                }
+                if let Ok(tracks) = lib.list_tracks() {
+                    if let Some(matched) = tracks
+                        .iter()
+                        .find(|t| path_str.contains(&t.path) || t.path.contains(&path_str))
+                    {
+                        let mut t = matched.clone();
+                        t.duration = dur;
+                        return t;
+                    }
+                }
+            }
 
-        if inner.config.test_mode {
-            return track;
-        }
-
-        let lib = match Library::new(inner.config.data_dir.to_str().unwrap_or("")) {
-            Ok(lib) => lib,
-            Err(_) => return track,
-        };
-        if let Ok(Some(mut t)) = lib.track_by_path(&path_str) {
-            t.duration = dur;
-            return t;
-        }
-        if let Ok(tracks) = lib.list_tracks() {
-            if let Some(matched) = tracks
-                .iter()
-                .find(|t| path_str.contains(&t.path) || t.path.contains(&path_str))
+            // Not in the library (by-path/foreign track): read real tags from
+            // the file so the UI shows clean metadata instead of the raw
+            // filename as the artist/title.
+            let cache_dir = inner.config.cache_dir.to_string_lossy().into_owned();
+            if let Ok((meta, hash)) = crate::library::extract_metadata(&path_str, Some(&cache_dir))
             {
-                track.id = matched.id;
-                track.title = matched.title.clone();
-                track.artist = matched.artist.clone();
-                track.album = matched.album.clone();
-                track.cover_path = matched.cover_path.clone();
-                track.favourite = matched.favourite;
+                return gtm_core::track::TrackInfo {
+                    id: 0,
+                    path: path_str,
+                    title: if meta.title.is_empty() {
+                        stem.clone()
+                    } else {
+                        meta.title
+                    },
+                    artist: if meta.artist.is_empty() {
+                        "Unknown Artist".to_string()
+                    } else {
+                        meta.artist
+                    },
+                    album: if meta.album.is_empty() {
+                        "Unknown Album".to_string()
+                    } else {
+                        meta.album
+                    },
+                    duration: if dur > 0.0 { dur } else { meta.duration },
+                    track_number: meta.track_number,
+                    genre: meta.genre,
+                    year: meta.year,
+                    bitrate: meta.bitrate,
+                    samplerate: meta.samplerate,
+                    hash,
+                    cover_path: meta.cover_path,
+                    favourite: false,
+                    ..Default::default()
+                };
             }
         }
-        track
+
+        // Final fallback: parse an "Artist - Title" pair from the filename so
+        // even untagged files render a meaningful artist instead of the raw
+        // stem.
+        let (cleaned_artist, cleaned_title) = crate::metadata_cleaner::clean_filename_stem(&stem);
+        let title = if cleaned_title.is_empty() {
+            stem
+        } else {
+            cleaned_title
+        };
+        let artist = cleaned_artist.unwrap_or_else(|| "Unknown Artist".to_string());
+        gtm_core::track::TrackInfo {
+            id: 0,
+            path: path_str,
+            title,
+            artist,
+            album: "Unknown Album".to_string(),
+            duration: dur,
+            ..Default::default()
+        }
     }
 
     /// Finalize a crossfade: the standby (next) track is already playing on
