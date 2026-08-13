@@ -1,8 +1,9 @@
 # Changelog
 
-## [0.1.5] – 2026-08-10
+## [0.1.5] – 2026-08-11
 
 ### Added
+- **crates.io publishing**: workspace crates (`gtm-core`, `gtm-audio`, `gtm-mpris`, `gtmd`, `gtm`) are now published to crates.io by the release workflow (stable releases only, dependency order, idempotent re-runs via the `GTM_IO` token). Added missing `description` fields, explicit versions on path dependencies, and marked `release-gen` as `publish = false`
 - **More distro packages**: release workflow now publishes `.rpm` (Fedora/RHEL/CentOS, x86_64 + aarch64, binary packaging via `dist/gtm-full.spec`), Arch `.pkg.tar.zst` (`scripts/build-arch-pkg.sh`), and Alpine `.apk` packages plus static musl archives (`scripts/build-alpine-apk.sh`, new `x86_64-linux-musl`/`aarch64-linux-musl` Alpine container jobs)
 - **`checksums.txt`** with SHA-256 of every release asset
 - **`docs/RELEASING.md`** documenting the release process and the asset manifest
@@ -13,6 +14,9 @@
 - README gains a "GitHub Release" install section (tar.xvf + per-distro one-liners)
 
 ### Fixed
+- **Lyric auto-follow freeze**: manual lyric scrolling no longer leaves the highlight frozen for the rest of the track — auto-follow resumes once playback catches up to the scrolled line, and a tab switch clears the latch
+- **Tab pane focus cycling**: Tab/Shift-Tab now cycles pane focus through the lyrics pane on the Library tab (previously only the library/settings panes), with focus state reset on tab switches
+- **Active tab highlight**: the active tab now uses selection foreground/background colors in both the Classic and Modern designs
 - Stale `dist/gtmd.spec` URL (`skchr/gtm-rs` → `prjctimg/gtm.rs`) and version
 
 ## [0.1.4] – 2026-08-09

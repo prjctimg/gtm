@@ -1,6 +1,6 @@
 [package]
 name = "gtmd"
-version.workspace = true
+version = "0.1.5"
 edition.workspace = true
 license.workspace = true
 description = "GTM background audio daemon"
@@ -11,9 +11,9 @@ categories.workspace = true
 readme.workspace = true
 
 [dependencies]
-gtm-core = { path = "../gtm-core" }
-gtm-audio = { path = "../gtm-audio" }
-gtm-mpris = { path = "../gtm-mpris", optional = true }
+gtm-core = { path = "../gtm-core", version = "0.1.5" }
+gtm-audio = { path = "../gtm-audio", version = "0.1.5" }
+gtm-mpris = { path = "../gtm-mpris", version = "0.1.5", optional = true }
 rusqlite = { version = "0.31", features = ["bundled"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"

@@ -977,6 +977,18 @@ impl App {
             // EMA smoothing
             self.display_position = self.display_position * 0.85 + raw_pos * 0.15;
 
+            // Auto-resume lyric auto-follow: after a manual scroll, once
+            // playback reaches the line the user scrolled to, re-enable
+            // auto-follow so the highlight can't stay frozen for the rest of
+            // the track.  Reading ahead still holds until the audio catches up.
+            if self.lyrics_manual_scroll
+                && self.show_lyrics
+                && self.current_lyrics.is_some()
+                && self.current_lyric_index() >= self.lyrics_scroll
+            {
+                self.lyrics_manual_scroll = false;
+            }
+
             // Auto-scroll lyrics to current playback position.  Not gated on
             // `status == Playing` so a mirrored-status desync (e.g. after a
             // daemon restart) can't freeze the highlight at the first line.
@@ -1040,6 +1052,34 @@ impl App {
             return 0;
         };
         lyric_index_at(&lyrics.lines, self.display_position)
+    }
+
+    /// Cycle pane focus with Tab/Shift-Tab.  On the Library tab with lyrics
+    /// open this walks left pane → right pane → lyrics pane (or the reverse
+    /// for Shift-Tab); otherwise it toggles the left/right panes.  Leaving
+    /// the lyrics pane re-enables lyric auto-follow.
+    fn cycle_pane_focus(&mut self, forward: bool) {
+        match self.current_tab {
+            Tab::Library => {
+                if self.show_lyrics {
+                    let (lib, lyr) = cycle_library_focus(
+                        self.library_pane_focus,
+                        self.lyrics_pane_focus,
+                        forward,
+                    );
+                    self.library_pane_focus = lib;
+                    self.lyrics_pane_focus = lyr;
+                    if !lyr {
+                        self.lyrics_manual_scroll = false;
+                    }
+                } else {
+                    self.library_pane_focus = !self.library_pane_focus;
+                }
+            }
+            Tab::Settings => {
+                self.settings_pane_focus = !self.settings_pane_focus;
+            }
+        }
     }
 
     pub fn notify(&mut self, message: impl Into<String>, kind: NotificationKind) {
@@ -1982,25 +2022,11 @@ impl App {
                         return false;
                     }
                     Some(KeyboardAction::NextTab) => {
-                        match self.current_tab {
-                            Tab::Library => {
-                                self.library_pane_focus = !self.library_pane_focus;
-                            }
-                            Tab::Settings => {
-                                self.settings_pane_focus = !self.settings_pane_focus;
-                            }
-                        }
+                        self.cycle_pane_focus(true);
                         self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::PrevTab) => {
-                        match self.current_tab {
-                            Tab::Library => {
-                                self.library_pane_focus = !self.library_pane_focus;
-                            }
-                            Tab::Settings => {
-                                self.settings_pane_focus = !self.settings_pane_focus;
-                            }
-                        }
+                        self.cycle_pane_focus(false);
                         self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::SwitchTab(tab)) => {
@@ -2008,6 +2034,8 @@ impl App {
                             self.current_tab = tab;
                             self.library_pane_focus = false;
                             self.settings_pane_focus = false;
+                            self.lyrics_pane_focus = false;
+                            self.lyrics_manual_scroll = false;
                             self.browse_detail = None;
                             self.scroll_offset = 0;
                         }
@@ -3689,6 +3717,31 @@ fn lyric_index_at(lines: &[gtm_core::track::LrcLine], position: f64) -> usize {
     current_idx
 }
 
+/// Pure focus-state transition for Tab/Shift-Tab pane cycling on the Library
+/// tab with lyrics open.  States are `(library_focus, lyrics_focus)`:
+/// left `(true, false)`, right `(false, false)`, lyrics `(false, true)`.
+/// Returns the next `(library_focus, lyrics_focus)` moving forward (Tab) or
+/// backward (Shift-Tab) around the three-pane cycle.
+fn cycle_library_focus(library_focus: bool, lyrics_focus: bool, forward: bool) -> (bool, bool) {
+    if lyrics_focus {
+        // lyrics → left (Tab) or right (Shift-Tab)
+        (forward, false)
+    } else if library_focus {
+        // left → right (Tab) or lyrics (Shift-Tab)
+        if forward {
+            (false, false)
+        } else {
+            (false, true)
+        }
+    } else if forward {
+        // right → lyrics
+        (false, true)
+    } else {
+        // right → left
+        (true, false)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3723,5 +3776,25 @@ mod tests {
     #[test]
     fn lyric_index_empty_returns_zero() {
         assert_eq!(lyric_index_at(&[], 42.0), 0);
+    }
+
+    #[test]
+    fn cycle_library_focus_advances_forward() {
+        let (lib, lyr) = cycle_library_focus(true, false, true);
+        assert_eq!((lib, lyr), (false, false));
+        let (lib, lyr) = cycle_library_focus(false, false, true);
+        assert_eq!((lib, lyr), (false, true));
+        let (lib, lyr) = cycle_library_focus(false, true, true);
+        assert_eq!((lib, lyr), (true, false));
+    }
+
+    #[test]
+    fn cycle_library_focus_advances_backward() {
+        let (lib, lyr) = cycle_library_focus(true, false, false);
+        assert_eq!((lib, lyr), (false, true));
+        let (lib, lyr) = cycle_library_focus(false, false, false);
+        assert_eq!((lib, lyr), (true, false));
+        let (lib, lyr) = cycle_library_focus(false, true, false);
+        assert_eq!((lib, lyr), (false, false));
     }
 }
