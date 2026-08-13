@@ -1,0 +1,15 @@
+[package]
+name = "gtm-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gtm-core = { path = "../gtm-core" }
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+clap_complete = { version = "4", optional = true }
+
+[features]
+completions = ["clap_complete"]

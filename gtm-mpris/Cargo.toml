@@ -1,0 +1,12 @@
+[package]
+name = "gtm-mpris"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gtm-core = { path = "../gtm-core" }
+zbus = { version = "4", features = ["tokio"] }
+zvariant = "4"
+tracing = "0.1"
+serde = "1"

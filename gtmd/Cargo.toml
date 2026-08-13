@@ -1,0 +1,24 @@
+[package]
+name = "gtmd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gtm-core = { path = "../gtm-core" }
+gtm-audio = { path = "../gtm-audio" }
+gtm-mpris = { path = "../gtm-mpris", optional = true }
+rusqlite = { version = "0.31", features = ["bundled"] }
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4", features = ["derive"] }
+serde = "1"
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+sha2 = "0.10"
+
+[features]
+default = ["mpris"]
+mpris = ["gtm-mpris"]

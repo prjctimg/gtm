@@ -1,0 +1,17 @@
+[package]
+name = "gtm-audio"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gtm-core = { path = "../gtm-core" }
+symphonia = { version = "0.6", default-features = false, features = ["mp3", "flac", "ogg", "wav", "vorbis", "pcm"] }
+cpal = "0.15"
+rubato = "3"
+log = "0.4"
+thiserror = "2"
+
+[features]
+default = []
+ffmpeg = []

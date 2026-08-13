@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = [
+    "gtm-core",
+    "gtm-audio",
+    "gtmd",
+    "gtm-tui",
+    "gtm-cli",
+    "gtm-mpris",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
