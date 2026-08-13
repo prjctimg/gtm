@@ -1,8 +1,10 @@
 use ratatui::style::Color;
 
 /// Central theme — all UI colors flow through here.
+/// The TUI renders its own explicit `bg` behind everything.
 #[derive(Clone, Copy)]
 pub struct AppTheme {
+    pub bg: Color,
     pub overlay_bg: Color,
     pub fg: Color,
     pub fg_dim: Color,
@@ -46,9 +48,10 @@ fn hex(c: u32) -> Color {
     Color::Rgb(r, g, b)
 }
 
-/// Cyberdeck TUI — default theme
+/// Default Cyberdeck TUI
 fn cyberdeck() -> AppTheme {
     AppTheme {
+        bg: hex(0x141313),
         overlay_bg: hex(0x141313),
         fg: hex(0xe5e2e1),
         fg_dim: hex(0x6e6d6d),
@@ -72,10 +75,11 @@ fn cyberdeck() -> AppTheme {
     }
 }
 
-/// Catppuccin Mocha
+/// Catppuccin Mocha — OpenCode palette
 #[allow(dead_code)]
 fn catppuccin_mocha() -> AppTheme {
     AppTheme {
+        bg: hex(0x1e1e2e),
         overlay_bg: hex(0x1e1e2e),
         fg: hex(0xcdd6f4),
         fg_dim: hex(0x6c7086),
@@ -99,10 +103,11 @@ fn catppuccin_mocha() -> AppTheme {
     }
 }
 
-/// Catppuccin Macchiato
+/// Catppuccin Macchiato — OpenCode palette
 #[allow(dead_code)]
 fn catppuccin_macchiato() -> AppTheme {
     AppTheme {
+        bg: hex(0x24273a),
         overlay_bg: hex(0x24273a),
         fg: hex(0xcad3f5),
         fg_dim: hex(0x6e738d),
@@ -126,10 +131,11 @@ fn catppuccin_macchiato() -> AppTheme {
     }
 }
 
-/// Catppuccin Frappe
+/// Catppuccin Frappe — OpenCode palette
 #[allow(dead_code)]
 fn catppuccin_frappe() -> AppTheme {
     AppTheme {
+        bg: hex(0x303446),
         overlay_bg: hex(0x303446),
         fg: hex(0xc6d0f5),
         fg_dim: hex(0x737994),
@@ -153,10 +159,11 @@ fn catppuccin_frappe() -> AppTheme {
     }
 }
 
-/// Catppuccin Latte (light)
+/// Catppuccin Latte (light) — OpenCode palette
 #[allow(dead_code)]
 fn catppuccin_latte() -> AppTheme {
     AppTheme {
+        bg: hex(0xeff1f5),
         overlay_bg: hex(0xeff1f5),
         fg: hex(0x4c4f69),
         fg_dim: hex(0x9ca0b0),
@@ -180,10 +187,11 @@ fn catppuccin_latte() -> AppTheme {
     }
 }
 
-/// Tokyonight Night
+/// Tokyonight Night — OpenCode palette
 #[allow(dead_code)]
 fn tokyonight_night() -> AppTheme {
     AppTheme {
+        bg: hex(0x1a1b26),
         overlay_bg: hex(0x1a1b26),
         fg: hex(0xa9b1d6),
         fg_dim: hex(0x565f89),
@@ -207,118 +215,11 @@ fn tokyonight_night() -> AppTheme {
     }
 }
 
-/// Gruvbox Dark
-#[allow(dead_code)]
-fn gruvbox_dark() -> AppTheme {
-    AppTheme {
-        overlay_bg: hex(0x282828),
-        fg: hex(0xebdbb2),
-        fg_dim: hex(0x928374),
-        fg_bright: hex(0xebdbb2),
-        accent: hex(0x83a598),
-        error: hex(0xfb4934),
-        warning: hex(0xfe8019),
-        success: hex(0xb8bb26),
-        selection_fg: hex(0x282828),
-        selection_bg: hex(0x83a598),
-        border: hex(0x665c54),
-        border_active: hex(0x83a598),
-        volume_low: hex(0xb8bb26),
-        volume_medium: hex(0xfe8019),
-        volume_high: hex(0xfb4934),
-        tab_active_fg: hex(0x282828),
-        tab_active_bg: hex(0x83a598),
-        tab_inactive_fg: hex(0x83a598),
-        tab_bar_bg: hex(0x282828),
-        sidebar_active_border: hex(0x83a598),
-    }
-}
-
-/// Ayu Dark
-#[allow(dead_code)]
-fn ayu_dark() -> AppTheme {
-    AppTheme {
-        overlay_bg: hex(0x0a0e14),
-        fg: hex(0xb3b1ad),
-        fg_dim: hex(0x6e6c66),
-        fg_bright: hex(0xffffff),
-        accent: hex(0xff8f40),
-        error: hex(0xff3333),
-        warning: hex(0xff8f40),
-        success: hex(0x7ec8a0),
-        selection_fg: hex(0x0a0e14),
-        selection_bg: hex(0xff8f40),
-        border: hex(0x3d424d),
-        border_active: hex(0xff8f40),
-        volume_low: hex(0x7ec8a0),
-        volume_medium: hex(0xff8f40),
-        volume_high: hex(0xff3333),
-        tab_active_fg: hex(0x0a0e14),
-        tab_active_bg: hex(0xff8f40),
-        tab_inactive_fg: hex(0xff8f40),
-        tab_bar_bg: hex(0x0a0e14),
-        sidebar_active_border: hex(0xff8f40),
-    }
-}
-
-/// Ayu Light
-#[allow(dead_code)]
-fn ayu_light() -> AppTheme {
-    AppTheme {
-        overlay_bg: hex(0xfafafa),
-        fg: hex(0x5c6166),
-        fg_dim: hex(0xa0a0a0),
-        fg_bright: hex(0x1a1f29),
-        accent: hex(0xff8a3c),
-        error: hex(0xf51818),
-        warning: hex(0xf07100),
-        success: hex(0x7bac3e),
-        selection_fg: hex(0xfafafa),
-        selection_bg: hex(0xff8a3c),
-        border: hex(0xd7dae0),
-        border_active: hex(0xff8a3c),
-        volume_low: hex(0x7bac3e),
-        volume_medium: hex(0xf07100),
-        volume_high: hex(0xf51818),
-        tab_active_fg: hex(0xfafafa),
-        tab_active_bg: hex(0xff8a3c),
-        tab_inactive_fg: hex(0xff8a3c),
-        tab_bar_bg: hex(0xfafafa),
-        sidebar_active_border: hex(0xff8a3c),
-    }
-}
-
-/// Gruvbox Light
-#[allow(dead_code)]
-fn gruvbox_light() -> AppTheme {
-    AppTheme {
-        overlay_bg: hex(0xfbf1c7),
-        fg: hex(0x3c3836),
-        fg_dim: hex(0x928374),
-        fg_bright: hex(0x282828),
-        accent: hex(0x458588),
-        error: hex(0x9d0006),
-        warning: hex(0xd65d0e),
-        success: hex(0x98971a),
-        selection_fg: hex(0xfbf1c7),
-        selection_bg: hex(0x458588),
-        border: hex(0xbdae93),
-        border_active: hex(0x458588),
-        volume_low: hex(0x98971a),
-        volume_medium: hex(0xd65d0e),
-        volume_high: hex(0x9d0006),
-        tab_active_fg: hex(0xfbf1c7),
-        tab_active_bg: hex(0x458588),
-        tab_inactive_fg: hex(0x458588),
-        tab_bar_bg: hex(0xfbf1c7),
-        sidebar_active_border: hex(0x458588),
-    }
-}
-
-/// Tokyonight Day
+/// Tokyonight Day (light) — OpenCode palette
 #[allow(dead_code)]
 fn tokyonight_day() -> AppTheme {
     AppTheme {
+        bg: hex(0xe1e2e7),
         overlay_bg: hex(0xe1e2e7),
         fg: hex(0x3760bf),
         fg_dim: hex(0xa1a6c5),
@@ -342,6 +243,260 @@ fn tokyonight_day() -> AppTheme {
     }
 }
 
+/// Gruvbox Dark — OpenCode palette
+#[allow(dead_code)]
+fn gruvbox_dark() -> AppTheme {
+    AppTheme {
+        bg: hex(0x282828),
+        overlay_bg: hex(0x282828),
+        fg: hex(0xebdbb2),
+        fg_dim: hex(0x928374),
+        fg_bright: hex(0xebdbb2),
+        accent: hex(0x83a598),
+        error: hex(0xfb4934),
+        warning: hex(0xfe8019),
+        success: hex(0xb8bb26),
+        selection_fg: hex(0x282828),
+        selection_bg: hex(0x83a598),
+        border: hex(0x665c54),
+        border_active: hex(0x83a598),
+        volume_low: hex(0xb8bb26),
+        volume_medium: hex(0xfe8019),
+        volume_high: hex(0xfb4934),
+        tab_active_fg: hex(0x282828),
+        tab_active_bg: hex(0x83a598),
+        tab_inactive_fg: hex(0x83a598),
+        tab_bar_bg: hex(0x282828),
+        sidebar_active_border: hex(0x83a598),
+    }
+}
+
+/// Gruvbox Light — OpenCode palette
+#[allow(dead_code)]
+fn gruvbox_light() -> AppTheme {
+    AppTheme {
+        bg: hex(0xfbf1c7),
+        overlay_bg: hex(0xfbf1c7),
+        fg: hex(0x3c3836),
+        fg_dim: hex(0x928374),
+        fg_bright: hex(0x282828),
+        accent: hex(0x458588),
+        error: hex(0x9d0006),
+        warning: hex(0xd65d0e),
+        success: hex(0x98971a),
+        selection_fg: hex(0xfbf1c7),
+        selection_bg: hex(0x458588),
+        border: hex(0xbdae93),
+        border_active: hex(0x458588),
+        volume_low: hex(0x98971a),
+        volume_medium: hex(0xd65d0e),
+        volume_high: hex(0x9d0006),
+        tab_active_fg: hex(0xfbf1c7),
+        tab_active_bg: hex(0x458588),
+        tab_inactive_fg: hex(0x458588),
+        tab_bar_bg: hex(0xfbf1c7),
+        sidebar_active_border: hex(0x458588),
+    }
+}
+
+/// Ayu Dark — OpenCode palette
+#[allow(dead_code)]
+fn ayu_dark() -> AppTheme {
+    AppTheme {
+        bg: hex(0x0a0e14),
+        overlay_bg: hex(0x0a0e14),
+        fg: hex(0xb3b1ad),
+        fg_dim: hex(0x6e6c66),
+        fg_bright: hex(0xffffff),
+        accent: hex(0xff8f40),
+        error: hex(0xff3333),
+        warning: hex(0xff8f40),
+        success: hex(0x7ec8a0),
+        selection_fg: hex(0x0a0e14),
+        selection_bg: hex(0xff8f40),
+        border: hex(0x3d424d),
+        border_active: hex(0xff8f40),
+        volume_low: hex(0x7ec8a0),
+        volume_medium: hex(0xff8f40),
+        volume_high: hex(0xff3333),
+        tab_active_fg: hex(0x0a0e14),
+        tab_active_bg: hex(0xff8f40),
+        tab_inactive_fg: hex(0xff8f40),
+        tab_bar_bg: hex(0x0a0e14),
+        sidebar_active_border: hex(0xff8f40),
+    }
+}
+
+/// Ayu Light — OpenCode palette
+#[allow(dead_code)]
+fn ayu_light() -> AppTheme {
+    AppTheme {
+        bg: hex(0xfafafa),
+        overlay_bg: hex(0xfafafa),
+        fg: hex(0x5c6166),
+        fg_dim: hex(0xa0a0a0),
+        fg_bright: hex(0x1a1f29),
+        accent: hex(0xff8a3c),
+        error: hex(0xf51818),
+        warning: hex(0xf07100),
+        success: hex(0x7bac3e),
+        selection_fg: hex(0xfafafa),
+        selection_bg: hex(0xff8a3c),
+        border: hex(0xd7dae0),
+        border_active: hex(0xff8a3c),
+        volume_low: hex(0x7bac3e),
+        volume_medium: hex(0xf07100),
+        volume_high: hex(0xf51818),
+        tab_active_fg: hex(0xfafafa),
+        tab_active_bg: hex(0xff8a3c),
+        tab_inactive_fg: hex(0xff8a3c),
+        tab_bar_bg: hex(0xfafafa),
+        sidebar_active_border: hex(0xff8a3c),
+    }
+}
+
+/// ── NEW: OpenCode-inspired themes ──
+
+/// Everforest Dark — OpenCode palette
+#[allow(dead_code)]
+fn everforest() -> AppTheme {
+    AppTheme {
+        bg: hex(0x2d353b),
+        overlay_bg: hex(0x2d353b),
+        fg: hex(0xd3c6aa),
+        fg_dim: hex(0x7a8478),
+        fg_bright: hex(0xffffff),
+        accent: hex(0xa7c080),
+        error: hex(0xe67e80),
+        warning: hex(0xe69875),
+        success: hex(0x83c092),
+        selection_fg: hex(0x2d353b),
+        selection_bg: hex(0xa7c080),
+        border: hex(0x4f5b57),
+        border_active: hex(0xa7c080),
+        volume_low: hex(0x83c092),
+        volume_medium: hex(0xe69875),
+        volume_high: hex(0xe67e80),
+        tab_active_fg: hex(0x2d353b),
+        tab_active_bg: hex(0xa7c080),
+        tab_inactive_fg: hex(0xa7c080),
+        tab_bar_bg: hex(0x2d353b),
+        sidebar_active_border: hex(0xa7c080),
+    }
+}
+
+/// Kanagawa — OpenCode palette
+#[allow(dead_code)]
+fn kanagawa() -> AppTheme {
+    AppTheme {
+        bg: hex(0x1f1f28),
+        overlay_bg: hex(0x1f1f28),
+        fg: hex(0xdcd7ba),
+        fg_dim: hex(0x727169),
+        fg_bright: hex(0xffffff),
+        accent: hex(0x7e9cd8),
+        error: hex(0xe82424),
+        warning: hex(0xd7a657),
+        success: hex(0x98bb6c),
+        selection_fg: hex(0x1f1f28),
+        selection_bg: hex(0x7e9cd8),
+        border: hex(0x54546d),
+        border_active: hex(0x7e9cd8),
+        volume_low: hex(0x98bb6c),
+        volume_medium: hex(0xd7a657),
+        volume_high: hex(0xe82424),
+        tab_active_fg: hex(0x1f1f28),
+        tab_active_bg: hex(0x7e9cd8),
+        tab_inactive_fg: hex(0x7e9cd8),
+        tab_bar_bg: hex(0x1f1f28),
+        sidebar_active_border: hex(0x7e9cd8),
+    }
+}
+
+/// Nord — OpenCode palette
+#[allow(dead_code)]
+fn nord() -> AppTheme {
+    AppTheme {
+        bg: hex(0x2e3440),
+        overlay_bg: hex(0x2e3440),
+        fg: hex(0xe5e9f0),
+        fg_dim: hex(0x616e88),
+        fg_bright: hex(0xffffff),
+        accent: hex(0x88c0d0),
+        error: hex(0xbf616a),
+        warning: hex(0xd08770),
+        success: hex(0xa3be8c),
+        selection_fg: hex(0x2e3440),
+        selection_bg: hex(0x88c0d0),
+        border: hex(0x434c5e),
+        border_active: hex(0x88c0d0),
+        volume_low: hex(0xa3be8c),
+        volume_medium: hex(0xd08770),
+        volume_high: hex(0xbf616a),
+        tab_active_fg: hex(0x2e3440),
+        tab_active_bg: hex(0x88c0d0),
+        tab_inactive_fg: hex(0x88c0d0),
+        tab_bar_bg: hex(0x2e3440),
+        sidebar_active_border: hex(0x88c0d0),
+    }
+}
+
+/// Matrix — hacker green-on-black
+#[allow(dead_code)]
+fn matrix() -> AppTheme {
+    AppTheme {
+        bg: hex(0x0a0e0a),
+        overlay_bg: hex(0x0a0e0a),
+        fg: hex(0x62ff94),
+        fg_dim: hex(0x3a7a4a),
+        fg_bright: hex(0xaeffc7),
+        accent: hex(0x2eff6a),
+        error: hex(0xff4b4b),
+        warning: hex(0xe6ff57),
+        success: hex(0x62ff94),
+        selection_fg: hex(0x0a0e0a),
+        selection_bg: hex(0x2eff6a),
+        border: hex(0x1a4a2a),
+        border_active: hex(0x2eff6a),
+        volume_low: hex(0x62ff94),
+        volume_medium: hex(0xe6ff57),
+        volume_high: hex(0xff4b4b),
+        tab_active_fg: hex(0x0a0e0a),
+        tab_active_bg: hex(0x2eff6a),
+        tab_inactive_fg: hex(0x2eff6a),
+        tab_bar_bg: hex(0x0a0e0a),
+        sidebar_active_border: hex(0x2eff6a),
+    }
+}
+
+/// One Dark — OpenCode palette
+#[allow(dead_code)]
+fn one_dark() -> AppTheme {
+    AppTheme {
+        bg: hex(0x282c34),
+        overlay_bg: hex(0x282c34),
+        fg: hex(0xabb2bf),
+        fg_dim: hex(0x5c6370),
+        fg_bright: hex(0xffffff),
+        accent: hex(0x61afef),
+        error: hex(0xe06c75),
+        warning: hex(0xe5c07b),
+        success: hex(0x98c379),
+        selection_fg: hex(0x282c34),
+        selection_bg: hex(0x61afef),
+        border: hex(0x3e4451),
+        border_active: hex(0x61afef),
+        volume_low: hex(0x98c379),
+        volume_medium: hex(0xe5c07b),
+        volume_high: hex(0xe06c75),
+        tab_active_fg: hex(0x282c34),
+        tab_active_bg: hex(0x61afef),
+        tab_inactive_fg: hex(0x61afef),
+        tab_bar_bg: hex(0x282c34),
+        sidebar_active_border: hex(0x61afef),
+    }
+}
+
 /// Theme registry — name + constructor
 pub struct ThemeEntry {
     pub name: &'static str,
@@ -360,4 +515,10 @@ pub const THEMES: &[ThemeEntry] = &[
     ThemeEntry { name: "Gruvbox Light", builder: gruvbox_light },
     ThemeEntry { name: "Ayu Dark", builder: ayu_dark },
     ThemeEntry { name: "Ayu Light", builder: ayu_light },
+    // OpenCode-inspired additions
+    ThemeEntry { name: "Everforest", builder: everforest },
+    ThemeEntry { name: "Kanagawa", builder: kanagawa },
+    ThemeEntry { name: "Nord", builder: nord },
+    ThemeEntry { name: "Matrix", builder: matrix },
+    ThemeEntry { name: "One Dark", builder: one_dark },
 ];

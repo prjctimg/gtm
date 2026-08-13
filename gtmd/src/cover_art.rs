@@ -7,6 +7,7 @@ use reqwest::Client;
 use sha2::{Digest, Sha256};
 use std::num::NonZeroUsize;
 use tokio::sync::Mutex;
+use tracing::warn;
 
 const CACHE_SIZE: usize = 500;
 const DEEZER_API: &str = "https://api.deezer.com/search";
@@ -36,7 +37,7 @@ impl CoverCache {
         }
     }
 
-    fn cache_key(artist: &str, album: &str) -> String {
+    pub fn cache_key(artist: &str, album: &str) -> String {
         let mut h = Sha256::new();
         h.update(format!("{}:{}", artist, album).as_bytes());
         hex::encode(&h.finalize()[..8])
@@ -47,6 +48,8 @@ impl CoverCache {
     }
 
     pub async fn get_cover(&mut self, artist: &str, album: &str) -> Option<CoverData> {
+        let artist = if artist.is_empty() { "Unknown Artist" } else { artist };
+        let album = if album.is_empty() { "Unknown Album" } else { album };
         let key = Self::cache_key(artist, album);
 
         {
@@ -86,33 +89,71 @@ impl CoverCache {
 
         tokio::time::sleep(std::time::Duration::from_millis(RATE_LIMIT_MS)).await;
 
-        let resp = self
-            .client
-            .get(DEEZER_API)
-            .query(&[("q", &query)])
-            .send()
-            .await
-            .ok()?;
+        let resp = match self.client.get(DEEZER_API).query(&[("q", &query)]).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Deezer API request failed for {artist}/{album}: {e}");
+                return None;
+            }
+        };
 
-        let json: serde_json::Value = resp.json().await.ok()?;
-        let data = json.get("data")?.as_array()?;
-        let first = data.first()?;
+        let json: serde_json::Value = match resp.json().await {
+            Ok(j) => j,
+            Err(e) => {
+                warn!("Deezer JSON parse failed for {artist}/{album}: {e}");
+                return None;
+            }
+        };
+        let data = match json.get("data").and_then(|d| d.as_array()) {
+            Some(d) => d,
+            None => {
+                warn!("Deezer returned no data for {artist}/{album}");
+                return None;
+            }
+        };
+        let first = match data.first() {
+            Some(f) => f,
+            None => {
+                warn!("Deezer empty results for {artist}/{album}");
+                return None;
+            }
+        };
 
         let cover_url = first
             .get("cover_big")
-            .or_else(|| first.get("cover_medium"))?
-            .as_str()?;
+            .or_else(|| first.get("cover_medium"))
+            .and_then(|c| c.as_str())
+            .unwrap_or("");
 
-        let img_bytes = self.client.get(cover_url).send().await.ok()?.bytes().await.ok()?;
+        if cover_url.is_empty() {
+            warn!("Deezer cover URL empty for {artist}/{album}");
+            return None;
+        }
+
+        let img_bytes = match self.client.get(cover_url).send().await {
+            Ok(r) => match r.bytes().await {
+                Ok(b) => b.to_vec(),
+                Err(e) => {
+                    warn!("Failed to read cover bytes from {cover_url}: {e}");
+                    return None;
+                }
+            },
+            Err(e) => {
+                warn!("Failed to download cover from {cover_url}: {e}");
+                return None;
+            }
+        };
 
         let disk = self.disk_path(key);
         if let Some(parent) = disk.parent() {
             fs::create_dir_all(parent).ok();
         }
-        fs::write(&disk, &img_bytes).ok();
+        if let Err(e) = fs::write(&disk, &img_bytes) {
+            warn!("Failed to write cover to disk {disk:?}: {e}");
+        }
 
         Some(CoverData {
-            data: img_bytes.to_vec(),
+            data: img_bytes,
             mime: "image/jpeg".to_string(),
         })
     }

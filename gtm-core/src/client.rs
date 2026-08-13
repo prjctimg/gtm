@@ -50,6 +50,7 @@ impl DaemonClient {
                         events: events.clone(),
                         connected: connected.clone(),
                         buf: Vec::with_capacity(4096),
+                        socket_path: path.clone(),
                     };
                     tokio::spawn(worker.run());
 
@@ -92,7 +93,8 @@ impl DaemonClient {
 
     pub async fn drain(&self) -> Vec<DaemonEvent> {
         let mut events = self.events.lock().await;
-        let drained = std::mem::take(&mut *events);
+        let cap = events.len().min(1000);
+        let drained: Vec<DaemonEvent> = events.drain(..cap).collect();
         self.apply_clock_events(&drained).await;
         drained
     }
@@ -462,20 +464,23 @@ struct IpcWorker {
     events: Arc<Mutex<Vec<DaemonEvent>>>,
     connected: Arc<AtomicBool>,
     buf: Vec<u8>,
+    socket_path: std::path::PathBuf,
 }
 
 impl IpcWorker {
     async fn run(mut self) {
         let mut tmp = [0u8; 4096];
         loop {
-            // Check for pending requests first (non-blocking)
-            while let Ok(pending) = self.cmd_rx.try_recv() {
+            // Process ONE pending request (if any), then drain events so
+            // events are never starved by a burst of commands.
+            if let Ok(pending) = self.cmd_rx.try_recv() {
                 if let Err(e) = self.send_request(pending).await {
-                    self.connected.store(false, Ordering::Release);
                     eprintln!("IPC worker send error: {e}");
-                    return;
+                    self.reconnect().await;
+                    continue;
                 }
             }
+
             // Read from socket with a small timeout so we can check for requests
             match self.read_with_timeout(&mut tmp).await {
                 Ok(true) => {
@@ -483,9 +488,9 @@ impl IpcWorker {
                     while let Some(frame) = self.parse().await {
                         match frame {
                             Frame::Response(_) => {
-                                self.connected.store(false, Ordering::Release);
                                 eprintln!("IPC worker: unexpected response with no pending request");
-                                return;
+                                self.reconnect().await;
+                                continue;
                             }
                             Frame::Event(_) => {}
                         }
@@ -493,12 +498,34 @@ impl IpcWorker {
                 }
                 Ok(false) => {} // timeout, loop back to check for requests
                 Err(e) => {
-                    self.connected.store(false, Ordering::Release);
                     eprintln!("IPC worker read error: {e}");
-                    return;
+                    self.reconnect().await;
+                    continue;
                 }
             }
         }
+    }
+
+    async fn reconnect(&mut self) {
+        self.connected.store(false, Ordering::Release);
+        for i in 0..30 {
+            tokio::time::sleep(Duration::from_millis(200 * (i + 1))).await;
+            match tokio::net::UnixStream::connect(&self.socket_path).await {
+                Ok(stream) => {
+                    let (reader, writer) = stream.into_split();
+                    self.reader = reader;
+                    self.writer = writer;
+                    self.buf.clear();
+                    self.connected.store(true, Ordering::Release);
+                    eprintln!("IPC worker reconnected");
+                    return;
+                }
+                Err(e) => {
+                    eprintln!("IPC worker reconnect attempt {i} failed: {e}");
+                }
+            }
+        }
+        eprintln!("IPC worker: giving up after 30 reconnect attempts");
     }
 
     async fn read_with_timeout(&mut self, tmp: &mut [u8; 4096]) -> Result<bool> {

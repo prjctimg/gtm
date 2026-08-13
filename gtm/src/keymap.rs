@@ -97,6 +97,7 @@ pub enum KeyboardAction {
     QuitDaemon,
     ReloadConfig,
     ToggleHelp,
+    CycleFooterPreset,
     Custom(String),
 }
 
@@ -576,6 +577,15 @@ pub fn default_keybindings() -> Keybindings {
                     action: KeyboardAction::OpenOverlay(OverlayId::SoundEffects),
                     contexts: vec![KeyContext::Normal],
                     description: "Sound Effects overlay",
+                },
+            ),
+            // Footer preset cycling — Alt+F
+            (
+                KeyEvent::new(KeyCode::Char('F'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::CycleFooterPreset,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Cycle footer preset",
                 },
             ),
         ],

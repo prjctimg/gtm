@@ -41,7 +41,7 @@ impl YoutubeManager {
         let search_arg = if query.starts_with("http://") || query.starts_with("https://") {
             query.to_string()
         } else {
-            format!("ytsearch{}:{}", SEARCH_COUNT, query)
+            format!("ytsearch{}:{} official audio", SEARCH_COUNT, query)
         };
 
         let mut child = Command::new("yt-dlp")
@@ -97,6 +97,14 @@ impl YoutubeManager {
         }
 
         let _ = child.wait().await;
+        // Sort results: prefer "official audio" and "explicit" titles
+        results.sort_by(|a, b| {
+            let a_prio = priority(&a.title);
+            let b_prio = priority(&b.title);
+            b_prio.cmp(&a_prio).then(
+                b.views.cmp(&a.views)
+            )
+        });
         self.results = results;
         Ok(())
     }
@@ -151,6 +159,28 @@ impl YoutubeManager {
             duration: 0.0,
         })
     }
+}
+
+/// Returns a priority score for a YouTube result title.
+/// Higher = more likely to be the "official" version the user wants.
+fn priority(title: &str) -> u32 {
+    let lower = title.to_lowercase();
+    let mut score = 0u32;
+    let keywords = [
+        ("official audio", 20),
+        ("official music video", 18),
+        ("official video", 15),
+        ("explicit", 10),
+        ("official", 5),
+        ("audio", 3),
+        ("lyric", 1),
+    ];
+    for (kw, pts) in &keywords {
+        if lower.contains(kw) {
+            score += pts;
+        }
+    }
+    score
 }
 
 fn parse_yt_json(line: &str) -> Result<YTSearchResult, String> {

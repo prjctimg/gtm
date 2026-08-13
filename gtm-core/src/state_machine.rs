@@ -20,7 +20,7 @@
 // ```
 
 use crate::ipc::DaemonEvent;
-use crate::state::{CrossfadeConfig, DaemonState, PlaybackStatus};
+use crate::state::{CoreError, CrossfadeConfig, DaemonState, PlaybackStatus};
 use crate::track::TrackInfo;
 use crate::tripwire::{self, FailPoint};
 use crate::Result;
@@ -30,11 +30,12 @@ impl DaemonState {
     /// Allowed from: Stopped, Paused.
     pub fn play(&mut self, track: TrackInfo) -> Result<()> {
         tripwire::check(FailPoint::StateTransition)?;
-        assert!(
-            self.status == PlaybackStatus::Stopped || self.status == PlaybackStatus::Paused,
-            "play() from invalid state: {:?}",
-            self.status
-        );
+        if self.status != PlaybackStatus::Stopped && self.status != PlaybackStatus::Paused {
+            return Err(CoreError::Daemon(format!(
+                "play() from invalid state: {:?}",
+                self.status
+            )));
+        }
         self.status = PlaybackStatus::Playing;
         self.current_track = Some(track);
         self.version += 1;
@@ -49,7 +50,12 @@ impl DaemonState {
     /// Allowed from: Playing.
     pub fn pause(&mut self) -> Result<()> {
         tripwire::check(FailPoint::StateTransition)?;
-        assert!(self.status == PlaybackStatus::Playing);
+        if self.status != PlaybackStatus::Playing {
+            return Err(CoreError::Daemon(format!(
+                "pause() from invalid state: {:?}",
+                self.status
+            )));
+        }
         self.status = PlaybackStatus::Paused;
         self.version += 1;
         #[cfg(debug_assertions)]

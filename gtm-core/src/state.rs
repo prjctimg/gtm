@@ -121,6 +121,12 @@ pub enum EqPreset {
     Classical,
     Bass,
     Vocal,
+    Electronic,
+    HipHop,
+    Latin,
+    Acoustic,
+    Podcast,
+    Dance,
     Custom([f32; 10]),
 }
 
@@ -134,6 +140,12 @@ impl EqPreset {
             Self::Classical => "Classical",
             Self::Bass => "Bass Boost",
             Self::Vocal => "Vocal",
+            Self::Electronic => "Electronic",
+            Self::HipHop => "Hip-Hop",
+            Self::Latin => "Latin",
+            Self::Acoustic => "Acoustic",
+            Self::Podcast => "Podcast",
+            Self::Dance => "Dance",
             Self::Custom(_) => "Custom",
         }
     }

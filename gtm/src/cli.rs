@@ -27,8 +27,13 @@ use gtm_core::state::RepeatMode;
 use crate::CliCommand;
 
 fn default_socket() -> PathBuf {
-    let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".into());
-    PathBuf::from(runtime).join("gtmd.socket")
+    if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
+        PathBuf::from(runtime).join("gtmd.socket")
+    } else if let Ok(tmpdir) = std::env::var("TMPDIR") {
+        PathBuf::from(tmpdir).join("gtmd.socket")
+    } else {
+        std::env::temp_dir().join("gtmd.socket")
+    }
 }
 
 pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {

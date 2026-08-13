@@ -1,8 +1,10 @@
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
 
+use rodio::Source;
+
 use crate::backend::{AudioEvent, AudioResult};
-use crate::mixer::{Mixer};
+use crate::mixer::Mixer;
 use gtm_core::state::Easing;
 
 /// A silent no-op mixer for environments without audio hardware (CI, testing).
@@ -30,6 +32,12 @@ impl NullMixer {
 
 impl Mixer for NullMixer {
     fn load_active(&mut self, _path: &str, start_pos: f64) -> AudioResult<()> {
+        *self.position.lock().unwrap() = start_pos;
+        self.playing.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+
+    fn load_active_decoded(&mut self, _source: Box<dyn Source<Item = f32> + Send>, start_pos: f64) -> AudioResult<()> {
         *self.position.lock().unwrap() = start_pos;
         self.playing.store(false, Ordering::SeqCst);
         Ok(())

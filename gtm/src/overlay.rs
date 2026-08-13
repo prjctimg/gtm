@@ -18,7 +18,6 @@ pub enum OverlayId {
     About,
     SleepTimer,
     ThemePicker,
-    VolumeConfirm,
     SoundEffects,
 }
 
@@ -109,9 +108,8 @@ impl OverlayId {
             OverlayId::CommandPalette => "Command Palette",
             OverlayId::About => "About",
             OverlayId::SleepTimer => "Sleep Timer",
-            OverlayId::ThemePicker => "Theme",
-        OverlayId::VolumeConfirm => " Volume Warning ",
-        OverlayId::SoundEffects => "Sound Effects",
+                OverlayId::ThemePicker => "Theme",
+            OverlayId::SoundEffects => "Sound Effects",
         }
     }
 }

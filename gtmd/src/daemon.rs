@@ -158,10 +158,11 @@ impl Daemon {
         let bg_state = self.state.clone();
         let bg_lib_paths = self.config.library_paths.clone();
         let bg_data_dir = self.config.data_dir.clone();
+        let bg_cache_dir = self.config.cache_dir.clone();
         let bg_req_tx = self.req_tx.clone();
         let bg_event_tx = self.event_tx.clone();
         tokio::spawn(async move {
-            Self::background_scan(bg_state, bg_lib_paths, bg_data_dir, bg_req_tx, bg_event_tx).await;
+            Self::background_scan(bg_state, bg_lib_paths, bg_data_dir, bg_cache_dir, bg_req_tx, bg_event_tx).await;
         });
 
         let mut poll_interval = tokio::time::interval(Duration::from_millis(33));
@@ -204,6 +205,7 @@ impl Daemon {
         state: Arc<RwLock<DaemonState>>,
         library_paths: Vec<std::path::PathBuf>,
         data_dir: std::path::PathBuf,
+        cache_dir: std::path::PathBuf,
         req_tx: mpsc::UnboundedSender<(ClientId, DaemonReq, ReplyTx)>,
         _event_tx: broadcast::Sender<DaemonEvent>,
     ) {
@@ -218,13 +220,14 @@ impl Daemon {
             }
             let audio_dir_str = audio_dir.to_string_lossy().to_string();
             let data_dir = data_dir.clone();
+            let cache_dir_str = cache_dir.to_string_lossy().to_string();
             let total = total_tracks.clone();
             let result = tokio::task::spawn_blocking(move || {
                 let lib = match Library::new(data_dir.to_str().unwrap_or("")) {
                     Ok(l) => l,
                     Err(e) => return Err(format!("Library::new: {e}")),
                 };
-                lib.scan_directory(&audio_dir_str, true)
+                lib.scan_directory(&audio_dir_str, true, Some(&cache_dir_str))
                     .map_err(|e| format!("scan: {e}"))
             })
             .await;
@@ -332,7 +335,13 @@ impl Daemon {
                     res = reply_rx.recv() => {
                         match res {
                             Some(response) => {
-                                let line = serde_json::to_string(&response).unwrap() + "\n";
+                                let line = match serde_json::to_string(&response) {
+                                    Ok(s) => s + "\n",
+                                    Err(e) => {
+                                        warn!("serialize response: {e}");
+                                        continue;
+                                    }
+                                };
                                 if writer.write_all(line.as_bytes()).await.is_err()
                                     || writer.flush().await.is_err()
                                 {
@@ -447,9 +456,11 @@ impl Daemon {
             DaemonReq::Ping => Ok(DaemonRes::Pong),
             DaemonReq::Quit => {
                 info!("quit requested");
-                self.cmd_stop().await?;
-                // In a production daemon, this would break the event loop.
-                // For now we stop playback and let the process exit.
+                let _ = self.cmd_stop().await;
+                // Remove the socket files so a fresh daemon can bind.
+                let _ = std::fs::remove_file(&self.config.socket_path);
+                let pulse_path = format!("{}.pulse", self.config.socket_path.display());
+                let _ = std::fs::remove_file(&pulse_path);
                 std::process::exit(0);
             }
         }
@@ -628,25 +639,70 @@ impl Daemon {
             }
         }
 
-        self.mixer.load_active(path, start_pos)?;
+        // Decode in a blocking thread so the daemon event loop stays responsive
+        let path_owned = path.to_string();
+        let path_for_blocking = path_owned.clone();
+        let source = tokio::task::spawn_blocking(move || {
+            AudioMixer::decode_file(&path_for_blocking)
+        })
+        .await
+        .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
+        .map_err(|e| CoreError::Daemon(format!("decode: {e}")))?;
+
+        self.mixer.load_active_decoded(source, start_pos)?;
         self.mixer.play()?;
         let dur = self.mixer.duration();
         let mut state = self.state.write().await;
-        let track = gtm_core::track::TrackInfo {
-            id: 0,
-            path: path.to_string(),
-            title: String::new(),
-            artist: String::new(),
-            album: String::new(),
-            duration: dur,
-            track_number: None,
-            genre: String::new(),
-            year: None,
-            bitrate: None,
-            samplerate: None,
-            hash: String::new(),
-            cover_path: None,
-            favourite: false,
+
+        // Look up real metadata from the library if available
+        let track = if let Some(ref lib) = self.library {
+            match lib.track_by_path(&path_owned) {
+                Ok(Some(mut t)) => {
+                    t.duration = dur;
+                    t
+                }
+                _ => gtm_core::track::TrackInfo {
+                    id: 0,
+                    path: path_owned.clone(),
+                    title: std::path::Path::new(&path_owned)
+                        .file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("Unknown")
+                        .to_string(),
+                    artist: "Unknown Artist".to_string(),
+                    album: "Unknown Album".to_string(),
+                    duration: dur,
+                    track_number: None,
+                    genre: String::new(),
+                    year: None,
+                    bitrate: None,
+                    samplerate: None,
+                    hash: String::new(),
+                    cover_path: None,
+                    favourite: false,
+                },
+            }
+        } else {
+            gtm_core::track::TrackInfo {
+                id: 0,
+                path: path_owned.clone(),
+                title: std::path::Path::new(&path_owned)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Unknown")
+                    .to_string(),
+                artist: "Unknown Artist".to_string(),
+                album: "Unknown Album".to_string(),
+                duration: dur,
+                track_number: None,
+                genre: String::new(),
+                year: None,
+                bitrate: None,
+                samplerate: None,
+                hash: String::new(),
+                cover_path: None,
+                favourite: false,
+            }
         };
         state.play(track.clone())?;
         state.time_pos = start_pos;
@@ -688,7 +744,15 @@ impl Daemon {
                 // Resume from paused — unpause backend without reloading
                 self.mixer.play()?;
                 let mut state = self.state.write().await;
-                let track = state.current_track.clone().unwrap();
+                let track = match state.current_track.clone() {
+                    Some(t) => t,
+                    None => {
+                        warn!("resume: current_track is None despite paused status");
+                        let version = state.version as u32;
+                        drop(state);
+                        return Ok(DaemonRes::Error { version, message: "no current track".into() });
+                    }
+                };
                 state.play(track.clone())?;
                 let version = state.version as u32;
                 let time_pos = state.time_pos;
@@ -762,7 +826,24 @@ impl Daemon {
             }
         };
         let idx = state.queue_cursor;
+        let crossfade_enabled = state.crossfade.as_ref().map(|c| c.enabled).unwrap_or(false);
+        let crossfade_dur = state.crossfade.as_ref().map(|c| c.duration_secs as f64).unwrap_or(0.0);
+        let crossfade_easing = state.crossfade.as_ref().map(|c| c.easing).unwrap_or(gtm_core::state::Easing::Linear);
         drop(state);
+        if crossfade_enabled && crossfade_dur > 0.0 && self.crossfade_loaded_for.is_none() && !self.mixer.is_crossfading() {
+            let path = track.path.clone();
+            if self.mixer.load_standby(&path).is_ok() {
+                self.mixer.set_crossfade_easing(crossfade_easing);
+                self.mixer.start_crossfade(crossfade_dur);
+                self.crossfade_loaded_for = Some(
+                    self.state.read().await.current_track.as_ref().map(|t| t.path.clone())
+                        .unwrap_or_default()
+                );
+                self.push_event(DaemonEvent::QueueIndexChanged { index: idx })
+                    .await;
+                return Ok(DaemonRes::Ok { version: self.state.read().await.version as u32 });
+            }
+        }
         self.crossfade_loaded_for = None;
         let path = track.path.clone();
         let res = self.cmd_play(&path, 0.0).await?;
@@ -787,7 +868,24 @@ impl Daemon {
             }
         };
         let idx = state.queue_cursor;
+        let crossfade_enabled = state.crossfade.as_ref().map(|c| c.enabled).unwrap_or(false);
+        let crossfade_dur = state.crossfade.as_ref().map(|c| c.duration_secs as f64).unwrap_or(0.0);
+        let crossfade_easing = state.crossfade.as_ref().map(|c| c.easing).unwrap_or(gtm_core::state::Easing::Linear);
         drop(state);
+        if crossfade_enabled && crossfade_dur > 0.0 && self.crossfade_loaded_for.is_none() && !self.mixer.is_crossfading() {
+            let path = track.path.clone();
+            if self.mixer.load_standby(&path).is_ok() {
+                self.mixer.set_crossfade_easing(crossfade_easing);
+                self.mixer.start_crossfade(crossfade_dur);
+                self.crossfade_loaded_for = Some(
+                    self.state.read().await.current_track.as_ref().map(|t| t.path.clone())
+                        .unwrap_or_default()
+                );
+                self.push_event(DaemonEvent::QueueIndexChanged { index: idx })
+                    .await;
+                return Ok(DaemonRes::Ok { version: self.state.read().await.version as u32 });
+            }
+        }
         self.crossfade_loaded_for = None;
         let path = track.path.clone();
         let res = self.cmd_play(&path, 0.0).await?;
@@ -1057,9 +1155,10 @@ impl Daemon {
             gtm_core::ipc::LibraryAction::Scan { path } => {
                 let audio_dir = path.clone();
                 let data_dir = self.config.data_dir.clone();
+                let cache_dir = self.config.cache_dir.to_string_lossy().to_string();
                 let result = tokio::task::spawn_blocking(move || {
                     let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    lib.scan_directory(&audio_dir, true)
+                    lib.scan_directory(&audio_dir, true, Some(&cache_dir))
                 })
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
@@ -1203,41 +1302,44 @@ impl Daemon {
             }
             gtm_core::ipc::LibraryAction::SyncCovers => {
                 let data_dir = self.config.data_dir.clone();
-                let cache_dir = self.config.data_dir.clone();
+                let cache_dir = self.config.cache_dir.clone();
+                // Spawn blocking so the daemon event loop isn't starved.
+                // Uses fresh Library + CoverCache to avoid connection issues.
                 let result = tokio::task::spawn_blocking(move || {
-                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    let tracks = lib.list_tracks()?;
-                    let mut cache = crate::cover_art::CoverCache::new(cache_dir);
-                    let mut synced = 0usize;
-                    let total = tracks.len();
-                    // We can't use tokio Runtime in a blocking context, so we
-                    // create a minimal tokio runtime just for cover fetching.
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))
+                        .map_err(|e| format!("open library: {e}"))?;
+                    let tracks = lib.list_tracks()
+                        .map_err(|e| format!("list tracks: {e}"))?;
                     let rt = tokio::runtime::Runtime::new()
                         .map_err(|e| format!("runtime: {e}"))?;
+                    let mut cache = crate::cover_art::CoverCache::new(cache_dir.clone());
+                    let mut synced = 0usize;
                     for track in &tracks {
-                        if track.cover_path.is_none()
-                            && !track.artist.is_empty()
-                            && !track.album.is_empty()
-                        {
-                            if rt.block_on(cache.get_cover(&track.artist, &track.album)).is_some() {
-                                synced += 1;
-                            }
+                        let missing_cover = track.cover_path.is_none()
+                            || track.cover_path.as_ref().map_or(true, |p| !std::path::Path::new(p).exists());
+                        if !missing_cover {
+                            continue;
                         }
+                        let artist = if track.artist.is_empty() { "Unknown Artist" } else { &track.artist };
+                        let album = if track.album.is_empty() { "Unknown Album" } else { &track.album };
+                        if rt.block_on(cache.get_cover(artist, album)).is_some() {
+                            let key = crate::cover_art::CoverCache::cache_key(artist, album);
+                            let cover_file = cache_dir.join("covers").join(format!("{key}.jpg"));
+                            if cover_file.exists() {
+                                let path_str = cover_file.to_string_lossy().to_string();
+                                let _ = lib.update_cover_path(track.id, &path_str);
+                            }
+                            synced += 1;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(50));
                     }
-                    Ok::<(usize, usize), String>((synced, total))
+                    Ok::<(usize, usize), String>((synced, tracks.len()))
                 })
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok((synced, total)) => DaemonRes::SyncCoversResult {
-                        version,
-                        synced,
-                        total,
-                    },
-                    Err(e) => DaemonRes::Error {
-                        version,
-                        message: e,
-                    },
+                    Ok((synced, total)) => DaemonRes::SyncCoversResult { version, synced, total },
+                    Err(e) => DaemonRes::Error { version, message: e },
                 }
             }
         };
@@ -1376,40 +1478,64 @@ impl Daemon {
     }
 
     async fn cmd_get_cover_art(&mut self, track_id: i64) -> Result<DaemonRes, CoreError> {
-        // Try embedded cover from library first
+        let mut discovered_artist = String::new();
+        let mut discovered_album = String::new();
+
+        // Try embedded cover / sidecar from library first
         if let Some(ref library) = self.library {
             if let Ok(Some(track)) = library.get_track(track_id) {
                 if let Some(ref path) = track.cover_path {
                     if let Ok(data) = tokio::fs::read(path).await {
                         use base64::Engine;
                         let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                        return Ok(DaemonRes::CoverArt {
-                            version: self.state.read().await.version as u32,
-                            data: Some(b64),
-                        });
+                        return Ok(DaemonRes::CoverArt { version: u32::MAX, data: Some(b64) });
                     }
                 }
+                // Sidecar .jpg/.jpeg/.png/.webp next to the audio file
+                let audio_path = std::path::Path::new(&track.path);
+                let parent = audio_path.parent().unwrap_or(std::path::Path::new(""));
+                let stem = audio_path.file_stem().unwrap_or_default();
+                for ext in ["jpg", "jpeg", "png", "webp"] {
+                    let sidecar = parent.join(format!("{}.{}", stem.to_string_lossy(), ext));
+                    if let Ok(data) = tokio::fs::read(&sidecar).await {
+                        use base64::Engine;
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                        return Ok(DaemonRes::CoverArt { version: u32::MAX, data: Some(b64) });
+                    }
+                }
+                discovered_artist = track.artist;
+                discovered_album = track.album;
             }
         }
 
-        // Fallback: try Deezer via CoverCache
-        if let Some(ref mut cache) = self.cover_cache {
+        // If not found in library, search the queue for the requested track_id
+        if discovered_artist.is_empty() {
             let state = self.state.read().await;
-            if let Some(ref track) = state.current_track {
-                if let Some(cover) = cache.get_cover(&track.artist, &track.album).await {
+            if let Some(t) = state.queue.iter().find(|t| t.id == track_id) {
+                discovered_artist = t.artist.clone();
+                discovered_album = t.album.clone();
+            } else if let Some(ref t) = state.current_track {
+                discovered_artist = t.artist.clone();
+                discovered_album = t.album.clone();
+            }
+        }
+
+        // Deezer fallback via CoverCache with discovered artist/album
+        if !discovered_artist.is_empty() && !discovered_album.is_empty() {
+            if let Some(ref mut cache) = self.cover_cache {
+                let artist = discovered_artist.clone();
+                let album = discovered_album.clone();
+                let cover = tokio::time::timeout(Duration::from_secs(5), cache.get_cover(&artist, &album)).await
+                    .ok()
+                    .flatten();
+                if let Some(cover) = cover {
                     use base64::Engine;
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&cover.data);
-                    return Ok(DaemonRes::CoverArt {
-                        version: state.version as u32,
-                        data: Some(b64),
-                    });
+                    return Ok(DaemonRes::CoverArt { version: u32::MAX, data: Some(b64) });
                 }
             }
         }
 
-        Ok(DaemonRes::CoverArt {
-            version: self.state.read().await.version as u32,
-            data: None,
-        })
+        Ok(DaemonRes::CoverArt { version: u32::MAX, data: None })
     }
 }

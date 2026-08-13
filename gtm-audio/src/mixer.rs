@@ -13,6 +13,7 @@ use gtm_core::state::Easing;
 /// Trait abstracting over audio mixer implementations (real or null).
 pub trait Mixer: Send + Sync {
     fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()>;
+    fn load_active_decoded(&mut self, source: Box<dyn Source<Item = f32> + Send>, start_pos: f64) -> AudioResult<()>;
     fn load_standby(&mut self, path: &str) -> AudioResult<()>;
     fn standby_is_loaded(&self) -> bool;
     fn play(&mut self) -> AudioResult<()>;
@@ -77,6 +78,9 @@ struct MixerDeviceSink(rodio::MixerDeviceSink);
 impl Mixer for AudioMixer {
     fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()> {
         self.load_active(path, start_pos)
+    }
+    fn load_active_decoded(&mut self, source: Box<dyn Source<Item = f32> + Send>, start_pos: f64) -> AudioResult<()> {
+        self.load_active_decoded(source, start_pos)
     }
     fn load_standby(&mut self, path: &str) -> AudioResult<()> {
         self.load_standby(path)
@@ -181,6 +185,11 @@ impl AudioMixer {
         }
     }
 
+    /// Decode a file (blocking I/O). Safe to call from `spawn_blocking`.
+    pub fn decode_file(path: &str) -> AudioResult<Box<dyn Source<Item = f32> + Send>> {
+        Self::decode(path)
+    }
+
     fn decode(path: &str) -> AudioResult<Box<dyn Source<Item = f32> + Send>> {
         let file = File::open(path).map_err(|e| AudioError::OpenFailed(e.to_string()))?;
         let reader = BufReader::new(file);
@@ -196,6 +205,26 @@ impl AudioMixer {
         self.active().set_volume(vol);
 
         let source = Self::decode(path)?;
+        if let Some(ref dur) = source.total_duration() {
+            *self.duration.lock().unwrap() = dur.as_secs_f64();
+        }
+        self.active().append(source);
+
+        *self.position.lock().unwrap() = start_pos;
+        *self.start_time.lock().unwrap() = None;
+        *self.start_pos.lock().unwrap() = start_pos;
+        self.playing.store(false, Ordering::SeqCst);
+        self.crossfade_start = None;
+
+        Ok(())
+    }
+
+    /// Like `load_active` but source is pre-decoded (avoids blocking in async context).
+    pub fn load_active_decoded(&mut self, source: Box<dyn Source<Item = f32> + Send>, start_pos: f64) -> AudioResult<()> {
+        let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
+        self.active().stop();
+        self.active().set_volume(vol);
+
         if let Some(ref dur) = source.total_duration() {
             *self.duration.lock().unwrap() = dur.as_secs_f64();
         }
@@ -226,6 +255,9 @@ impl AudioMixer {
     pub fn play(&mut self) -> AudioResult<()> {
         if self.active().is_paused() {
             self.active().play();
+            // Restore volume — the sink was faded to 0 during the pause fade-out.
+            let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
+            self.active().set_volume(vol);
         }
         if self.pending_pause {
             self.pending_pause = false;

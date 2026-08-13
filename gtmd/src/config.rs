@@ -93,6 +93,8 @@ impl DaemonConfig {
             PathBuf::from(s)
         } else if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
             PathBuf::from(runtime).join("gtmd.socket")
+        } else if let Ok(tmpdir) = std::env::var("TMPDIR") {
+            PathBuf::from(tmpdir).join("gtmd.socket")
         } else {
             std::env::temp_dir().join("gtmd.socket")
         };
