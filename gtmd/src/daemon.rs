@@ -67,7 +67,7 @@ use gtm_audio::{AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
 use gtm_audio::PulseAudioMixer;
 #[cfg(feature = "pulseaudio")]
 use crate::config::AudioBackendKind;
-use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, QueueAction, WireEvent, WireReq, WireRes};
+use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, QueueAction, WireEvent, WireReq, PROTOCOL_VERSION};
 use gtm_core::state::{DaemonState, EqPreset, PlaybackStatus, ReverbConfig, SavedState};
 use gtm_core::wire;
 use gtm_core::CoreError;
@@ -429,20 +429,36 @@ impl Daemon {
                             continue;
                         }
                         if trimmed.len() > 1_048_576 {
+                            // protocol.md: "Lines exceeding this limit MUST be
+                            // rejected and the connection closed."
                             warn!("client {client_id}: line too long ({} bytes), disconnecting", trimmed.len());
                             break;
                         }
                         let wire_req: WireReq = match serde_json::from_str(trimmed) {
                             Ok(r) => r,
                             Err(e) => {
-                                warn!("client {client_id} bad request: {e}");
-                                continue;
+                                // protocol.md: "If the daemon receives malformed
+                                // JSON, it MUST close the connection."
+                                warn!("client {client_id} malformed JSON, closing: {e}");
+                                break;
                             }
                         };
-                        let daemon_req: DaemonReq = match serde_json::from_value(wire_req.params) {
+                        let daemon_req = match DaemonReq::parse_cmd(&wire_req.cmd, wire_req.params.clone()) {
                             Ok(r) => r,
+                            Err(e) if e.starts_with("unknown command:") => {
+                                // protocol.md: unknown `cmd` → error response, keep alive.
+                                let _ = r_tx.send((wire_req.id, DaemonRes::Error {
+                                    version: PROTOCOL_VERSION,
+                                    message: e,
+                                }));
+                                continue;
+                            }
                             Err(e) => {
-                                warn!("client {client_id} bad request params: {e}");
+                                // Params parsed wrong for a known `cmd`: recoverable.
+                                let _ = r_tx.send((wire_req.id, DaemonRes::Error {
+                                    version: PROTOCOL_VERSION,
+                                    message: format!("invalid params for {}: {}", wire_req.cmd, e),
+                                }));
                                 continue;
                             }
                         };
@@ -585,10 +601,24 @@ impl Daemon {
     ) -> Result<DaemonRes, CoreError> {
         match req {
             DaemonReq::Handshake { version, client, client_version } => {
+                // protocol.md "Version Negotiation": client > daemon ⇒ ok:false.
+                if *version > PROTOCOL_VERSION {
+                    info!(
+                        "client {client_id}: handshake rejected — client protocol v{version} > daemon v{PROTOCOL_VERSION}"
+                    );
+                    return Ok(DaemonRes::Error {
+                        version: PROTOCOL_VERSION,
+                        message: format!(
+                            "protocol version {version} not supported, daemon supports {PROTOCOL_VERSION}"
+                        ),
+                    });
+                }
                 inner.client_auth.lock().await.insert(client_id, true);
-                info!("client {client_id}: handshake from {client} v{client_version:?}, protocol v{version}");
+                info!(
+                    "client {client_id}: handshake from {client} v{client_version:?}, protocol v{version}"
+                );
                 Ok(DaemonRes::Handshake {
-                    version: *version,
+                    version: PROTOCOL_VERSION,
                     daemon: "gtmd-rs".to_string(),
                     daemon_version: env!("CARGO_PKG_VERSION").to_string(),
                 })

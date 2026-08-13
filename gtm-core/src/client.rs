@@ -14,7 +14,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
-use crate::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction, WireEvent, WireReq, WireRes};
+use crate::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction, WireEvent, WireReq, WireRes, PROTOCOL_VERSION};
 use crate::state::{self, DaemonState, EqPreset, PlaybackStatus, RepeatMode, ReverbConfig, SavedState, YTFilter};
 use crate::track;
 use crate::wire;
@@ -89,7 +89,45 @@ impl DaemonClient {
                         handshake_sent: false,
                         authenticated: Arc::new(AtomicBool::new(false)),
                     };
+                    // Spawn worker before constructing the client handle so
+                    // we can issue the mandatory handshake as id=0 here.
+                    let client = Self {
+                        cmd_tx: cmd_tx.clone(),
+                        events: events.clone(),
+                        connected: connected.clone(),
+                        base_pos: Arc::new(Mutex::new(0.0)),
+                        base_time: Arc::new(Mutex::new(None)),
+                        is_playing: Arc::new(AtomicBool::new(false)),
+                    };
                     tokio::spawn(worker.run());
+
+                    // protocol.md "Handshake": first message after connect.
+                    // Worker assigns id=0 to the first request queued, so the
+                    // handshake naturally gets id=0 as required.
+                    let hres = client.send_raw(DaemonReq::Handshake {
+                        version: PROTOCOL_VERSION,
+                        client: "gtm-rs".to_string(),
+                        client_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+                    }).await?;
+                    match hres {
+                        DaemonRes::Handshake { version, daemon, daemon_version } => {
+                            if version > PROTOCOL_VERSION {
+                                return Err(CoreError::Daemon(format!(
+                                    "daemon {daemon} {daemon_version} speaks protocol v{version} \
+                                     which is newer than client v{PROTOCOL_VERSION}"
+                                )));
+                            }
+                            connected.store(true, Ordering::Release);
+                        }
+                        DaemonRes::Error { message, .. } => {
+                            return Err(CoreError::Daemon(format!("handshake rejected: {message}")));
+                        }
+                        other => {
+                            return Err(CoreError::Daemon(format!(
+                                "unexpected handshake response: {other:?}"
+                            )));
+                        }
+                    }
 
                     // Connect to pulse socket for dedicated event stream
                     let pulse_path = {
@@ -102,14 +140,7 @@ impl DaemonClient {
                         pulse_reader(&pulse_path, events_pulse, hb_pulse).await;
                     });
 
-                    return Ok(Self {
-                        cmd_tx,
-                        events,
-                        connected,
-                        base_pos: Arc::new(Mutex::new(0.0)),
-                        base_time: Arc::new(Mutex::new(None)),
-                        is_playing: Arc::new(AtomicBool::new(false)),
-                    });
+                    return Ok(client);
                 }
                 Err(e) => {
                     last_err = Some(e);
@@ -587,7 +618,7 @@ struct IpcWorker {
     last_event_time: Instant,
     last_heartbeat_at: Arc<std::sync::Mutex<Instant>>,
     consecutive_failures: u32,
-    pending: HashMap<u64, oneshot::Sender<Result<DaemonRes>>>,
+    pending: HashMap<u64, (String, oneshot::Sender<Result<DaemonRes>>)>,
     next_id: u64,
     handshake_sent: bool,
     authenticated: Arc<AtomicBool>,
@@ -655,7 +686,8 @@ impl IpcWorker {
                     break;
                 }
                 if let Some(tx) = pending.response_tx {
-                    self.pending.insert(id, tx);
+                    let cmd = pending.req.cmd_name().to_string();
+                    self.pending.insert(id, (cmd, tx));
                 }
                 sent_any = true;
             }
@@ -692,7 +724,7 @@ impl IpcWorker {
     }
 
     fn fail_all_pending(&mut self, reason: &str) {
-        for (_, tx) in self.pending.drain() {
+        for (_, (_, tx)) in self.pending.drain() {
             let _ = tx.send(Err(CoreError::Daemon(reason.into())));
         }
     }
@@ -752,83 +784,13 @@ impl IpcWorker {
     async fn send_request_by_id(&mut self, id: u64, pending: &PendingRequest) -> Result<()> {
         let mut line = serde_json::to_string(&WireReq {
             id,
-            cmd: match &pending.req {
-                DaemonReq::Handshake { .. } => "handshake".to_string(),
-                DaemonReq::Play { .. } => "play".to_string(),
-                DaemonReq::PlayPause => "play_pause".to_string(),
-                DaemonReq::Pause => "pause".to_string(),
-                DaemonReq::Stop => "stop".to_string(),
-                DaemonReq::Next => "next".to_string(),
-                DaemonReq::Prev => "prev".to_string(),
-                DaemonReq::Seek { .. } => "seek".to_string(),
-                DaemonReq::SetVolume { .. } => "set_volume".to_string(),
-                DaemonReq::GetVolume => "get_volume".to_string(),
-                DaemonReq::ToggleShuffle => "toggle_shuffle".to_string(),
-                DaemonReq::CycleRepeat { .. } => "cycle_repeat".to_string(),
-                DaemonReq::ToggleMute => "toggle_mute".to_string(),
-                DaemonReq::Crossfade { .. } => "crossfade".to_string(),
-                DaemonReq::SetCrossfadeEasing { .. } => "crossfade".to_string(),
-                DaemonReq::SetEqPreset { .. } => "set_eq_preset".to_string(),
-                DaemonReq::SetEqEnabled { .. } => "set_eq_enabled".to_string(),
-                DaemonReq::SetReverb { .. } => "set_reverb".to_string(),
-                DaemonReq::ListEqPresets => "list_eq_presets".to_string(),
-                DaemonReq::Queue { action } => match action {
-                    QueueAction::List => "queue".to_string(),
-                    QueueAction::Clear => "queue".to_string(),
-                    QueueAction::Remove { .. } => "queue".to_string(),
-                    QueueAction::Move { .. } => "queue".to_string(),
-                    QueueAction::Add { .. } => "queue".to_string(),
-                    QueueAction::AddMany { .. } => "queue".to_string(),
-                    QueueAction::AddFolder { .. } => "queue".to_string(),
-                    QueueAction::Set { .. } => "queue".to_string(),
-                },
-                DaemonReq::Library { action } => match action {
-                    LibraryAction::Scan { .. } => "library".to_string(),
-                    LibraryAction::GetTracks { .. } => "library".to_string(),
-                    LibraryAction::GetPlaylists => "library".to_string(),
-                    LibraryAction::CreatePlaylist { .. } => "library".to_string(),
-                    LibraryAction::DeletePlaylist { .. } => "library".to_string(),
-                    LibraryAction::AddToPlaylist { .. } => "library".to_string(),
-                    LibraryAction::ImportM3u { .. } => "library".to_string(),
-                    LibraryAction::ExportM3u { .. } => "library".to_string(),
-                    LibraryAction::GetRecent { .. } => "library".to_string(),
-                    LibraryAction::SyncCovers => "library".to_string(),
-                    LibraryAction::SyncLyrics => "library".to_string(),
-                    LibraryAction::RemoveFromPlaylist { .. } => "library".to_string(),
-                    LibraryAction::RemoveTrack { .. } => "library".to_string(),
-                    LibraryAction::UpdateMetadata { .. } => "library".to_string(),
-                },
-                DaemonReq::Search { .. } => "search".to_string(),
-                DaemonReq::GetFavourites => "get_favourites".to_string(),
-                DaemonReq::AddFavourite { .. } => "add_favourite".to_string(),
-                DaemonReq::RemoveFavourite { .. } => "remove_favourite".to_string(),
-                DaemonReq::YtSearch { .. } => "yt_search".to_string(),
-                DaemonReq::YtSearchPoll => "yt_search_poll".to_string(),
-                DaemonReq::YtSearchCancel => "yt_search_cancel".to_string(),
-                DaemonReq::YtResolveStream { .. } => "yt_resolve_stream".to_string(),
-                DaemonReq::YtDownload { .. } => "yt_download".to_string(),
-                DaemonReq::YtDownloadPoll => "yt_download_poll".to_string(),
-                DaemonReq::YtCancelDownload { .. } => "yt_cancel_download".to_string(),
-                DaemonReq::YtFetchPlaylist { .. } => "yt_fetch_playlist".to_string(),
-                DaemonReq::YtFetchPlaylistPoll => "yt_fetch_playlist_poll".to_string(),
-                DaemonReq::YtSetConfig { .. } => "yt_set_config".to_string(),
-                DaemonReq::GetCoverArt { .. } => "get_cover_art".to_string(),
-                DaemonReq::GetLyrics { .. } => "get_lyrics".to_string(),
-                DaemonReq::SetSleepTimer { .. } => "set_sleep_timer".to_string(),
-                DaemonReq::CancelSleepTimer => "cancel_sleep_timer".to_string(),
-                DaemonReq::GetStatus => "get_status".to_string(),
-                DaemonReq::CheckHealth => "check_health".to_string(),
-                DaemonReq::Ping => "ping".to_string(),
-                DaemonReq::Quit => "quit".to_string(),
-            },
-            params: serde_json::to_value(pending.req.clone())?,
+            cmd: pending.req.cmd_name(),
         })?;
         line.push('\n');
-        match tokio::time::timeout(Duration::from_secs(5), self.writer.write_all(line.as_bytes())).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(CoreError::Daemon(format!("write error: {e}"))),
-            Err(_) => return Err(CoreError::Daemon("write timeout".into())),
-        }
+        self.writer.write_all(line.as_bytes()).await?;
+        self.writer.flush().await?;
+        Ok(())
+    }
         Ok(())
     }
 
@@ -843,13 +805,11 @@ impl IpcWorker {
         let line = self.buf[..pos].to_vec();
         self.buf.drain(..=pos);
         if let Ok(wire_res) = serde_json::from_slice::<WireRes>(&line) {
-            if let Some(tx) = self.pending.remove(&wire_res.id) {
-                let response = match (wire_res.ok, wire_res.data) {
-                    (Some(true), Some(data)) => DaemonRes::Value { version: 0, value: data },
-                    (Some(true), None) => DaemonRes::Ok { version: 0 },
-                    (Some(false), Some(_)) => DaemonRes::Error { version: 0, message: "unknown error".into() },
-                    _ => DaemonRes::Error { version: 0, message: "unknown error".into() },
-                };
+            if let Some((cmd, tx)) = self.pending.remove(&wire_res.id) {
+                // protocol.md: responses do not echo `cmd`; reconstruct the
+                // typed DaemonRes from the original request's cmd string so
+                // callers can match on typed variants.
+                let response = DaemonRes::from_wire(&cmd, &wire_res);
                 let _ = tx.send(Ok(response));
             }
             return true;

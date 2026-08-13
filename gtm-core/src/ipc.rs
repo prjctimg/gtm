@@ -1,17 +1,37 @@
 // Copyright (c) 2025 - present
 // Author: prjctimg <prjctimg@outlook.com>
-// IPC protocol: wire format with explicit cmd/event fields per GTM Protocol v1
+// IPC protocol: wire format with explicit cmd/event fields per GTM Protocol v2
 //
 // This is free software released under the GPL-3.0 license.
 
-use crate::state::{self, DaemonState, RepeatMode};
+use crate::state::{self, DaemonState, EqPreset, RepeatMode, ReverbConfig, YTFilter};
 use crate::track::{LrcData, Playlist, StreamInfo, TrackInfo, YTSearchResult};
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+/// Protocol version this implementation speaks. Matches `prjctimg/gtm.spec`
+/// `protocol.md` "Version Negotiation". Bumped only on breaking wire changes.
+pub const PROTOCOL_VERSION: u32 = 2;
+
+/// `/queue` sub-commands. Internally tagged via `action` so they serialize
+/// flat: `{"action":"add","path":"...","position":null}` per `commands.md`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(tag = "action", rename_all = "snake_case")]
+pub enum QueueAction {
+    List,
+    Clear,
+    Remove { index: u128 },
+    Move { from: u128, to: u128 },
+    Add { path: String, position: Option<u128> },
+    AddMany { paths: Vec<String> },
+    AddFolder { path: String },
+    Set { paths: Vec<String>, start_idx: u128 },
+}
+
+/// `/library` sub-commands. Internally tagged via `action`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "action", rename_all = "snake_case")]
 pub enum LibraryAction {
     Scan { path: String },
     GetTracks { filter: Option<String>, sort: Option<String> },
@@ -37,29 +57,306 @@ pub enum LibraryAction {
     },
 }
 
+/// Wire request: client -> daemon.
+///
+/// Per `protocol.md`, the on-the-wire shape is:
+/// `{"id":<u64>,"cmd":"<name>", ...params}` where `params` is flattened
+/// into the top-level object (no wrapper key). We therefore serialize each
+/// `DaemonReq` variant as a flat map via `#[serde(untagged)]` and flatten
+/// the nested `action` enum for `Queue`/`Library`.
+///
+/// Deserialization of `DaemonReq` directly from params is ambiguous for
+/// unit variants; the daemon must dispatch on the `cmd` string via
+/// [`DaemonReq::parse_cmd`] instead.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum QueueAction {
-    List,
-    Clear,
-    Remove { index: u128 },
-    Move { from: u128, to: u128 },
-    Add { path: String, position: Option<u128> },
-    AddMany { paths: Vec<String> },
-    AddFolder { path: String },
-    Set { paths: Vec<String>, start_idx: u128 },
+#[serde(untagged)]
+pub enum DaemonReq {
+    Handshake { version: u32, client: String, client_version: Option<String> },
+    Play { path: String, start_pos: f64 },
+    PlayPause,
+    Pause,
+    Stop,
+    Next,
+    Prev,
+    Seek { position_secs: f64 },
+    SetVolume { volume: u8 },
+    GetVolume,
+    ToggleShuffle,
+    CycleRepeat { mode: RepeatMode },
+    ToggleMute,
+    Crossfade { enabled: bool, duration_secs: u8 },
+    SetCrossfadeEasing { easing: state::Easing },
+    SetEqPreset { preset: EqPreset },
+    SetEqEnabled { enabled: bool },
+    SetReverb { enabled: bool, room_size: f32 },
+    ListEqPresets,
+    Queue {
+        #[serde(flatten)]
+        action: QueueAction,
+    },
+    Library {
+        #[serde(flatten)]
+        action: LibraryAction,
+    },
+    Search { query: String },
+    GetFavourites,
+    AddFavourite { track_id: i64 },
+    RemoveFavourite { track_id: i64 },
+    YtSearch { query: String, filter: Option<YTFilter> },
+    YtSearchPoll,
+    YtSearchCancel,
+    YtResolveStream { url: String },
+    YtDownload { url: String, title: Option<String>, channel: Option<String> },
+    YtDownloadPoll,
+    YtCancelDownload { url: String },
+    YtFetchPlaylist { url: String },
+    YtFetchPlaylistPoll,
+    YtSetConfig {
+        cookie_source: Option<String>,
+        js_runtime: Option<String>,
+        download_dir: Option<String>,
+        max_concurrent: Option<u32>,
+    },
+    GetCoverArt { track_id: i64 },
+    GetLyrics { track_id: i64 },
+    SetSleepTimer { minutes: u32 },
+    CancelSleepTimer,
+    GetStatus,
+    CheckHealth,
+    Ping,
+    Quit,
 }
 
-/// Wire request: client -> daemon
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WireReq {
-    pub id: u64,
-    pub cmd: String,
-    #[serde(flatten)]
-    pub params: Value,
+impl DaemonReq {
+    /// Canonical `cmd` string for this request, as defined by `commands.md`.
+    pub fn cmd_name(&self) -> &'static str {
+        match self {
+            DaemonReq::Handshake { .. } => "handshake",
+            DaemonReq::Play { .. } => "play",
+            DaemonReq::PlayPause => "play_pause",
+            DaemonReq::Pause => "pause",
+            DaemonReq::Stop => "stop",
+            DaemonReq::Next => "next",
+            DaemonReq::Prev => "prev",
+            DaemonReq::Seek { .. } => "seek",
+            DaemonReq::SetVolume { .. } => "set_volume",
+            DaemonReq::GetVolume => "get_volume",
+            DaemonReq::ToggleShuffle => "toggle_shuffle",
+            DaemonReq::CycleRepeat { .. } => "cycle_repeat",
+            DaemonReq::ToggleMute => "toggle_mute",
+            DaemonReq::Crossfade { .. } => "crossfade",
+            DaemonReq::SetCrossfadeEasing { .. } => "crossfade",
+            DaemonReq::SetEqPreset { .. } => "set_eq_preset",
+            DaemonReq::SetEqEnabled { .. } => "set_eq_enabled",
+            DaemonReq::SetReverb { .. } => "set_reverb",
+            DaemonReq::ListEqPresets => "list_eq_presets",
+            DaemonReq::Queue { .. } => "queue",
+            DaemonReq::Library { .. } => "library",
+            DaemonReq::Search { .. } => "search",
+            DaemonReq::GetFavourites => "get_favourites",
+            DaemonReq::AddFavourite { .. } => "add_favourite",
+            DaemonReq::RemoveFavourite { .. } => "remove_favourite",
+            DaemonReq::YtSearch { .. } => "yt_search",
+            DaemonReq::YtSearchPoll => "yt_search_poll",
+            DaemonReq::YtSearchCancel => "yt_search_cancel",
+            DaemonReq::YtResolveStream { .. } => "yt_resolve_stream",
+            DaemonReq::YtDownload { .. } => "yt_download",
+            DaemonReq::YtDownloadPoll => "yt_download_poll",
+            DaemonReq::YtCancelDownload { .. } => "yt_cancel_download",
+            DaemonReq::YtFetchPlaylist { .. } => "yt_fetch_playlist",
+            DaemonReq::YtFetchPlaylistPoll => "yt_fetch_playlist_poll",
+            DaemonReq::YtSetConfig { .. } => "yt_set_config",
+            DaemonReq::GetCoverArt { .. } => "get_cover_art",
+            DaemonReq::GetLyrics { .. } => "get_lyrics",
+            DaemonReq::SetSleepTimer { .. } => "set_sleep_timer",
+            DaemonReq::CancelSleepTimer => "cancel_sleep_timer",
+            DaemonReq::GetStatus => "get_status",
+            DaemonReq::CheckHealth => "check_health",
+            DaemonReq::Ping => "ping",
+            DaemonReq::Quit => "quit",
+        }
+    }
+
+    /// Reconstruct a `DaemonReq` from a parsed `cmd` string and the flat
+    /// `params` object delivered on the wire. The dispatch is explicit so
+    /// unit variants (`Pause`, `Stop`, ...) disambiguate cleanly — something
+    /// `#[serde(untagged)]` cannot do by itself.
+    pub fn parse_cmd(cmd: &str, params: Value) -> std::result::Result<Self, String> {
+        fn p<T: DeserializeOwned>(v: Value) -> std::result::Result<T, String> {
+            serde_json::from_value(v).map_err(|e| e.to_string())
+        }
+        Ok(match cmd {
+            "handshake" => {
+                #[derive(Deserialize)]
+                struct Params { version: u32, client: String, client_version: Option<String> }
+                let x = p(params)?;
+                DaemonReq::Handshake {
+                    version: x.version,
+                    client: x.client,
+                    client_version: x.client_version,
+                }
+            }
+            "play" => {
+                #[derive(Deserialize)]
+                struct Params { path: String, start_pos: f64 }
+                let x = p(params)?;
+                DaemonReq::Play { path: x.path, start_pos: x.start_pos }
+            }
+            "play_pause" => DaemonReq::PlayPause,
+            "pause" => DaemonReq::Pause,
+            "stop" => DaemonReq::Stop,
+            "next" => DaemonReq::Next,
+            "prev" => DaemonReq::Prev,
+            "seek" => {
+                #[derive(Deserialize)]
+                struct Params { position_secs: f64 }
+                let x = p(params)?;
+                DaemonReq::Seek { position_secs: x.position_secs }
+            }
+            "set_volume" => {
+                #[derive(Deserialize)]
+                struct Params { volume: u8 }
+                let x = p(params)?;
+                DaemonReq::SetVolume { volume: x.volume }
+            }
+            "get_volume" => DaemonReq::GetVolume,
+            "toggle_shuffle" => DaemonReq::ToggleShuffle,
+            "cycle_repeat" => {
+                #[derive(Deserialize)]
+                struct Params { mode: RepeatMode }
+                let x = p(params)?;
+                DaemonReq::CycleRepeat { mode: x.mode }
+            }
+            "toggle_mute" => DaemonReq::ToggleMute,
+            "crossfade" => {
+                #[derive(Deserialize)]
+                struct Params { enabled: bool, duration_secs: u8, easing: Option<state::Easing> }
+                let x = p(params)?;
+                if let Some(easing) = x.easing {
+                    DaemonReq::SetCrossfadeEasing { easing }
+                } else {
+                    DaemonReq::Crossfade { enabled: x.enabled, duration_secs: x.duration_secs }
+                }
+            }
+            "set_eq_preset" => {
+                #[derive(Deserialize)]
+                struct Params { preset: EqPreset }
+                let x = p(params)?;
+                DaemonReq::SetEqPreset { preset: x.preset }
+            }
+            "set_eq_enabled" => {
+                #[derive(Deserialize)]
+                struct Params { enabled: bool }
+                let x = p(params)?;
+                DaemonReq::SetEqEnabled { enabled: x.enabled }
+            }
+            "set_reverb" => {
+                #[derive(Deserialize)]
+                struct Params { enabled: bool, room_size: f32 }
+                let x = p(params)?;
+                DaemonReq::SetReverb { enabled: x.enabled, room_size: x.room_size }
+            }
+            "list_eq_presets" => DaemonReq::ListEqPresets,
+            "queue" => DaemonReq::Queue { action: p(params)? },
+            "library" => DaemonReq::Library { action: p(params)? },
+            "search" => {
+                #[derive(Deserialize)]
+                struct Params { query: String }
+                let x = p(params)?;
+                DaemonReq::Search { query: x.query }
+            }
+            "get_favourites" => DaemonReq::GetFavourites,
+            "add_favourite" => {
+                #[derive(Deserialize)]
+                struct Params { track_id: i64 }
+                let x = p(params)?;
+                DaemonReq::AddFavourite { track_id: x.track_id }
+            }
+            "remove_favourite" => {
+                #[derive(Deserialize)]
+                struct Params { track_id: i64 }
+                let x = p(params)?;
+                DaemonReq::RemoveFavourite { track_id: x.track_id }
+            }
+            "yt_search" => {
+                #[derive(Deserialize)]
+                struct Params { query: String, filter: Option<YTFilter> }
+                let x = p(params)?;
+                DaemonReq::YtSearch { query: x.query, filter: x.filter }
+            }
+            "yt_search_poll" => DaemonReq::YtSearchPoll,
+            "yt_search_cancel" => DaemonReq::YtSearchCancel,
+            "yt_resolve_stream" => {
+                #[derive(Deserialize)]
+                struct Params { url: String }
+                let x = p(params)?;
+                DaemonReq::YtResolveStream { url: x.url }
+            }
+            "yt_download" => {
+                #[derive(Deserialize)]
+                struct Params { url: String, title: Option<String>, channel: Option<String> }
+                let x = p(params)?;
+                DaemonReq::YtDownload { url: x.url, title: x.title, channel: x.channel }
+            }
+            "yt_download_poll" => DaemonReq::YtDownloadPoll,
+            "yt_cancel_download" => {
+                #[derive(Deserialize)]
+                struct Params { url: String }
+                let x = p(params)?;
+                DaemonReq::YtCancelDownload { url: x.url }
+            }
+            "yt_fetch_playlist" => {
+                #[derive(Deserialize)]
+                struct Params { url: String }
+                let x = p(params)?;
+                DaemonReq::YtFetchPlaylist { url: x.url }
+            }
+            "yt_fetch_playlist_poll" => DaemonReq::YtFetchPlaylistPoll,
+            "yt_set_config" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    cookie_source: Option<String>,
+                    js_runtime: Option<String>,
+                    download_dir: Option<String>,
+                    max_concurrent: Option<u32>,
+                }
+                let x = p(params)?;
+                DaemonReq::YtSetConfig {
+                    cookie_source: x.cookie_source,
+                    js_runtime: x.js_runtime,
+                    download_dir: x.download_dir,
+                    max_concurrent: x.max_concurrent,
+                }
+            }
+            "get_cover_art" => {
+                #[derive(Deserialize)]
+                struct Params { track_id: i64 }
+                let x = p(params)?;
+                DaemonReq::GetCoverArt { track_id: x.track_id }
+            }
+            "get_lyrics" => {
+                #[derive(Deserialize)]
+                struct Params { track_id: i64 }
+                let x = p(params)?;
+                DaemonReq::GetLyrics { track_id: x.track_id }
+            }
+            "set_sleep_timer" => {
+                #[derive(Deserialize)]
+                struct Params { minutes: u32 }
+                let x = p(params)?;
+                DaemonReq::SetSleepTimer { minutes: x.minutes }
+            }
+            "cancel_sleep_timer" => DaemonReq::CancelSleepTimer,
+            "get_status" => DaemonReq::GetStatus,
+            "check_health" => DaemonReq::CheckHealth,
+            "ping" => DaemonReq::Ping,
+            "quit" => DaemonReq::Quit,
+            other => return Err(format!("unknown command: {other}")),
+        })
+    }
 }
 
-/// Wire response: daemon -> client (success)
+/// Wire response: daemon -> client.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireRes {
     pub id: u64,
@@ -73,25 +370,15 @@ pub struct WireRes {
 
 impl WireRes {
     pub fn ok(id: u64, data: Option<Value>) -> Self {
-        Self {
-            id,
-            ok: Some(true),
-            error: None,
-            data,
-        }
+        Self { id, ok: Some(true), error: None, data }
     }
 
     pub fn err(id: u64, error: String) -> Self {
-        Self {
-            id,
-            ok: Some(false),
-            error: Some(error),
-            data: None,
-        }
+        Self { id, ok: Some(false), error: Some(error), data: None }
     }
 }
 
-/// Wire event: daemon -> client (broadcast)
+/// Wire event: daemon -> client (broadcast).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireEvent {
     pub event: String,
@@ -101,10 +388,7 @@ pub struct WireEvent {
 
 impl WireEvent {
     pub fn new(event: &str, data: Value) -> Self {
-        Self {
-            event: event.to_string(),
-            data,
-        }
+        Self { event: event.to_string(), data }
     }
 }
 
@@ -147,7 +431,7 @@ pub enum DaemonEvent {
     #[serde(rename = "sleep_timer_expired")]
     SleepTimerExpired,
     #[serde(rename = "eq_preset_changed")]
-    EqPresetChanged { preset: state::EqPreset },
+    EqPresetChanged { preset: EqPreset },
     #[serde(rename = "eq_enabled_changed")]
     EqEnabledChanged { enabled: bool },
     #[serde(rename = "reverb_changed")]
@@ -188,7 +472,7 @@ impl DaemonEvent {
                 WireEvent::new("volume_changed", serde_json::json!({ "volume": volume }))
             }
             DaemonEvent::MetadataChanged { detail } => {
-                WireEvent::new("metadata_changed", serde_json::json!({ "event": detail }))
+                WireEvent::new("metadata_changed", serde_json::json!({ "detail": detail }))
             }
             DaemonEvent::QueueChanged { queue, cursor } => {
                 WireEvent::new("queue_changed", serde_json::json!({ "queue": queue, "cursor": cursor }))
@@ -243,76 +527,11 @@ impl DaemonEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum DaemonReq {
-    // Handshake
-    Handshake { version: u32, client: String, client_version: Option<String> },
-    // Playback
-    Play { path: String, start_pos: f64 },
-    PlayPause,
-    Pause,
-    Stop,
-    Next,
-    Prev,
-    Seek { position_secs: f64 },
-    SetVolume { volume: u8 },
-    GetVolume,
-    ToggleShuffle,
-    CycleRepeat { mode: state::RepeatMode },
-    ToggleMute,
-    Crossfade { enabled: bool, duration_secs: u8 },
-    SetCrossfadeEasing { easing: state::Easing },
-    SetEqPreset { preset: state::EqPreset },
-    SetEqEnabled { enabled: bool },
-    SetReverb { enabled: bool, room_size: f32 },
-    ListEqPresets,
-
-    // Queue
-    Queue { action: QueueAction },
-
-    // Library
-    Library { action: LibraryAction },
-
-    // Discovery
-    Search { query: String },
-    GetFavourites,
-    AddFavourite { track_id: i64 },
-    RemoveFavourite { track_id: i64 },
-    YtSearch { query: String, filter: Option<state::YTFilter> },
-    YtSearchPoll,
-    YtSearchCancel,
-    YtResolveStream { url: String },
-    YtDownload { url: String, title: Option<String>, channel: Option<String> },
-    YtDownloadPoll,
-    YtCancelDownload { url: String },
-    YtFetchPlaylist { url: String },
-    YtFetchPlaylistPoll,
-    YtSetConfig { cookie_source: Option<String>, js_runtime: Option<String>, download_dir: Option<String>, max_concurrent: Option<u32> },
-
-    // Cover Art
-    GetCoverArt { track_id: i64 },
-
-    // Lyrics
-    GetLyrics { track_id: i64 },
-
-    // Sleep Timer
-    SetSleepTimer { minutes: u32 },
-    CancelSleepTimer,
-
-    // System
-    GetStatus,
-    CheckHealth,
-    Ping,
-    Quit,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
 pub enum DaemonRes {
     Ok { version: u32 },
     Value { version: u32, value: Value },
     Tracks { version: u32, tracks: Vec<TrackInfo> },
-    QueueState { version: u32, tracks: Vec<TrackInfo>, cursor: u128 },
+    QueueState { version: u32, queue: Vec<TrackInfo>, cursor: u128 },
     Status { version: u32, state: Box<DaemonState> },
     Playlists { version: u32, playlists: Vec<Playlist> },
     YtSearchResults { version: u32, results: Vec<YTSearchResult> },
@@ -329,6 +548,7 @@ pub enum DaemonRes {
 }
 
 impl DaemonRes {
+    /// Serialize this typed response into a `WireRes` for the command socket.
     pub fn to_wire(self, id: u64) -> WireRes {
         let version = match &self {
             DaemonRes::Ok { version } => *version,
@@ -354,7 +574,10 @@ impl DaemonRes {
             DaemonRes::Ok { .. } => None,
             DaemonRes::Value { value, .. } => Some(value),
             DaemonRes::Tracks { tracks, .. } => Some(serde_json::json!({ "tracks": tracks })),
-            DaemonRes::QueueState { tracks, cursor, .. } => Some(serde_json::json!({ "tracks": tracks, "cursor": cursor })),
+            // Spec `queue` `list` action: `{"id":N,"ok":true,"queue":[...],"cursor":0}`.
+            DaemonRes::QueueState { queue, cursor, .. } => {
+                Some(serde_json::json!({ "queue": queue, "cursor": cursor }))
+            }
             DaemonRes::Status { state, .. } => Some(serde_json::json!({ "state": state })),
             DaemonRes::Playlists { playlists, .. } => Some(serde_json::json!({ "playlists": playlists })),
             DaemonRes::YtSearchResults { results, .. } => Some(serde_json::json!({ "results": results })),
@@ -365,12 +588,125 @@ impl DaemonRes {
             DaemonRes::SyncLyricsResult { synced, total, .. } => Some(serde_json::json!({ "synced": synced, "total": total })),
             DaemonRes::HealthReport { report, .. } => Some(serde_json::json!({ "report": report })),
             DaemonRes::EqPresets { presets, .. } => Some(serde_json::json!({ "presets": presets })),
-            DaemonRes::Handshake { daemon, daemon_version, .. } => Some(serde_json::json!({ "daemon": daemon, "daemon_version": daemon_version })),
+            DaemonRes::Handshake { version, daemon, daemon_version } => {
+                Some(serde_json::json!({
+                    "version": version,
+                    "daemon": daemon,
+                    "daemon_version": daemon_version,
+                }))
+            }
             DaemonRes::Error { message, .. } => return WireRes::err(id, message),
             DaemonRes::Pong => None,
         };
 
         WireRes::ok(id, data)
+    }
+
+    /// Reconstruct a typed `DaemonRes` from a parsed `WireRes` keyed by the
+    /// `cmd` string of the request that produced it. The wire format itself
+    /// does not echo `cmd` (`protocol.md` § Wire Format: Responses), so the
+    /// caller tracks the originating `cmd` and supplies it here.
+    pub fn from_wire(cmd: &str, wire: &WireRes) -> Self {
+        match (wire.ok, &wire.error) {
+            (Some(false), Some(msg)) => {
+                DaemonRes::Error { version: PROTOCOL_VERSION, message: msg.clone() }
+            }
+            (Some(false), None) => {
+                DaemonRes::Error { version: PROTOCOL_VERSION, message: "unknown error".into() }
+            }
+            (Some(true), _) => {
+                let data = wire.data.clone().unwrap_or(Value::Null);
+                Self::ok_from_data(cmd, data)
+            }
+            _ => DaemonRes::Error { version: PROTOCOL_VERSION, message: "malformed response".into() },
+        }
+    }
+
+    fn ok_from_data(cmd: &str, data: Value) -> Self {
+        let v = PROTOCOL_VERSION;
+        match cmd {
+            "handshake" => {
+                #[derive(Deserialize)]
+                struct D { version: u32, daemon: String, daemon_version: String }
+                match serde_json::from_value::<D>(data) {
+                    Ok(d) => DaemonRes::Handshake {
+                        version: d.version,
+                        daemon: d.daemon,
+                        daemon_version: d.daemon_version,
+                    },
+                    Err(_) => DaemonRes::Value { version: v, value: data },
+                }
+            }
+            "get_status" => match serde_json::from_value::<Box<DaemonState>>(data.get("state").cloned().unwrap_or(Value::Null)) {
+                Ok(state) => DaemonRes::Status { version: v, state },
+                Err(_) => DaemonRes::Value { version: v, value: data },
+            },
+            "queue" => {
+                let queue = data.get("queue").cloned().unwrap_or(Value::Null);
+                let cursor = data.get("cursor").and_then(|c| c.as_u64()).unwrap_or(0) as u128;
+                match serde_json::from_value::<Vec<TrackInfo>>(queue) {
+                    Ok(queue) => DaemonRes::QueueState { version: v, queue, cursor },
+                    Err(_) => DaemonRes::Value { version: v, value: data },
+                }
+            }
+            "search" | "get_favourites" | "library" => {
+                let tracks = data.get("tracks").cloned().unwrap_or(Value::Null);
+                match serde_json::from_value::<Vec<TrackInfo>>(tracks) {
+                    Ok(tracks) => DaemonRes::Tracks { version: v, tracks },
+                    Err(_) => DaemonRes::Value { version: v, value: data },
+                }
+            }
+            "yt_search_poll" => {
+                let results = data.get("results").cloned().unwrap_or(Value::Null);
+                match serde_json::from_value::<Vec<YTSearchResult>>(results) {
+                    Ok(results) => DaemonRes::YtSearchResults { version: v, results },
+                    Err(_) => DaemonRes::Value { version: v, value: data },
+                }
+            }
+            "yt_resolve_stream" => {
+                let info = data.get("info").cloned().unwrap_or(Value::Null);
+                match serde_json::from_value::<Box<StreamInfo>>(info) {
+                    Ok(info) => DaemonRes::StreamInfo { version: v, info },
+                    Err(_) => DaemonRes::Value { version: v, value: data },
+                }
+            }
+            "get_cover_art" => {
+                let d = data.get("data").cloned().unwrap_or(Value::Null);
+                match serde_json::from_value::<Option<String>>(d) {
+                    Ok(data) => DaemonRes::CoverArt { version: v, data },
+                    Err(_) => DaemonRes::Value { version: v, value: data },
+                }
+            }
+            "get_lyrics" => {
+                let lyrics = data.get("lyrics").cloned().unwrap_or(Value::Null);
+                match serde_json::from_value::<Option<LrcData>>(lyrics) {
+                    Ok(lyrics) => DaemonRes::Lyrics { version: v, lyrics },
+                    Err(_) => DaemonRes::Value { version: v, value: data },
+                }
+            }
+            "check_health" => {
+                let report = data.get("report").cloned().unwrap_or(Value::Null);
+                match serde_json::from_value::<Box<HealthReport>>(report) {
+                    Ok(report) => DaemonRes::HealthReport { version: v, report },
+                    Err(_) => DaemonRes::Value { version: v, value: data },
+                }
+            }
+            "list_eq_presets" => {
+                let presets = data.get("presets").cloned().unwrap_or(Value::Null);
+                match serde_json::from_value::<Vec<String>>(presets) {
+                    Ok(presets) => DaemonRes::EqPresets { version: v, presets },
+                    Err(_) => DaemonRes::Value { version: v, value: data },
+                }
+            }
+            "ping" => DaemonRes::Pong,
+            _ => {
+                if data.is_null() {
+                    DaemonRes::Ok { version: v }
+                } else {
+                    DaemonRes::Value { version: v, value: data }
+                }
+            }
+        }
     }
 }
 
