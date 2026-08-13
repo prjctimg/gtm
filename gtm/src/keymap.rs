@@ -118,6 +118,7 @@ pub enum KeyboardAction {
     CycleFooterPreset,
     CycleProgressStyle,
     ToggleVisualizer,
+    CheckHealth,
     Custom(String),
 }
 
@@ -683,6 +684,15 @@ pub fn default_keybindings() -> Keybindings {
                     action: KeyboardAction::ToggleVisualizer,
                     contexts: vec![KeyContext::Normal],
                     description: "Toggle visualizer",
+                },
+            ),
+            // : (colon) — health check (neovim-style)
+            (
+                KeyCode::Char(':').into(),
+                BoundCommand {
+                    action: KeyboardAction::CheckHealth,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Daemon health check",
                 },
             ),
         ],

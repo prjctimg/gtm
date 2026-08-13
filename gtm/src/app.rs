@@ -200,6 +200,8 @@ pub struct App {
     pub lyrics_fetching: bool,
     last_lyrics_track_id: Option<i64>,
     pub show_lyrics: bool,
+    pub show_health_panel: bool,
+    pub health_report: Option<gtm_core::ipc::HealthReport>,
     pub hide_help_bar: bool,
     pub lyrics_manual_scroll: bool,
     pub lyrics_last_scroll_time: std::time::Instant,
@@ -217,6 +219,7 @@ enum IpcResult {
     YtResults(Vec<YTSearchResult>),
     Notification(String, NotificationKind),
     Error(String),
+    HealthReport(gtm_core::ipc::HealthReport),
 }
 
 #[allow(dead_code)]
@@ -255,6 +258,7 @@ pub enum TuiCommand {
     FetchLyrics,
     SetSleepTimer(u32),
     CancelSleepTimer,
+    CheckHealth,
 }
 
 impl App {
@@ -358,6 +362,8 @@ impl App {
             lyrics_fetching: false,
             last_lyrics_track_id: None,
             show_lyrics: false,
+            show_health_panel: false,
+            health_report: None,
             hide_help_bar: false,
             lyrics_manual_scroll: false,
             lyrics_last_scroll_time: std::time::Instant::now(),
@@ -476,11 +482,11 @@ impl App {
                 self.client.seed_clock_from_state(&self.state).await;
             }
 
-            // Force a state refresh if no events received for 8s while playing
-            // to prevent stale Now Playing tab.  Increased from 5s to tolerate
-            // brief daemon stalls during rapid prev/next.
-            if self.state.status == PlaybackStatus::Playing
-                && self.last_event_time.elapsed() > Duration::from_secs(8)
+            // Force a state refresh if no events received for 8s to prevent
+            // stale state from broadcast lag. Works in all playback states,
+            // not just Playing, to catch lag when paused/stopped too.
+            if self.last_event_time.elapsed() > Duration::from_secs(8)
+                && self.client.is_connected()
             {
                 let c = self.client.clone();
                 let ipc_tx2 = self.ipc_tx.clone();
@@ -602,6 +608,10 @@ impl App {
                         self.current_lyrics = lyrics;
                         self.lyrics_fetching = false;
                         self.lyrics_scroll = 0;
+                    }
+                    IpcResult::HealthReport(report) => {
+                        self.health_report = Some(report);
+                        self.show_health_panel = true;
                     }
                 }
             }
@@ -1189,6 +1199,20 @@ impl App {
                     }
                 });
             }
+            TuiCommand::CheckHealth => {
+                let client = self.client.clone();
+                let ipc_tx = self.ipc_tx.clone();
+                tokio::spawn(async move {
+                    match client.check_health().await {
+                        Ok(report) => {
+                            let _ = ipc_tx.send(IpcResult::HealthReport(report));
+                        }
+                        Err(e) => {
+                            let _ = ipc_tx.send(IpcResult::Error(e.to_string()));
+                        }
+                    }
+                });
+            }
         };
     }
 
@@ -1382,6 +1406,13 @@ impl App {
                         _ => {}
                     }
                     return true;
+                }
+                // Health panel: Esc closes it
+                if self.show_health_panel {
+                    if key.code == KeyCode::Esc {
+                        self.show_health_panel = false;
+                        return true;
+                    }
                 }
                 // Handle gg (vim-style double-press) for jump to start
                 if key.code == KeyCode::Char('g') {
@@ -1582,6 +1613,9 @@ impl App {
                         self.visualizer.toggle();
                         let state = if self.visualizer.is_enabled() { "ON" } else { "OFF" };
                         self.notify(&format!("Visualizer: {}", state), NotificationKind::Info);
+                    }
+                    Some(KeyboardAction::CheckHealth) => {
+                        self.send_high(TuiCommand::CheckHealth);
                     }
                     Some(KeyboardAction::FocusLeft) => {
                         match self.current_tab {

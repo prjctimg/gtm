@@ -250,3 +250,75 @@ pub enum Tab {
     Library,
     Settings,
 }
+
+/// Persistent daemon state saved to disk across restarts.
+///
+/// Only contains user preferences and queue data — ephemeral session
+/// state (status, current_track, time_pos, duration, sleep_timer) is
+/// not persisted.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SavedState {
+    pub queue: Vec<TrackInfo>,
+    pub queue_cursor: u128,
+    pub volume: u8,
+    pub repeat: RepeatMode,
+    pub shuffle: bool,
+    pub mute: bool,
+    pub crossfade: Option<CrossfadeConfig>,
+    pub eq_preset: EqPreset,
+    pub eq_enabled: bool,
+    pub reverb: ReverbConfig,
+}
+
+impl SavedState {
+    /// Capture persistent state from a `DaemonState`.
+    pub fn from_state(state: &DaemonState) -> Self {
+        Self {
+            queue: state.queue.clone(),
+            queue_cursor: state.queue_cursor,
+            volume: state.volume,
+            repeat: state.repeat,
+            shuffle: state.shuffle,
+            mute: state.mute,
+            crossfade: state.crossfade.clone(),
+            eq_preset: state.eq_preset,
+            eq_enabled: state.eq_enabled,
+            reverb: state.reverb.clone(),
+        }
+    }
+
+    /// Apply this saved state to a `DaemonState`, restoring persisted fields.
+    pub fn apply_to(&self, state: &mut DaemonState) {
+        state.queue = self.queue.clone();
+        state.queue_cursor = self.queue_cursor;
+        state.volume = self.volume;
+        state.repeat = self.repeat;
+        state.shuffle = self.shuffle;
+        state.mute = self.mute;
+        state.crossfade = self.crossfade.clone();
+        state.eq_preset = self.eq_preset;
+        state.eq_enabled = self.eq_enabled;
+        state.reverb = self.reverb.clone();
+    }
+
+    /// Save to a JSON file. Creates parent directories if needed.
+    /// Writes atomically via a temp file + rename.
+    pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = path.with_extension("json.tmp");
+        let json = serde_json::to_string_pretty(self)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        std::fs::write(&tmp, json)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    /// Load from a JSON file. Returns `None` if the file doesn't exist
+    /// or is corrupted.
+    pub fn load(path: &std::path::Path) -> Option<Self> {
+        let data = std::fs::read_to_string(path).ok()?;
+        serde_json::from_str(&data).ok()
+    }
+}

@@ -205,6 +205,11 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
     if app.pickers.is_open() {
         render_picker(f, area, app);
     }
+
+    // Health check panel overlay
+    if app.show_health_panel {
+        render_health_panel(f, area, app);
+    }
 }
 
 fn render_notifications(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -2749,4 +2754,80 @@ fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let help_text =
         " [j/k] Navigate fields  [Tab] Next  [Enter] Next/Save  [Ctrl+Enter] Save  [Esc] Cancel";
     picker_help(f, chunks[1], help_text, app);
+}
+
+fn render_health_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    use ratatui::widgets::{Block, Borders, Clear};
+
+    let panel_width = area.width.min(60);
+    let panel_height = area.height.min(20);
+    let x = (area.width.saturating_sub(panel_width)) / 2;
+    let y = (area.height.saturating_sub(panel_height)) / 2;
+    let rect = Rect::new(area.x + x, area.y + y, panel_width, panel_height);
+
+    f.render_widget(Clear, rect);
+
+    let block = Block::default()
+        .title(" Health Check ")
+        .borders(Borders::ALL)
+        .style(Style::default().fg(app.theme.fg).bg(app.theme.bg));
+
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    if let Some(ref report) = app.health_report {
+        let mut lines = Vec::new();
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("Daemon v{}", report.version),
+                Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  uptime {:.0}s", report.daemon_uptime_secs),
+                Style::default().fg(app.theme.fg_dim),
+            ),
+        ]));
+        lines.push(Line::from(""));
+
+        for c in &report.components {
+            let (icon, color) = match c.status {
+                gtm_core::ipc::HealthStatus::Ok => ("✓", app.theme.success),
+                gtm_core::ipc::HealthStatus::Degraded => ("⚠", app.theme.warning),
+                gtm_core::ipc::HealthStatus::Error => ("✗", app.theme.error),
+            };
+            let mut spans = vec![
+                Span::styled(format!(" {icon} "), Style::default().fg(color)),
+                Span::styled(
+                    c.name.clone(),
+                    Style::default()
+                        .fg(app.theme.fg_bright)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ];
+            if let Some(ref msg) = c.message {
+                spans.push(Span::styled(
+                    format!(" — {msg}"),
+                    Style::default().fg(app.theme.fg_dim),
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+
+        let para = Paragraph::new(lines).scroll((0, 0));
+        f.render_widget(para, inner);
+    } else {
+        let loading = Paragraph::new(" Loading...")
+            .style(Style::default().fg(app.theme.fg_dim));
+        f.render_widget(loading, inner);
+    }
+
+    let help = Paragraph::new(" [Esc] Close")
+        .style(Style::default().fg(app.theme.fg_dim));
+    let help_area = Rect::new(
+        rect.x,
+        rect.y + rect.height.saturating_sub(1),
+        rect.width,
+        1,
+    );
+    f.render_widget(help, help_area);
 }

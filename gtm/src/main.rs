@@ -104,6 +104,7 @@ enum CliCommand {
     YtResolve { url: String },
     Search { query: String },
     Status,
+    CheckHealth,
     Ping,
     Quit,
 }

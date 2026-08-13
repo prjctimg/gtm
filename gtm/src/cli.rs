@@ -327,6 +327,34 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
                 client.ping().await.map_err(|e| e.to_string())?;
                 Ok("pong".into())
             }
+            CliCommand::CheckHealth => {
+                let report = client.check_health().await.map_err(|e| e.to_string())?;
+                if json {
+                    serde_json::to_string_pretty(&report).map_err(|e| e.to_string())
+                } else {
+                    let mut out = format!(
+                        "\x1b[1mGTM Health Report\x1b[0m (v{})\n\
+                         Daemon uptime: {:.0}s\n",
+                        report.version, report.daemon_uptime_secs
+                    );
+                    for c in &report.components {
+                        let icon = match c.status {
+                            gtm_core::ipc::HealthStatus::Ok => "\x1b[32m✓\x1b[0m",
+                            gtm_core::ipc::HealthStatus::Degraded => "\x1b[33m⚠\x1b[0m",
+                            gtm_core::ipc::HealthStatus::Error => "\x1b[31m✗\x1b[0m",
+                        };
+                        out += &format!("  {icon} \x1b[1m{}\x1b[0m", c.name);
+                        if let Some(ref msg) = c.message {
+                            out += &format!(" — {msg}");
+                        }
+                        if let Some(uptime) = c.uptime_secs {
+                            out += &format!(" (uptime {:.0}s)", uptime);
+                        }
+                        out += "\n";
+                    }
+                    Ok(out)
+                }
+            }
             CliCommand::Quit => client
                 .quit()
                 .await

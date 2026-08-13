@@ -535,6 +535,15 @@ impl DaemonClient {
             _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
         }
     }
+
+    pub async fn check_health(&self) -> Result<crate::ipc::HealthReport> {
+        let res = self.send_raw(DaemonReq::CheckHealth).await?;
+        match res {
+            DaemonRes::HealthReport { report, .. } => Ok(*report),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+        }
+    }
 }
 
 struct IpcWorker {

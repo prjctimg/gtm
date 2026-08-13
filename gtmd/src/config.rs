@@ -30,6 +30,7 @@ pub struct DaemonConfig {
     pub config_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub data_dir: PathBuf,
+    pub state_file: PathBuf,
     pub library_paths: Vec<PathBuf>,
     pub log_file: Option<PathBuf>,
     pub verbose: bool,
@@ -138,6 +139,8 @@ impl DaemonConfig {
         // Termux: also scan shared storage (/sdcard/Music)
         library_paths.extend(gtm_core::termux_music_dirs());
 
+        let state_file = data_dir.join("state.json");
+
         DaemonConfig {
             socket_path,
             socket_pulse_path,
@@ -145,6 +148,7 @@ impl DaemonConfig {
             config_dir,
             cache_dir,
             data_dir,
+            state_file,
             library_paths,
             log_file,
             verbose: args.verbose,

@@ -260,6 +260,7 @@ pub enum DaemonReq {
 
     // ─── System ───
     GetStatus,
+    CheckHealth,
     Ping,
     Quit,
 }
@@ -318,6 +319,10 @@ pub enum DaemonRes {
         total: usize,
     },
     Pong,
+    HealthReport {
+        version: u32,
+        report: Box<HealthReport>,
+    },
     Error {
         version: u32,
         message: String,
@@ -340,4 +345,29 @@ pub struct WireRes {
     pub id: u64,
     #[serde(flatten)]
     pub res: DaemonRes,
+}
+
+/// Health status of a daemon component.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ComponentHealth {
+    pub name: String,
+    pub status: HealthStatus,
+    pub message: Option<String>,
+    pub uptime_secs: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HealthStatus {
+    Ok,
+    Degraded,
+    Error,
+}
+
+/// Diagnostic report from the daemon, similar to Neovim's `:checkhealth`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HealthReport {
+    pub daemon_uptime_secs: f64,
+    pub version: String,
+    pub components: Vec<ComponentHealth>,
 }
