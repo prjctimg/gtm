@@ -76,6 +76,15 @@ pub enum LibraryAction {
     },
     SyncCovers,
     SyncLyrics,
+    /// Enrich unreliable track metadata via Deezer and embed tags into the
+    /// files. With `path` given only that track is processed; otherwise all
+    /// library tracks whose metadata is "unreliable" (title equals the raw
+    /// filename stem, or artist/album missing).
+    SyncMetadata {
+        path: Option<String>,
+    },
+    /// Read the progress of the currently running library sync, if any.
+    SyncStatus,
     RemoveFromPlaylist {
         playlist_id: i64,
         track_id: i64,
@@ -98,6 +107,15 @@ pub struct MetadataPatch {
     pub genre: Option<String>,
     pub year: Option<i32>,
     pub track_number: Option<i32>,
+}
+
+/// Which library sync operation is (or was last) running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncKind {
+    Covers,
+    Lyrics,
+    Metadata,
 }
 
 /// Wire request: client -> daemon.
@@ -876,6 +894,7 @@ pub enum DaemonRes {
         playlists: Vec<Playlist>,
     },
     YtSearchResults {
+        query: String,
         results: Vec<YTSearchResult>,
     },
     StreamInfo {
@@ -896,11 +915,9 @@ pub enum DaemonRes {
     CoverArt {
         data: Option<String>,
     },
-    SyncCoversResult {
-        synced: usize,
-        total: usize,
-    },
-    SyncLyricsResult {
+    SyncStatus {
+        running: bool,
+        kind: SyncKind,
         synced: usize,
         total: usize,
     },
@@ -935,8 +952,8 @@ impl DaemonRes {
             DaemonRes::Playlists { playlists } => {
                 Some(serde_json::json!({ "playlists": playlists }))
             }
-            DaemonRes::YtSearchResults { results } => {
-                Some(serde_json::json!({ "results": results }))
+            DaemonRes::YtSearchResults { query, results } => {
+                Some(serde_json::json!({ "query": query, "results": results }))
             }
             DaemonRes::StreamInfo { info } => Some(serde_json::json!({ "info": info })),
             DaemonRes::Lyrics { lyrics } => Some(serde_json::json!({ "lyrics": lyrics })),
@@ -946,12 +963,17 @@ impl DaemonRes {
             }
             DaemonRes::SpotifyTracksRes { tracks } => Some(serde_json::json!({ "tracks": tracks })),
             DaemonRes::CoverArt { data } => Some(serde_json::json!({ "data": data })),
-            DaemonRes::SyncCoversResult { synced, total } => {
-                Some(serde_json::json!({ "synced": synced, "total": total }))
-            }
-            DaemonRes::SyncLyricsResult { synced, total } => {
-                Some(serde_json::json!({ "synced": synced, "total": total }))
-            }
+            DaemonRes::SyncStatus {
+                running,
+                kind,
+                synced,
+                total,
+            } => Some(serde_json::json!({
+                "running": running,
+                "kind": kind,
+                "synced": synced,
+                "total": total,
+            })),
             DaemonRes::HealthReport { report } => Some(serde_json::json!({ "report": report })),
             DaemonRes::EqPresets { presets } => Some(serde_json::json!({ "presets": presets })),
             DaemonRes::Handshake {
@@ -1036,17 +1058,48 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "search" | "get_favourites" | "library" => {
+            "search" | "get_favourites" => {
                 let tracks = data.get("tracks").cloned().unwrap_or(Value::Null);
                 match serde_json::from_value::<Vec<TrackInfo>>(tracks) {
                     Ok(tracks) => DaemonRes::Tracks { tracks },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
+            "library" => {
+                if data.get("running").is_some() {
+                    #[derive(Deserialize)]
+                    struct D {
+                        running: bool,
+                        kind: SyncKind,
+                        synced: usize,
+                        total: usize,
+                    }
+                    match serde_json::from_value::<D>(data.clone()) {
+                        Ok(d) => DaemonRes::SyncStatus {
+                            running: d.running,
+                            kind: d.kind,
+                            synced: d.synced,
+                            total: d.total,
+                        },
+                        Err(_) => DaemonRes::Value { value: data },
+                    }
+                } else {
+                    let tracks = data.get("tracks").cloned().unwrap_or(Value::Null);
+                    match serde_json::from_value::<Vec<TrackInfo>>(tracks) {
+                        Ok(tracks) => DaemonRes::Tracks { tracks },
+                        Err(_) => DaemonRes::Value { value: data },
+                    }
+                }
+            }
             "yt_search_poll" => {
+                let query = data
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let results = data.get("results").cloned().unwrap_or(Value::Null);
                 match serde_json::from_value::<Vec<YTSearchResult>>(results) {
-                    Ok(results) => DaemonRes::YtSearchResults { results },
+                    Ok(results) => DaemonRes::YtSearchResults { query, results },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }

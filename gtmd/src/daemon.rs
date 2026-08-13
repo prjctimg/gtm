@@ -52,8 +52,8 @@
 //! ```
 
 use std::collections::HashMap;
-use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -69,7 +69,9 @@ use crate::config::AudioBackendKind;
 #[cfg(feature = "pulseaudio")]
 use gtm_audio::PulseAudioMixer;
 use gtm_audio::{AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
-use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, QueueAction, WireReq, PROTOCOL_VERSION};
+use gtm_core::ipc::{
+    DaemonEvent, DaemonReq, DaemonRes, QueueAction, SyncKind, WireReq, PROTOCOL_VERSION,
+};
 use gtm_core::state::{
     DaemonState, EqPreset, PlaybackStatus, RepeatMode, ReverbConfig, SavedState,
 };
@@ -92,7 +94,6 @@ type ReplyTx = mpsc::UnboundedSender<(u64, DaemonRes)>;
 /// back through playback history.
 const RESTART_THRESHOLD_SECS: f64 = 3.0;
 
-use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 
 /// Tracks daemon component health for diagnostic reports.
@@ -137,6 +138,27 @@ enum HistoryEntry {
     Default { index: usize, track: TrackInfo },
 }
 
+/// Shared progress of a background library sync (covers/lyrics/metadata).
+/// Atomically updated from blocking sync threads and read by the IPC
+/// `SyncStatus` handler without ever holding `cmd_lock` across the sync.
+struct SyncProgress {
+    running: AtomicBool,
+    kind: std::sync::Mutex<SyncKind>,
+    synced: AtomicUsize,
+    total: AtomicUsize,
+}
+
+impl Default for SyncProgress {
+    fn default() -> Self {
+        Self {
+            running: AtomicBool::new(false),
+            kind: std::sync::Mutex::new(SyncKind::Covers),
+            synced: AtomicUsize::new(0),
+            total: AtomicUsize::new(0),
+        }
+    }
+}
+
 struct DaemonInner {
     state: Arc<RwLock<DaemonState>>,
     mixer: tokio::sync::Mutex<Box<dyn Mixer>>,
@@ -161,6 +183,8 @@ struct DaemonInner {
     cmd_lock: tokio::sync::Mutex<()>,
     /// Playback history for Prev back-traversal (guarded by cmd_lock in use).
     play_history: tokio::sync::Mutex<Vec<HistoryEntry>>,
+    /// Progress of any background library sync (covers/lyrics/metadata).
+    sync_progress: Arc<SyncProgress>,
 }
 
 pub struct Daemon {
@@ -261,6 +285,7 @@ impl Daemon {
             internal_req_tx,
             cmd_lock: tokio::sync::Mutex::new(()),
             play_history: tokio::sync::Mutex::new(Vec::new()),
+            sync_progress: Arc::new(SyncProgress::default()),
         });
 
         Ok(Self {
@@ -2305,108 +2330,15 @@ impl Daemon {
                 }
             }
             gtm_core::ipc::LibraryAction::SyncCovers => {
-                let data_dir = inner.config.data_dir.clone();
-                let cache_dir = inner.config.cache_dir.clone();
-                // Spawn blocking so the daemon event loop isn't starved.
-                // Uses fresh Library + CoverCache to avoid connection issues.
-                let result = tokio::task::spawn_blocking(move || {
-                    let lib = Library::new(data_dir.to_str().unwrap_or(""))
-                        .map_err(|e| format!("open library: {e}"))?;
-                    let tracks = lib.list_tracks().map_err(|e| format!("list tracks: {e}"))?;
-                    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("runtime: {e}"))?;
-                    let mut cache = crate::cover_art::CoverCache::new(cache_dir.clone());
-                    let mut synced = 0usize;
-                    for track in &tracks {
-                        let missing_cover = track.cover_path.is_none()
-                            || track
-                                .cover_path
-                                .as_ref()
-                                .is_none_or(|p| !std::path::Path::new(p).exists());
-                        if !missing_cover {
-                            continue;
-                        }
-                        let artist = if track.artist.is_empty() {
-                            "Unknown Artist"
-                        } else {
-                            &track.artist
-                        };
-                        let album = if track.album.is_empty() {
-                            "Unknown Album"
-                        } else {
-                            &track.album
-                        };
-                        if rt.block_on(cache.get_cover(artist, album)).is_some() {
-                            let key = crate::cover_art::CoverCache::cache_key(artist, album);
-                            let cover_file = cache_dir.join("covers").join(format!("{key}.jpg"));
-                            if cover_file.exists() {
-                                let path_str = cover_file.to_string_lossy().to_string();
-                                let _ = lib.update_cover_path(track.id, &path_str);
-                            }
-                            synced += 1;
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(50));
-                    }
-                    Ok::<(usize, usize), String>((synced, tracks.len()))
-                })
-                .await
-                .map_err(|e| CoreError::Daemon(e.to_string()))?;
-                match result {
-                    Ok((synced, total)) => DaemonRes::SyncCoversResult { synced, total },
-                    Err(e) => DaemonRes::Error { message: e },
-                }
+                Self::cmd_sync_start(inner, SyncKind::Covers, None).await?
             }
             gtm_core::ipc::LibraryAction::SyncLyrics => {
-                let lyrics_manager = inner.lyrics_manager.clone();
-                let data_dir = inner.config.data_dir.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    let lib = Library::new(data_dir.to_str().unwrap_or(""))
-                        .map_err(|e| format!("open library: {e}"))?;
-                    let tracks = lib.list_tracks().map_err(|e| format!("list tracks: {e}"))?;
-                    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("runtime: {e}"))?;
-                    let manager = lyrics_manager.ok_or("lyrics manager not available")?;
-                    let mut synced = 0usize;
-                    let total = tracks.len();
-                    for track in &tracks {
-                        let lrc_path = std::path::Path::new(&track.path).with_extension("lrc");
-                        if lrc_path.exists() {
-                            continue;
-                        }
-                        if let Some(lyrics) = rt.block_on(manager.get_lyrics(track)) {
-                            if !lyrics.lines.is_empty() {
-                                let mut lrc_content = String::new();
-                                if let Some(ref ar) = lyrics.artist {
-                                    lrc_content.push_str(&format!("[ar:{}]\n", ar));
-                                }
-                                if let Some(ref al) = lyrics.album {
-                                    lrc_content.push_str(&format!("[al:{}]\n", al));
-                                }
-                                if let Some(ref ti) = lyrics.title {
-                                    lrc_content.push_str(&format!("[ti:{}]\n", ti));
-                                }
-                                for line in &lyrics.lines {
-                                    let mins = (line.timestamp / 60.0) as u64;
-                                    let secs = line.timestamp - (mins as f64 * 60.0);
-                                    lrc_content.push_str(&format!(
-                                        "[{:02}:{:05.2}]{}\n",
-                                        mins, secs, line.text
-                                    ));
-                                }
-                                if std::fs::write(&lrc_path, &lrc_content).is_ok() {
-                                    synced += 1;
-                                }
-                            }
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                    }
-                    Ok::<(usize, usize), String>((synced, total))
-                })
-                .await
-                .map_err(|e| CoreError::Daemon(e.to_string()))?;
-                match result {
-                    Ok((synced, total)) => DaemonRes::SyncLyricsResult { synced, total },
-                    Err(e) => DaemonRes::Error { message: e },
-                }
+                Self::cmd_sync_start(inner, SyncKind::Lyrics, None).await?
             }
+            gtm_core::ipc::LibraryAction::SyncMetadata { path } => {
+                Self::cmd_sync_start(inner, SyncKind::Metadata, path.clone()).await?
+            }
+            gtm_core::ipc::LibraryAction::SyncStatus => Self::cmd_sync_status(inner).await?,
             gtm_core::ipc::LibraryAction::ExportM3u { playlist_id, path } => {
                 let playlist_id = *playlist_id;
                 let export_path = path.clone();
@@ -2471,6 +2403,73 @@ impl Daemon {
             }
         };
         Ok(res)
+    }
+
+    /// Kick off a background library sync (covers/lyrics/metadata). Returns
+    /// immediately so the client's short response timeout is never hit and
+    /// `cmd_lock` is not held across the long-running sync. Progress is
+    /// reported via [`Self::cmd_sync_status`] and a `sync_done` event.
+    async fn cmd_sync_start(
+        inner: &DaemonInner,
+        kind: SyncKind,
+        only_path: Option<String>,
+    ) -> Result<DaemonRes, CoreError> {
+        if inner.sync_progress.running.load(Ordering::Acquire) {
+            return Ok(DaemonRes::Error {
+                message: "a library sync is already running".into(),
+            });
+        }
+        *inner.sync_progress.kind.lock().unwrap() = kind;
+        inner.sync_progress.synced.store(0, Ordering::Relaxed);
+        inner.sync_progress.total.store(0, Ordering::Relaxed);
+        inner.sync_progress.running.store(true, Ordering::Release);
+
+        let data_dir = inner.config.data_dir.clone();
+        let cache_dir = inner.config.cache_dir.clone();
+        let lyrics_manager = inner.lyrics_manager.clone();
+        let progress = inner.sync_progress.clone();
+        let event_tx = inner.event_tx.clone();
+        tokio::spawn(async move {
+            let progress_inner = progress.clone();
+            let result = tokio::task::spawn_blocking(move || match kind {
+                SyncKind::Covers => run_covers_sync(data_dir, cache_dir, &progress_inner),
+                SyncKind::Lyrics => run_lyrics_sync(data_dir, lyrics_manager, &progress_inner),
+                SyncKind::Metadata => {
+                    run_metadata_sync(data_dir, cache_dir, only_path, &progress_inner)
+                }
+            })
+            .await;
+            let (synced, total, error) = match result {
+                Ok(Ok((s, t))) => (s, t, None),
+                Ok(Err(e)) => (0, 0, Some(e)),
+                Err(e) => (0, 0, Some(e.to_string())),
+            };
+            progress.synced.store(synced, Ordering::Relaxed);
+            progress.total.store(total, Ordering::Relaxed);
+            progress.running.store(false, Ordering::Release);
+            let mut data = std::collections::HashMap::new();
+            data.insert("kind".to_string(), format!("{kind:?}").to_lowercase());
+            data.insert("synced".to_string(), synced.to_string());
+            data.insert("total".to_string(), total.to_string());
+            if let Some(e) = error {
+                data.insert("error".to_string(), e);
+            }
+            let _ = event_tx.send(DaemonEvent::Custom {
+                name: "sync_done".into(),
+                data,
+            });
+        });
+        Ok(DaemonRes::Ok)
+    }
+
+    async fn cmd_sync_status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let progress = &inner.sync_progress;
+        Ok(DaemonRes::SyncStatus {
+            running: progress.running.load(Ordering::Acquire),
+            kind: *progress.kind.lock().unwrap(),
+            synced: progress.synced.load(Ordering::Relaxed),
+            total: progress.total.load(Ordering::Relaxed),
+        })
     }
 
     async fn cmd_search(inner: &DaemonInner, query: &str) -> Result<DaemonRes, CoreError> {
@@ -2539,27 +2538,25 @@ impl Daemon {
         filter: Option<gtm_core::state::YTFilter>,
     ) -> Result<DaemonRes, CoreError> {
         inner.health.yt_search_count.fetch_add(1, Ordering::Relaxed);
-        // Run the yt-dlp search on a background task so the IPC request returns
-        // immediately instead of blocking the client's 5s response timeout.
-        // Results are picked up via `cmd_yt_search_poll` once the task finishes.
-        let yt = inner.youtube.clone();
-        let health = inner.health.clone();
-        let query = query.to_string();
-        tokio::spawn(async move {
-            let mut guard = yt.lock().await;
-            if let Err(e) = guard.search(&query, filter).await {
-                health.yt_search_errors.fetch_add(1, Ordering::Relaxed);
-                warn!("yt search failed: {e}");
-            }
-        });
+        // Fire-and-forget: the manager cancels any in-flight yt-dlp search and
+        // starts a new one immediately, so the request returns before the
+        // client's short response timeout. Results are picked up via
+        // `cmd_yt_search_poll`, which echoes the query they belong to.
+        inner.youtube.lock().await.start_search(query, filter);
         Ok(DaemonRes::Ok)
     }
 
     async fn cmd_yt_search_poll(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         match inner.youtube.lock().await.poll_results().await {
-            Ok(Some(results)) => Ok(DaemonRes::YtSearchResults { results }),
+            Ok(Some((query, results))) => Ok(DaemonRes::YtSearchResults { query, results }),
             Ok(None) => Ok(DaemonRes::Ok),
-            Err(e) => Ok(DaemonRes::Error { message: e }),
+            Err(e) => {
+                inner
+                    .health
+                    .yt_search_errors
+                    .fetch_add(1, Ordering::Relaxed);
+                Ok(DaemonRes::Error { message: e })
+            }
         }
     }
 
@@ -2770,7 +2767,7 @@ impl Daemon {
             let state = inner.state.read().await;
             state.current_track.as_ref().and_then(|t| {
                 let id_matches = t.id == track_id;
-                let path_matches = path.as_deref().map_or(false, |p| t.path == p);
+                let path_matches = path.as_deref().is_some_and(|p| t.path == p);
                 if id_matches || path_matches {
                     Some(t.clone())
                 } else {
@@ -2937,7 +2934,7 @@ impl Daemon {
             return Ok(DaemonRes::Error { message: e });
         }
         let top = match yt.poll_results().await {
-            Ok(Some(mut results)) if !results.is_empty() => results.remove(0),
+            Ok(Some((_, mut results))) if !results.is_empty() => results.remove(0),
             _ => {
                 return Ok(DaemonRes::Error {
                     message: "no youtube results for track".into(),
@@ -3025,4 +3022,243 @@ impl Daemon {
         }
         Err("download produced no file".into())
     }
+}
+
+/// Derive the artist/title pair to query Deezer with for a library track.
+///
+/// Falls back to cleaning the filename stem when the stored metadata is empty,
+/// still equals the raw stem, or otherwise looks like an unparsed filename
+/// (e.g. yt-dlp underscore names that survived an older scan).
+fn metadata_query_for(track: &TrackInfo) -> (String, String) {
+    let stem = Path::new(&track.path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let (cleaned_artist, cleaned_title) = crate::metadata_cleaner::clean_filename_stem(stem);
+    let title_unreliable = crate::metadata_cleaner::is_filename_like(stem, &track.title);
+    let query_artist = if track.artist.is_empty() {
+        cleaned_artist.unwrap_or_default()
+    } else {
+        track.artist.clone()
+    };
+    let query_title = if title_unreliable {
+        cleaned_title
+    } else {
+        track.title.clone()
+    };
+    (query_artist, query_title)
+}
+
+/// Background sync: fetch cover art for tracks missing it. Runs on a blocking
+/// thread so the daemon event loop stays responsive; progress is mirrored into
+/// `progress` for the `SyncStatus` poll.
+fn run_covers_sync(
+    data_dir: PathBuf,
+    cache_dir: PathBuf,
+    progress: &SyncProgress,
+) -> Result<(usize, usize), String> {
+    let lib =
+        Library::new(data_dir.to_str().unwrap_or("")).map_err(|e| format!("open library: {e}"))?;
+    let tracks = lib.list_tracks().map_err(|e| format!("list tracks: {e}"))?;
+    let total = tracks.len();
+    progress.total.store(total, Ordering::Relaxed);
+    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("runtime: {e}"))?;
+    let mut cache = crate::cover_art::CoverCache::new(cache_dir.clone());
+    let mut synced = 0usize;
+    for track in &tracks {
+        let missing_cover = track.cover_path.is_none()
+            || track
+                .cover_path
+                .as_ref()
+                .is_none_or(|p| !std::path::Path::new(p).exists());
+        if !missing_cover {
+            continue;
+        }
+        let artist = if track.artist.is_empty() {
+            "Unknown Artist"
+        } else {
+            &track.artist
+        };
+        let album = if track.album.is_empty() {
+            "Unknown Album"
+        } else {
+            &track.album
+        };
+        if rt.block_on(cache.get_cover(artist, album)).is_some() {
+            let key = crate::cover_art::CoverCache::cache_key(artist, album);
+            let cover_file = cache_dir.join("covers").join(format!("{key}.jpg"));
+            if cover_file.exists() {
+                let path_str = cover_file.to_string_lossy().to_string();
+                let _ = lib.update_cover_path(track.id, &path_str);
+            }
+            synced += 1;
+            progress.synced.store(synced, Ordering::Relaxed);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Ok((synced, total))
+}
+
+/// Background sync: write `.lrc` sidecars for tracks without one.
+fn run_lyrics_sync(
+    data_dir: PathBuf,
+    lyrics_manager: Option<LyricsManager>,
+    progress: &SyncProgress,
+) -> Result<(usize, usize), String> {
+    let lib =
+        Library::new(data_dir.to_str().unwrap_or("")).map_err(|e| format!("open library: {e}"))?;
+    let tracks = lib.list_tracks().map_err(|e| format!("list tracks: {e}"))?;
+    let total = tracks.len();
+    progress.total.store(total, Ordering::Relaxed);
+    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("runtime: {e}"))?;
+    let manager = lyrics_manager.ok_or("lyrics manager not available")?;
+    let mut synced = 0usize;
+    for track in &tracks {
+        let lrc_path = std::path::Path::new(&track.path).with_extension("lrc");
+        if lrc_path.exists() {
+            continue;
+        }
+        if let Some(lyrics) = rt.block_on(manager.get_lyrics(track)) {
+            if !lyrics.lines.is_empty() {
+                let mut lrc_content = String::new();
+                if let Some(ref ar) = lyrics.artist {
+                    lrc_content.push_str(&format!("[ar:{}]\n", ar));
+                }
+                if let Some(ref al) = lyrics.album {
+                    lrc_content.push_str(&format!("[al:{}]\n", al));
+                }
+                if let Some(ref ti) = lyrics.title {
+                    lrc_content.push_str(&format!("[ti:{}]\n", ti));
+                }
+                for line in &lyrics.lines {
+                    let mins = (line.timestamp / 60.0) as u64;
+                    let secs = line.timestamp - (mins as f64 * 60.0);
+                    lrc_content.push_str(&format!("[{:02}:{:05.2}]{}\n", mins, secs, line.text));
+                }
+                if std::fs::write(&lrc_path, &lrc_content).is_ok() {
+                    synced += 1;
+                    progress.synced.store(synced, Ordering::Relaxed);
+                }
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Ok((synced, total))
+}
+
+/// Background sync: enrich unreliable track metadata via Deezer and embed tags
+/// into the files. Tracks with no verified match fall back to the cleaned
+/// filename stem so the library never displays a raw yt-dlp filename.
+fn run_metadata_sync(
+    data_dir: PathBuf,
+    cache_dir: PathBuf,
+    only_path: Option<String>,
+    progress: &SyncProgress,
+) -> Result<(usize, usize), String> {
+    let lib =
+        Library::new(data_dir.to_str().unwrap_or("")).map_err(|e| format!("open library: {e}"))?;
+    let tracks = lib.list_tracks().map_err(|e| format!("list tracks: {e}"))?;
+    let total = tracks.len();
+    progress.total.store(total, Ordering::Relaxed);
+    let rt = tokio::runtime::Runtime::new().map_err(|e| format!("runtime: {e}"))?;
+    let deezer = crate::deezer::DeezerSearch::new();
+    let mut synced = 0usize;
+    for track in &tracks {
+        let stem = Path::new(&track.path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        if let Some(ref only) = only_path {
+            if track.path != *only {
+                continue;
+            }
+        } else if !crate::metadata_cleaner::title_is_unreliable(
+            stem,
+            &track.title,
+            &track.artist,
+            &track.album,
+        ) {
+            continue;
+        }
+
+        let (q_artist, q_title) = metadata_query_for(track);
+        let hit = match rt.block_on(deezer.search(&q_artist, &q_title, track.duration)) {
+            Ok(Some(hit)) => Some(hit),
+            Ok(None) => None,
+            Err(e) => {
+                warn!("metadata sync failed for {}: {e}", track.path);
+                None
+            }
+        };
+
+        if let Some(hit) = hit {
+            let cover = if let Some(ref url) = hit.cover_url {
+                rt.block_on(deezer.download_cover(url))
+            } else {
+                None
+            };
+            let cover_mime = cover.as_ref().map(|_| "image/jpeg".to_string());
+            let meta = crate::tags::MetadataToWrite {
+                title: hit.title.clone(),
+                artist: hit.artist.clone(),
+                album: hit.album.clone(),
+                genre: hit.genre.clone(),
+                year: hit.year,
+                track_number: hit.track_number,
+            };
+            if crate::tags::write_tags(&track.path, &meta, cover.clone().zip(cover_mime)).is_err() {
+                continue;
+            }
+            if let Some(bytes) = &cover {
+                let key = CoverCache::cache_key(&hit.artist, &hit.album);
+                let cover_file = cache_dir.join("covers").join(format!("{key}.jpg"));
+                if let Some(parent) = cover_file.parent() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+                if std::fs::write(&cover_file, bytes).is_ok() {
+                    let _ = lib.update_cover_path(track.id, &cover_file.to_string_lossy());
+                }
+            }
+            if let Err(e) = lib.update_metadata(
+                track.id,
+                &gtm_core::MetadataPatch {
+                    title: Some(hit.title),
+                    artist: Some(hit.artist),
+                    album: Some(hit.album),
+                    genre: hit.genre,
+                    year: hit.year,
+                    track_number: hit.track_number,
+                },
+            ) {
+                warn!("metadata sync: failed to update DB for {}: {e}", track.path);
+            }
+            synced += 1;
+        } else {
+            // No verified Deezer match: fall back to the cleaned filename stem
+            // so the library shows a real title/artist instead of the raw name.
+            let (cleaned_artist, cleaned_title) =
+                crate::metadata_cleaner::clean_filename_stem(stem);
+            if !cleaned_title.is_empty() || cleaned_artist.is_some() {
+                let patch = gtm_core::MetadataPatch {
+                    title: (!cleaned_title.is_empty())
+                        .then(|| crate::metadata_cleaner::sanitize_text(&cleaned_title)),
+                    artist: cleaned_artist.map(|a| crate::metadata_cleaner::sanitize_text(&a)),
+                    ..Default::default()
+                };
+                if patch.title.is_some() || patch.artist.is_some() {
+                    if let Err(e) = lib.update_metadata(track.id, &patch) {
+                        warn!(
+                            "metadata sync: failed to write fallback for {}: {e}",
+                            track.path
+                        );
+                    } else {
+                        synced += 1;
+                    }
+                }
+            }
+        }
+        progress.synced.store(synced, Ordering::Relaxed);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    Ok((synced, total))
 }

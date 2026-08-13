@@ -85,3 +85,9 @@ impl PickerManager {
         self.stack.pop();
     }
 }
+
+impl Default for PickerManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}

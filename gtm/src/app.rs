@@ -273,13 +273,57 @@ enum IpcResult {
     PlaylistTracks(Vec<TrackInfo>),
     Playlists(Vec<Playlist>),
     Queue(Vec<TrackInfo>, usize),
-    YtResults(Vec<YTSearchResult>),
+    YtResults(String, Vec<YTSearchResult>),
     Notification(String, NotificationKind),
     Error(String),
     HealthReport(gtm_core::ipc::HealthReport),
     SpotifyStatus(SpotifyStatus),
     SpotifyPlaylists(Vec<SpotifyPlaylist>),
     SpotifyTracks(Vec<SpotifyTrack>),
+}
+
+fn spawn_sync_and_wait(
+    c: DaemonClient,
+    kind: gtm_core::ipc::SyncKind,
+    label: &'static str,
+    ipc_tx: mpsc::UnboundedSender<IpcResult>,
+) {
+    tokio::spawn(async move {
+        let kick = match kind {
+            gtm_core::ipc::SyncKind::Covers => c.library_sync_covers().await,
+            gtm_core::ipc::SyncKind::Lyrics => c.library_sync_lyrics().await,
+            gtm_core::ipc::SyncKind::Metadata => c.library_sync_metadata(None).await,
+        };
+        if let Err(e) = kick {
+            let _ = ipc_tx.send(IpcResult::Error(format!("{label} sync failed: {e}")));
+            return;
+        }
+        let deadline = std::time::Instant::now() + Duration::from_secs(1800);
+        loop {
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            match c.library_sync_status().await {
+                Ok(st) if !st.running => {
+                    let msg = format!("{label} synced: {}/{} tracks", st.synced, st.total);
+                    let _ = ipc_tx.send(IpcResult::Notification(msg, NotificationKind::Info));
+                    if let Ok(DaemonRes::Tracks { tracks, .. }) =
+                        c.library_get_tracks(None, None).await
+                    {
+                        let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
+                    }
+                    break;
+                }
+                Ok(_) if std::time::Instant::now() >= deadline => {
+                    let _ = ipc_tx.send(IpcResult::Error(format!("{label} sync timed out")));
+                    break;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    let _ = ipc_tx.send(IpcResult::Error(e.to_string()));
+                    break;
+                }
+            }
+        }
+    });
 }
 
 pub enum TuiCommand {
@@ -722,10 +766,20 @@ impl App {
                             self.browse_detail = None;
                         }
                     }
-                    IpcResult::YtResults(results) => {
-                        // Interleave: 1 playlist for every 3 tracks
-                        self.yt_results_cache = Self::interleave_yt_results(results);
-                        self.yt_search_loading = false;
+                    IpcResult::YtResults(query, results) => {
+                        // Apply results only when they belong to the query the
+                        // picker currently shows; stale results from a
+                        // superseded search are dropped.
+                        let current = self
+                            .pickers
+                            .top()
+                            .filter(|t| t.id == PickerId::YTSearch)
+                            .map(|t| t.query.clone());
+                        if current.as_deref() == Some(query.as_str()) {
+                            // Interleave: 1 playlist for every 3 tracks
+                            self.yt_results_cache = Self::interleave_yt_results(results);
+                            self.yt_search_loading = false;
+                        }
                     }
                     IpcResult::Notification(msg, kind) => {
                         self.notifications.push(Notification {
@@ -794,7 +848,7 @@ impl App {
                 && self
                     .pickers
                     .top()
-                    .map_or(false, |t| t.id == PickerId::YTSearch)
+                    .is_some_and(|t| t.id == PickerId::YTSearch)
             {
                 if self.yt_search_poll_deadline.is_none() {
                     self.yt_search_poll_deadline = Some(now + Duration::from_millis(500));
@@ -933,7 +987,7 @@ impl App {
                 .state
                 .current_track
                 .as_ref()
-                .map_or(false, |t| t.path == path);
+                .is_some_and(|t| t.path == path);
             if current_is_selected {
                 self.track_popup_cover = self.current_cover.clone();
                 self.sync_popup_cover_stateful();
@@ -1101,7 +1155,7 @@ impl App {
             0 => 3, // Audio: Master Volume, Volume, Mute
             1 => 8, // YouTube
             2 => 4, // Playback: Repeat, Shuffle, Crossfade, Easing
-            3 => 5, // System: Theme, Transparent BG, Sync Covers, Sync Lyrics, Footer Preset
+            3 => 6, // System: Theme, Transparent BG, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset
             4 => 6, // Spotify: Status, Account, Playlists, Link, Sync, Unlink
             _ => 0,
         }
@@ -1250,6 +1304,7 @@ impl App {
             }
             TuiCommand::YtSearch(q) => {
                 self.yt_search_loading = true;
+                self.yt_results_cache.clear();
                 let c = client.clone();
                 tokio::spawn(async move {
                     if let Err(e) = c.yt_search(&q, None).await {
@@ -1422,12 +1477,10 @@ impl App {
             }
             TuiCommand::RefreshYt => {
                 tokio::spawn(async move {
-                    if let Ok(DaemonRes::YtSearchResults { results, .. }) =
+                    if let Ok(DaemonRes::YtSearchResults { query, results }) =
                         client.yt_search_poll().await
                     {
-                        if !results.is_empty() {
-                            let _ = ipc_tx.send(IpcResult::YtResults(results));
-                        }
+                        let _ = ipc_tx.send(IpcResult::YtResults(query, results));
                     }
                 });
             }
@@ -1849,7 +1902,7 @@ impl App {
                         self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::ToggleHelp) => {
-                        if self.pickers.top().map_or(false, |o| o.id == PickerId::Help) {
+                        if self.pickers.top().is_some_and(|o| o.id == PickerId::Help) {
                             self.pickers.close_top();
                         } else {
                             self.pickers.open(PickerId::Help);
@@ -2335,71 +2388,32 @@ impl App {
                                     }
                                     2 => {
                                         // Sync Covers
-                                        let ipc_tx = self.ipc_tx.clone();
-                                        let c = self.client.clone();
-                                        tokio::spawn(async move {
-                                            match c.library_sync_covers().await {
-                                                Ok(DaemonRes::SyncCoversResult {
-                                                    synced,
-                                                    total,
-                                                    ..
-                                                }) => {
-                                                    let msg = format!(
-                                                        "Covers synced: {synced}/{total} tracks"
-                                                    );
-                                                    let _ = ipc_tx.send(IpcResult::Notification(
-                                                        msg,
-                                                        crate::app::NotificationKind::Info,
-                                                    ));
-                                                }
-                                                Ok(DaemonRes::Error { message, .. }) => {
-                                                    let _ = ipc_tx.send(IpcResult::Notification(
-                                                        format!("Sync failed: {message}"),
-                                                        crate::app::NotificationKind::Error,
-                                                    ));
-                                                }
-                                                Ok(_) => {}
-                                                Err(e) => {
-                                                    let _ = ipc_tx
-                                                        .send(IpcResult::Error(e.to_string()));
-                                                }
-                                            }
-                                        });
+                                        spawn_sync_and_wait(
+                                            self.client.clone(),
+                                            gtm_core::ipc::SyncKind::Covers,
+                                            "Covers",
+                                            self.ipc_tx.clone(),
+                                        );
                                     }
                                     3 => {
                                         // Sync Lyrics
-                                        let ipc_tx = self.ipc_tx.clone();
-                                        let c = self.client.clone();
-                                        tokio::spawn(async move {
-                                            match c.library_sync_lyrics().await {
-                                                Ok(DaemonRes::SyncLyricsResult {
-                                                    synced,
-                                                    total,
-                                                    ..
-                                                }) => {
-                                                    let msg = format!(
-                                                        "Lyrics synced: {synced}/{total} tracks"
-                                                    );
-                                                    let _ = ipc_tx.send(IpcResult::Notification(
-                                                        msg,
-                                                        crate::app::NotificationKind::Info,
-                                                    ));
-                                                }
-                                                Ok(DaemonRes::Error { message, .. }) => {
-                                                    let _ = ipc_tx.send(IpcResult::Notification(
-                                                        format!("Sync failed: {message}"),
-                                                        crate::app::NotificationKind::Error,
-                                                    ));
-                                                }
-                                                Ok(_) => {}
-                                                Err(e) => {
-                                                    let _ = ipc_tx
-                                                        .send(IpcResult::Error(e.to_string()));
-                                                }
-                                            }
-                                        });
+                                        spawn_sync_and_wait(
+                                            self.client.clone(),
+                                            gtm_core::ipc::SyncKind::Lyrics,
+                                            "Lyrics",
+                                            self.ipc_tx.clone(),
+                                        );
                                     }
                                     4 => {
+                                        // Sync Metadata
+                                        spawn_sync_and_wait(
+                                            self.client.clone(),
+                                            gtm_core::ipc::SyncKind::Metadata,
+                                            "Metadata",
+                                            self.ipc_tx.clone(),
+                                        );
+                                    }
+                                    5 => {
                                         // Footer Preset cycle
                                         self.cycle_footer_preset();
                                         if let Some(p) = self.footer_presets.get(self.footer_preset)
@@ -2686,33 +2700,13 @@ impl App {
                             }
                             KeyCode::Char('S') => {
                                 // Sync covers for tracks missing cover art
-                                let c = self.client.clone();
-                                let ipc_tx = self.ipc_tx.clone();
                                 self.notify("Syncing covers...", NotificationKind::Info);
-                                tokio::spawn(async move {
-                                    match c.library_sync_covers().await {
-                                        Ok(DaemonRes::SyncCoversResult {
-                                            synced, total, ..
-                                        }) => {
-                                            let msg =
-                                                format!("Covers synced: {synced}/{total} tracks");
-                                            let _ = ipc_tx.send(IpcResult::Notification(
-                                                msg,
-                                                crate::app::NotificationKind::Info,
-                                            ));
-                                        }
-                                        Ok(DaemonRes::Error { message, .. }) => {
-                                            let _ = ipc_tx.send(IpcResult::Notification(
-                                                format!("Sync failed: {message}"),
-                                                crate::app::NotificationKind::Error,
-                                            ));
-                                        }
-                                        Ok(_) => {}
-                                        Err(e) => {
-                                            let _ = ipc_tx.send(IpcResult::Error(e.to_string()));
-                                        }
-                                    }
-                                });
+                                spawn_sync_and_wait(
+                                    self.client.clone(),
+                                    gtm_core::ipc::SyncKind::Covers,
+                                    "Covers",
+                                    self.ipc_tx.clone(),
+                                );
                             }
                             _ => {}
                         }
@@ -3340,10 +3334,10 @@ impl App {
                         | PickerId::Help => {
                             top.query.push(c);
                             if top.id == PickerId::YTSearch {
-                                if c == ' ' {
-                                    self.yt_results_cache.clear();
-                                    self.yt_search_loading = false;
-                                }
+                                // Invalidate stale results immediately so the
+                                // picker never shows results from an older query.
+                                self.yt_results_cache.clear();
+                                self.yt_search_loading = false;
                                 self.yt_search_debounce =
                                     Some(std::time::Instant::now() + Duration::from_millis(500));
                             }
@@ -3376,6 +3370,12 @@ impl App {
                         }
                         _ => {
                             top.query.pop();
+                            if top.id == PickerId::YTSearch {
+                                self.yt_results_cache.clear();
+                                self.yt_search_loading = false;
+                                self.yt_search_debounce =
+                                    Some(std::time::Instant::now() + Duration::from_millis(500));
+                            }
                         }
                     }
                 }

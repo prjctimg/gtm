@@ -437,6 +437,10 @@ fn library_action_json_roundtrip() {
         },
         LibraryAction::SyncCovers,
         LibraryAction::SyncLyrics,
+        LibraryAction::SyncMetadata { path: None },
+        LibraryAction::SyncMetadata {
+            path: Some("/music/track.mp3".into()),
+        },
         LibraryAction::RemoveFromPlaylist {
             playlist_id: 1,
             track_id: 2,

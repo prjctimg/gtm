@@ -154,6 +154,12 @@ pub enum CliCommand {
     Recent {
         count: u64,
     },
+    /// Enrich unreliable track metadata via Deezer and embed tags into the files
+    MetadataSync {
+        /// Only sync this single track; otherwise all unreliable tracks
+        #[arg(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
+        path: Option<String>,
+    },
     Favourites,
     FavouriteAdd {
         track_id: i64,
@@ -367,6 +373,32 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
                     serde_json::to_string_pretty(&res).map_err(|e| e.to_string())
                 } else {
                     Ok(format!("{res:?}"))
+                }
+            }
+            CliCommand::MetadataSync { path } => {
+                client
+                    .library_sync_metadata(path.clone())
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1800);
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                    let st = client
+                        .library_sync_status()
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    if !st.running {
+                        if json {
+                            return serde_json::to_string_pretty(&st).map_err(|e| e.to_string());
+                        }
+                        return Ok(format!(
+                            "Metadata synced: {}/{} tracks",
+                            st.synced, st.total
+                        ));
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        return Err("metadata sync timed out".to_string());
+                    }
                 }
             }
             CliCommand::Favourites => {

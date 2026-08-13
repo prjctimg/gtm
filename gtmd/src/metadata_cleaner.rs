@@ -52,8 +52,9 @@ pub fn clean_youtube_title(title: &str) -> (Option<String>, String) {
         s.chars().all(|c| c.is_ascii_digit()) && s.len() == 4
     });
 
-    // Strip generic fillers
-    let fillers = [
+    // Strip generic fillers (longest first so "Official Audio" wins over
+    // "Official").
+    let mut fillers = [
         "Official",
         "Music",
         "Lyric Video",
@@ -64,6 +65,7 @@ pub fn clean_youtube_title(title: &str) -> (Option<String>, String) {
         "Official Video",
         "Official Audio",
     ];
+    fillers.sort_by_key(|f| std::cmp::Reverse(f.len()));
     for filler in &fillers {
         result = result.replace(filler, "");
     }
@@ -235,6 +237,56 @@ pub fn sanitize_filename(s: &str) -> String {
     result.trim().trim_matches('_').to_string()
 }
 
+/// Normalize a yt-dlp filename stem into a spaced-out string.
+///
+/// yt-dlp replaces spaces with underscores in filenames, e.g.
+/// `Bazzi_-_Beautiful_feat._Camila_Official_Audio`. Converting the
+/// underscores back to spaces lets the existing title cleaning parse the
+/// "Artist - Title" structure.
+pub fn normalize_filename_stem(stem: &str) -> String {
+    let mut result = stem.replace('_', " ");
+    while result.contains("  ") {
+        result = result.replace("  ", " ");
+    }
+    result.trim().to_string()
+}
+
+/// Clean a filename stem (as produced by yt-dlp) into `(artist, title)`.
+pub fn clean_filename_stem(stem: &str) -> (Option<String>, String) {
+    clean_youtube_title(&normalize_filename_stem(stem))
+}
+
+/// True when the stored track metadata is "unreliable" and would benefit from
+/// enrichment: the title is empty, still equals the raw filename stem (nothing
+/// could be parsed), or the track lacks an artist or album.
+pub fn title_is_unreliable(stem: &str, title: &str, artist: &str, album: &str) -> bool {
+    if title.is_empty() || artist.is_empty() || album.is_empty() {
+        return true;
+    }
+    let normalized = normalize_filename_stem(stem);
+    title == stem || title == normalized.as_str() || title.eq_ignore_ascii_case(normalized.as_str())
+}
+
+/// True when a stored title still looks like a raw filename rather than
+/// parsed metadata: it keeps underscores, or matches the raw/normalized stem.
+/// Used to decide whether to re-derive the Deezer query from the filename.
+pub fn is_filename_like(stem: &str, title: &str) -> bool {
+    if title.is_empty() || title.contains('_') {
+        return true;
+    }
+    let normalized = normalize_filename_stem(stem);
+    title == stem || title == normalized.as_str() || title.eq_ignore_ascii_case(normalized.as_str())
+}
+
+/// Strip control characters so stored titles are clean UTF-8 text.
+pub fn sanitize_text(s: &str) -> String {
+    s.chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -274,5 +326,63 @@ mod tests {
         let (artist, title) = clean_youtube_title("Some Clean Song Title");
         assert!(artist.is_none());
         assert_eq!(title, "Some Clean Song Title");
+    }
+
+    #[test]
+    fn test_normalize_filename_stem() {
+        assert_eq!(
+            normalize_filename_stem("Bazzi_-_Beautiful_feat._Camila_Official_Audio"),
+            "Bazzi - Beautiful feat. Camila Official Audio"
+        );
+        assert_eq!(normalize_filename_stem("No_Spaces"), "No Spaces");
+        assert_eq!(normalize_filename_stem("Already Spaced"), "Already Spaced");
+    }
+
+    #[test]
+    fn test_clean_filename_stem() {
+        let (artist, title) = clean_filename_stem("Bazzi_-_Beautiful_feat._Camila_Official_Audio");
+        assert_eq!(artist.as_deref(), Some("Bazzi"));
+        assert_eq!(title, "Beautiful feat. Camila");
+    }
+
+    #[test]
+    fn test_title_is_unreliable() {
+        assert!(title_is_unreliable(
+            "Hello",
+            "Hello",
+            "Someone",
+            "Some Album"
+        ));
+        assert!(title_is_unreliable("Song", "Song", "", "Album"));
+        assert!(title_is_unreliable("Song", "Song", "Artist", ""));
+        assert!(!title_is_unreliable(
+            "Bazzi_-_Beautiful_feat._Camila_Official_Audio",
+            "Beautiful feat. Camila",
+            "Bazzi",
+            "Cosmic Latte"
+        ));
+    }
+
+    #[test]
+    fn test_sanitize_text() {
+        assert_eq!(sanitize_text("Line1\nLine2\r\n"), "Line1Line2");
+        assert_eq!(sanitize_text("  padded  "), "padded");
+    }
+
+    #[test]
+    fn test_is_filename_like() {
+        assert!(is_filename_like(
+            "Bazzi_-_Beautiful_feat._Camila_Official_Audio",
+            "Bazzi_-_Beautiful_feat._Camila__Audio"
+        ));
+        assert!(is_filename_like(
+            "Kygo, Selena Gomez - It Ain't Me (Official Video)",
+            "Kygo, Selena Gomez - It Ain't Me (Official Video)"
+        ));
+        assert!(!is_filename_like(
+            "Bazzi_-_Beautiful_feat._Camila_Official_Audio",
+            "Beautiful feat. Camila"
+        ));
+        assert!(!is_filename_like("Some Stem", "Some Stem Cleaned"));
     }
 }

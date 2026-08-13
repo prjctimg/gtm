@@ -15,8 +15,8 @@ use tokio::net::UnixStream;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::ipc::{
-    DaemonEvent, DaemonReq, DaemonRes, LibraryAction, MetadataPatch, QueueAction, WireEvent,
-    WireReq, WireRes, PROTOCOL_VERSION,
+    DaemonEvent, DaemonReq, DaemonRes, LibraryAction, MetadataPatch, QueueAction, SyncKind,
+    WireEvent, WireReq, WireRes, PROTOCOL_VERSION,
 };
 use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::state::{self, DaemonState, EqPreset, PlaybackStatus, RepeatMode, YTFilter};
@@ -24,6 +24,15 @@ use crate::track;
 use crate::wire;
 use crate::CoreError;
 use crate::Result;
+
+/// Snapshot of a background library sync operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct LibrarySyncStatus {
+    pub running: bool,
+    pub kind: SyncKind,
+    pub synced: usize,
+    pub total: usize,
+}
 
 struct PendingRequest {
     req: DaemonReq,
@@ -534,18 +543,54 @@ impl DaemonClient {
         .await
     }
 
-    pub async fn library_sync_covers(&self) -> Result<DaemonRes> {
-        self.send_raw(DaemonReq::Library {
+    pub async fn library_sync_covers(&self) -> Result<()> {
+        self.send_ok(DaemonReq::Library {
             action: LibraryAction::SyncCovers,
         })
         .await
     }
 
-    pub async fn library_sync_lyrics(&self) -> Result<DaemonRes> {
-        self.send_raw(DaemonReq::Library {
+    pub async fn library_sync_lyrics(&self) -> Result<()> {
+        self.send_ok(DaemonReq::Library {
             action: LibraryAction::SyncLyrics,
         })
         .await
+    }
+
+    /// Enrich unreliable track metadata via Deezer and embed tags into the
+    /// files. With `path` given, only that track is processed. The daemon
+    /// acknowledges immediately and runs the sync in the background; use
+    /// [`Self::library_sync_status`] to poll for completion.
+    pub async fn library_sync_metadata(&self, path: Option<String>) -> Result<()> {
+        self.send_ok(DaemonReq::Library {
+            action: LibraryAction::SyncMetadata { path },
+        })
+        .await
+    }
+
+    /// Poll the progress of a background library sync (covers/lyrics/metadata).
+    pub async fn library_sync_status(&self) -> Result<LibrarySyncStatus> {
+        let res = self
+            .send_raw(DaemonReq::Library {
+                action: LibraryAction::SyncStatus,
+            })
+            .await?;
+        match res {
+            DaemonRes::SyncStatus {
+                running,
+                kind,
+                synced,
+                total,
+            } => Ok(LibrarySyncStatus {
+                running,
+                kind,
+                synced,
+                total,
+            }),
+            other => Err(CoreError::Daemon(format!(
+                "unexpected response to library sync status: {other:?}"
+            ))),
+        }
     }
 
     pub async fn library_remove_from_playlist(

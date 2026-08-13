@@ -160,41 +160,41 @@ impl Library {
 
     pub fn update_metadata(&self, id: i64, patch: &MetadataPatch) -> Result<(), String> {
         let mut sets = Vec::new();
+        let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(id)];
+
         if patch.title.is_some() {
-            sets.push("title = ?2");
+            sets.push(format!("title = ?{}", values.len() + 1));
+            values.push(Box::new(patch.title.clone()));
         }
         if patch.artist.is_some() {
-            sets.push("artist = ?3");
+            sets.push(format!("artist = ?{}", values.len() + 1));
+            values.push(Box::new(patch.artist.clone()));
         }
         if patch.album.is_some() {
-            sets.push("album = ?4");
+            sets.push(format!("album = ?{}", values.len() + 1));
+            values.push(Box::new(patch.album.clone()));
         }
         if patch.genre.is_some() {
-            sets.push("genre = ?5");
+            sets.push(format!("genre = ?{}", values.len() + 1));
+            values.push(Box::new(patch.genre.clone()));
         }
         if patch.year.is_some() {
-            sets.push("year = ?6");
+            sets.push(format!("year = ?{}", values.len() + 1));
+            values.push(Box::new(patch.year));
         }
         if patch.track_number.is_some() {
-            sets.push("track_number = ?7");
+            sets.push(format!("track_number = ?{}", values.len() + 1));
+            values.push(Box::new(patch.track_number));
         }
         if sets.is_empty() {
             return Ok(());
         }
         let sql = format!("UPDATE tracks SET {} WHERE id = ?1", sets.join(", "));
-        self.conn
-            .execute(
-                &sql,
-                params![
-                    id,
-                    patch.title,
-                    patch.artist,
-                    patch.album,
-                    patch.genre,
-                    patch.year,
-                    patch.track_number
-                ],
-            )
+        let mut stmt = self
+            .conn
+            .prepare(&sql)
+            .map_err(|e| format!("prepare update: {e}"))?;
+        stmt.execute(rusqlite::params_from_iter(values.iter()))
             .map_err(|e| format!("update metadata: {e}"))?;
         Ok(())
     }
@@ -658,13 +658,15 @@ fn extract_metadata(path: &str, cache_dir: Option<&str>) -> Result<(Metadata, St
             .and_then(|s| s.to_str())
             .unwrap_or("");
         // Use metadata_cleaner for comprehensive YouTube title cleaning
-        let (cleaned_artist, cleaned_title) = crate::metadata_cleaner::clean_youtube_title(stem);
+        // (handles yt-dlp underscore-separated filenames too).
+        let (cleaned_artist, cleaned_title) = crate::metadata_cleaner::clean_filename_stem(stem);
+        let cleaned_title = crate::metadata_cleaner::sanitize_text(&cleaned_title);
         if title.is_empty() && !cleaned_title.is_empty() {
             title = cleaned_title;
         }
         if artist.is_empty() {
             if let Some(a) = cleaned_artist {
-                artist = a;
+                artist = crate::metadata_cleaner::sanitize_text(&a);
             } else if let Some(dash_idx) = stem.find(" - ") {
                 // Fallback: split on first " - "
                 if dash_idx > 0 {

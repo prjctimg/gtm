@@ -7,11 +7,13 @@
 pub mod config;
 pub mod cover_art;
 pub mod daemon;
+pub mod deezer;
 pub mod library;
 pub mod lyrics;
 pub mod metadata_cleaner;
 pub mod queue;
 pub mod spotify;
+pub mod tags;
 pub mod youtube;
 
 pub use config::DaemonConfig;

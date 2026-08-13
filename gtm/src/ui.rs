@@ -1236,6 +1236,7 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
                 ),
                 "Sync Covers     [ Enter  ▶ ]".to_string(),
                 "Sync Lyrics     [ Enter  ▶ ]".to_string(),
+                "Sync Metadata   [ Enter  ▶ ]".to_string(),
                 format!("Footer Preset   [ {:>8} ▶ ]", preset_name),
             ]
         }
@@ -1322,7 +1323,8 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         (3, 1) => lines.push(Line::from(Span::styled(" Transparent BG: Press Enter to toggle. When on, picker backgrounds become transparent.", Style::default().fg(app.theme.fg)))),
         (3, 2) => lines.push(Line::from(Span::styled(" Sync Covers: Download missing cover art from Deezer for all library tracks.", Style::default().fg(app.theme.fg)))),
         (3, 3) => lines.push(Line::from(Span::styled(" Sync Lyrics: Fetch and save lyrics files alongside all library tracks.", Style::default().fg(app.theme.fg)))),
-        (3, 4) => lines.push(Line::from(Span::styled(" Footer Preset: Press Enter to cycle. Also toggled via Alt+F. Add or override presets in ~/.config/gtm/footer.toml.", Style::default().fg(app.theme.fg)))),
+        (3, 4) => lines.push(Line::from(Span::styled(" Sync Metadata: Resolve unreliable track metadata via Deezer and embed clean tags (title, artist, album, genre, year, track, cover) into the files.", Style::default().fg(app.theme.fg)))),
+        (3, 5) => lines.push(Line::from(Span::styled(" Footer Preset: Press Enter to cycle. Also toggled via Alt+F. Add or override presets in ~/.config/gtm/footer.toml.", Style::default().fg(app.theme.fg)))),
         (4, 0) => lines.push(Line::from(Span::styled(" Spotify: Integration status for the linked account.", Style::default().fg(app.theme.fg)))),
         (4, 1) => lines.push(Line::from(Span::styled(" Account: Display name of the linked Spotify user.", Style::default().fg(app.theme.fg)))),
         (4, 2) => lines.push(Line::from(Span::styled(" Playlists: Number of playlists synced by the daemon.", Style::default().fg(app.theme.fg)))),

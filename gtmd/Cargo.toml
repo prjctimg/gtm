@@ -24,6 +24,7 @@ uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 walkdir = "2"
 symphonia = { version = "0.6", default-features = false, features = ["all-codecs", "all-formats", "all-meta"] }
+lofty = "0.24"
 lru = "0.12"
 hex = "0.4"
 base64 = "0.22"

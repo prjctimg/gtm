@@ -124,6 +124,12 @@ impl AudioVisualizer {
     }
 }
 
+impl Default for AudioVisualizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub struct Lines<'a>(pub Vec<Line<'a>>);
 
 impl<'a> Widget for Lines<'a> {
