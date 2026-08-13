@@ -60,10 +60,12 @@ impl DaemonState {
     }
 
     /// Transition to Stopped.
-    /// Allowed from: Playing, Paused.
+    /// Allowed from: Playing, Paused.  No-op if already Stopped.
     pub fn stop(&mut self) -> Result<()> {
         tripwire::check(FailPoint::StateTransition)?;
-        assert!(self.status != PlaybackStatus::Stopped);
+        if self.status == PlaybackStatus::Stopped {
+            return Ok(());
+        }
         self.status = PlaybackStatus::Stopped;
         self.current_track = None;
         self.time_pos = 0.0;

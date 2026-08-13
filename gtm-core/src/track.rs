@@ -55,6 +55,7 @@ pub struct YTSearchResult {
     pub duration: f64,
     pub views: u64,
     pub thumbnail: Option<String>,
+    pub is_playlist: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

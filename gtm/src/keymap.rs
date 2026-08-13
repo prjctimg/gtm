@@ -203,7 +203,7 @@ pub fn default_keybindings() -> Keybindings {
             (
                 KeyCode::Char(':').into(),
                 BoundCommand {
-                    action: KeyboardAction::EnterCommand,
+                    action: KeyboardAction::OpenOverlay(OverlayId::CommandPalette),
                     contexts: vec![KeyContext::Normal],
                     description: "Open command palette",
                 },

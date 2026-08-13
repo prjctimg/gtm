@@ -4,7 +4,7 @@ use std::time::Duration;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use gtm_core::client::DaemonClient;
 use gtm_core::ipc::DaemonRes;
-use gtm_core::state::{DaemonState, PlaybackStatus, RepeatMode, Tab};
+use gtm_core::state::{DaemonState, Easing, PlaybackStatus, RepeatMode, Tab};
 use gtm_core::track::{Playlist, TrackInfo, YTSearchResult};
 use ratatui::Terminal;
 use tokio::sync::mpsc;
@@ -15,6 +15,47 @@ use crate::keymap::{default_keybindings, KeyContext, KeyboardAction};
 use crate::overlay::{OverlayCtx, OverlayId, OverlayManager};
 use crate::theme::{AppTheme, THEMES};
 use crate::ui;
+
+fn prefs_path() -> std::path::PathBuf {
+    let config = std::env::var("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+            std::path::PathBuf::from(home).join(".config")
+        });
+    let dir = config.join("gtm");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("prefs.json")
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Prefs {
+    theme_index: usize,
+    #[serde(default)]
+    transparent_bg: bool,
+}
+
+fn load_prefs() -> Prefs {
+    let path = prefs_path();
+    let s = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return Prefs { theme_index: 0, transparent_bg: false },
+    };
+    // Try new format first, then fall back to old format (bare usize)
+    if let Ok(p) = serde_json::from_str::<Prefs>(&s) {
+        return p;
+    }
+    if let Ok(idx) = serde_json::from_str::<usize>(&s) {
+        return Prefs { theme_index: idx.min(crate::theme::THEMES.len().saturating_sub(1)), transparent_bg: false };
+    }
+    Prefs { theme_index: 0, transparent_bg: false }
+}
+
+fn save_prefs(prefs: &Prefs) {
+    if let Ok(s) = serde_json::to_string(prefs) {
+        let _ = std::fs::write(prefs_path(), s);
+    }
+}
 
 pub const NUM_SETTINGS_CATEGORIES: usize = 5;
 pub const LIBRARY_CATEGORIES: &[&str] = &[
@@ -58,6 +99,8 @@ pub struct App {
     pub client: DaemonClient,
     pub state: DaemonState,
     pub display_position: f64,
+    last_display_position: f64,
+    frame_count: u64,
     pub current_tab: Tab,
     pub input_mode: InputMode,
     pub search_query: String,
@@ -78,6 +121,8 @@ pub struct App {
     pub status_message: Option<String>,
     pub notifications: Vec<Notification>,
     pub crossfade_duration: u8,
+    pub yt_search_loading: bool,
+    pub yt_search_debounce: Option<std::time::Instant>,
     pub pending_volume: Option<u8>,
     pub overlays: OverlayManager,
     pub sleep_timer_remaining: Option<u64>,
@@ -91,14 +136,22 @@ pub struct App {
     keybindings: crate::keymap::Keybindings,
     pub theme_index: usize,
     pub show_tag_popup: bool,
+    pub hover_start: Option<std::time::Instant>,
+    pub show_hover_info: bool,
+    pub list_scroll: usize,
+    pub viewport_items: usize,
+    pub transparent_bg: bool,
+    last_queue_cursor: u128,
 }
 
 enum IpcResult {
     RefreshDone(DaemonState, Option<Vec<u8>>, Option<i64>),
+    CoverArt(Option<Vec<u8>>, Option<i64>),
     LibraryTracks(Vec<TrackInfo>),
     Playlists(Vec<Playlist>),
     Queue(Vec<TrackInfo>, usize),
     YtResults(Vec<YTSearchResult>),
+    Notification(String, NotificationKind),
     Error(String),
 }
 
@@ -116,11 +169,13 @@ pub enum TuiCommand {
     CycleRepeat(RepeatMode),
     ToggleMute,
     Crossfade(bool, u8),
+    SetCrossfadeEasing(gtm_core::state::Easing),
     QueueAdd(String),
     QueueRemove(u128),
     QueueMove(u128, u128),
     QueueClear,
     YtSearch(String),
+    YtDownload(String),
     YtResolve(String),
     Search(String),
     AddFavourite(i64),
@@ -139,11 +194,15 @@ impl App {
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
         let (ipc_tx, ipc_rx) = mpsc::unbounded_channel();
         let keybindings = default_keybindings();
+        let prefs = load_prefs();
+        let initial_cursor = state.queue_cursor;
         Ok(Self {
-            theme: AppTheme::default(),
+            theme: (THEMES[prefs.theme_index].builder)(),
             client,
             state,
             display_position: 0.0,
+            last_display_position: 0.0,
+            frame_count: 0,
             current_tab: Tab::NowPlaying,
             input_mode: InputMode::Normal,
             search_query: String::new(),
@@ -165,6 +224,8 @@ impl App {
             notifications: Vec::new(),
             crossfade_duration: 7,
             pending_volume: None,
+            yt_search_loading: false,
+            yt_search_debounce: None,
             overlays: OverlayManager::new(),
             sleep_timer_remaining: None,
             playback_speed: 1.0,
@@ -175,8 +236,14 @@ impl App {
             ipc_rx,
             ipc_tx,
             keybindings,
-            theme_index: 0,
+            theme_index: prefs.theme_index,
             show_tag_popup: false,
+            hover_start: None,
+            show_hover_info: false,
+            list_scroll: 0,
+            viewport_items: 20,
+            transparent_bg: prefs.transparent_bg,
+            last_queue_cursor: initial_cursor,
         })
     }
 
@@ -223,11 +290,47 @@ impl App {
                 self.state.apply_event(&ev);
             }
 
+            // Detect crossfade auto-advance: when queue cursor moves forward
+            // while a track is playing, show "Up Next" notification.
+            if self.state.status == PlaybackStatus::Playing
+                && self.state.queue_cursor > self.last_queue_cursor
+                && self.state.queue_cursor > 0
+            {
+                let idx = self.state.queue_cursor as usize;
+                if idx < self.queue_cache.len() {
+                    let next = &self.queue_cache[idx];
+                    self.notify(format!(" \u{25b6} Up Next: {} — {}", next.artist, next.title), NotificationKind::Info);
+                }
+            }
+            self.last_queue_cursor = self.state.queue_cursor;
+
+            // If track changed via daemon event (not from our own Refresh),
+            // trigger a cover art fetch so the UI updates immediately.
+            let current_tid = self.state.current_track.as_ref().map(|t| t.id);
+            if current_tid != self.last_cover_track_id && current_tid.is_some() {
+                let client2 = self.client.clone();
+                let ipc_tx2 = self.ipc_tx.clone();
+                tokio::spawn(async move {
+                    if let Some(tid) = current_tid {
+                        if let Ok(Some(b64)) = client2.get_cover_art(tid).await {
+                            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
+                                let _ = ipc_tx2.send(IpcResult::CoverArt(
+                                    Some(bytes), Some(tid)
+                                ));
+                            }
+                        }
+                    }
+                });
+            }
+
             while let Ok(result) = self.ipc_rx.try_recv() {
                 match result {
                     IpcResult::RefreshDone(state, cover, cover_tid) => {
-                        self.client.seed_clock_from_state(&state).await;
                         self.state = state;
+                        self.current_cover = cover;
+                        self.last_cover_track_id = cover_tid;
+                    }
+                    IpcResult::CoverArt(cover, cover_tid) => {
                         self.current_cover = cover;
                         self.last_cover_track_id = cover_tid;
                     }
@@ -237,7 +340,17 @@ impl App {
                         self.queue_cache = tracks;
                         self.queue_cursor = cursor;
                     }
-                    IpcResult::YtResults(results) => self.yt_results_cache = results,
+                    IpcResult::YtResults(results) => {
+                        self.yt_results_cache = results;
+                        self.yt_search_loading = false;
+                    }
+                    IpcResult::Notification(msg, kind) => {
+                        self.notifications.push(Notification {
+                            message: msg,
+                            kind,
+                            expires_at: std::time::Instant::now() + Duration::from_secs(5),
+                        });
+                    }
                     IpcResult::Error(e) => self.error_message = Some(e),
                 }
             }
@@ -250,9 +363,53 @@ impl App {
             let now = std::time::Instant::now();
             self.notifications.retain(|n| n.expires_at > now);
 
-            self.display_position = self.client.estimated_position().await;
+            // YT search debounce: auto-search 500ms after last keystroke
+            if let Some(deadline) = self.yt_search_debounce {
+                if now >= deadline {
+                    self.yt_search_debounce = None;
+                    if let Some(top) = self.overlays.top() {
+                        if top.id == OverlayId::YTSearch && !top.query.is_empty() {
+                            let q = top.query.clone();
+                            let tx = self.cmd_tx();
+                            let _ = tx.send(TuiCommand::YtSearch(q)).await;
+                        }
+                    }
+                }
+            }
 
-            terminal.draw(|f| ui::render(f, &mut self))?;
+            // Hover timer: show info popup after 3s of no key press (Library tab only)
+            if self.current_tab == Tab::Library && !self.library_pane_focus && !self.overlays.is_open() && !self.show_tag_popup {
+                match self.hover_start {
+                    Some(t) if t.elapsed() >= std::time::Duration::from_secs(3) => {
+                        self.show_hover_info = true;
+                    }
+                    None => self.hover_start = Some(now),
+                    _ => {}
+                }
+            } else {
+                self.show_hover_info = false;
+            }
+
+            let raw_pos = self.client.estimated_position().await;
+            // Monotonic guard: prevent large backward jumps from clock skew.
+            // Allow at most 0.5s of regression to avoid visible stutter.
+            let raw_pos = raw_pos.max(self.display_position - 0.5);
+            // EMA smoothing
+            self.display_position = self.display_position * 0.85 + raw_pos * 0.15;
+
+            // Dirty-render: skip redraw if position hasn't changed meaningfully
+            // to reduce CPU usage.  Always render every 10th frame as a safety net.
+            let frame_count = self.frame_count.wrapping_add(1);
+            self.frame_count = frame_count;
+            let pos_changed = (self.display_position - self.last_display_position).abs() >= 0.1;
+            let force_render = pos_changed
+                || !self.notifications.is_empty()
+                || frame_count % 10 == 0;
+            self.last_display_position = self.display_position;
+
+            if force_render {
+                terminal.draw(|f| ui::render(f, &mut self))?;
+            }
 
             if event::poll(Duration::from_millis(50))? {
                 if let Event::Key(key) = event::read()? {
@@ -350,8 +507,8 @@ impl App {
         match self.settings_category {
             0 => 2,  // Audio: Volume, Mute
             1 => 8,  // YouTube: (all display-only for now)
-            2 => 3,  // Playback: Repeat, Shuffle, Crossfade
-            3 => 2,  // System: Theme, Notifications
+            2 => 4,  // Playback: Repeat, Shuffle, Crossfade, Easing
+            3 => 3,  // System: Theme, Transparent BG, Sync Covers
             4 => 1,  // Spotify: Status
             _ => 0,
         }
@@ -440,6 +597,11 @@ impl App {
                     if let Err(e) = client.crossfade(en, dur).await { error_handler(e); }
                 });
             }
+            TuiCommand::SetCrossfadeEasing(easing) => {
+                tokio::spawn(async move {
+                    if let Err(e) = client.set_crossfade_easing(easing).await { error_handler(e); }
+                });
+            }
             TuiCommand::QueueAdd(p) => {
                 tokio::spawn(async move {
                     if let Err(e) = client.queue_add(&p, None).await { error_handler2(e); }
@@ -461,8 +623,51 @@ impl App {
                 });
             }
             TuiCommand::YtSearch(q) => {
+                self.yt_search_loading = true;
+                let c = client.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = client.yt_search(&q, None).await { error_handler2(e); }
+                    if let Err(e) = c.yt_search(&q, None).await { error_handler2(e); }
+                });
+            }
+            TuiCommand::YtDownload(url) => {
+                let ipc = ipc_tx.clone();
+                let client2 = self.client.clone();
+                tokio::spawn(async move {
+                    let audio_dir = std::env::var("XDG_DATA_HOME")
+                        .map(|d| std::path::PathBuf::from(d).join("gtm").join("audio"))
+                        .unwrap_or_else(|_| {
+                            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+                            std::path::PathBuf::from(home).join(".local/share/gtm/audio")
+                        });
+                    std::fs::create_dir_all(&audio_dir).ok();
+                    let template = audio_dir.join("%(title)s.%(ext)s");
+                    let output = tokio::process::Command::new("yt-dlp")
+                        .arg("--extract-audio")
+                        .arg("--audio-format")
+                        .arg("mp3")
+                        .arg("--write-thumbnail")
+                        .arg("--convert-thumbnails")
+                        .arg("jpg")
+                        .arg("-o")
+                        .arg(template.to_string_lossy().as_ref())
+                        .arg(&url)
+                        .output()
+                        .await;
+                    let msg = match output {
+                        Ok(o) if o.status.success() => {
+                            let _ = client2.library_scan(
+                                audio_dir.to_string_lossy().as_ref(),
+                            ).await;
+                            // Also refresh the track cache
+                            if let Ok(DaemonRes::Tracks { tracks, .. }) = client2.library_get_tracks(None, None).await {
+                                let _ = ipc.send(IpcResult::LibraryTracks(tracks));
+                            }
+                            format!("Downloaded: {}", url)
+                        }
+                        Ok(o) => format!("Download failed: {}", String::from_utf8_lossy(&o.stderr)),
+                        Err(e) => format!("Download error: {e}"),
+                    };
+                    let _ = ipc.send(IpcResult::Notification(msg, crate::app::NotificationKind::Info));
                 });
             }
             TuiCommand::YtResolve(u) => {
@@ -491,7 +696,9 @@ impl App {
                 let ipc_tx2 = self.ipc_tx.clone();
                 tokio::spawn(async move {
                     if let Ok(state) = client2.get_status().await {
-                        client2.seed_clock_from_state(&state).await;
+                        // Do NOT call seed_clock_from_state here — that resets the
+                        // local clock and causes visible position stutter.  The
+                        // clock is kept in sync by apply_clock_events during drain().
                         let mut cover = None;
                         let mut cover_tid = None;
                         let track_id = state.current_track.as_ref().map(|t| t.id);
@@ -501,6 +708,18 @@ impl App {
                                     cover = Some(bytes);
                                     cover_tid = Some(tid);
                                 }
+                            } else {
+                                // Cover not available yet — retry after a short delay
+                                let c2 = client2.clone();
+                                let ipc3 = ipc_tx2.clone();
+                                tokio::spawn(async move {
+                                    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                    if let Ok(Some(b64)) = c2.get_cover_art(tid).await {
+                                        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
+                                            let _ = ipc3.send(IpcResult::CoverArt(Some(bytes), Some(tid)));
+                                        }
+                                    }
+                                });
                             }
                         }
                         let _ = ipc_tx2.send(IpcResult::RefreshDone(state, cover, cover_tid.or(track_id)));
@@ -550,6 +769,8 @@ impl App {
     }
 
     async fn handle_key(&mut self, key: event::KeyEvent) -> bool {
+        self.hover_start = None;
+        self.show_hover_info = false;
         // If an overlay is open, Esc closes it; keys pass through to overlay
         if self.overlays.is_open() {
             return match key.code {
@@ -798,6 +1019,10 @@ impl App {
                             }
                             _ => {
                                 self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                                // Auto-scroll: keep selection visible
+                                if self.scroll_offset < self.list_scroll {
+                                    self.list_scroll = self.list_scroll.saturating_sub(1);
+                                }
                             }
                         }
                     }
@@ -815,6 +1040,11 @@ impl App {
                             }
                             _ => {
                                 self.scroll_offset += 1;
+                                // Auto-scroll: keep selection visible
+                                let max_list = self.filtered_tracks().len();
+                                if self.scroll_offset >= self.list_scroll + self.viewport_items && self.list_scroll + self.viewport_items < max_list {
+                                    self.list_scroll += 1;
+                                }
                             }
                         }
                     }
@@ -895,6 +1125,35 @@ impl App {
                                         let enabled = !self.state.crossfade.as_ref().map(|c| c.enabled).unwrap_or(false);
                                         let dur = self.state.crossfade.as_ref().map(|c| c.duration_secs).unwrap_or(self.crossfade_duration);
                                         let _ = tx.send(TuiCommand::Crossfade(enabled, dur)).await;
+                                    }
+                                    3 => { // Easing cycle
+                                        let current = self.state.crossfade.as_ref().map(|c| c.easing).unwrap_or(Easing::Linear);
+                                        let next = match current {
+                                            Easing::Linear => Easing::Smoothstep,
+                                            Easing::Smoothstep => Easing::Logarithmic,
+                                            Easing::Logarithmic => Easing::SlowFadeInFastFadeOut,
+                                            Easing::SlowFadeInFastFadeOut => Easing::FastFadeInSlowFadeOut,
+                                            Easing::FastFadeInSlowFadeOut => Easing::Linear,
+                                        };
+                                        let _ = tx.send(TuiCommand::SetCrossfadeEasing(next)).await;
+                                        if let Some(ref mut cf) = self.state.crossfade { cf.easing = next; }
+                                    }
+                                    _ => {}
+                                },
+                                3 => match opt {
+                                    1 => { // Transparent BG toggle
+                                        self.transparent_bg = !self.transparent_bg;
+                                        save_prefs(&Prefs { theme_index: self.theme_index, transparent_bg: self.transparent_bg });
+                                    }
+                                    2 => { // Sync Covers
+                                        let ipc_tx = self.ipc_tx.clone();
+                                        let c = self.client.clone();
+                                        tokio::spawn(async move {
+                                            if let Ok(DaemonRes::SyncCoversResult { synced, total, .. }) = c.library_sync_covers().await {
+                                                let msg = format!("Covers synced: {synced}/{total} tracks");
+                                                let _ = ipc_tx.send(IpcResult::Notification(msg, crate::app::NotificationKind::Info));
+                                            }
+                                        });
                                     }
                                     _ => {}
                                 },
@@ -997,22 +1256,29 @@ impl App {
                 }
             }
             KeyCode::Up | KeyCode::Char('k') => {
+                // For overlays with input fields, only allow arrow keys (not vim keys)
+                let has_input = matches!(self.overlays.top().map(|o| o.id), Some(OverlayId::YTSearch) | Some(OverlayId::SearchLibrary) | Some(OverlayId::CommandPalette));
+                if has_input && key.code != KeyCode::Up { return; }
                 if let Some(top) = self.overlays.top_mut() {
                     top.selected = top.selected.saturating_sub(1);
                     if top.id == OverlayId::ThemePicker {
                         let idx = top.selected.min(THEMES.len().saturating_sub(1));
                         self.theme = (THEMES[idx].builder)();
                         self.theme_index = idx;
+                        save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg });
                     }
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
+                let has_input = matches!(self.overlays.top().map(|o| o.id), Some(OverlayId::YTSearch) | Some(OverlayId::SearchLibrary) | Some(OverlayId::CommandPalette));
+                if has_input && key.code != KeyCode::Down { return; }
                 if let Some(top) = self.overlays.top_mut() {
                     top.selected += 1;
                     if top.id == OverlayId::ThemePicker {
                         let idx = top.selected.min(THEMES.len().saturating_sub(1));
                         self.theme = (THEMES[idx].builder)();
                         self.theme_index = idx;
+                        save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg });
                     }
                 }
             }
@@ -1032,8 +1298,18 @@ impl App {
                                 // Start search
                             } else if !self.yt_results_cache.is_empty() {
                                 let idx = top.selected.min(self.yt_results_cache.len() - 1);
-                                let url = self.yt_results_cache[idx].url.clone();
-                                let _ = tx.send(TuiCommand::YtResolve(url)).await;
+                                if self.yt_results_cache[idx].is_playlist {
+                                    // Playlist drill-down: search using the playlist URL
+                                    let url = self.yt_results_cache[idx].url.clone();
+                                    if let Some(top) = self.overlays.top_mut() {
+                                        top.query = url;
+                                    }
+                                    let query = self.yt_results_cache[idx].url.clone();
+                                    let _ = tx.send(TuiCommand::YtSearch(query)).await;
+                                } else {
+                                    let url = self.yt_results_cache[idx].url.clone();
+                                    let _ = tx.send(TuiCommand::YtResolve(url)).await;
+                                }
                             } else {
                                 // Initiate a new search
                                 let query = top.query.clone();
@@ -1077,6 +1353,7 @@ impl App {
                             let idx = top.selected.min(THEMES.len().saturating_sub(1));
                             self.theme = (THEMES[idx].builder)();
                             self.theme_index = idx;
+                            save_prefs(&Prefs { theme_index: idx, transparent_bg: self.transparent_bg });
                             self.overlays.close_top();
                         }
                         OverlayId::SoundEffects => {
@@ -1087,11 +1364,34 @@ impl App {
                     }
                 }
             }
+            KeyCode::Char('d') if key.modifiers == KeyModifiers::CONTROL => {
+                // YT search: download selected result
+                let idx = self.overlays.top().map_or(0, |o| o.selected.min(self.yt_results_cache.len().saturating_sub(1)));
+                if !self.yt_results_cache.is_empty() {
+                    let url = self.yt_results_cache[idx].url.clone();
+                    let _ = tx.send(TuiCommand::YtDownload(url)).await;
+                }
+            }
+            KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
+                // YT search: add selected result to queue
+                let idx = self.overlays.top().map_or(0, |o| o.selected.min(self.yt_results_cache.len().saturating_sub(1)));
+                if !self.yt_results_cache.is_empty() {
+                    let url = self.yt_results_cache[idx].url.clone();
+                    if self.yt_results_cache[idx].is_playlist {
+                        let _ = tx.send(TuiCommand::YtResolve(url)).await;
+                    } else {
+                        let _ = tx.send(TuiCommand::QueueAdd(url)).await;
+                    }
+                }
+            }
             KeyCode::Char(c) => {
                 if let Some(top) = self.overlays.top_mut() {
                     match top.id {
                         OverlayId::YTSearch | OverlayId::SearchLibrary => {
                             top.query.push(c);
+                            if top.id == OverlayId::YTSearch {
+                                self.yt_search_debounce = Some(std::time::Instant::now() + Duration::from_millis(500));
+                            }
                         }
                         _ => {}
                     }
@@ -1100,6 +1400,9 @@ impl App {
             KeyCode::Backspace => {
                 if let Some(top) = self.overlays.top_mut() {
                     top.query.pop();
+                    if top.id == OverlayId::YTSearch {
+                        self.yt_search_debounce = Some(std::time::Instant::now() + Duration::from_millis(500));
+                    }
                 }
             }
             _ => {}

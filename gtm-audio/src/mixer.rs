@@ -369,11 +369,11 @@ impl AudioMixer {
 
     fn ease_out(t: f64, easing: Easing) -> f64 {
         match easing {
-            Easing::Linear => t,
-            Easing::SlowFadeInFastFadeOut => 1.0 - (1.0 - t).sqrt(),
-            Easing::FastFadeInSlowFadeOut => 1.0 - (1.0 - t) * (1.0 - t),
+            Easing::Linear => 1.0 - t,
+            Easing::SlowFadeInFastFadeOut => 1.0 - t * t,
+            Easing::FastFadeInSlowFadeOut => (1.0 - t) * (1.0 - t),
             Easing::Logarithmic => 2.0f64.powf(-t),
-            Easing::Smoothstep => t * t * (3.0 - 2.0 * t),
+            Easing::Smoothstep => 1.0 - (t * t * (3.0 - 2.0 * t)),
         }
     }
 
@@ -464,13 +464,18 @@ impl AudioMixer {
         if self.active().empty() {
             if self.crossfade_start.is_some() {
                 self.force_complete_crossfade();
-                // After force-complete the new active player (the old standby)
-                // may still be playing — don't emit Finished if there's audio.
                 if !self.active().empty() {
                     return Ok(None);
                 }
             }
             if self.playing.load(Ordering::SeqCst) {
+                // Guard: if the buffer emptied before the track duration was
+                // reached, it's an underrun — skip Finished and retry next poll.
+                let total = *self.duration.lock().unwrap();
+                let pos = self.current_position();
+                if total > 0.0 && pos < total - 0.5 {
+                    return Ok(None);
+                }
                 self.playing.store(false, Ordering::SeqCst);
                 return Ok(Some(AudioEvent::Finished));
             }

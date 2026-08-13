@@ -116,6 +116,7 @@ roundtrip!(
         duration: 120.0,
         views: 1000,
         thumbnail: Some("https://img.youtube.com/vi/abc/default.jpg".into()),
+        is_playlist: false,
     }
 );
 roundtrip!(

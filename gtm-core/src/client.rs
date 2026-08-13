@@ -230,6 +230,10 @@ impl DaemonClient {
         .await
     }
 
+    pub async fn set_crossfade_easing(&self, easing: crate::state::Easing) -> Result<u32> {
+        self.send_ok(DaemonReq::SetCrossfadeEasing { easing }).await
+    }
+
     // ─── Queue ───
 
     pub async fn queue_list(&self) -> Result<DaemonRes> {
@@ -356,6 +360,13 @@ impl DaemonClient {
     pub async fn library_get_recent(&self, count: u128) -> Result<DaemonRes> {
         self.send_raw(DaemonReq::Library {
             action: LibraryAction::GetRecent { count },
+        })
+        .await
+    }
+
+    pub async fn library_sync_covers(&self) -> Result<DaemonRes> {
+        self.send_raw(DaemonReq::Library {
+            action: LibraryAction::SyncCovers,
         })
         .await
     }

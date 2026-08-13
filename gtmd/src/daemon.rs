@@ -430,6 +430,7 @@ impl Daemon {
                 enabled,
                 duration_secs,
             } => self.cmd_crossfade(*enabled, *duration_secs).await,
+            DaemonReq::SetCrossfadeEasing { easing } => self.cmd_set_crossfade_easing(*easing).await,
             DaemonReq::Queue { action } => self.cmd_queue(action).await,
             DaemonReq::Library { action } => self.cmd_library(action).await,
             DaemonReq::Search { query } => self.cmd_search(query).await,
@@ -667,7 +668,8 @@ impl Daemon {
     ///   - If mixer is playing → pause
     ///   - If paused → resume (no reload, just unpause backend)
     ///   - If stopped with a current track → play from beginning
-    ///   - If stopped with no track → no-op
+    ///   - If stopped with no current track but queue is non-empty → play from queue cursor
+    ///   - If stopped with no track and empty queue → no-op
     async fn cmd_playpause(&mut self) -> Result<DaemonRes, CoreError> {
         let is_playing = self.mixer.is_playing();
         if is_playing {
@@ -703,8 +705,18 @@ impl Daemon {
             } else if !path.is_empty() {
                 self.cmd_play(&path, 0.0).await
             } else {
-                let version = self.state.read().await.version as u32;
-                Ok(DaemonRes::Ok { version })
+                // Stopped with no current track — try first track in queue
+                let state = self.state.read().await;
+                let queue = state.queue.clone();
+                let cursor = state.queue_cursor as usize;
+                drop(state);
+                if !queue.is_empty() {
+                    let idx = cursor.min(queue.len() - 1);
+                    self.cmd_play(&queue[idx].path, 0.0).await
+                } else {
+                    let version = self.state.read().await.version as u32;
+                    Ok(DaemonRes::Ok { version })
+                }
             }
         }
     }
@@ -866,6 +878,20 @@ impl Daemon {
             duration_secs,
         })
         .await;
+        Ok(DaemonRes::Ok { version })
+    }
+
+    async fn cmd_set_crossfade_easing(
+        &mut self,
+        easing: gtm_core::state::Easing,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = self.state.write().await;
+        if let Some(ref mut cf) = state.crossfade {
+            cf.easing = easing;
+        }
+        state.version += 1;
+        let version = state.version as u32;
+        drop(state);
         Ok(DaemonRes::Ok { version })
     }
 
@@ -1169,6 +1195,45 @@ impl Daemon {
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
                     Ok(tracks) => DaemonRes::Tracks { version, tracks },
+                    Err(e) => DaemonRes::Error {
+                        version,
+                        message: e,
+                    },
+                }
+            }
+            gtm_core::ipc::LibraryAction::SyncCovers => {
+                let data_dir = self.config.data_dir.clone();
+                let cache_dir = self.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    let tracks = lib.list_tracks()?;
+                    let mut cache = crate::cover_art::CoverCache::new(cache_dir);
+                    let mut synced = 0usize;
+                    let total = tracks.len();
+                    // We can't use tokio Runtime in a blocking context, so we
+                    // create a minimal tokio runtime just for cover fetching.
+                    let rt = tokio::runtime::Runtime::new()
+                        .map_err(|e| format!("runtime: {e}"))?;
+                    for track in &tracks {
+                        if track.cover_path.is_none()
+                            && !track.artist.is_empty()
+                            && !track.album.is_empty()
+                        {
+                            if rt.block_on(cache.get_cover(&track.artist, &track.album)).is_some() {
+                                synced += 1;
+                            }
+                        }
+                    }
+                    Ok::<(usize, usize), String>((synced, total))
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok((synced, total)) => DaemonRes::SyncCoversResult {
+                        version,
+                        synced,
+                        total,
+                    },
                     Err(e) => DaemonRes::Error {
                         version,
                         message: e,

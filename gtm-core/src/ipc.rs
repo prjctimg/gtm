@@ -54,6 +54,7 @@ pub enum LibraryAction {
     GetRecent {
         count: u128,
     },
+    SyncCovers,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -167,6 +168,9 @@ pub enum DaemonReq {
         enabled: bool,
         duration_secs: u8,
     },
+    SetCrossfadeEasing {
+        easing: state::Easing,
+    },
     SetEqPreset {
         preset: state::EqPreset,
     },
@@ -255,6 +259,11 @@ pub enum DaemonRes {
     CoverArt {
         version: u32,
         data: Option<String>, // base64-encoded PNG bytes
+    },
+    SyncCoversResult {
+        version: u32,
+        synced: usize,
+        total: usize,
     },
     Pong,
     Error {

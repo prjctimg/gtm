@@ -35,7 +35,7 @@ pub enum Easing {
 
 impl Default for Easing {
     fn default() -> Self {
-        Self::Smoothstep
+        Self::Linear
     }
 }
 

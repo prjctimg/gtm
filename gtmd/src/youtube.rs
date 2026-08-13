@@ -38,7 +38,11 @@ impl YoutubeManager {
             .await
             .map_err(|e| format!("semaphore: {e}"))?;
 
-        let search_arg = format!("ytsearch{}:{}", SEARCH_COUNT, query);
+        let search_arg = if query.starts_with("http://") || query.starts_with("https://") {
+            query.to_string()
+        } else {
+            format!("ytsearch{}:{}", SEARCH_COUNT, query)
+        };
 
         let mut child = Command::new("yt-dlp")
             .arg(&search_arg)
@@ -153,13 +157,19 @@ fn parse_yt_json(line: &str) -> Result<YTSearchResult, String> {
     let v: serde_json::Value =
         serde_json::from_str(line).map_err(|e| format!("json: {e}"))?;
     let id = v.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let is_playlist = v.get("_type").and_then(|v| v.as_str()) == Some("playlist");
     Ok(YTSearchResult {
         id: id.clone(),
         title: v.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-        url: format!("https://www.youtube.com/watch?v={id}"),
+        url: if is_playlist {
+            format!("https://www.youtube.com/playlist?list={id}")
+        } else {
+            format!("https://www.youtube.com/watch?v={id}")
+        },
         channel: v.get("channel").and_then(|v| v.as_str()).unwrap_or("").to_string(),
         duration: v.get("duration").and_then(|v| v.as_f64()).unwrap_or(0.0),
         views: v.get("view_count").and_then(|v| v.as_u64()).unwrap_or(0),
         thumbnail: v.get("thumbnail").and_then(|v| v.as_str()).map(|s| s.to_string()),
+        is_playlist,
     })
 }

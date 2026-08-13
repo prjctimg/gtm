@@ -30,7 +30,11 @@ impl DaemonState {
             repeat: RepeatMode::Off,
             shuffle: false,
             mute: false,
-            crossfade: None,
+            crossfade: Some(crate::state::CrossfadeConfig {
+                enabled: true,
+                duration_secs: 5,
+                easing: crate::state::Easing::Linear,
+            }),
             current_track: None,
             time_pos: 0.0,
             duration: 0.0,
