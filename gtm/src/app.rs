@@ -475,6 +475,10 @@ impl App {
 
         self.is_ready = true;
 
+        // Render the initial frame immediately, before the main loop, so
+        // the user never sees a blank alternate screen on startup.
+        let _ = terminal.draw(|f| ui::render(f, &mut self));
+
         let cmd_tx = self.cmd_tx();
         tokio::spawn(async move {
             loop {
