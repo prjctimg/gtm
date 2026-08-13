@@ -29,7 +29,7 @@ fn print_version() {
     let ver = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0");
     println!(
         "gtm {ver}\n\
-         Copyright (C) 2026 prjctimg <prjctimg@outlook.com>\n\
+         Copyright (C) 2025 - present prjctimg <prjctimg@outlook.com>\n\
          Website: https://prjctimg.me\n\
          License GPL-3.0\n\
          This is free software: you are free to change and redistribute it.\n\

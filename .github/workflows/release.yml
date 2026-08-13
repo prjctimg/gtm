@@ -152,7 +152,7 @@ jobs:
       - name: Build Android release binaries
         if: matrix.platform == 'aarch64-android'
         run: |
-          CARGO_INCREMENTAL=0 cargo ndk -t arm64-v8a -p 27 \
+          CARGO_INCREMENTAL=0 cargo ndk -t arm64-v8a -P 27 \
             build --release --no-default-features --features pulseaudio
 
       - name: Clean Android ELF sections

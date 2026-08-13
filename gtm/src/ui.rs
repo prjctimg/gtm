@@ -1996,7 +1996,7 @@ fn render_about_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         )),
         Line::from(""),
         Line::from(Span::styled(
-            " Copyright (C) 2026, prjctimg",
+            " Copyright (C) 2025 - present, prjctimg",
             Style::default().fg(app.theme.fg_dim),
         )),
         Line::from(Span::styled(

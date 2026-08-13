@@ -47,7 +47,7 @@ GPL-3.0-only
 
 > ## License 📜
 >
-> (c) 2026, [prjctimg](https://prjctimg.me)
+> (c) 2025 - present, [prjctimg](https://prjctimg.me)
 >
 > This is free software, released under the GPL-3.0 license.
 

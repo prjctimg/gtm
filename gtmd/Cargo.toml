@@ -38,7 +38,7 @@ pulseaudio = ["gtm-audio/pulseaudio"]
 
 [package.metadata.deb]
 maintainer = "prjctimg <prjctimg@outlook.com>"
-copyright = "2025 prjctimg"
+copyright = "2025 - present prjctimg"
 license-file = ["../LICENSE"]
 extended-description = "GTM background audio daemon. Manages playback, library, and IPC for the GTM music player."
 section = "sound"
