@@ -1,4 +1,4 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
 // NvChad-inspired color themes for the TUI, with TOML user-theme support.
 //
@@ -7,7 +7,7 @@
 use ratatui::style::Color;
 use std::borrow::Cow;
 
-/// Central theme — all UI colors flow through here.
+/// Central theme: all UI colors flow through here.
 /// The TUI renders its own explicit `bg` behind everything.
 #[derive(Clone, Copy)]
 pub struct AppTheme {
@@ -88,7 +88,7 @@ pub fn parse_color(s: &str) -> Result<Color, String> {
 
 // ─── Built-in presets ─────────────────────────────────────────────────
 
-/// Chadrula — NvChad default
+/// Chadrula: NvChad default
 fn chadrula() -> AppTheme {
     AppTheme {
         bg: hex(0x24283b),
@@ -117,7 +117,7 @@ fn chadrula() -> AppTheme {
     }
 }
 
-/// One Dark — NvChad palette
+/// One Dark: NvChad palette
 fn one_dark() -> AppTheme {
     AppTheme {
         bg: hex(0x282c34),
@@ -146,7 +146,7 @@ fn one_dark() -> AppTheme {
     }
 }
 
-/// Tokyo Night — NvChad palette
+/// Tokyo Night: NvChad palette
 fn tokyonight() -> AppTheme {
     AppTheme {
         bg: hex(0x1a1b26),
@@ -175,7 +175,7 @@ fn tokyonight() -> AppTheme {
     }
 }
 
-/// Tokyo Night Storm — derived from Chadrula with a dimmer fg and a warmer
+/// Tokyo Night Storm: derived from Chadrula with a dimmer fg and a warmer
 /// warning/volume-medium pair.
 fn tokyonight_storm() -> AppTheme {
     let mut t = chadrula();
@@ -186,7 +186,7 @@ fn tokyonight_storm() -> AppTheme {
     t
 }
 
-/// Catppuccin Mocha — NvChad palette
+/// Catppuccin Mocha: NvChad palette
 fn catppuccin_mocha() -> AppTheme {
     AppTheme {
         bg: hex(0x1e1e2e),
@@ -215,7 +215,7 @@ fn catppuccin_mocha() -> AppTheme {
     }
 }
 
-/// Gruvbox Dark — NvChad palette
+/// Gruvbox Dark: NvChad palette
 fn gruvbox_dark() -> AppTheme {
     AppTheme {
         bg: hex(0x282828),
@@ -244,7 +244,7 @@ fn gruvbox_dark() -> AppTheme {
     }
 }
 
-/// Nord — NvChad palette
+/// Nord: NvChad palette
 fn nord() -> AppTheme {
     AppTheme {
         bg: hex(0x2e3440),
@@ -273,7 +273,7 @@ fn nord() -> AppTheme {
     }
 }
 
-/// Rose Pine — NvChad palette
+/// Rose Pine: NvChad palette
 fn rose_pine() -> AppTheme {
     AppTheme {
         bg: hex(0x191724),
@@ -302,7 +302,7 @@ fn rose_pine() -> AppTheme {
     }
 }
 
-/// Everforest — NvChad palette
+/// Everforest: NvChad palette
 fn everforest() -> AppTheme {
     AppTheme {
         bg: hex(0x2d353b),
@@ -331,7 +331,7 @@ fn everforest() -> AppTheme {
     }
 }
 
-/// Kanagawa — NvChad palette
+/// Kanagawa: NvChad palette
 fn kanagawa() -> AppTheme {
     AppTheme {
         bg: hex(0x1f1f28),
@@ -360,7 +360,7 @@ fn kanagawa() -> AppTheme {
     }
 }
 
-/// Catppuccin Latte (light) — NvChad palette
+/// Catppuccin Latte (light): NvChad palette
 fn catppuccin_latte() -> AppTheme {
     AppTheme {
         bg: hex(0xeff1f5),
@@ -389,7 +389,7 @@ fn catppuccin_latte() -> AppTheme {
     }
 }
 
-/// Kanagawa Lotus (light) — NvChad palette
+/// Kanagawa Lotus (light): NvChad palette
 fn kanagawa_lotus() -> AppTheme {
     AppTheme {
         bg: hex(0xf2ecbc),
@@ -418,7 +418,7 @@ fn kanagawa_lotus() -> AppTheme {
     }
 }
 
-/// Classic — original gtm TUI design with warmer, more contrasted palette
+/// Classic: original gtm TUI design with warmer, more contrasted palette
 fn classic() -> AppTheme {
     AppTheme {
         bg: hex(0x1c1c1c),
@@ -447,7 +447,7 @@ fn classic() -> AppTheme {
     }
 }
 
-/// Monochrome — single accent color (cyan) with brightness variations for a
+/// Monochrome: single accent color (cyan) with brightness variations for a
 /// cohesive, understated look.
 fn monochrome() -> AppTheme {
     let accent = hex(0x6ec6ca);

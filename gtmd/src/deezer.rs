@@ -1,4 +1,4 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
 // Deezer search for enriching unreliable track metadata
 //

@@ -1,4 +1,4 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
 // Core error type, primitive enums, daemon state, and UI types
 //
@@ -324,12 +324,12 @@ impl EqPreset {
             Self::Rock => [
                 0.0, 0.0, 2.0, 3.0, 2.0, 1.0, -1.0, 0.0, 1.0, 2.0, 2.0, -1.0, 2.0, 2.0, 1.0,
             ],
-            // Jazz: dynamics preserved — nearly flat, clears low-mid congestion,
+            // Jazz: dynamics preserved: nearly flat, clears low-mid congestion,
             // lifts presence and top so brushes and double bass articulate.
             Self::Jazz => [
                 0.0, 0.0, 1.0, 2.0, 1.0, 0.0, -1.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 2.0, 1.0,
             ],
-            // Classical: minimal touch — slight warmth, mostly a gentle
+            // Classical: minimal touch: slight warmth, mostly a gentle
             // brightness tilt so strings and hall air shine through.
             Self::Classical => [
                 0.0, 0.0, 1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 2.0,
@@ -356,32 +356,32 @@ impl EqPreset {
             Self::HipHop => [
                 4.0, 4.0, 3.0, 1.0, 0.0, -2.0, -1.0, 0.0, 1.0, 1.0, 2.0, 1.0, 1.0, 1.0, 0.0,
             ],
-            // Latin: percussive mids and horns — full 250–1000 Hz body for
+            // Latin: percussive mids and horns: full 250–1000 Hz body for
             // congas/bongos, presence and a touch of air for clave and brass.
             Self::Latin => [
                 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0, 2.0, 1.0, 1.0,
             ],
-            // Acoustic: small moves only — acoustic recordings punish heavy EQ;
+            // Acoustic: small moves only: acoustic recordings punish heavy EQ;
             // a slight 250 Hz trim, gentle 1.6–4 kHz presence and top air.
             Self::Acoustic => [
                 0.0, 0.0, 1.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 2.0, 2.0,
             ],
-            // Podcast: speech-optimized — hard low cut for rumble/plosives,
+            // Podcast: speech-optimized: hard low cut for rumble/plosives,
             // 2.5 kHz intelligibility lift, narrow sibilance dip at 6.3 kHz.
             Self::Podcast => [
                 -4.0, -4.0, -2.0, -1.0, 0.0, 1.0, 0.0, 0.0, 1.0, 2.0, 3.0, 2.0, -1.0, -1.0, -2.0,
             ],
-            // Dance: club-oriented — strong bass, mids scooped to leave room for
+            // Dance: club-oriented: strong bass, mids scooped to leave room for
             // bass and treble, sparkle above 10 kHz.
             Self::Dance => [
                 3.0, 4.0, 4.0, 3.0, 1.0, -1.0, -1.0, -1.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 2.0,
             ],
-            // Headphones: mild smiley for consumer cans — a touch of low-end
+            // Headphones: mild smiley for consumer cans: a touch of low-end
             // warmth, mids kept present (not scooped), gentle treble lift.
             Self::Headphones => [
                 2.0, 3.0, 2.0, 1.0, 0.0, -1.0, -1.0, 0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 2.0,
             ],
-            // Speaker: small desktop speakers can't reproduce sub-bass — cut
+            // Speaker: small desktop speakers can't reproduce sub-bass: cut
             // 25–63 Hz (saves excursion, prevents distortion), keep the
             // presence band 2.5–4 kHz forward for clarity, minimal top.
             Self::Speaker => [
@@ -433,7 +433,7 @@ pub enum Tab {
 
 /// Persistent daemon state saved to disk across restarts.
 ///
-/// Only contains user preferences and queue data — ephemeral session
+/// Only contains user preferences and queue data: ephemeral session
 /// state (status, current_track, time_pos, duration, sleep_timer) is
 /// not persisted.
 #[derive(Debug, Clone, Serialize, Deserialize)]

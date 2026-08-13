@@ -1,4 +1,4 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
 // Dedicated decode thread that reads audio files, applies EQ/reverb,
 // and writes decoded samples into a lock-free SPSC ring buffer.
@@ -20,7 +20,7 @@ use crate::ring_buffer::{DecodeControl, SharedRingBuffer, PREBUFFER_SAMPLES};
 use crate::symphonia::SymphoniaSource;
 
 // ---------------------------------------------------------------------------
-// EQ helpers (moved from eq.rs EqSource — processing on decode thread)
+// EQ helpers (moved from eq.rs EqSource: processing on decode thread)
 // ---------------------------------------------------------------------------
 
 fn build_eq_boxed(sr: f64) -> Box<dyn AudioUnit> {
@@ -41,7 +41,7 @@ fn apply_headroom(sample: f32, headroom_mult: f32) -> f32 {
 }
 
 // ---------------------------------------------------------------------------
-// Reverb helper — standalone processing function (no Source wrapper needed)
+// Reverb helper: standalone processing function (no Source wrapper needed)
 // ---------------------------------------------------------------------------
 
 struct ReverbState {
@@ -64,7 +64,7 @@ impl ReverbState {
 }
 
 // ---------------------------------------------------------------------------
-// DecodeThread — runs on a dedicated std::thread
+// DecodeThread owns a dedicated std::thread
 // ---------------------------------------------------------------------------
 
 pub struct DecodeThread {
@@ -158,7 +158,7 @@ impl DecodeThread {
             let mut sample_count: usize = 0;
             let mut prebuffered = false;
 
-            // Decode loop — read from SymphoniaSource, process, write to ring buffer
+            // Decode loop: read from SymphoniaSource, process, write to ring buffer
             // Use an explicit loop over the iterator so we can check seek/running flags.
             let mut source_iter = raw;
 
@@ -179,7 +179,7 @@ impl DecodeThread {
                     break; // restart decoder at new position
                 }
 
-                // Check ring buffer space — if nearly full, yield to avoid spinning
+                // Check ring buffer space: if nearly full, yield to avoid spinning
                 if self.shared.free_space() < 1024 {
                     std::thread::yield_now();
                     continue;
@@ -189,7 +189,7 @@ impl DecodeThread {
                 let sample = match source_iter.next() {
                     Some(s) => s,
                     None => {
-                        // EOF — drain ring buffer then signal finished
+                        // EOF: drain ring buffer then signal finished
                         while self.shared.available() > 0 {
                             std::thread::yield_now();
                             if !self.control.running.load(Ordering::Acquire) {
@@ -234,7 +234,7 @@ impl DecodeThread {
                     if channels == 2 {
                         let ch = sample_count % 2;
                         if ch == 0 {
-                            // This is a left sample — we need the right sample too
+                            // This is a left sample: we need the right sample too
                             match source_iter.next() {
                                 Some(right_raw) => {
                                     let right_eq = if self.eq_enabled.load(Ordering::Relaxed) {
@@ -279,7 +279,7 @@ impl DecodeThread {
                                 }
                             }
                         } else {
-                            // Odd sample — should be right, but we handle in pairs above
+                            // Odd sample: should be right, but we handle in pairs above
                             eq_sample
                         }
                     } else {

@@ -86,7 +86,7 @@ impl TestReader {
                 return None;
             }
             if self.buf[0] == b'{' {
-                // JSON line — either a response envelope or an event line.
+                // JSON line: either a response envelope or an event line.
                 let pos = self.buf.iter().position(|&b| b == b'\n')?;
                 let line = self.buf[..pos].to_vec();
                 self.buf.drain(..=pos);
@@ -97,13 +97,13 @@ impl TestReader {
             }
             // Binary WireFrame: 4-byte big-endian length prefix + payload.
             if self.buf.len() < 4 {
-                // Not enough for the length prefix yet — read more.
+                // Not enough for the length prefix yet: read more.
                 return None;
             }
             let len =
                 u32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
             if self.buf.len() < 4 + len {
-                // Not enough for the full frame — read more.
+                // Not enough for the full frame: read more.
                 return None;
             }
             // Discard the binary event frame and loop to try parsing again.

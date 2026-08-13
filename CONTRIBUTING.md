@@ -1,14 +1,14 @@
 # Contributing
 
 Thanks for considering contributing to gtm.rs, this is a friendly, hobby
-project — feedback, bug reports, and pull requests are welcome.
+project: feedback, bug reports, and pull requests are welcome.
 
 ## Build from source
 
 Prerequisites:
 
-- **Rust 1.81+** — install via [rustup](https://rustup.rs)
-- **ALSA development headers** — `libasound2-dev` on Debian/Ubuntu
+- **Rust 1.81+**: install via [rustup](https://rustup.rs)
+- **ALSA development headers**: `libasound2-dev` on Debian/Ubuntu
   (`brew install alsa-lib` on macOS, optional for Linux-only backends)
 - D-Bus development library (for the optional MPRIS feature:)
 
@@ -33,8 +33,8 @@ care about:
 |---|---|
 | `gtm-core` | Shared types, IPC protocol, state machine, `DaemonClient` |
 | `gtm-audio` | Audio playback backend (rodio + symphonia and fundsp) |
-| `gtmd` | Daemon — manages queue, library, IPC socket |
-| `gtm` | Client — TUI and CLI interface |
+| `gtmd` | Daemon: manages queue, library, IPC socket |
+| `gtm` | Client: TUI and CLI interface |
 | `gtm-mpris` | MPRIS D-Bus interface (optional) |
 | `release-gen` | Shell-completion generator used by the release pipeline |
 
@@ -71,5 +71,5 @@ vhs < tapes/demo.tape
 ## Reference implementation
 
 This is a Rust implementation of the [gtm.spec](https://github.com/prjctimg/gtm.spec), the authoritative source for the player's domain model,
-IPC protocol, and manuals — please check it before changing
+IPC protocol, and manuals: please check it before changing
 behaviour that is specified there.

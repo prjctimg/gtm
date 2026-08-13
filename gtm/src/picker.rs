@@ -1,10 +1,10 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
-// Picker system — floating panels accessible via Alt+key from any tab
+// Picker system: floating panels accessible via Alt+key from any tab
 //
 // This is free software released under the GPL-3.0 license.
 
-//! Picker system — floating panels accessible via Alt+key from any tab.
+//! Picker system: floating panels accessible via Alt+key from any tab.
 //!
 //! Each picker is a self-contained UI module that renders on top of the
 //! current tab content with a semi-transparent background.
@@ -27,7 +27,7 @@ pub enum PickerId {
     EditMetadata,
 }
 
-/// Active picker instance — state + metadata.
+/// Active picker instance: state + metadata.
 pub struct Picker {
     pub id: PickerId,
     pub query: String,

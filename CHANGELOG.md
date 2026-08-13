@@ -30,11 +30,11 @@
 
 ### Changed
 - Release assets are staged per build job into `release-assets/` and collected flat by the release job, fixing the release glob that silently dropped the Linux/macOS archives on v0.1.3
-- Per-target archives are now self-contained bundles (`bin/`, `man/man1/`, `completions/`, `systemd/`, `desktop/`, `icons/`, `LICENSE`); no separate TUI/daemon-only archives, raw binaries, or standalone `gtm-docs.tar.gz` are published — completions and man pages ship inside every archive
+- Per-target archives are now self-contained bundles (`bin/`, `man/man1/`, `completions/`, `systemd/`, `desktop/`, `icons/`, `LICENSE`); no separate TUI/daemon-only archives, raw binaries, or standalone `gtm-docs.tar.gz` are published: completions and man pages ship inside every archive
 - README gains a "GitHub Release" install section (tar.xvf + per-distro one-liners)
 
 ### Fixed
-- **Lyric auto-follow freeze**: manual lyric scrolling no longer leaves the highlight frozen for the rest of the track — auto-follow resumes once playback catches up to the scrolled line, and a tab switch clears the latch
+- **Lyric auto-follow freeze**: manual lyric scrolling no longer leaves the highlight frozen for the rest of the track: auto-follow resumes once playback catches up to the scrolled line, and a tab switch clears the latch
 - **Tab pane focus cycling**: Tab/Shift-Tab now cycles pane focus through the lyrics pane on the Library tab (previously only the library/settings panes), with focus state reset on tab switches
 - **Active tab highlight**: the active tab now uses selection foreground/background colors in both the Classic and Modern designs
 - Stale `dist/gtmd.spec` URL (`skchr/gtm-rs` → `prjctimg/gtm.rs`) and version
@@ -52,7 +52,7 @@
 
 ### Fixed
 - **glibc compatibility**: Linux builds now run on Ubuntu 22.04 (glibc 2.35) instead of 24.04 (2.39), so binaries run on any system with glibc >= 2.35 (Debian 12 / Ubuntu 22.04 and later)
-- **Broken `.deb` packages**: `gtm-full` debs had `Depends: libasound2t64, libc6 (>= 2.39)` which are unresolvable on Debian 12; deps are now resolved on the Ubuntu 22.04 build host (`libasound2`, `libc6 (>= 2.35)`). Also fixed the missing `gtm` binary and asset files that were packaged as dangling symlinks (cargo-deb 3.7.0 array-asset bug — switched to the `{source, dest}` table format and added `$auto`)
+- **Broken `.deb` packages**: `gtm-full` debs had `Depends: libasound2t64, libc6 (>= 2.39)` which are unresolvable on Debian 12; deps are now resolved on the Ubuntu 22.04 build host (`libasound2`, `libc6 (>= 2.35)`). Also fixed the missing `gtm` binary and asset files that were packaged as dangling symlinks (cargo-deb 3.7.0 array-asset bug: switched to the `{source, dest}` table format and added `$auto`)
 - **Decluttered releases**: per-platform `gtm-full-{platform}.tar.gz` now bundles both binaries + manpages + completions + systemd service; separate `gtm-*`/`gtmd-*` archives and raw binaries removed; all docs shipped as a single `gtm-docs.tar.gz`; the empty `gtmd` deb is no longer published
 
 ## [0.1.2] – 2026-08-05
@@ -80,10 +80,10 @@
 - **Packaging**: DEB (cargo-deb), RPM spec, Nix flake, Makefile, systemd user service, desktop file
 
 ### Fixed
-- `blocking_lock()` crash in IPC worker — switched to async `.lock().await`
-- 10-second blank startup — background auto-scan, non-blocking socket accept
-- Unsafe volume clamp on daemon startup — explicit `min(100)`
-- TUI freeze on library scan — deferred scanning to tokio task
+- `blocking_lock()` crash in IPC worker: switched to async `.lock().await`
+- 10-second blank startup: background auto-scan, non-blocking socket accept
+- Unsafe volume clamp on daemon startup: explicit `min(100)`
+- TUI freeze on library scan: deferred scanning to tokio task
 - Enter key in Library tab now plays selected track
 - Position tracking freezes correctly on pause
 

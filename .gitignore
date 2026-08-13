@@ -1,0 +1,10 @@
+/target
+/artifacts
+/wiki
+/tapes/out
+opencode.json
+PROMPT.md
+*.png
+DIRECTORY.md
+.entire/
+.opencode/

@@ -236,7 +236,7 @@ impl AudioVisualizer {
         Lines(lines)
     }
 
-    /// Scrolling decay band — bars sampled at a seed-driven offset so the
+    /// Scrolling decay band: bars sampled at a seed-driven offset so the
     /// waveform appears to travel across the screen.
     fn render_spectrum(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
         const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];

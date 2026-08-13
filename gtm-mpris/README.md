@@ -9,8 +9,8 @@ allowing media keys, desktop environment lock screen controls, and tools like
 
 Serves two D-Bus interfaces on `org.mpris.MediaPlayer2.gtm`:
 
-- **`org.mpris.MediaPlayer2`** — Identity, Quit, CanQuit
-- **`org.mpris.MediaPlayer2.Player`** — PlaybackStatus, Metadata, Volume, Position, Seek, Next, Previous, PlayPause
+- **`org.mpris.MediaPlayer2`**: Identity, Quit, CanQuit
+- **`org.mpris.MediaPlayer2.Player`**: PlaybackStatus, Metadata, Volume, Position, Seek, Next, Previous, PlayPause
 
 Daemon events are bridged to D-Bus `PropertiesChanged` signals in real-time.
 
@@ -18,4 +18,4 @@ Daemon events are bridged to D-Bus `PropertiesChanged` signals in real-time.
 
 `gtm-core`, `zbus` (tokio), `zvariant`, `tracing`
 
-Optional — compile with `gtmd --features mpris` (enabled by default).
+Optional: compile with `gtmd --features mpris` (enabled by default).

@@ -1,4 +1,4 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
 // Daemon configuration: CLI args, paths, and defaults
 //
@@ -132,7 +132,7 @@ impl DaemonConfig {
             #[cfg(feature = "pulseaudio")]
             _ if gtm_core::is_termux() => {
                 eprintln!(
-                    "gtmd: Termux detected — using the PulseAudio backend. \
+                    "gtmd: Termux detected: using the PulseAudio backend. \
                      Ensure it is running: pulseaudio --start --exit-idle-time=-1"
                 );
                 AudioBackendKind::PulseAudio

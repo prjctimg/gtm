@@ -1,4 +1,4 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
 // CLI mode: dispatches subcommands to the daemon via IPC
 //
@@ -202,7 +202,7 @@ pub enum CliCommand {
 }
 
 pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) {
-    // `gtm config` edits the config file locally — no daemon needed.
+    // `gtm config` edits the config file locally: no daemon needed.
     if matches!(cmd, CliCommand::Config) {
         if let Err(e) = open_config_in_editor() {
             eprintln!("error: {e}");
@@ -535,7 +535,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         Some(l) => {
                             if l.lines.is_empty() {
                                 let artist_str = if let Some(ref a) = l.artist {
-                                    format!("{a} — ")
+                                    format!("{a}: ")
                                 } else {
                                     String::new()
                                 };
@@ -619,7 +619,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                                 if t.artist.is_empty() {
                                     title
                                 } else {
-                                    format!("{} — {}", t.artist, title)
+                                    format!("{}: {}", t.artist, title)
                                 }
                             })
                             .unwrap_or_else(|| "No track".into());
@@ -681,7 +681,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         };
                         out += &format!("  {icon} \x1b[1m{}\x1b[0m", c.name);
                         if let Some(ref msg) = c.message {
-                            out += &format!(" — {msg}");
+                            out += &format!(": {msg}");
                         }
                         if let Some(uptime) = c.uptime_secs {
                             out += &format!(" (uptime {:.0}s)", uptime);
@@ -718,7 +718,7 @@ fn open_config_in_editor() -> Result<(), String> {
     let path = crate::app::ensure_prefs_file();
     let editor = pick_editor().ok_or_else(|| {
         format!(
-            "no editor found — set $VISUAL or $EDITOR to open {}",
+            "no editor found: set $VISUAL or $EDITOR to open {}",
             path.display()
         )
     })?;

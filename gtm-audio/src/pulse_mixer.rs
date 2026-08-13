@@ -1,4 +1,4 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
 // PulseAudio mixer backend with dual-stream crossfade
 //
@@ -21,10 +21,6 @@ use crate::ring_buffer::{DecodeControl, RingBufferInner, SharedRingBuffer, PREBU
 use crate::symphonia::SymphoniaSource;
 use gtm_core::state::{Easing, EqPreset, ReverbConfig};
 use rodio::Source;
-
-// ---------------------------------------------------------------------------
-// PlaybackSource — reads f32 samples from ring buffer with volume scaling
-// ---------------------------------------------------------------------------
 
 struct PaPlaybackSource {
     ring: SharedRingBuffer,

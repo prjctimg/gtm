@@ -1,25 +1,42 @@
-# gtm.rs 🦀
+# gtm.rs
 
 [![CI](https://img.shields.io/github/actions/workflow/status/prjctimg/gtm.rs/ci.yml)](https://github.com/prjctimg/gtm.rs/actions/workflows/ci.yml)
 [![Version](https://img.shields.io/github/v/release/prjctimg/gtm.rs)](https://github.com/prjctimg/gtm.rs/releases/latest)
 [![License](https://img.shields.io/github/license/prjctimg/gtm.rs)](https://github.com/prjctimg/gtm.rs/blob/main/LICENSE)
 [![Rust](https://img.shields.io/badge/rustc-1.81+-orange.svg)](https://www.rust-lang.org)
 
-> Feature rich terminal audio player 📻  with background playback support and YouTube/Spotify integration. Rust implementation of the
-> [gtm spec](https://github.com/prjctimg/gtm.spec).
+A terminal music player with background playback and YouTube/Spotify
+integration. Rust implementation of the [gtm spec](https://github.com/prjctimg/gtm.spec).
 
 <img src="assets/screenshots/library.png" alt="gtm library view" width="640">
 
+## Why I built this
+
+I wanted a player that keeps playing in the background while I work in the
+terminal, handles local files *and* YouTube/Spotify in one place, and sounds
+good through a real EQ instead of a flat toggle. gtm.rs is that.
+
 ## Features
 
-- **Background playback** - reattach to the client from anywhere in the terminal
-- **YouTube, Spotify, Deezer** integration — search, download, and resolve
-  tracks, sync Spotify playlists, and fetch missing metadata/lyrics/cover art.
-- **Equalizer** — 16 presets plus per-band gain, headroom stage, and a
-  spectrum visualizer.
-- **Cover art** — rendered inline via the kitty/terminal image protocol.
-- **Zero configuration** - Sane defaults,fully customizable via TOML.Has 12 built-in themes and various widget styles.
-- **MPRIS** — media player controls via D-Bus.
+- **Background playback**: reattach to the client from anywhere in the terminal
+- **YouTube, Spotify, Deezer**: search, download, and resolve tracks, sync
+  Spotify playlists, and fetch missing metadata/lyrics/cover art
+- **Equalizer**: 16 presets plus per-band gain, headroom stage, and a spectrum
+  visualizer
+- **Cover art**: rendered inline via the kitty/terminal image protocol
+- **Zero configuration**: sane defaults, fully customizable via TOML, 12
+  built-in themes, various widget styles
+- **MPRIS**: media player controls via D-Bus
+
+## Comparison
+
+| | gtm.rs | cmus | mpd + ncmpcpp | spotify-tui | mopidy |
+|---|---|---|---|---|---|
+| Background daemon | yes | no | yes | no | yes |
+| Local files + YouTube/Spotify in one player | yes | no | no | spotify only | addons |
+| Equalizer | 16 presets, 15 bands | no | via mpd | no | via addons |
+| Terminal UI | TUI + CLI | TUI | TUI | TUI | client needed |
+| Inline cover art | yes | no | no | no | no |
 
 ## Install
 
@@ -29,13 +46,10 @@ curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.spec/main/install.sh |
 
 ### GitHub Release
 
-> [!note]
->
-> Each `gtm-{platform}.tar.gz` bundles both binaries
-(`bin/gtm`, `bin/gtmd`), man pages, shell completions, and the `systemd` user service.
->
-> Substitute `x86_64-linux` for `aarch64-linux`, `aarch64-linux-musl` (musl), `aarch64-darwin` or `aarch64-android` for as needed.
->
+Each `gtm-{platform}.tar.gz` bundles both binaries (`bin/gtm`, `bin/gtmd`),
+man pages, shell completions, and the `systemd` user service. Substitute
+`x86_64-linux` for `aarch64-linux`, `aarch64-linux-musl`, `aarch64-darwin` or
+`aarch64-android` as needed.
 
 Grab one from the [releases page](https://github.com/prjctimg/gtm.rs/releases/latest).
 
@@ -79,18 +93,13 @@ sudo make install
 
 ## Contributing
 
-> [!note]
->
-> This is a hobby project but is feature complete and stable enough to use as my daily driver.
-> However its still largely a WIP.
->
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions, the crate layout and the green gates (fmt / clippy / test).
+This is a hobby project. It is feature complete and stable enough to use as a
+daily driver, though still largely a WIP. See [CONTRIBUTING.md](CONTRIBUTING.md)
+for build instructions, the crate layout, and the green gates (fmt / clippy /
+test).
 
 ---
 
-> ## License 📜
->
-> (c) 2025 - present, [prjctimg](https://prjctimg.me)
->
-> This is free software, released under the GPL-3.0 license.
+(c) 2026 - present, [prjctimg](https://prjctimg.me)
+
+Released under the GPL-3.0 license.

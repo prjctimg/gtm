@@ -1,4 +1,4 @@
-# gtmd — gtm daemon
+# gtmd: gtm daemon
 
 Background audio daemon that owns all playback state, manages the music library,
 and communicates with clients over a Unix domain socket.

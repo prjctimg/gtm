@@ -1,4 +1,4 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
 // Real-time 15-band parametric EQ and reverb using fundsp
 //
@@ -36,10 +36,6 @@ impl AtomicF32 {
         self.0.store(val.to_bits(), order);
     }
 }
-
-// ---------------------------------------------------------------------------
-// EqGains — shared 15-band gain array
-// ---------------------------------------------------------------------------
 
 pub struct EqGainsInner {
     bands: [AtomicF32; 15],
@@ -83,7 +79,7 @@ impl EqGains {
 }
 
 // ---------------------------------------------------------------------------
-// EqSource — 15-band parametric EQ applied per-sample
+// EqSource: 15-band parametric EQ applied per-sample
 // ---------------------------------------------------------------------------
 
 pub struct EqSource<I> {
@@ -190,7 +186,7 @@ where
 }
 
 // ---------------------------------------------------------------------------
-// ReverbSource — stereo reverb, bypassable at runtime
+// ReverbSource: stereo reverb, bypassable at runtime
 // ---------------------------------------------------------------------------
 
 type ReverbFn = Box<dyn FnMut(f32, f32) -> (f32, f32) + Send>;

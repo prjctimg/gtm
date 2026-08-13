@@ -1,4 +1,4 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
 // IPC client: async daemon communication over Unix sockets
 //
@@ -854,7 +854,7 @@ impl IpcWorker {
         let mut tmp = [0u8; 4096];
         loop {
             // Heartbeat check: if no heartbeat received within timeout,
-            // the daemon or connection is stale — force reconnect immediately.
+            // the daemon or connection is stale: force reconnect immediately.
             if self.last_heartbeat_at.lock().unwrap().elapsed()
                 > Duration::from_secs(HEARTBEAT_TIMEOUT_SECS)
             {

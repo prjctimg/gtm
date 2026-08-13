@@ -1,4 +1,4 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
 // Daemon event loop, IPC command handlers, and audio event processing
 //
@@ -306,7 +306,7 @@ impl Daemon {
                 Ok(m) => Ok(Box::new(m)),
                 Err(e) => {
                     // On Termux, rodio/cpal cannot open a device, so falling
-                    // back to it is pointless — surface the actionable error.
+                    // back to it is pointless: surface the actionable error.
                     if gtm_core::is_termux() {
                         return Err(CoreError::Daemon(format!(
                             "PulseAudio init failed: {e}. On Termux start the server first: \
@@ -334,11 +334,11 @@ impl Daemon {
             .map_err(|e| CoreError::Daemon(format!("audio mixer init: {e}")))
     }
 
-    /// Main daemon event loop — multiplexes three sources:
+    /// Main daemon event loop: multiplexes three sources:
     ///
-    ///   1. **new connections**  — accept_client() spawns per-client read/write tasks
-    ///   2. **IPC requests**     — dispatch() → handle_request() → cmd_*()
-    ///   3. **audio events**     — handle_audio_event() updates state, pushes events
+    ///   1. **new connections** : accept_client() spawns per-client read/write tasks
+    ///   2. **IPC requests**    : dispatch() → handle_request() → cmd_*()
+    ///   3. **audio events**    : handle_audio_event() updates state, pushes events
     pub async fn run(&mut self) -> Result<(), CoreError> {
         info!(
             "daemon started on {} (pulse: {})",
@@ -463,7 +463,7 @@ impl Daemon {
         let total_tracks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         for audio_dir in &library_paths {
             if !audio_dir.exists() {
-                info!("library path {:?} does not exist — skipping", audio_dir);
+                info!("library path {:?} does not exist: skipping", audio_dir);
                 continue;
             }
             let audio_dir_str = audio_dir.to_string_lossy().to_string();
@@ -512,9 +512,9 @@ impl Daemon {
 
     /// Accept a new client connection and spawn two background tasks:
     ///
-    ///   **Reader task** — reads JSON lines from the Unix socket,
+    ///   **Reader task**: reads JSON lines from the Unix socket,
     ///                    deserializes into DaemonReq, sends to req_tx.
-    ///   **Writer task** — receives responses (via reply_rx) and broadcast
+    ///   **Writer task**: receives responses (via reply_rx) and broadcast
     ///                    events (via event_rx), writes JSON back to socket.
     async fn accept_client(
         client_id: ClientId,
@@ -770,7 +770,7 @@ impl Daemon {
                 // protocol.md "Version Negotiation": client > daemon ⇒ ok:false.
                 if *version > PROTOCOL_VERSION {
                     info!(
-                        "client {client_id}: handshake rejected — client protocol v{version} > daemon v{PROTOCOL_VERSION}"
+                        "client {client_id}: handshake rejected: client protocol v{version} > daemon v{PROTOCOL_VERSION}"
                     );
                     return Ok(DaemonRes::Error {
                         message: format!(

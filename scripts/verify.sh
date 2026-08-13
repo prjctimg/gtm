@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Script to verify GTM Protocol v2 compliance
-# Run this after implementing all phases
+# Verify GTM protocol v2 wire-format compliance
+# Run from the repo root:
 
 set -euo pipefail
 
-echo "Checking GTM Protocol v2 compliance..."
+echo "Checking GTM protocol v2 wire-format compliance..."
 echo "====================================="
 
 echo ""

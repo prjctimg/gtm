@@ -1,4 +1,4 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
 // Keybinding dispatch system with context-aware matching
 //
@@ -21,11 +21,11 @@
 //!  └──────────────────────┘
 //!
 //!  Contexts:
-//!    Global  — active everywhere (q, space, ?)
-//!    Normal  — main view mode (tab, cursor, volume)
-//!    List    — when a list widget has focus (j/k, enter)
-//!    Filter  — typing a search query
-//!    Picker — modal picker is open
+//!    Global : active everywhere (q, space, ?)
+//!    Normal : main view mode (tab, cursor, volume)
+//!    List   : when a list widget has focus (j/k, enter)
+//!    Filter : typing a search query
+//!    Picker: modal picker is open
 //! ```
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -138,15 +138,15 @@ fn key_matches(event: &KeyEvent, binding: &KeyEvent) -> bool {
 
 /// Build the default set of key bindings.  Layered by context:
 ///
-///   Global  — q (quit), ? (help), space (play/pause)
-///   Normal  — tab switching, cursor, volume, filters, playback control
-///   List    — j/k, enter, delete
+///   Global : q (quit), ? (help), space (play/pause)
+///   Normal : tab switching, cursor, volume, filters, playback control
+///   List   : j/k, enter, delete
 ///
 /// Bindings are scanned in order; the first match wins.
 pub fn default_keybindings() -> Keybindings {
     Keybindings {
         bindings: vec![
-            // Global — Quit
+            // Global: Quit
             (
                 KeyCode::Char('q').into(),
                 BoundCommand {
@@ -154,7 +154,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Global, KeyContext::Normal],
                 },
             ),
-            // Global — ToggleHelp
+            // Global: ToggleHelp
             (
                 KeyCode::Char('?').into(),
                 BoundCommand {
@@ -162,7 +162,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Global, KeyContext::Normal],
                 },
             ),
-            // Ctrl+H — hide/show help bar in library view
+            // Ctrl+H: hide/show help bar in library view
             (
                 KeyEvent::new(KeyCode::Char('h'), KeyModifiers::CONTROL),
                 BoundCommand {
@@ -178,7 +178,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Tab switching — Tab / Shift-Tab
+            // Tab switching: Tab / Shift-Tab
             (
                 KeyCode::Tab.into(),
                 BoundCommand {
@@ -193,7 +193,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Numbered tab switching — 1 = Library, 2 = Settings
+            // Numbered tab switching: 1 = Library, 2 = Settings
             (
                 KeyCode::Char('1').into(),
                 BoundCommand {
@@ -208,7 +208,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Cursor — arrow keys
+            // Cursor: arrow keys
             (
                 KeyCode::Up.into(),
                 BoundCommand {
@@ -223,7 +223,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::List, KeyContext::Normal],
                 },
             ),
-            // Cursor — vim-style j/k
+            // Cursor: vim-style j/k
             (
                 KeyCode::Char('k').into(),
                 BoundCommand {
@@ -238,7 +238,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::List, KeyContext::Normal],
                 },
             ),
-            // Cursor — page up/down (PgUp/PgDn, Ctrl+U/Ctrl+D)
+            // Cursor: page up/down (PgUp/PgDn, Ctrl+U/Ctrl+D)
             (
                 KeyCode::PageUp.into(),
                 BoundCommand {
@@ -267,7 +267,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Cursor — jump to top/bottom (Home/End)
+            // Cursor: jump to top/bottom (Home/End)
             (
                 KeyCode::Home.into(),
                 BoundCommand {
@@ -282,7 +282,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::List, KeyContext::Normal],
                 },
             ),
-            // Playback — space, n, p, Ctrl+N/P, s (stop)
+            // Playback: space, n, p, Ctrl+N/P, s (stop)
             (
                 KeyCode::Char(' ').into(),
                 BoundCommand {
@@ -325,7 +325,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Volume — +, =, -
+            // Volume: +, =, -
             (
                 KeyCode::Char('+').into(),
                 BoundCommand {
@@ -347,7 +347,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Mute — m
+            // Mute: m
             (
                 KeyCode::Char('m').into(),
                 BoundCommand {
@@ -355,7 +355,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Quit daemon — Q / Ctrl+Q
+            // Quit daemon: Q / Ctrl+Q
             (
                 KeyCode::Char('Q').into(),
                 BoundCommand {
@@ -370,7 +370,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Global, KeyContext::Normal],
                 },
             ),
-            // Favourite — F
+            // Favourite: F
             (
                 KeyCode::Char('F').into(),
                 BoundCommand {
@@ -378,7 +378,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Clear queue — D
+            // Clear queue: D
             (
                 KeyCode::Char('D').into(),
                 BoundCommand {
@@ -386,7 +386,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Focus navigation — [, ]
+            // Focus navigation: [, ]
             (
                 KeyCode::Char('[').into(),
                 BoundCommand {
@@ -401,7 +401,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Lyrics — l
+            // Lyrics: l
             (
                 KeyCode::Char('l').into(),
                 BoundCommand {
@@ -409,7 +409,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Repeat — r, Shift+R
+            // Repeat: r, Shift+R
             (
                 KeyCode::Char('r').into(),
                 BoundCommand {
@@ -424,7 +424,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Shuffle — Shift+S only (s is reserved for Stop)
+            // Shuffle: Shift+S only (s is reserved for Stop)
             (
                 KeyCode::Char('S').into(),
                 BoundCommand {
@@ -432,7 +432,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Seek — comma/period
+            // Seek: comma/period
             (
                 KeyCode::Char('.').into(),
                 BoundCommand {
@@ -447,7 +447,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Filter mode — /, Ctrl+F
+            // Filter mode: /, Ctrl+F
             (
                 KeyCode::Char('/').into(),
                 BoundCommand {
@@ -462,7 +462,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Select — Enter
+            // Select: Enter
             (
                 KeyCode::Enter.into(),
                 BoundCommand {
@@ -470,7 +470,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::List, KeyContext::Normal],
                 },
             ),
-            // Back — Backspace (go back in library drill-down / move focus left)
+            // Back: Backspace (go back in library drill-down / move focus left)
             (
                 KeyCode::Backspace.into(),
                 BoundCommand {
@@ -478,7 +478,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Delete — Del / d (with confirmation)
+            // Delete: Del / d (with confirmation)
             (
                 KeyCode::Delete.into(),
                 BoundCommand {
@@ -493,7 +493,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::List, KeyContext::Normal],
                 },
             ),
-            // Overlay triggers — Alt+key
+            // Overlay triggers: Alt+key
             (
                 KeyEvent::new(KeyCode::Char('q'), KeyModifiers::ALT),
                 BoundCommand {
@@ -564,8 +564,8 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Library motions — vim-style
-            // v — toggle multiselect mode
+            // Library motions: vim-style
+            // v: toggle multiselect mode
             (
                 KeyCode::Char('v').into(),
                 BoundCommand {
@@ -573,7 +573,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // a — add selected to queue
+            // a: add selected to queue
             (
                 KeyCode::Char('a').into(),
                 BoundCommand {
@@ -581,7 +581,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // A (Shift) — add to playlist
+            // A (Shift): add to playlist
             (
                 KeyCode::Char('A').into(),
                 BoundCommand {
@@ -589,7 +589,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // x — delete from list
+            // x: delete from list
             (
                 KeyCode::Char('x').into(),
                 BoundCommand {
@@ -597,9 +597,9 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // gg — jump to start (handled via pending_motion in app.rs)
+            // gg: jump to start (handled via pending_motion in app.rs)
             // g alone is not bound; the app checks for double-press.
-            // G (Shift) — jump to end
+            // G (Shift): jump to end
             (
                 KeyCode::Char('G').into(),
                 BoundCommand {
@@ -607,7 +607,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // e — edit metadata
+            // e: edit metadata
             (
                 KeyCode::Char('e').into(),
                 BoundCommand {
@@ -615,7 +615,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Ctrl+V — toggle visualizer
+            // Ctrl+V: toggle visualizer
             (
                 KeyEvent::new(KeyCode::Char('v'), KeyModifiers::CONTROL),
                 BoundCommand {
@@ -623,7 +623,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Alt+T — cycle theme (dark/light variants)
+            // Alt+T: cycle theme (dark/light variants)
             (
                 KeyEvent::new(KeyCode::Char('T'), KeyModifiers::ALT),
                 BoundCommand {
@@ -631,7 +631,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // : (colon) — health check (neovim-style)
+            // : (colon): health check (neovim-style)
             (
                 KeyCode::Char(':').into(),
                 BoundCommand {

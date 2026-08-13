@@ -1,4 +1,4 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
 // SPSC lock-free ring buffer and rodio Source adapter
 //
@@ -20,10 +20,6 @@ pub const NO_SEEK: u64 = u64::MAX;
 
 /// Prebuffer threshold in samples (0.75 seconds at 44100 stereo).
 pub const PREBUFFER_SAMPLES: usize = 44100 * 2 * 3 / 4; // 66150
-
-// ---------------------------------------------------------------------------
-// RingBufferInner — shared SPSC state
-// ---------------------------------------------------------------------------
 
 // SAFETY: RingBufferInner uses UnsafeCell for SPSC lock-free access.
 // - Only one producer thread calls push()
@@ -124,10 +120,6 @@ impl Drop for RingBufferInner {
 
 pub type SharedRingBuffer = Arc<RingBufferInner>;
 
-// ---------------------------------------------------------------------------
-// DecodeControl — flags shared between decode thread and mixer
-// ---------------------------------------------------------------------------
-
 pub struct DecodeControl {
     pub running: Arc<AtomicBool>,
     pub seek_request: Arc<AtomicU64>,
@@ -177,10 +169,6 @@ impl DecodeControl {
     }
 }
 
-// ---------------------------------------------------------------------------
-// RingBufferSource — implements rodio::Source, reads from ring buffer
-// ---------------------------------------------------------------------------
-
 pub struct RingBufferSource {
     shared: SharedRingBuffer,
     control: Arc<DecodeControl>,
@@ -223,12 +211,12 @@ impl Iterator for RingBufferSource {
                 return Some(sample);
             }
 
-            // Buffer empty — check if decode thread is done
+            // Buffer empty: check if decode thread is done
             if self.shared.is_finished() {
                 return None;
             }
 
-            // Decode still running but buffer empty — brief yield to avoid hot spin
+            // Decode still running but buffer empty: brief yield to avoid hot spin
             std::thread::yield_now();
         }
     }

@@ -1,6 +1,6 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
-// Centralised logging to file — replaces eprintln! in library code
+// Centralised logging to file: replaces eprintln! in library code
 //
 // This is free software released under the GPL-3.0 license.
 

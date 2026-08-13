@@ -1,6 +1,6 @@
 % GTMD-IPC(1) GTM IPC Protocol Manual
 % prjctimg
-% 2025
+% 2026
 
 # NAME
 
@@ -87,8 +87,8 @@ is a MessagePack map with at minimum an `event` string field, matching
 the full JSON event schema.
 
 The client distinguishes responses from binary events by the first byte:
-- `0x7B` (`{`) — JSON response (read until `\n`)
-- anything else — binary event frame (read 4-byte length, then payload)
+- `0x7B` (`{`): JSON response (read until `\n`)
+- anything else: binary event frame (read 4-byte length, then payload)
 
 Maximum line length: 1,048,576 bytes (1 MiB).  Maximum binary frame: 16 MiB.
 
@@ -652,72 +652,72 @@ frames on the pulse socket.
 
 ## Playback Lifecycle
 
-- `playback_started` — track begins playing.  Fields: `track` (TrackInfo),
+- `playback_started`: track begins playing.  Fields: `track` (TrackInfo),
   `auto_advanced` (bool), `time_pos` (float64), `duration` (float64).
-- `playback_paused` — playback paused.  Fields: `time_pos`.
-- `playback_stopped` — playback explicitly stopped.
-- `track_ended` — track reached end of file naturally.
+- `playback_paused`: playback paused.  Fields: `time_pos`.
+- `playback_stopped`: playback explicitly stopped.
+- `track_ended`: track reached end of file naturally.
 
 ## Position and Duration
 
-- `position_changed` — playback position updated.  Fields: `time_pos`.
-- `duration_changed` — track duration resolved.  Fields: `duration`.
+- `position_changed`: playback position updated.  Fields: `time_pos`.
+- `duration_changed`: track duration resolved.  Fields: `duration`.
 
 ## Volume
 
-- `volume_changed` — volume level changed.  Fields: `volume` (uint8, 0-100).
+- `volume_changed`: volume level changed.  Fields: `volume` (uint8, 0-100).
 
 ## Playback Mode
 
-- `shuffle_changed` — shuffle toggled.  Fields: `enabled` (bool).
-- `repeat_mode_changed` — repeat mode changed.  Fields: `mode` (string).
+- `shuffle_changed`: shuffle toggled.  Fields: `enabled` (bool).
+- `repeat_mode_changed`: repeat mode changed.  Fields: `mode` (string).
 
 ## Queue
 
-- `queue_changed` — queue modified.  Fields: `queue` (array), `cursor`.
-- `queue_index_changed` — cursor moved.  Fields: `index`.
+- `queue_changed`: queue modified.  Fields: `queue` (array), `cursor`.
+- `queue_index_changed`: cursor moved.  Fields: `index`.
 
 ## Audio Effects
 
-- `crossfade_changed` — fields: `enabled`, `duration_secs`.
-- `eq_preset_changed` — fields: `preset`.
-- `eq_enabled_changed` — fields: `enabled`.
-- `reverb_changed` — fields: `enabled`, `room_size`.
+- `crossfade_changed`: fields: `enabled`, `duration_secs`.
+- `eq_preset_changed`: fields: `preset`.
+- `eq_enabled_changed`: fields: `enabled`.
+- `reverb_changed`: fields: `enabled`, `room_size`.
 
 ## Sleep Timer
 
-- `sleep_timer_tick` — emitted every second.  Fields: `remaining_secs`.
-- `sleep_timer_expired` — timer reached zero.
+- `sleep_timer_tick`: emitted every second.  Fields: `remaining_secs`.
+- `sleep_timer_expired`: timer reached zero.
 
 ## Loudness Compensation
 
-- `loudness_mode_changed` — fields: `mode`.
-- `loudness_scan_progress` — fields: `tracks_remaining`, `tracks_total`, `current_track`.
-- `loudness_scan_done` — fields: `scanned`, `failed`.
-- `pre_gain_changed` — fields: `pre_gain_db`.
+- `loudness_mode_changed`: fields: `mode`.
+- `loudness_scan_progress`: fields: `tracks_remaining`, `tracks_total`, `current_track`.
+- `loudness_scan_done`: fields: `scanned`, `failed`.
+- `pre_gain_changed`: fields: `pre_gain_db`.
 
 ## Gapless Playback
 
-- `gapless_changed` — fields: `enabled`.
+- `gapless_changed`: fields: `enabled`.
 
 ## Dynamic Mode
 
-- `dynamic_mode_changed` — fields: `enabled`, `min_queue_remaining`, `max_history`.
+- `dynamic_mode_changed`: fields: `enabled`, `min_queue_remaining`, `max_history`.
 
 ## Scrobbling
 
-- `scrobble_config_changed` — fields: `enabled`.
-- `scrobble_sent` — fields: `track`, `timestamp`.
-- `scrobble_error` — fields: `track_id`, `error`.
+- `scrobble_config_changed`: fields: `enabled`.
+- `scrobble_sent`: fields: `track`, `timestamp`.
+- `scrobble_error`: fields: `track_id`, `error`.
 
 ## Library Organization
 
-- `library_organized` — fields: `moves_succeeded`, `moves_failed`.
+- `library_organized`: fields: `moves_succeeded`, `moves_failed`.
 
 ## System
 
-- `heartbeat` — emitted at least every 30 seconds during active playback.
-- `custom` — extensible event type with `name` sub-type field.  Known names:
+- `heartbeat`: emitted at least every 30 seconds during active playback.
+- `custom`: extensible event type with `name` sub-type field.  Known names:
   `daemon_quitting`, `backend_error`, `audio_error`, `scan_done`.
 
 # EVENT EXAMPLES

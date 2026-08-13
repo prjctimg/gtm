@@ -1,10 +1,10 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
-// GTM music player — single binary, TUI + CLI modes
+// GTM music player: single binary, TUI + CLI modes
 //
 // This is free software released under the GPL-3.0 license.
 
-//! GTM music player — single binary, TUI + CLI modes.
+//! GTM music player: single binary, TUI + CLI modes.
 //!
 //! ```text
 //! ┌──────────────────────────────────────────────────────────┐
@@ -34,7 +34,7 @@ fn print_version_verbose() {
     let ver = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0");
     println!(
         "gtm {ver}\n\
-         Copyright (C) 2025 - present prjctimg <prjctimg@outlook.com>\n\
+         Copyright (C) 2026 - present prjctimg <prjctimg@outlook.com>\n\
          Website: https://prjctimg.me\n\
          License GPL-3.0\n\
          This is free software: you are free to change and redistribute it.\n\

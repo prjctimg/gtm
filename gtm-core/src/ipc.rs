@@ -1,4 +1,4 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
 // IPC protocol: wire format with explicit cmd/event fields per GTM Protocol v2
 //
@@ -355,7 +355,7 @@ impl DaemonReq {
 
     /// Reconstruct a `DaemonReq` from a parsed `cmd` string and the flat
     /// `params` object delivered on the wire. The dispatch is explicit so
-    /// unit variants (`Pause`, `Stop`, ...) disambiguate cleanly — something
+    /// unit variants (`Pause`, `Stop`, ...) disambiguate cleanly: something
     /// `#[serde(untagged)]` cannot do by itself.
     pub fn parse_cmd(cmd: &str, params: Value) -> std::result::Result<Self, String> {
         fn p<T: DeserializeOwned>(v: Value) -> std::result::Result<T, String> {

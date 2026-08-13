@@ -1,4 +1,4 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
 // Daemon state machine: transitions, event application, and debug invariants
 //
@@ -319,7 +319,7 @@ impl DaemonState {
                 self.status = PlaybackStatus::Stopped;
                 self.current_track = None;
                 self.time_pos = 0.0;
-                // Note: do NOT clear the queue here — the daemon owns queue
+                // Note: do NOT clear the queue here: the daemon owns queue
                 // consumption and mirrors every change via QueueChanged.  Wiping
                 // it here previously erased pending entries on every track end.
             }
@@ -382,7 +382,7 @@ impl DaemonState {
             }
             DaemonEvent::LoudnessScanProgress { .. } => {}
             DaemonEvent::LoudnessScanDone { .. } => {}
-            _ => {} // MetadataChanged, Custom — no state mirror field
+            _ => {} // MetadataChanged, Custom: no state mirror field
         }
         self.version += 1;
         #[cfg(debug_assertions)]

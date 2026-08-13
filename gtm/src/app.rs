@@ -1,4 +1,4 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
 // Application state machine: input handling, IPC dispatch, crossfade
 //
@@ -732,10 +732,7 @@ impl App {
             }
             if had_sleep_expired {
                 self.sleep_timer_remaining = None;
-                self.notify(
-                    "Sleep timer expired — shutting down",
-                    NotificationKind::Info,
-                );
+                self.notify("Sleep timer expired: shutting down", NotificationKind::Info);
                 // Draw a final frame so the user sees the shutdown message
                 // before the terminal restores.
                 let _ = terminal.draw(|f| ui::render(f, &mut self));
@@ -1223,7 +1220,7 @@ impl App {
             });
         }
         if let Some(ref detail) = self.browse_detail {
-            // Drill-down must match the browse key exactly — a substring OR
+            // Drill-down must match the browse key exactly: a substring OR
             // across album/artist/title pulls in unrelated tracks (e.g. an
             // album name that appears in another track's title) and misses
             // empty-field keys that `unique_albums`/`unique_artists` render
@@ -1256,7 +1253,7 @@ impl App {
             tracks.retain(|t| t.favourite);
         } else if self.library_category == 5 {
             // Spotify: category renders the synced playlist browser, not a flat
-            // TrackInfo list — resolve/play goes through the daemon.
+            // TrackInfo list: resolve/play goes through the daemon.
             tracks.clear();
         } else if self.library_category == 6 {
             // YouTube: tracks from the youtube audio subdirectory
@@ -2068,13 +2065,13 @@ impl App {
                     && !self.library_pane_focus
                 {
                     if self.pending_motion == Some('g') {
-                        // Second 'g' — execute jump to start
+                        // Second 'g': execute jump to start
                         self.pending_motion = None;
                         self.scroll_offset = 0;
 
                         return true;
                     } else {
-                        // First 'g' — wait for second press
+                        // First 'g': wait for second press
                         self.pending_motion = Some('g');
                         return true;
                     }
@@ -2900,7 +2897,7 @@ impl App {
                     Some(KeyboardAction::DeleteFromList) => {
                         if self.current_tab == Tab::Library && !self.library_pane_focus {
                             if self.library_category == 4 && self.browse_detail.is_some() {
-                                // In playlist view — remove selected track from playlist
+                                // In playlist view: remove selected track from playlist
                                 let filtered = self.filtered_tracks();
                                 if let Some(track) = filtered.get(self.scroll_offset) {
                                     let track_id = track.id;
@@ -3579,7 +3576,7 @@ impl App {
                                             self.selected_indices.clear();
                                         }
                                         let msg = if self.multiselect_mode {
-                                            "Multiselect ON — use v/a/x to queue"
+                                            "Multiselect ON: use v/a/x to queue"
                                         } else {
                                             "Multiselect OFF"
                                         };

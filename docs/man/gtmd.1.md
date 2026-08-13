@@ -1,6 +1,6 @@
 % GTMD(1) GTM Daemon Manual
 % prjctimg
-% 2025
+% 2026
 
 # NAME
 

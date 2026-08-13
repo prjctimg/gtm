@@ -1,4 +1,4 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
 // TUI rendering: tab layout, pickers, library, now-playing, settings
 //
@@ -87,7 +87,7 @@ async fn ensure_daemon_running(
                 }
             }
         }
-        // Socket exists but daemon is dead/stale — remove it
+        // Socket exists but daemon is dead/stale: remove it
         let _ = std::fs::remove_file(socket_path);
     }
 
@@ -114,7 +114,7 @@ async fn ensure_daemon_running(
     for _ in 0..120 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         if socket_path.exists() {
-            // Socket exists — try a ping to confirm daemon is responsive
+            // Socket exists: try a ping to confirm daemon is responsive
             if let Ok(mut stream) = tokio::net::UnixStream::connect(socket_path).await {
                 use tokio::io::{AsyncReadExt, AsyncWriteExt};
                 let ping = serde_json::to_string(&gtm_core::ipc::WireReq {
@@ -138,7 +138,7 @@ async fn ensure_daemon_running(
         }
     }
 
-    // Daemon didn't become ready in time — let App::new handle the connection
+    // Daemon didn't become ready in time: let App::new handle the connection
     // error with its own retries. The TUI will show an empty state and the
     // daemon may still come up.
     Ok(())
@@ -182,7 +182,7 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
         f.render_widget(msg, area);
         return;
     }
-    // Explicit background fill — the TUI defines its own background
+    // Explicit background fill: the TUI defines its own background
     f.render_widget(
         ratatui::widgets::Block::default().style(ratatui::style::Style::default().bg(app.theme.bg)),
         area,
@@ -658,8 +658,8 @@ fn fill_pane(f: &mut ratatui::Frame, area: Rect, app: &App) {
     );
 }
 
-/// Borderless pane header (C1/C2): a 1-row BOLD label — `accent` + a `▎`
-/// edge bar when `focused`, `fg_bright` otherwise — with an optional muted
+/// Borderless pane header (C1/C2): a 1-row BOLD label: `accent` + a `▎`
+/// edge bar when `focused`, `fg_bright` otherwise: with an optional muted
 /// separator beneath.  When `left_rule` is set a thin `muted_border` vertical
 /// rule is drawn along the pane's left edge and content is indented past it.
 /// Returns the content rect (1-cell horizontal padding) below the header.
@@ -962,7 +962,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 let bar_para = Paragraph::new(Line::from(line_spans));
                 f.render_widget(bar_para, bar_row);
             } else {
-                // Terminal too narrow for cover — just show info text
+                // Terminal too narrow for cover: just show info text
                 let display_title = if track.title.is_empty() {
                     std::path::Path::new(&track.path)
                         .file_stem()
@@ -1090,7 +1090,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 "Spotify" => app.spotify_playlists.len(),
                 _ => 0,
             };
-            // Skip icon for "Liked" — the heart is redundant with the name
+            // Skip icon for "Liked": the heart is redundant with the name
             let display_icon = if *cat == "Liked" { " " } else { *icon };
             let label = if count > 0 {
                 format!(" {display_icon}  {:<14} {:>4}", cat, count)
@@ -1153,7 +1153,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let mut lines = vec![Line::from("")];
         if tracks.is_empty() {
             lines.push(Line::from(Span::styled(
-                " No tracks — run Settings > Spotify > Sync Now, then press Enter again",
+                " No tracks: run Settings > Spotify > Sync Now, then press Enter again",
                 Style::default().fg(app.theme.fg_dim),
             )));
             (lines, st_line)
@@ -1355,7 +1355,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let mut lines = vec![Line::from("")];
         if playlists.is_empty() {
             lines.push(Line::from(Span::styled(
-                " No synced playlists — link an account in Settings > Spotify",
+                " No synced playlists: link an account in Settings > Spotify",
                 Style::default().fg(app.theme.fg_dim),
             )));
         } else {
@@ -2500,7 +2500,7 @@ fn render_about_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         )),
         Line::from(""),
         Line::from(Span::styled(
-            " Copyright (C) 2025 - present, prjctimg",
+            " Copyright (C) 2026 - present, prjctimg",
             Style::default().fg(app.theme.fg_dim),
         )),
         Line::from(Span::styled(
@@ -2688,7 +2688,7 @@ fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
 fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     if app.sleep_timer_input_mode {
-        let block = picker_panel(app, " Sleep Timer — Manual Input ");
+        let block = picker_panel(app, " Sleep Timer: Manual Input ");
         let inner = block.inner(area);
         f.render_widget(block, area);
         let label = Paragraph::new(Line::from(vec![
@@ -3197,7 +3197,7 @@ pub fn braille_spinner(frame: usize) -> char {
 }
 
 /// Pick the foreground colour with enough contrast against `bg`. If the
-/// requested `fg` already has sufficient contrast it is preserved — this
+/// requested `fg` already has sufficient contrast it is preserved: this
 /// lets the footer's per-module colour mapping do something rather than
 /// being thrown away in favour of a monochrome fallback.
 pub fn readable_fg(fg: ratatui::style::Color, bg: ratatui::style::Color) -> ratatui::style::Color {
@@ -3418,7 +3418,7 @@ fn render_health_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
             ];
             if let Some(ref msg) = c.message {
                 spans.push(Span::styled(
-                    format!(" — {msg}"),
+                    format!(": {msg}"),
                     Style::default().fg(app.theme.fg_dim),
                 ));
             }

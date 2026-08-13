@@ -1,4 +1,4 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
 // Daemon entry point: CLI parsing, logging setup, and daemon launch
 //
@@ -14,7 +14,7 @@ fn print_version() {
     let ver = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0");
     println!(
         "gtmd {ver}\n\
-         Copyright (C) 2025 - present prjctimg <prjctimg@outlook.com>\n\
+         Copyright (C) 2026 - present prjctimg <prjctimg@outlook.com>\n\
          Website: https://prjctimg.me\n\
          License GPL-3.0\n\
          This is free software: you are free to change and redistribute it.\n\

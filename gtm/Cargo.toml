@@ -31,7 +31,7 @@ toml = "0.8"
 [package.metadata.deb]
 name = "gtm"
 maintainer = "prjctimg <prjctimg@outlook.com>"
-copyright = "2025 - present prjctimg"
+copyright = "2026 - present prjctimg"
 license-file = ["../LICENSE"]
 extended-description = "GTM music player client - provides both a Terminal UI (TUI) and command-line interface for controlling the GTM music daemon."
 section = "sound"

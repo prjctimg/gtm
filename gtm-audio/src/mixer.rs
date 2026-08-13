@@ -1,4 +1,4 @@
-// Copyright (c) 2025 - present
+// Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
 // Mixer trait and rodio-based implementation with EQ, reverb, and crossfade
 //
@@ -506,7 +506,7 @@ impl AudioMixer {
     pub fn play(&mut self) -> AudioResult<()> {
         if self.active().is_paused() {
             self.active().play();
-            // Restore volume — the sink was faded to 0 during the pause fade-out.
+            // Restore volume: the sink was faded to 0 during the pause fade-out.
             let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
             self.active()
                 .set_volume(vol * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0));
