@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.4] – 2026-08-09
+
+### Fixed
+- **Manpage generation in release pipeline**: the `docs/man` manpage sources (gtm.1, gtmd.1, gtmd-ipc.1) were removed while the gtm.spec repo still carries no `man/` tree, so `gen-manpages.sh` produced zero manpages and the release build failed. Restored the local `docs/man/*.1.md` sources and made the script fail with a clear diagnostic when no manpages can be generated
+- **CI formatting gate**: `cargo fmt --check` was failing on the Design-toggle additions in `gtm/src/ui.rs`; reformatted
+
+### Changed
+- README docs section now links to the in-repo manpages (`docs/man/*.1.md`) instead of the wiki
+
 ## [0.1.3] – 2026-08-06
 
 ### Fixed

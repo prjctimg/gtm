@@ -381,25 +381,46 @@ fn centered_scroll(sel: usize, available: usize, total: usize) -> (usize, usize)
     (scroll, end)
 }
 
-/// Render `widget` into `area`, applying a tachyonfx evolve animation on the
-/// first frame and on each track change.  The effect is (re)started only when
-/// `app.track_anim_trigger` is set; while it is running, subsequent refresh
-/// frames keep advancing it (keyed uniquely) until it completes, at which
-/// point rendering returns to the plain `render_widget` path.  The scratch
-/// buffer isolates the effect to `area` so it never leaks into neighbours.
+/// Render `widget` into `area`, applying a tachyonfx evolve animation so the
+/// text resolves from placeholder glyphs (which read as stray "escape
+/// characters") into the real content.  The effect (re)starts whenever
+/// `app.track_anim_trigger` is set and either this pane may animate on track
+/// change (`animate_on_track_change`) or this is the very first frame
+/// (`app.frame_count == 0`, i.e. startup).  While it is running, subsequent
+/// refresh frames keep advancing it (keyed uniquely) until it completes, at
+/// which point rendering returns to the plain `render_widget` path.  The
+/// scratch buffer isolates the effect to `area` so it never leaks into
+/// neighbours, and the widget is re-rendered underneath every frame so the
+/// effect always resolves to clean text.
 fn render_evolving<W: ratatui::widgets::Widget>(
     f: &mut ratatui::Frame,
     area: Rect,
     widget: W,
-    _key: &'static str,
-    _app: &mut App,
+    key: &'static str,
+    app: &mut App,
+    animate_on_track_change: bool,
 ) {
-    // The tachyonfx evolve_into effect replaced the text with block/geometric
-    // glyphs (▁▂▃▄▅▆▇█, •◦●○) mid-transition, which rendered like stray
-    // "escape characters" over the title.  Content now paints directly and
-    // cleanly; the startup/track-change trigger still forces the initial
-    // redraw via `track_anim_trigger`, it just no longer animates glyphs.
-    f.render_widget(widget, area);
+    let start = app.track_anim_trigger && (animate_on_track_change || app.frame_count == 0);
+    if !start && !app.anim_fx.is_running() {
+        f.render_widget(widget, area);
+        return;
+    }
+    let mut buf = ratatui::buffer::Buffer::empty(area);
+    widget.render(area, &mut buf);
+    if start {
+        app.anim_fx.add_unique_effect(
+            key,
+            tachyonfx::fx::evolve_into(
+                tachyonfx::fx::EvolveSymbolSet::Circles,
+                (350, tachyonfx::Interpolation::QuadInOut),
+            )
+            .with_area(area)
+            .with_filter(tachyonfx::CellFilter::All),
+        );
+    }
+    app.anim_fx
+        .process_effects(tachyonfx::Duration::from_millis(16), &mut buf, area);
+    f.buffer_mut().merge(&buf);
 }
 
 /// Fill a pane body rectangle with the theme's `pane_bg` (the configurable
@@ -650,7 +671,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                         .fg(app.theme.fg_bright)
                         .add_modifier(Modifier::BOLD),
                 )]));
-                render_evolving(f, info_chunks[0], title_para, "np", app);
+                render_evolving(f, info_chunks[0], title_para, "np", app, true);
 
                 // Row 1: Artist
                 let artist_para = Paragraph::new(Line::from(vec![
@@ -716,7 +737,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     width: inner.width,
                     height: 1,
                 };
-                render_evolving(f, title_area, title_para, "np", app);
+                render_evolving(f, title_area, title_para, "np", app, true);
 
                 let mut row_offset = 1u16;
                 if !track.album.is_empty() {
@@ -1173,7 +1194,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let right_inner =
         render_pane_header(f, panes[1], app, category_label, !left_focus, false, true);
     fill_pane(f, right_inner, app);
-    render_evolving(f, right_inner, right_para, "lib", app);
+    render_evolving(f, right_inner, right_para, "lib", app, false);
     // end content rendering
 
     // ── Right lyrics pane (full height) ──
@@ -1186,7 +1207,9 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
 const SETTINGS_ICONS_NERD: &[&str] = &["\u{f028}", "\u{f16a}", "\u{f04b}", "\u{f013}", "\u{f1bc}"];
 const SETTINGS_ICONS_ASCII: &[&str] = &["♪", "YT", "▶", "⚙", "★"];
-const SETTINGS_CATEGORIES: &[&str] = &["Audio", "YouTube", "Playback", "System", "Spotify"];
+const SETTINGS_CATEGORIES: &[&str] = &[
+    "Audio", "YouTube", "Playback", "System", "Spotify", "Design",
+];
 
 fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let chunks = Layout::default()
@@ -1364,6 +1387,10 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
                 format!("Sync Now        [ Enter ]"),
                 format!("Unlink          [ Enter ]"),
             ]
+        }
+        5 => {
+            let design_name = app.design.name();
+            vec![format!("Design          [ {:>7} ▶ ]", design_name)]
         }
         _ => vec![],
     };

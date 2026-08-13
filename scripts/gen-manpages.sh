@@ -17,6 +17,8 @@ if [[ -d "$repo_root/../gtm.spec/man" ]]; then
 elif [[ -d "$repo_root/gtm.spec/man" ]]; then
   spec_dir="$repo_root/gtm.spec/man"
   echo "Using canonical manpage sources from gtm.spec"
+else
+  echo "No manpage sources in gtm.spec; falling back to docs/man/"
 fi
 docs_dir="$repo_root/docs/man"
 
@@ -45,4 +47,11 @@ for src in "$docs_dir"/*.1.md; do
 done
 
 echo "Manpages generated in $outdir/man/"
+if [[ -z "$(ls -1 "$outdir/man/"*.1 2>/dev/null)" ]]; then
+  echo "Error: no manpages were generated. Checked sources:" >&2
+  [[ -n "$spec_dir" ]] && echo "  - gtm.spec: $spec_dir" >&2 || echo "  - gtm.spec: (no man/ directory)" >&2
+  echo "  - local:    $docs_dir" >&2
+  echo "Place *.1.md files in one of these directories." >&2
+  exit 1
+fi
 ls -1 "$outdir/man/"*.1

@@ -103,6 +103,7 @@ pub enum KeyboardAction {
     HideHelpBar,
     CycleFooterPreset,
     CycleProgressStyle,
+    CycleDesign,
     ToggleVisualizer,
     CheckHealth,
 }
@@ -553,6 +554,14 @@ pub fn default_keybindings() -> Keybindings {
                 KeyEvent::new(KeyCode::Char('F'), KeyModifiers::ALT),
                 BoundCommand {
                     action: KeyboardAction::CycleFooterPreset,
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
+            // Design cycling — Alt+D
+            (
+                KeyEvent::new(KeyCode::Char('D'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::CycleDesign,
                     contexts: vec![KeyContext::Normal],
                 },
             ),

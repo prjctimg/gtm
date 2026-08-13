@@ -51,6 +51,8 @@ struct Prefs {
     footer_preset_name: String,
     #[serde(default)]
     progress_style: crate::progress::ProgressStyle,
+    #[serde(default)]
+    design: Design,
 }
 
 fn default_theme_name() -> String {
@@ -60,6 +62,26 @@ fn default_theme_name() -> String {
 fn default_footer_preset_name() -> String {
     "Default".into()
 }
+#[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Design {
+    #[default]
+    Modern,
+    Classic,
+}
+
+impl Design {
+    pub fn all() -> &'static [Design] {
+        &[Design::Modern, Design::Classic]
+    }
+
+    pub fn name(&self) -> &'static str {
+        match self {
+            Design::Modern => "Modern",
+            Design::Classic => "Classic",
+        }
+    }
+}
 
 impl Default for Prefs {
     fn default() -> Self {
@@ -68,6 +90,7 @@ impl Default for Prefs {
             transparent_bg: false,
             footer_preset_name: default_footer_preset_name(),
             progress_style: crate::progress::ProgressStyle::default(),
+            design: Design::default(),
         }
     }
 }
@@ -91,6 +114,8 @@ fn load_prefs() -> Prefs {
         footer_preset: Option<usize>,
         #[serde(default)]
         progress_style: crate::progress::ProgressStyle,
+        #[serde(default)]
+        design: Design,
     }
     if let Ok(old) = serde_json::from_str::<OldPrefs>(&s) {
         return Prefs {
@@ -108,6 +133,7 @@ fn load_prefs() -> Prefs {
                 .and_then(|i| footer::presets().get(i).map(|p| p.name.to_string()))
                 .unwrap_or_else(default_footer_preset_name),
             progress_style: old.progress_style,
+            design: old.design,
         };
     }
     // Legacy v1 format: bare integer theme_index.
@@ -129,7 +155,7 @@ fn save_prefs(prefs: &Prefs) {
     }
 }
 
-pub const NUM_SETTINGS_CATEGORIES: usize = 5;
+pub const NUM_SETTINGS_CATEGORIES: usize = 6;
 pub const LIBRARY_CATEGORIES: &[&str] = &[
     "All Tracks",
     "Liked",
@@ -240,6 +266,7 @@ pub struct App {
     last_event_time: std::time::Instant,
     pub multiselect_mode: bool,
     pub progress_style: crate::progress::ProgressStyle,
+    pub design: Design,
     pub visualizer: crate::visualizer::AudioVisualizer,
     pub selected_indices: std::collections::HashSet<usize>,
     pending_motion: Option<char>,
@@ -476,6 +503,7 @@ impl App {
             last_event_time: std::time::Instant::now(),
             multiselect_mode: false,
             progress_style: prefs.progress_style,
+            design: prefs.design,
             visualizer: crate::visualizer::AudioVisualizer::new(),
             selected_indices: std::collections::HashSet::new(),
             pending_motion: None,
@@ -529,6 +557,7 @@ impl App {
                 .map(|p| p.name.to_string())
                 .unwrap_or_else(default_footer_preset_name),
             progress_style: self.progress_style,
+            design: self.design,
         }
     }
 
@@ -2062,6 +2091,23 @@ impl App {
                         self.progress_style = self.progress_style.next();
                         self.notify(
                             format!("Progress: {}", self.progress_style.name()),
+                            NotificationKind::Info,
+                        );
+                    }
+                    Some(KeyboardAction::CycleDesign) => {
+                        let all = Design::all();
+                        let idx = all.iter().position(|d| *d == self.design).unwrap_or(0);
+                        self.design = all[(idx + 1) % all.len()];
+                        // Auto-switch theme to match design
+                        let target_theme = match self.design {
+                            Design::Classic => "Classic",
+                            Design::Modern => "Chadrula",
+                        };
+                        if let Some(idx) = self.themes.iter().position(|t| t.name == target_theme) {
+                            self.theme_index = idx;
+                        }
+                        self.notify(
+                            format!("Design: {}", self.design.name()),
                             NotificationKind::Info,
                         );
                     }

@@ -80,8 +80,9 @@ The audio player is split into separate crates, allowing you to easily pick whic
 
 - [Wiki](https://github.com/prjctimg/gtm.rs/wiki)
 - [gtm.spec](https://github.com/prjctimg/gtm.spec)
-- [gtm-config(1)](https://github.com/prjctimg/gtm.spec.wiki/Manpages)
-- [gtm-keybindings(1)](https://github.com/prjctimg/gtm.spec.wiki/Manpages)
+- [gtm(1)](docs/man/gtm.1.md)
+- [gtmd(1)](docs/man/gtmd.1.md)
+- [gtmd-ipc(1)](docs/man/gtmd-ipc.1.md)
 
 ## Contributing
 

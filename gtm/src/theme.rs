@@ -378,12 +378,43 @@ fn kanagawa_lotus() -> AppTheme {
     }
 }
 
+/// Classic — original gtm TUI design with warmer, more contrasted palette
+fn classic() -> AppTheme {
+    AppTheme {
+        bg: hex(0x1c1c1c),
+        pane_bg: hex(0x1c1c1c),
+        picker_bg: hex(0x181818),
+        elevated_bg: hex(0x121212),
+        muted_border: hex(0x444444),
+        fg: hex(0xd0d0d0),
+        fg_dim: hex(0x707070),
+        fg_bright: hex(0xffffff),
+        accent: hex(0xff8800),
+        error: hex(0xff4444),
+        warning: hex(0xffaa00),
+        success: hex(0x44ff44),
+        selection_fg: hex(0x1c1c1c),
+        selection_bg: hex(0xff8800),
+        border: hex(0x444444),
+        border_active: hex(0xff8800),
+        volume_low: hex(0x44ff44),
+        volume_medium: hex(0xffaa00),
+        volume_high: hex(0xff4444),
+        sidebar_active_border: hex(0xff8800),
+    }
+}
+
 /// Built-in theme table, constructed once and cached for the process lifetime.
 pub fn builtin_themes() -> &'static [ThemeEntry] {
     static BUILTINS: std::sync::OnceLock<Vec<ThemeEntry>> = std::sync::OnceLock::new();
     BUILTINS
         .get_or_init(|| {
             vec![
+                ThemeEntry {
+                    name: Cow::Borrowed("Classic"),
+                    light: false,
+                    theme: classic(),
+                },
                 ThemeEntry {
                     name: Cow::Borrowed("Chadrula"),
                     light: false,
