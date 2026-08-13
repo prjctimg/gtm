@@ -921,14 +921,20 @@ impl Daemon {
                     name: "daemon_quitting".into(),
                     data: [].into(),
                 });
-                // Give clients time to receive the quitting event
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                // Clean up socket files
-                let _ = std::fs::remove_file(&inner.config.socket_path);
-                let _ = std::fs::remove_file(&inner.config.socket_pulse_path);
-                let _ = std::fs::remove_file(resolve_pid_file());
-                info!("daemon shut down cleanly");
-                std::process::exit(0);
+                // Reply Ok first so clients can finish their quit() call, then
+                // shut down shortly after the response has been flushed.
+                let socket_path = inner.config.socket_path.clone();
+                let socket_pulse_path = inner.config.socket_pulse_path.clone();
+                tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    // Clean up socket files
+                    let _ = std::fs::remove_file(&socket_path);
+                    let _ = std::fs::remove_file(&socket_pulse_path);
+                    let _ = std::fs::remove_file(resolve_pid_file());
+                    info!("daemon shut down cleanly");
+                    std::process::exit(0);
+                });
+                Ok(DaemonRes::Ok)
             }
         }
     }

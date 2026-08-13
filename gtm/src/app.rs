@@ -10,6 +10,7 @@ use std::time::Duration;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use gtm_core::client::DaemonClient;
 use gtm_core::ipc::DaemonRes;
+use gtm_core::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use gtm_core::state::{DaemonState, Easing, PlaybackStatus, RepeatMode, Tab};
 use gtm_core::track::{Playlist, TrackInfo, YTSearchResult};
 use ratatui::layout::Alignment;
@@ -152,6 +153,10 @@ pub struct App {
     pub volume_input: String,
     pub playlist_cache: Vec<gtm_core::track::Playlist>,
     pub playlist_tracks_cache: Vec<TrackInfo>,
+    pub spotify_status: Option<SpotifyStatus>,
+    pub spotify_playlists: Vec<SpotifyPlaylist>,
+    pub spotify_playlist_tracks_cache: Vec<SpotifyTrack>,
+    pub spotify_token_input: String,
     pub cookie_file: Option<String>,
     pub status_message: Option<String>,
     pub notifications: Vec<Notification>,
@@ -243,6 +248,9 @@ enum IpcResult {
     Notification(String, NotificationKind),
     Error(String),
     HealthReport(gtm_core::ipc::HealthReport),
+    SpotifyStatus(SpotifyStatus),
+    SpotifyPlaylists(Vec<SpotifyPlaylist>),
+    SpotifyTracks(Vec<SpotifyTrack>),
 }
 
 #[allow(dead_code)]
@@ -326,6 +334,10 @@ impl App {
             volume_input: String::new(),
             playlist_cache: Vec::new(),
             playlist_tracks_cache: Vec::new(),
+            spotify_status: None,
+            spotify_playlists: Vec::new(),
+            spotify_playlist_tracks_cache: Vec::new(),
+            spotify_token_input: String::new(),
             cookie_file: None,
             status_message: None,
             notifications: Vec::new(),
@@ -465,6 +477,18 @@ impl App {
                 }
             });
         }
+        {
+            let c = self.client.clone();
+            let ipc_tx = self.ipc_tx.clone();
+            tokio::spawn(async move {
+                if let Ok(status) = c.spotify_status().await {
+                    let _ = ipc_tx.send(IpcResult::SpotifyStatus(status));
+                }
+                if let Ok(playlists) = c.spotify_playlists().await {
+                    let _ = ipc_tx.send(IpcResult::SpotifyPlaylists(playlists));
+                }
+            });
+        }
 
         // Initialize cover image picker in background (blocking terminal query).
         {
@@ -599,15 +623,17 @@ impl App {
                         if state.version >= self.state.version {
                             self.state = state;
                             self.client.seed_clock_from_state(&self.state).await;
+                            // Cover art is fetched on track-change events only.
+                            // Do not clear last_cover_track_id when a periodic
+                            // RefreshDone carries no cover, or the track-change
+                            // guard would re-download art (and re-fetch lyrics)
+                            // every second.
                             if !no_image_protocol() {
                                 if let Some(c) = cover {
                                     self.current_cover = Some(c);
                                     self.last_cover_track_id = cover_tid;
-                                } else {
-                                    self.current_cover = None;
-                                    self.last_cover_track_id = cover_tid;
+                                    self.sync_cover_stateful();
                                 }
-                                self.sync_cover_stateful();
                             }
                         }
                     }
@@ -662,6 +688,9 @@ impl App {
                         self.health_report = Some(report);
                         self.show_health_panel = true;
                     }
+                    IpcResult::SpotifyStatus(s) => self.spotify_status = Some(s),
+                    IpcResult::SpotifyPlaylists(p) => self.spotify_playlists = p,
+                    IpcResult::SpotifyTracks(t) => self.spotify_playlist_tracks_cache = t,
                 }
             }
 
@@ -870,10 +899,9 @@ impl App {
         if self.library_category == 1 {
             tracks.retain(|t| t.favourite);
         } else if self.library_category == 5 {
-            // Spotify: tracks from the spotify audio subdirectory
-            tracks.retain(|t| {
-                t.path.contains("/audio/spotify") || t.path.contains("\\audio\\spotify")
-            });
+            // Spotify: category renders the synced playlist browser, not a flat
+            // TrackInfo list — resolve/play goes through the daemon.
+            tracks.clear();
         } else if self.library_category == 6 {
             // YouTube: tracks from the youtube audio subdirectory
             tracks.retain(|t| {
@@ -902,12 +930,16 @@ impl App {
     /// depending on the active category and drill-down state.
     pub fn library_list_len(&self) -> usize {
         if self.browse_detail.is_some() {
+            if self.library_category == 5 {
+                return self.spotify_playlist_tracks_cache.len();
+            }
             return self.filtered_tracks().len();
         }
         match self.library_category {
             2 => self.unique_albums().len(),
             3 => self.unique_artists().len(),
             4 => self.playlist_cache.len(),
+            5 => self.spotify_playlists.len(),
             _ => self.filtered_tracks().len(),
         }
     }
@@ -959,7 +991,7 @@ impl App {
             1 => 8, // YouTube
             2 => 4, // Playback: Repeat, Shuffle, Crossfade, Easing
             3 => 5, // System: Theme, Transparent BG, Sync Covers, Sync Lyrics, Footer Preset
-            4 => 1, // Spotify: Status
+            4 => 6, // Spotify: Status, Account, Playlists, Link, Sync, Unlink
             _ => 0,
         }
     }
@@ -1647,15 +1679,19 @@ impl App {
                         if self.browse_detail.is_some() {
                             self.browse_detail = None;
                             self.scroll_offset = 0;
+                            if self.library_category == 5 {
+                                self.spotify_playlist_tracks_cache.clear();
+                            }
                         } else {
                             return false;
                         }
                     }
                     Some(KeyboardAction::QuitDaemon) => {
                         let c = self.client.clone();
-                        tokio::spawn(async move {
-                            let _ = c.quit().await;
-                        });
+                        // Await the daemon's reply so the quit request is
+                        // actually delivered before the TUI exits. The daemon
+                        // replies Ok then shuts down ~200ms later.
+                        let _ = tokio::time::timeout(Duration::from_millis(1500), c.quit()).await;
                         return false;
                     }
                     Some(KeyboardAction::NextTab) => {
@@ -1840,6 +1876,9 @@ impl App {
                         } else if self.browse_detail.is_some() {
                             self.browse_detail = None;
                             self.scroll_offset = 0;
+                            if self.library_category == 5 {
+                                self.spotify_playlist_tracks_cache.clear();
+                            }
                         } else if !self.library_pane_focus && self.current_tab == Tab::Library {
                             self.library_pane_focus = true;
                         }
@@ -1936,17 +1975,49 @@ impl App {
                                 self.library_pane_focus = false;
                             } else if self.browse_detail.is_some() {
                                 // In detail view: play the selected track
-                                let filtered = self.filtered_tracks();
-                                if self.scroll_offset < filtered.len() {
-                                    let idx = self.scroll_offset;
-                                    let paths: Vec<String> =
-                                        filtered.iter().map(|t| t.path.clone()).collect();
-                                    let path = paths[idx].clone();
-                                    let c = self.client.clone();
-                                    tokio::spawn(async move {
-                                        let _ = c.queue_set(paths, idx as u128).await;
-                                        let _ = c.play(&path, 0.0).await;
-                                    });
+                                if self.library_category == 5 {
+                                    // Spotify playlist: resolve track to a playable
+                                    // local stream (via YouTube) and enqueue it.
+                                    if self.scroll_offset < self.spotify_playlist_tracks_cache.len()
+                                    {
+                                        let playlist_id =
+                                            self.browse_detail.clone().unwrap_or_default();
+                                        let track_index = self.spotify_playlist_tracks_cache
+                                            [self.scroll_offset]
+                                            .index;
+                                        let c = self.client.clone();
+                                        let ipc_tx2 = self.ipc_tx.clone();
+                                        tokio::spawn(async move {
+                                            match c.spotify_resolve(&playlist_id, track_index).await
+                                            {
+                                                Ok(()) => {
+                                                    let _ = ipc_tx2.send(IpcResult::Notification(
+                                                        "Spotify track resolved & queued"
+                                                            .to_string(),
+                                                        NotificationKind::Success,
+                                                    ));
+                                                }
+                                                Err(e) => {
+                                                    let _ = ipc_tx2.send(IpcResult::Error(
+                                                        format!("Spotify resolve failed: {e}"),
+                                                    ));
+                                                }
+                                            }
+                                        });
+                                    }
+                                } else {
+                                    let filtered = self.filtered_tracks();
+                                    if self.scroll_offset < filtered.len() {
+                                        let idx = self.scroll_offset;
+                                        let paths: Vec<String> =
+                                            filtered.iter().map(|t| t.path.clone()).collect();
+                                        let path = paths[idx].clone();
+                                        let c = self.client.clone();
+                                        tokio::spawn(async move {
+                                            let _ = c.queue_set(paths, idx as u128).await;
+                                            let _ = c.play(&path, 0.0).await;
+                                        });
+                                    }
                                 }
                             } else if self.library_category == 2 {
                                 // Albums: select album → show its tracks
@@ -1980,6 +2051,31 @@ impl App {
                                                     let _ = ipc_tx2.send(IpcResult::PlaylistTracks(tracks));
                                                 }
                                                 _ => {}
+                                            }
+                                        }
+                                    });
+                                }
+                            } else if self.library_category == 5 {
+                                // Spotify: select playlist → show its cached tracks
+                                if self.scroll_offset < self.spotify_playlists.len() {
+                                    let playlist =
+                                        self.spotify_playlists[self.scroll_offset].clone();
+                                    self.browse_detail = Some(playlist.id.clone());
+                                    self.scroll_offset = 0;
+                                    self.spotify_playlist_tracks_cache.clear();
+                                    let c = self.client.clone();
+                                    let ipc_tx2 = self.ipc_tx.clone();
+                                    let pid = playlist.id;
+                                    tokio::spawn(async move {
+                                        match c.spotify_playlist_tracks(&pid).await {
+                                            Ok(tracks) => {
+                                                let _ =
+                                                    ipc_tx2.send(IpcResult::SpotifyTracks(tracks));
+                                            }
+                                            Err(e) => {
+                                                let _ = ipc_tx2.send(IpcResult::Error(format!(
+                                                    "Spotify playlist load failed: {e}"
+                                                )));
                                             }
                                         }
                                     });
@@ -2228,6 +2324,64 @@ impl App {
                                             format!("Footer: {}", name),
                                             NotificationKind::Info,
                                         );
+                                    }
+                                    _ => {}
+                                },
+                                4 => match opt {
+                                    3 => {
+                                        // Link Spotify account: open token input picker
+                                        self.spotify_token_input.clear();
+                                        self.pickers.open(PickerId::SpotifySearch);
+                                    }
+                                    4 => {
+                                        // Sync playlists now
+                                        let c = self.client.clone();
+                                        let ipc_tx = self.ipc_tx.clone();
+                                        tokio::spawn(async move {
+                                            match c.spotify_sync().await {
+                                                Ok(()) => {
+                                                    let _ = ipc_tx.send(IpcResult::Notification(
+                                                        "Spotify sync complete".to_string(),
+                                                        NotificationKind::Success,
+                                                    ));
+                                                }
+                                                Err(e) => {
+                                                    let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                        "Spotify sync failed: {e}"
+                                                    )));
+                                                }
+                                            }
+                                            if let Ok(status) = c.spotify_status().await {
+                                                let _ =
+                                                    ipc_tx.send(IpcResult::SpotifyStatus(status));
+                                            }
+                                            if let Ok(playlists) = c.spotify_playlists().await {
+                                                let _ = ipc_tx
+                                                    .send(IpcResult::SpotifyPlaylists(playlists));
+                                            }
+                                        });
+                                    }
+                                    5 => {
+                                        // Unlink account
+                                        let c = self.client.clone();
+                                        let ipc_tx = self.ipc_tx.clone();
+                                        tokio::spawn(async move {
+                                            match c.spotify_clear().await {
+                                                Ok(status) => {
+                                                    let _ = ipc_tx
+                                                        .send(IpcResult::SpotifyStatus(status));
+                                                    let _ = ipc_tx.send(IpcResult::Notification(
+                                                        "Spotify account unlinked".to_string(),
+                                                        NotificationKind::Info,
+                                                    ));
+                                                }
+                                                Err(e) => {
+                                                    let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                        "Spotify unlink failed: {e}"
+                                                    )));
+                                                }
+                                            }
+                                        });
                                     }
                                     _ => {}
                                 },
@@ -2606,8 +2760,10 @@ impl App {
         match key.code {
             KeyCode::Esc => {
                 if let Some(top) = self.pickers.top() {
-                    if top.id == PickerId::SleepTimer {
-                        self.sleep_timer_remaining = None;
+                    match top.id {
+                        PickerId::SleepTimer => self.sleep_timer_remaining = None,
+                        PickerId::SpotifySearch => self.spotify_token_input.clear(),
+                        _ => {}
                     }
                 }
                 self.pickers.close_top();
@@ -2764,6 +2920,36 @@ impl App {
                 // Dispatch based on picker type
                 if let Some(top) = self.pickers.top() {
                     match top.id {
+                        PickerId::SpotifySearch => {
+                            let token = self.spotify_token_input.clone();
+                            if token.trim().is_empty() {
+                                self.notify(
+                                    "Enter a Spotify access token to link your account",
+                                    NotificationKind::Info,
+                                );
+                            } else {
+                                let c = self.client.clone();
+                                let ipc_tx = self.ipc_tx.clone();
+                                tokio::spawn(async move {
+                                    match c.spotify_set_token(&token).await {
+                                        Ok(status) => {
+                                            let _ = ipc_tx.send(IpcResult::SpotifyStatus(status));
+                                            let _ = ipc_tx.send(IpcResult::Notification(
+                                                "Spotify account linked".to_string(),
+                                                NotificationKind::Success,
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                "Spotify link failed: {e}"
+                                            )));
+                                        }
+                                    }
+                                });
+                                self.spotify_token_input.clear();
+                                self.pickers.close_top();
+                            }
+                        }
                         PickerId::Queue => {
                             if !self.queue_cache.is_empty() {
                                 let idx = top.selected.min(self.queue_cache.len() - 1);
@@ -3071,6 +3257,9 @@ impl App {
                         PickerId::EditMetadata => {
                             self.metadata_fields[self.metadata_field_idx].push(c);
                         }
+                        PickerId::SpotifySearch => {
+                            self.spotify_token_input.push(c);
+                        }
                         _ => {}
                     }
                 }
@@ -3084,10 +3273,16 @@ impl App {
             }
             KeyCode::Backspace => {
                 if let Some(top) = self.pickers.top_mut() {
-                    if top.id == PickerId::EditMetadata {
-                        self.metadata_fields[self.metadata_field_idx].pop();
-                    } else {
-                        top.query.pop();
+                    match top.id {
+                        PickerId::EditMetadata => {
+                            self.metadata_fields[self.metadata_field_idx].pop();
+                        }
+                        PickerId::SpotifySearch => {
+                            self.spotify_token_input.pop();
+                        }
+                        _ => {
+                            top.query.pop();
+                        }
                     }
                 }
             }

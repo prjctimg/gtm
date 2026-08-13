@@ -43,29 +43,35 @@ pub struct FooterPreset {
     pub z: Vec<FooterModule>,
 }
 
+// The different presets available for the footer, got inspiration from lualine.nvim
+// I wanted to be able to have that very informative env where I can see the internals of my player,
+// like the next track (really useful when you have shuffle on)
+// TODO: What other internals would I like to know ?
 pub fn presets() -> Vec<FooterPreset> {
     vec![
         FooterPreset {
             name: "Default",
             a: vec![FooterModule::Playback],
-            b: vec![FooterModule::Volume, FooterModule::EqPreset],
+            b: vec![FooterModule::KeyAction],
             c: vec![FooterModule::Queue],
             x: vec![FooterModule::Repeat, FooterModule::Shuffle],
-            y: vec![FooterModule::KeyAction],
-            z: vec![FooterModule::Clock, FooterModule::SleepTimer],
+            y: vec![FooterModule::Volume, FooterModule::EqPreset],
+            z: vec![FooterModule::SleepTimer],
         },
+        // The bare minimum especically, when I'm on termux or running on a device with small
+        // viewport
         FooterPreset {
             name: "Minimal",
-            a: vec![FooterModule::Playback],
-            b: vec![FooterModule::Title],
+            a: vec![FooterModule::KeyAction, FooterModule::Playback],
+            b: vec![],
             c: vec![FooterModule::EqPreset],
             x: vec![],
             y: vec![],
-            z: vec![FooterModule::SleepTimer, FooterModule::Clock],
+            z: vec![FooterModule::SleepTimer],
         },
         FooterPreset {
             name: "Full",
-            a: vec![FooterModule::Playback],
+            a: vec![FooterModule::KeyAction, FooterModule::Playback],
             b: vec![FooterModule::Title],
             c: vec![
                 FooterModule::Volume,
@@ -73,19 +79,14 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::Shuffle,
                 FooterModule::EqPreset,
             ],
-            x: vec![FooterModule::Backend, FooterModule::Device],
-            y: vec![FooterModule::KeyAction],
-            z: vec![
-                FooterModule::System,
-                FooterModule::Clock,
-                FooterModule::SleepTimer,
-                FooterModule::Progress,
-            ],
+            x: vec![],
+            y: vec![],
+            z: vec![FooterModule::SleepTimer, FooterModule::Progress],
         },
     ]
 }
 
-pub fn num_presets() -> usize {
+pub fn num_presets() -> u8 {
     3
 }
 
@@ -142,7 +143,7 @@ fn build_groups<'a>(preset: &'a FooterPreset, app: &App) -> Vec<FooterGroup<'a>>
     let mut groups = Vec::new();
 
     // Collect all modules from all preset fields
-    let all: Vec<&'a FooterModule> = preset
+    let mut all: Vec<&'a FooterModule> = preset
         .a
         .iter()
         .chain(preset.b.iter())

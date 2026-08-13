@@ -554,7 +554,7 @@ pub fn default_keybindings() -> Keybindings {
                     description: "Go back",
                 },
             ),
-            // Delete — Del / D (uppercase, with confirmation)
+            // Delete — Del / d (with confirmation)
             (
                 KeyCode::Delete.into(),
                 BoundCommand {
@@ -564,7 +564,7 @@ pub fn default_keybindings() -> Keybindings {
                 },
             ),
             (
-                KeyCode::Char('D').into(),
+                KeyCode::Char('d').into(),
                 BoundCommand {
                     action: KeyboardAction::Delete,
                     contexts: vec![KeyContext::List, KeyContext::Normal],
@@ -746,5 +746,44 @@ pub fn default_keybindings() -> Keybindings {
                 },
             ),
         ],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn dispatch(key: KeyEvent, ctx: KeyContext) -> Option<KeyboardAction> {
+        default_keybindings().dispatch(key, ctx)
+    }
+
+    #[test]
+    fn delete_uses_lowercase_d_and_del() {
+        // d / Del remove an item…
+        assert!(matches!(
+            dispatch(KeyCode::Char('d').into(), KeyContext::Normal),
+            Some(KeyboardAction::Delete)
+        ));
+        assert!(matches!(
+            dispatch(KeyCode::Delete.into(), KeyContext::Normal),
+            Some(KeyboardAction::Delete)
+        ));
+        // …while uppercase D still clears the queue.
+        assert!(matches!(
+            dispatch(KeyCode::Char('D').into(), KeyContext::Normal),
+            Some(KeyboardAction::ClearQueue)
+        ));
+    }
+
+    #[test]
+    fn quit_keyboard_actions() {
+        assert!(matches!(
+            dispatch(KeyCode::Char('q').into(), KeyContext::Global),
+            Some(KeyboardAction::Quit)
+        ));
+        assert!(matches!(
+            dispatch(KeyCode::Char('Q').into(), KeyContext::Global),
+            Some(KeyboardAction::QuitDaemon)
+        ));
     }
 }

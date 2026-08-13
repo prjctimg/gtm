@@ -121,7 +121,7 @@ impl PickerId {
             PickerId::Queue => "Queue",
             PickerId::YTSearch => "YouTube Search",
             PickerId::SearchLibrary => "Search Library",
-            PickerId::SpotifySearch => "Spotify Search",
+            PickerId::SpotifySearch => "Spotify Link Token",
             PickerId::Equalizer => "Equalizer",
             PickerId::CommandPalette => "Command Palette",
             PickerId::About => "About",

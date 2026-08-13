@@ -688,6 +688,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 "Albums" => app.unique_albums().len(),
                 "Artists" => app.unique_artists().len(),
                 "Playlists" => app.playlist_cache.len(),
+                "Spotify" => app.spotify_playlists.len(),
                 _ => 0,
             };
             // Skip icon for "Liked" — the heart is redundant with the name
@@ -746,7 +747,61 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .get(app.library_category)
         .unwrap_or(&"All Tracks");
 
-    let (right_lines, stats_line) = if app.browse_detail.is_some() {
+    let (right_lines, stats_line) = if app.browse_detail.is_some() && app.library_category == 5 {
+        // Spotify playlist detail: cached track list, resolved via the daemon.
+        let tracks = &app.spotify_playlist_tracks_cache;
+        let total_len = tracks.len();
+        let st_line = format!(" {} tracks ", total_len);
+        let reserve = 3usize;
+        let available = panes[1].height.saturating_sub(reserve as u16) as usize;
+        app.viewport_items = available;
+        let sel = app.scroll_offset.min(total_len.saturating_sub(1));
+        let (list_scroll, end) = centered_scroll(sel, available, total_len);
+        app.list_scroll = list_scroll;
+
+        let pane_w = panes[1].width as usize;
+        let mut lines = vec![Line::from("")];
+        if tracks.is_empty() {
+            lines.push(Line::from(Span::styled(
+                " No tracks — run Settings > Spotify > Sync Now, then press Enter again",
+                Style::default().fg(app.theme.fg_dim),
+            )));
+            (lines, st_line)
+        } else {
+            for (i, tr) in tracks[app.list_scroll..end].iter().enumerate() {
+                let real_i = app.list_scroll + i;
+                let is_sel = real_i == sel && !left_focus;
+                let label = if tr.artists.is_empty() {
+                    tr.name.clone()
+                } else {
+                    format!("{} \u{2014} {}", tr.artists, tr.name)
+                };
+                let avail = pane_w.saturating_sub(2);
+                let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
+                let dur = tr
+                    .duration_ms
+                    .map(|d| format_duration_short((d / 1000) as u64))
+                    .unwrap_or_default();
+                let prefix = if is_sel { " >" } else { "  " };
+                let row = format!(
+                    "{}{:<width$}  {:>6}",
+                    prefix,
+                    display_label,
+                    dur,
+                    width = avail.saturating_sub(9)
+                );
+                let style = if is_sel {
+                    Style::default()
+                        .fg(app.theme.selection_fg)
+                        .bg(app.theme.selection_bg)
+                } else {
+                    Style::default().fg(app.theme.fg)
+                };
+                lines.push(Line::from(Span::styled(row, style)));
+            }
+            (lines, st_line)
+        }
+    } else if app.browse_detail.is_some() {
         // Detail view: show tracks filtered by album/artist/playlist
         let (total_len, hours, mins) = {
             let f = app.filtered_tracks();
@@ -901,6 +956,45 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 format!("{}{:<40} {:>4} tracks", prefix, pl.name, pl.track_count),
                 style,
             )));
+        }
+        (lines, st_line)
+    } else if app.library_category == 5 {
+        // Spotify playlists browse
+        let playlists = &app.spotify_playlists;
+        let total_len = playlists.len();
+        let sel = app.scroll_offset.min(total_len.saturating_sub(1));
+        let st_line = format!(" {} playlists ", total_len);
+        let reserve = 3usize;
+        let available = panes[1].height.saturating_sub(reserve as u16) as usize;
+        app.viewport_items = available;
+        let (list_scroll, end) = centered_scroll(sel, available, total_len);
+        app.list_scroll = list_scroll;
+        let mut lines = vec![Line::from("")];
+        if playlists.is_empty() {
+            lines.push(Line::from(Span::styled(
+                " No synced playlists — link an account in Settings > Spotify",
+                Style::default().fg(app.theme.fg_dim),
+            )));
+        } else {
+            for (i, pl) in playlists[app.list_scroll..end].iter().enumerate() {
+                let real_i = app.list_scroll + i;
+                let prefix = if real_i == sel && !left_focus {
+                    " >"
+                } else {
+                    "  "
+                };
+                let style = if real_i == sel && !left_focus {
+                    Style::default()
+                        .fg(app.theme.selection_fg)
+                        .bg(app.theme.selection_bg)
+                } else {
+                    Style::default().fg(app.theme.fg)
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("{}{:<40} {:>4} tracks", prefix, pl.name, pl.track_count()),
+                    style,
+                )));
+            }
         }
         (lines, st_line)
     } else {
@@ -1148,7 +1242,32 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
                 format!("Footer Preset   [ {:>8} ▶ ]", preset_name),
             ]
         }
-        4 => vec!["Spotify Status  [ Disconnected ▶ ]".to_string()],
+        4 => {
+            let st = app.spotify_status.clone().unwrap_or_default();
+            let connected = if st.linked {
+                "Connected"
+            } else {
+                "Disconnected"
+            };
+            let user = st.user.as_deref().unwrap_or("(none)");
+            let status_label = if let Some(err) = st.error.as_deref() {
+                let mut e = err.chars().take(14).collect::<String>();
+                if err.chars().count() > 14 {
+                    e.push('…');
+                }
+                format!("{connected}: {e}")
+            } else {
+                connected.to_string()
+            };
+            vec![
+                format!("Status          [ {status_label} ]"),
+                format!("Account         [ {user:<10} ]"),
+                format!("Playlists       [ {:>3} ]", st.playlists),
+                format!("Link Account    [ Enter ]"),
+                format!("Sync Now        [ Enter ]"),
+                format!("Unlink          [ Enter ]"),
+            ]
+        }
         _ => vec![],
     };
 
@@ -1207,7 +1326,12 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         (3, 2) => lines.push(Line::from(Span::styled(" Sync Covers: Download missing cover art from Deezer for all library tracks.", Style::default().fg(app.theme.fg)))),
         (3, 3) => lines.push(Line::from(Span::styled(" Sync Lyrics: Fetch and save lyrics files alongside all library tracks.", Style::default().fg(app.theme.fg)))),
         (3, 4) => lines.push(Line::from(Span::styled(" Footer Preset: Press Enter to cycle (Default, Minimal, Full). Also toggled via Alt+F.", Style::default().fg(app.theme.fg)))),
-        (4, 0) => lines.push(Line::from(Span::styled(" Spotify: Integration status — requires daemon restart.", Style::default().fg(app.theme.fg)))),
+        (4, 0) => lines.push(Line::from(Span::styled(" Spotify: Integration status for the linked account.", Style::default().fg(app.theme.fg)))),
+        (4, 1) => lines.push(Line::from(Span::styled(" Account: Display name of the linked Spotify user.", Style::default().fg(app.theme.fg)))),
+        (4, 2) => lines.push(Line::from(Span::styled(" Playlists: Number of playlists synced by the daemon.", Style::default().fg(app.theme.fg)))),
+        (4, 3) => lines.push(Line::from(Span::styled(" Link Account: Press Enter to paste a Spotify access token (OAuth). Token is stored at ~/.config/gtm/spotify.json.", Style::default().fg(app.theme.fg)))),
+        (4, 4) => lines.push(Line::from(Span::styled(" Sync Now: Re-fetch playlists from the Spotify Web API.", Style::default().fg(app.theme.fg)))),
+        (4, 5) => lines.push(Line::from(Span::styled(" Unlink: Remove the token and disconnect the account.", Style::default().fg(app.theme.fg)))),
         _ => {}
     }
 
@@ -1259,13 +1383,46 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             let block = Block::default()
                 .borders(Borders::ALL)
                 .border_type(BorderType::Plain)
-                .title(" Spotify Search ")
+                .title(" Spotify Link Token ")
                 .style(Style::default().bg(picker_box_bg));
             let inner = block.inner(picker_area);
             f.render_widget(block, picker_area);
-            let p = Paragraph::new("Spotify search not yet implemented")
-                .alignment(Alignment::Center)
-                .style(Style::default().fg(app.theme.fg_dim));
+
+            let mut lines = Vec::new();
+            lines.push(Line::from(Span::styled(
+                "Paste a Spotify access token below, then press Enter.",
+                Style::default().fg(app.theme.fg),
+            )));
+            lines.push(Line::from(Span::styled(
+                "Get one from the Spotify developer dashboard (OAuth access token).",
+                Style::default().fg(app.theme.fg_dim),
+            )));
+            lines.push(Line::from(""));
+            let masked: String = "*".repeat(app.spotify_token_input.chars().count());
+            if app.spotify_token_input.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    " [ token ]",
+                    Style::default().fg(app.theme.fg_dim),
+                )));
+            } else {
+                lines.push(Line::from(Span::styled(
+                    format!("  {masked}"),
+                    Style::default().fg(app.theme.accent),
+                )));
+                lines.push(Line::from(Span::styled(
+                    format!(
+                        "  ({} chars entered)",
+                        app.spotify_token_input.chars().count()
+                    ),
+                    Style::default().fg(app.theme.fg_dim),
+                )));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                " Enter: link account   Esc: cancel",
+                Style::default().fg(app.theme.fg_dim),
+            )));
+            let p = Paragraph::new(lines);
             f.render_widget(p, inner);
         }
     }
@@ -2266,6 +2423,14 @@ fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
     };
     let scroll_end = (scroll_start + visible).min(total);
 
+    // Pad names so keybindings line up in a column.
+    let name_w = filtered
+        .iter()
+        .map(|((name, _), _)| name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(inner.width.saturating_sub(8) as usize);
+
     let mut lines: Vec<Line> = vec![search_line];
     for i in scroll_start..scroll_end {
         let ((name, key), _score) = filtered[i];
@@ -2278,7 +2443,10 @@ fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
             Style::default()
         };
         lines.push(Line::from(vec![
-            Span::styled(format!("{prefix}{name}"), style),
+            Span::styled(
+                format!("{prefix}{name:<width$}", name = name, width = name_w),
+                style,
+            ),
             Span::styled(
                 format!("  [{key}]", key = key),
                 Style::default().fg(app.theme.fg_dim),
@@ -2607,16 +2775,23 @@ pub fn readable_fg(
 /// Scroll text horizontally if it exceeds max_width, using a frame-based offset.
 /// Only the selected item scrolls; others are truncated with "…".
 fn scroll_text(text: &str, max_width: usize, frame: usize, is_selected: bool) -> String {
-    if text.len() <= max_width {
+    if text.chars().count() <= max_width {
         return format!("{:<width$}", text, width = max_width);
     }
     if !is_selected {
         let truncated: String = text.chars().take(max_width.saturating_sub(1)).collect();
         return format!("{}…", truncated);
     }
-    // Animated scroll: shift by (frame / 3) characters, wrap around
-    let scroll = (frame / 3) % text.len();
-    let scrolled = format!("{}{}", &text[scroll..], &text[..scroll]);
+    // Animated scroll: shift by (frame / 3) characters, wrap around.
+    // Rotate on character boundaries to avoid slicing mid-UTF-8-sequence.
+    let chars: Vec<char> = text.chars().collect();
+    let n = chars.len();
+    let scroll = (frame / 3) % n.max(1);
+    let scrolled: String = chars
+        .iter()
+        .skip(scroll)
+        .chain(chars.iter().take(scroll))
+        .collect();
     scrolled.chars().take(max_width).collect()
 }
 
@@ -2793,4 +2968,34 @@ fn render_health_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
         1,
     );
     f.render_widget(help, help_area);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scroll_text;
+
+    #[test]
+    fn scroll_text_handles_multibyte_utf8() {
+        let text = "Artist \u{2014} T\u{e9}t\u{e9} Song Title That Is Quite Long";
+        // Exercise a range of frame offsets so byte/char boundaries vary.
+        for frame in 0..600 {
+            for width in [8usize, 16, 24] {
+                let out = scroll_text(text, width, frame, true);
+                assert!(out.chars().count() <= width, "frame {frame} width {width}");
+            }
+            let out = scroll_text(text, 16, frame, false);
+            assert!(out.chars().count() <= 16);
+        }
+    }
+
+    #[test]
+    fn scroll_text_pads_when_fits() {
+        assert_eq!(scroll_text("ab", 4, 0, true), "ab  ");
+    }
+
+    #[test]
+    fn scroll_text_empty_never_panics() {
+        let out = scroll_text("", 0, 1, true);
+        assert_eq!(out, "");
+    }
 }
