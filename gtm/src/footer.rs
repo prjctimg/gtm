@@ -323,22 +323,19 @@ pub fn draw(f: &mut Frame, area: Rect, out: &FooterRenderOutput) {
 // ─── Module dispatch ───────────────────────────────────────────────────
 
 fn module_color(m: FooterModule, theme: &crate::theme::AppTheme) -> Color {
-    // Terminal-friendly semantic mapping. Previously this lived on the theme
-    // as `syn_*` fields misnamed for syntax highlighting; the footer now
-    // owns its own mapping using the theme's semantic palette.
     match m {
         FooterModule::Playback => theme.accent,
-        FooterModule::Title => theme.success,
-        FooterModule::Volume => theme.warning,
+        FooterModule::Title => theme.secondary_accent,
+        FooterModule::Volume => theme.tertiary_accent,
         FooterModule::Repeat => theme.accent,
-        FooterModule::Shuffle => theme.warning,
-        FooterModule::Progress => theme.accent,
+        FooterModule::Shuffle => theme.tertiary_accent,
+        FooterModule::Progress => theme.secondary_accent,
         FooterModule::Queue => theme.fg_dim,
-        FooterModule::KeyAction => theme.warning,
+        FooterModule::KeyAction => theme.tertiary_accent,
         FooterModule::Backend => theme.fg_dim,
         FooterModule::System => theme.fg_dim,
         FooterModule::Device => theme.fg_dim,
-        FooterModule::EqPreset => theme.warning,
+        FooterModule::EqPreset => theme.secondary_accent,
         FooterModule::SleepTimer => theme.accent,
     }
 }

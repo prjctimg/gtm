@@ -24,6 +24,8 @@ pub struct AppTheme {
     pub fg_dim: Color,
     pub fg_bright: Color,
     pub accent: Color,
+    pub secondary_accent: Color,
+    pub tertiary_accent: Color,
     pub error: Color,
     pub warning: Color,
     pub success: Color,
@@ -94,6 +96,8 @@ fn chadrula() -> AppTheme {
         fg_dim: hex(0x565f89),
         fg_bright: hex(0xe0e6ff),
         accent: hex(0x7aa2f7),
+        secondary_accent: hex(0x9ece6a),
+        tertiary_accent: hex(0xe0af68),
         error: hex(0xf7768e),
         warning: hex(0xe0af68),
         success: hex(0x9ece6a),
@@ -120,6 +124,8 @@ fn one_dark() -> AppTheme {
         fg_dim: hex(0x5c6370),
         fg_bright: hex(0xe6e6e6),
         accent: hex(0x61afef),
+        secondary_accent: hex(0x98c379),
+        tertiary_accent: hex(0xe5c07b),
         error: hex(0xe06c75),
         warning: hex(0xe5c07b),
         success: hex(0x98c379),
@@ -146,6 +152,8 @@ fn tokyonight() -> AppTheme {
         fg_dim: hex(0x565f89),
         fg_bright: hex(0xc0caf5),
         accent: hex(0x7aa2f7),
+        secondary_accent: hex(0x9ece6a),
+        tertiary_accent: hex(0xff9e64),
         error: hex(0xf7768e),
         warning: hex(0xff9e64),
         success: hex(0x9ece6a),
@@ -166,6 +174,7 @@ fn tokyonight_storm() -> AppTheme {
     let mut t = chadrula();
     t.fg = hex(0xa9b1d6);
     t.warning = hex(0xff9e64);
+    t.tertiary_accent = hex(0xff9e64);
     t.volume_medium = hex(0xff9e64);
     t
 }
@@ -182,6 +191,8 @@ fn catppuccin_mocha() -> AppTheme {
         fg_dim: hex(0x6c7086),
         fg_bright: hex(0xf5f5ff),
         accent: hex(0x89b4fa),
+        secondary_accent: hex(0xa6e3a1),
+        tertiary_accent: hex(0xfab387),
         error: hex(0xf38ba8),
         warning: hex(0xfab387),
         success: hex(0xa6e3a1),
@@ -208,6 +219,8 @@ fn gruvbox_dark() -> AppTheme {
         fg_dim: hex(0x928374),
         fg_bright: hex(0xfbf1c7),
         accent: hex(0xd3869b),
+        secondary_accent: hex(0xb8bb26),
+        tertiary_accent: hex(0xfe8019),
         error: hex(0xfb4934),
         warning: hex(0xfe8019),
         success: hex(0xb8bb26),
@@ -234,6 +247,8 @@ fn nord() -> AppTheme {
         fg_dim: hex(0x4c566a),
         fg_bright: hex(0xeceff4),
         accent: hex(0x88c0d0),
+        secondary_accent: hex(0xa3be8c),
+        tertiary_accent: hex(0xd08770),
         error: hex(0xbf616a),
         warning: hex(0xd08770),
         success: hex(0xa3be8c),
@@ -260,6 +275,8 @@ fn rose_pine() -> AppTheme {
         fg_dim: hex(0x6e6a86),
         fg_bright: hex(0xf0edf6),
         accent: hex(0xc4a7e7),
+        secondary_accent: hex(0x9ccfd8),
+        tertiary_accent: hex(0xf6c177),
         error: hex(0xeb6f92),
         warning: hex(0xf6c177),
         success: hex(0x9ccfd8),
@@ -286,6 +303,8 @@ fn everforest() -> AppTheme {
         fg_dim: hex(0x7a8478),
         fg_bright: hex(0xeae4c9),
         accent: hex(0xa7c080),
+        secondary_accent: hex(0xa7c080),
+        tertiary_accent: hex(0xe69875),
         error: hex(0xe67e80),
         warning: hex(0xe69875),
         success: hex(0xa7c080),
@@ -312,6 +331,8 @@ fn kanagawa() -> AppTheme {
         fg_dim: hex(0x727169),
         fg_bright: hex(0xc8c0b3),
         accent: hex(0x7e9cd8),
+        secondary_accent: hex(0x98bb6c),
+        tertiary_accent: hex(0xe6c384),
         error: hex(0xc34043),
         warning: hex(0xe6c384),
         success: hex(0x98bb6c),
@@ -338,6 +359,8 @@ fn catppuccin_latte() -> AppTheme {
         fg_dim: hex(0x9ca0b0),
         fg_bright: hex(0x1e1e2e),
         accent: hex(0x1e66f5),
+        secondary_accent: hex(0x40a02b),
+        tertiary_accent: hex(0xfe640b),
         error: hex(0xd20f39),
         warning: hex(0xfe640b),
         success: hex(0x40a02b),
@@ -364,6 +387,8 @@ fn kanagawa_lotus() -> AppTheme {
         fg_dim: hex(0x949494),
         fg_bright: hex(0x434343),
         accent: hex(0x2d6a9f),
+        secondary_accent: hex(0x6a9589),
+        tertiary_accent: hex(0xb47e2b),
         error: hex(0xc84053),
         warning: hex(0xb47e2b),
         success: hex(0x6a9589),
@@ -390,6 +415,8 @@ fn classic() -> AppTheme {
         fg_dim: hex(0x707070),
         fg_bright: hex(0xffffff),
         accent: hex(0xff8800),
+        secondary_accent: hex(0x44ff44),
+        tertiary_accent: hex(0xffaa00),
         error: hex(0xff4444),
         warning: hex(0xffaa00),
         success: hex(0x44ff44),
@@ -514,6 +541,12 @@ struct UserThemeFile {
     fg_dim: String,
     fg_bright: String,
     accent: String,
+    /// Optional; defaults to `accent` (monochromatic fallback).
+    #[serde(default)]
+    secondary_accent: Option<String>,
+    /// Optional; defaults to `accent` (monochromatic fallback).
+    #[serde(default)]
+    tertiary_accent: Option<String>,
     error: String,
     warning: String,
     success: String,
@@ -545,6 +578,16 @@ impl UserThemeFile {
             fg_dim: parse_color(&self.fg_dim)?,
             fg_bright: parse_color(&self.fg_bright)?,
             accent: parse_color(&self.accent)?,
+            secondary_accent: parse_color(
+                self.secondary_accent
+                    .as_deref()
+                    .unwrap_or(self.accent.as_str()),
+            )?,
+            tertiary_accent: parse_color(
+                self.tertiary_accent
+                    .as_deref()
+                    .unwrap_or(self.accent.as_str()),
+            )?,
             error: parse_color(&self.error)?,
             warning: parse_color(&self.warning)?,
             success: parse_color(&self.success)?,

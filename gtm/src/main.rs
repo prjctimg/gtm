@@ -27,6 +27,11 @@ use gtm::ui;
 
 fn print_version() {
     let ver = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0");
+    println!("gtm {ver}");
+}
+
+fn print_version_verbose() {
+    let ver = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0");
     println!(
         "gtm {ver}\n\
          Copyright (C) 2025 - present prjctimg <prjctimg@outlook.com>\n\
@@ -38,8 +43,14 @@ fn print_version() {
 }
 
 fn main() {
-    if std::env::args().any(|a| a == "--version" || a == "-V") {
-        print_version();
+    let args: Vec<String> = std::env::args().collect();
+    if args.iter().any(|a| a == "--version" || a == "-V") {
+        // Check for -vv (verbose version with copyright)
+        if args.iter().any(|a| a == "-vv") {
+            print_version_verbose();
+        } else {
+            print_version();
+        }
         return;
     }
 
