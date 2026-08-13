@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use crate::app::{App, InputMode, LIBRARY_CATEGORIES};
-use crate::picker::PickerId;
+use crate::picker::{Picker, PickerId};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -1442,6 +1442,65 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
 // ─── Overlay Rendering ───
 
+/// Content-driven sizing hint for a floating picker: `(width, height)` the
+/// picker's content needs so the panel is never wider (or taller) than
+/// necessary.  Row counts are clamped so very large lists scroll instead of
+/// covering the whole screen.
+fn picker_content_hint(top: &Picker, app: &App) -> (u16, u16) {
+    match top.id {
+        PickerId::Queue => {
+            let w = app
+                .queue_cache
+                .iter()
+                .map(|t| t.artist.len() as u16 + t.title.len() as u16 + 14)
+                .max()
+                .unwrap_or(46)
+                .clamp(44, 72);
+            let h = (app.queue_cache.len() as u16 + 6).clamp(18, 30);
+            (w, h)
+        }
+        PickerId::YTSearch => {
+            let w = app
+                .yt_results_cache
+                .iter()
+                .map(|r| r.channel.len() as u16 + r.title.len() as u16 + 22)
+                .max()
+                .unwrap_or(52)
+                .clamp(48, 84);
+            let h = (app.yt_results_cache.len() as u16 + 6).clamp(20, 32);
+            (w, h)
+        }
+        PickerId::SearchLibrary => {
+            let q = top.query.trim().to_lowercase();
+            let n = if q.is_empty() {
+                app.tracks_cache.len()
+            } else {
+                app.tracks_cache
+                    .iter()
+                    .filter(|t| {
+                        t.title.to_lowercase().contains(&q) || t.artist.to_lowercase().contains(&q)
+                    })
+                    .count()
+            };
+            let w = app
+                .tracks_cache
+                .iter()
+                .map(|t| t.artist.len() as u16 + t.title.len() as u16 + 14)
+                .max()
+                .unwrap_or(46)
+                .clamp(44, 72);
+            let h = (n as u16 + 6).clamp(18, 30);
+            (w, h)
+        }
+        PickerId::ThemePicker => (58, 24),
+        PickerId::CommandPalette => (46, 18),
+        PickerId::PlaylistSelect => (48, 20),
+        PickerId::SpotifySearch => (60, 12),
+        // Equalizer / SoundEffects / SleepTimer / About / EditMetadata
+        _ => (56, 22),
+    }
+}
+
 fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let Some(top) = app.pickers.top() else {
         return;
@@ -1449,22 +1508,18 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
     let picker_area = if top.id == PickerId::Help {
         area
-    } else if top.id == PickerId::CommandPalette {
-        // Command palette floats at 60% x 40%, centered.
-        let w = ((area.width as f64 * 0.6) as u16).min(area.width);
-        let h = ((area.height as f64 * 0.4) as u16).min(area.height);
-        Rect {
-            x: area.width.saturating_sub(w) / 2,
-            y: area.height.saturating_sub(h) / 2,
-            width: w,
-            height: h,
-        }
     } else {
-        // Overlay box: centered, 60% width, 70% height, with minimum size
-        let picker_width = ((area.width as f64 * 0.6) as u16).max(50).min(area.width);
-        let picker_height = ((area.height as f64 * 0.7) as u16).max(15).min(area.height);
-        let picker_x = (area.width.saturating_sub(picker_width)) / 2;
-        let picker_y = (area.height.saturating_sub(picker_height)) / 3;
+        // Content-driven size with a square-ish minimum floor so floating
+        // pickers are never skinny strips, and never wider than their
+        // content demands.  Centered on both axes.
+        let square_min = 40
+            .min(area.width.saturating_sub(2))
+            .min(area.height.saturating_sub(2));
+        let (content_w, content_h) = picker_content_hint(top, app);
+        let picker_width = content_w.max(square_min).min(area.width.saturating_sub(2));
+        let picker_height = content_h.max(square_min).min(area.height.saturating_sub(2));
+        let picker_x = area.width.saturating_sub(picker_width) / 2;
+        let picker_y = area.height.saturating_sub(picker_height) / 2;
 
         Rect {
             x: picker_x,

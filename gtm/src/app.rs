@@ -172,7 +172,7 @@ pub struct App {
     pub state: DaemonState,
     pub display_position: f64,
     last_display_position: f64,
-    frame_count: u64,
+    pub frame_count: u64,
     pub current_tab: Tab,
     pub input_mode: InputMode,
     pub search_query: String,

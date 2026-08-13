@@ -130,7 +130,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             ca-certificates curl git pkg-config \
             libasound2-dev pandoc dpkg-dev \
-            build-essential liblzma-dev
+            build-essential cmake liblzma-dev
 
       - name: Install Rust (Debian 12 container)
         if: matrix.container
