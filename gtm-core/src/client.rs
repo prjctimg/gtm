@@ -57,6 +57,7 @@ impl DaemonClient {
                         connected: connected.clone(),
                         buf: Vec::with_capacity(4096),
                         socket_path: path.clone(),
+                        last_event_time: Instant::now(),
                     };
                     tokio::spawn(worker.run());
 
@@ -486,12 +487,21 @@ struct IpcWorker {
     connected: Arc<AtomicBool>,
     buf: Vec<u8>,
     socket_path: std::path::PathBuf,
+    last_event_time: Instant,
 }
 
 impl IpcWorker {
     async fn run(mut self) {
         let mut tmp = [0u8; 4096];
         loop {
+            // Health check: if no events received for 10s, force reconnect
+            if self.last_event_time.elapsed() > Duration::from_secs(10) {
+                eprintln!("IPC worker: no events for 10s, forcing reconnect");
+                self.reconnect().await;
+                self.last_event_time = Instant::now();
+                continue;
+            }
+
             // Process ONE pending request (if any), then drain events so
             // events are never starved by a burst of commands.
             if let Ok(pending) = self.cmd_rx.try_recv() {
@@ -505,6 +515,7 @@ impl IpcWorker {
             // Read from socket with a small timeout so we can check for requests
             match self.read_with_timeout(&mut tmp).await {
                 Ok(true) => {
+                    self.last_event_time = Instant::now();
                     // Parse all complete frames
                     while let Some(frame) = self.parse().await {
                         match frame {
@@ -567,8 +578,16 @@ impl IpcWorker {
     async fn send_request(&mut self, pending: PendingRequest) -> Result<()> {
         let mut line = serde_json::to_string(&pending.req)?;
         line.push('\n');
-        self.writer.write_all(line.as_bytes()).await?;
-        self.writer.flush().await?;
+        match tokio::time::timeout(Duration::from_secs(5), self.writer.write_all(line.as_bytes())).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(CoreError::Daemon(format!("write error: {e}"))),
+            Err(_) => return Err(CoreError::Daemon("write timeout".into())),
+        }
+        match tokio::time::timeout(Duration::from_secs(5), self.writer.flush()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => return Err(CoreError::Daemon(format!("flush error: {e}"))),
+            Err(_) => return Err(CoreError::Daemon("flush timeout".into())),
+        }
 
         let response = self.read_response().await?;
         if let Some(tx) = pending.response_tx {

@@ -32,20 +32,12 @@ use gtm_core::state::RepeatMode;
 
 use crate::CliCommand;
 
-fn default_socket() -> PathBuf {
-    if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
-        PathBuf::from(runtime).join("gtmd.socket")
-    } else if let Ok(tmpdir) = std::env::var("TMPDIR") {
-        PathBuf::from(tmpdir).join("gtmd.socket")
-    } else {
-        std::env::temp_dir().join("gtmd.socket")
-    }
-}
-
 pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
     let rt = tokio::runtime::Runtime::new().unwrap();
     let result: Result<String, String> = rt.block_on(async {
-        let socket_path = socket.map(PathBuf::from).unwrap_or_else(default_socket);
+        let socket_path = socket
+            .map(PathBuf::from)
+            .unwrap_or_else(gtm_core::default_socket_path);
 
         let client = DaemonClient::connect(&socket_path)
             .await

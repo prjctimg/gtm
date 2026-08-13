@@ -1561,6 +1561,7 @@ name = "gtm"
 version = "0.1.0"
 dependencies = [
  "base64",
+ "chrono",
  "clap",
  "color-eyre",
  "crossterm 0.28.1",

@@ -26,6 +26,8 @@ pub enum OverlayId {
     ThemePicker,
     SoundEffects,
     Help,
+    PlaylistSelect,
+    EditMetadata,
 }
 
 /// Active overlay instance — state + metadata.
@@ -118,6 +120,8 @@ impl OverlayId {
                 OverlayId::ThemePicker => "Theme",
             OverlayId::SoundEffects => "Sound Effects",
             OverlayId::Help => "Help",
+            OverlayId::PlaylistSelect => "Add to Playlist",
+            OverlayId::EditMetadata => "Edit Metadata",
         }
     }
 }

@@ -6,6 +6,7 @@
 
 use std::path::PathBuf;
 
+use chrono::Timelike;
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -25,7 +26,7 @@ use gtm_core::track::TrackInfo;
 pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = socket
         .map(PathBuf::from)
-        .unwrap_or_else(default_socket);
+        .unwrap_or_else(gtm_core::default_socket_path);
 
     ensure_daemon_running(&socket_path)?;
 
@@ -55,16 +56,6 @@ pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>>
 
         res
     })
-}
-
-fn default_socket() -> PathBuf {
-    if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
-        PathBuf::from(runtime).join("gtmd.socket")
-    } else if let Ok(tmpdir) = std::env::var("TMPDIR") {
-        PathBuf::from(tmpdir).join("gtmd.socket")
-    } else {
-        std::env::temp_dir().join("gtmd.socket")
-    }
 }
 
 fn ensure_daemon_running(socket_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
@@ -172,7 +163,7 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App, dt: std::time::Duration) {
 
 fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let version = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0");
-    let tab_items = [("1", "▶ Now Playing", Tab::NowPlaying), ("2", "☰ Library", Tab::Library), ("3", "⚙ Settings", Tab::Settings)];
+    let tab_items = [("1", "▶ Now Playing", Tab::NowPlaying), ("2", "󰎈 Library", Tab::Library), ("3", "⚙ Settings", Tab::Settings)];
 
     let mut span_data: Vec<(bool, String)> = Vec::new();
     for (num, name, tab) in &tab_items {
@@ -393,6 +384,15 @@ fn render_cover(
     current_cover: Option<&[u8]>,
     fg: Color,
 ) {
+    // Skip image rendering entirely in Neovim terminal (no protocol passthrough)
+    if std::env::var("NVIM").is_ok() {
+        let placeholder = Block::default()
+            .borders(Borders::ALL)
+            .title(" Cover art unavailable in Neovim ")
+            .style(Style::default().fg(fg));
+        f.render_widget(placeholder, area);
+        return;
+    }
     if let Some(protocol) = cover_stateful {
         let image = StatefulImage::new();
         f.render_stateful_widget(image, area, protocol);
@@ -496,11 +496,10 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 "Playlists" => app.playlist_cache.len(),
                 _ => 0,
             };
-            let num = i + 1;
             let label = if count > 0 {
-                format!(" {icon} {num:>2}. {:<14} {:>4}", cat, count)
+                format!(" {icon}  {:<14} {:>4}", cat, count)
             } else {
-                format!(" {icon} {num:>2}. {}", cat)
+                format!(" {icon}  {}", cat)
             };
             let is_active = i == app.library_category;
             let style = if is_active && left_focus {
@@ -922,8 +921,10 @@ fn render_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         OverlayId::SoundEffects => render_sound_effects_overlay(f, inner, app),
         OverlayId::ThemePicker => render_theme_picker_overlay(f, inner, app),
         OverlayId::Help => render_help_overlay(f, inner, app),
-        _ => {
-            let p = Paragraph::new(format!("{} overlay", top.id.title()))
+        OverlayId::PlaylistSelect => render_playlist_select_overlay(f, inner, app),
+        OverlayId::EditMetadata => render_edit_metadata_overlay(f, inner, app),
+        OverlayId::SpotifySearch => {
+            let p = Paragraph::new("Spotify search not yet implemented")
                 .alignment(Alignment::Center)
                 .style(Style::default().fg(app.theme.fg_dim));
             f.render_widget(p, inner);
@@ -1106,7 +1107,7 @@ fn render_search_library_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) 
 
 // ─── Footer ───
 
-fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
+fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     // Volume safety prompt: shown inline in the footer
     if app.pending_volume.is_some() {
         let vol = app.pending_volume.unwrap_or(app.state.volume);
@@ -1120,9 +1121,35 @@ fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
     match app.input_mode {
         InputMode::Normal => {
+            // During tab transitions, preserve the last footer render to avoid
+            // visual jumps from stale state becoming momentarily visible.
+            if app.suppress_footer_refresh {
+                if let Some((ref spans, left_bg, right_bg)) = app.cached_footer_spans {
+                    let left_w: u16 = spans.iter().map(|s| s.width() as u16).sum::<u16>() + 4;
+                    let right_w = area.width.saturating_sub(left_w);
+                    let chunks = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([Constraint::Length(left_w), Constraint::Min(right_w)])
+                        .split(area);
+                    f.render_widget(
+                        Paragraph::new(Line::from(spans.clone())).style(Style::default().bg(left_bg)),
+                        chunks[0],
+                    );
+                    if right_w > 0 {
+                        f.render_widget(
+                            Paragraph::new(Line::from(""))
+                                .style(Style::default().bg(right_bg)),
+                            chunks[1],
+                        );
+                    }
+                    return;
+                }
+            }
             let presets = crate::footer::presets();
             let idx = app.footer_preset.min(presets.len().saturating_sub(1));
             crate::footer::render_preset(f, area, app, &presets[idx]);
+            // Cache the rendered footer spans for the next frame
+            app.cached_footer_spans = crate::footer::collect_preset_spans(app, &presets[idx]);
         }
         InputMode::Searching => {
             f.render_widget(
@@ -1685,14 +1712,8 @@ fn render_track_info_popup(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
 /// Return the local time as " HH:MM " using the system clock.
 pub fn local_time_str() -> String {
-    let dur = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default();
-    let secs = dur.as_secs();
-    let total_min = (secs / 60) as i64;
-    let h = (total_min / 60) % 24;
-    let m = total_min % 60;
-    format!(" {:02}:{:02} ", h, m)
+    let now = chrono::Local::now();
+    format!(" {:02}:{:02} ", now.hour(), now.minute())
 }
 
 fn format_duration(secs: u64) -> String {
@@ -1847,7 +1868,6 @@ fn volume_icon(volume: u8) -> &'static str {
 
 /// Pick the foreground colour that has enough contrast against `bg`.
 /// Uses simple luminance formula (BT.601) to decide between `dark` and `light`.
-#[allow(dead_code)]
 pub fn readable_fg(bg: ratatui::style::Color, dark: ratatui::style::Color, light: ratatui::style::Color) -> ratatui::style::Color {
     fn luminance(c: &ratatui::style::Color) -> f64 {
         match c {
@@ -1874,4 +1894,71 @@ fn scroll_text(text: &str, max_width: usize, frame: usize, is_selected: bool) ->
     let scroll = (frame / 3) % text.len();
     let scrolled = format!("{}{}", &text[scroll..], &text[..scroll]);
     scrolled.chars().take(max_width).collect()
+}
+
+// ─── Library Motion Overlays ───
+
+fn render_playlist_select_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let sel = app.overlays.top().map_or(0, |o| o.selected);
+    let mut items: Vec<ListItem> = Vec::new();
+
+    // "Create New" option at the top
+    items.push(ListItem::new("  + Create New Playlist").style(
+        Style::default().fg(app.theme.accent),
+    ));
+
+    for (i, pl) in app.playlist_cache.iter().enumerate() {
+        let prefix = if i + 1 == sel { " > " } else { "   " };
+        let content = format!("{}{} ({} tracks)", prefix, pl.name, pl.track_count);
+        let style = if i + 1 == sel {
+            Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
+        } else {
+            Style::default().fg(app.theme.fg)
+        };
+        items.push(ListItem::new(content).style(style));
+    }
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Select Playlist ")
+            .border_type(BorderType::Plain),
+    );
+    f.render_widget(list, area);
+
+    let help_text = " [Enter] Select  [Esc] Cancel";
+    overlay_help(f, area, help_text, app);
+}
+
+fn render_edit_metadata_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let field_names = ["Title", "Artist", "Album", "Album Artist", "Genre", "Year", "Track #"];
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(field_names.len() as u16 * 2 + 1),
+            Constraint::Min(0),
+        ])
+        .split(area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, name) in field_names.iter().enumerate() {
+        let value = app.metadata_fields.get(i).map(|s| s.as_str()).unwrap_or("");
+        let is_active = i == app.metadata_field_idx;
+        let prefix = if is_active { " > " } else { "   " };
+        let style = if is_active {
+            Style::default().fg(app.theme.selection_fg).bg(app.theme.selection_bg)
+        } else {
+            Style::default().fg(app.theme.fg)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(format!("{}{}: ", prefix, name), style),
+            Span::styled(value.to_string(), style),
+        ]));
+    }
+
+    let para = Paragraph::new(lines);
+    f.render_widget(para, chunks[0]);
+
+    let help_text = " [Tab] Next field  [Enter] Save  [Esc] Cancel";
+    overlay_help(f, chunks[1], help_text, app);
 }

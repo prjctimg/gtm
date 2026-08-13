@@ -77,6 +77,29 @@ pub fn num_presets() -> usize {
     3
 }
 
+/// Collect the rendered spans for a preset so they can be cached across frames.
+pub fn collect_preset_spans(app: &App, preset: &FooterPreset) -> Option<(Vec<Span<'static>>, ratatui::style::Color, ratatui::style::Color)> {
+    let left_modules: Vec<&FooterModule> = preset.a.iter()
+        .chain(preset.b.iter())
+        .chain(preset.c.iter())
+        .collect();
+    let left_parts = render_modules(&left_modules, app);
+    let left_bg = if app.state.status == PlaybackStatus::Playing { app.theme.accent } else { app.theme.fg_dim };
+    let right_bg = app.theme.border;
+    if left_parts.is_empty() {
+        return None;
+    }
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    spans.push(Span::raw(" "));
+    for (i, (text, color)) in left_parts.iter().enumerate() {
+        if i > 0 { spans.push(Span::raw(" ")); }
+        let fg = crate::ui::readable_fg(left_bg, *color, app.theme.fg_bright);
+        spans.push(Span::styled(text.clone(), Style::default().fg(fg)));
+    }
+    spans.push(Span::raw(" "));
+    Some((spans, left_bg, right_bg))
+}
+
 pub fn render_preset(f: &mut Frame, area: Rect, app: &App, preset: &FooterPreset) {
     let left_modules: Vec<&FooterModule> = preset.a.iter()
         .chain(preset.b.iter())
@@ -101,6 +124,7 @@ pub fn render_preset(f: &mut Frame, area: Rect, app: &App, preset: &FooterPreset
     let is_playing = app.state.status == PlaybackStatus::Playing;
 
     let left_bg = if is_playing { app.theme.accent } else { app.theme.fg_dim };
+    let right_bg = app.theme.border;
 
     if left_w == 0 && right_w == 0 {
         return;
@@ -110,7 +134,8 @@ pub fn render_preset(f: &mut Frame, area: Rect, app: &App, preset: &FooterPreset
         let mut spans = Vec::new();
         for (i, (text, color)) in left_parts.iter().enumerate() {
             if i > 0 { spans.push(Span::raw(" ")); }
-            spans.push(Span::styled(text.clone(), Style::default().fg(*color)));
+            let fg = crate::ui::readable_fg(left_bg, *color, app.theme.fg_bright);
+            spans.push(Span::styled(text.clone(), Style::default().fg(fg)));
         }
         f.render_widget(
             Paragraph::new(Line::from(spans))
@@ -130,7 +155,8 @@ pub fn render_preset(f: &mut Frame, area: Rect, app: &App, preset: &FooterPreset
         spans.push(Span::raw(" "));
         for (i, (text, color)) in left_parts.iter().enumerate() {
             if i > 0 { spans.push(Span::raw(" ")); }
-            spans.push(Span::styled(text.clone(), Style::default().fg(*color)));
+            let fg = crate::ui::readable_fg(left_bg, *color, app.theme.fg_bright);
+            spans.push(Span::styled(text.clone(), Style::default().fg(fg)));
         }
         spans.push(Span::raw(" "));
         f.render_widget(
@@ -145,12 +171,13 @@ pub fn render_preset(f: &mut Frame, area: Rect, app: &App, preset: &FooterPreset
         spans.push(Span::raw(" "));
         for (i, (text, color)) in right_parts.iter().enumerate() {
             if i > 0 { spans.push(Span::raw(" ")); }
-            spans.push(Span::styled(text.clone(), Style::default().fg(*color)));
+            let fg = crate::ui::readable_fg(right_bg, *color, app.theme.fg_bright);
+            spans.push(Span::styled(text.clone(), Style::default().fg(fg)));
         }
         spans.push(Span::raw(" "));
         f.render_widget(
             Paragraph::new(Line::from(spans))
-                .style(Style::default().bg(app.theme.border)),
+                .style(Style::default().bg(right_bg)),
             chunks[1],
         );
     }

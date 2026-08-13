@@ -98,6 +98,16 @@ pub enum KeyboardAction {
     FocusLeft,
     FocusRight,
 
+    // Library motions (vim-style)
+    ToggleMultiselect,
+    ToggleSelectAndAdvance,
+    AddToQueue,
+    AddToPlaylist,
+    DeleteFromList,
+    JumpToStart,
+    JumpToEnd,
+    EditMetadata,
+
     // Meta
     Quit,
     QuitDaemon,
@@ -592,6 +602,70 @@ pub fn default_keybindings() -> Keybindings {
                     action: KeyboardAction::CycleFooterPreset,
                     contexts: vec![KeyContext::Normal],
                     description: "Cycle footer preset",
+                },
+            ),
+            // Library motions — vim-style
+            // v — toggle multiselect mode
+            (
+                KeyCode::Char('v').into(),
+                BoundCommand {
+                    action: KeyboardAction::ToggleMultiselect,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Toggle multiselect mode",
+                },
+            ),
+            // a — add selected to queue
+            (
+                KeyCode::Char('a').into(),
+                BoundCommand {
+                    action: KeyboardAction::AddToQueue,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Add to queue",
+                },
+            ),
+            // A (Shift) — add to playlist
+            (
+                KeyCode::Char('A').into(),
+                BoundCommand {
+                    action: KeyboardAction::AddToPlaylist,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Add to playlist",
+                },
+            ),
+            // x — delete from list
+            (
+                KeyCode::Char('x').into(),
+                BoundCommand {
+                    action: KeyboardAction::DeleteFromList,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Delete from list",
+                },
+            ),
+            // gg — jump to start
+            (
+                KeyCode::Char('g').into(),
+                BoundCommand {
+                    action: KeyboardAction::JumpToStart,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Jump to start",
+                },
+            ),
+            // G (Shift) — jump to end
+            (
+                KeyCode::Char('G').into(),
+                BoundCommand {
+                    action: KeyboardAction::JumpToEnd,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Jump to end",
+                },
+            ),
+            // e — edit metadata
+            (
+                KeyCode::Char('e').into(),
+                BoundCommand {
+                    action: KeyboardAction::EditMetadata,
+                    contexts: vec![KeyContext::Normal],
+                    description: "Edit metadata",
                 },
             ),
         ],

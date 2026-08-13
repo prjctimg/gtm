@@ -97,12 +97,8 @@ impl DaemonConfig {
 
         let socket_path = if let Some(ref s) = args.socket {
             PathBuf::from(s)
-        } else if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
-            PathBuf::from(runtime).join("gtmd.socket")
-        } else if let Ok(tmpdir) = std::env::var("TMPDIR") {
-            PathBuf::from(tmpdir).join("gtmd.socket")
         } else {
-            std::env::temp_dir().join("gtmd.socket")
+            gtm_core::default_socket_path()
         };
 
         let socket_pulse_path = {
@@ -134,6 +130,8 @@ impl DaemonConfig {
                 library_paths.push(music);
             }
         }
+        // Termux: also scan shared storage (/sdcard/Music)
+        library_paths.extend(gtm_core::termux_music_dirs());
 
         DaemonConfig {
             socket_path,

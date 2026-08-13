@@ -83,6 +83,7 @@ pub struct EqSource<I> {
     prev_gains: [f32; 15],
     channels: NonZeroU16,
     sample_count: usize,
+    gain_check_counter: usize,
 }
 
 impl<I> EqSource<I>
@@ -112,6 +113,7 @@ where
             prev_gains,
             channels,
             sample_count: 0,
+            gain_check_counter: 0,
         }
     }
 }
@@ -125,12 +127,15 @@ where
     fn next(&mut self) -> Option<f32> {
         let raw = self.inner.next()?;
 
-        for i in 0..15 {
-            let v = self.gains.load(i);
-            if v != self.prev_gains[i] {
-                apply_band(&mut *self.eq_left, i, EQ_FREQUENCIES[i] as f32, v);
-                apply_band(&mut *self.eq_right, i, EQ_FREQUENCIES[i] as f32, v);
-                self.prev_gains[i] = v;
+        self.gain_check_counter = self.gain_check_counter.wrapping_add(1);
+        if self.gain_check_counter % 128 == 0 {
+            for i in 0..15 {
+                let v = self.gains.load(i);
+                if v != self.prev_gains[i] {
+                    apply_band(&mut *self.eq_left, i, EQ_FREQUENCIES[i] as f32, v);
+                    apply_band(&mut *self.eq_right, i, EQ_FREQUENCIES[i] as f32, v);
+                    self.prev_gains[i] = v;
+                }
             }
         }
 

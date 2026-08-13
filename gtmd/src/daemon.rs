@@ -105,6 +105,10 @@ impl Daemon {
         };
 
         let socket_path = Path::new(&config.socket_path);
+        if let Some(parent) = socket_path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| CoreError::Daemon(format!("create socket dir: {e}")))?;
+        }
         if socket_path.exists() {
             std::fs::remove_file(socket_path)
                 .map_err(|e| CoreError::Daemon(format!("remove stale socket: {e}")))?;
@@ -121,7 +125,7 @@ impl Daemon {
         let pulse_listener = UnixListener::bind(pulse_path)
             .map_err(|e| CoreError::Daemon(format!("bind pulse socket: {e}")))?;
 
-        let (event_tx, _) = broadcast::channel::<DaemonEvent>(256);
+        let (event_tx, _) = broadcast::channel::<DaemonEvent>(1024);
         let (req_tx, req_rx) = mpsc::unbounded_channel();
 
         let cache_dir = config.cache_dir.clone();
@@ -171,7 +175,7 @@ impl Daemon {
             Self::background_scan(bg_state, bg_lib_paths, bg_data_dir, bg_cache_dir, bg_req_tx, bg_event_tx).await;
         });
 
-        let mut poll_interval = tokio::time::interval(Duration::from_millis(33));
+        let mut poll_interval = tokio::time::interval(Duration::from_millis(16));
         loop {
             tokio::select! {
                 _ = poll_interval.tick() => {
@@ -482,7 +486,6 @@ impl Daemon {
         let ev = match result {
             Ok(Some(e)) => e,
             Ok(None) => {
-                tokio::task::yield_now().await;
                 return;
             }
             Err(e) => {
@@ -531,16 +534,22 @@ impl Daemon {
                             }
                         };
                         if let Some(ref path) = next_path {
-                            if self.mixer.load_standby(path).is_ok() {
-                                self.mixer.set_crossfade_easing(cf.easing);
-                                self.mixer.start_crossfade(cf.duration_secs as f64);
-                                self.crossfade_loaded_for = cur_path.clone();
-                                // Advance the queue cursor to the next track
-                                if let Ok(mut s) = self.state.try_write() {
-                                    let _ = s.advance_queue(1);
-                                    let idx = s.queue_cursor;
-                                    drop(s);
-                                    self.push_event(DaemonEvent::QueueIndexChanged { index: idx });
+                            let path_owned = path.clone();
+                            let decoded = tokio::task::spawn_blocking(move || {
+                                AudioMixer::decode_file(&path_owned)
+                            })
+                            .await;
+                            if let Ok(Ok(source)) = decoded {
+                                if self.mixer.load_standby_decoded(source).is_ok() {
+                                    self.mixer.set_crossfade_easing(cf.easing);
+                                    self.mixer.start_crossfade(cf.duration_secs as f64);
+                                    self.crossfade_loaded_for = cur_path.clone();
+                                    if let Ok(mut s) = self.state.try_write() {
+                                        let _ = s.advance_queue(1);
+                                        let idx = s.queue_cursor;
+                                        drop(s);
+                                        self.push_event(DaemonEvent::QueueIndexChanged { index: idx });
+                                    }
                                 }
                             }
                         }
@@ -823,29 +832,36 @@ impl Daemon {
         drop(state);
         if crossfade_enabled && crossfade_dur > 0.0 && self.crossfade_loaded_for.is_none() && !self.mixer.is_crossfading() {
             let path = track.path.clone();
-            if self.mixer.load_standby(&path).is_ok() {
-                self.mixer.set_crossfade_easing(crossfade_easing);
-                self.mixer.start_crossfade(crossfade_dur);
-                self.crossfade_loaded_for = Some(
-                    self.state.read().await.current_track.as_ref().map(|t| t.path.clone())
-                        .unwrap_or_default()
-                );
-                self.push_event(DaemonEvent::QueueIndexChanged { index: idx });
-                let dur = self.mixer.duration();
-                {
-                    let mut st = self.state.write().await;
-                    st.status = PlaybackStatus::Playing;
-                    st.current_track = Some(track.clone());
-                    st.time_pos = 0.0;
-                    st.duration = dur;
+            let path_owned = path.clone();
+            let decoded = tokio::task::spawn_blocking(move || {
+                AudioMixer::decode_file(&path_owned)
+            })
+            .await;
+            if let Ok(Ok(source)) = decoded {
+                if self.mixer.load_standby_decoded(source).is_ok() {
+                    self.mixer.set_crossfade_easing(crossfade_easing);
+                    self.mixer.start_crossfade(crossfade_dur);
+                    self.crossfade_loaded_for = Some(
+                        self.state.read().await.current_track.as_ref().map(|t| t.path.clone())
+                            .unwrap_or_default()
+                    );
+                    self.push_event(DaemonEvent::QueueIndexChanged { index: idx });
+                    let dur = self.mixer.duration();
+                    {
+                        let mut st = self.state.write().await;
+                        st.status = PlaybackStatus::Playing;
+                        st.current_track = Some(track.clone());
+                        st.time_pos = 0.0;
+                        st.duration = dur;
+                    }
+                    self.push_event(DaemonEvent::PlaybackStarted {
+                        track,
+                        auto_advanced: true,
+                        time_pos: 0.0,
+                        duration: dur,
+                    });
+                    return Ok(DaemonRes::Ok { version: self.state.read().await.version as u32 });
                 }
-                self.push_event(DaemonEvent::PlaybackStarted {
-                    track,
-                    auto_advanced: true,
-                    time_pos: 0.0,
-                    duration: dur,
-                });
-                return Ok(DaemonRes::Ok { version: self.state.read().await.version as u32 });
             }
         }
         self.crossfade_loaded_for = None;
@@ -877,29 +893,36 @@ impl Daemon {
         drop(state);
         if crossfade_enabled && crossfade_dur > 0.0 && self.crossfade_loaded_for.is_none() && !self.mixer.is_crossfading() {
             let path = track.path.clone();
-            if self.mixer.load_standby(&path).is_ok() {
-                self.mixer.set_crossfade_easing(crossfade_easing);
-                self.mixer.start_crossfade(crossfade_dur);
-                self.crossfade_loaded_for = Some(
-                    self.state.read().await.current_track.as_ref().map(|t| t.path.clone())
-                        .unwrap_or_default()
-                );
-                self.push_event(DaemonEvent::QueueIndexChanged { index: idx });
-                let dur = self.mixer.duration();
-                {
-                    let mut st = self.state.write().await;
-                    st.status = PlaybackStatus::Playing;
-                    st.current_track = Some(track.clone());
-                    st.time_pos = 0.0;
-                    st.duration = dur;
+            let path_owned = path.clone();
+            let decoded = tokio::task::spawn_blocking(move || {
+                AudioMixer::decode_file(&path_owned)
+            })
+            .await;
+            if let Ok(Ok(source)) = decoded {
+                if self.mixer.load_standby_decoded(source).is_ok() {
+                    self.mixer.set_crossfade_easing(crossfade_easing);
+                    self.mixer.start_crossfade(crossfade_dur);
+                    self.crossfade_loaded_for = Some(
+                        self.state.read().await.current_track.as_ref().map(|t| t.path.clone())
+                            .unwrap_or_default()
+                    );
+                    self.push_event(DaemonEvent::QueueIndexChanged { index: idx });
+                    let dur = self.mixer.duration();
+                    {
+                        let mut st = self.state.write().await;
+                        st.status = PlaybackStatus::Playing;
+                        st.current_track = Some(track.clone());
+                        st.time_pos = 0.0;
+                        st.duration = dur;
+                    }
+                    self.push_event(DaemonEvent::PlaybackStarted {
+                        track,
+                        auto_advanced: true,
+                        time_pos: 0.0,
+                        duration: dur,
+                    });
+                    return Ok(DaemonRes::Ok { version: self.state.read().await.version as u32 });
                 }
-                self.push_event(DaemonEvent::PlaybackStarted {
-                    track,
-                    auto_advanced: true,
-                    time_pos: 0.0,
-                    duration: dur,
-                });
-                return Ok(DaemonRes::Ok { version: self.state.read().await.version as u32 });
             }
         }
         self.crossfade_loaded_for = None;
