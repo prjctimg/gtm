@@ -60,6 +60,7 @@ use gtm_core::wire;
 use gtm_core::CoreError;
 
 use crate::config::DaemonConfig;
+use crate::cover_art::CoverCache;
 use crate::library::Library;
 use crate::queue;
 
@@ -74,6 +75,7 @@ pub struct Daemon {
     pub config: DaemonConfig,
     pub event_tx: broadcast::Sender<DaemonEvent>,
     pub library: Option<Library>,
+    pub cover_cache: Option<CoverCache>,
     req_tx: mpsc::UnboundedSender<(ClientId, DaemonReq, ReplyTx)>,
     req_rx: mpsc::UnboundedReceiver<(ClientId, DaemonReq, ReplyTx)>,
     next_client_id: ClientId,
@@ -110,9 +112,10 @@ impl Daemon {
         let pulse_listener = UnixListener::bind(pulse_path)
             .map_err(|e| CoreError::Daemon(format!("bind pulse socket: {e}")))?;
 
-        let (event_tx, _) = broadcast::channel(256);
+        let (event_tx, _) = broadcast::channel::<DaemonEvent>(256);
         let (req_tx, req_rx) = mpsc::unbounded_channel();
 
+        let cache_dir = config.cache_dir.clone();
         let library = if !config.test_mode {
             Library::new(config.data_dir.to_str().unwrap_or("")).ok()
         } else {
@@ -131,6 +134,7 @@ impl Daemon {
             next_client_id: 0,
             crossfade_loaded_for: None,
             library,
+            cover_cache: Some(CoverCache::new(cache_dir)),
         })
     }
 
@@ -432,6 +436,7 @@ impl Daemon {
             DaemonReq::YtResolveStream { url } => self.cmd_yt_resolve_stream(url).await,
             DaemonReq::GetStatus => self.cmd_get_status().await,
             DaemonReq::SetEqPreset { preset } => self.cmd_set_eq_preset(*preset).await,
+            DaemonReq::GetCoverArt { track_id } => self.cmd_get_cover_art(*track_id).await,
             DaemonReq::Ping => Ok(DaemonRes::Pong),
             DaemonReq::Quit => {
                 info!("quit requested");
@@ -1251,6 +1256,44 @@ impl Daemon {
         Ok(DaemonRes::Status {
             version,
             state: Box::new(state_clone),
+        })
+    }
+
+    async fn cmd_get_cover_art(&mut self, track_id: i64) -> Result<DaemonRes, CoreError> {
+        // Try embedded cover from library first
+        if let Some(ref library) = self.library {
+            if let Ok(Some(track)) = library.get_track(track_id) {
+                if let Some(ref path) = track.cover_path {
+                    if let Ok(data) = tokio::fs::read(path).await {
+                        use base64::Engine;
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                        return Ok(DaemonRes::CoverArt {
+                            version: self.state.read().await.version as u32,
+                            data: Some(b64),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Fallback: try Deezer via CoverCache
+        if let Some(ref mut cache) = self.cover_cache {
+            let state = self.state.read().await;
+            if let Some(ref track) = state.current_track {
+                if let Some(cover) = cache.get_cover(&track.artist, &track.album).await {
+                    use base64::Engine;
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&cover.data);
+                    return Ok(DaemonRes::CoverArt {
+                        version: state.version as u32,
+                        data: Some(b64),
+                    });
+                }
+            }
+        }
+
+        Ok(DaemonRes::CoverArt {
+            version: self.state.read().await.version as u32,
+            data: None,
         })
     }
 }

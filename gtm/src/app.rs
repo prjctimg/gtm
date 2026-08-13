@@ -9,15 +9,45 @@ use gtm_core::track::TrackInfo;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
 
+use base64::Engine;
+
 use crate::keymap::{default_keybindings, KeyContext, KeyboardAction};
 use crate::overlay::{OverlayCtx, OverlayId, OverlayManager};
 use crate::theme::AppTheme;
 use crate::ui;
 
+pub const NUM_SETTINGS_CATEGORIES: usize = 5;
+pub const LIBRARY_CATEGORIES: &[&str] = &[
+    "All Tracks",
+    "Albums",
+    "Artists",
+    "Playlists",
+    "Recently Added",
+    "Most Played",
+    "Least Played",
+    "Spotify",
+    "Downloads",
+];
+
 pub enum InputMode {
     Normal,
     Searching,
     Command,
+}
+
+#[derive(Debug, Clone)]
+pub enum NotificationKind {
+    Info,
+    Success,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone)]
+pub struct Notification {
+    pub message: String,
+    pub kind: NotificationKind,
+    pub expires_at: std::time::Instant,
 }
 
 #[allow(dead_code)]
@@ -29,6 +59,10 @@ pub struct App {
     pub input_mode: InputMode,
     pub search_query: String,
     pub scroll_offset: usize,
+    pub library_category: usize,
+    pub library_pane_focus: bool,
+    pub settings_category: usize,
+    pub settings_option_scroll: usize,
     pub tracks_cache: Vec<TrackInfo>,
     pub queue_cache: Vec<TrackInfo>,
     pub queue_cursor: usize,
@@ -37,11 +71,14 @@ pub struct App {
     pub playlist_cache: Vec<gtm_core::track::Playlist>,
     pub error_message: Option<String>,
     pub status_message: Option<String>,
+    pub notifications: Vec<Notification>,
     pub crossfade_duration: u8,
     pub pending_volume: Option<u8>,
     pub overlays: OverlayManager,
     pub sleep_timer_remaining: Option<u64>,
     pub playback_speed: f64,
+    pub current_cover: Option<Vec<u8>>,
+    pub last_cover_track_id: Option<i64>,
     pub cmd_rx: mpsc::Receiver<TuiCommand>,
     cmd_tx: mpsc::Sender<TuiCommand>,
     keybindings: crate::keymap::Keybindings,
@@ -90,6 +127,10 @@ impl App {
             input_mode: InputMode::Normal,
             search_query: String::new(),
             scroll_offset: 0,
+            library_category: 0,
+            library_pane_focus: false,
+            settings_category: 0,
+            settings_option_scroll: 0,
             tracks_cache: Vec::new(),
             queue_cache: Vec::new(),
             queue_cursor: 0,
@@ -98,11 +139,14 @@ impl App {
             playlist_cache: Vec::new(),
             error_message: None,
             status_message: None,
+            notifications: Vec::new(),
             crossfade_duration: 7,
             pending_volume: None,
             overlays: OverlayManager::new(),
             sleep_timer_remaining: None,
             playback_speed: 1.0,
+            current_cover: None,
+            last_cover_track_id: None,
             cmd_rx,
             cmd_tx,
             keybindings,
@@ -156,6 +200,10 @@ impl App {
                 self.handle_command(cmd).await;
             }
 
+            // Expire stale notifications
+            let now = std::time::Instant::now();
+            self.notifications.retain(|n| n.expires_at > now);
+
             terminal.draw(|f| ui::render(f, &mut self))?;
 
             if event::poll(Duration::from_millis(50))? {
@@ -171,9 +219,32 @@ impl App {
         Ok(())
     }
 
+    pub fn notify(&mut self, message: impl Into<String>, kind: NotificationKind) {
+        let expires_at = std::time::Instant::now() + std::time::Duration::from_secs(4);
+        self.notifications.push(Notification {
+            message: message.into(),
+            kind,
+            expires_at,
+        });
+    }
+
     async fn fetch_state(&mut self) {
         if let Ok(state) = self.client.get_status().await {
             self.state = state;
+            // Fetch cover art if current track changed
+            let track_id = self.state.current_track.as_ref().map(|t| t.id);
+            if track_id != self.last_cover_track_id {
+                self.last_cover_track_id = track_id;
+                if let Some(tid) = track_id {
+                    if let Ok(Some(b64)) = self.client.get_cover_art(tid).await {
+                        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
+                            self.current_cover = Some(bytes);
+                        }
+                    }
+                } else {
+                    self.current_cover = None;
+                }
+            }
         }
     }
 
@@ -398,20 +469,36 @@ impl App {
                 match self.keybindings.dispatch(key, KeyContext::Normal) {
                     Some(KeyboardAction::Quit) => return false,
                     Some(KeyboardAction::NextTab) => {
-                        self.current_tab = match self.current_tab {
-                            Tab::NowPlaying => Tab::Library,
-                            Tab::Library => Tab::Settings,
-                            Tab::Settings => Tab::NowPlaying,
-                        };
-                        self.refresh_tab().await;
+                        // In Library/Settings tabs, Tab toggles pane focus first
+                        match self.current_tab {
+                            Tab::Library => {
+                                self.library_pane_focus = !self.library_pane_focus;
+                            }
+                            Tab::Settings => {
+                                self.settings_category = (self.settings_category + 1) % NUM_SETTINGS_CATEGORIES;
+                            }
+                            _ => {
+                                self.current_tab = match self.current_tab {
+                                    Tab::NowPlaying => Tab::Library,
+                                    _ => Tab::NowPlaying,
+                                };
+                                self.refresh_tab().await;
+                            }
+                        }
                     }
                     Some(KeyboardAction::PrevTab) => {
-                        self.current_tab = match self.current_tab {
-                            Tab::NowPlaying => Tab::Settings,
-                            Tab::Library => Tab::NowPlaying,
-                            Tab::Settings => Tab::Library,
-                        };
-                        self.refresh_tab().await;
+                        match self.current_tab {
+                            Tab::Library => {
+                                self.library_pane_focus = !self.library_pane_focus;
+                            }
+                            Tab::Settings => {
+                                self.settings_category = self.settings_category.saturating_sub(1);
+                            }
+                            _ => {
+                                self.current_tab = Tab::Settings;
+                                self.refresh_tab().await;
+                            }
+                        }
                     }
                     Some(KeyboardAction::SwitchTab(tab)) => {
                         self.current_tab = tab;
@@ -459,16 +546,23 @@ impl App {
                         } else {
                             let tx = self.cmd_tx();
                             let _ = tx.send(TuiCommand::SetVolume(new_vol)).await;
+                            self.notify(format!("Volume: {}%", new_vol), NotificationKind::Info);
                         }
                     }
                     Some(KeyboardAction::VolumeDown) | Some(KeyboardAction::SeekBackward) => {
                         let tx = self.cmd_tx();
                         let new_vol = self.state.volume.saturating_sub(5);
                         let _ = tx.send(TuiCommand::SetVolume(new_vol)).await;
+                        self.notify(format!("Volume: {}%", new_vol), NotificationKind::Info);
                     }
                     Some(KeyboardAction::ToggleMute) => {
                         let tx = self.cmd_tx();
                         let _ = tx.send(TuiCommand::ToggleMute).await;
+                        if self.state.mute {
+                            self.notify("Unmuted", NotificationKind::Info);
+                        } else {
+                            self.notify("Muted", NotificationKind::Warning);
+                        }
                     }
                     Some(KeyboardAction::CycleRepeat) => {
                         let tx = self.cmd_tx();
@@ -478,10 +572,16 @@ impl App {
                             RepeatMode::All => RepeatMode::Off,
                         };
                         let _ = tx.send(TuiCommand::CycleRepeat(new_mode)).await;
+                        self.notify(format!("Repeat: {:?}", new_mode), NotificationKind::Info);
                     }
                     Some(KeyboardAction::ToggleShuffle) => {
                         let tx = self.cmd_tx();
                         let _ = tx.send(TuiCommand::ToggleShuffle).await;
+                        if self.state.shuffle {
+                            self.notify("Shuffle OFF", NotificationKind::Info);
+                        } else {
+                            self.notify("Shuffle ON", NotificationKind::Info);
+                        }
                     }
                     Some(KeyboardAction::EnterFilter) => {
                         self.input_mode = InputMode::Searching;
@@ -490,12 +590,25 @@ impl App {
                         self.input_mode = InputMode::Command;
                     }
                     Some(KeyboardAction::MoveUp) => {
-                        self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                        if self.current_tab == Tab::Library && self.library_pane_focus {
+                            self.library_category = self.library_category.saturating_sub(1);
+                        } else {
+                            self.scroll_offset = self.scroll_offset.saturating_sub(1);
+                        }
                     }
                     Some(KeyboardAction::MoveDown) => {
-                        self.scroll_offset += 1;
+                        if self.current_tab == Tab::Library && self.library_pane_focus {
+                            self.library_category = (self.library_category + 1).min(LIBRARY_CATEGORIES.len() - 1);
+                        } else {
+                            self.scroll_offset += 1;
+                        }
                     }
-                    Some(KeyboardAction::Select) => {}
+                    Some(KeyboardAction::Select) => {
+                        // In Library left pane, Enter moves focus to right pane
+                        if self.current_tab == Tab::Library && self.library_pane_focus {
+                            self.library_pane_focus = false;
+                        }
+                    }
                     Some(KeyboardAction::Delete) => {}
                     None => {
                         match key.code {

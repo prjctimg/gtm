@@ -366,6 +366,15 @@ impl DaemonClient {
     pub async fn quit(&self) -> Result<u32> {
         self.send_ok(DaemonReq::Quit).await
     }
+
+    pub async fn get_cover_art(&self, track_id: i64) -> Result<Option<String>> {
+        let res = self.send_raw(DaemonReq::GetCoverArt { track_id }).await?;
+        match res {
+            DaemonRes::CoverArt { data, .. } => Ok(data),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+        }
+    }
 }
 
 enum Frame {

@@ -200,6 +200,11 @@ pub enum DaemonReq {
         url: String,
     },
 
+    // ─── Cover Art ───
+    GetCoverArt {
+        track_id: i64,
+    },
+
     // ─── System ───
     GetStatus,
     Ping,
@@ -244,6 +249,10 @@ pub enum DaemonRes {
     Lyrics {
         version: u32,
         lyrics: Option<LrcData>,
+    },
+    CoverArt {
+        version: u32,
+        data: Option<String>, // base64-encoded PNG bytes
     },
     Pong,
     Error {

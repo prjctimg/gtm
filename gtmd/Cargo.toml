@@ -23,6 +23,8 @@ walkdir = "2"
 symphonia = { version = "0.6", default-features = false, features = ["all-codecs", "all-formats", "all-meta"] }
 lru = "0.12"
 hex = "0.4"
+base64 = "0.22"
+dirs = "5"
 
 [features]
 default = ["mpris"]

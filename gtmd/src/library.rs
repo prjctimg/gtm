@@ -1,3 +1,4 @@
+use std::fs;
 use std::fs::File;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -9,6 +10,7 @@ use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::{MetadataOptions, StandardTag};
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::units::Timestamp;
+use symphonia::core::meta::StandardVisualKey;
 use tracing::warn;
 
 use gtm_core::track::{Playlist, TrackInfo};
@@ -17,7 +19,7 @@ const DB_NAME: &str = "library.db";
 
 pub struct Library {
     conn: Connection,
-    _watch_dirs: Mutex<Vec<PathBuf>>,
+    _watch_dirs: Mutex<Vec<String>>,
 }
 
 impl Library {
@@ -96,8 +98,8 @@ impl Library {
 
         self.conn
             .execute(
-                "INSERT INTO tracks (path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT INTO tracks (path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     path,
                     meta.title,
@@ -110,6 +112,7 @@ impl Library {
                     meta.bitrate,
                     meta.samplerate,
                     hash,
+                    meta.cover_path,
                 ],
             )
             .map_err(|e| format!("insert: {e}"))?;
@@ -413,6 +416,7 @@ struct Metadata {
     duration: f64,
     bitrate: Option<i32>,
     samplerate: Option<i32>,
+    cover_path: Option<String>,
 }
 
 fn tag_title(dst: &mut String, tag: &symphonia::core::meta::Tag) {
@@ -423,6 +427,12 @@ fn tag_title(dst: &mut String, tag: &symphonia::core::meta::Tag) {
 }
 
 fn extract_metadata(path: &str) -> Result<(Metadata, String), String> {
+    let cache_base = dirs::cache_dir()
+        .unwrap_or_else(|| PathBuf::from("/tmp"))
+        .join("gtm")
+        .join("covers");
+    fs::create_dir_all(&cache_base).ok();
+
     let hash = {
         let mut hasher = Sha256::new();
         let mut f = File::open(path).map_err(|e| format!("open hash: {e}"))?;
@@ -486,6 +496,32 @@ fn extract_metadata(path: &str) -> Result<(Metadata, String), String> {
         }
     }
 
+    let mut cover_path: Option<String> = None;
+    {
+        let meta = reader.metadata();
+        if let Some(rev) = meta.current() {
+            for visual in &rev.media.visuals {
+                let is_cover = matches!(visual.usage, Some(StandardVisualKey::FrontCover));
+                if is_cover || visual.usage.is_none() {
+                    let ext = match visual.media_type.as_deref() {
+                        Some("image/jpeg" | "image/jpg") => "jpg",
+                        Some("image/png") => "png",
+                        _ => "jpg",
+                    };
+                    let cover_file = cache_base.join(format!("{}.{}", hash, ext));
+                    if !cover_file.exists() {
+                        if let Ok(mut buf) = File::create(&cover_file) {
+                            use std::io::Write;
+                            let _ = buf.write_all(&visual.data);
+                        }
+                    }
+                    cover_path = Some(cover_file.to_string_lossy().to_string());
+                    break;
+                }
+            }
+        }
+    }
+
     let duration = reader
         .tracks()
         .iter()
@@ -518,6 +554,7 @@ fn extract_metadata(path: &str) -> Result<(Metadata, String), String> {
             duration,
             bitrate,
             samplerate,
+            cover_path,
         },
         hash,
     ))
