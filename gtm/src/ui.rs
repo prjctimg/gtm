@@ -2005,16 +2005,21 @@ fn render_lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let total_rows = cumulative;
     let visible = inner.height as usize;
     let anchor = app.lyrics_scroll.min(total - 1);
+    let bottom = total_rows.saturating_sub(visible);
     let scroll_display = if total_rows <= visible {
         0
     } else if app.lyrics_manual_scroll {
-        // Free manual scroll keeps the active line roughly centered.
-        row_offsets[anchor]
-            .saturating_sub(visible / 2)
-            .min(total_rows - visible)
+        if anchor == total - 1 {
+            // Last line reached: snap to the bottom so a wrapped tail is
+            // never clipped by centering.
+            bottom
+        } else {
+            // Free manual scroll keeps the active line roughly centered.
+            row_offsets[anchor].saturating_sub(visible / 2).min(bottom)
+        }
     } else {
         // Auto-follow: active line pinned to the top of the pane.
-        row_offsets[anchor].min(total_rows - visible)
+        row_offsets[anchor].min(bottom)
     };
 
     let para = Paragraph::new(text)
@@ -2040,8 +2045,10 @@ fn render_track_popup(f: &mut ratatui::Frame, content_area: Rect, app: &mut App)
     let text_margin = 2u16;
 
     // Fixed dimensions to prevent layout shift when cover loads/unloads.
+    // Height must fit the 6 text rows (title, artist, album, spacer,
+    // duration, source) plus the border; the cover is vertically centered.
     let popup_w = (COVER_W + 1 + 38 + text_margin).min(content_area.width.saturating_sub(2));
-    let popup_h = COVER_H + 2;
+    let popup_h = COVER_H + 3;
     if popup_w < 20 || popup_h > content_area.height {
         return;
     }

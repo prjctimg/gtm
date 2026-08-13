@@ -274,8 +274,8 @@ impl Daemon {
             mixer: tokio::sync::Mutex::new(mixer),
             config,
             event_tx,
-            cover_cache: tokio::sync::Mutex::new(Some(CoverCache::new(cache_dir))),
-            lyrics_manager: Some(LyricsManager::new()),
+            cover_cache: tokio::sync::Mutex::new(Some(CoverCache::new(cache_dir.clone()))),
+            lyrics_manager: Some(LyricsManager::with_cache_dir(cache_dir.join("lyrics"))),
             youtube: Arc::new(tokio::sync::Mutex::new(YoutubeManager::new())),
             spotify: tokio::sync::Mutex::new(SpotifyManager::new(config_dir)),
             crossfade_loaded_for: tokio::sync::Mutex::new(None),
@@ -3131,21 +3131,7 @@ fn run_lyrics_sync(
         }
         if let Some(lyrics) = rt.block_on(manager.get_lyrics(track)) {
             if !lyrics.lines.is_empty() {
-                let mut lrc_content = String::new();
-                if let Some(ref ar) = lyrics.artist {
-                    lrc_content.push_str(&format!("[ar:{}]\n", ar));
-                }
-                if let Some(ref al) = lyrics.album {
-                    lrc_content.push_str(&format!("[al:{}]\n", al));
-                }
-                if let Some(ref ti) = lyrics.title {
-                    lrc_content.push_str(&format!("[ti:{}]\n", ti));
-                }
-                for line in &lyrics.lines {
-                    let mins = (line.timestamp / 60.0) as u64;
-                    let secs = line.timestamp - (mins as f64 * 60.0);
-                    lrc_content.push_str(&format!("[{:02}:{:05.2}]{}\n", mins, secs, line.text));
-                }
+                let lrc_content = crate::lyrics::lrc_to_text(&lyrics);
                 if std::fs::write(&lrc_path, &lrc_content).is_ok() {
                     synced += 1;
                     progress.synced.store(synced, Ordering::Relaxed);

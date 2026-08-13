@@ -4,7 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use reqwest::Client;
 
@@ -15,6 +15,9 @@ const LRCLIB_API: &str = "https://lrclib.net/api";
 #[derive(Clone)]
 pub struct LyricsManager {
     client: Client,
+    /// Directory where fetched lyrics are persisted (one `.lrc` file per
+    /// track) so they can be reused without a network connection.
+    cache_dir: Option<PathBuf>,
 }
 
 impl Default for LyricsManager {
@@ -27,6 +30,17 @@ impl LyricsManager {
     pub fn new() -> Self {
         Self {
             client: Client::new(),
+            cache_dir: None,
+        }
+    }
+
+    /// Create a manager that persists fetched lyrics under `dir`, keyed by a
+    /// sanitized "Artist - Title", so they are available offline.
+    pub fn with_cache_dir(dir: PathBuf) -> Self {
+        let _ = std::fs::create_dir_all(&dir);
+        Self {
+            client: Client::new(),
+            cache_dir: Some(dir),
         }
     }
 
@@ -85,21 +99,31 @@ impl LyricsManager {
     }
 
     pub async fn get_lyrics(&self, track: &TrackInfo) -> Option<LrcData> {
+        // 1. Check the .lrc sidecar next to the audio file first.
         if let Some(lrc) = self.read_sidecar(track).await {
             return Some(lrc);
         }
 
-        // lrclib's exact lookup requires an artist; tracks with missing tags
-        // (e.g. queued/foreign files) fall back to a title-only search.
-        if track.artist.is_empty() {
-            return self.fetch_lrclib_search_title(&track.title).await;
-        }
-
-        if let Some(lrc) = self.fetch_lrclib_exact(track).await {
+        // 2. Check the offline cache before hitting the network.
+        if let Some(lrc) = self.read_cache(track) {
             return Some(lrc);
         }
 
-        if let Some(lrc) = self.fetch_lrclib_search(track).await {
+        // 3. lrclib's exact lookup requires an artist; tracks with missing
+        //    tags (e.g. queued/foreign files) fall back to a title-only
+        //    search.
+        let fetched = if track.artist.is_empty() {
+            self.fetch_lrclib_search_title(&track.title).await
+        } else if let Some(lrc) = self.fetch_lrclib_exact(track).await {
+            Some(lrc)
+        } else {
+            self.fetch_lrclib_search(track).await
+        };
+
+        if let Some(lrc) = fetched {
+            if !lrc.lines.is_empty() {
+                self.write_cache(track, &lrc);
+            }
             return Some(lrc);
         }
 
@@ -136,6 +160,57 @@ impl LyricsManager {
         }
         let content = std::fs::read_to_string(&lrc_path).ok()?;
         Some(Self::parse_lrc(&content))
+    }
+
+    /// Resolve the cached `.lrc` file for a track. Cache entries are keyed by
+    /// a sanitized "Artist - Title" (plus a short content hash) so the same
+    /// song shares one entry regardless of where the file lives.
+    fn cache_path(&self, track: &TrackInfo) -> Option<PathBuf> {
+        let dir = self.cache_dir.as_ref()?;
+        let key = if !track.artist.is_empty() || !track.title.is_empty() {
+            format!("{} - {}", track.artist, track.title)
+        } else {
+            Path::new(&track.path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default()
+        };
+        let sanitized: String = key
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
+            .take(80)
+            .collect::<String>()
+            .to_lowercase();
+        let mut hash = 0u64;
+        for b in key.bytes() {
+            hash = hash.wrapping_mul(31).wrapping_add(u64::from(b));
+        }
+        let name = if sanitized.is_empty() {
+            format!("{:05x}.lrc", hash % 1_000_000)
+        } else {
+            format!("{}-{:05x}.lrc", sanitized, hash % 1_000_000)
+        };
+        Some(dir.join(name))
+    }
+
+    fn read_cache(&self, track: &TrackInfo) -> Option<LrcData> {
+        let path = self.cache_path(track)?;
+        if !path.exists() {
+            return None;
+        }
+        let content = std::fs::read_to_string(&path).ok()?;
+        let lrc = Self::parse_lrc(&content);
+        if lrc.lines.is_empty() {
+            None
+        } else {
+            Some(lrc)
+        }
+    }
+
+    fn write_cache(&self, track: &TrackInfo, lrc: &LrcData) {
+        if let Some(path) = self.cache_path(track) {
+            let _ = std::fs::write(&path, lrc_to_text(lrc));
+        }
     }
 
     async fn fetch_lrclib_exact(&self, track: &TrackInfo) -> Option<LrcData> {
@@ -214,6 +289,33 @@ pub fn meta_from_filename(path: &str) -> (String, String) {
         .to_string();
     let (artist, title) = crate::metadata_cleaner::clean_filename_stem(&stem);
     (artist.unwrap_or_default(), title)
+}
+
+/// Serialize parsed lyrics back to LRC text. Timed lines keep their
+/// timestamps; untimed lines are written as plain text so they round-trip
+/// through [`LyricsManager::parse_lrc`].
+pub fn lrc_to_text(lrc: &LrcData) -> String {
+    let mut content = String::new();
+    if let Some(ref ar) = lrc.artist {
+        content.push_str(&format!("[ar:{}]\n", ar));
+    }
+    if let Some(ref al) = lrc.album {
+        content.push_str(&format!("[al:{}]\n", al));
+    }
+    if let Some(ref ti) = lrc.title {
+        content.push_str(&format!("[ti:{}]\n", ti));
+    }
+    for line in &lrc.lines {
+        if line.timestamp < 0.0 {
+            content.push_str(&line.text);
+            content.push('\n');
+        } else {
+            let mins = (line.timestamp / 60.0) as u64;
+            let secs = line.timestamp - (mins as f64 * 60.0);
+            content.push_str(&format!("[{:02}:{:05.2}]{}\n", mins, secs, line.text));
+        }
+    }
+    content
 }
 
 fn parse_lrclib_response(json: &serde_json::Value) -> Option<LrcData> {
@@ -320,5 +422,93 @@ mod tests {
             meta_from_filename("/tmp/music/Drake - God's Plan (Official Audio).flac");
         assert_eq!(artist, "Drake");
         assert_eq!(title, "God's Plan");
+    }
+
+    #[test]
+    fn lrc_to_text_round_trips_through_parse() {
+        let lrc = LrcData {
+            title: Some("Some Song".to_string()),
+            artist: Some("Some Artist".to_string()),
+            album: Some("Some Album".to_string()),
+            lines: vec![
+                LrcLine {
+                    timestamp: 65.0,
+                    text: "timed line".to_string(),
+                },
+                LrcLine {
+                    timestamp: -1.0,
+                    text: "plain line".to_string(),
+                },
+            ],
+        };
+
+        let text = lrc_to_text(&lrc);
+        let parsed = LyricsManager::parse_lrc(&text);
+
+        assert_eq!(parsed.lines.len(), 2);
+        assert_eq!(parsed.lines[0].text, "timed line");
+        assert_eq!(parsed.lines[0].timestamp, 65.0);
+        assert_eq!(parsed.lines[1].text, "plain line");
+        assert!(parsed.lines[1].timestamp < 0.0);
+    }
+
+    #[test]
+    fn cache_round_trips_lyrics() {
+        let dir = std::env::temp_dir().join(format!("gtm-lyrics-cache-{}", std::process::id()));
+        let manager = LyricsManager::with_cache_dir(dir.clone());
+        let track = TrackInfo {
+            id: 1,
+            path: "/tmp/music/Some Song.flac".to_string(),
+            title: "Some Song".to_string(),
+            artist: "Some Artist".to_string(),
+            ..Default::default()
+        };
+        let lrc = LrcData {
+            title: Some("Some Song".to_string()),
+            artist: Some("Some Artist".to_string()),
+            album: Some("Some Album".to_string()),
+            lines: vec![
+                LrcLine {
+                    timestamp: 0.0,
+                    text: "first".to_string(),
+                },
+                LrcLine {
+                    timestamp: -1.0,
+                    text: "plain line".to_string(),
+                },
+            ],
+        };
+
+        assert!(manager.read_cache(&track).is_none(), "cold cache misses");
+        manager.write_cache(&track, &lrc);
+
+        let cached = manager.read_cache(&track).expect("cache should hit");
+        assert_eq!(cached.lines.len(), 2);
+        assert_eq!(cached.lines[0].text, "first");
+        assert_eq!(cached.lines[0].timestamp, 0.0);
+        assert_eq!(cached.lines[1].text, "plain line");
+        assert!(cached.lines[1].timestamp < 0.0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn cache_key_stable_across_paths() {
+        let dir = std::env::temp_dir().join(format!("gtm-lyrics-key-{}", std::process::id()));
+        let manager = LyricsManager::with_cache_dir(dir.clone());
+        let a = TrackInfo {
+            path: "/one/Artist - Song.mp3".to_string(),
+            title: "Song".to_string(),
+            artist: "Artist".to_string(),
+            ..Default::default()
+        };
+        let b = TrackInfo {
+            path: "/two/Artist - Song.flac".to_string(),
+            title: "Song".to_string(),
+            artist: "Artist".to_string(),
+            ..Default::default()
+        };
+        assert_eq!(manager.cache_path(&a), manager.cache_path(&b));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

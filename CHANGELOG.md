@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.1.5] – 2026-08-10
+
+### Added
+- **More distro packages**: release workflow now publishes `.rpm` (Fedora/RHEL/CentOS, x86_64 + aarch64, binary packaging via `dist/gtm-full.spec`), Arch `.pkg.tar.zst` (`scripts/build-arch-pkg.sh`), and Alpine `.apk` packages plus static musl archives (`scripts/build-alpine-apk.sh`, new `x86_64-linux-musl`/`aarch64-linux-musl` Alpine container jobs)
+- **`checksums.txt`** with SHA-256 of every release asset
+- **`docs/RELEASING.md`** documenting the release process and the asset manifest
+
+### Changed
+- Release assets are staged per build job into `release-assets/` and collected flat by the release job, fixing the release glob that silently dropped the Linux/macOS archives on v0.1.3
+- Per-target archives are now self-contained bundles (`bin/`, `man/man1/`, `completions/`, `systemd/`, `desktop/`, `icons/`, `LICENSE`); no separate TUI/daemon-only archives, raw binaries, or standalone `gtm-docs.tar.gz` are published — completions and man pages ship inside every archive
+- README gains a "GitHub Release" install section (tar.xvf + per-distro one-liners)
+
+### Fixed
+- Stale `dist/gtmd.spec` URL (`skchr/gtm-rs` → `prjctimg/gtm.rs`) and version
+
 ## [0.1.4] – 2026-08-09
 
 ### Fixed

@@ -1,32 +1,42 @@
-# Release pipeline — builds gtm + gtmd for Linux (x86_64, ARM), macOS, and Android (Termux).
+# Release pipeline — builds gtm + gtmd for Linux (x86_64, ARM64), macOS,
+# and Android (Termux), packaging complete per-target archives plus native
+# distro packages (.deb, .rpm, .pkg.tar.zst, .apk).
 #
-# Linux x86_64 builds run on Ubuntu 22.04 (glibc 2.35) so the released binaries
-# run on any system with glibc >= 2.35.
+# Targets:
 #
-# Linux ARM64 (aarch64) builds run inside a `debian:12` (bookworm) container, so
-# the released binaries link against glibc 2.36 and are guaranteed to run on
-# Debian 12 ARM64 (glibc 2.36) as well as any newer ARM64 Linux.  The container
-# pins the glibc floor regardless of which ARM64 runner image GitHub provides.
+#   x86_64-linux          Ubuntu 22.04 host (glibc 2.35)  → tar.gz + deb + rpm + Arch pkg
+#   aarch64-linux         Debian 12 container (glibc 2.36) → tar.gz + deb + rpm + Arch pkg
+#   aarch64-darwin        macOS runner                     → tar.gz
+#   aarch64-android       Ubuntu runner + cargo-ndk        → tar.gz + Termux deb
+#   x86_64-linux-musl     Alpine 3.22 container (musl)      → tar.gz + apk
+#   aarch64-linux-musl    Alpine 3.22 ad-hoc container      → tar.gz + apk
+#
+# Each build job stages everything it produces into a single release-assets/
+# directory (uploaded as one artifact), so the release job collects all files
+# flat at the workspace root — no fragile path globs.
 #
 # Pipeline:
 #
-#   tag job         → derive tag/version; force-point tag at the build commit
-#     │               (stable: vX.Y.Z, nightly: `nightly` at latest main)
+#   tag job    → derive tag/version; force-point tag at the build commit
+#     │          (stable: vX.Y.Z, nightly: `nightly` at latest main)
 #     ▼
-#   build job       → for each OS/arch:
-#     │                1. cargo build --release (or cargo-ndk for Android)
-#     │                2. Generate manpages (pandoc) + completions (release-gen)
-#     │                3. Package a single per-platform archive:
-#     │                   gtm-full-{platform}.tar.gz  (gtm + gtmd + man + completions + service)
-#     │                4. Build the gtm-full .deb (Linux): both binaries + docs,
-#     │                   deps resolved via dpkg-shlibdeps on the build host.
-#     │                   Termux gets its own gtm_{version}_aarch64.deb.
-#     │                5. Upload build artifacts
+#   build job  → per OS/arch:
+#     │         1. cargo build --release (cargo-ndk for Android; native musl for Alpine)
+#     │         2. Generate manpages (pandoc) + completions (release-gen)
+#     │         3. Assemble a complete per-target archive:
+#     │            gtm-full-{platform}.tar.gz  (bin/ man/ completions/ systemd/
+#     │                                          desktop/ icons/ LICENSE)
+#     │         4. Build native packages from the staged tree:
+#     │            .deb (cargo-deb, Linux), .rpm (rpmbuild, Linux),
+#     │            .pkg.tar.zst (Arch, Linux), .apk (Alpine)
+#     │         5. Upload release-assets-{platform} artifact
 #     │
 #     ▼
-#   release job     → create/update GitHub Release: one archive per platform,
-#                     one docs archive (man + completions), and the .debs.
+#   release job → download all artifacts, print the asset manifest, generate
+#                 checksums.txt, and create/update the GitHub Release.
 #
+# The gtm.spec install.sh consumes the per-target tar.gz archives; keep its
+# layout expectations in sync when changing the archive structure here.
 name: Release
 
 on:
@@ -105,35 +115,64 @@ jobs:
     runs-on: ${{ matrix.os }}
     container: ${{ matrix.container }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-22.04
             platform: x86_64-linux
             container: null
+            family: debian
           - os: ubuntu-24.04-arm
             platform: aarch64-linux
             container: debian:12
+            family: debian
           - os: macos-latest
             platform: aarch64-darwin
             container: null
+            family: macos
           - os: ubuntu-latest
             platform: aarch64-android
             container: null
+            family: android
+          - os: ubuntu-22.04
+            platform: x86_64-linux-musl
+            container: alpine:3.22
+            family: alpine
+          - os: ubuntu-24.04-arm
+            platform: aarch64-linux-musl
+            # JavaScript actions (checkout, upload) cannot run inside Alpine
+            # containers on ARM64 runners, so this job runs on the host and
+            # performs the Alpine build via `docker run` (see build step).
+            container: null
+            family: alpine-arm
     steps:
-      # Debian 12 container jobs start with a bare bookworm image (no git,
-      # no Rust), so bootstrap tooling before checkout.  Runner-hosted jobs
+      # Debian 12 / Alpine container jobs start from a bare image (no git,
+      # no Rust), so bootstrap tooling before checkout. Runner-hosted jobs
       # already have git + Rust and skip these steps.
-      - name: Install tooling (Debian 12 container)
-        if: matrix.container
+      - name: Bootstrap tooling (Debian 12 container)
+        if: matrix.container == 'debian:12'
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
             ca-certificates curl git pkg-config \
-            libasound2-dev pandoc dpkg-dev \
+            libasound2-dev pandoc dpkg-dev rpm zstd libarchive-tools \
             build-essential cmake liblzma-dev
 
       - name: Install Rust (Debian 12 container)
-        if: matrix.container
+        if: matrix.container == 'debian:12'
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Bootstrap tooling (Alpine container)
+        if: matrix.container == 'alpine:3.22'
+        run: |
+          apk add --no-cache \
+            ca-certificates curl git bash build-base cmake musl-dev \
+            pkgconfig alsa-lib-dev pandoc
+
+      - name: Install Rust (Alpine container)
+        if: matrix.container == 'alpine:3.22'
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
@@ -142,51 +181,64 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install system dependencies (Linux)
-        if: startsWith(matrix.os, 'ubuntu') && matrix.platform != 'aarch64-android' && !matrix.container
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pandoc
+        if: startsWith(matrix.os, 'ubuntu') && matrix.container == null && matrix.family == 'debian'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pandoc rpm zstd libarchive-tools
 
       - name: Install system dependencies (macOS)
-        if: startsWith(matrix.os, 'macos')
+        if: matrix.family == 'macos'
         run: brew install pkg-config pandoc
 
       - name: Install pandoc (Android build)
-        if: matrix.platform == 'aarch64-android'
+        if: matrix.family == 'android'
         run: sudo apt-get update && sudo apt-get install -y pandoc
 
       - name: Clone gtm.spec (manpage sources)
         run: git clone --depth 1 https://github.com/prjctimg/gtm.spec.git gtm.spec
 
+      # Alpine-on-ARM64 cannot run JavaScript actions inside a container, so the
+      # aarch64-musl build runs the whole Alpine pipeline in an ad-hoc container.
+      - name: Build musl binaries + packages (Alpine container)
+        if: matrix.family == 'alpine-arm'
+        run: |
+          docker run --rm \
+            -v "$PWD":/work \
+            -w /work \
+            -e HOME=/root \
+            alpine:3.22 \
+            /bin/sh -c "apk add --no-cache bash && /bin/bash /work/scripts/build-musl-in-container.sh \
+              aarch64-linux-musl ${{ needs.tag.outputs.version }} aarch64"
+
       - name: Install Android NDK + tools
-        if: matrix.platform == 'aarch64-android'
+        if: matrix.family == 'android'
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r27b
 
       - name: Install Rust Android target
-        if: matrix.platform == 'aarch64-android'
+        if: matrix.family == 'android'
         run: |
           rustup target add aarch64-linux-android
           cargo install cargo-ndk
 
       - name: Build termux-elf-cleaner
-        if: matrix.platform == 'aarch64-android'
+        if: matrix.family == 'android'
         run: |
           git clone --depth 1 --branch v3.0.1 https://github.com/termux/termux-elf-cleaner.git
           cmake -S termux-elf-cleaner -B termux-elf-cleaner/build -DCMAKE_BUILD_TYPE=Release
           cmake --build termux-elf-cleaner/build -j
 
       - name: Build release binaries
-        if: matrix.platform != 'aarch64-android'
+        if: matrix.family != 'android'
         run: cargo build --release
 
       - name: Build Android release binaries
-        if: matrix.platform == 'aarch64-android'
+        if: matrix.family == 'android'
         run: |
           CARGO_INCREMENTAL=0 cargo ndk -t arm64-v8a -P 27 \
             build --release --no-default-features --features pulseaudio
 
       - name: Clean Android ELF sections
-        if: matrix.platform == 'aarch64-android'
+        if: matrix.family == 'android'
         run: |
           termux-elf-cleaner/build/termux-elf-cleaner target/aarch64-linux-android/release/gtmd
           termux-elf-cleaner/build/termux-elf-cleaner target/aarch64-linux-android/release/gtm
@@ -197,86 +249,183 @@ jobs:
       - name: Generate shell completions
         run: cargo run --release --bin release-gen completions artifacts
 
-      - name: Package binaries (desktop)
-        if: matrix.platform != 'aarch64-android'
+      # ── Complete per-target archive (bin + man + completions + service) ──
+      - name: Package complete archive (desktop)
+        if: matrix.family == 'debian' || matrix.family == 'macos'
         shell: bash
         run: |
-          cd target/release
-          for bin in gtmd gtm; do
-            cp "${bin}" "${bin}-${{ matrix.platform }}"
-          done
-
-      - name: Package binaries (Android)
-        if: matrix.platform == 'aarch64-android'
-        shell: bash
-        run: |
-          cd target/aarch64-linux-android/release
-          for bin in gtmd gtm; do
-            cp "${bin}" "${bin}-aarch64-android"
-          done
-
-      - name: Create component archives
-        if: matrix.platform != 'aarch64-android'
-        shell: bash
-        run: |
-          cd target/release
+          set -euo pipefail
           platform="${{ matrix.platform }}"
-          # Single per-platform archive: gtm + gtmd binaries, all manpages,
-          # all completions, and the systemd service (flat layout).
-          tar czf "gtm-full-${platform}.tar.gz" \
-            "gtm-${platform}" \
-            "gtmd-${platform}" \
-            ../../artifacts/man/gtm.1 \
-            ../../artifacts/man/gtmd.1 \
-            ../../artifacts/man/gtmd-ipc.1 \
-            ../../artifacts/completions/gtm.bash \
-            ../../artifacts/completions/_gtm \
-            ../../artifacts/completions/gtm.fish \
-            ../../artifacts/completions/gtm.ps1 \
-            ../../artifacts/completions/gtm.elv \
-            ../../artifacts/completions/gtmd.bash \
-            ../../artifacts/completions/_gtmd \
-            ../../artifacts/completions/gtmd.fish \
-            ../../artifacts/completions/gtmd.ps1 \
-            ../../artifacts/completions/gtmd.elv \
-            ../../dist/gtmd.service \
-            ../../dist/gtm.desktop \
-            ../../assets/gtm.svg
+          root="gtm-full-${platform}"
+          mkdir -p release-assets \
+            "$root/bin" "$root/man/man1" "$root/completions" \
+            "$root/systemd" "$root/desktop" "$root/icons"
+          cp target/release/gtm  "$root/bin/"
+          cp target/release/gtmd "$root/bin/"
+          cp artifacts/man/*.1        "$root/man/man1/"
+          cp artifacts/completions/*  "$root/completions/"
+          cp dist/gtmd.service  "$root/systemd/"
+          cp dist/gtm.desktop   "$root/desktop/"
+          cp assets/gtm.svg     "$root/icons/"
+          cp LICENSE            "$root/"
+          tar czf "release-assets/gtm-full-${platform}.tar.gz" "$root"
 
-      - name: Create Android archive
-        if: matrix.platform == 'aarch64-android'
+      - name: Package complete archive (Alpine musl)
+        if: matrix.family == 'alpine'
+        shell: bash
         run: |
-          cd target/aarch64-linux-android/release
-          tar czf gtm-full-aarch64-android.tar.gz \
-            gtm-aarch64-android \
-            gtmd-aarch64-android
+          set -euo pipefail
+          platform="${{ matrix.platform }}"
+          root="gtm-full-${platform}"
+          mkdir -p release-assets \
+            "$root/bin" "$root/man/man1" "$root/completions" \
+            "$root/systemd" "$root/desktop" "$root/icons"
+          cp target/release/gtm  "$root/bin/"
+          cp target/release/gtmd "$root/bin/"
+          cp artifacts/man/*.1        "$root/man/man1/"
+          cp artifacts/completions/*  "$root/completions/"
+          cp dist/gtmd.service  "$root/systemd/"
+          cp dist/gtm.desktop   "$root/desktop/"
+          cp assets/gtm.svg     "$root/icons/"
+          cp LICENSE            "$root/"
+          tar czf "release-assets/gtm-full-${platform}.tar.gz" "$root"
 
-      - name: Install cargo-deb and build Debian packages (Linux only)
-        if: startsWith(matrix.os, 'ubuntu') && matrix.platform != 'aarch64-android'
+      - name: Package complete archive (Android)
+        if: matrix.family == 'android'
+        shell: bash
         run: |
+          set -euo pipefail
+          root="gtm-full-aarch64-android"
+          mkdir -p release-assets "$root/bin" "$root/man/man1" "$root/completions"
+          cp target/aarch64-linux-android/release/gtm  "$root/bin/"
+          cp target/aarch64-linux-android/release/gtmd "$root/bin/"
+          cp artifacts/man/*.1       "$root/man/man1/"
+          cp artifacts/completions/* "$root/completions/"
+          tar czf "release-assets/gtm-full-aarch64-android.tar.gz" "$root"
+
+      # ── Native Linux packages (from a common rootfs-style stage tree) ──
+      - name: Build Debian/Ubuntu .deb
+        if: matrix.family == 'debian'
+        run: |
+          set -euo pipefail
+          version="${{ needs.tag.outputs.version }}"
           cargo install cargo-deb --locked --version 3.7.0
           mkdir -p gtm/deb-assets/man gtm/deb-assets/completions
-          cp -r artifacts/man/* gtm/deb-assets/man/
-          cp -r artifacts/completions/* gtm/deb-assets/completions/
+          cp artifacts/man/* gtm/deb-assets/man/
+          cp artifacts/completions/* gtm/deb-assets/completions/
           cp target/release/gtmd gtm/deb-assets/gtmd
           cp dist/gtmd.service gtm/deb-assets/
           cp dist/gtm.desktop gtm/deb-assets/
           cp assets/gtm.svg gtm/deb-assets/
-          # Single combined package: auto-adds the gtm binary ("$auto"), the
-          # gtmd binary is a staged asset, plus manpages/completions/service.
           cargo deb --package gtm
           arch="$(dpkg --print-architecture)"
-          version="${{ needs.tag.outputs.version }}"
           for deb in target/debian/gtm-full_*.deb; do
-            dest="target/debian/gtm-full_${version}-1_${arch}.deb"
-            if [ "$deb" != "$dest" ]; then
-              mv "$deb" "$dest"
-            fi
+            mv "$deb" "release-assets/gtm-full_${version}-1_${arch}.deb"
           done
           rm -rf gtm/deb-assets
 
+      - name: Stage rootfs tree (RPM + Arch)
+        if: matrix.family == 'debian'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage/usr/bin \
+            stage/usr/lib/systemd/user \
+            stage/usr/share/man/man1 \
+            stage/usr/share/bash-completion/completions \
+            stage/usr/share/zsh/site-functions \
+            stage/usr/share/fish/vendor_completions.d \
+            stage/usr/share/elvish/completions \
+            stage/usr/share/powershell/completions \
+            stage/usr/share/applications \
+            stage/usr/share/icons/hicolor/scalable/apps \
+            stage/usr/share/licenses/gtm-full
+          cp target/release/gtm  stage/usr/bin/
+          cp target/release/gtmd stage/usr/bin/
+          cp dist/gtmd.service stage/usr/lib/systemd/user/
+          cp artifacts/man/*.1 stage/usr/share/man/man1/
+          cp artifacts/completions/gtm.bash  stage/usr/share/bash-completion/completions/gtm
+          cp artifacts/completions/gtmd.bash stage/usr/share/bash-completion/completions/gtmd
+          cp artifacts/completions/_gtm  stage/usr/share/zsh/site-functions/_gtm
+          cp artifacts/completions/_gtmd stage/usr/share/zsh/site-functions/_gtmd
+          cp artifacts/completions/gtm.fish  stage/usr/share/fish/vendor_completions.d/
+          cp artifacts/completions/gtmd.fish stage/usr/share/fish/vendor_completions.d/
+          cp artifacts/completions/gtm.elv  stage/usr/share/elvish/completions/
+          cp artifacts/completions/gtmd.elv stage/usr/share/elvish/completions/
+          cp artifacts/completions/gtm.ps1  stage/usr/share/powershell/completions/
+          cp artifacts/completions/gtmd.ps1 stage/usr/share/powershell/completions/
+          cp dist/gtm.desktop stage/usr/share/applications/
+          cp assets/gtm.svg stage/usr/share/icons/hicolor/scalable/apps/
+          cp LICENSE stage/usr/share/licenses/gtm-full/
+
+      - name: Build Fedora/RHEL .rpm
+        if: matrix.family == 'debian'
+        run: |
+          set -euo pipefail
+          version="${{ needs.tag.outputs.version }}"
+          rpm_arch="$(rpmbuild --eval '%{_target_cpu}')"
+          rpmbuild -bb \
+            --define "_topdir $PWD/rpmbuild" \
+            --define "gtm_version $version" \
+            --define "gtm_staging $PWD/stage" \
+            dist/gtm-full.spec
+          cp rpmbuild/RPMS/*/*.rpm "release-assets/gtm-full-${version}-1.${rpm_arch}.rpm"
+
+      - name: Build Arch Linux package
+        if: matrix.family == 'debian'
+        run: |
+          set -euo pipefail
+          version="${{ needs.tag.outputs.version }}"
+          rpm_arch="$(rpmbuild --eval '%{_target_cpu}')"
+          ./scripts/build-arch-pkg.sh "$version" "$rpm_arch" stage \
+            "release-assets/gtm-full-${version}-1-${rpm_arch}.pkg.tar.zst"
+
+      - name: Stage rootfs tree (Alpine .apk)
+        if: matrix.family == 'alpine'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage/usr/bin \
+            stage/usr/lib/systemd/user \
+            stage/usr/share/man/man1 \
+            stage/usr/share/bash-completion/completions \
+            stage/usr/share/zsh/vendor-completions \
+            stage/usr/share/fish/vendor_completions.d \
+            stage/usr/share/elvish/completions \
+            stage/usr/share/powershell/completions \
+            stage/usr/share/applications \
+            stage/usr/share/icons/hicolor/scalable/apps \
+            stage/usr/share/licenses/gtm-full
+          cp target/release/gtm  stage/usr/bin/
+          cp target/release/gtmd stage/usr/bin/
+          cp dist/gtmd.service stage/usr/lib/systemd/user/
+          cp artifacts/man/*.1 stage/usr/share/man/man1/
+          cp artifacts/completions/gtm.bash  stage/usr/share/bash-completion/completions/gtm
+          cp artifacts/completions/gtmd.bash stage/usr/share/bash-completion/completions/gtmd
+          cp artifacts/completions/_gtm  stage/usr/share/zsh/vendor-completions/_gtm
+          cp artifacts/completions/_gtmd stage/usr/share/zsh/vendor-completions/_gtmd
+          cp artifacts/completions/gtm.fish  stage/usr/share/fish/vendor_completions.d/
+          cp artifacts/completions/gtmd.fish stage/usr/share/fish/vendor_completions.d/
+          cp artifacts/completions/gtm.elv  stage/usr/share/elvish/completions/
+          cp artifacts/completions/gtmd.elv stage/usr/share/elvish/completions/
+          cp artifacts/completions/gtm.ps1  stage/usr/share/powershell/completions/
+          cp artifacts/completions/gtmd.ps1 stage/usr/share/powershell/completions/
+          cp dist/gtm.desktop stage/usr/share/applications/
+          cp assets/gtm.svg stage/usr/share/icons/hicolor/scalable/apps/
+          cp LICENSE stage/usr/share/licenses/gtm-full/
+
+      - name: Build Alpine .apk
+        if: matrix.family == 'alpine'
+        run: |
+          set -euo pipefail
+          version="${{ needs.tag.outputs.version }}"
+          arch="x86_64"
+          [[ "${{ matrix.platform }}" == "aarch64-linux-musl" ]] && arch="aarch64"
+          ./scripts/build-alpine-apk.sh "$version" "$arch" stage \
+            "release-assets/gtm-${version}-r0-${arch}.apk"
+
       - name: Build Termux .deb packages
-        if: matrix.platform == 'aarch64-android'
+        if: matrix.family == 'android'
         run: |
           pip install termux-create-package ruamel.yaml
           version="${{ needs.tag.outputs.version }}"
@@ -285,37 +434,20 @@ jobs:
           cp target/aarch64-linux-android/release/gtmd "$files/bin/"
           cp target/aarch64-linux-android/release/gtm  "$files/bin/"
           cp artifacts/man/gtm.1 artifacts/man/gtmd.1 artifacts/man/gtmd-ipc.1 "$files/share/man/man1/"
-          # termux-create-package 0.12.0 crashes (UnboundLocalError) when
-          # --files-dir/--deb-dir are passed, so files_dir/deb_dir are read
-          # from the manifest instead (resolved relative to the workspace).
           termux-create-package \
             --pkg-version "$version" \
             --pkg-arch aarch64 \
             termux/gtm.yml
-
-      # Upload per-OS build artifacts so the release job can collect them.
-      # Manpages + completions are identical across platforms, so they are
-      # uploaded once (x86_64-linux) to keep `merge-multiple` conflict-free.
-      - uses: actions/upload-artifact@v4
-        with:
-          name: artifacts-${{ matrix.platform }}
-          path: |
-            target/release/gtm-full-*
-            target/aarch64-linux-android/release/gtm-full-*
-            target/debian/*.deb
-            ./*.deb
+          mv "gtm_${version}_aarch64.deb" release-assets/
 
       - uses: actions/upload-artifact@v4
-        if: matrix.platform == 'x86_64-linux'
         with:
-          name: artifacts-docs
-          path: |
-            artifacts/man
-            artifacts/completions
+          name: release-assets-${{ matrix.platform }}
+          path: release-assets/*
+          if-no-files-found: error
 
-  # Collects all platform artifacts and creates a single GitHub Release
-  # with platform-specific binaries, archives, debs, manpages, and completions.
-  # For `nightly` runs this updates the existing `nightly` prerelease.
+  # Collects every platform's assets into a single GitHub Release. For
+  # `nightly` runs this updates the existing `nightly` prerelease.
   release:
     needs: [tag, build]
     runs-on: ubuntu-latest
@@ -326,20 +458,19 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: artifacts-*
+          pattern: release-assets-*
           merge-multiple: true
 
-      - name: Collect release files
+      - name: Print release asset manifest
         run: |
-          echo "=== Release artifacts ==="
-          find . -type f \( -name "gtm-full-*" -o -name "*.deb" -o -path "*/man/*" -o -path "*/completions/*" \) | sort
+          echo "=== Release assets ==="
+          ls -lh gtm-full-*.tar.gz *.deb *.rpm *.pkg.tar.zst *.apk 2>/dev/null
+          echo
+          echo "Total: $(ls gtm-full-*.tar.gz *.deb *.rpm *.pkg.tar.zst *.apk 2>/dev/null | wc -l) files"
 
-      - name: Bundle docs archive (manpages + completions)
+      - name: Generate checksums
         run: |
-          mkdir -p gtm-docs/man gtm-docs/completions
-          cp -r man/* gtm-docs/man/
-          cp -r completions/* gtm-docs/completions/
-          tar czf gtm-docs.tar.gz -C gtm-docs .
+          sha256sum gtm-full-* gtm_*.deb gtm-*.apk | tee checksums.txt
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -347,10 +478,11 @@ jobs:
           name: ${{ needs.tag.outputs.tag }}
           prerelease: ${{ needs.tag.outputs.nightly == 'true' }}
           generate_release_notes: true
+          overwrite_files: true
           files: |
-            target/release/gtm-full-*-linux
-            target/release/gtm-full-*-darwin
-            target/aarch64-linux-android/release/gtm-full-*
-            gtm-docs.tar.gz
-            target/debian/*.deb
-            ./*.deb
+            gtm-full-*.tar.gz
+            *.deb
+            *.rpm
+            *.pkg.tar.zst
+            *.apk
+            checksums.txt

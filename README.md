@@ -40,9 +40,44 @@ Or pick this implementation directly:
 curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.spec/main/install.sh | bash -s -- --impl rust
 ```
 
-### Pre-built binaries
+### GitHub Release
 
-Grab one for your target system from the [releases page](https://github.com/prjctimg/gtm.rs/releases/latest).
+Every release publishes **complete per-target archives** plus native distro
+packages. Each `gtm-full-{platform}.tar.gz` bundles both binaries
+(`bin/gtm`, `bin/gtmd`), man pages, shell completions, and the systemd user
+service. Grab one from the [releases page](https://github.com/prjctimg/gtm.rs/releases/latest).
+
+Manual install for x86_64 Linux (tar.xvf style):
+
+```bash
+curl -fsSLO https://github.com/prjctimg/gtm.rs/releases/latest/download/gtm-full-x86_64-linux.tar.gz
+tar xzf gtm-full-x86_64-linux.tar.gz
+cd gtm-full-x86_64-linux
+
+sudo install -Dm755 bin/gtm  /usr/local/bin/gtm
+sudo install -Dm755 bin/gtmd /usr/local/bin/gtmd
+sudo install -Dm644 man/man1/gtm.1 man/man1/gtmd.1 man/man1/gtmd-ipc.1 /usr/local/share/man/man1/
+sudo install -Dm644 systemd/gtmd.service /usr/local/lib/systemd/user/gtmd.service
+sudo install -Dm644 completions/gtm.bash completions/gtmd.bash /usr/local/share/bash-completion/completions/
+sudo install -Dm644 completions/_gtm completions/_gtmd /usr/local/share/zsh/vendor-completions/
+sudo install -Dm644 completions/gtm.fish completions/gtmd.fish /usr/local/share/fish/vendor_completions.d/
+
+systemctl --user daemon-reload
+systemctl --user enable --now gtmd
+```
+
+Substitute `aarch64-linux`, `aarch64-linux-musl` (musl), `aarch64-darwin`,
+or `aarch64-android` for `x86_64-linux` as needed. Verify the download with the
+release's `checksums.txt`.
+
+Native packages are also published for each release:
+
+| Format | Distro | Install |
+|---|---|---|
+| `.deb` | Debian / Ubuntu | `sudo dpkg -i gtm-full_*.deb` |
+| `.rpm` | Fedora / RHEL / CentOS | `sudo dnf install ./gtm-full-*.rpm` |
+| `.pkg.tar.zst` | Arch Linux | `sudo pacman -U gtm-full-*.pkg.tar.zst` |
+| `.apk` | Alpine (musl) | `sudo apk add --allow-untrusted ./gtm-*.apk` |
 
 ### Build from Source
 

@@ -3,11 +3,11 @@
 %global debug_package %{nil}
 
 Name: gtmd
-Version: 0.1.0
+Version: 0.1.4
 Release: 1%{?dist}
 Summary: GTM background audio daemon
 License: GPL-3.0-only
-URL: https://github.com/skchr/gtm-rs
+URL: https://github.com/prjctimg/gtm.rs
 Source0: %{name}-%{version}.tar.gz
 BuildRequires: cargo >= 1.81
 BuildRequires: pandoc
