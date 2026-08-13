@@ -12,7 +12,7 @@ Green gate: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D w
 
 ### 4.1.1 — Add `secondary_accent` and `tertiary_accent` fields
 
-Add to `AppTheme` struct:
+Add to `AppTheme` struct (currently at lines 13-38):
 
 ```rust
 #[derive(Clone, Copy)]
@@ -26,8 +26,8 @@ pub struct AppTheme {
     pub fg_dim: Color,
     pub fg_bright: Color,
     pub accent: Color,
-    pub secondary_accent: Color,  // new
-    pub tertiary_accent: Color,   // new
+    pub secondary_accent: Color,  // NEW: secondary accent color
+    pub tertiary_accent: Color,   // NEW: tertiary accent color
     pub error: Color,
     pub warning: Color,
     pub success: Color,
@@ -44,22 +44,55 @@ pub struct AppTheme {
 
 ### 4.1.2 — Update all 12 built-in themes
 
-Each theme needs secondary and tertiary accent colors. For themes that already have an accent, the secondary is a darker/complementary variant and tertiary is an even lighter/sharper variant.
+Each theme needs secondary and tertiary accent colors derived from the existing palette. Values are chosen to complement the primary accent while providing visual variety.
 
-**Chadrula** (current: accent=0x7aa2f7): secondary=0x5c6b9a, tertiary=0x9ece6a
-**One Dark** (current: accent=0x61afef): secondary=0x4a7ab8, tertiary=0x98c379
-**Tokyo Night** (current: accent=0x7aa2f7): secondary=0x5c6b9a, tertiary=0x9ece6a
-**Tokyo Night Storm** (current: accent=0xff9e64): secondary=0xd08770, tertiary=0xfab387
-**Catppuccin Mocha** (current: accent=0x89b4fa): secondary=0x89b4fa, tertiary=0xa6e3a1
-**Catppuccin Latte** (current: accent=0x1e66f5): secondary=0x1e66f5, tertiary=0x40a02b
-**Gruvbox Dark** (current: accent=0xd3869b): secondary=0xfb4934, tertiary=0x9ccfd8
-**Nord** (current: accent=0x88c0d0): secondary=0x88c0d0, tertiary=0xa3be8c
-**Rose Pine** (current: accent=0xc4a7e7): secondary=0xc4a7e7, tertiary=0x9ccfd8
-**Everforest** (current: accent=0xa7c080): secondary=0xa7c080, tertiary=0xe69875
-**Kanagawa** (current: accent=0x7e9cd8): secondary=0x7e9cd8, tertiary=0x98bb6c
-**Kanagawa Lotus** (current: accent=0x2d6a9f): secondary=0x2d6a9f, tertiary=0x6a9589
+**Chadrula** (accent=0x7aa2f7):
+- secondary: `success` (0x9ece6a) — green complement
+- tertiary: `warning` (0xe0af68) — warm accent
 
-For each, the secondary is a shade darker than the accent (dark theme variant), and tertiary is a lighter shade.
+**One Dark** (accent=0x61afef):
+- secondary: `success` (0x98c379) — green complement
+- tertiary: `warning` (0xe5c07b) — warm accent
+
+**Tokyo Night** (accent=0x7aa2f7):
+- secondary: `success` (0x9ece6a) — green complement
+- tertiary: `warning` (0xff9e64) — warm accent
+
+**Tokyo Night Storm** (accent=0x7aa2f7):
+- secondary: `success` (0x9ece6a) — green complement
+- tertiary: `warning` (0xff9e64) — warm accent
+
+**Catppuccin Mocha** (accent=0x89b4fa):
+- secondary: `success` (0xa6e3a1) — green complement
+- tertiary: `warning` (0xfab387) — warm accent
+
+**Catppuccin Latte** (accent=0x1e66f5):
+- secondary: `success` (0x40a02b) — green complement
+- tertiary: `warning` (0df802b) — warm accent
+
+**Gruvbox Dark** (accent=0xd3869b):
+- secondary: `success` (0xb8bb26) — green complement
+- tertiary: `warning` (0xfe8019) — warm accent
+
+**Nord** (accent=0x88c0d0):
+- secondary: `success` (0xa3be8c) — green complement
+- tertiary: `warning` (0xd08770) — warm accent
+
+**Rose Pine** (accent=0xc4a7e7):
+- secondary: `success` (0x9ccfd8) — blue complement
+- tertiary: `warning` (0xf6c177) — warm accent
+
+**Everforest** (accent=0xa7c080):
+- secondary: `success` (0xa7c080) — same as accent (monochromatic green)
+- tertiary: `warning` (0xe69875) — warm accent
+
+**Kanagawa** (accent=0x7e9cd8):
+- secondary: `success` (0x98bb6c) — green complement
+- tertiary: `warning` (0xe6c384) — warm accent
+
+**Kanagawa Lotus** (accent=0x2d6a9f):
+- secondary: `success` (0x6a9589) — teal complement
+- tertiary: `warning` (0xb5633a) — warm accent
 
 ---
 
@@ -69,7 +102,7 @@ For each, the secondary is a shade darker than the accent (dark theme variant), 
 
 Apply accent colors per footer section:
 - **Left**: `accent` (primary accent)
-- **Middle**: `secondary_accent` (secondary accent)  
+- **Middle**: `secondary_accent` (secondary accent)
 - **Right**: `tertiary_accent` (tertiary accent)
 
 This ensures the footer feels colorful when possible, with each section's background showing its assigned color.
@@ -139,6 +172,8 @@ The gradient has 3 steps:
 - Step 0 (left): `accent` (bright)
 - Step 1 (middle): `secondary_accent` (medium)
 - Step 2 (right): `tertiary_accent` (dim)
+
+Gradient direction: **left to right** (accent → secondary → tertiary).
 
 ---
 

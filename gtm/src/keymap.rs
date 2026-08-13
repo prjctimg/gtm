@@ -108,6 +108,8 @@ pub enum KeyboardAction {
     CycleDesign,
     ToggleVisualizer,
     CycleVisualizerPreset,
+    ToggleTheme,
+    CycleCrossfadeType,
     CheckHealth,
 }
 
@@ -634,9 +636,9 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // P — cycle progress style
+            // Alt+P — cycle progress style
             (
-                KeyCode::Char('P').into(),
+                KeyEvent::new(KeyCode::Char('P'), KeyModifiers::ALT),
                 BoundCommand {
                     action: KeyboardAction::CycleProgressStyle,
                     contexts: vec![KeyContext::Normal],
@@ -655,6 +657,22 @@ pub fn default_keybindings() -> Keybindings {
                 KeyEvent::new(KeyCode::Char('V'), KeyModifiers::ALT),
                 BoundCommand {
                     action: KeyboardAction::CycleVisualizerPreset,
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
+            // Alt+T — cycle theme (dark/light variants)
+            (
+                KeyEvent::new(KeyCode::Char('T'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::ToggleTheme,
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
+            // Alt+X — cycle crossfade type
+            (
+                KeyEvent::new(KeyCode::Char('X'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::CycleCrossfadeType,
                     contexts: vec![KeyContext::Normal],
                 },
             ),

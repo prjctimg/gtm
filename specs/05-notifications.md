@@ -6,7 +6,7 @@ Green gate: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D w
 
 ---
 
-## 5.1 — Design requirements
+## 5.1 — General floating notification window
 
 ### 5.1.1 — Floating window properties
 - Slide from right or left (configurable, default right)
@@ -34,11 +34,52 @@ Green gate: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D w
 
 ---
 
-## 5.2 — Implementation
+## 5.2 — Volume change notification (vertical floating window)
+
+### 5.2.1 — Design
+- Vertical floating window (taller than wide)
+- Shows volume amount as a filled progress bar
+- Progress bar respects theme coloring (accent → secondary → tertiary gradient)
+- Slides from configurable direction (left or right, user-configurable)
+- Auto-dismiss after 2 seconds
+
+### 5.2.2 — Volume notification layout
+```
+┌────────────────────┐
+│  Volume            │
+│  ┌──────────────┐  │
+│  │ ████████░░░░ │  │
+│  └──────────────┘  │
+│       75%          │
+└────────────────────┘
+```
+
+### 5.2.3 — Implementation
+```rust
+pub struct VolumeNotification {
+    pub volume: u8,
+    pub direction: SlideDirection,  // Left or Right (user-configurable)
+    pub duration: Duration,
+    pub accent_color: Color,
+    pub secondary_color: Color,
+    pub tertiary_color: Color,
+}
+```
+
+### 5.2.4 — Progress bar render
+- Use theme's accent/secondary/tertiary colors for gradient fill
+- Bar width: ~20 characters
+- Fill percentage: `(volume / 100.0) * bar_width`
+- Background: `bg` color
+- Foreground: gradient from accent (0%) to tertiary (100%)
+
+---
+
+## 5.3 — Implementation
 
 **File**: `gtm/src/ui.rs`
 
-### 5.2.1 — New `Notification` widget
+### 5.3.1 — New `Notification` widget
 ```rust
 pub struct Notification {
     pub title: String,
@@ -49,27 +90,27 @@ pub struct Notification {
 }
 ```
 
-### 5.2.2 — New render function
+### 5.3.2 — New render function
 - `render_notification(f: &mut Frame, area: Rect, notification: &Notification) -> Option<Rect>`
 - Uses `tachyonfx::fx::evolve_into` with `TimingFunction::QuadInOut`
 - Slides notification in from left or right (configurable via `direction` field)
 - Applies 3px left border with theme's accent color
 
-### 5.2.3 — Legacy notification removal
+### 5.3.3 — Legacy notification removal
 - Remove the old notification row rendering code in `ui.rs` (the simple highlighted row approach)
 - All notification rendering is now done by the new floating widget
 
-### 5.2.4 — Notification scheduling
+### 5.3.4 — Notification scheduling
 - Notifications are pushed via `App` method: `push_notification(title, message, direction, duration)`
 - Each notification uses `tachyonfx::evolve_into` for the animation
 - Notification is rendered as a floating widget overlay
 
 ---
 
-## 5.3 — Notification types to be used
+## 5.4 — Notification types to be used
 
 - **Playback status**: "▶ Playing" / "⏸ Paused" / "⏹ Stopped"
-- **Volume change**: Volume updated (e.g., "Volume: 75%")
+- **Volume change**: Volume updated (vertical floating window with progress bar)
 - **Queue update**: Track added to queue
 - **Track change**: New track playing
 - **Error**: Error messages
@@ -79,10 +120,11 @@ pub struct Notification {
 
 ---
 
-## 5.4 — Verification
+## 5.5 — Verification
 
 - New notification widget renders correctly with `tachyonfx` animation
 - Left border 3px thick and theme-aware
 - Notification slides from configured direction
+- Volume notification shows vertical floating window with gradient progress bar
 - Legacy notification row code is removed
 - `cargo test` passes

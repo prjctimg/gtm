@@ -38,6 +38,7 @@ test_mode = false                    # bool
 theme_dark_light = false             # bool
 monochromatic = false                 # bool
 footer_style = "default"             # string: "default" | "minimal" | "full"
+notification_slide = "right"         # string: "left" | "right"
 
 [footer]
 left = ["Playback", "Queue", "Repeat", "Shuffle", "Volume", "EqPreset"]
@@ -58,6 +59,8 @@ fg = "#cdd6f4"
 fg_dim = "#6c7086"
 fg_bright = "#f5f5ff"
 accent = "#89b4fa"
+secondary_accent = "#a6e3a1"
+tertiary_accent = "#fab387"
 error = "#f38ba8"
 warning = "#fab387"
 success = "#a6e3a1"
@@ -71,15 +74,35 @@ volume_high = "#f38ba8"
 sidebar_active_border = "#89b4fa"
 ```
 
-### 8.1.4 — TOML limitations and technical restrictions
-1. **No inline comments** — TOML does not support inline comments in the same way JSON does; comments must be in their own lines with `#` prefix
-2. **Type restrictions** — TOML has limited type support (string, integer, float, boolean, array, table); no complex nested structures beyond what JSON supports
-3. **Key naming** — TOML keys are case-sensitive; use snake_case for readability
-4. **No escape sequences** — TOML strings are not escape sequences (e.g., `\n` not supported); use raw strings where needed
-5. **No comments in arrays** — Array items can be commented but only with `#` on their own line
-6. **No null values** — TOML has no `null` type; use empty strings or omit keys
-7. **No tab indentation** — TOML uses spaces for indentation; tabs are not allowed
-8. **Version compatibility** — TOML 1.0 is the minimum spec; TOML 1.1 adds new features but we must ensure compatibility
+### 8.1.4 — TOML 1.0 limitations and technical restrictions
+
+The following are **actual** TOML 1.0 limitations (not inaccurate claims):
+
+1. **No inline comments in arrays** — TOML does NOT support inline comments within array items. Comments must be on their own line with `#` prefix. Example of INVALID TOML:
+   ```toml
+   items = ["foo", "bar", "baz"]  # this comment is INVALID
+   ```
+   Must be:
+   ```toml
+   items = ["foo", "bar", "baz"]
+   # this comment is valid
+   ```
+
+2. **Type restrictions** — TOML has limited type support (string, integer, float, boolean, array, table). No complex nested structures beyond what JSON supports. No `null` type; use empty strings or omit keys.
+
+3. **Key naming** — TOML keys are case-sensitive; use snake_case for readability.
+
+4. **Whitespace handling** — TOML allows both spaces and tabs for indentation. However, use consistent spacing for readability.
+
+5. **Inline tables are limited** — Inline tables (e.g., `{ key = "value" }`) cannot span multiple lines or contain comments. Use standard tables for complex structures.
+
+6. **Date/time types** — TOML has native date/time types (`offset-datetime`, `local-datetime`, `local-date`, `local-time`) that may not map directly to Rust types without conversion.
+
+7. **No trailing commas** — TOML does not allow trailing commas in arrays or tables.
+
+8. **String escaping** — TOML supports escape sequences in basic strings (`\n`, `\t`, `\"`, `\\`, etc.). Use literal strings (`'...'`) for paths with backslashes.
+
+9. **Version compatibility** — TOML 1.0 is the minimum spec; TOML 1.1 adds new features (inline tables, dotted keys, etc.) but ensure compatibility with TOML 1.0 parsers.
 
 ---
 
@@ -97,6 +120,8 @@ sidebar_active_border = "#89b4fa"
 
 ### 8.2.3 — File migration path
 - `~/.config/gtm/prefs.json` → `~/.config/gtm/config.toml`
+- `~/.config/gtm/user_theme.json` → `~/.config/gtm/themes/*.toml`
+- `~/.config/gtm/user_presets.json` → `~/.config/gtm/footer.toml`
 - Migration is done automatically on first TOML file creation
 
 ---
@@ -107,9 +132,10 @@ sidebar_active_border = "#89b4fa"
 - `gtmd/src/config.rs` already uses TOML for daemon configuration
 - `DaemonArgs` struct is already TOML-serializable
 
-### 8.3.2 — User theme config (JSON currently)
+### 8.3.2 — User theme config (currently JSON, migrating to TOML)
 - Currently in `gtm/src/theme.rs:496-561` as `UserThemeFile` (deserialized from JSON)
-- Need to migrate to TOML: update `UserThemeFile` struct to use TOML-compatible types
+- **Migrating to TOML** (per decision): update `UserThemeFile` struct to use TOML-compatible types
+- Add `#[serde(default)]` fallbacks for backward compatibility with existing user TOML themes
 - Migration helper: add `UserThemeFile` deserialization from TOML (same approach as existing `toml::from_str`)
 
 ### 8.3.3 — Footer presets (JSON currently)

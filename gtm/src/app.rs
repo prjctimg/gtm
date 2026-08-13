@@ -621,6 +621,37 @@ impl App {
         save_prefs(&self.current_prefs());
     }
 
+    /// Cycle to the next theme in the list, persist, and refresh.
+    fn toggle_theme(&mut self) {
+        let next = (self.theme_index + 1) % self.themes.len();
+        self.apply_theme_index(next);
+        let name = &self.themes[next].name;
+        let light = if self.themes[next].light {
+            " (light)"
+        } else {
+            ""
+        };
+        self.notify(format!("Theme: {}{}", name, light), NotificationKind::Info);
+    }
+
+    /// Toggle crossfade on/off and persist.
+    fn cycle_crossfade_type(&mut self) {
+        let currently_enabled = self.state.crossfade.as_ref().is_some_and(|c| c.enabled);
+        let new_enabled = !currently_enabled;
+        let duration = self
+            .state
+            .crossfade
+            .as_ref()
+            .map_or(7u8, |c| c.duration_secs);
+        let tx = self.cmd_tx();
+        tokio::spawn(async move {
+            let _ = tx.send(TuiCommand::Crossfade(new_enabled, duration)).await;
+        });
+        let label = if new_enabled { "ON" } else { "OFF" };
+        self.notify(format!("Crossfade: {}", label), NotificationKind::Info);
+        save_prefs(&self.current_prefs());
+    }
+
     pub async fn run(
         mut self,
         terminal: &mut Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
@@ -2212,6 +2243,12 @@ impl App {
                             format!("Visualizer: {}", self.visualizer.preset.name()),
                             NotificationKind::Info,
                         );
+                    }
+                    Some(KeyboardAction::ToggleTheme) => {
+                        self.toggle_theme();
+                    }
+                    Some(KeyboardAction::CycleCrossfadeType) => {
+                        self.cycle_crossfade_type();
                     }
                     Some(KeyboardAction::CheckHealth) => {
                         self.send_high(TuiCommand::CheckHealth);

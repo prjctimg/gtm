@@ -27,10 +27,13 @@ Show up next track title in the Now Playing section below the progress indicator
 
 ### 6.1.4 — Remove over-comprehensive help text
 - Trim help text to bare minimum
-- Keep only: q (quit), ? (help), space (play/pause), n (next), p (prev), ← → (navigate), s (stop)
-- Keep tab navigation + basic list actions (j/k, enter, delete)
-- Remove: extended keyboard help, detailed menu descriptions, etc.
-- The help bar should be minimal: only keybinding shortcuts
+- **Decision deferred to user**: Which keybindings/text to keep is TBD — ask user which items to retain
+- Default proposal (user may override):
+  - Keep only: q (quit), ? (help), space (play/pause), n (next), p (prev), ← → (navigate), s (stop)
+  - Keep tab navigation + basic list actions (j/k, enter, delete)
+  - Remove: extended keyboard help, detailed menu descriptions, etc.
+  - The help bar should be minimal: only keybinding shortcuts
+- User will specify which specific keybindings and text to keep during implementation
 
 ### 6.1.5 — Shell completion descriptions
 Ensure all new commands have descriptions for shell completions:

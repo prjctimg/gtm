@@ -53,22 +53,20 @@ Green gate: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D w
 
 **File**: `gtm/src/ui.rs` (equalizer picker render function)
 
-### 2.3.1 — Below-list descriptions
-- After each equalizer preset line in the list, add a description of how that preset sound works
+### 2.3.1 — Below-list descriptions (Subjective style)
+- After each equalizer preset line in the list, add a **subjective** description of how that preset sounds
 - Descriptions for each preset:
-  - **Braille**: Uses 4-step color ramp; bars with higher amplitude get brighter accent colors
-  - **Blocks**: Solid blocks with fine fractional heights; blocks are colored by amplitude
-  - **Mirror**: Center-symmetric bars with mirrored shape; bars expand outward from center
-  - **Gradient**: Color ramp through gradient pattern; bars with higher value get brighter colors
-  - **Spectrum**: Scrolling waveform bar with phase shift; bars change with frequency content
+  - **Braille**: "Smooth, flowing bars with a vintage feel — warm and understated, like watching an old oscilloscope"
+  - **Blocks**: "Bold, chunky blocks with a retro arcade vibe — punchy and direct, great for electronic music"
+  - **Mirror**: "Symmetrical, hypnotic waves radiating from center — mesmerizing and balanced, ideal for ambient"
+  - **Gradient**: "Color-shifting bands that pulse with intensity — vibrant and dynamic, perfect for high-energy tracks"
+  - **Spectrum**: "Scrolling waveform that captures every beat — fluid and responsive, like a living equalizer"
 
-### 2.3.2 — Description styles (mixed)
-- Each description follows a multi-style approach:
-  - **Technical**: "Frequency spectrum analyzer using phase-locked bandpass filter"
-  - **Subjective**: "Warm vintage sound, great for jazz and lo-fi"
-  - **Use-case**: "Best for vocal-heavy tracks, cut for bass-heavy music"
-- User can select a description style when the picker opens
-- A small toggle in the picker header (or a description panel next to each item) allows choosing the style
+### 2.3.2 — Description style rationale
+- Using **subjective only** style (no technical/use-case/mixed options)
+- Keeps descriptions concise and focused on the "feel" of each visualizer
+- Avoids cluttering the picker with multiple description modes
+- Users can see at a glance what each preset "feels like"
 
 ---
 
@@ -76,38 +74,38 @@ Green gate: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D w
 
 **File**: `gtm/src/ui.rs` (search picker render function)
 
-### 2.4.1 — Cover art preview below list
-- When fuzzy finder is open, below the list of matching tracks, show a cover art preview
-- Cover image is fetched from the track's cover art URL or local file
+### 2.4.1 — Layout: Side-by-side (cover left, meta right)
+- When fuzzy finder is open, below the list of matching tracks, show a preview panel
+- Layout:
+  ```
+  ┌─────────────────────────────────────────┐
+  │  Search: "endless"                      │
+  ├─────────────────────────────────────────┤
+  │  1. An Endless Summer - The Waves       │
+  │  2. Endless Road - John Mayer           │
+  │  3. Never Ending Story - Limahl         │
+  ├─────────────────────────────────────────┤
+  │  ┌─────────┐  Track: An Endless Summer  │
+  │  │         │  Artist: The Waves         │
+  │  │  Cover  │  Album: Ocean Drive        │
+  │  │   Art   │  Duration: 3:45            │
+  │  │         │                            │
+  │  └─────────┘                            │
+  └─────────────────────────────────────────┘
+  ```
+- Cover art is fetched from the track's cover art URL or local file
+- If cover art fails to load, show a placeholder colored square with "♫" glyph
+
+### 2.4.2 — Cover art render
+- Cover image rendered as a small widget on the left side of the preview panel
 - If cover art fails to load, show a placeholder colored square
 
-### 2.4.2 — Track meta beside preview
+### 2.4.3 — Track metadata render
 - To the right of the cover art preview, show:
-  - Track title
+  - Track title (bold)
   - Artist name
   - Album name
-  - Duration
-
-### 2.4.3 — ASCII demos first
-- Before settling on a final design, show ASCII-style demo of the layout
-- ASCII demo:
-  ```
-  Track: "An Endless Summer" — by The Waves
-  ┌─────────────────────────────────────────┐
-  │  📷 Cover Preview                    │
-  │  ┌───────────────────────────────┐     │
-  │  │  ◆ Track Title:                │     │
-  │  │  │  An Endless Summer         │     │
-  │  │  │  ───────────────────────── │     │
-  │  │  │  Artist: The Waves         │     │
-  │  │  │  Album: Ocean Drive        │     │
-  │  │  │  Duration: 3:45            │     │
-  │  │  └───────────────────────────────┘     │
-  │  └─────────────────────────────────────────┘
-  │  [Search results ...]
-  ```
-- This ASCII demo is shown in a small overlay panel at the top of the fuzzy finder picker
-- After the user makes a selection, the final design is applied
+  - Duration (formatted as mm:ss)
 
 ---
 
