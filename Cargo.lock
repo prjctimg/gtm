@@ -1406,6 +1406,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e629b9b98ef3dd8afe6ca2bd0f89306cec16d43d907889945bc5d6687f2f13c7"
 
 [[package]]
+name = "gtm"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "clap",
+ "color-eyre",
+ "crossterm 0.28.1",
+ "gtm-audio",
+ "gtm-core",
+ "image",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "gtm-audio"
 version = "0.1.0"
 dependencies = [
@@ -1417,17 +1436,6 @@ dependencies = [
  "symphonia 0.6.0",
  "symphonia-adapter-libopus",
  "thiserror 2.0.18",
- "tokio",
-]
-
-[[package]]
-name = "gtm-cli"
-version = "0.1.0"
-dependencies = [
- "clap",
- "clap_complete",
- "gtm-core",
- "serde_json",
  "tokio",
 ]
 
@@ -1455,25 +1463,6 @@ dependencies = [
  "tracing",
  "zbus",
  "zvariant",
-]
-
-[[package]]
-name = "gtm-tui"
-version = "0.1.0"
-dependencies = [
- "base64",
- "clap",
- "color-eyre",
- "crossterm 0.28.1",
- "gtm-audio",
- "gtm-core",
- "image",
- "ratatui",
- "serde",
- "serde_json",
- "tokio",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

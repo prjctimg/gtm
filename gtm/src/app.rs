@@ -1,35 +1,16 @@
-//! TUI application state, event loop, and key handling.
-//!
-//! ```text
-//!  ┌──────────────────────────────────────────────────────┐
-//!  │  TUI Event Loop (run)                                │
-//!  │                                                      │
-//!  │  ┌──────────┐    ┌──────────────┐    ┌───────────┐  │
-//!  │  │ Drain    │───→│ Render       │───→│ Poll      │  │
-//!  │  │ cmd_rx   │    │ (ratatui)    │    │ crossterm │  │
-//!  │  │ queue    │    │              │    │ key event │  │
-//!  │  └────┬─────┘    └──────────────┘    └─────┬─────┘  │
-//!  │       │                                    │        │
-//!  │       ▼                                    ▼        │
-//!  │  handle_command()                     handle_key()  │
-//!  │  ─── via DaemonClient IPC             ─── dispatch  │
-//!  │       to gtmd                          keybinding  │
-//!  │                                                    │
-//!  │  Auto-refresh timer sends Refresh every 250ms      │
-//!  └──────────────────────────────────────────────────────┘
-//! ```
-
 use std::path::Path;
 use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use gtm_core::client::DaemonClient;
+use gtm_core::ipc::DaemonRes;
 use gtm_core::state::{DaemonState, PlaybackStatus, RepeatMode, Tab};
 use gtm_core::track::TrackInfo;
 use ratatui::Terminal;
 use tokio::sync::mpsc;
 
-use crate::keymap::{default_keybindings, BoundCommand, KeyContext, KeyboardAction};
+use crate::keymap::{default_keybindings, KeyContext, KeyboardAction};
+use crate::overlay::{OverlayCtx, OverlayId, OverlayManager};
 use crate::ui;
 
 pub enum InputMode {
@@ -38,41 +19,31 @@ pub enum InputMode {
     Command,
 }
 
+#[allow(dead_code)]
 pub struct App {
     pub client: DaemonClient,
     pub state: DaemonState,
     pub current_tab: Tab,
     pub input_mode: InputMode,
-
-    // Text input for filter ('/') and command (':') modes
     pub search_query: String,
-
-    // Scrolling state for list views (queue, library, YT)
     pub scroll_offset: usize,
-
-    // Cached data for each tab (fetched lazily from daemon)
     pub tracks_cache: Vec<TrackInfo>,
     pub queue_cache: Vec<TrackInfo>,
     pub queue_cursor: usize,
     pub yt_results_cache: Vec<gtm_core::track::YTSearchResult>,
     pub volume_input: String,
     pub playlist_cache: Vec<gtm_core::track::Playlist>,
-
-    // Status bar messages
     pub error_message: Option<String>,
     pub status_message: Option<String>,
     pub crossfade_duration: u8,
-
-    // Command channel — background timer and key handlers send TuiCommands
-    // through cmd_tx, handle_command processes them from cmd_rx.
+    pub pending_volume: Option<u8>,
+    pub overlays: OverlayManager,
     pub cmd_rx: mpsc::Receiver<TuiCommand>,
     cmd_tx: mpsc::Sender<TuiCommand>,
     keybindings: crate::keymap::Keybindings,
 }
 
-/// Commands sent from key handlers or the auto-refresh timer to the
-/// main event loop.  Each variant maps 1:1 to a DaemonClient IPC call
-/// or a local cache refresh.
+#[allow(dead_code)]
 pub enum TuiCommand {
     Play(String),
     PlayPause,
@@ -122,7 +93,9 @@ impl App {
             playlist_cache: Vec::new(),
             error_message: None,
             status_message: None,
-            crossfade_duration: 5,
+            crossfade_duration: 7,
+            pending_volume: None,
+            overlays: OverlayManager::new(),
             cmd_rx,
             cmd_tx,
             keybindings,
@@ -133,23 +106,32 @@ impl App {
         self.cmd_tx.clone()
     }
 
-    /// Main TUI event loop:
-    ///
-    ///   1. Drain any queued TuiCommands → call IPC on daemon
-    ///   2. Render current state to screen via ratatui
-    ///   3. Poll crossterm for key events → dispatch through keybindings
-    ///
-    /// A background tokio task sends a Refresh command every 250 ms,
-    /// which reads broadcast events from the daemon and updates local state.
+    #[allow(dead_code)]
+    pub fn overlay_ctx(&self) -> OverlayCtx<'_> {
+        OverlayCtx {
+            state: &self.state,
+            tracks_cache: &self.tracks_cache,
+            queue_cache: &self.queue_cache,
+            queue_cursor: self.queue_cursor,
+            yt_results_cache: &self.yt_results_cache,
+            playlist_cache: &self.playlist_cache,
+            op: &self.overlays,
+        }
+    }
+
     pub async fn run(
         mut self,
         terminal: &mut Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        // Initial state fetch from daemon
         self.fetch_state().await;
+        // Clamp volume to safe level on startup so the safety prompt
+        // doesn't appear immediately when the TUI opens.
+        if self.state.volume > 85 {
+            let _ = self.client.set_volume(85).await;
+            self.state.volume = 85;
+        }
         self.fetch_queue().await;
 
-        // Background timer: refresh state every 250 ms
         let cmd_tx = self.cmd_tx();
         tokio::spawn(async move {
             loop {
@@ -159,15 +141,16 @@ impl App {
         });
 
         loop {
-            // 1. Process all queued commands (IPC calls + cache refreshes)
+            for ev in self.client.drain().await {
+                self.state.apply_event(&ev);
+            }
+
             while let Ok(cmd) = self.cmd_rx.try_recv() {
                 self.handle_command(cmd).await;
             }
 
-            // 2. Render the UI
             terminal.draw(|f| ui::render(f, &mut self))?;
 
-            // 3. Handle keyboard input
             if event::poll(Duration::from_millis(50))? {
                 if let Event::Key(key) = event::read()? {
                     if key.kind == KeyEventKind::Press {
@@ -188,92 +171,168 @@ impl App {
     }
 
     async fn fetch_queue(&mut self) {
-        if let Ok(res) = self.client.queue_list().await {
-            if let gtm_core::ipc::DaemonRes::QueueState { tracks, cursor, .. } = res {
-                self.queue_cache = tracks;
-                self.queue_cursor = cursor as usize;
-            }
+        if let Ok(DaemonRes::QueueState { tracks, cursor, .. }) =
+            self.client.queue_list().await
+        {
+            self.queue_cache = tracks;
+            self.queue_cursor = cursor as usize;
         }
     }
 
     async fn handle_command(&mut self, cmd: TuiCommand) {
-        let result = match cmd {
-            TuiCommand::Play(path) => self.client.play(&path, 0.0).await,
-            TuiCommand::PlayPause => self.client.play_pause().await,
-            TuiCommand::Pause => self.client.pause().await,
-            TuiCommand::Stop => self.client.stop().await,
-            TuiCommand::Next => self.client.next().await,
-            TuiCommand::Prev => self.client.prev().await,
-            TuiCommand::Seek(pos) => self.client.seek(pos).await,
-            TuiCommand::SetVolume(v) => self.client.set_volume(v).await,
-            TuiCommand::ToggleShuffle => self.client.toggle_shuffle().await,
-            TuiCommand::CycleRepeat(m) => self.client.cycle_repeat(m).await,
-            TuiCommand::ToggleMute => self.client.toggle_mute().await,
-            TuiCommand::Crossfade(en, dur) => self.client.crossfade(en, dur).await,
-            TuiCommand::QueueAdd(p) => self.client.queue_add(&p, None).await,
-            TuiCommand::QueueRemove(i) => self.client.queue_remove(i).await,
-            TuiCommand::QueueClear => self.client.queue_clear().await,
-            TuiCommand::YtSearch(q) => self.client.yt_search(&q, None).await.map(|_| 0u32),
-            TuiCommand::YtResolve(u) => self.client.yt_resolve_stream(&u).await.map(|_| 0u32),
-            TuiCommand::Search(q) => self.client.search(&q).await.map(|_| 0u32),
-            TuiCommand::AddFavourite(id) => self.client.add_favourite(id).await,
-            TuiCommand::RemoveFavourite(id) => self.client.remove_favourite(id).await,
+        match cmd {
+            TuiCommand::Play(path) => {
+                if let Err(e) = self.client.play(&path, 0.0).await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::PlayPause => {
+                if let Err(e) = self.client.play_pause().await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::Pause => {
+                if let Err(e) = self.client.pause().await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::Stop => {
+                if let Err(e) = self.client.stop().await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::Next => {
+                if let Err(e) = self.client.next().await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::Prev => {
+                if let Err(e) = self.client.prev().await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::Seek(pos) => {
+                if let Err(e) = self.client.seek(pos).await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::SetVolume(v) => {
+                if let Err(e) = self.client.set_volume(v).await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::ToggleShuffle => {
+                if let Err(e) = self.client.toggle_shuffle().await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::CycleRepeat(m) => {
+                if let Err(e) = self.client.cycle_repeat(m).await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::ToggleMute => {
+                if let Err(e) = self.client.toggle_mute().await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::Crossfade(en, dur) => {
+                if let Err(e) = self.client.crossfade(en, dur).await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::QueueAdd(p) => {
+                if let Err(e) = self.client.queue_add(&p, None).await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::QueueRemove(i) => {
+                if let Err(e) = self.client.queue_rm(i).await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::QueueClear => {
+                if let Err(e) = self.client.queue_clear().await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::YtSearch(q) => {
+                if let Err(e) = self.client.yt_search(&q, None).await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::YtResolve(u) => {
+                if let Err(e) = self.client.yt_resolve_stream(&u).await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::Search(q) => {
+                if let Err(e) = self.client.search(&q).await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::AddFavourite(id) => {
+                if let Err(e) = self.client.add_favourite(id).await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
+            TuiCommand::RemoveFavourite(id) => {
+                if let Err(e) = self.client.remove_favourite(id).await {
+                    self.error_message = Some(e.to_string());
+                }
+            }
             TuiCommand::Refresh => {
-                let events = self.client.drain_events();
-                for ev in &events {
-                    self.state.apply_event(ev);
+                for ev in self.client.drain().await {
+                    self.state.apply_event(&ev);
                 }
                 self.fetch_state().await;
                 if self.current_tab == Tab::Queue {
                     self.fetch_queue().await;
                 }
-                Ok(0u32)
             }
             TuiCommand::RefreshLibrary => {
-                if let Ok(res) = self.client.library_get_tracks(None, None).await {
-                    if let gtm_core::ipc::DaemonRes::Tracks { tracks, .. } = res {
-                        self.tracks_cache = tracks;
-                    }
+                if let Ok(DaemonRes::Tracks { tracks, .. }) =
+                    self.client.library_get_tracks(None, None).await
+                {
+                    self.tracks_cache = tracks;
                 }
-                Ok(0u32)
             }
             TuiCommand::RefreshQueue => {
                 self.fetch_queue().await;
-                Ok(0u32)
             }
             TuiCommand::RefreshPlaylists => {
-                if let Ok(res) = self.client.library_get_playlists().await {
-                    if let gtm_core::ipc::DaemonRes::Playlists { playlists, .. } = res {
-                        self.playlist_cache = playlists;
-                    }
+                if let Ok(DaemonRes::Playlists { playlists, .. }) =
+                    self.client.library_get_playlists().await
+                {
+                    self.playlist_cache = playlists;
                 }
-                Ok(0u32)
             }
             TuiCommand::RefreshYt => {
-                if let Ok(res) = self.client.yt_search_poll().await {
-                    if let gtm_core::ipc::DaemonRes::YtSearchResults { results, .. } = res {
-                        self.yt_results_cache = results;
-                    }
+                if let Ok(DaemonRes::YtSearchResults { results, .. }) =
+                    self.client.yt_search_poll().await
+                {
+                    self.yt_results_cache = results;
                 }
-                Ok(0u32)
             }
         };
-        match result {
-            Ok(_) => {}
-            Err(e) => {
-                self.error_message = Some(e.to_string());
-            }
-        }
     }
 
-    /// Dispatch a key event based on current InputMode:
-    ///
-    ///   Normal     → keybindings.dispatch() → KeyboardAction
-    ///   Searching  → type query, Enter to search, Esc to cancel
-    ///   Command    → type command, Enter to execute, Esc to cancel
-    ///
-    /// Returns false when the app should quit.
     async fn handle_key(&mut self, key: event::KeyEvent) -> bool {
+        // If an overlay is open, Esc closes it; keys pass through to overlay
+        if self.overlays.is_open() {
+            return match key.code {
+                KeyCode::Esc => {
+                    self.overlays.close_top();
+                    true
+                }
+                _ => {
+                    // Pass key to overlay handler
+                    self.handle_overlay_key(key).await;
+                    true
+                }
+            };
+        }
+
         match self.input_mode {
             InputMode::Searching => match key.code {
                 KeyCode::Esc => {
@@ -285,9 +344,6 @@ impl App {
                     self.input_mode = InputMode::Normal;
                     let tx = self.cmd_tx();
                     match self.current_tab {
-                        Tab::YouTube => {
-                            let _ = tx.send(TuiCommand::YtSearch(q)).await;
-                        }
                         Tab::Library => {
                             let _ = tx.send(TuiCommand::RefreshLibrary).await;
                         }
@@ -318,7 +374,12 @@ impl App {
                         return false;
                     }
                     if let Ok(vol) = cmd.parse::<u8>() {
-                        let _ = tx.send(TuiCommand::SetVolume(vol)).await;
+                        if vol > 85 {
+                            self.pending_volume = Some(vol);
+                            self.overlays.open(OverlayId::VolumeConfirm);
+                        } else {
+                            let _ = tx.send(TuiCommand::SetVolume(vol)).await;
+                        }
                     }
                 }
                 KeyCode::Char(c) => {
@@ -330,28 +391,23 @@ impl App {
                 _ => {}
             },
             InputMode::Normal => {
-                // Try keybindings dispatch
                 match self.keybindings.dispatch(key, KeyContext::Normal) {
                     Some(KeyboardAction::Quit) => return false,
                     Some(KeyboardAction::NextTab) => {
                         self.current_tab = match self.current_tab {
                             Tab::NowPlaying => Tab::Library,
-                            Tab::Library => Tab::Queue,
-                            Tab::Queue => Tab::YouTube,
-                            Tab::YouTube => Tab::Settings,
-                            Tab::Settings => Tab::Help,
-                            Tab::Help => Tab::NowPlaying,
+                            Tab::Library => Tab::Settings,
+                            Tab::Settings => Tab::NowPlaying,
+                            _ => Tab::NowPlaying,
                         };
                         self.refresh_tab().await;
                     }
                     Some(KeyboardAction::PrevTab) => {
                         self.current_tab = match self.current_tab {
-                            Tab::NowPlaying => Tab::Help,
+                            Tab::NowPlaying => Tab::Settings,
                             Tab::Library => Tab::NowPlaying,
-                            Tab::Queue => Tab::Library,
-                            Tab::YouTube => Tab::Queue,
-                            Tab::Settings => Tab::YouTube,
-                            Tab::Help => Tab::Settings,
+                            Tab::Settings => Tab::Library,
+                            _ => Tab::Settings,
                         };
                         self.refresh_tab().await;
                     }
@@ -359,10 +415,9 @@ impl App {
                         self.current_tab = tab;
                         self.refresh_tab().await;
                     }
-                    // PlayPause toggles based on current state:
-                    //   Playing  → Pause
-                    //   Paused   → Play (resume current track)
-                    //   Stopped  → Play from queue (first item at cursor)
+                    Some(KeyboardAction::OpenOverlay(id)) => {
+                        self.overlays.open(id);
+                    }
                     Some(KeyboardAction::PlayPause) => {
                         let tx = self.cmd_tx();
                         match self.state.status {
@@ -371,7 +426,9 @@ impl App {
                             }
                             PlaybackStatus::Paused => {
                                 if let Some(ref t) = self.state.current_track {
-                                    let _ = tx.send(TuiCommand::Play(t.path.clone())).await;
+                                    let _ = tx
+                                        .send(TuiCommand::Play(t.path.clone()))
+                                        .await;
                                 }
                             }
                             PlaybackStatus::Stopped => {
@@ -393,9 +450,14 @@ impl App {
                         let _ = tx.send(TuiCommand::Prev).await;
                     }
                     Some(KeyboardAction::VolumeUp) | Some(KeyboardAction::SeekForward) => {
-                        let tx = self.cmd_tx();
                         let new_vol = (self.state.volume + 5).min(100);
-                        let _ = tx.send(TuiCommand::SetVolume(new_vol)).await;
+                        if new_vol > 85 {
+                            self.pending_volume = Some(new_vol);
+                            self.overlays.open(OverlayId::VolumeConfirm);
+                        } else {
+                            let tx = self.cmd_tx();
+                            let _ = tx.send(TuiCommand::SetVolume(new_vol)).await;
+                        }
                     }
                     Some(KeyboardAction::VolumeDown) | Some(KeyboardAction::SeekBackward) => {
                         let tx = self.cmd_tx();
@@ -431,44 +493,31 @@ impl App {
                     Some(KeyboardAction::MoveDown) => {
                         self.scroll_offset += 1;
                     }
-                    Some(KeyboardAction::Select) => {
-                        match self.current_tab {
-                            Tab::Queue if !self.queue_cache.is_empty() => {
-                                let idx = self.scroll_offset;
-                                if idx < self.queue_cache.len() {
-                                    let tx = self.cmd_tx();
-                                    let _ = tx
-                                        .send(TuiCommand::Play(
-                                            self.queue_cache[idx].path.clone(),
-                                        ))
-                                        .await;
-                                }
+                    Some(KeyboardAction::Select) => match self.current_tab {
+                        Tab::Queue if !self.queue_cache.is_empty() => {
+                            let idx = self.scroll_offset;
+                            if idx < self.queue_cache.len() {
+                                let tx = self.cmd_tx();
+                                let _ = tx
+                                    .send(TuiCommand::Play(
+                                        self.queue_cache[idx].path.clone(),
+                                    ))
+                                    .await;
                             }
-                            Tab::YouTube if !self.yt_results_cache.is_empty() => {
-                                let idx = self.scroll_offset;
-                                if idx < self.yt_results_cache.len() {
-                                    let tx = self.cmd_tx();
-                                    let _ = tx
-                                        .send(TuiCommand::YtResolve(
-                                            self.yt_results_cache[idx].url.clone(),
-                                        ))
-                                        .await;
-                                }
-                            }
-                            _ => {}
                         }
-                    }
+                        _ => {}
+                    },
                     Some(KeyboardAction::Delete) => {
                         if self.current_tab == Tab::Queue && !self.queue_cache.is_empty() {
                             let idx = self.queue_cursor + self.scroll_offset;
                             if idx < self.queue_cache.len() {
                                 let tx = self.cmd_tx();
-                                let _ = tx.send(TuiCommand::QueueRemove(idx as u128)).await;
+                                let _ =
+                                    tx.send(TuiCommand::QueueRemove(idx as u128)).await;
                             }
                         }
                     }
                     None => {
-                        // Fallback to direct key handling
                         match key.code {
                             KeyCode::Char('q') | KeyCode::Esc => return false,
                             KeyCode::Char('1') => {
@@ -479,17 +528,40 @@ impl App {
                                 self.refresh_tab().await;
                             }
                             KeyCode::Char('3') => {
-                                self.current_tab = Tab::Queue;
-                                self.refresh_tab().await;
-                            }
-                            KeyCode::Char('4') => {
-                                self.current_tab = Tab::YouTube;
-                            }
-                            KeyCode::Char('5') => {
                                 self.current_tab = Tab::Settings;
                             }
-                            KeyCode::Char('6') => {
-                                self.current_tab = Tab::Help;
+                            KeyCode::Char('c') if self.current_tab == Tab::Settings => {
+                                // Toggle crossfade in Settings tab
+                                let enabled = !self.state.crossfade
+                                    .as_ref()
+                                    .map(|c| c.enabled)
+                                    .unwrap_or(false);
+                                let dur = self.state.crossfade
+                                    .as_ref()
+                                    .map(|c| c.duration_secs)
+                                    .unwrap_or(self.crossfade_duration);
+                                let tx = self.cmd_tx();
+                                let _ = tx.send(TuiCommand::Crossfade(enabled, dur)).await;
+                            }
+                            KeyCode::Char('C') if self.current_tab == Tab::Settings => {
+                                // Cycle crossfade duration (3, 5, 7, 10, 15, 30)
+                                let dur = self.state.crossfade
+                                    .as_ref()
+                                    .map(|c| c.duration_secs)
+                                    .unwrap_or(self.crossfade_duration);
+                                let new_dur = match dur {
+                                    0..=3 => 5,
+                                    4..=7 => 10,
+                                    8..=14 => 15,
+                                    15..=29 => 30,
+                                    _ => 3,
+                                };
+                                let enabled = self.state.crossfade
+                                    .as_ref()
+                                    .map(|c| c.enabled)
+                                    .unwrap_or(true);
+                                let tx = self.cmd_tx();
+                                let _ = tx.send(TuiCommand::Crossfade(enabled, new_dur)).await;
                             }
                             _ => {}
                         }
@@ -499,6 +571,73 @@ impl App {
             }
         }
         true
+    }
+
+    async fn handle_overlay_key(&mut self, key: event::KeyEvent) {
+        let tx = self.cmd_tx();
+        match key.code {
+            KeyCode::Esc => {
+                self.pending_volume = None;
+                self.overlays.close_top();
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(top) = self.overlays.top_mut() {
+                    top.selected = top.selected.saturating_sub(1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(top) = self.overlays.top_mut() {
+                    top.selected += 1;
+                }
+            }
+            KeyCode::Enter => {
+                // Dispatch based on overlay type
+                if let Some(top) = self.overlays.top() {
+                    match top.id {
+                        OverlayId::Queue => {
+                            if !self.queue_cache.is_empty() {
+                                let idx = top.selected.min(self.queue_cache.len() - 1);
+                                let path = self.queue_cache[idx].path.clone();
+                                let _ = tx.send(TuiCommand::Play(path)).await;
+                            }
+                        }
+                        OverlayId::YTSearch => {
+                            if top.query.is_empty() {
+                                // Start search
+                            } else if !self.yt_results_cache.is_empty() {
+                                let idx = top.selected.min(self.yt_results_cache.len() - 1);
+                                let url = self.yt_results_cache[idx].url.clone();
+                                let _ = tx.send(TuiCommand::YtResolve(url)).await;
+                            }
+                        }
+                        OverlayId::VolumeConfirm => {
+                            // Volume safety confirmed
+                            if let Some(v) = self.pending_volume.take() {
+                                let _ = tx.send(TuiCommand::SetVolume(v)).await;
+                            }
+                            self.overlays.close_top();
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(top) = self.overlays.top_mut() {
+                    match top.id {
+                        OverlayId::YTSearch | OverlayId::SearchLibrary => {
+                            top.query.push(c);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(top) = self.overlays.top_mut() {
+                    top.query.pop();
+                }
+            }
+            _ => {}
+        }
     }
 
     async fn refresh_tab(&mut self) {

@@ -17,9 +17,10 @@
 mod app;
 mod cli;
 mod keymap;
+mod overlay;
 mod ui;
 
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(

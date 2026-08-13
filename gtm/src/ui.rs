@@ -1,24 +1,3 @@
-//! TUI rendering with ratatui — 3-row layout with tabs, content, and footer.
-//!
-//! ```text
-//!  ┌───────────────────────────────────────────┐
-//!  │  Tab bar: [1]NowPlaying [2]Library ...    │  ← render_tabs()
-//!  │  Status: ▶ Vol: 80%                       │
-//!  ├───────────────────────────────────────────┤
-//!  │                                           │
-//!  │  Content area (per-tab):                  │  ← render_content()
-//!  │  • NowPlaying: metadata, progress, vol    │
-//!  │  • Library/Queue: filterable track list   │
-//!  │  • YouTube: search results                │
-//!  │  • Settings: volume/repeat/shuffle/etc    │
-//!  │  • Help: keyboard reference               │
-//!  │                                           │
-//!  ├───────────────────────────────────────────┤
-//!  │  Footer: key hints / search input / cmd   │  ← render_footer()
-//!  │  Error bar (overlaid, red background)     │
-//!  └───────────────────────────────────────────┘
-//! ```
-
 use std::path::PathBuf;
 
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen};
@@ -26,11 +5,10 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Gauge, List, ListItem, Paragraph, Tabs};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, List, ListItem, Paragraph, Tabs};
 use ratatui::Terminal;
-use tokio::io;
-
 use crate::app::{App, InputMode};
+use crate::overlay::OverlayId;
 use gtm_core::state::{PlaybackStatus, RepeatMode, Tab};
 
 pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
@@ -38,19 +16,22 @@ pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>>
         .map(PathBuf::from)
         .unwrap_or_else(default_socket);
 
+    ensure_daemon_running(&socket_path)?;
+
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         color_eyre::install()?;
 
         enable_raw_mode()?;
-        let mut stdout = io::stdout();
+        let mut stdout = std::io::stdout();
         crossterm::execute!(stdout, EnterAlternateScreen)?;
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
+        terminal.clear()?;
 
         let panic_hook = std::panic::take_hook();
         std::panic::set_hook(Box::new(move |panic| {
             let _ = disable_raw_mode();
-            let mut stdout = io::stdout();
+            let mut stdout = std::io::stdout();
             let _ = crossterm::execute!(stdout, LeaveAlternateScreen);
             panic_hook(panic);
         }));
@@ -58,7 +39,7 @@ pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>>
         let res = App::new(&socket_path).await?.run(&mut terminal).await;
 
         let _ = disable_raw_mode();
-        let mut stdout = io::stdout();
+        let mut stdout = std::io::stdout();
         let _ = crossterm::execute!(stdout, LeaveAlternateScreen);
 
         res
@@ -70,6 +51,63 @@ fn default_socket() -> PathBuf {
         std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".into());
     PathBuf::from(runtime).join("gtmd.socket")
 }
+
+fn ensure_daemon_running(socket_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    if socket_path.exists() {
+        if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket_path) {
+            let ping = serde_json::to_string(&gtm_core::ipc::DaemonReq::Ping)? + "\n";
+            use std::io::Write;
+            if stream.write_all(ping.as_bytes()).is_ok() {
+                return Ok(());
+            }
+        }
+    }
+
+    let gtmd_path = find_gtmd_binary()?;
+    let socket_arg = format!("--socket={}", socket_path.display());
+
+    let mut child = std::process::Command::new(&gtmd_path)
+        .arg(&socket_arg)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("Failed to start gtmd at {gtmd_path:?}: {e}"))?;
+
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+
+    Ok(())
+}
+
+fn find_gtmd_binary() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(parent) = exe.parent() {
+            let candidate = parent.join("gtmd");
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+        }
+    }
+
+    if let Ok(paths) = std::env::var("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let candidate = dir.join("gtmd");
+            if candidate.exists() {
+                return Ok(candidate);
+            }
+        }
+    }
+
+    let candidate = std::path::PathBuf::from("/usr/bin/gtmd");
+    if candidate.exists() {
+        return Ok(candidate);
+    }
+
+    Err("gtmd binary not found".into())
+}
+
+// ─── Layout ───
 
 pub fn render(f: &mut ratatui::Frame, app: &mut App) {
     let area = f.area();
@@ -85,17 +123,17 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
     render_tabs(f, chunks[0], app);
     render_content(f, chunks[1], app);
     render_footer(f, chunks[2], app);
+
+    // Render overlays on top of everything
+    if app.overlays.is_open() {
+        render_overlay(f, area, app);
+    }
 }
 
+// ─── Tab Bar ───
+
 fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let tab_names = vec![
-        " NowPlaying ",
-        " Library ",
-        " Queue ",
-        " YouTube ",
-        " Settings ",
-        " Help ",
-    ];
+    let tab_names = vec![" NowPlaying ", " Library ", " Settings "];
     let titles: Vec<Line> = tab_names
         .iter()
         .enumerate()
@@ -103,10 +141,7 @@ fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
             let tab = match i {
                 0 => Tab::NowPlaying,
                 1 => Tab::Library,
-                2 => Tab::Queue,
-                3 => Tab::YouTube,
-                4 => Tab::Settings,
-                5 => Tab::Help,
+                2 => Tab::Settings,
                 _ => Tab::NowPlaying,
             };
             if tab == app.current_tab {
@@ -135,13 +170,15 @@ fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
         RepeatMode::All => " \u{1F500}",
     };
 
-    let shuffle_icon = if app.state.shuffle {
-        " \u{1F500}"
+    let shuffle_icon = if app.state.shuffle { " \u{1F500}" } else { "" };
+
+    let overlay_hint = if app.overlays.is_open() {
+        " [Esc]Close "
     } else {
-        ""
+        " Alt+Q Queue "
     };
 
-    let status_line = format!(" {status_icon} Vol:{vol}{repeat_icon}{shuffle_icon} ");
+    let status_line = format!(" {status_icon} Vol:{vol}{repeat_icon}{shuffle_icon}{overlay_hint} ");
 
     let title_chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -155,7 +192,7 @@ fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .border_type(BorderType::Plain)
+                .border_type(BorderType::Rounded)
                 .title(" GTM ")
                 .title_alignment(Alignment::Center),
         )
@@ -168,14 +205,19 @@ fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(status_para, title_chunks[1]);
 }
 
+// ─── Content Area ───
+
 fn render_content(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     match app.current_tab {
         Tab::NowPlaying => render_now_playing(f, area, app),
-        Tab::Library => render_list(f, area, app, "Library", &app.tracks_cache),
-        Tab::Queue => render_queue(f, area, app),
-        Tab::YouTube => render_yt_results(f, area, app),
+        Tab::Library => render_list(f, area, app, "Library", &app.tracks_cache.clone()),
         Tab::Settings => render_settings(f, area, app),
-        Tab::Help => render_help(f, area),
+        _ => {
+            let p = Paragraph::new("Select a tab with 1-3")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::Gray));
+            f.render_widget(p, area);
+        }
     }
 }
 
@@ -242,20 +284,15 @@ fn render_now_playing(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let pos_str = format_duration(pos as u64);
     let dur_str = format_duration(dur as u64);
 
-    let gauge = Gauge::default()
+    let progress_line = render_progress_line(ratio, chunks[1].width.saturating_sub(4) as usize);
+    let gauge = Paragraph::new(progress_line)
         .block(
             Block::default()
                 .title(format!(" {pos_str} / {dur_str} "))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded),
         )
-        .gauge_style(
-            Style::default()
-                .fg(Color::Cyan)
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
-        .ratio(ratio);
+        .style(Style::default().fg(Color::Cyan));
     f.render_widget(gauge, chunks[1]);
 
     let vol_ratio = if app.state.mute {
@@ -263,29 +300,25 @@ fn render_now_playing(f: &mut ratatui::Frame, area: Rect, app: &App) {
     } else {
         app.state.volume as f64 / 100.0
     };
-    let vol_label = if app.state.mute {
-        " Volume: MUTED ".to_string()
+    let vol_label: String = if app.state.mute {
+        "\u{1F507} Volume: MUTED ".to_string()
     } else {
-        format!(" Volume: {:3}% ", app.state.volume)
+        format!(" {} Volume: {:3}% ", volume_icon(app.state.volume), app.state.volume)
     };
-    let vol_gauge = Gauge::default()
+    let vol_color = volume_color(app.state.volume);
+    let vol_bar = render_progress_line(vol_ratio, chunks[2].width.saturating_sub(4) as usize);
+    let vol_gauge = Paragraph::new(vol_bar)
         .block(
             Block::default()
                 .title(format!(" {vol_label} "))
                 .borders(Borders::ALL)
                 .border_type(BorderType::Rounded),
         )
-        .gauge_style(
-            Style::default()
-                .fg(Color::Green)
-                .bg(Color::DarkGray)
-                .add_modifier(Modifier::BOLD),
-        )
-        .ratio(vol_ratio);
+        .style(Style::default().fg(vol_color));
     f.render_widget(vol_gauge, chunks[2]);
 
     let controls = Paragraph::new(
-        " [Space]Play/Pause  [n]Next  [p]Prev  [+/-]Vol  [m]Mute  [r]Repeat  [h]Shuffle  [:]Cmd  [q]Quit ",
+        " \u{23EF}P/P [n]\u{23ED}Next [p]\u{23EE}Prev [+/-]\u{1F50A}Vol [m]\u{1F507}Mute [r]\u{1F501}Repeat [h]\u{1F500}Shuffle [:]Cmd [q]\u{1F6AA}Quit ",
     )
     .alignment(Alignment::Center)
     .style(Style::default().fg(Color::DarkGray));
@@ -341,38 +374,127 @@ fn render_list(
     f.render_widget(list, area);
 }
 
-fn render_queue(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let filtered: Vec<(usize, &gtm_core::track::TrackInfo)> =
-        if app.search_query.is_empty() {
-            app.queue_cache.iter().enumerate().collect()
-        } else {
-            let q = app.search_query.to_lowercase();
-            app.queue_cache
-                .iter()
-                .enumerate()
-                .filter(|(_, t)| {
-                    t.title.to_lowercase().contains(&q)
-                        || t.artist.to_lowercase().contains(&q)
-                })
-                .collect()
-        };
+fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let crossfade_on = app.state
+        .crossfade
+        .as_ref()
+        .map(|c| c.enabled)
+        .unwrap_or(false);
+    let crossfade_dur = app.state
+        .crossfade
+        .as_ref()
+        .map(|c| c.duration_secs)
+        .unwrap_or(0);
+    let crossfade_label = if crossfade_on {
+        format!("Crossfade: ON  [c]toggle [C]dur: {}s", crossfade_dur)
+    } else {
+        "Crossfade: OFF  [c]toggle".to_string()
+    };
 
-    let list_items: Vec<ListItem> = filtered
-        .iter()
-        .map(|(idx, track)| {
-            let is_current = *idx == app.queue_cursor;
-            let prefix = if is_current {
-                " \u{25B6} "
+    let items = vec![
+        format!(
+            "Volume:    {}% {}",
+            app.state.volume,
+            if app.state.mute { "(MUTED)" } else { "" }
+        ),
+        format!("Repeat:    {:?}", app.state.repeat),
+        format!("Shuffle:   {}", if app.state.shuffle { "ON" } else { "OFF" }),
+        format!("Mute:      {}", if app.state.mute { "ON" } else { "OFF" }),
+        crossfade_label,
+        format!("Status:    {:?}", app.state.status),
+        format!("Queue:     {} tracks", app.state.queue.len()),
+    ];
+
+    // Style the crossfade item distinctly (last before status) — index 4
+    let settings_items: Vec<ListItem> = items.into_iter().enumerate()
+        .map(|(i, s)| {
+            let style = if i == 4 {
+                if crossfade_on {
+                    Style::default().fg(Color::Green)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                }
             } else {
-                "   "
+                Style::default()
             };
+            ListItem::new(s).style(style)
+        })
+        .collect();
+
+    let list = List::new(settings_items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Settings ")
+            .border_type(BorderType::Rounded),
+    );
+
+    f.render_widget(list, area);
+}
+
+// ─── Overlay Rendering ───
+
+fn render_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    let Some(top) = app.overlays.top() else {
+        return;
+    };
+
+    // Dim the background
+    let dim = Style::default().fg(Color::Rgb(60, 60, 60));
+    let dim_block = Block::default().style(dim);
+    f.render_widget(dim_block, area);
+
+    // Overlay box: centered, 60% width, 70% height
+    let overlay_width = (area.width as f64 * 0.6) as u16;
+    let overlay_height = (area.height as f64 * 0.7) as u16;
+    let overlay_x = (area.width - overlay_width) / 2;
+    let overlay_y = (area.height - overlay_height) / 3;
+
+    let overlay_area = Rect {
+        x: overlay_x,
+        y: overlay_y,
+        width: overlay_width,
+        height: overlay_height,
+    };
+
+    // Use a block with rounded borders
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .title(format!(" {} ", top.id.title()))
+        .style(Style::default().bg(Color::Rgb(30, 30, 30)));
+
+    let inner = block.inner(overlay_area);
+    f.render_widget(Clear, overlay_area);
+    f.render_widget(block, overlay_area);
+
+    match top.id {
+        OverlayId::Queue => render_queue_overlay(f, inner, app),
+        OverlayId::YTSearch => render_yt_search_overlay(f, inner, app),
+        OverlayId::SearchLibrary => render_search_library_overlay(f, inner, app),
+        OverlayId::VolumeConfirm => render_volume_confirm_overlay(f, inner, app),
+        _ => {
+            let p = Paragraph::new(format!("{} overlay", top.id.title()))
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(Color::Gray));
+            f.render_widget(p, inner);
+        }
+    }
+}
+
+fn render_queue_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let items: Vec<ListItem> = app
+        .queue_cache
+        .iter()
+        .enumerate()
+        .map(|(i, track)| {
+            let is_current = i == app.queue_cursor;
+            let prefix = if is_current { " \u{25B6} " } else { "   " };
             let dur = format_duration(track.duration as u64);
-            let content = format!(
-                "{prefix}#{} {} - {} [{}]",
-                idx, track.artist, track.title, dur
-            );
-            let style = if is_current {
+            let content = format!("{prefix}#{} {} - {} [{}]", i, track.artist, track.title, dur);
+            let style = if i == app.overlays.top().map_or(0, |o| o.selected) {
                 Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else if is_current {
+                Style::default().fg(Color::Yellow)
             } else {
                 Style::default()
             };
@@ -380,7 +502,7 @@ fn render_queue(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         })
         .collect();
 
-    let list = List::new(list_items).block(
+    let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
             .title(" Queue ")
@@ -390,21 +512,80 @@ fn render_queue(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     f.render_widget(list, area);
 }
 
-fn render_yt_results(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let len = app.yt_results_cache.len();
-    let sel = if len > 0 {
-        app.scroll_offset.min(len - 1)
-    } else {
-        0
-    };
+fn render_yt_search_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(area);
+
+    let query = app.overlays.top().map_or(String::new(), |o| o.query.clone());
+    let search_input = Paragraph::new(format!(" Search: {}", query))
+        .style(Style::default().fg(Color::Black).bg(Color::Yellow));
+    f.render_widget(search_input, chunks[0]);
+
     let items: Vec<ListItem> = app
         .yt_results_cache
         .iter()
         .enumerate()
         .map(|(i, r)| {
             let dur = format_duration(r.duration as u64);
-            let prefix = if i == sel { " \u{25B6} " } else { "   " };
+            let prefix = if i == app.overlays.top().map_or(0, |o| o.selected) {
+                " \u{25B6} "
+            } else {
+                "   "
+            };
             let content = format!("{prefix}{} - {} [{}]", r.channel, r.title, dur);
+            let style = if i == app.overlays.top().map_or(0, |o| o.selected) {
+                Style::default().fg(Color::Black).bg(Color::Cyan)
+            } else {
+                Style::default()
+            };
+            ListItem::new(content).style(style)
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Results ")
+            .border_type(BorderType::Rounded),
+    );
+
+    f.render_widget(list, chunks[1]);
+}
+
+fn render_search_library_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let query = app.overlays.top().map_or(String::new(), |o| o.query.clone());
+    let filtered: Vec<&gtm_core::track::TrackInfo> = if query.is_empty() {
+        app.tracks_cache.iter().collect()
+    } else {
+        let q = query.to_lowercase();
+        app.tracks_cache
+            .iter()
+            .filter(|t| {
+                t.title.to_lowercase().contains(&q)
+                    || t.artist.to_lowercase().contains(&q)
+            })
+            .collect()
+    };
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(area);
+
+    let search_input = Paragraph::new(format!(" Search: {}", query))
+        .style(Style::default().fg(Color::Black).bg(Color::Yellow));
+    f.render_widget(search_input, chunks[0]);
+
+    let sel = app.overlays.top().map_or(0, |o| o.selected.min(filtered.len().saturating_sub(1)));
+    let items: Vec<ListItem> = filtered
+        .iter()
+        .enumerate()
+        .map(|(i, track)| {
+            let prefix = if i == sel { " \u{25B6} " } else { "   " };
+            let dur = format_duration(track.duration as u64);
+            let content = format!("{prefix}{} - {} [{}]", track.artist, track.title, dur);
             let style = if i == sel {
                 Style::default().fg(Color::Black).bg(Color::Cyan)
             } else {
@@ -417,139 +598,45 @@ fn render_yt_results(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" YouTube Search Results ")
+            .title(" Tracks ")
             .border_type(BorderType::Rounded),
     );
 
-    f.render_widget(list, area);
+    f.render_widget(list, chunks[1]);
 }
 
-fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let items = vec![
-        format!(
-            "Volume:    {}% {}",
-            app.state.volume,
-            if app.state.mute { "(MUTED)" } else { "" }
-        ),
-        format!("Repeat:    {:?}", app.state.repeat),
-        format!("Shuffle:   {}", if app.state.shuffle { "ON" } else { "OFF" }),
-        format!("Mute:      {}", if app.state.mute { "ON" } else { "OFF" }),
-        format!(
-            "Crossfade: {} ({}s)",
-            app.state
-                .crossfade
-                .as_ref()
-                .map(|c| c.enabled)
-                .unwrap_or(false)
-                .then_some("ON")
-                .unwrap_or("OFF"),
-            app.state
-                .crossfade
-                .as_ref()
-                .map(|c| c.duration_secs)
-                .unwrap_or(0)
-        ),
-        format!("Status:    {:?}", app.state.status),
-        format!("Queue:     {} tracks", app.state.queue.len()),
-    ];
-
-    let settings_items: Vec<ListItem> = items.into_iter().map(|s| ListItem::new(s)).collect();
-
-    let list = List::new(settings_items).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Settings ")
-            .border_type(BorderType::Rounded),
-    );
-
-    f.render_widget(list, area);
-}
-
-fn render_help(f: &mut ratatui::Frame, area: Rect) {
-    let help_text = vec![
+fn render_volume_confirm_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let vol = app.pending_volume.unwrap_or(app.state.volume);
+    let lines = vec![
         Line::from(Span::styled(
-            "Keyboard Shortcuts",
-            Style::default().add_modifier(Modifier::BOLD),
+            format!(" Setting volume to {}% may be unsafe for hearing.", vol),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("1-6      ", Style::default().fg(Color::Cyan)),
-            Span::from("Switch tabs"),
-        ]),
-        Line::from(vec![
-            Span::styled("Tab/Shft ", Style::default().fg(Color::Cyan)),
-            Span::from("Next/Prev tab"),
-        ]),
-        Line::from(vec![
-            Span::styled("Space/p  ", Style::default().fg(Color::Cyan)),
-            Span::from("Play / Pause"),
-        ]),
-        Line::from(vec![
-            Span::styled("s    ", Style::default().fg(Color::Cyan)),
-            Span::from("Search/filter current tab"),
-        ]),
-        Line::from(vec![
-            Span::styled("n / p    ", Style::default().fg(Color::Cyan)),
-            Span::from("Next / Previous track"),
-        ]),
-        Line::from(vec![
-            Span::styled("+/-      ", Style::default().fg(Color::Cyan)),
-            Span::from("Volume up/down"),
-        ]),
-        Line::from(vec![
-            Span::styled("m        ", Style::default().fg(Color::Cyan)),
-            Span::from("Toggle mute"),
-        ]),
-        Line::from(vec![
-            Span::styled("r        ", Style::default().fg(Color::Cyan)),
-            Span::from("Cycle repeat mode"),
-        ]),
-        Line::from(vec![
-            Span::styled("h        ", Style::default().fg(Color::Cyan)),
-            Span::from("Toggle shuffle"),
-        ]),
-        Line::from(vec![
-            Span::styled("d/Del    ", Style::default().fg(Color::Cyan)),
-            Span::from("Remove from queue"),
-        ]),
-        Line::from(vec![
-            Span::styled("Enter    ", Style::default().fg(Color::Cyan)),
-            Span::from("Play selected item"),
-        ]),
-        Line::from(vec![
-            Span::styled("j/k/↑/↓  ", Style::default().fg(Color::Cyan)),
-            Span::from("Navigate lists"),
-        ]),
-        Line::from(vec![
-            Span::styled(":        ", Style::default().fg(Color::Cyan)),
-            Span::from("Command mode"),
-        ]),
-        Line::from(vec![
-            Span::styled("?        ", Style::default().fg(Color::Cyan)),
-            Span::from("Toggle this help"),
-        ]),
-        Line::from(vec![
-            Span::styled("q/Esc    ", Style::default().fg(Color::Cyan)),
-            Span::from("Quit"),
-        ]),
+        Line::from(Span::styled(
+            " Are you sure you want to continue?",
+            Style::default().fg(Color::Yellow),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            " [Enter] Yes    [Esc] Cancel",
+            Style::default().fg(Color::Gray),
+        )),
     ];
 
-    let p = Paragraph::new(help_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(" Help ")
-                .border_type(BorderType::Rounded),
-        )
-        .style(Style::default());
+    let p = Paragraph::new(lines)
+        .alignment(Alignment::Center)
+        .style(Style::default().bg(Color::Rgb(40, 20, 20)));
     f.render_widget(p, area);
 }
+
+// ─── Footer ───
 
 fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &App) {
     match app.input_mode {
         InputMode::Normal => {
             let footer = Paragraph::new(
-                " [1]NowPlaying [2]Library [3]Queue [4]YouTube [5]Settings [6]Help | Space:Pause n:Next p:Prev +/-:Vol :Cmd ?:Help q:Quit ",
+                " [1]NP [2]Lib [3]Set | Alt+Q:Queue Alt+Y:YT Alt+F:Library | Space:P n:Next p:Prev +/-:Vol :Cmd q:Quit ",
             )
             .style(
                 Style::default()
@@ -597,5 +684,59 @@ fn format_duration(secs: u64) -> String {
         format!("{h}:{m:02}:{s:02}")
     } else {
         format!("{m}:{s:02}")
+    }
+}
+
+// ─── Aesthetic Helpers ───
+
+/// Braille spinner frames for loading states.
+const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// Return a braille spinner character cycling by `frame` (incremented each tick).
+#[allow(dead_code)]
+pub fn braille_spinner(frame: usize) -> char {
+    SPINNER_FRAMES[frame % SPINNER_FRAMES.len()]
+}
+
+/// Build a single-line progress bar string using unicode block characters
+/// with an oscillating head at the fill position.
+/// `ratio` in [0.0, 1.0]; `width` in terminal columns.
+fn render_progress_line(ratio: f64, width: usize) -> String {
+    let width = width.max(10); // never narrower than 10
+    let filled = (ratio.clamp(0.0, 1.0) * width as f64).round() as usize;
+
+    let head = if ratio > 0.0 && ratio < 1.0 { '●' } else { ' ' };
+
+    let mut line = String::with_capacity(width);
+    for i in 0..width {
+        if i < filled.saturating_sub(1) {
+            line.push('█');
+        } else if i == filled.saturating_sub(1) && filled > 0 && filled < width {
+            line.push(head);
+        } else if i < width {
+            line.push('░');
+        }
+    }
+    line
+}
+
+/// Pick a colour for the volume bar / label based on level.
+fn volume_color(volume: u8) -> Color {
+    if volume > 85 {
+        Color::Red
+    } else if volume > 50 {
+        Color::Yellow
+    } else {
+        Color::Green
+    }
+}
+
+/// Nerd-font volume icon with emoji fallback.
+fn volume_icon(volume: u8) -> &'static str {
+    match volume {
+        0 => "\u{1F507}",   // muted
+        1..=33 => "\u{1F509}", // low
+        34..=66 => "\u{1F50A}", // medium
+        _ => "\u{1F50A}",   // high
     }
 }

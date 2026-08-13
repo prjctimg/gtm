@@ -10,7 +10,7 @@ Depends on: `rusqlite` (bundled sqlite3 via feature), `gtm-core`
 ## Schema
 
 ```sql
--- Core track table
+# Core track table
 CREATE TABLE IF NOT EXISTS tracks (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     path        TEXT UNIQUE NOT NULL,

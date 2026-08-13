@@ -130,12 +130,21 @@ Response: `{"Ok":{"version":1}}`
 ### Crossfade
 
 ```json
-{"Crossfade":{"enabled":true,"duration_secs":5}}
+{"Crossfade":{"enabled":true,"duration_secs":7}}
 ```
 
 Response: `{"Ok":{"version":1}}`
 
-Duration is clamped to 0–30 seconds.
+Duration is clamped to 0–30 seconds (default: 7s).
+
+### Set EQ Preset
+
+```json
+{"SetEqPreset":{"preset":"Rock"}}
+```
+
+Preset values: `"Flat"`, `"Pop"`, `"Rock"`, `"Jazz"`, `"Classical"`, `"Bass"`, `"Vocal"`, `"Custom"`.
+Response: `{"Ok":{"version":1}}`
 
 ---
 
@@ -395,6 +404,8 @@ Where `WireFrame` contains one or more `DaemonEvent` values:
 | `RepeatModeChanged` | Repeat mode changed |
 | `ShuffleChanged` | Shuffle toggled |
 | `SleepTimerTick` | Sleep timer countdown |
+| `CrossfadeChanged` | Crossfade config toggled |
+| `EqPresetChanged` | EQ preset changed |
 | `Custom` | Application-defined event |
 
 ---

@@ -45,6 +45,7 @@ pub struct DaemonState {
     pub time_pos: f64,
     pub duration: f64,
     pub sleep_timer: Option<u32>,
+    pub eq_preset: EqPreset,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +93,34 @@ pub enum UIMode {
 pub enum ThemeMode {
     Dark,
     Light,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EqPreset {
+    Flat,
+    Pop,
+    Rock,
+    Jazz,
+    Classical,
+    Bass,
+    Vocal,
+    Custom([f32; 10]),
+}
+
+impl EqPreset {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Flat => "Flat",
+            Self::Pop => "Pop",
+            Self::Rock => "Rock",
+            Self::Jazz => "Jazz",
+            Self::Classical => "Classical",
+            Self::Bass => "Bass Boost",
+            Self::Vocal => "Vocal",
+            Self::Custom(_) => "Custom",
+        }
+    }
 }
 
 /// Image data parsed from metadata or API call

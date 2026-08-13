@@ -14,6 +14,6 @@ bincode = "1"
 thiserror = "2"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-tokio = { version = "1", features = ["net", "io-util"] }
+tokio = { version = "1", features = ["net", "io-util", "sync", "time", "rt", "macros"] }
 tracing = { version = "0.1", optional = true }
 rustc-hash = { version = "2", optional = true }

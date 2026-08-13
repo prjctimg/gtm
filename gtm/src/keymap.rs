@@ -25,7 +25,10 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use gtm_core::state::Tab;
 
+use crate::overlay::OverlayId;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum KeyContext {
     Global,
     Normal,
@@ -36,6 +39,7 @@ pub enum KeyContext {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum KeyboardAction {
     // Tab switching
     NextTab,
@@ -75,6 +79,9 @@ pub enum KeyboardAction {
     CycleRepeat,
     ToggleMute,
 
+    // Overlay triggers
+    OpenOverlay(OverlayId),
+
     // Navigation
     Back,
 
@@ -89,6 +96,7 @@ pub enum KeyboardAction {
 pub struct BoundCommand {
     pub action: KeyboardAction,
     pub contexts: Vec<KeyContext>,
+    #[allow(dead_code)]
     pub description: &'static str,
 }
 
@@ -116,6 +124,7 @@ fn key_matches(event: &KeyEvent, binding: &KeyEvent) -> bool {
 
 /// Parse a key name string into a KeyEvent.  Used for configurability
 /// (e.g. from a config file) though currently only called from tests.
+#[allow(dead_code)]
 pub fn parse_keycode(name: &str) -> KeyEvent {
     match name {
         "tab" | "Tab" => KeyCode::Tab.into(),
@@ -371,7 +380,7 @@ pub fn default_keybindings() -> Keybindings {
                     description: "Delete item",
                 },
             ),
-            // Direct tab switching by number — 1 through 6
+            // Direct tab switching by number — 1 through 3
             (
                 KeyCode::Char('1').into(),
                 BoundCommand {
@@ -391,33 +400,50 @@ pub fn default_keybindings() -> Keybindings {
             (
                 KeyCode::Char('3').into(),
                 BoundCommand {
-                    action: KeyboardAction::SwitchTab(Tab::Queue),
-                    contexts: vec![KeyContext::Normal],
-                    description: "Queue tab",
-                },
-            ),
-            (
-                KeyCode::Char('4').into(),
-                BoundCommand {
-                    action: KeyboardAction::SwitchTab(Tab::YouTube),
-                    contexts: vec![KeyContext::Normal],
-                    description: "YouTube tab",
-                },
-            ),
-            (
-                KeyCode::Char('5').into(),
-                BoundCommand {
                     action: KeyboardAction::SwitchTab(Tab::Settings),
                     contexts: vec![KeyContext::Normal],
                     description: "Settings tab",
                 },
             ),
+            // Overlay triggers — Alt+key
             (
-                KeyCode::Char('6').into(),
+                KeyEvent::new(KeyCode::Char('q'), KeyModifiers::ALT),
                 BoundCommand {
-                    action: KeyboardAction::SwitchTab(Tab::Help),
+                    action: KeyboardAction::OpenOverlay(OverlayId::Queue),
                     contexts: vec![KeyContext::Normal],
-                    description: "Help tab",
+                    description: "Queue overlay",
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('y'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::OpenOverlay(OverlayId::YTSearch),
+                    contexts: vec![KeyContext::Normal],
+                    description: "YouTube Search overlay",
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::OpenOverlay(OverlayId::SearchLibrary),
+                    contexts: vec![KeyContext::Normal],
+                    description: "Search Library overlay",
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('a'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::OpenOverlay(OverlayId::About),
+                    contexts: vec![KeyContext::Normal],
+                    description: "About overlay",
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::OpenOverlay(OverlayId::SleepTimer),
+                    contexts: vec![KeyContext::Normal],
+                    description: "Sleep Timer overlay",
                 },
             ),
         ],

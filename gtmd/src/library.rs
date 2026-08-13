@@ -8,6 +8,7 @@ use symphonia::core::formats::probe::Hint;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::{MetadataOptions, StandardTag};
 use symphonia::core::formats::FormatOptions;
+use symphonia::core::units::Timestamp;
 use tracing::warn;
 
 use gtm_core::track::{Playlist, TrackInfo};
@@ -239,6 +240,21 @@ impl Library {
         rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("rows: {e}"))
     }
 
+    pub fn get_recent(&self, count: u128) -> Result<Vec<TrackInfo>, String> {
+        let limit = if count > 0 { count as i64 } else { 50 };
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite
+                 FROM tracks ORDER BY id DESC LIMIT ?1",
+            )
+            .map_err(|e| format!("prepare: {e}"))?;
+        let rows = stmt
+            .query_map(params![limit], Self::row_to_track)
+            .map_err(|e| format!("query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(|e| format!("rows: {e}"))
+    }
+
     pub fn get_playlist(&self, id: i64) -> Result<Option<Playlist>, String> {
         let mut stmt = self
             .conn
@@ -303,7 +319,7 @@ impl Library {
 
     pub fn scan_directory(&self, dir: &str, recursive: bool) -> Result<Vec<TrackInfo>, String> {
         let mut added = Vec::new();
-        let extensions = ["mp3", "flac", "ogg", "wav", "m4a", "aac"];
+        let extensions = ["mp3", "flac", "ogg", "wav", "m4a", "aac", "opus"];
 
         let walk = if recursive {
             walkdir::WalkDir::new(dir).follow_links(true)
@@ -470,7 +486,18 @@ fn extract_metadata(path: &str) -> Result<(Metadata, String), String> {
         }
     }
 
-    let duration = 0.0;
+    let duration = reader
+        .tracks()
+        .iter()
+        .filter_map(|t| {
+            let tb = t.time_base.as_ref()?;
+            let dur = t.duration?;
+            let ts = Timestamp::new(dur.get() as i64);
+            let time = tb.calc_time(ts)?;
+            Some(time.as_secs_f64())
+        })
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap_or(0.0);
 
     if title.is_empty() {
         title = std::path::Path::new(path)

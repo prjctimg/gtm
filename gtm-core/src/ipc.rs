@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum LibraryAction {
     Scan {
         path: String,
@@ -56,7 +57,7 @@ pub enum LibraryAction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-
+#[serde(rename_all = "snake_case")]
 pub enum QueueAction {
     List,
     Clear,
@@ -84,7 +85,7 @@ pub enum QueueAction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-
+#[serde(rename_all = "snake_case")]
 pub enum DaemonEvent {
     PlaybackStarted {
         track: TrackInfo,
@@ -120,8 +121,15 @@ pub enum DaemonEvent {
     ShuffleChanged {
         enabled: bool,
     },
+    CrossfadeChanged {
+        enabled: bool,
+        duration_secs: u8,
+    },
     SleepTimerTick {
         remaining_secs: u32,
+    },
+    EqPresetChanged {
+        preset: state::EqPreset,
     },
     Custom {
         name: String,
@@ -130,7 +138,7 @@ pub enum DaemonEvent {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-
+#[serde(rename_all = "snake_case")]
 pub enum DaemonReq {
     // ─── Playback ───
     Play {
@@ -156,6 +164,9 @@ pub enum DaemonReq {
     Crossfade {
         enabled: bool,
         duration_secs: u8,
+    },
+    SetEqPreset {
+        preset: state::EqPreset,
     },
 
     // ─── Queue ───
@@ -196,7 +207,7 @@ pub enum DaemonReq {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-
+#[serde(rename_all = "snake_case")]
 pub enum DaemonRes {
     Ok {
         version: u32,

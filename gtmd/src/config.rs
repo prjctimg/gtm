@@ -17,10 +17,12 @@ impl Default for AudioBackendKind {
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {
     pub socket_path: PathBuf,
+    pub socket_pulse_path: PathBuf,
     pub library_path: PathBuf,
     pub config_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub data_dir: PathBuf,
+    pub library_paths: Vec<PathBuf>,
     pub log_file: Option<PathBuf>,
     pub verbose: bool,
     pub test_mode: bool,
@@ -95,6 +97,12 @@ impl DaemonConfig {
             std::env::temp_dir().join("gtmd.socket")
         };
 
+        let socket_pulse_path = {
+            let mut p = socket_path.clone();
+            p.set_extension("pulse");
+            p
+        };
+
         let library_path = if let Some(ref l) = args.library {
             PathBuf::from(l)
         } else {
@@ -110,12 +118,23 @@ impl DaemonConfig {
         let _unused_backend = args.backend.as_deref();
         let audio_backend = AudioBackendKind::Rodio;
 
+        // Default library paths: data_dir/audio and user's Music directory
+        let mut library_paths = vec![data_dir.join("audio")];
+        if let Ok(home) = std::env::var("HOME") {
+            let music = PathBuf::from(home).join("Music");
+            if music.exists() {
+                library_paths.push(music);
+            }
+        }
+
         DaemonConfig {
             socket_path,
+            socket_pulse_path,
             library_path,
             config_dir,
             cache_dir,
             data_dir,
+            library_paths,
             log_file,
             verbose: args.verbose,
             test_mode: args.test_mode,

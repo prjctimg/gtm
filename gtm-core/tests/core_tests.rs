@@ -228,9 +228,9 @@ enum_roundtrip!(
     DaemonEvent::TrackEnded
 );
 
-enum_roundtrip!(queue_action_list, QueueAction, "List", QueueAction::List);
+enum_roundtrip!(QueueAction_list, QueueAction, "List", QueueAction::List);
 enum_roundtrip!(
-    queue_action_add,
+    QueueAction_add,
     QueueAction,
     "Add",
     QueueAction::Add {

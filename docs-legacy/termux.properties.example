@@ -1,0 +1,22 @@
+# gtm Termux configuration example
+# Copy this file to ~/.termux/termux.properties and restart Termux.
+#
+# The extra-keys row provides one-touch access to Esc, Tab, arrows,
+# and other keys essential for TUI navigation that are missing from
+# touch-based virtual keyboards.
+#
+# Volume Down acts as Ctrl (e.g., Volume Down+C = Ctrl+C).
+# Volume Up + key sends utility sequences (e.g., Volume Up+W = Up Arrow).
+#
+# See https://wiki.termux.com/wiki/Termux:Properties for details.
+
+# Virtual function row (shown above the number row on the keyboard)
+extra-keys = [['ESC','TAB','CTRL','ALT','-','/','HOME','UP','END','PGUP'],['FN','VOLUME','BACKSLASH','SINGLEQUOTE','ENTER','LEFT','DOWN','RIGHT','PGDN','DEL']]
+
+# Force character-based input for TUI compatibility.
+# Some mobile keyboards buffer keystrokes, which disrupts interactive
+# TUIs like gtm, Neovim, or htop.
+enforce-char-based-input = true
+
+# Use dark background for the terminal UI
+use-black-ui = true

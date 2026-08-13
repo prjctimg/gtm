@@ -1,5 +1,5 @@
 [Unit]
-Description=GTM Music Daemon
+Description=Daemon process for gtm for background playback. 
 After=network.target sound.target
 
 [Service]

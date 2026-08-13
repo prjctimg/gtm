@@ -1,78 +1,468 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
+use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction};
-use crate::state::{DaemonState, RepeatMode, YTFilter};
+use crate::state::{DaemonState, EqPreset, RepeatMode, YTFilter};
 use crate::wire;
 use crate::CoreError;
 use crate::Result;
 
-enum Frame {
-    Response(DaemonRes),
-    Event(DaemonEvent),
+struct PendingRequest {
+    req: DaemonReq,
+    response_tx: Option<oneshot::Sender<Result<DaemonRes>>>,
 }
 
 pub struct DaemonClient {
-    reader: tokio::net::unix::OwnedReadHalf,
-    writer: tokio::net::unix::OwnedWriteHalf,
-    buf: Vec<u8>,
-    event_queue: Vec<DaemonEvent>,
-    connected: bool,
+    cmd_tx: mpsc::UnboundedSender<PendingRequest>,
+    events: Arc<Mutex<Vec<DaemonEvent>>>,
+    connected: Arc<AtomicBool>,
 }
 
 impl DaemonClient {
     pub async fn connect(path: impl AsRef<Path>) -> Result<Self> {
-        let stream = UnixStream::connect(path).await?;
-        let (reader, writer) = stream.into_split();
-        Ok(Self {
-            reader,
-            writer,
-            buf: Vec::with_capacity(4096),
-            event_queue: Vec::new(),
-            connected: true,
-        })
+        let path = path.as_ref().to_owned();
+        let mut last_err = None;
+        for i in 0..10 {
+            match UnixStream::connect(&path).await {
+                Ok(stream) => {
+                    let (reader, writer) = stream.into_split();
+                    let (cmd_tx, cmd_rx) = mpsc::unbounded_channel();
+                    let events: Arc<Mutex<Vec<DaemonEvent>>> =
+                        Arc::new(Mutex::new(Vec::new()));
+                    let connected = Arc::new(AtomicBool::new(true));
+
+                    let worker = IpcWorker {
+                        reader,
+                        writer,
+                        cmd_rx,
+                        events: events.clone(),
+                        connected: connected.clone(),
+                        buf: Vec::with_capacity(4096),
+                    };
+                    tokio::spawn(worker.run());
+
+                    // Connect to pulse socket for dedicated event stream
+                    let pulse_path = {
+                        let mut p = path.clone();
+                        p.set_extension("pulse");
+                        p
+                    };
+                    let events_pulse = events.clone();
+                    tokio::spawn(async move {
+                        pulse_reader(&pulse_path, events_pulse).await;
+                    });
+
+                    return Ok(Self {
+                        cmd_tx,
+                        events,
+                        connected,
+                    });
+                }
+                Err(e) => {
+                    last_err = Some(e);
+                    tokio::time::sleep(Duration::from_millis(50 * (i + 1))).await;
+                }
+            }
+        }
+        Err(CoreError::Daemon(format!(
+            "connect to {} failed after 10 retries: {}",
+            path.display(),
+            last_err.map(|e| e.to_string()).unwrap_or_default()
+        )))
     }
 
     pub fn is_connected(&self) -> bool {
-        self.connected
+        self.connected.load(Ordering::Acquire)
     }
 
-    pub fn drain_events(&mut self) -> Vec<DaemonEvent> {
-        std::mem::take(&mut self.event_queue)
+    pub async fn drain(&self) -> Vec<DaemonEvent> {
+        let mut events = self.events.lock().await;
+        std::mem::take(&mut *events)
     }
 
-    async fn send_raw(&mut self, req: &DaemonReq) -> Result<DaemonRes> {
-        let mut line = serde_json::to_string(req)?;
+    async fn send_raw(&self, req: DaemonReq) -> Result<DaemonRes> {
+        let (tx, rx) = oneshot::channel();
+        self.cmd_tx
+            .send(PendingRequest {
+                req,
+                response_tx: Some(tx),
+            })
+            .map_err(|_| CoreError::Daemon("IPC worker died".into()))?;
+        rx.await
+            .map_err(|_| CoreError::Daemon("IPC worker response dropped".into()))?
+    }
+
+    async fn send_ok(&self, req: DaemonReq) -> Result<u32> {
+        match self.send_raw(req).await? {
+            DaemonRes::Ok { version } => Ok(version),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(CoreError::Daemon("unexpected response".into())),
+        }
+    }
+
+    // ─── Playback ───
+
+    pub async fn play(&self, path: &str, start_pos: f64) -> Result<u32> {
+        self.send_ok(DaemonReq::Play {
+            path: path.into(),
+            start_pos,
+        })
+        .await
+    }
+
+    pub async fn play_pause(&self) -> Result<u32> {
+        self.send_ok(DaemonReq::PlayPause).await
+    }
+
+    pub async fn pause(&self) -> Result<u32> {
+        self.send_ok(DaemonReq::Pause).await
+    }
+
+    pub async fn stop(&self) -> Result<u32> {
+        self.send_ok(DaemonReq::Stop).await
+    }
+
+    pub async fn next(&self) -> Result<u32> {
+        self.send_ok(DaemonReq::Next).await
+    }
+
+    pub async fn prev(&self) -> Result<u32> {
+        self.send_ok(DaemonReq::Prev).await
+    }
+
+    pub async fn seek(&self, position_secs: f64) -> Result<u32> {
+        self.send_ok(DaemonReq::Seek { position_secs })
+            .await
+    }
+
+    pub async fn set_volume(&self, volume: u8) -> Result<u32> {
+        self.send_ok(DaemonReq::SetVolume { volume }).await
+    }
+
+    pub async fn toggle_shuffle(&self) -> Result<u32> {
+        self.send_ok(DaemonReq::ToggleShuffle).await
+    }
+
+    pub async fn cycle_repeat(&self, mode: RepeatMode) -> Result<u32> {
+        self.send_ok(DaemonReq::CycleRepeat { mode }).await
+    }
+
+    pub async fn toggle_mute(&self) -> Result<u32> {
+        self.send_ok(DaemonReq::ToggleMute).await
+    }
+
+    pub async fn set_eq_preset(&self, preset: EqPreset) -> Result<u32> {
+        self.send_ok(DaemonReq::SetEqPreset { preset }).await
+    }
+
+    pub async fn crossfade(&self, enabled: bool, duration_secs: u8) -> Result<u32> {
+        self.send_ok(DaemonReq::Crossfade {
+            enabled,
+            duration_secs,
+        })
+        .await
+    }
+
+    // ─── Queue ───
+
+    pub async fn queue_list(&self) -> Result<DaemonRes> {
+        self.send_raw(DaemonReq::Queue {
+            action: QueueAction::List,
+        })
+        .await
+    }
+
+    pub async fn queue_add(&self, path: &str, position: Option<u128>) -> Result<u32> {
+        self.send_ok(DaemonReq::Queue {
+            action: QueueAction::Add {
+                path: path.into(),
+                position,
+            },
+        })
+        .await
+    }
+
+    pub async fn queue_add_many(&self, paths: Vec<String>) -> Result<u32> {
+        self.send_ok(DaemonReq::Queue {
+            action: QueueAction::AddMany { paths },
+        })
+        .await
+    }
+
+    pub async fn queue_add_dir(&self, path: &str) -> Result<u32> {
+        self.send_ok(DaemonReq::Queue {
+            action: QueueAction::AddFolder { path: path.into() },
+        })
+        .await
+    }
+
+    pub async fn queue_clear(&self) -> Result<u32> {
+        self.send_ok(DaemonReq::Queue {
+            action: QueueAction::Clear,
+        })
+        .await
+    }
+
+    pub async fn queue_rm(&self, index: u128) -> Result<u32> {
+        self.send_ok(DaemonReq::Queue {
+            action: QueueAction::Remove { index },
+        })
+        .await
+    }
+
+    pub async fn queue_move(&self, from: u128, to: u128) -> Result<u32> {
+        self.send_ok(DaemonReq::Queue {
+            action: QueueAction::Move { from, to },
+        })
+        .await
+    }
+
+    pub async fn queue_set(&self, paths: Vec<String>, start_idx: u128) -> Result<u32> {
+        self.send_ok(DaemonReq::Queue {
+            action: QueueAction::Set { paths, start_idx },
+        })
+        .await
+    }
+
+    // ─── Library ───
+
+    pub async fn library_scan(&self, path: &str) -> Result<u32> {
+        self.send_ok(DaemonReq::Library {
+            action: LibraryAction::Scan { path: path.into() },
+        })
+        .await
+    }
+
+    pub async fn library_get_tracks(
+        &self,
+        filter: Option<String>,
+        sort: Option<String>,
+    ) -> Result<DaemonRes> {
+        self.send_raw(DaemonReq::Library {
+            action: LibraryAction::GetTracks { filter, sort },
+        })
+        .await
+    }
+
+    pub async fn library_get_playlists(&self) -> Result<DaemonRes> {
+        self.send_raw(DaemonReq::Library {
+            action: LibraryAction::GetPlaylists,
+        })
+        .await
+    }
+
+    pub async fn library_create_playlist(&self, name: &str) -> Result<u32> {
+        self.send_ok(DaemonReq::Library {
+            action: LibraryAction::CreatePlaylist { name: name.into() },
+        })
+        .await
+    }
+
+    pub async fn library_delete_playlist(&self, id: i64) -> Result<u32> {
+        self.send_ok(DaemonReq::Library {
+            action: LibraryAction::DeletePlaylist { id },
+        })
+        .await
+    }
+
+    pub async fn library_add_to_playlist(
+        &self,
+        playlist_id: i64,
+        track_ids: Vec<i64>,
+    ) -> Result<u32> {
+        self.send_ok(DaemonReq::Library {
+            action: LibraryAction::AddToPlaylist {
+                playlist_id,
+                track_ids,
+            },
+        })
+        .await
+    }
+
+    pub async fn library_import_m3u(&self, path: &str) -> Result<u32> {
+        self.send_ok(DaemonReq::Library {
+            action: LibraryAction::ImportM3u { path: path.into() },
+        })
+        .await
+    }
+
+    pub async fn library_get_recent(&self, count: u128) -> Result<DaemonRes> {
+        self.send_raw(DaemonReq::Library {
+            action: LibraryAction::GetRecent { count },
+        })
+        .await
+    }
+
+    // ─── Search / Favourites ───
+
+    pub async fn search(&self, query: &str) -> Result<DaemonRes> {
+        self.send_raw(DaemonReq::Search {
+            query: query.into(),
+        })
+        .await
+    }
+
+    pub async fn get_favourites(&self) -> Result<DaemonRes> {
+        self.send_raw(DaemonReq::GetFavourites).await
+    }
+
+    pub async fn add_favourite(&self, track_id: i64) -> Result<u32> {
+        self.send_ok(DaemonReq::AddFavourite { track_id }).await
+    }
+
+    pub async fn remove_favourite(&self, track_id: i64) -> Result<u32> {
+        self.send_ok(DaemonReq::RemoveFavourite { track_id }).await
+    }
+
+    // ─── YouTube ───
+
+    pub async fn yt_search(&self, query: &str, filter: Option<YTFilter>) -> Result<DaemonRes> {
+        self.send_raw(DaemonReq::YtSearch {
+            query: query.into(),
+            filter,
+        })
+        .await
+    }
+
+    pub async fn yt_search_poll(&self) -> Result<DaemonRes> {
+        self.send_raw(DaemonReq::YtSearchPoll).await
+    }
+
+    pub async fn yt_search_cancel(&self) -> Result<u32> {
+        self.send_ok(DaemonReq::YtSearchCancel).await
+    }
+
+    pub async fn yt_resolve_stream(&self, url: &str) -> Result<DaemonRes> {
+        self.send_raw(DaemonReq::YtResolveStream { url: url.into() })
+            .await
+    }
+
+    // ─── System ───
+
+    pub async fn get_status(&self) -> Result<DaemonState> {
+        let res = self.send_raw(DaemonReq::GetStatus).await?;
+        match res {
+            DaemonRes::Status { state, .. } => Ok(*state),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+        }
+    }
+
+    pub async fn ping(&self) -> Result<()> {
+        let res = self.send_raw(DaemonReq::Ping).await?;
+        match res {
+            DaemonRes::Pong => Ok(()),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+        }
+    }
+
+    pub async fn quit(&self) -> Result<u32> {
+        self.send_ok(DaemonReq::Quit).await
+    }
+}
+
+enum Frame {
+    Response(DaemonRes),
+    #[allow(dead_code)]
+    Event(DaemonEvent),
+}
+
+struct IpcWorker {
+    reader: tokio::net::unix::OwnedReadHalf,
+    writer: tokio::net::unix::OwnedWriteHalf,
+    cmd_rx: mpsc::UnboundedReceiver<PendingRequest>,
+    events: Arc<Mutex<Vec<DaemonEvent>>>,
+    connected: Arc<AtomicBool>,
+    buf: Vec<u8>,
+}
+
+impl IpcWorker {
+    async fn run(mut self) {
+        let mut tmp = [0u8; 4096];
+        loop {
+            // Check for pending requests first (non-blocking)
+            while let Ok(pending) = self.cmd_rx.try_recv() {
+                if let Err(e) = self.send_request(pending).await {
+                    self.connected.store(false, Ordering::Release);
+                    eprintln!("IPC worker send error: {e}");
+                    return;
+                }
+            }
+            // Read from socket with a small timeout so we can check for requests
+            match self.read_with_timeout(&mut tmp).await {
+                Ok(true) => {
+                    // Parse all complete frames
+                    while let Some(frame) = self.parse().await {
+                        match frame {
+                            Frame::Response(_) => {
+                                self.connected.store(false, Ordering::Release);
+                                eprintln!("IPC worker: unexpected response with no pending request");
+                                return;
+                            }
+                            Frame::Event(_) => {}
+                        }
+                    }
+                }
+                Ok(false) => {} // timeout, loop back to check for requests
+                Err(e) => {
+                    self.connected.store(false, Ordering::Release);
+                    eprintln!("IPC worker read error: {e}");
+                    return;
+                }
+            }
+        }
+    }
+
+    async fn read_with_timeout(&mut self, tmp: &mut [u8; 4096]) -> Result<bool> {
+        match tokio::time::timeout(Duration::from_millis(50), self.reader.read(tmp)).await {
+            Ok(Ok(n)) => {
+                if n == 0 {
+                    Err(CoreError::Daemon("connection closed".into()))
+                } else {
+                    self.buf.extend_from_slice(&tmp[..n]);
+                    Ok(true)
+                }
+            }
+            Ok(Err(e)) => Err(CoreError::Daemon(format!("read error: {e}"))),
+            Err(_) => Ok(false),
+        }
+    }
+
+    async fn send_request(&mut self, pending: PendingRequest) -> Result<()> {
+        let mut line = serde_json::to_string(&pending.req)?;
         line.push('\n');
         self.writer.write_all(line.as_bytes()).await?;
         self.writer.flush().await?;
-        self.read_response().await
+
+        let response = self.read_response().await?;
+        if let Some(tx) = pending.response_tx {
+            let _ = tx.send(Ok(response));
+        }
+        Ok(())
     }
 
     async fn read_response(&mut self) -> Result<DaemonRes> {
         loop {
-            if let Some(frame) = self.try_parse() {
-                match frame {
-                    Frame::Response(res) => return Ok(res),
-                    Frame::Event(ev) => self.event_queue.push(ev),
-                }
+            if let Some(Frame::Response(res)) = self.parse().await {
+                return Ok(res);
             }
             let mut tmp = [0u8; 4096];
-            let n = self.reader.read(&mut tmp).await.map_err(|e| {
-                self.connected = false;
-                e
-            })?;
+            let n = self.reader.read(&mut tmp).await?;
             if n == 0 {
-                self.connected = false;
                 return Err(CoreError::Daemon("connection closed".into()));
             }
             self.buf.extend_from_slice(&tmp[..n]);
         }
     }
 
-    fn try_parse(&mut self) -> Option<Frame> {
+    async fn parse(&mut self) -> Option<Frame> {
         if self.buf.is_empty() {
             return None;
         }
@@ -86,277 +476,59 @@ impl DaemonClient {
         if self.buf.len() < 4 {
             return None;
         }
-        let len = u32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
+        let len =
+            u32::from_be_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
         if self.buf.len() < 4 + len {
             return None;
         }
         let frame: wire::WireFrame = bincode::deserialize(&self.buf[4..4 + len]).ok()?;
         self.buf.drain(..4 + len);
-        frame.events.into_iter().next().map(Frame::Event)
-    }
-
-    async fn send_ok(&mut self, req: &DaemonReq) -> Result<u32> {
-        let res = self.send_raw(req).await?;
-        match res {
-            DaemonRes::Ok { version } => Ok(version),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+        for ev in frame.events {
+            let mut events = self.events.lock().await;
+            events.push(ev);
         }
+        None
     }
+}
 
-    // ─── Playback ───
-
-    pub async fn play(&mut self, path: &str, start_pos: f64) -> Result<u32> {
-        self.send_ok(&DaemonReq::Play {
-            path: path.into(),
-            start_pos,
-        })
-        .await
-    }
-
-    pub async fn play_pause(&mut self) -> Result<u32> {
-        self.send_ok(&DaemonReq::PlayPause).await
-    }
-
-    pub async fn pause(&mut self) -> Result<u32> {
-        self.send_ok(&DaemonReq::Pause).await
-    }
-
-    pub async fn stop(&mut self) -> Result<u32> {
-        self.send_ok(&DaemonReq::Stop).await
-    }
-
-    pub async fn next(&mut self) -> Result<u32> {
-        self.send_ok(&DaemonReq::Next).await
-    }
-
-    pub async fn prev(&mut self) -> Result<u32> {
-        self.send_ok(&DaemonReq::Prev).await
-    }
-
-    pub async fn seek(&mut self, position_secs: f64) -> Result<u32> {
-        self.send_ok(&DaemonReq::Seek { position_secs }).await
-    }
-
-    pub async fn set_volume(&mut self, volume: u8) -> Result<u32> {
-        self.send_ok(&DaemonReq::SetVolume { volume }).await
-    }
-
-    pub async fn toggle_shuffle(&mut self) -> Result<u32> {
-        self.send_ok(&DaemonReq::ToggleShuffle).await
-    }
-
-    pub async fn cycle_repeat(&mut self, mode: RepeatMode) -> Result<u32> {
-        self.send_ok(&DaemonReq::CycleRepeat { mode }).await
-    }
-
-    pub async fn toggle_mute(&mut self) -> Result<u32> {
-        self.send_ok(&DaemonReq::ToggleMute).await
-    }
-
-    pub async fn crossfade(&mut self, enabled: bool, duration_secs: u8) -> Result<u32> {
-        self.send_ok(&DaemonReq::Crossfade {
-            enabled,
-            duration_secs,
-        })
-        .await
-    }
-
-    // ─── Queue ───
-
-    pub async fn queue_list(&mut self) -> Result<DaemonRes> {
-        self.send_raw(&DaemonReq::Queue {
-            action: QueueAction::List,
-        })
-        .await
-    }
-
-    pub async fn queue_add(&mut self, path: &str, position: Option<u128>) -> Result<u32> {
-        self.send_ok(&DaemonReq::Queue {
-            action: QueueAction::Add {
-                path: path.into(),
-                position,
-            },
-        })
-        .await
-    }
-
-    pub async fn queue_add_many(&mut self, paths: Vec<String>) -> Result<u32> {
-        self.send_ok(&DaemonReq::Queue {
-            action: QueueAction::AddMany { paths },
-        })
-        .await
-    }
-
-    pub async fn queue_add_folder(&mut self, path: &str) -> Result<u32> {
-        self.send_ok(&DaemonReq::Queue {
-            action: QueueAction::AddFolder { path: path.into() },
-        })
-        .await
-    }
-
-    pub async fn queue_clear(&mut self) -> Result<u32> {
-        self.send_ok(&DaemonReq::Queue {
-            action: QueueAction::Clear,
-        })
-        .await
-    }
-
-    pub async fn queue_remove(&mut self, index: u128) -> Result<u32> {
-        self.send_ok(&DaemonReq::Queue {
-            action: QueueAction::Remove { index },
-        })
-        .await
-    }
-
-    pub async fn queue_move(&mut self, from: u128, to: u128) -> Result<u32> {
-        self.send_ok(&DaemonReq::Queue {
-            action: QueueAction::Move { from, to },
-        })
-        .await
-    }
-
-    pub async fn queue_set(&mut self, paths: Vec<String>, start_idx: u128) -> Result<u32> {
-        self.send_ok(&DaemonReq::Queue {
-            action: QueueAction::Set { paths, start_idx },
-        })
-        .await
-    }
-
-    // ─── Library ───
-
-    pub async fn library_scan(&mut self, path: &str) -> Result<u32> {
-        self.send_ok(&DaemonReq::Library {
-            action: LibraryAction::Scan { path: path.into() },
-        })
-        .await
-    }
-
-    pub async fn library_get_tracks(
-        &mut self,
-        filter: Option<String>,
-        sort: Option<String>,
-    ) -> Result<DaemonRes> {
-        self.send_raw(&DaemonReq::Library {
-            action: LibraryAction::GetTracks { filter, sort },
-        })
-        .await
-    }
-
-    pub async fn library_get_playlists(&mut self) -> Result<DaemonRes> {
-        self.send_raw(&DaemonReq::Library {
-            action: LibraryAction::GetPlaylists,
-        })
-        .await
-    }
-
-    pub async fn library_create_playlist(&mut self, name: &str) -> Result<u32> {
-        self.send_ok(&DaemonReq::Library {
-            action: LibraryAction::CreatePlaylist { name: name.into() },
-        })
-        .await
-    }
-
-    pub async fn library_delete_playlist(&mut self, id: i64) -> Result<u32> {
-        self.send_ok(&DaemonReq::Library {
-            action: LibraryAction::DeletePlaylist { id },
-        })
-        .await
-    }
-
-    pub async fn library_add_to_playlist(
-        &mut self,
-        playlist_id: i64,
-        track_ids: Vec<i64>,
-    ) -> Result<u32> {
-        self.send_ok(&DaemonReq::Library {
-            action: LibraryAction::AddToPlaylist {
-                playlist_id,
-                track_ids,
-            },
-        })
-        .await
-    }
-
-    pub async fn library_import_m3u(&mut self, path: &str) -> Result<u32> {
-        self.send_ok(&DaemonReq::Library {
-            action: LibraryAction::ImportM3u { path: path.into() },
-        })
-        .await
-    }
-
-    pub async fn library_get_recent(&mut self, count: u128) -> Result<DaemonRes> {
-        self.send_raw(&DaemonReq::Library {
-            action: LibraryAction::GetRecent { count },
-        })
-        .await
-    }
-
-    // ─── Search / Favourites ───
-
-    pub async fn search(&mut self, query: &str) -> Result<DaemonRes> {
-        self.send_raw(&DaemonReq::Search {
-            query: query.into(),
-        })
-        .await
-    }
-
-    pub async fn get_favourites(&mut self) -> Result<DaemonRes> {
-        self.send_raw(&DaemonReq::GetFavourites).await
-    }
-
-    pub async fn add_favourite(&mut self, track_id: i64) -> Result<u32> {
-        self.send_ok(&DaemonReq::AddFavourite { track_id }).await
-    }
-
-    pub async fn remove_favourite(&mut self, track_id: i64) -> Result<u32> {
-        self.send_ok(&DaemonReq::RemoveFavourite { track_id }).await
-    }
-
-    // ─── YouTube ───
-
-    pub async fn yt_search(&mut self, query: &str, filter: Option<YTFilter>) -> Result<DaemonRes> {
-        self.send_raw(&DaemonReq::YtSearch {
-            query: query.into(),
-            filter,
-        })
-        .await
-    }
-
-    pub async fn yt_search_poll(&mut self) -> Result<DaemonRes> {
-        self.send_raw(&DaemonReq::YtSearchPoll).await
-    }
-
-    pub async fn yt_search_cancel(&mut self) -> Result<u32> {
-        self.send_ok(&DaemonReq::YtSearchCancel).await
-    }
-
-    pub async fn yt_resolve_stream(&mut self, url: &str) -> Result<DaemonRes> {
-        self.send_raw(&DaemonReq::YtResolveStream { url: url.into() })
-            .await
-    }
-
-    // ─── System ───
-
-    pub async fn get_status(&mut self) -> Result<DaemonState> {
-        let res = self.send_raw(&DaemonReq::GetStatus).await?;
-        match res {
-            DaemonRes::Status { state, .. } => Ok(*state),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+/// Background reader task for the dedicated pulse socket.
+///
+/// Continuously reads bincode-encoded DaemonEvent frames from the pulse
+/// socket and pushes them into the shared event queue.
+async fn pulse_reader(pulse_path: &std::path::Path, events: Arc<Mutex<Vec<DaemonEvent>>>) {
+    let stream = match UnixStream::connect(pulse_path).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("pulse connect failed: {e}");
+            return;
         }
-    }
-
-    pub async fn ping(&mut self) -> Result<()> {
-        let res = self.send_raw(&DaemonReq::Ping).await?;
-        match res {
-            DaemonRes::Pong => Ok(()),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+    };
+    let mut reader = stream;
+    let mut buf = Vec::with_capacity(4096);
+    loop {
+        let mut tmp = [0u8; 4096];
+        let n = match reader.read(&mut tmp).await {
+            Ok(0) => break,
+            Ok(n) => n,
+            Err(e) => {
+                eprintln!("pulse read error: {e}");
+                break;
+            }
+        };
+        buf.extend_from_slice(&tmp[..n]);
+        loop {
+            let (frame, consumed) = match wire::decode(&buf) {
+                Ok(Some((f, c))) => (f, c),
+                Ok(None) => break,
+                Err(e) => {
+                    eprintln!("pulse decode error: {e}");
+                    buf.clear();
+                    break;
+                }
+            };
+            buf.drain(..consumed as usize);
+            let mut evs = events.lock().await;
+            evs.extend(frame.events);
         }
-    }
-
-    pub async fn quit(&mut self) -> Result<u32> {
-        self.send_ok(&DaemonReq::Quit).await
     }
 }

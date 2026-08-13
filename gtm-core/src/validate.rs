@@ -34,6 +34,7 @@ impl DaemonState {
             time_pos: 0.0,
             duration: 0.0,
             sleep_timer: None,
+            eq_preset: crate::state::EqPreset::Flat,
         }
     }
 }
