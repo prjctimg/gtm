@@ -18,6 +18,7 @@ mod app;
 mod cli;
 mod keymap;
 mod overlay;
+mod theme;
 mod ui;
 
 use clap::{CommandFactory, Parser, Subcommand};

@@ -439,11 +439,51 @@ pub fn default_keybindings() -> Keybindings {
                 },
             ),
             (
-                KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT),
+                KeyEvent::new(KeyCode::Char('z'), KeyModifiers::ALT),
                 BoundCommand {
                     action: KeyboardAction::OpenOverlay(OverlayId::SleepTimer),
                     contexts: vec![KeyContext::Normal],
                     description: "Sleep Timer overlay",
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::OpenOverlay(OverlayId::ThemePicker),
+                    contexts: vec![KeyContext::Normal],
+                    description: "Theme Picker overlay",
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('e'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::OpenOverlay(OverlayId::Equalizer),
+                    contexts: vec![KeyContext::Normal],
+                    description: "Equalizer overlay",
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::OpenOverlay(OverlayId::CommandPalette),
+                    contexts: vec![KeyContext::Normal],
+                    description: "Command Palette overlay",
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('s'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::OpenOverlay(OverlayId::SpotifySearch),
+                    contexts: vec![KeyContext::Normal],
+                    description: "Spotify Search overlay",
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::OpenOverlay(OverlayId::SoundEffects),
+                    contexts: vec![KeyContext::Normal],
+                    description: "Sound Effects overlay",
                 },
             ),
         ],

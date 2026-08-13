@@ -12,17 +12,14 @@ pub enum OverlayId {
     Queue,
     YTSearch,
     SearchLibrary,
-    #[allow(dead_code)]
     SpotifySearch,
-    #[allow(dead_code)]
     Equalizer,
-    #[allow(dead_code)]
     CommandPalette,
     About,
     SleepTimer,
-    #[allow(dead_code)]
     ThemePicker,
     VolumeConfirm,
+    SoundEffects,
 }
 
 /// Active overlay instance — state + metadata.
@@ -114,6 +111,7 @@ impl OverlayId {
             OverlayId::SleepTimer => "Sleep Timer",
             OverlayId::ThemePicker => "Theme",
         OverlayId::VolumeConfirm => " Volume Warning ",
+        OverlayId::SoundEffects => "Sound Effects",
         }
     }
 }

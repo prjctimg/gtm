@@ -11,6 +11,7 @@ use tokio::sync::mpsc;
 
 use crate::keymap::{default_keybindings, KeyContext, KeyboardAction};
 use crate::overlay::{OverlayCtx, OverlayId, OverlayManager};
+use crate::theme::AppTheme;
 use crate::ui;
 
 pub enum InputMode {
@@ -21,6 +22,7 @@ pub enum InputMode {
 
 #[allow(dead_code)]
 pub struct App {
+    pub theme: AppTheme,
     pub client: DaemonClient,
     pub state: DaemonState,
     pub current_tab: Tab,
@@ -38,6 +40,8 @@ pub struct App {
     pub crossfade_duration: u8,
     pub pending_volume: Option<u8>,
     pub overlays: OverlayManager,
+    pub sleep_timer_remaining: Option<u64>,
+    pub playback_speed: f64,
     pub cmd_rx: mpsc::Receiver<TuiCommand>,
     cmd_tx: mpsc::Sender<TuiCommand>,
     keybindings: crate::keymap::Keybindings,
@@ -79,6 +83,7 @@ impl App {
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
         let keybindings = default_keybindings();
         Ok(Self {
+            theme: AppTheme::default(),
             client,
             state,
             current_tab: Tab::NowPlaying,
@@ -96,6 +101,8 @@ impl App {
             crossfade_duration: 7,
             pending_volume: None,
             overlays: OverlayManager::new(),
+            sleep_timer_remaining: None,
+            playback_speed: 1.0,
             cmd_rx,
             cmd_tx,
             keybindings,
@@ -286,9 +293,6 @@ impl App {
                     self.state.apply_event(&ev);
                 }
                 self.fetch_state().await;
-                if self.current_tab == Tab::Queue {
-                    self.fetch_queue().await;
-                }
             }
             TuiCommand::RefreshLibrary => {
                 if let Ok(DaemonRes::Tracks { tracks, .. }) =
@@ -398,7 +402,6 @@ impl App {
                             Tab::NowPlaying => Tab::Library,
                             Tab::Library => Tab::Settings,
                             Tab::Settings => Tab::NowPlaying,
-                            _ => Tab::NowPlaying,
                         };
                         self.refresh_tab().await;
                     }
@@ -407,7 +410,6 @@ impl App {
                             Tab::NowPlaying => Tab::Settings,
                             Tab::Library => Tab::NowPlaying,
                             Tab::Settings => Tab::Library,
-                            _ => Tab::Settings,
                         };
                         self.refresh_tab().await;
                     }
@@ -493,43 +495,11 @@ impl App {
                     Some(KeyboardAction::MoveDown) => {
                         self.scroll_offset += 1;
                     }
-                    Some(KeyboardAction::Select) => match self.current_tab {
-                        Tab::Queue if !self.queue_cache.is_empty() => {
-                            let idx = self.scroll_offset;
-                            if idx < self.queue_cache.len() {
-                                let tx = self.cmd_tx();
-                                let _ = tx
-                                    .send(TuiCommand::Play(
-                                        self.queue_cache[idx].path.clone(),
-                                    ))
-                                    .await;
-                            }
-                        }
-                        _ => {}
-                    },
-                    Some(KeyboardAction::Delete) => {
-                        if self.current_tab == Tab::Queue && !self.queue_cache.is_empty() {
-                            let idx = self.queue_cursor + self.scroll_offset;
-                            if idx < self.queue_cache.len() {
-                                let tx = self.cmd_tx();
-                                let _ =
-                                    tx.send(TuiCommand::QueueRemove(idx as u128)).await;
-                            }
-                        }
-                    }
+                    Some(KeyboardAction::Select) => {}
+                    Some(KeyboardAction::Delete) => {}
                     None => {
                         match key.code {
                             KeyCode::Char('q') | KeyCode::Esc => return false,
-                            KeyCode::Char('1') => {
-                                self.current_tab = Tab::NowPlaying;
-                            }
-                            KeyCode::Char('2') => {
-                                self.current_tab = Tab::Library;
-                                self.refresh_tab().await;
-                            }
-                            KeyCode::Char('3') => {
-                                self.current_tab = Tab::Settings;
-                            }
                             KeyCode::Char('c') if self.current_tab == Tab::Settings => {
                                 // Toggle crossfade in Settings tab
                                 let enabled = !self.state.crossfade
@@ -577,6 +547,11 @@ impl App {
         let tx = self.cmd_tx();
         match key.code {
             KeyCode::Esc => {
+                if let Some(top) = self.overlays.top() {
+                    if top.id == OverlayId::SleepTimer {
+                        self.sleep_timer_remaining = None;
+                    }
+                }
                 self.pending_volume = None;
                 self.overlays.close_top();
             }
@@ -617,6 +592,39 @@ impl App {
                             }
                             self.overlays.close_top();
                         }
+                        OverlayId::SleepTimer => {
+                            // Set sleep timer from selected preset
+                            let presets = [5u64, 10, 15, 30, 60];
+                            let idx = top.selected.min(presets.len() - 1);
+                            self.sleep_timer_remaining = Some(presets[idx]);
+                            self.overlays.close_top();
+                        }
+                        OverlayId::CommandPalette => {
+                            self.overlays.close_top();
+                        }
+                        OverlayId::Equalizer => {
+                            // Apply selected EQ preset
+                            let presets = [
+                                gtm_core::state::EqPreset::Flat,
+                                gtm_core::state::EqPreset::Pop,
+                                gtm_core::state::EqPreset::Rock,
+                                gtm_core::state::EqPreset::Jazz,
+                                gtm_core::state::EqPreset::Classical,
+                                gtm_core::state::EqPreset::Bass,
+                                gtm_core::state::EqPreset::Vocal,
+                            ];
+                            let idx = top.selected.min(presets.len() - 1);
+                            let _ = tx.send(TuiCommand::SetVolume(0)).await; // placeholder
+                            let _ = self.client.set_eq_preset(presets[idx]).await;
+                            self.overlays.close_top();
+                        }
+                        OverlayId::ThemePicker => {
+                            self.overlays.close_top();
+                        }
+                        OverlayId::SoundEffects => {
+                            // Toggle crossfade selected
+                            self.overlays.close_top();
+                        }
                         _ => {}
                     }
                 }
@@ -642,14 +650,8 @@ impl App {
 
     async fn refresh_tab(&mut self) {
         let tx = self.cmd_tx();
-        match self.current_tab {
-            Tab::Library => {
-                let _ = tx.send(TuiCommand::RefreshLibrary).await;
-            }
-            Tab::Queue => {
-                let _ = tx.send(TuiCommand::RefreshQueue).await;
-            }
-            _ => {}
+        if self.current_tab == Tab::Library {
+            let _ = tx.send(TuiCommand::RefreshLibrary).await;
         }
     }
 }

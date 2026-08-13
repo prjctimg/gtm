@@ -136,8 +136,5 @@ pub struct Image {
 pub enum Tab {
     NowPlaying,
     Library,
-    Queue,
-    YouTube,
     Settings,
-    Help,
 }
