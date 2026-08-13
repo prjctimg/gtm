@@ -766,6 +766,13 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
         let pane_w = panes[1].width as usize;
         let mut lines = vec![Line::from("")];
+        if filtered.is_empty() {
+            lines.push(Line::from(Span::styled(
+                " No tracks found for this selection",
+                Style::default().fg(app.theme.fg_dim),
+            )));
+            (lines, format!(" 0 tracks | 0h 0m "))
+        } else {
         for (i, track) in filtered[app.list_scroll..end].iter().enumerate() {
             let real_i = app.list_scroll + i;
             let is_current = app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
@@ -799,6 +806,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             lines.push(Line::from(Span::styled(row, style)));
         }
         (lines, st_line)
+        }
     } else if app.library_category == 2 {
         // Albums browse
         let albums = app.unique_albums();

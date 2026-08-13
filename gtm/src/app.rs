@@ -151,6 +151,7 @@ pub struct App {
     pub yt_results_cache: Vec<gtm_core::track::YTSearchResult>,
     pub volume_input: String,
     pub playlist_cache: Vec<gtm_core::track::Playlist>,
+    pub playlist_tracks_cache: Vec<TrackInfo>,
     pub cookie_file: Option<String>,
     pub status_message: Option<String>,
     pub notifications: Vec<Notification>,
@@ -236,6 +237,7 @@ enum IpcResult {
     CoverPicker(Option<Picker>),
     Lyrics(Option<gtm_core::track::LrcData>),
     LibraryTracks(Vec<TrackInfo>),
+    PlaylistTracks(Vec<TrackInfo>),
     Playlists(Vec<Playlist>),
     Queue(Vec<TrackInfo>, usize),
     YtResults(Vec<YTSearchResult>),
@@ -323,6 +325,7 @@ impl App {
             yt_results_cache: Vec::new(),
             volume_input: String::new(),
             playlist_cache: Vec::new(),
+            playlist_tracks_cache: Vec::new(),
             cookie_file: None,
             status_message: None,
             notifications: Vec::new(),
@@ -618,9 +621,13 @@ impl App {
                     }
                     IpcResult::LibraryTracks(tracks) => self.tracks_cache = tracks,
                     IpcResult::Playlists(playlists) => self.playlist_cache = playlists,
+                    IpcResult::PlaylistTracks(tracks) => self.playlist_tracks_cache = tracks,
                     IpcResult::Queue(tracks, cursor) => {
-                        self.queue_cache = tracks;
+                        self.queue_cache = tracks.clone();
                         self.queue_cursor = cursor;
+                        if self.queue_cache.is_empty() && self.state.current_track.is_none() {
+                            self.browse_detail = None;
+                        }
                     }
                     IpcResult::YtResults(results) => {
                         // Interleave: 1 playlist for every 3 tracks
@@ -837,6 +844,9 @@ impl App {
 
     /// Filtered tracks for the current library view, respecting search query, browse_detail, and category.
     pub fn filtered_tracks(&self) -> Vec<&TrackInfo> {
+        if self.library_category == 4 && self.browse_detail.is_some() {
+            return self.playlist_tracks_cache.iter().collect();
+        }
         let mut tracks: Vec<&TrackInfo> = self.tracks_cache.iter().collect();
         if !self.search_query.is_empty() {
             let q = self.search_query.to_lowercase();
@@ -1323,9 +1333,6 @@ impl App {
             }
             TuiCommand::FetchLyrics => {
                 let track_id = self.state.current_track.as_ref().map(|t| t.id).unwrap_or(0);
-                if track_id == 0 {
-                    return;
-                }
                 let client2 = self.client.clone();
                 let ipc_tx2 = self.ipc_tx.clone();
                 tokio::spawn(async move {
@@ -1916,9 +1923,23 @@ impl App {
                             } else if self.library_category == 4 {
                                 // Playlists: select playlist → show its tracks
                                 if self.scroll_offset < self.playlist_cache.len() {
-                                    self.browse_detail =
-                                        Some(self.playlist_cache[self.scroll_offset].name.clone());
+                                    let playlist = self.playlist_cache[self.scroll_offset].clone();
+                                    self.browse_detail = Some(playlist.name.clone());
                                     self.scroll_offset = 0;
+                                    self.playlist_tracks_cache.clear();
+                                    let c = self.client.clone();
+                                    let ipc_tx2 = self.ipc_tx.clone();
+                                    let pid = playlist.id;
+                                    tokio::spawn(async move {
+                                        if let Ok(res) = c.library_get_playlist_tracks(pid).await {
+                                            match res {
+                                                DaemonRes::Tracks { tracks } => {
+                                                    let _ = ipc_tx2.send(IpcResult::PlaylistTracks(tracks));
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    });
                                 }
                             } else {
                                 // Default: play track from flat list

@@ -56,6 +56,9 @@ pub enum LibraryAction {
         sort: Option<String>,
     },
     GetPlaylists,
+    GetPlaylistTracks {
+        id: i64,
+    },
     CreatePlaylist {
         name: String,
     },

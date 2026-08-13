@@ -329,6 +329,8 @@ impl DaemonState {
                 self.status = PlaybackStatus::Stopped;
                 self.current_track = None;
                 self.time_pos = 0.0;
+                self.queue.clear();
+                self.queue_cursor = 0;
             }
             DaemonEvent::EqEnabledChanged { enabled } => {
                 self.eq_enabled = *enabled;

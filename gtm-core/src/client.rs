@@ -475,6 +475,15 @@ impl DaemonClient {
         .await
     }
 
+    pub async fn library_get_playlist_tracks(&self, playlist_id: i64) -> Result<DaemonRes> {
+        self.send_raw(DaemonReq::Library {
+            action: LibraryAction::GetPlaylistTracks {
+                id: playlist_id,
+            },
+        })
+        .await
+    }
+
     pub async fn library_create_playlist(&self, name: &str) -> Result<()> {
         self.send_ok(DaemonReq::Library {
             action: LibraryAction::CreatePlaylist { name: name.into() },

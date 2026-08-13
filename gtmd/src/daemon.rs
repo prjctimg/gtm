@@ -1969,6 +1969,20 @@ impl Daemon {
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
+            gtm_core::ipc::LibraryAction::GetPlaylistTracks { id } => {
+                let data_dir = inner.config.data_dir.clone();
+                let pid = *id;
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.get_playlist_tracks(pid)
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(tracks) => DaemonRes::Tracks { tracks },
+                    Err(e) => DaemonRes::Error { message: e },
+                }
+            }
             gtm_core::ipc::LibraryAction::CreatePlaylist { name } => {
                 let name = name.clone();
                 let data_dir = inner.config.data_dir.clone();
