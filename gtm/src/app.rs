@@ -209,6 +209,7 @@ enum IpcResult {
     RefreshDone(DaemonState, Option<Vec<u8>>, Option<i64>),
     CoverArt(Option<Vec<u8>>, Option<i64>),
     PopupCoverArt(Option<Vec<u8>>, i64),
+    CoverPicker(Option<Picker>),
     Lyrics(Option<gtm_core::track::LrcData>),
     LibraryTracks(Vec<TrackInfo>),
     Playlists(Vec<Playlist>),
@@ -264,7 +265,9 @@ impl App {
         let (high_pri_cmd_tx, high_pri_cmd_rx) = mpsc::unbounded_channel();
         let (ipc_tx, ipc_rx) = mpsc::unbounded_channel();
         let keybindings = default_keybindings();
-        let prefs = load_prefs();
+        let prefs = tokio::task::spawn_blocking(load_prefs)
+            .await
+            .unwrap_or_else(|_| Prefs { theme_index: 0, transparent_bg: false, footer_preset: 0, progress_style: crate::progress::ProgressStyle::default() });
         let initial_cursor = state.queue_cursor;
         Ok(Self {
             theme: (THEMES[prefs.theme_index].builder)(),
@@ -386,68 +389,51 @@ impl App {
         mut self,
         terminal: &mut Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        // Fetch state and queue in parallel for faster startup.
-        let c1 = self.client.clone();
-        let c2 = self.client.clone();
-        let (state_res, queue_res) = tokio::join!(
-            c1.get_status(),
-            c2.queue_list()
-        );
-        if let Ok(state) = state_res {
-            self.client.seed_clock_from_state(&state).await;
-            self.state = state;
-            let track_id = self.state.current_track.as_ref().map(|t| t.id);
-            if track_id != self.last_cover_track_id {
-                if let Some(tid) = track_id {
-                    if let Ok(Some(b64)) = self.client.get_cover_art(tid).await {
-                        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                            self.current_cover = Some(bytes);
-                            self.last_cover_track_id = track_id;
-                        }
-                    }
-                }
-                self.sync_cover_stateful();
-            }
-        }
-        if self.state.volume > 85 {
-            let _ = self.client.set_volume(85).await;
-            self.state.volume = 85;
-        }
-        if let Ok(DaemonRes::QueueState { tracks, cursor, .. }) = queue_res {
-            self.queue_cache = tracks;
-            self.queue_cursor = cursor as usize;
-        }
-        self.is_ready = true;
-
-        // Load library in background so TUI appears immediately.
+        // All initial IPC is done in background tasks so the TUI renders
+        // immediately with an empty state. Results arrive via ipc_rx and
+        // are applied on the next loop iteration.
         {
             let c = self.client.clone();
             let ipc_tx = self.ipc_tx.clone();
             tokio::spawn(async move {
-                let mut attempts = 0u32;
-                loop {
-                    match c.library_get_tracks(None, None).await {
-                        Ok(DaemonRes::Tracks { tracks, .. }) if !tracks.is_empty() => {
-                            let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
-                            return;
-                        }
-                        Ok(_) if attempts < 3 => {
-                            attempts += 1;
-                            tokio::time::sleep(Duration::from_millis(300)).await;
-                        }
-                        _ => return,
+                if let Ok(state) = c.get_status().await {
+                    let _ = ipc_tx.send(IpcResult::RefreshDone(state, None, None));
+                }
+            });
+        }
+        {
+            let c = self.client.clone();
+            let ipc_tx = self.ipc_tx.clone();
+            tokio::spawn(async move {
+                if let Ok(DaemonRes::QueueState { tracks, cursor, .. }) = c.queue_list().await {
+                    let _ = ipc_tx.send(IpcResult::Queue(tracks, cursor as usize));
+                }
+            });
+        }
+        {
+            let c = self.client.clone();
+            let ipc_tx = self.ipc_tx.clone();
+            tokio::spawn(async move {
+                if let Ok(DaemonRes::Tracks { tracks, .. }) = c.library_get_tracks(None, None).await {
+                    if !tracks.is_empty() {
+                        let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
                     }
                 }
             });
         }
 
-        // Initialize cover image picker (blocking terminal query)
-        let picker = tokio::task::spawn_blocking(|| {
-            Picker::from_query_stdio().ok()
-        })
-        .await
-        .unwrap_or(None);
-        self.cover_picker = picker;
+        // Initialize cover image picker in background (blocking terminal query).
+        {
+            let ipc_tx = self.ipc_tx.clone();
+            tokio::spawn(async move {
+                let picker = tokio::task::spawn_blocking(|| Picker::from_query_stdio().ok())
+                    .await
+                    .unwrap_or(None);
+                let _ = ipc_tx.send(IpcResult::CoverPicker(picker));
+            });
+        }
+
+        self.is_ready = true;
 
         let cmd_tx = self.cmd_tx();
         tokio::spawn(async move {
@@ -608,6 +594,9 @@ impl App {
                             self.track_popup_cover = cover;
                             self.sync_popup_cover_stateful();
                         }
+                    }
+                    IpcResult::CoverPicker(picker) => {
+                        self.cover_picker = picker;
                     }
                     IpcResult::Lyrics(lyrics) => {
                         self.current_lyrics = lyrics;
@@ -1095,35 +1084,13 @@ impl App {
                 });
             }
             TuiCommand::Refresh => {
-                // drain events on main thread (fast)
                 let client2 = self.client.clone();
                 let ipc_tx2 = self.ipc_tx.clone();
                 tokio::spawn(async move {
                     if let Ok(state) = client2.get_status().await {
-                        let mut cover = None;
-                        let mut cover_tid = None;
-                        let track_id = state.current_track.as_ref().map(|t| t.id);
-                        // Skip cover art in Neovim terminal
-                        if !no_image_protocol() {
-                            if let Some(tid) = track_id {
-                                if let Ok(Some(b64)) = client2.get_cover_art(tid).await {
-                                    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                                        cover = Some(bytes);
-                                        cover_tid = Some(tid);
-                                    }
-                                }
-                            }
-                        }
-                        let _ = ipc_tx2.send(IpcResult::RefreshDone(state, cover, cover_tid.or(track_id)));
-                    }
-                });
-                // Auto-poll YT search results while picker is active
-                let ipc_tx3 = self.ipc_tx.clone();
-                tokio::spawn(async move {
-                    if let Ok(DaemonRes::YtSearchResults { results, .. }) = client.yt_search_poll().await {
-                        if !results.is_empty() {
-                            let _ = ipc_tx3.send(IpcResult::YtResults(results));
-                        }
+                        // Cover art is fetched on track-change events, not
+                        // here, to avoid an extra IPC call every second.
+                        let _ = ipc_tx2.send(IpcResult::RefreshDone(state, None, None));
                     }
                 });
             }
@@ -1187,8 +1154,14 @@ impl App {
                 let client2 = self.client.clone();
                 let ipc_tx2 = self.ipc_tx.clone();
                 tokio::spawn(async move {
-                    let result = client2.get_lyrics(track_id).await;
-                    let _ = ipc_tx2.send(IpcResult::Lyrics(result.unwrap_or(None)));
+                    let result = tokio::time::timeout(
+                        Duration::from_secs(5),
+                        client2.get_lyrics(track_id),
+                    ).await;
+                    let _ = ipc_tx2.send(IpcResult::Lyrics(match result {
+                        Ok(r) => r.unwrap_or(None),
+                        Err(_) => None,
+                    }));
                 });
             }
             TuiCommand::SetSleepTimer(minutes) => {

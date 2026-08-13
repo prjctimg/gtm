@@ -4,7 +4,6 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use std::io::Read;
 use std::path::PathBuf;
 
 use crate::app::{App, InputMode, LIBRARY_CATEGORIES};
@@ -29,14 +28,14 @@ pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>>
         .map(PathBuf::from)
         .unwrap_or_else(gtm_core::default_socket_path);
 
-    ensure_daemon_running(&socket_path)?;
-
     // Redirect stderr to log file so diagnostic messages don't break the TUI
     let _original_stderr = gtm_core::log::redirect_stderr_to_log();
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
         color_eyre::install()?;
+
+        ensure_daemon_running(&socket_path).await?;
 
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
@@ -66,23 +65,23 @@ pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>>
     })
 }
 
-fn ensure_daemon_running(socket_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+async fn ensure_daemon_running(socket_path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
     if socket_path.exists() {
-        if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(socket_path) {
-            use std::io::Write;
-            // Use WireReq format so the daemon can parse it
+        if let Ok(mut stream) = tokio::net::UnixStream::connect(socket_path).await {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let ping = serde_json::to_string(&gtm_core::ipc::WireReq {
                 id: 0,
                 req: gtm_core::ipc::DaemonReq::Ping,
             })? + "\n";
-            let _ = stream.write_all(ping.as_bytes());
-            // Try to read a response with a short timeout to detect stale sockets
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_millis(250)))
-                .ok();
+            let _ = stream.write_all(ping.as_bytes()).await;
             let mut buf = [0u8; 256];
-            if stream.read(&mut buf).ok().unwrap_or(0) > 0 {
-                return Ok(());
+            if let Ok(Ok(n)) = tokio::time::timeout(
+                std::time::Duration::from_millis(100),
+                stream.read(&mut buf),
+            ).await {
+                if n > 0 {
+                    return Ok(());
+                }
             }
         }
     }

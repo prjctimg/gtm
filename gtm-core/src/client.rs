@@ -41,7 +41,7 @@ impl DaemonClient {
     pub async fn connect(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_owned();
         let mut last_err = None;
-        for i in 0..10 {
+        for i in 0..5 {
             match UnixStream::connect(&path).await {
                 Ok(stream) => {
                     let (reader, writer) = stream.into_split();
@@ -87,12 +87,12 @@ impl DaemonClient {
                 }
                 Err(e) => {
                     last_err = Some(e);
-                    tokio::time::sleep(Duration::from_millis(50 * (i + 1))).await;
+                    tokio::time::sleep(Duration::from_millis(30 * (i + 1))).await;
                 }
             }
         }
         Err(CoreError::Daemon(format!(
-            "connect to {} failed after 10 retries: {}",
+            "connect to {} failed after 5 retries: {}",
             path.display(),
             last_err.map(|e| e.to_string()).unwrap_or_default()
         )))
@@ -170,7 +170,9 @@ impl DaemonClient {
                 response_tx: Some(tx),
             })
             .map_err(|_| CoreError::Daemon("IPC worker died".into()))?;
-        rx.await
+        tokio::time::timeout(Duration::from_secs(5), rx)
+            .await
+            .map_err(|_| CoreError::Daemon("IPC response timeout".into()))?
             .map_err(|_| CoreError::Daemon("IPC worker response dropped".into()))?
     }
 
