@@ -12,6 +12,9 @@ use std::borrow::Cow;
 #[derive(Clone, Copy)]
 pub struct AppTheme {
     pub bg: Color,
+    /// Main pane body fill (library/queue/lyrics content areas). Defaults to
+    /// `bg`; user themes may set it independently to control the fill area.
+    pub pane_bg: Color,
     pub picker_bg: Color,
     /// Floating-panel fill, one step darker/lighter than `picker_bg`.
     pub elevated_bg: Color,
@@ -83,6 +86,7 @@ pub fn parse_color(s: &str) -> Result<Color, String> {
 fn chadrula() -> AppTheme {
     AppTheme {
         bg: hex(0x24283b),
+        pane_bg: hex(0x24283b),
         picker_bg: hex(0x1f2335),
         elevated_bg: hex(0x1a1e2e),
         muted_border: hex(0x3b4261),
@@ -108,6 +112,7 @@ fn chadrula() -> AppTheme {
 fn one_dark() -> AppTheme {
     AppTheme {
         bg: hex(0x282c34),
+        pane_bg: hex(0x282c34),
         picker_bg: hex(0x21252b),
         elevated_bg: hex(0x1c2026),
         muted_border: hex(0x3e4451),
@@ -133,6 +138,7 @@ fn one_dark() -> AppTheme {
 fn tokyonight() -> AppTheme {
     AppTheme {
         bg: hex(0x1a1b26),
+        pane_bg: hex(0x1a1b26),
         picker_bg: hex(0x16161e),
         elevated_bg: hex(0x12121a),
         muted_border: hex(0x292e42),
@@ -168,6 +174,7 @@ fn tokyonight_storm() -> AppTheme {
 fn catppuccin_mocha() -> AppTheme {
     AppTheme {
         bg: hex(0x1e1e2e),
+        pane_bg: hex(0x1e1e2e),
         picker_bg: hex(0x181825),
         elevated_bg: hex(0x141422),
         muted_border: hex(0x313244),
@@ -193,6 +200,7 @@ fn catppuccin_mocha() -> AppTheme {
 fn gruvbox_dark() -> AppTheme {
     AppTheme {
         bg: hex(0x282828),
+        pane_bg: hex(0x282828),
         picker_bg: hex(0x1d2021),
         elevated_bg: hex(0x181b1c),
         muted_border: hex(0x504945),
@@ -218,6 +226,7 @@ fn gruvbox_dark() -> AppTheme {
 fn nord() -> AppTheme {
     AppTheme {
         bg: hex(0x2e3440),
+        pane_bg: hex(0x2e3440),
         picker_bg: hex(0x2b303b),
         elevated_bg: hex(0x262b35),
         muted_border: hex(0x3b4252),
@@ -243,6 +252,7 @@ fn nord() -> AppTheme {
 fn rose_pine() -> AppTheme {
     AppTheme {
         bg: hex(0x191724),
+        pane_bg: hex(0x191724),
         picker_bg: hex(0x11111b),
         elevated_bg: hex(0x0d0d16),
         muted_border: hex(0x26233a),
@@ -268,6 +278,7 @@ fn rose_pine() -> AppTheme {
 fn everforest() -> AppTheme {
     AppTheme {
         bg: hex(0x2d353b),
+        pane_bg: hex(0x2d353b),
         picker_bg: hex(0x273036),
         elevated_bg: hex(0x232a30),
         muted_border: hex(0x414b52),
@@ -293,6 +304,7 @@ fn everforest() -> AppTheme {
 fn kanagawa() -> AppTheme {
     AppTheme {
         bg: hex(0x1f1f28),
+        pane_bg: hex(0x1f1f28),
         picker_bg: hex(0x181820),
         elevated_bg: hex(0x14141b),
         muted_border: hex(0x727169),
@@ -318,6 +330,7 @@ fn kanagawa() -> AppTheme {
 fn catppuccin_latte() -> AppTheme {
     AppTheme {
         bg: hex(0xeff1f5),
+        pane_bg: hex(0xeff1f5),
         picker_bg: hex(0xe6e9ef),
         elevated_bg: hex(0xdde1e9),
         muted_border: hex(0xccd0da),
@@ -343,6 +356,7 @@ fn catppuccin_latte() -> AppTheme {
 fn kanagawa_lotus() -> AppTheme {
     AppTheme {
         bg: hex(0xf2ecbc),
+        pane_bg: hex(0xf2ecbc),
         picker_bg: hex(0xeae4c9),
         elevated_bg: hex(0xe3dcc2),
         muted_border: hex(0xdcdbc4),
@@ -454,6 +468,10 @@ struct UserThemeFile {
     #[serde(default)]
     light: bool,
     bg: String,
+    /// Optional for backward compatibility with theme TOMLs written before
+    /// `pane_bg` existed; defaults to `bg`.
+    #[serde(default)]
+    pane_bg: Option<String>,
     picker_bg: String,
     /// Optional for backward compatibility with pre-C0 theme TOMLs.
     #[serde(default)]
@@ -482,6 +500,7 @@ impl UserThemeFile {
     fn into_theme(self) -> Result<AppTheme, String> {
         Ok(AppTheme {
             bg: parse_color(&self.bg)?,
+            pane_bg: parse_color(self.pane_bg.as_deref().unwrap_or(self.bg.as_str()))?,
             picker_bg: parse_color(&self.picker_bg)?,
             elevated_bg: parse_color(
                 self.elevated_bg

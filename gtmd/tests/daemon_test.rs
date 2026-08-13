@@ -338,11 +338,7 @@ async fn test_queue_remove() {
     )
     .await;
     match res {
-        DaemonRes::QueueState {
-            queue: tracks,
-            cursor: _,
-            ..
-        } => {
+        DaemonRes::QueueState { queue: tracks, .. } => {
             assert_eq!(tracks.len(), 1);
             assert_eq!(tracks[0].path, "/tmp/y.opus");
         }

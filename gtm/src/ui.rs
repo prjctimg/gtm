@@ -391,29 +391,25 @@ fn render_evolving<W: ratatui::widgets::Widget>(
     f: &mut ratatui::Frame,
     area: Rect,
     widget: W,
-    key: &'static str,
-    app: &mut App,
+    _key: &'static str,
+    _app: &mut App,
 ) {
-    if !app.track_anim_trigger && !app.anim_fx.is_running() {
-        f.render_widget(widget, area);
-        return;
-    }
-    let mut buf = ratatui::buffer::Buffer::empty(area);
-    widget.render(area, &mut buf);
-    if app.track_anim_trigger {
-        app.anim_fx.add_unique_effect(
-            key,
-            tachyonfx::fx::evolve_into(
-                tachyonfx::fx::EvolveSymbolSet::Circles,
-                (350, tachyonfx::Interpolation::QuadInOut),
-            )
-            .with_area(area)
-            .with_filter(tachyonfx::CellFilter::All),
-        );
-    }
-    app.anim_fx
-        .process_effects(tachyonfx::Duration::from_millis(16), &mut buf, area);
-    f.buffer_mut().merge(&buf);
+    // The tachyonfx evolve_into effect replaced the text with block/geometric
+    // glyphs (▁▂▃▄▅▆▇█, •◦●○) mid-transition, which rendered like stray
+    // "escape characters" over the title.  Content now paints directly and
+    // cleanly; the startup/track-change trigger still forces the initial
+    // redraw via `track_anim_trigger`, it just no longer animates glyphs.
+    f.render_widget(widget, area);
+}
+
+/// Fill a pane body rectangle with the theme's `pane_bg` (the configurable
+/// "fill area" background) before the pane content renders on top.
+fn fill_pane(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    f.render_widget(
+        ratatui::widgets::Block::default()
+            .style(ratatui::style::Style::default().bg(app.theme.pane_bg)),
+        area,
+    );
 }
 
 /// Borderless pane header (C1/C2): a 1-row BOLD label — `accent` + a `▎`
@@ -580,6 +576,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     {
         // Borderless pane: bold header + muted separator, content below.
         let np_inner = render_pane_header(f, np_area, app, "NOW PLAYING", false, true, false);
+        fill_pane(f, np_inner, app);
 
         // Clone the current track out of the app state so the render calls
         // below (which borrow `app` mutably for the evolve animation) can
@@ -841,6 +838,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .collect();
 
     let left_inner = render_pane_header(f, panes[0], app, "LIBRARY", left_focus, false, false);
+    fill_pane(f, left_inner, app);
     f.render_widget(List::new(left_items), left_inner);
 
     // Active category left-border indicator picker
@@ -1174,6 +1172,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let right_para = Paragraph::new(right_lines);
     let right_inner =
         render_pane_header(f, panes[1], app, category_label, !left_focus, false, true);
+    fill_pane(f, right_inner, app);
     render_evolving(f, right_inner, right_para, "lib", app);
     // end content rendering
 
@@ -1226,6 +1225,7 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .collect();
 
     let left_inner = render_pane_header(f, panes[0], app, "SETTINGS", settings_focus, false, false);
+    fill_pane(f, left_inner, app);
     f.render_widget(List::new(left_items), left_inner);
 
     // Active category left-border indicator
@@ -1380,6 +1380,7 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         false,
         true,
     );
+    fill_pane(f, right_inner, app);
 
     let mut lines = Vec::new();
     let sel = app.settings_option;
@@ -1839,6 +1840,7 @@ pub fn render_progress_variant(ratio: f64, width: usize, app: &App) -> String {
 /// Time-synced lyrics pane on the right side of the library view.
 fn render_lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let inner = render_pane_header(f, area, app, "LYRICS", app.lyrics_pane_focus, false, true);
+    fill_pane(f, inner, app);
 
     let Some(ref lyrics) = app.current_lyrics else {
         let msg_text = if app.lyrics_fetching {
