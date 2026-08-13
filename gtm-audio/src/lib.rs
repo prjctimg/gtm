@@ -5,8 +5,10 @@
 // This is free software released under the GPL-3.0 license.
 
 pub mod backend;
+pub mod decode_thread;
 pub mod eq;
 pub mod null_mixer;
+pub mod ring_buffer;
 pub mod rodio;
 pub mod symphonia;
 
@@ -14,5 +16,6 @@ pub use backend::{AudioBackend, AudioError, AudioEvent, AudioResult};
 pub use eq::{EqGains, EqSource, ReverbSource};
 pub use mixer::{AudioMixer, Mixer};
 pub use null_mixer::NullMixer;
+pub use ring_buffer::{DecodeControl, RingBufferSource};
 
 pub mod mixer;

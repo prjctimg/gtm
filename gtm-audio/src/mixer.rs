@@ -4,16 +4,16 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use std::fs::File;
-use std::io::BufReader;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
 
 use crate::backend::{AudioError, AudioEvent, AudioResult};
+use crate::decode_thread::DecodeThread;
 use crate::eq::{EqGains, EqSource, ReverbSource};
+use crate::ring_buffer::{DecodeControl, RingBufferInner, RingBufferSource};
 use crate::symphonia::SymphoniaSource;
 use gtm_core::state::{Easing, EqPreset, ReverbConfig};
 
@@ -89,6 +89,11 @@ pub struct AudioMixer {
     eq_enabled: Arc<AtomicBool>,
     reverb_enabled: Arc<AtomicBool>,
     reverb_room_size: Arc<Mutex<f32>>,
+    // ─── Decode thread / Ring buffer ───
+    active_control: Option<Arc<DecodeControl>>,
+    active_decode_handle: Option<std::thread::JoinHandle<()>>,
+    standby_control: Option<Arc<DecodeControl>>,
+    standby_decode_handle: Option<std::thread::JoinHandle<()>>,
 }
 
 struct MixerDeviceSink(rodio::MixerDeviceSink);
@@ -204,6 +209,10 @@ impl AudioMixer {
             eq_enabled: Arc::new(AtomicBool::new(true)),
             reverb_enabled: Arc::new(AtomicBool::new(false)),
             reverb_room_size: Arc::new(Mutex::new(0.3)),
+            active_control: None,
+            active_decode_handle: None,
+            standby_control: None,
+            standby_decode_handle: None,
         })
     }
 
@@ -224,11 +233,14 @@ impl AudioMixer {
     }
 
     /// Decode a file (blocking I/O). Safe to call from `spawn_blocking`.
+    /// Kept for `load_active_decoded` / `load_standby_decoded` paths.
     pub fn decode_file(path: &str) -> AudioResult<Box<dyn Source<Item = f32> + Send>> {
         Self::decode(path)
     }
 
     fn decode(path: &str) -> AudioResult<Box<dyn Source<Item = f32> + Send>> {
+        use std::fs::File;
+        use std::io::BufReader;
         let file = File::open(path).map_err(|e| AudioError::OpenFailed(e.to_string()))?;
         let reader = BufReader::new(file);
         if let Ok(source) = Decoder::new(reader) {
@@ -237,9 +249,28 @@ impl AudioMixer {
         SymphoniaSource::from_file(path, 0.0)
     }
 
+    /// Probe the duration of an audio file without fully decoding it.
+    fn probe_duration(path: &str) -> AudioResult<f64> {
+        let source = Self::decode(path)?;
+        Ok(source.total_duration().map(|d| d.as_secs_f64()).unwrap_or(0.0))
+    }
+
+    /// Stop a decode thread and drain its handle.
+    fn stop_decode_thread(
+        control: &Option<Arc<DecodeControl>>,
+        handle: &mut Option<std::thread::JoinHandle<()>>,
+    ) {
+        if let Some(ctrl) = control {
+            ctrl.signal_stop();
+        }
+        if let Some(h) = handle.take() {
+            let _ = h.join();
+        }
+    }
+
     /// Wrap a decoded source with EQ and optional reverb.
+    /// Used only for pre-decoded sources (load_active_decoded / load_standby_decoded).
     fn wrap_source(&self, source: Box<dyn Source<Item = f32> + Send>) -> Box<dyn Source<Item = f32> + Send> {
-        // Apply EQ only when enabled
         let boxed: Box<dyn Source<Item = f32> + Send> = if self.eq_enabled.load(Ordering::Relaxed) {
             Box::new(EqSource::new(source, self.eq_gains.clone()))
         } else {
@@ -253,17 +284,70 @@ impl AudioMixer {
         }
     }
 
+    /// Start a decode thread for the given path, wait for prebuffer, return (control, source, handle).
+    fn start_decode_thread(
+        path: &str,
+        eq_gains: &EqGains,
+        eq_enabled: &Arc<AtomicBool>,
+        reverb_enabled: &Arc<AtomicBool>,
+        reverb_room_size: &Arc<Mutex<f32>>,
+    ) -> AudioResult<(Arc<DecodeControl>, RingBufferSource, std::thread::JoinHandle<()>)> {
+        let control = Arc::new(DecodeControl::new());
+        let shared = Arc::new(RingBufferInner::new(44100 * 2 * 3));
+
+        let thread = DecodeThread::new(
+            path.to_string(),
+            shared.clone(),
+            control.clone(),
+            eq_gains.clone(),
+            eq_enabled.clone(),
+            reverb_enabled.clone(),
+            reverb_room_size.clone(),
+        );
+        let handle = thread.spawn();
+
+        let start = Instant::now();
+        let timeout = Duration::from_secs(5);
+        while !control.ready.load(Ordering::Acquire) && start.elapsed() < timeout {
+            if !control.running.load(Ordering::Acquire) {
+                return Err(AudioError::DecodeError(
+                    "decode thread exited before prebuffer".into(),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+
+        let source = RingBufferSource::new(shared, control.clone());
+        Ok((control, source, handle))
+    }
+
     pub fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()> {
+        // Stop old decode thread
+        Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
+
         let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
         self.active().stop();
         self.active().set_volume(vol);
 
-        let raw = Self::decode(path)?;
-        if let Some(ref dur) = raw.total_duration() {
-            *self.duration.lock().unwrap() = dur.as_secs_f64();
+        // Probe duration
+        let dur = Self::probe_duration(path)?;
+        if dur > 0.0 {
+            *self.duration.lock().unwrap() = dur;
         }
-        let source = self.wrap_source(raw);
+
+        // Start decode thread + ring buffer
+        let (control, source, handle) = Self::start_decode_thread(
+            path,
+            &self.eq_gains,
+            &self.eq_enabled,
+            &self.reverb_enabled,
+            &self.reverb_room_size,
+        )?;
+
         self.active().append(source);
+
+        self.active_control = Some(control);
+        self.active_decode_handle = Some(handle);
 
         *self.position.lock().unwrap() = start_pos;
         *self.start_time.lock().unwrap() = None;
@@ -275,7 +359,11 @@ impl AudioMixer {
     }
 
     /// Like `load_active` but source is pre-decoded (avoids blocking in async context).
+    /// Uses EQ/reverb wrapping directly (no decode thread needed).
     pub fn load_active_decoded(&mut self, source: Box<dyn Source<Item = f32> + Send>, start_pos: f64) -> AudioResult<()> {
+        // Stop old decode thread
+        Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
+
         let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
         self.active().stop();
         self.active().set_volume(vol);
@@ -285,6 +373,8 @@ impl AudioMixer {
         }
         let source = self.wrap_source(source);
         self.active().append(source);
+
+        self.active_control = None;
 
         *self.position.lock().unwrap() = start_pos;
         *self.start_time.lock().unwrap() = None;
@@ -296,20 +386,33 @@ impl AudioMixer {
     }
 
     pub fn load_standby(&mut self, path: &str) -> AudioResult<()> {
+        Self::stop_decode_thread(&self.standby_control, &mut self.standby_decode_handle);
+
         self.standby().stop();
         self.standby().set_volume(0.0);
 
-        let source = Self::decode(path)?;
-        let source = self.wrap_source(source);
+        let (control, source, handle) = Self::start_decode_thread(
+            path,
+            &self.eq_gains,
+            &self.eq_enabled,
+            &self.reverb_enabled,
+            &self.reverb_room_size,
+        )?;
+
         self.standby().append(source);
+        self.standby_control = Some(control);
+        self.standby_decode_handle = Some(handle);
         Ok(())
     }
 
     pub fn load_standby_decoded(&mut self, source: Box<dyn Source<Item = f32> + Send>) -> AudioResult<()> {
+        Self::stop_decode_thread(&self.standby_control, &mut self.standby_decode_handle);
+
         self.standby().stop();
         self.standby().set_volume(0.0);
         let source = self.wrap_source(source);
         self.standby().append(source);
+        self.standby_control = None;
         Ok(())
     }
 
@@ -357,10 +460,17 @@ impl AudioMixer {
     }
 
     pub fn seek(&mut self, position_secs: f64) -> AudioResult<()> {
-        let pos = std::time::Duration::from_secs_f64(position_secs);
-        self.active()
-            .try_seek(pos)
-            .map_err(|_| AudioError::SeekError("seek failed".into()))?;
+        // Signal decode thread to seek at the given position
+        if let Some(ref ctrl) = self.active_control {
+            ctrl.signal_seek(position_secs);
+            // Brief wait for decode thread to flush + restart
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while ctrl.seeking.load(Ordering::Acquire)
+                && Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
         *self.position.lock().unwrap() = position_secs;
         *self.start_time.lock().unwrap() = (position_secs > 0.0).then(|| Instant::now());
         *self.start_pos.lock().unwrap() = position_secs;

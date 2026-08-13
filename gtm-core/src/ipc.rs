@@ -323,3 +323,21 @@ pub enum DaemonRes {
         message: String,
     },
 }
+
+/// Wire envelope for requests: wraps a `DaemonReq` with a monotonic request ID
+/// so the client can correlate responses with in-flight requests.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireReq {
+    pub id: u64,
+    #[serde(flatten)]
+    pub req: DaemonReq,
+}
+
+/// Wire envelope for responses: wraps a `DaemonRes` with the same request ID
+/// the client sent, enabling out-of-order response dispatch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WireRes {
+    pub id: u64,
+    #[serde(flatten)]
+    pub res: DaemonRes,
+}

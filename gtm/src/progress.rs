@@ -83,11 +83,9 @@ pub fn render_progress(ratio: f64, width: usize, style: ProgressStyle) -> String
             line.push('─');
         }
         ProgressStyle::Classic => {
-            line.push('[');
             for i in 0..inner_w {
                 line.push(if i < filled { '█' } else { '░' });
             }
-            line.push(']');
         }
         ProgressStyle::Dots => {
             line.push(' ');

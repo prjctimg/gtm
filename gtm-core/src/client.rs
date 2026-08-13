@@ -4,6 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -13,7 +14,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
-use crate::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction};
+use crate::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction, WireReq, WireRes};
 use crate::state::{DaemonState, EqPreset, RepeatMode, YTFilter};
 use crate::wire;
 use crate::CoreError;
@@ -59,6 +60,8 @@ impl DaemonClient {
                         socket_path: path.clone(),
                         last_event_time: Instant::now(),
                         consecutive_failures: 0,
+                        pending: HashMap::new(),
+                        next_id: 0,
                     };
                     tokio::spawn(worker.run());
 
@@ -530,12 +533,6 @@ impl DaemonClient {
     }
 }
 
-enum Frame {
-    Response(DaemonRes),
-    #[allow(dead_code)]
-    Event(DaemonEvent),
-}
-
 struct IpcWorker {
     reader: tokio::net::unix::OwnedReadHalf,
     writer: tokio::net::unix::OwnedWriteHalf,
@@ -546,6 +543,8 @@ struct IpcWorker {
     socket_path: std::path::PathBuf,
     last_event_time: Instant,
     consecutive_failures: u32,
+    pending: HashMap<u64, oneshot::Sender<Result<DaemonRes>>>,
+    next_id: u64,
 }
 
 const MAX_CONSECUTIVE_FAILURES: u32 = 3;
@@ -563,6 +562,7 @@ impl IpcWorker {
                         "IPC worker: no events for 10s ({} consecutive), forcing reconnect",
                         self.consecutive_failures
                     ));
+                    self.fail_all_pending("daemon not responding");
                     self.reconnect().await;
                     self.consecutive_failures = 0;
                 } else {
@@ -575,40 +575,63 @@ impl IpcWorker {
                 continue;
             }
 
-            // Process ONE pending request (if any), then drain events so
-            // events are never starved by a burst of commands.
-            if let Ok(pending) = self.cmd_rx.try_recv() {
-                if let Err(e) = self.send_request(pending).await {
+            // Drain ALL pending requests from the channel and send them
+            // without waiting for individual responses. This is the key fix:
+            // previously we blocked on read_response() after each send,
+            // causing commands to queue up for 15 seconds.
+            let mut sent_any = false;
+            while let Ok(pending) = self.cmd_rx.try_recv() {
+                let id = self.next_id;
+                self.next_id = self.next_id.wrapping_add(1);
+                if let Err(e) = self.send_request_by_id(id, &pending).await {
                     crate::log::log(&format!("IPC worker send error: {e}"));
+                    if let Some(tx) = pending.response_tx {
+                        let _ = tx.send(Err(CoreError::Daemon("send failed".into())));
+                    }
+                    self.fail_all_pending("send failed");
+                    self.reconnect().await;
+                    break;
+                }
+                if let Some(tx) = pending.response_tx {
+                    self.pending.insert(id, tx);
+                }
+                sent_any = true;
+            }
+            if sent_any && !self.pending.is_empty() {
+                if let Err(e) = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    self.writer.flush(),
+                ).await {
+                    crate::log::log(&format!("IPC worker flush error: {e}"));
+                    self.fail_all_pending("flush failed");
                     self.reconnect().await;
                     continue;
                 }
             }
 
-            // Read from socket with a small timeout so we can check for requests
+            // Read from socket with a small timeout so we can loop back
+            // to drain more requests.
             match self.read_with_timeout(&mut tmp).await {
                 Ok(true) => {
                     self.last_event_time = Instant::now();
                     self.consecutive_failures = 0;
-                    // Parse all complete frames
-                    while let Some(frame) = self.parse().await {
-                        match frame {
-                            Frame::Response(_) => {
-                                crate::log::log("IPC worker: unexpected response with no pending request");
-                                self.reconnect().await;
-                                continue;
-                            }
-                            Frame::Event(_) => {}
-                        }
-                    }
+                    // Parse all complete frames, dispatching responses by ID
+                    while self.parse_next().await {}
                 }
                 Ok(false) => {} // timeout, loop back to check for requests
                 Err(e) => {
                     crate::log::log(&format!("IPC worker read error: {e}"));
+                    self.fail_all_pending("read error");
                     self.reconnect().await;
                     continue;
                 }
             }
+        }
+    }
+
+    fn fail_all_pending(&mut self, reason: &str) {
+        for (_, tx) in self.pending.drain() {
+            let _ = tx.send(Err(CoreError::Daemon(reason.into())));
         }
     }
 
@@ -653,61 +676,39 @@ impl IpcWorker {
         }
     }
 
-    async fn send_request(&mut self, pending: PendingRequest) -> Result<()> {
-        let mut line = serde_json::to_string(&pending.req)?;
+    async fn send_request_by_id(&mut self, id: u64, pending: &PendingRequest) -> Result<()> {
+        let wire = WireReq { id, req: pending.req.clone() };
+        let mut line = serde_json::to_string(&wire)?;
         line.push('\n');
         match tokio::time::timeout(Duration::from_secs(5), self.writer.write_all(line.as_bytes())).await {
             Ok(Ok(())) => {}
             Ok(Err(e)) => return Err(CoreError::Daemon(format!("write error: {e}"))),
             Err(_) => return Err(CoreError::Daemon("write timeout".into())),
         }
-        match tokio::time::timeout(Duration::from_secs(5), self.writer.flush()).await {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(CoreError::Daemon(format!("flush error: {e}"))),
-            Err(_) => return Err(CoreError::Daemon("flush timeout".into())),
-        }
-
-        let response = self.read_response().await?;
-        if let Some(tx) = pending.response_tx {
-            let _ = tx.send(Ok(response));
-        }
         Ok(())
     }
 
-    async fn read_response(&mut self) -> Result<DaemonRes> {
-        loop {
-            if let Some(Frame::Response(res)) = self.parse().await {
-                return Ok(res);
-            }
-            let mut tmp = [0u8; 4096];
-            match tokio::time::timeout(Duration::from_secs(15), self.reader.read(&mut tmp)).await {
-                Ok(Ok(n)) => {
-                    if n == 0 {
-                        return Err(CoreError::Daemon("connection closed".into()));
-                    }
-                    self.buf.extend_from_slice(&tmp[..n]);
-                }
-                Ok(Err(e)) => return Err(CoreError::Daemon(format!("read error: {e}"))),
-                Err(_) => return Err(CoreError::Daemon("response timeout".into())),
-            }
-        }
-    }
-
-    async fn parse(&mut self) -> Option<Frame> {
+    async fn parse_next(&mut self) -> bool {
         if self.buf.is_empty() {
-            return None;
+            return false;
         }
-        let pos = self.buf.iter().position(|&b| b == b'\n')?;
+        let pos = match self.buf.iter().position(|&b| b == b'\n') {
+            Some(p) => p,
+            None => return false,
+        };
         let line = self.buf[..pos].to_vec();
         self.buf.drain(..=pos);
-        if let Ok(res) = serde_json::from_slice::<DaemonRes>(&line) {
-            return Some(Frame::Response(res));
+        if let Ok(wire_res) = serde_json::from_slice::<WireRes>(&line) {
+            if let Some(tx) = self.pending.remove(&wire_res.id) {
+                let _ = tx.send(Ok(wire_res.res));
+            }
+            return true;
         }
         if let Ok(event) = serde_json::from_slice::<DaemonEvent>(&line) {
             let mut events = self.events.lock().await;
             events.push(event);
         }
-        None
+        true
     }
 }
 
