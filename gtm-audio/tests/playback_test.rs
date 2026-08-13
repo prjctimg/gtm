@@ -9,7 +9,7 @@ fn create_test_wav(path: &std::path::Path, duration_secs: f64) {
     let sample_rate: u32 = 44100;
     let channels: u16 = 2;
     let bits_per_sample: u16 = 16;
-    let bytes_per_sample = bits_per_sample as u16 / 8;
+    let bytes_per_sample = bits_per_sample / 8;
     let num_samples = (sample_rate as f64 * duration_secs) as u64 * channels as u64;
     let data_size = num_samples * bytes_per_sample as u64;
     let file_size = 36 + data_size;

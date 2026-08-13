@@ -362,10 +362,7 @@ const LIBRARY_ICONS_NERD: &[&str] = &[
 const LIBRARY_ICONS_ASCII: &[&str] = &["♫", "♥", "▤", "♪", "≡", "☊", "▶"];
 
 fn use_nerd_fonts() -> bool {
-    match std::env::var("GTM_NERD_FONTS") {
-        Ok(v) if v == "0" || v == "false" || v == "no" => false,
-        _ => true,
-    }
+    !matches!(std::env::var("GTM_NERD_FONTS"), Ok(v) if v == "0" || v == "false" || v == "no")
 }
 
 /// Scroll helper that keeps the selected item centered in the viewport.
@@ -460,14 +457,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             .border_type(BorderType::Plain)
             .border_style(Style::default().fg(app.theme.fg));
 
-        if app.state.current_track.is_none() {
-            let inner = np_block.inner(np_area);
-            f.render_widget(np_block, np_area);
-            let msg = Paragraph::new("It's awfully quiet here... ")
-                .alignment(Alignment::Center)
-                .style(Style::default().fg(app.theme.fg));
-            f.render_widget(msg, inner);
-        } else {
+        if let Some(track) = app.state.current_track.as_ref() {
             let inner = np_block.inner(np_area);
             f.render_widget(np_block, np_area);
 
@@ -500,7 +490,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 );
 
                 let info_area = hchunks[2];
-                let track = app.state.current_track.as_ref().unwrap();
 
                 let info_chunks = Layout::default()
                     .direction(Direction::Vertical)
@@ -564,7 +553,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 let pos = app.display_position;
                 let pos_str = format_duration(pos as u64);
                 let dur_str = format_duration(dur as u64);
-                let ratio = if dur > 0.0 { (pos / dur) as f64 } else { 0.0 };
+                let ratio = if dur > 0.0 { pos / dur } else { 0.0 };
                 let ts_str = format!("{} / {}", pos_str, dur_str);
                 let bar_width =
                     (info_chunks[3].width.saturating_sub(ts_str.len() as u16 + 2) as usize).min(40);
@@ -575,7 +564,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 f.render_widget(bar_para, info_chunks[3]);
             } else {
                 // Terminal too narrow for cover — just show info text
-                let track = app.state.current_track.as_ref().unwrap();
                 let display_title = if track.title.is_empty() {
                     std::path::Path::new(&track.path)
                         .file_stem()
@@ -633,7 +621,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 let pos = app.display_position;
                 let pos_str = format_duration(pos as u64);
                 let dur_str = format_duration(dur as u64);
-                let ratio = if dur > 0.0 { (pos / dur) as f64 } else { 0.0 };
+                let ratio = if dur > 0.0 { pos / dur } else { 0.0 };
                 let ts_str = format!("{} / {}", pos_str, dur_str);
                 let bar_width =
                     (inner.width.saturating_sub(ts_str.len() as u16 + 2) as usize).min(40);
@@ -649,6 +637,13 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 };
                 f.render_widget(bar_para, bar_area);
             }
+        } else {
+            let inner = np_block.inner(np_area);
+            f.render_widget(np_block, np_area);
+            let msg = Paragraph::new("It's awfully quiet here... ")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(app.theme.fg));
+            f.render_widget(msg, inner);
         }
     }
 
@@ -780,7 +775,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
                 let dur = tr
                     .duration_ms
-                    .map(|d| format_duration_short((d / 1000) as u64))
+                    .map(|d| format_duration_short(d / 1000))
                     .unwrap_or_default();
                 let prefix = if is_sel { " >" } else { "  " };
                 let row = format!(
@@ -826,7 +821,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 " No tracks found for this selection",
                 Style::default().fg(app.theme.fg_dim),
             )));
-            (lines, format!(" 0 tracks | 0h 0m "))
+            (lines, " 0 tracks | 0h 0m ".to_string())
         } else {
         for (i, track) in filtered[app.list_scroll..end].iter().enumerate() {
             let real_i = app.list_scroll + i;
@@ -841,8 +836,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
             let prefix = if is_current {
                 "> "
-            } else if is_sel {
-                "  "
             } else {
                 "  "
             };
@@ -1032,8 +1025,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
             let prefix = if is_current {
                 "> "
-            } else if is_sel {
-                "  "
             } else {
                 "  "
             };
@@ -1475,8 +1466,6 @@ fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let is_sel = i == sel;
         let prefix = if is_current {
             ">"
-        } else if is_sel {
-            " "
         } else {
             " "
         };
@@ -1538,7 +1527,7 @@ fn render_yt_search_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let cursor = if app
         .pickers
         .top()
-        .map_or(false, |o| o.id == PickerId::YTSearch)
+        .is_some_and(|o| o.id == PickerId::YTSearch)
     {
         "_"
     } else {
@@ -1651,8 +1640,7 @@ fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let scroll_end = (scroll_start + visible).min(total);
 
     let mut lines: Vec<Line> = vec![search_line];
-    for i in scroll_start..scroll_end {
-        let track = &filtered[i];
+    for (i, track) in filtered.iter().enumerate().take(scroll_end).skip(scroll_start) {
         let prefix = if i == sel { " > " } else { "   " };
         let dur = format_duration(track.duration as u64);
         let content = format!("{prefix}{} - {} [{}]", track.artist, track.title, dur);
@@ -2123,7 +2111,7 @@ fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     ];
 
     let filtered: Vec<&str> = if query.is_empty() {
-        help_lines.iter().copied().collect()
+        help_lines.to_vec()
     } else {
         let q = query.to_lowercase();
         help_lines
@@ -2161,8 +2149,7 @@ fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let scroll_end = (scroll_start + visible).min(total);
 
     let mut lines: Vec<Line> = vec![search_line];
-    for i in scroll_start..scroll_end {
-        let line = filtered[i];
+    for (i, line) in filtered.iter().enumerate().take(scroll_end).skip(scroll_start) {
         let is_header = line.starts_with(|c: char| c.is_uppercase()) && !line.starts_with("   ");
         let is_sel = i == sel;
         let style = if is_sel {
@@ -2176,7 +2163,7 @@ fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         } else {
             Style::default().fg(app.theme.fg)
         };
-        lines.push(Line::from(Span::styled(line, style)));
+        lines.push(Line::from(Span::styled(*line, style)));
     }
 
     let para = Paragraph::new(lines);
@@ -2381,7 +2368,7 @@ fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
             .collect()
     };
     // Sort by score descending (longer match = better)
-    filtered.sort_by(|a, b| b.1.cmp(&a.1));
+    filtered.sort_by_key(|b| std::cmp::Reverse(b.1));
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -2422,8 +2409,7 @@ fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
         .min(inner.width.saturating_sub(8) as usize);
 
     let mut lines: Vec<Line> = vec![search_line];
-    for i in scroll_start..scroll_end {
-        let ((name, key), _score) = filtered[i];
+    for (i, ((name, key), _score)) in filtered.iter().enumerate().take(scroll_end).skip(scroll_start) {
         let prefix = if i == sel { " > " } else { "   " };
         let style = if i == sel {
             Style::default()
@@ -2553,16 +2539,14 @@ fn render_sound_effects_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
     let reverb_on = app.state.reverb.enabled;
 
-    let items = vec![
-        format!("Playback Speed:  {:.1}x", app.playback_speed),
+    let items = [format!("Playback Speed:  {:.1}x", app.playback_speed),
         format!("Reverb:          {}", if reverb_on { "ON" } else { "OFF" }),
         format!(
             "Crossfade:       {}",
             if crossfade_on { "ON" } else { "OFF" }
         ),
         format!("Crossfade Dur:   {}s", crossfade_dur),
-        format!("EQ Preset:       {}", app.state.eq_preset.label()),
-    ];
+        format!("EQ Preset:       {}", app.state.eq_preset.label())];
 
     let sel = app
         .pickers

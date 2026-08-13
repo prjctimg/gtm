@@ -227,7 +227,7 @@ pub struct App {
 }
 
 enum IpcResult {
-    RefreshDone(DaemonState, Option<Vec<u8>>, Option<i64>),
+    RefreshDone(Box<DaemonState>, Option<Vec<u8>>, Option<i64>),
     CoverArt(Option<Vec<u8>>, Option<i64>),
     PopupCoverArt(Option<Vec<u8>>, i64),
     CoverPicker(Option<Picker>),
@@ -417,7 +417,7 @@ impl App {
             let ipc_tx = self.ipc_tx.clone();
             tokio::spawn(async move {
                 if let Ok(state) = c.get_status().await {
-                    let _ = ipc_tx.send(IpcResult::RefreshDone(state, None, None));
+                    let _ = ipc_tx.send(IpcResult::RefreshDone(Box::new(state), None, None));
                 }
             });
         }
@@ -530,7 +530,7 @@ impl App {
                 let ipc_tx2 = self.ipc_tx.clone();
                 tokio::spawn(async move {
                     if let Ok(state) = c.get_status().await {
-                        let _ = ipc_tx2.send(IpcResult::RefreshDone(state, None, None));
+                        let _ = ipc_tx2.send(IpcResult::RefreshDone(Box::new(state), None, None));
                     }
                 });
                 self.last_event_time = std::time::Instant::now();
@@ -550,37 +550,38 @@ impl App {
             // If track changed via daemon event, trigger a cover art fetch.
             // Set last_cover_track_id immediately to prevent redundant spawns.
             // Clear stale cover immediately so we don't show old art on the new track.
-            if current_tid != self.last_cover_track_id && current_tid.is_some() {
-                let tid = current_tid.unwrap();
-                self.last_cover_track_id = Some(tid);
-                self.current_cover = None;
-                self.cover_stateful = None;
-                // Skip cover art in Neovim terminal (no image protocol passthrough)
-                if !no_image_protocol() {
-                    let client2 = self.client.clone();
-                    let ipc_tx2 = self.ipc_tx.clone();
-                    tokio::spawn(async move {
-                        if let Ok(Some(b64)) = client2.get_cover_art(tid).await {
-                            if let Ok(bytes) =
-                                base64::engine::general_purpose::STANDARD.decode(&b64)
-                            {
-                                let _ = ipc_tx2.send(IpcResult::CoverArt(Some(bytes), Some(tid)));
+            if let Some(tid) = current_tid {
+                if Some(tid) != self.last_cover_track_id {
+                    self.last_cover_track_id = Some(tid);
+                    self.current_cover = None;
+                    self.cover_stateful = None;
+                    // Skip cover art in Neovim terminal (no image protocol passthrough)
+                    if !no_image_protocol() {
+                        let client2 = self.client.clone();
+                        let ipc_tx2 = self.ipc_tx.clone();
+                        tokio::spawn(async move {
+                            if let Ok(Some(b64)) = client2.get_cover_art(tid).await {
+                                if let Ok(bytes) =
+                                    base64::engine::general_purpose::STANDARD.decode(&b64)
+                                {
+                                    let _ = ipc_tx2.send(IpcResult::CoverArt(Some(bytes), Some(tid)));
+                                }
                             }
-                        }
-                    });
-                }
-                // Auto-fetch lyrics if lyrics pane is visible
-                if self.show_lyrics {
-                    let client3 = self.client.clone();
-                    let ipc_tx3 = self.ipc_tx.clone();
-                    let tpath = self.state.current_track.as_ref().map(|t| t.path.clone());
-                    self.current_lyrics = None;
-                    self.lyrics_fetching = true;
-                    self.lyrics_scroll = 0;
-                    tokio::spawn(async move {
-                        let result = client3.get_lyrics(tid, tpath.as_deref()).await;
-                        let _ = ipc_tx3.send(IpcResult::Lyrics(result.unwrap_or(None)));
-                    });
+                        });
+                    }
+                    // Auto-fetch lyrics if lyrics pane is visible
+                    if self.show_lyrics {
+                        let client3 = self.client.clone();
+                        let ipc_tx3 = self.ipc_tx.clone();
+                        let tpath = self.state.current_track.as_ref().map(|t| t.path.clone());
+                        self.current_lyrics = None;
+                        self.lyrics_fetching = true;
+                        self.lyrics_scroll = 0;
+                        tokio::spawn(async move {
+                            let result = client3.get_lyrics(tid, tpath.as_deref()).await;
+                            let _ = ipc_tx3.send(IpcResult::Lyrics(result.unwrap_or(None)));
+                        });
+                    }
                 }
             }
 
@@ -591,7 +592,7 @@ impl App {
                         // A stale get_status() response can arrive after a PlaybackStarted
                         // event and overwrite the newer state if we don't guard this.
                         if state.version >= self.state.version {
-                            self.state = state;
+                            self.state = *state;
                             self.client.seed_clock_from_state(&self.state).await;
                             // Cover art is fetched on track-change events only.
                             // Do not clear last_cover_track_id when a periodic
@@ -745,14 +746,14 @@ impl App {
             self.frame_count = frame_count;
             let pos_changed = (self.display_position - self.last_display_position).abs() >= 0.1;
             // Advance title scroll animations (every 3rd frame)
-            if frame_count % 3 == 0 {
+            if frame_count.is_multiple_of(3) {
                 self.footer_title_scroll = self.footer_title_scroll.wrapping_add(1);
                 self.np_title_scroll = self.np_title_scroll.wrapping_add(1);
             }
 
             let force_render = pos_changed
                 || !self.notifications.is_empty()
-                || frame_count % 10 == 0
+                || frame_count.is_multiple_of(10)
                 || self.cover_art_dirty;
             self.cover_art_dirty = false;
             self.last_display_position = self.display_position;
@@ -774,11 +775,10 @@ impl App {
 
             if event::poll(Duration::from_millis(16)).unwrap_or(false) {
                 if let Ok(Event::Key(key)) = event::read() {
-                    if key.kind == KeyEventKind::Press {
-                        if !self.handle_key(key).await || self.pending_quit {
+                    if key.kind == KeyEventKind::Press
+                        && (!self.handle_key(key).await || self.pending_quit) {
                             break;
                         }
-                    }
                 }
             }
         }
@@ -1161,7 +1161,7 @@ impl App {
                                     .iter()
                                     .find(|t| {
                                         filename.contains(&t.title)
-                                            || t.path.contains(&filename.trim_end_matches(".mp3"))
+                                            || t.path.contains(filename.trim_end_matches(".mp3"))
                                     })
                                     .or_else(|| tracks.last())
                                 {
@@ -1256,7 +1256,7 @@ impl App {
                     if let Ok(state) = client2.get_status().await {
                         // Cover art is fetched on track-change events, not
                         // here, to avoid an extra IPC call every second.
-                        let _ = ipc_tx2.send(IpcResult::RefreshDone(state, None, None));
+                        let _ = ipc_tx2.send(IpcResult::RefreshDone(Box::new(state), None, None));
                     }
                     // Also refresh queue to recover from initial background
                     // spawn failures that leave queue_cache empty.
@@ -1546,12 +1546,11 @@ impl App {
                     return true;
                 }
                 // Health panel: Esc closes it
-                if self.show_health_panel {
-                    if key.code == KeyCode::Esc {
+                if self.show_health_panel
+                    && key.code == KeyCode::Esc {
                         self.show_health_panel = false;
                         return true;
                     }
-                }
                 // Handle gg (vim-style double-press) for jump to start
                 if key.code == KeyCode::Char('g')
                     && self.current_tab == Tab::Library
@@ -1757,7 +1756,7 @@ impl App {
                     Some(KeyboardAction::CycleProgressStyle) => {
                         self.progress_style = self.progress_style.next();
                         self.notify(
-                            &format!("Progress: {}", self.progress_style.name()),
+                            format!("Progress: {}", self.progress_style.name()),
                             NotificationKind::Info,
                         );
                     }
@@ -1768,7 +1767,7 @@ impl App {
                         } else {
                             "OFF"
                         };
-                        self.notify(&format!("Visualizer: {}", state), NotificationKind::Info);
+                        self.notify(format!("Visualizer: {}", state), NotificationKind::Info);
                     }
                     Some(KeyboardAction::CheckHealth) => {
                         self.send_high(TuiCommand::CheckHealth);
@@ -1953,13 +1952,8 @@ impl App {
                                     let ipc_tx2 = self.ipc_tx.clone();
                                     let pid = playlist.id;
                                     tokio::spawn(async move {
-                                        if let Ok(res) = c.library_get_playlist_tracks(pid).await {
-                                            match res {
-                                                DaemonRes::Tracks { tracks } => {
-                                                    let _ = ipc_tx2.send(IpcResult::PlaylistTracks(tracks));
-                                                }
-                                                _ => {}
-                                            }
+                                        if let Ok(DaemonRes::Tracks { tracks }) = c.library_get_playlist_tracks(pid).await {
+                                            let _ = ipc_tx2.send(IpcResult::PlaylistTracks(tracks));
                                         }
                                     });
                                 }
@@ -2034,32 +2028,29 @@ impl App {
                                     }
                                     _ => {}
                                 },
-                                1 => match opt {
-                                    1 => {
-                                        // Cookie File: set directory
-                                        let c = self.client.clone();
-                                        let current = self.cookie_file.clone();
-                                        let new_path = if current.is_some() {
-                                            None
-                                        } else {
-                                            // Default to common cookie path
-                                            let home = std::env::var("HOME").unwrap_or_default();
-                                            Some(format!("{home}/.cookies/youtube.txt"))
-                                        };
-                                        let display = new_path.clone().unwrap_or_else(|| "(none)".to_string());
-                                        self.cookie_file = new_path.clone();
-                                        let cf = new_path.clone();
-                                        tokio::spawn(async move {
-                                            let _ = c.yt_set_config(
-                                                None, cf, None, None, None,
-                                            ).await;
-                                        });
-                                        self.notify(
-                                            format!("Cookie file: {display}"),
-                                            crate::app::NotificationKind::Info,
-                                        );
-                                    }
-                                    _ => {}
+                                1 => if opt == 1 {
+                                    // Cookie File: set directory
+                                    let c = self.client.clone();
+                                    let current = self.cookie_file.clone();
+                                    let new_path = if current.is_some() {
+                                        None
+                                    } else {
+                                        // Default to common cookie path
+                                        let home = std::env::var("HOME").unwrap_or_default();
+                                        Some(format!("{home}/.cookies/youtube.txt"))
+                                    };
+                                    let display = new_path.clone().unwrap_or_else(|| "(none)".to_string());
+                                    self.cookie_file = new_path.clone();
+                                    let cf = new_path.clone();
+                                    tokio::spawn(async move {
+                                        let _ = c.yt_set_config(
+                                            None, cf, None, None, None,
+                                        ).await;
+                                    });
+                                    self.notify(
+                                        format!("Cookie file: {display}"),
+                                        crate::app::NotificationKind::Info,
+                                    );
                                 },
                                 2 => match opt {
                                     0 => {
@@ -2603,7 +2594,7 @@ impl App {
                     self.sleep_timer_remaining = Some(mins as u64);
                     self.send_high(TuiCommand::SetSleepTimer(mins));
                     self.notify(
-                        &format!("Sleep timer set: {} min", mins),
+                        format!("Sleep timer set: {} min", mins),
                         NotificationKind::Info,
                     );
                     self.pickers.close_top();
@@ -2783,17 +2774,15 @@ impl App {
                         let client = self.client.clone();
                         let ipc_tx = self.ipc_tx.clone();
                         tokio::spawn(async move {
-                            let _ = client
-                                .library_update_metadata(
-                                    track_id,
-                                    Some(title),
-                                    Some(artist),
-                                    Some(album),
-                                    Some(genre),
-                                    year,
-                                    track_number,
-                                )
-                                .await;
+                            let patch = gtm_core::MetadataPatch {
+                                title: Some(title),
+                                artist: Some(artist),
+                                album: Some(album),
+                                genre: Some(genre),
+                                year,
+                                track_number,
+                            };
+                            let _ = client.library_update_metadata(track_id, patch).await;
                             let _ = ipc_tx.send(IpcResult::Notification(
                                 "Metadata saved".to_string(),
                                 NotificationKind::Success,
@@ -2965,7 +2954,7 @@ impl App {
                                 } else if label.starts_with("progress style") {
                                     self.progress_style = self.progress_style.next();
                                     self.notify(
-                                        &format!("Progress: {}", self.progress_style.name()),
+                                        format!("Progress: {}", self.progress_style.name()),
                                         crate::app::NotificationKind::Info,
                                     );
                                 } else if label.starts_with("visualizer") {
@@ -2976,7 +2965,7 @@ impl App {
                                         "OFF"
                                     };
                                     self.notify(
-                                        &format!("Visualizer: {}", state),
+                                        format!("Visualizer: {}", state),
                                         crate::app::NotificationKind::Info,
                                     );
                                 }
@@ -3074,16 +3063,16 @@ impl App {
                                     let client = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
+let patch = gtm_core::MetadataPatch {
+                                             title: Some(title),
+                                             artist: Some(artist),
+                                             album: Some(album),
+                                             genre: Some(genre),
+                                             year,
+                                             track_number,
+                                         };
                                         let _ = client
-                                            .library_update_metadata(
-                                                track_id,
-                                                Some(title),
-                                                Some(artist),
-                                                Some(album),
-                                                Some(genre),
-                                                year,
-                                                track_number,
-                                            )
+                                            .library_update_metadata(track_id, patch)
                                             .await;
                                         let _ = ipc_tx.send(IpcResult::Notification(
                                             "Metadata saved".to_string(),

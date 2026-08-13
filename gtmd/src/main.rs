@@ -38,7 +38,7 @@ async fn main() {
         std::process::exit(1);
     }
 
-    let log_file = config.log_file.as_ref().map(|p| p.as_path());
+    let log_file = config.log_file.as_deref();
 
     let log_level = if args.verbose { "debug" } else { "info" };
 

@@ -15,8 +15,8 @@ use tokio::net::UnixStream;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 use crate::ipc::{
-    DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction, WireEvent, WireReq, WireRes,
-    PROTOCOL_VERSION,
+    DaemonEvent, DaemonReq, DaemonRes, LibraryAction, MetadataPatch, QueueAction, WireEvent,
+    WireReq, WireRes, PROTOCOL_VERSION,
 };
 use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::state::{self, DaemonState, EqPreset, PlaybackStatus, RepeatMode, YTFilter};
@@ -579,23 +579,10 @@ impl DaemonClient {
     pub async fn library_update_metadata(
         &self,
         track_id: i64,
-        title: Option<String>,
-        artist: Option<String>,
-        album: Option<String>,
-        genre: Option<String>,
-        year: Option<i32>,
-        track_number: Option<i32>,
+        patch: MetadataPatch,
     ) -> Result<()> {
         self.send_ok(DaemonReq::Library {
-            action: LibraryAction::UpdateMetadata {
-                track_id,
-                title,
-                artist,
-                album,
-                genre,
-                year,
-                track_number,
-            },
+            action: LibraryAction::UpdateMetadata { track_id, patch },
         })
         .await
     }
@@ -953,7 +940,7 @@ impl IpcWorker {
                 }
                 Err(e) => {
                     attempt += 1;
-                    if attempt % 10 == 0 {
+                    if attempt.is_multiple_of(10) {
                         crate::log::log(&format!(
                             "IPC worker reconnect attempt {attempt} failed: {e}"
                         ));

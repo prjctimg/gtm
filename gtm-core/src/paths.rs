@@ -24,7 +24,7 @@ pub fn is_termux() -> bool {
 fn state_dir() -> PathBuf {
     if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
         let p = PathBuf::from(&runtime).join("gtm");
-        if p.parent().map_or(false, |d| d.exists()) {
+        if p.parent().is_some_and(|d| d.exists()) {
             let _ = std::fs::create_dir_all(&p);
             return p;
         }
@@ -42,7 +42,7 @@ fn state_dir() -> PathBuf {
     }
     if let Ok(tmpdir) = std::env::var("TMPDIR") {
         let p = PathBuf::from(&tmpdir).join("gtm");
-        if p.parent().map_or(false, |d| d.exists()) {
+        if p.parent().is_some_and(|d| d.exists()) {
             let _ = std::fs::create_dir_all(&p);
             return p;
         }
@@ -50,7 +50,7 @@ fn state_dir() -> PathBuf {
     if is_termux() {
         if let Ok(prefix) = std::env::var("PREFIX") {
             let p = PathBuf::from(prefix).join("tmp").join("gtm");
-            if p.parent().map_or(false, |d| d.exists()) {
+            if p.parent().is_some_and(|d| d.exists()) {
                 let _ = std::fs::create_dir_all(&p);
                 return p;
             }

@@ -27,6 +27,12 @@ pub struct YoutubeManager {
     cookie_file: Option<PathBuf>,
 }
 
+impl Default for YoutubeManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl YoutubeManager {
     pub fn new() -> Self {
         Self {

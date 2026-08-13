@@ -791,7 +791,7 @@ impl Daemon {
                 enabled,
                 duration_secs,
                 easing,
-            } => Self::cmd_crossfade(inner, *enabled, *duration_secs, easing.clone()).await,
+            } => Self::cmd_crossfade(inner, *enabled, *duration_secs, *easing).await,
             DaemonReq::SetLoudnessMode { mode } => Self::cmd_set_loudness_mode(inner, *mode).await,
             DaemonReq::ScanLoudness { track_ids, force } => {
                 Self::cmd_scan_loudness(inner, track_ids.clone(), *force).await
@@ -907,7 +907,7 @@ impl Daemon {
             DaemonReq::GetStatus => Self::cmd_get_status(inner).await,
             DaemonReq::CheckHealth => Self::cmd_check_health(inner).await,
             DaemonReq::Ping => Ok(DaemonRes::Pong),
-            DaemonReq::Queue { action } => Self::cmd_queue(inner, &action).await,
+            DaemonReq::Queue { action } => Self::cmd_queue(inner, action).await,
             DaemonReq::SetEqPreset { preset } => Self::cmd_set_eq_preset(inner, *preset).await,
             DaemonReq::SetEqEnabled { enabled } => Self::cmd_set_eq_enabled(inner, *enabled).await,
             DaemonReq::SetReverb { enabled, room_size } => {
@@ -2348,7 +2348,7 @@ impl Daemon {
                             || track
                                 .cover_path
                                 .as_ref()
-                                .map_or(true, |p| !std::path::Path::new(p).exists());
+                                .is_none_or(|p| !std::path::Path::new(p).exists());
                         if !missing_cover {
                             continue;
                         }
@@ -2481,34 +2481,13 @@ impl Daemon {
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
-            gtm_core::ipc::LibraryAction::UpdateMetadata {
-                track_id,
-                title,
-                artist,
-                album,
-                genre,
-                year,
-                track_number,
-            } => {
+            gtm_core::ipc::LibraryAction::UpdateMetadata { track_id, patch } => {
                 let track_id = *track_id;
-                let t = title.clone();
-                let a = artist.clone();
-                let al = album.clone();
-                let g = genre.clone();
-                let y = *year;
-                let tn = *track_number;
+                let patch = patch.clone();
                 let data_dir = inner.config.data_dir.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    lib.update_metadata(
-                        track_id,
-                        t.as_deref(),
-                        a.as_deref(),
-                        al.as_deref(),
-                        g.as_deref(),
-                        y,
-                        tn,
-                    )
+                    lib.update_metadata(track_id, &patch)
                 })
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
@@ -2708,7 +2687,7 @@ impl Daemon {
         components.push(ComponentHealth {
             name: "event_channel".into(),
             status: HealthStatus::Ok,
-            message: Some(format!("capacity 1024")),
+            message: Some("capacity 1024".to_string()),
             uptime_secs: None,
         });
 

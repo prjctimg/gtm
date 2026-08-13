@@ -87,10 +87,7 @@ impl TestReader {
             }
             if self.buf[0] == b'{' {
                 // JSON line — either a response envelope or an event line.
-                let pos = match self.buf.iter().position(|&b| b == b'\n') {
-                    Some(p) => p,
-                    None => return None, // incomplete line, need more data
-                };
+                let pos = self.buf.iter().position(|&b| b == b'\n')?;
                 let line = self.buf[..pos].to_vec();
                 self.buf.drain(..=pos);
                 match serde_json::from_slice::<WireRes>(&line) {
@@ -226,7 +223,7 @@ async fn test_queue_add_and_list() {
         },
     )
     .await;
-    assert!(matches!(res, DaemonRes::Ok { .. }), "got {res:?}");
+    assert!(matches!(res, DaemonRes::Ok), "got {res:?}");
 
     let res = send_req(
         &mut reader,
@@ -270,7 +267,7 @@ async fn test_queue_add_multiple() {
             },
         )
         .await;
-        assert!(matches!(res, DaemonRes::Ok { .. }));
+        assert!(matches!(res, DaemonRes::Ok));
     }
 
     // Each Add with `position: None` queues the entry "next" (right after the
@@ -330,7 +327,7 @@ async fn test_queue_remove() {
         },
     )
     .await;
-    assert!(matches!(res, DaemonRes::Ok { .. }), "got {res:?}");
+    assert!(matches!(res, DaemonRes::Ok), "got {res:?}");
 
     let res = send_req(
         &mut reader,
@@ -381,7 +378,7 @@ async fn test_queue_clear() {
         },
     )
     .await;
-    assert!(matches!(res, DaemonRes::Ok { .. }));
+    assert!(matches!(res, DaemonRes::Ok));
 
     let res = send_req(
         &mut reader,

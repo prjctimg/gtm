@@ -24,6 +24,12 @@ pub struct NullMixer {
     standby_loaded: Mutex<bool>,
 }
 
+impl Default for NullMixer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NullMixer {
     pub fn new() -> Self {
         Self {

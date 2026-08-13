@@ -76,8 +76,8 @@ pub fn clean_youtube_title(title: &str) -> (Option<String>, String) {
         if pos < result.len() - 8 {
             // There's content after " - Topic"
             let after = &result[pos + 8..];
-            if after.starts_with(" - ") {
-                result = after[3..].to_string();
+            if let Some(rest) = after.strip_prefix(" - ") {
+                result = rest.to_string();
             }
         }
     }
@@ -195,10 +195,10 @@ fn strip_suffix_parenthesized(s: &str, pred: impl Fn(&str) -> bool) -> String {
 fn find_last_bracket_pair(s: &str) -> Option<(char, char, usize, usize)> {
     let bytes = s.as_bytes();
     let mut last = None;
-    for i in 0..s.len() {
-        match bytes[i] {
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
             b'(' | b'[' => {
-                last = Some((bytes[i] as char, i));
+                last = Some((b as char, i));
             }
             b')' => {
                 if let Some((open, open_pos)) = last {

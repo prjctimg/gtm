@@ -138,6 +138,12 @@ pub struct DecodeControl {
     pub channels: AtomicU16,
 }
 
+impl Default for DecodeControl {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DecodeControl {
     pub fn new() -> Self {
         Self {

@@ -332,7 +332,7 @@ impl DaemonState {
                 easing,
             } => {
                 self.crossfade = if *enabled {
-                    let easing_val = easing.clone().unwrap_or_else(|| {
+                    let easing_val = (*easing).unwrap_or_else(|| {
                         self.crossfade
                             .as_ref()
                             .map(|c| c.easing)
@@ -354,7 +354,7 @@ impl DaemonState {
                 };
             }
             DaemonEvent::EqPresetChanged { preset } => {
-                self.eq_preset = preset.clone();
+                self.eq_preset = *preset;
             }
             DaemonEvent::LoudnessModeChanged { mode } => {
                 self.loudness_mode = *mode;
@@ -414,7 +414,7 @@ impl DaemonState {
         assert!(
             self.crossfade
                 .as_ref()
-                .map_or(true, |c| !c.enabled || c.duration_secs > 0),
+                .is_none_or(|c| !c.enabled || c.duration_secs > 0),
             "crossfade enabled with duration_secs = 0"
         );
     }

@@ -10,17 +10,14 @@ use clap::Parser;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum AudioBackendKind {
+    #[default]
     Rodio,
     #[cfg(feature = "pulseaudio")]
     PulseAudio,
 }
 
-impl Default for AudioBackendKind {
-    fn default() -> Self {
-        Self::Rodio
-    }
-}
 
 #[derive(Debug, Clone)]
 pub struct DaemonConfig {

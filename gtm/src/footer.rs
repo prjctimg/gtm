@@ -15,6 +15,7 @@ use gtm_core::state::PlaybackStatus;
 use crate::app::App;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum FooterModule {
     Playback,
     Title,
@@ -86,7 +87,7 @@ pub fn presets() -> Vec<FooterPreset> {
     ]
 }
 
-pub fn num_presets() -> u8 {
+pub fn num_presets() -> usize {
     3
 }
 
@@ -143,7 +144,7 @@ fn build_groups<'a>(preset: &'a FooterPreset, app: &App) -> Vec<FooterGroup<'a>>
     let mut groups = Vec::new();
 
     // Collect all modules from all preset fields
-    let mut all: Vec<&'a FooterModule> = preset
+    let all: Vec<&'a FooterModule> = preset
         .a
         .iter()
         .chain(preset.b.iter())
@@ -325,7 +326,7 @@ fn render_playback(app: &App) -> String {
 
 fn render_title(app: &App) -> String {
     let raw = app.state.current_track.as_ref().map_or_else(
-        || String::new(),
+        String::new,
         |t| {
             if t.artist.is_empty() {
                 t.title.clone()
@@ -480,7 +481,7 @@ fn read_process_memory_kb() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     for line in status.lines() {
         if let Some(rest) = line.strip_prefix("VmRSS:") {
-            let kb: u64 = rest.trim().split_whitespace().next()?.parse().ok()?;
+            let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
             return Some(kb);
         }
     }

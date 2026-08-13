@@ -20,6 +20,7 @@ use symphonia::core::units::Timestamp;
 use tracing::warn;
 
 use gtm_core::track::{Playlist, TrackInfo};
+use gtm_core::MetadataPatch;
 
 const DB_NAME: &str = "library.db";
 
@@ -160,30 +161,25 @@ impl Library {
     pub fn update_metadata(
         &self,
         id: i64,
-        title: Option<&str>,
-        artist: Option<&str>,
-        album: Option<&str>,
-        genre: Option<&str>,
-        year: Option<i32>,
-        track_number: Option<i32>,
+        patch: &MetadataPatch,
     ) -> Result<(), String> {
         let mut sets = Vec::new();
-        if title.is_some() {
+        if patch.title.is_some() {
             sets.push("title = ?2");
         }
-        if artist.is_some() {
+        if patch.artist.is_some() {
             sets.push("artist = ?3");
         }
-        if album.is_some() {
+        if patch.album.is_some() {
             sets.push("album = ?4");
         }
-        if genre.is_some() {
+        if patch.genre.is_some() {
             sets.push("genre = ?5");
         }
-        if year.is_some() {
+        if patch.year.is_some() {
             sets.push("year = ?6");
         }
-        if track_number.is_some() {
+        if patch.track_number.is_some() {
             sets.push("track_number = ?7");
         }
         if sets.is_empty() {
@@ -193,7 +189,15 @@ impl Library {
         self.conn
             .execute(
                 &sql,
-                params![id, title, artist, album, genre, year, track_number],
+                params![
+                    id,
+                    patch.title,
+                    patch.artist,
+                    patch.album,
+                    patch.genre,
+                    patch.year,
+                    patch.track_number
+                ],
             )
             .map_err(|e| format!("update metadata: {e}"))?;
         Ok(())
@@ -602,11 +606,10 @@ fn extract_metadata(path: &str, cache_dir: Option<&str>) -> Result<(Metadata, St
                     Some(StandardTag::RecordingYear(n))
                     | Some(StandardTag::ReleaseYear(n))
                     | Some(StandardTag::OriginalReleaseYear(n))
-                    | Some(StandardTag::OriginalRecordingYear(n)) => {
-                        if year.is_none() {
+                    | Some(StandardTag::OriginalRecordingYear(n))
+                        if year.is_none() => {
                             year = Some(*n as i32);
                         }
-                    }
                     _ => {}
                 }
             }

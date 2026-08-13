@@ -24,5 +24,6 @@ pub use state::{
     CoreError, CrossfadeConfig, DaemonState, Easing, EqBand, ReverbConfig, EQ_FREQUENCIES,
 };
 pub use track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
+pub use ipc::MetadataPatch;
 
 pub type Result<T> = std::result::Result<T, CoreError>;

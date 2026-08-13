@@ -196,7 +196,7 @@ impl DecodeThread {
                 // Apply EQ
                 let eq_sample = if self.eq_enabled.load(Ordering::Relaxed) {
                     gain_check += 1;
-                    if gain_check % 128 == 0 {
+                    if gain_check.is_multiple_of(128) {
                         for i in 0..15 {
                             let v = self.eq_gains.load(i);
                             if v != prev_gains[i] {

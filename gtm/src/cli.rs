@@ -304,13 +304,14 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
                     match lyrics {
                         Some(l) => {
                             if l.lines.is_empty() {
+                                let artist_str = if let Some(ref a) = l.artist {
+                                    format!("{a} — ")
+                                } else {
+                                    String::new()
+                                };
                                 Ok(format!(
                                     "Found lyrics metadata for {}{} but no timed lines.",
-                                    if l.artist.is_some() {
-                                        format!("{} — ", l.artist.as_ref().unwrap())
-                                    } else {
-                                        String::new()
-                                    },
+                                    artist_str,
                                     l.title.as_ref().unwrap_or(&String::from("unknown"))
                                 ))
                             } else {

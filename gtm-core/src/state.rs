@@ -23,7 +23,9 @@ pub enum CoreError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum Easing {
+    #[default]
     Linear,
     SlowFadeInFastFadeOut,
     FastFadeInSlowFadeOut,
@@ -47,38 +49,27 @@ impl Easing {
     }
 }
 
-impl Default for Easing {
-    fn default() -> Self {
-        Self::Linear
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Default)]
 pub enum LoudnessMode {
+    #[default]
     Off,
     Track,
     Album,
     Auto,
 }
 
-impl Default for LoudnessMode {
-    fn default() -> Self {
-        Self::Off
-    }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum DynamicMode {
+    #[default]
     Off,
     On,
 }
 
-impl Default for DynamicMode {
-    fn default() -> Self {
-        Self::Off
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DynamicModeConfig {
@@ -109,6 +100,7 @@ impl Default for DynamicModeConfig {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct ScrobbleConfig {
     pub enabled: bool,
     pub api_key: Option<String>,
@@ -117,17 +109,6 @@ pub struct ScrobbleConfig {
     pub min_play_pct: Option<f32>,
 }
 
-impl Default for ScrobbleConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            api_key: None,
-            session_token: None,
-            min_play_secs: None,
-            min_play_pct: None,
-        }
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrossfadeConfig {
@@ -475,7 +456,7 @@ impl SavedState {
         }
         let tmp = path.with_extension("json.tmp");
         let json = serde_json::to_string_pretty(self)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+            .map_err(std::io::Error::other)?;
         std::fs::write(&tmp, json)?;
         std::fs::rename(&tmp, path)?;
         Ok(())

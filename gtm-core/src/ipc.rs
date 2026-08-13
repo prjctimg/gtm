@@ -91,13 +91,19 @@ pub enum LibraryAction {
     },
     UpdateMetadata {
         track_id: i64,
-        title: Option<String>,
-        artist: Option<String>,
-        album: Option<String>,
-        genre: Option<String>,
-        year: Option<i32>,
-        track_number: Option<i32>,
+        patch: MetadataPatch,
     },
+}
+
+/// Optional metadata fields for an edit-metadata request.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MetadataPatch {
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
+    pub genre: Option<String>,
+    pub year: Option<i32>,
+    pub track_number: Option<i32>,
 }
 
 /// Wire request: client -> daemon.

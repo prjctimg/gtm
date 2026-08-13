@@ -461,7 +461,7 @@ fn encode_decode_empty() {
     let buf = encode(&[]).unwrap();
     let (frame, consumed) = decode(&buf).unwrap().unwrap();
     assert!(frame.is_empty());
-    assert_eq!(consumed as usize, buf.len());
+    assert_eq!(consumed, buf.len());
 }
 
 #[test]
@@ -471,7 +471,7 @@ fn encode_decode_one() {
     let (frame, consumed) = decode(&buf).unwrap().unwrap();
     assert_eq!(frame.len(), 1);
     assert!(matches!(frame[0], DaemonEvent::PlaybackPaused { .. }));
-    assert_eq!(consumed as usize, buf.len());
+    assert_eq!(consumed, buf.len());
 }
 
 #[test]
@@ -484,7 +484,7 @@ fn encode_decode_multi() {
     let buf = encode(&events).unwrap();
     let (frame, consumed) = decode(&buf).unwrap().unwrap();
     assert_eq!(frame.len(), 3);
-    assert_eq!(consumed as usize, buf.len());
+    assert_eq!(consumed, buf.len());
 }
 
 #[test]

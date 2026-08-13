@@ -212,8 +212,8 @@ impl AudioMixer {
         sink.log_on_drop(false);
         let sink = Arc::new(MixerDeviceSink(sink));
         let mixer = sink.0.mixer();
-        let a = Player::connect_new(&mixer);
-        let b = Player::connect_new(&mixer);
+        let a = Player::connect_new(mixer);
+        let b = Player::connect_new(mixer);
 
         b.set_volume(0.0);
         b.pause();
@@ -529,7 +529,7 @@ impl AudioMixer {
         };
         ctrl.signal_seek(position_secs);
         *self.position.lock().unwrap() = position_secs;
-        *self.start_time.lock().unwrap() = (position_secs > 0.0).then(|| Instant::now());
+        *self.start_time.lock().unwrap() = (position_secs > 0.0).then(Instant::now);
         *self.start_pos.lock().unwrap() = position_secs;
         Ok(())
     }

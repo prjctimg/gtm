@@ -128,12 +128,12 @@ where
         let raw = self.inner.next()?;
 
         self.gain_check_counter = self.gain_check_counter.wrapping_add(1);
-        if self.gain_check_counter % 128 == 0 {
-            for i in 0..15 {
+        if self.gain_check_counter.is_multiple_of(128) {
+            for (i, freq) in EQ_FREQUENCIES.iter().enumerate() {
                 let v = self.gains.load(i);
                 if v != self.prev_gains[i] {
-                    apply_band(&mut *self.eq_left, i, EQ_FREQUENCIES[i] as f32, v);
-                    apply_band(&mut *self.eq_right, i, EQ_FREQUENCIES[i] as f32, v);
+                    apply_band(&mut *self.eq_left, i, *freq as f32, v);
+                    apply_band(&mut *self.eq_right, i, *freq as f32, v);
                     self.prev_gains[i] = v;
                 }
             }
