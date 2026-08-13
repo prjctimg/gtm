@@ -12,7 +12,9 @@ use gtm_core::client::DaemonClient;
 use gtm_core::ipc::DaemonRes;
 use gtm_core::state::{DaemonState, Easing, PlaybackStatus, RepeatMode, Tab};
 use gtm_core::track::{Playlist, TrackInfo, YTSearchResult};
+use ratatui::layout::Alignment;
 use ratatui::Terminal;
+use ratatui::widgets::Paragraph;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 use tokio::sync::mpsc;
@@ -130,7 +132,6 @@ pub struct App {
     pub yt_results_cache: Vec<gtm_core::track::YTSearchResult>,
     pub volume_input: String,
     pub playlist_cache: Vec<gtm_core::track::Playlist>,
-    pub error_message: Option<String>,
     pub status_message: Option<String>,
     pub notifications: Vec<Notification>,
     pub crossfade_duration: u8,
@@ -275,7 +276,6 @@ impl App {
             yt_results_cache: Vec::new(),
             volume_input: String::new(),
             playlist_cache: Vec::new(),
-            error_message: None,
             status_message: None,
             notifications: Vec::new(),
             crossfade_duration: 7,
@@ -520,7 +520,9 @@ impl App {
                             expires_at: std::time::Instant::now() + Duration::from_secs(5),
                         });
                     }
-                    IpcResult::Error(e) => self.error_message = Some(e),
+                    IpcResult::Error(e) => {
+                        self.notify(e, NotificationKind::Error);
+                    }
                     IpcResult::PopupCoverArt(cover, track_id) => {
                         if !no_image_protocol() && self.track_popup_track_id == Some(track_id) {
                             self.track_popup_cover = cover;
@@ -625,7 +627,14 @@ impl App {
             self.last_display_position = self.display_position;
 
             if force_render {
-                if terminal.draw(|f| ui::render(f, &mut self)).is_ok() {
+                let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
+                if cols < 40 || rows < 10 {
+                    let _ = terminal.draw(|f| {
+                        let msg = Paragraph::new("Terminal too small (min 40x10)")
+                            .alignment(Alignment::Center);
+                        f.render_widget(msg, f.area());
+                    });
+                } else if terminal.draw(|f| ui::render(f, &mut self)).is_ok() {
                     self.suppress_footer_refresh = false;
                 }
             }
@@ -977,10 +986,6 @@ impl App {
                         .arg("--extract-audio")
                         .arg("--audio-format")
                         .arg("mp3")
-                        .arg("--embed-thumbnail")
-                        .arg("--convert-thumbnails")
-                        .arg("jpg")
-                        .arg("--write-thumbnail")
                         .arg("-o")
                         .arg(template.to_string_lossy().as_ref())
                         .arg(&url)

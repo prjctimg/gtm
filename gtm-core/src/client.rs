@@ -122,6 +122,10 @@ impl DaemonClient {
                     *base_time = None;
                     self.is_playing.store(false, Ordering::Release);
                 }
+                DaemonEvent::PositionChanged { time_pos } => {
+                    *base_pos = *time_pos;
+                    *base_time = Some(Instant::now());
+                }
                 DaemonEvent::PlaybackStopped | DaemonEvent::TrackEnded => {
                     *base_pos = 0.0;
                     *base_time = None;

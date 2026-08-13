@@ -419,17 +419,20 @@ impl Daemon {
     async fn dispatch(&mut self, _client_id: ClientId, req: DaemonReq, reply_tx: ReplyTx) {
         let res = match self.handle_request(&req).await {
             Ok(res) => res,
-            Err(e) => DaemonRes::Error {
-                version: self.state.read().await.version as u32,
-                message: e.to_string(),
-            },
+            Err(e) => {
+                warn!("command {:?} failed: {e}", req);
+                DaemonRes::Error {
+                    version: self.state.read().await.version as u32,
+                    message: e.to_string(),
+                }
+            }
         };
         let _ = reply_tx.send(res);
     }
 
     async fn handle_request(&mut self, req: &DaemonReq) -> Result<DaemonRes, CoreError> {
         match req {
-            DaemonReq::Play { path, start_pos } => self.cmd_play(path, *start_pos).await,
+            DaemonReq::Play { path, start_pos } => self.cmd_play(path, *start_pos, false).await,
             DaemonReq::PlayPause => self.cmd_playpause().await,
             DaemonReq::Pause => self.cmd_pause().await,
             DaemonReq::Stop => self.cmd_stop().await,
@@ -649,7 +652,7 @@ impl Daemon {
     ///
     /// Stops any current playback first, then loads and plays the new track.
     /// Creates a minimal TrackInfo (metadata extraction is future work).
-    async fn cmd_play(&mut self, path: &str, start_pos: f64) -> Result<DaemonRes, CoreError> {
+    async fn cmd_play(&mut self, path: &str, start_pos: f64, auto_advanced: bool) -> Result<DaemonRes, CoreError> {
         self.mixer.stop()?;
         self.crossfade_loaded_for = None;
         {
@@ -731,7 +734,7 @@ impl Daemon {
         drop(state);
         self.push_event(DaemonEvent::PlaybackStarted {
             track,
-            auto_advanced: false,
+            auto_advanced,
             time_pos: start_pos,
             duration: dur,
         });
@@ -785,7 +788,7 @@ impl Daemon {
                 });
                 Ok(DaemonRes::Ok { version })
             } else if !path.is_empty() {
-                self.cmd_play(&path, 0.0).await
+                self.cmd_play(&path, 0.0, false).await
             } else {
                 // Stopped with no current track — try first track in queue
                 let state = self.state.read().await;
@@ -794,7 +797,7 @@ impl Daemon {
                 drop(state);
                 if !queue.is_empty() {
                     let idx = cursor.min(queue.len() - 1);
-                    self.cmd_play(&queue[idx].path, 0.0).await
+                    self.cmd_play(&queue[idx].path, 0.0, false).await
                 } else {
                     let version = self.state.read().await.version as u32;
                     Ok(DaemonRes::Ok { version })
@@ -884,7 +887,7 @@ impl Daemon {
         }
         self.crossfade_loaded_for = None;
         let path = track.path.clone();
-        let res = self.cmd_play(&path, 0.0).await?;
+        let res = self.cmd_play(&path, 0.0, true).await?;
         self.push_event(DaemonEvent::QueueIndexChanged { index: idx });
         Ok(res)
     }
@@ -945,7 +948,7 @@ impl Daemon {
         }
         self.crossfade_loaded_for = None;
         let path = track.path.clone();
-        let res = self.cmd_play(&path, 0.0).await?;
+        let res = self.cmd_play(&path, 0.0, true).await?;
         self.push_event(DaemonEvent::QueueIndexChanged { index: idx });
         Ok(res)
     }
@@ -965,6 +968,7 @@ impl Daemon {
         state.seek(actual)?;
         let version = state.version as u32;
         drop(state);
+        self.push_event(DaemonEvent::PositionChanged { time_pos: actual });
         Ok(DaemonRes::Ok { version })
     }
 
@@ -1159,7 +1163,7 @@ impl Daemon {
                     if was_empty {
                         // Auto-play; if it fails (e.g. file missing), still
                         // report success for the queue operation.
-                        let _ = self.cmd_play(path, 0.0).await;
+                        let _ = self.cmd_play(path, 0.0, false).await;
                     }
                 }
                 let version = self.state.read().await.version as u32;
@@ -1178,7 +1182,7 @@ impl Daemon {
                     drop(state);
                     self.push_event(DaemonEvent::QueueChanged { queue, cursor });
                     if was_empty {
-                        let _ = self.cmd_play(&first_path, 0.0).await;
+                        let _ = self.cmd_play(&first_path, 0.0, false).await;
                     }
                 }
                 let version = self.state.read().await.version as u32;
@@ -1205,7 +1209,7 @@ impl Daemon {
                     self.push_event(DaemonEvent::QueueChanged { queue, cursor });
                     // If queue was empty and stopped, auto-play the first track
                     if was_empty {
-                        return self.cmd_play(&first_path, 0.0).await;
+                        return self.cmd_play(&first_path, 0.0, false).await;
                     }
                 }
                 let version = self.state.read().await.version as u32;
