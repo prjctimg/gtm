@@ -1,6 +1,5 @@
 # gtm-rs
 
-[![CI](https://github.com/skchr/gtm-rs/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/skchr/gtm-rs/actions/workflows/ci.yml)
 [![Release](https://github.com/skchr/gtm-rs/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/skchr/gtm-rs/actions/workflows/release.yml)
 [![License](https://img.shields.io/badge/license-GPLv3-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rustc-1.81+-orange.svg)](https://www.rust-lang.org)

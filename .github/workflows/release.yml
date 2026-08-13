@@ -165,15 +165,15 @@ jobs:
           name: ${{ needs.tag.outputs.tag }}
           generate_release_notes: true
           files: |
-            gtm-*-linux
-            gtm-*-darwin
-            gtmd-*-linux
-            gtmd-*-darwin
-            gtm-tui-*-linux
-            gtm-tui-*-darwin
-            gtm-*.tar.gz
-            gtmd-*.tar.gz
-            gtm-tui-*.tar.gz
-            man/*
-            completions/*
-            *.deb
+            target/release/gtm-*-linux
+            target/release/gtm-*-darwin
+            target/release/gtmd-*-linux
+            target/release/gtmd-*-darwin
+            target/release/gtm-tui-*-linux
+            target/release/gtm-tui-*-darwin
+            target/release/gtm-*.tar.gz
+            target/release/gtmd-*.tar.gz
+            target/release/gtm-tui-*.tar.gz
+            artifacts/man/*
+            artifacts/completions/*
+            target/debian/*.deb
