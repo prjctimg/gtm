@@ -460,16 +460,13 @@ impl AudioMixer {
     }
 
     pub fn seek(&mut self, position_secs: f64) -> AudioResult<()> {
-        // Signal decode thread to seek at the given position
-        if let Some(ref ctrl) = self.active_control {
-            ctrl.signal_seek(position_secs);
-            // Brief wait for decode thread to flush + restart
-            let deadline = Instant::now() + Duration::from_secs(2);
-            while ctrl.seeking.load(Ordering::Acquire)
-                && Instant::now() < deadline
-            {
-                std::thread::sleep(Duration::from_millis(5));
-            }
+        let Some(ref ctrl) = self.active_control else {
+            return Ok(());
+        };
+        ctrl.signal_seek(position_secs);
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while ctrl.seeking.load(Ordering::Acquire) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
         }
         *self.position.lock().unwrap() = position_secs;
         *self.start_time.lock().unwrap() = (position_secs > 0.0).then(|| Instant::now());

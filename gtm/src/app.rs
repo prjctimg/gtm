@@ -386,16 +386,60 @@ impl App {
         mut self,
         terminal: &mut Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     ) -> Result<(), Box<dyn std::error::Error>> {
-        self.fetch_state().await;
-        // Clamp volume to safe level on startup so the safety prompt
-        // doesn't appear immediately when the TUI opens.
+        // Fetch state and queue in parallel for faster startup.
+        let c1 = self.client.clone();
+        let c2 = self.client.clone();
+        let (state_res, queue_res) = tokio::join!(
+            c1.get_status(),
+            c2.queue_list()
+        );
+        if let Ok(state) = state_res {
+            self.client.seed_clock_from_state(&state).await;
+            self.state = state;
+            let track_id = self.state.current_track.as_ref().map(|t| t.id);
+            if track_id != self.last_cover_track_id {
+                if let Some(tid) = track_id {
+                    if let Ok(Some(b64)) = self.client.get_cover_art(tid).await {
+                        if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
+                            self.current_cover = Some(bytes);
+                            self.last_cover_track_id = track_id;
+                        }
+                    }
+                }
+                self.sync_cover_stateful();
+            }
+        }
         if self.state.volume > 85 {
             let _ = self.client.set_volume(85).await;
             self.state.volume = 85;
         }
-        self.fetch_queue().await;
-        self.fetch_library_tracks().await;
+        if let Ok(DaemonRes::QueueState { tracks, cursor, .. }) = queue_res {
+            self.queue_cache = tracks;
+            self.queue_cursor = cursor as usize;
+        }
         self.is_ready = true;
+
+        // Load library in background so TUI appears immediately.
+        {
+            let c = self.client.clone();
+            let ipc_tx = self.ipc_tx.clone();
+            tokio::spawn(async move {
+                let mut attempts = 0u32;
+                loop {
+                    match c.library_get_tracks(None, None).await {
+                        Ok(DaemonRes::Tracks { tracks, .. }) if !tracks.is_empty() => {
+                            let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
+                            return;
+                        }
+                        Ok(_) if attempts < 3 => {
+                            attempts += 1;
+                            tokio::time::sleep(Duration::from_millis(300)).await;
+                        }
+                        _ => return,
+                    }
+                }
+            });
+        }
 
         // Initialize cover image picker (blocking terminal query)
         let picker = tokio::task::spawn_blocking(|| {
@@ -801,37 +845,6 @@ impl App {
         artists.into_iter().collect()
     }
 
-    async fn fetch_state(&mut self) {
-        if let Ok(state) = self.client.get_status().await {
-            self.client.seed_clock_from_state(&state).await;
-            self.state = state;
-            // Fetch cover art if current track changed
-            let track_id = self.state.current_track.as_ref().map(|t| t.id);
-            if track_id != self.last_cover_track_id {
-                if let Some(tid) = track_id {
-                    match self.client.get_cover_art(tid).await {
-                        Ok(Some(b64)) => {
-                            if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                                self.current_cover = Some(bytes);
-                                self.last_cover_track_id = track_id;
-                            }
-                        }
-                        _ => {
-                            self.current_cover = None;
-                            self.cover_stateful = None;
-                            self.last_cover_track_id = None;
-                        }
-                    }
-                } else {
-                    self.current_cover = None;
-                    self.cover_stateful = None;
-                    self.last_cover_track_id = track_id;
-                }
-                self.sync_cover_stateful();
-            }
-        }
-    }
-
     fn sync_cover_stateful(&mut self) {
         match (&self.current_cover, &self.cover_picker) {
             (Some(bytes), Some(picker)) => {
@@ -875,30 +888,6 @@ impl App {
         {
             self.queue_cache = tracks;
             self.queue_cursor = cursor as usize;
-        }
-    }
-
-    async fn fetch_library_tracks(&mut self) {
-        for attempt in 0..3 {
-            match self.client.library_get_tracks(None, None).await {
-                Ok(DaemonRes::Tracks { tracks, .. }) if !tracks.is_empty() => {
-                    self.tracks_cache = tracks;
-                    return;
-                }
-                Ok(DaemonRes::Tracks { .. }) if attempt < 2 => {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                }
-                Ok(DaemonRes::Tracks { tracks, .. }) => {
-                    // Last attempt — accept even empty tracks
-                    self.tracks_cache = tracks;
-                }
-                Ok(_) | Err(_) if attempt < 2 => {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                }
-                Ok(_) | Err(_) => {
-                    self.tracks_cache.clear();
-                }
-            }
         }
     }
 
@@ -1243,9 +1232,44 @@ impl App {
                         }).count()
                     }.saturating_sub(1)
                 }
-                OverlayId::Equalizer => 12,
+                OverlayId::Equalizer => {
+                    let presets = [
+                        gtm_core::state::EqPreset::Flat,
+                        gtm_core::state::EqPreset::Pop,
+                        gtm_core::state::EqPreset::Rock,
+                        gtm_core::state::EqPreset::Jazz,
+                        gtm_core::state::EqPreset::Classical,
+                        gtm_core::state::EqPreset::Bass,
+                        gtm_core::state::EqPreset::Vocal,
+                        gtm_core::state::EqPreset::Electronic,
+                        gtm_core::state::EqPreset::HipHop,
+                        gtm_core::state::EqPreset::Latin,
+                        gtm_core::state::EqPreset::Acoustic,
+                        gtm_core::state::EqPreset::Podcast,
+                        gtm_core::state::EqPreset::Dance,
+                        gtm_core::state::EqPreset::Headphones,
+                        gtm_core::state::EqPreset::Speaker,
+                    ];
+                    presets.len().saturating_sub(1)
+                }
                 OverlayId::SleepTimer => 4,
-                OverlayId::ThemePicker => THEMES.len().saturating_sub(1),
+                OverlayId::ThemePicker => {
+                    let q = top.query.to_lowercase();
+                    if q.is_empty() {
+                        THEMES.len()
+                    } else {
+                        THEMES.iter().filter(|entry| {
+                            let lower = entry.name.to_lowercase();
+                            let mut qi = 0usize;
+                            for ch in lower.chars() {
+                                if qi < q.len() && ch == q.as_bytes()[qi] as char {
+                                    qi += 1;
+                                }
+                            }
+                            qi == q.len()
+                        }).count()
+                    }.saturating_sub(1)
+                }
                 OverlayId::CommandPalette => {
                     let commands = crate::ui::COMMAND_PALETTE_COMMANDS;
                     let q = top.query.to_lowercase();
@@ -1498,11 +1522,11 @@ impl App {
                     }
                     Some(KeyboardAction::SeekForward) => {
                         self.set_last_action("Seek Forward");
-                        let pos = self.display_position + 5.0;
+                        let pos = (self.display_position + 5.0).min(self.state.duration);
                         self.send_high(TuiCommand::Seek(pos));
                     }
                     Some(KeyboardAction::SeekBackward) => {
-                        self.set_last_action("Seek Backward");
+                        self.set_last_action("SeekBackward");
                         let pos = (self.display_position - 5.0).max(0.0);
                         self.send_high(TuiCommand::Seek(pos));
                     }
@@ -1592,7 +1616,10 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::Back) => {
-                        if self.browse_detail.is_some() {
+                        let is_narrow = self.terminal_cols < 60;
+                        if is_narrow && self.show_lyrics {
+                            self.show_lyrics = false;
+                        } else if self.browse_detail.is_some() {
                             self.browse_detail = None;
                             self.scroll_offset = 0;
                         } else if !self.library_pane_focus && self.current_tab == Tab::Library {
@@ -2335,7 +2362,7 @@ impl App {
                                 } else if label.starts_with("sleeptimer") {
                                     self.overlays.open(OverlayId::SleepTimer);
                                 } else if label.starts_with("themepicker") {
-                                    self.overlays.open(OverlayId::ThemePicker);
+                                    self.overlays.open_with_selection(OverlayId::ThemePicker, self.theme_index);
                                 } else if label.starts_with("sound fx") {
                                     self.overlays.open(OverlayId::SoundEffects);
                                 } else if label.starts_with("about") {
@@ -2480,7 +2507,7 @@ impl App {
             KeyCode::Char(c) => {
                 if let Some(top) = self.overlays.top_mut() {
                     match top.id {
-                        OverlayId::YTSearch | OverlayId::SearchLibrary | OverlayId::CommandPalette => {
+                        OverlayId::YTSearch | OverlayId::SearchLibrary | OverlayId::CommandPalette | OverlayId::ThemePicker => {
                             top.query.push(c);
                             if top.id == OverlayId::YTSearch {
                                 if c == ' ' {

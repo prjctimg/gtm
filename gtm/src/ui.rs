@@ -361,11 +361,12 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             .split(area);
         (h[0], None, Some(h[1]))
     } else if show_vis {
+        let vis_w = area.width / 3;
         let h = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
                 Constraint::Min(0),
-                Constraint::Length(app.terminal_cols / 4),
+                Constraint::Length(vis_w),
             ])
             .split(area);
         (h[0], Some(h[1]), None)
@@ -379,11 +380,12 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .split(left_area);
 
     let (np_area, vis_area) = if show_vis && !full_height_lyrics {
+        let vis_w = app.terminal_cols / 3;
         let h = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([
                 Constraint::Min(0),
-                Constraint::Length(app.terminal_cols / 4),
+                Constraint::Length(vis_w),
             ])
             .split(chunks[0]);
         (h[0], Some(h[1]))
@@ -1195,11 +1197,11 @@ fn render_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         return;
     };
 
-    // Overlay box: centered, 60% width, 70% height
-    let overlay_width = (area.width as f64 * 0.6) as u16;
-    let overlay_height = (area.height as f64 * 0.7) as u16;
-    let overlay_x = (area.width - overlay_width) / 2;
-    let overlay_y = (area.height - overlay_height) / 3;
+    // Overlay box: centered, 60% width, 70% height, with minimum size
+    let overlay_width = ((area.width as f64 * 0.6) as u16).max(50).min(area.width);
+    let overlay_height = ((area.height as f64 * 0.7) as u16).max(15).min(area.height);
+    let overlay_x = (area.width.saturating_sub(overlay_width)) / 2;
+    let overlay_y = (area.height.saturating_sub(overlay_height)) / 3;
 
     let overlay_area = Rect {
         x: overlay_x,
@@ -1653,12 +1655,9 @@ fn render_track_popup(f: &mut ratatui::Frame, content_area: Rect, app: &mut App)
     const COVER_H: u16 = 5;
     let text_margin = 2u16;
 
-    let popup_w = if has_cover {
-        (COVER_W + 1 + 38 + text_margin).min(content_area.width.saturating_sub(2))
-    } else {
-        48u16.min(content_area.width.saturating_sub(4))
-    };
-    let popup_h = if has_cover { COVER_H + 2 } else { 6u16 };
+    // Fixed dimensions to prevent layout shift when cover loads/unloads.
+    let popup_w = (COVER_W + 1 + 38 + text_margin).min(content_area.width.saturating_sub(2));
+    let popup_h = COVER_H + 2;
     if popup_w < 20 || popup_h > content_area.height {
         return;
     }
@@ -1916,7 +1915,7 @@ fn render_about_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
     let p = Paragraph::new(lines).alignment(Alignment::Left);
     f.render_widget(p, inner);
-    overlay_help(f, inner, " [Esc] Close  [q] Quit gtm", app);
+    overlay_help(f, inner, " [Esc] Close", app);
 }
 
 fn render_help_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -2235,16 +2234,6 @@ fn render_command_palette_overlay(f: &mut ratatui::Frame, area: Rect, app: &App)
     // Sort by score descending (longer match = better)
     filtered.sort_by(|a, b| b.1.cmp(&a.1));
 
-    // Narrow the palette width within the overlay area
-    let palette_width = (area.width as f32 * 0.5).min(60.0) as u16;
-    let x_offset = (area.width.saturating_sub(palette_width)) / 2;
-    let palette_area = Rect {
-        x: area.x + x_offset,
-        y: area.y,
-        width: palette_width,
-        height: area.height,
-    };
-
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Commands ")
@@ -2254,8 +2243,8 @@ fn render_command_palette_overlay(f: &mut ratatui::Frame, area: Rect, app: &App)
         } else {
             app.theme.overlay_bg
         }));
-    let inner = block.inner(palette_area);
-    f.render_widget(block, palette_area);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
     let search_line = Line::from(Span::styled(
         format!(" > {}_", query),
@@ -2323,7 +2312,19 @@ fn render_equalizer_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .top()
         .map_or(0, |o| o.selected.min(presets.len() - 1));
 
-    let visible = area.height as usize;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Equalizer ")
+        .border_type(BorderType::Plain)
+        .style(Style::default().bg(if app.transparent_bg {
+            ratatui::style::Color::Reset
+        } else {
+            app.theme.overlay_bg
+        }));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let visible = inner.height as usize;
     let total = presets.len();
     let (scroll_start, _) = centered_scroll(sel, visible, total);
     let scroll_end = (scroll_start + visible).min(total);
@@ -2447,39 +2448,69 @@ fn render_theme_picker_overlay(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
+    let query = app
+        .overlays
+        .top()
+        .map_or(String::new(), |o| o.query.clone());
+    let q = query.to_lowercase();
+
+    let filtered: Vec<_> = if q.is_empty() {
+        THEMES.iter().enumerate().collect()
+    } else {
+        THEMES
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                let lower = entry.name.to_lowercase();
+                let mut qi = 0usize;
+                for ch in lower.chars() {
+                    if qi < q.len() && ch == q.as_bytes()[qi] as char {
+                        qi += 1;
+                    }
+                }
+                qi == q.len()
+            })
+            .collect()
+    };
+
+    let total = filtered.len();
     let sel = app
         .overlays
         .top()
-        .map_or(0, |o| o.selected.min(THEMES.len().saturating_sub(1)));
-    let visible = inner.height as usize;
-    let total = THEMES.len();
-    let (scroll_start, _) = centered_scroll(sel, visible, total);
+        .map_or(0, |o| o.selected.min(total.saturating_sub(1)));
+
+    let search_line = Line::from(Span::styled(
+        format!(" > {}_", query),
+        Style::default().fg(app.theme.fg),
+    ));
+
+    let visible = inner.height.saturating_sub(1) as usize;
+    let (scroll_start, _) = if total > 0 {
+        centered_scroll(sel, visible, total)
+    } else {
+        (0, 0)
+    };
     let scroll_end = (scroll_start + visible).min(total);
 
-    let list_items: Vec<ListItem> = THEMES
-        .iter()
-        .enumerate()
-        .skip(scroll_start)
-        .take(scroll_end - scroll_start)
-        .map(|(i, entry)| {
-            let is_active = i == app.theme_index;
-            let prefix = if i == sel { " > " } else { "   " };
-            let check = if is_active { " \u{2713}" } else { "" };
-            let content = format!("{}{}{}", prefix, entry.name, check);
-            let style = if i == sel {
-                Style::default()
-                    .fg(app.theme.selection_fg)
-                    .bg(app.theme.selection_bg)
-            } else if is_active {
-                Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            ListItem::new(content).style(style)
-        })
-        .collect();
+    let mut list_items: Vec<ListItem> = vec![ListItem::new(search_line)];
+    for &(i, entry) in &filtered[scroll_start..scroll_end] {
+        let is_active = i == app.theme_index;
+        let prefix = if i == sel { " > " } else { "   " };
+        let check = if is_active { " \u{2713}" } else { "" };
+        let content = format!("{}{}{}", prefix, entry.name, check);
+        let style = if i == sel {
+            Style::default()
+                .fg(app.theme.selection_fg)
+                .bg(app.theme.selection_bg)
+        } else if is_active {
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        list_items.push(ListItem::new(content).style(style));
+    }
 
     let list = List::new(list_items);
     f.render_widget(list, inner);

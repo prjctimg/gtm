@@ -84,6 +84,14 @@ impl OverlayManager {
         }
     }
 
+    pub fn open_with_selection(&mut self, id: OverlayId, selected: usize) {
+        if !self.stack.iter().any(|o| o.id == id) {
+            let mut overlay = Overlay::new(id);
+            overlay.selected = selected;
+            self.stack.push(overlay);
+        }
+    }
+
     pub fn close_top(&mut self) {
         self.stack.pop();
     }

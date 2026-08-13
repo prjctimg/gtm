@@ -154,6 +154,7 @@ impl DecodeThread {
             loop {
                 // Check for stop
                 if !self.control.running.load(Ordering::Acquire) {
+                    self.control.seeking.store(false, Ordering::Release);
                     self.shared.set_finished(true);
                     return;
                 }
@@ -163,6 +164,7 @@ impl DecodeThread {
                     log::info!("decode thread: seek to {target_secs:.2}s");
                     start_pos = target_secs;
                     self.shared.flush();
+                    self.control.seeking.store(false, Ordering::Release);
                     break; // restart decoder at new position
                 }
 
@@ -177,13 +179,14 @@ impl DecodeThread {
                     Some(s) => s,
                     None => {
                         // EOF — drain ring buffer then signal finished
-                        // Wait a tiny bit for the consumer to read remaining samples
                         while self.shared.available() > 0 {
                             std::thread::yield_now();
                             if !self.control.running.load(Ordering::Acquire) {
+                                self.control.seeking.store(false, Ordering::Release);
                                 return;
                             }
                         }
+                        self.control.seeking.store(false, Ordering::Release);
                         self.shared.set_finished(true);
                         self.control.ready.store(true, Ordering::Release);
                         return;

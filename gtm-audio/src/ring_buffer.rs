@@ -156,6 +156,7 @@ impl DecodeControl {
     }
 
     pub fn signal_seek(&self, position_secs: f64) {
+        self.seeking.store(true, Ordering::Release);
         let bits = position_secs.to_bits();
         self.seek_request.store(bits, Ordering::Release);
     }
