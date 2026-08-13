@@ -11,6 +11,7 @@ pub mod library;
 pub mod lyrics;
 pub mod metadata_cleaner;
 pub mod queue;
+pub mod spotify;
 pub mod youtube;
 
 pub use config::DaemonConfig;

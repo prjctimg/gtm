@@ -157,6 +157,11 @@ enum CliCommand {
     YtResolve {
         url: String,
     },
+    /// Fetch lyrics for an "Artist - Title" query via lrclib
+    Lyrics {
+        /// Search query in the form "Artist - Title"
+        query: String,
+    },
     Search {
         query: String,
     },

@@ -5,6 +5,7 @@
 // This is free software released under the GPL-3.0 license.
 
 use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction};
+use gtm_core::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use gtm_core::state::{
     CrossfadeConfig, DaemonState, Easing, Image, PlaybackStatus, RepeatMode, ThemeMode, UIMode,
     YTFilter,
@@ -225,6 +226,104 @@ fn daemon_req_parse_cmd_unit_variants() {
     ] {
         let req = DaemonReq::parse_cmd(cmd, serde_json::json!({})).unwrap();
         assert_eq!(req.cmd_name(), expected);
+    }
+}
+
+#[test]
+fn daemon_req_parse_cmd_spotify_variants() {
+    let cases: Vec<(&str, serde_json::Value, &str)> = vec![
+        (
+            "spotify_set_token",
+            serde_json::json!({ "token": "BQCabc" }),
+            "spotify_set_token",
+        ),
+        ("spotify_clear", serde_json::json!({}), "spotify_clear"),
+        ("spotify_status", serde_json::json!({}), "spotify_status"),
+        ("spotify_sync", serde_json::json!({}), "spotify_sync"),
+        (
+            "spotify_playlists",
+            serde_json::json!({}),
+            "spotify_playlists",
+        ),
+        (
+            "spotify_playlist_tracks",
+            serde_json::json!({ "id": "37i9dQZEVX" }),
+            "spotify_playlist_tracks",
+        ),
+        (
+            "spotify_resolve",
+            serde_json::json!({ "playlist_id": "37i9dQZEVX", "track_index": 3 }),
+            "spotify_resolve",
+        ),
+    ];
+    for (cmd, params, expected) in cases {
+        let req = DaemonReq::parse_cmd(cmd, params).unwrap();
+        assert_eq!(req.cmd_name(), expected);
+        match req {
+            DaemonReq::SpotifySetToken { token } => assert_eq!(token, "BQCabc"),
+            DaemonReq::SpotifyPlaylistTracks { id } => assert_eq!(id, "37i9dQZEVX"),
+            DaemonReq::SpotifyResolve {
+                playlist_id,
+                track_index,
+            } => {
+                assert_eq!(playlist_id, "37i9dQZEVX");
+                assert_eq!(track_index, 3);
+            }
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn daemon_res_spotify_wire_roundtrip() {
+    let status = SpotifyStatus {
+        linked: true,
+        user: Some("test-user".into()),
+        playlists: 2,
+        tracks: 5,
+        error: None,
+    };
+    let playlist = SpotifyPlaylist {
+        id: "37i9dQZEVX".into(),
+        name: "Test Mix".into(),
+        owner: "spotify".into(),
+        tracks: vec![SpotifyTrack {
+            index: 0,
+            name: "Song".into(),
+            artists: "Artist".into(),
+            album: Some("Album".into()),
+            duration_ms: Some(240000),
+        }],
+    };
+    let cases: Vec<(&str, DaemonRes)> = vec![
+        (
+            "spotify_status",
+            DaemonRes::SpotifyStatusRes {
+                status: status.clone(),
+            },
+        ),
+        (
+            "spotify_playlists",
+            DaemonRes::SpotifyPlaylistsRes {
+                playlists: vec![playlist.clone()],
+            },
+        ),
+        (
+            "spotify_playlist_tracks",
+            DaemonRes::SpotifyTracksRes {
+                tracks: playlist.tracks.clone(),
+            },
+        ),
+    ];
+    for (cmd, res) in cases {
+        let expected = format!("{:?}", res);
+        let wire = res.to_wire(1);
+        let back = DaemonRes::from_wire(cmd, &wire);
+        assert_eq!(
+            expected,
+            format!("{:?}", back),
+            "round-trip failed for {cmd}"
+        );
     }
 }
 

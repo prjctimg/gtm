@@ -8,6 +8,7 @@ pub mod client;
 pub mod ipc;
 pub mod log;
 pub mod paths;
+pub mod spotify;
 pub mod state;
 pub mod state_machine;
 pub mod track;
@@ -18,6 +19,7 @@ pub mod wire;
 pub use paths::{
     resolve_command_socket, resolve_pid_file, resolve_pulse_socket, termux_music_dirs,
 };
+pub use spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 pub use state::{
     CoreError, CrossfadeConfig, DaemonState, Easing, EqBand, ReverbConfig, EQ_FREQUENCIES,
 };

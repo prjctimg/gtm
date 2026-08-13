@@ -18,6 +18,7 @@ use crate::ipc::{
     DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction, WireEvent, WireReq, WireRes,
     PROTOCOL_VERSION,
 };
+use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::state::{self, DaemonState, EqPreset, PlaybackStatus, RepeatMode, YTFilter};
 use crate::track;
 use crate::wire;
@@ -694,10 +695,100 @@ impl DaemonClient {
         }
     }
 
-    pub async fn get_lyrics(&self, track_id: i64) -> Result<Option<track::LrcData>> {
-        let res = self.send_raw(DaemonReq::GetLyrics { track_id }).await?;
+    pub async fn get_lyrics(&self, track_id: i64, path: Option<&str>) -> Result<Option<track::LrcData>> {
+        let res = self
+            .send_raw(DaemonReq::GetLyrics {
+                track_id,
+                path: path.map(str::to_string),
+            })
+            .await?;
         match res {
             DaemonRes::Lyrics { lyrics, .. } => Ok(lyrics),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+        }
+    }
+
+    /// Fetch lyrics for a free-form artist/title pair (no track id or path).
+    pub async fn lyrics_search(&self, artist: &str, title: &str) -> Result<Option<track::LrcData>> {
+        let res = self
+            .send_raw(DaemonReq::LyricsSearch {
+                artist: artist.into(),
+                title: title.into(),
+            })
+            .await?;
+        match res {
+            DaemonRes::Lyrics { lyrics, .. } => Ok(lyrics),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+        }
+    }
+
+    // ─── Spotify ───
+
+    /// Link a Spotify account from a token (plain access token or full JSON)
+    /// and refresh the playlist cache.
+    pub async fn spotify_set_token(&self, token: &str) -> Result<SpotifyStatus> {
+        let res = self
+            .send_raw(DaemonReq::SpotifySetToken {
+                token: token.into(),
+            })
+            .await?;
+        Self::spotify_status_from(res)
+    }
+
+    /// Unlink the Spotify account and delete the token file.
+    pub async fn spotify_clear(&self) -> Result<SpotifyStatus> {
+        let res = self.send_raw(DaemonReq::SpotifyClear).await?;
+        Self::spotify_status_from(res)
+    }
+
+    /// Current link status (linked user, playlist/track counts, last error).
+    pub async fn spotify_status(&self) -> Result<SpotifyStatus> {
+        let res = self.send_raw(DaemonReq::SpotifyStatus).await?;
+        Self::spotify_status_from(res)
+    }
+
+    /// Re-sync all playlists from the Spotify Web API.
+    pub async fn spotify_sync(&self) -> Result<()> {
+        self.send_ok(DaemonReq::SpotifySync).await
+    }
+
+    /// The cached playlist list (with tracks embedded).
+    pub async fn spotify_playlists(&self) -> Result<Vec<SpotifyPlaylist>> {
+        let res = self.send_raw(DaemonReq::SpotifyPlaylists).await?;
+        match res {
+            DaemonRes::SpotifyPlaylistsRes { playlists, .. } => Ok(playlists),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+        }
+    }
+
+    /// Cached tracks of a single playlist.
+    pub async fn spotify_playlist_tracks(&self, id: &str) -> Result<Vec<SpotifyTrack>> {
+        let res = self
+            .send_raw(DaemonReq::SpotifyPlaylistTracks { id: id.into() })
+            .await?;
+        match res {
+            DaemonRes::SpotifyTracksRes { tracks, .. } => Ok(tracks),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+        }
+    }
+
+    /// Resolve a Spotify playlist track to a playable local stream and append
+    /// it to the user queue.
+    pub async fn spotify_resolve(&self, playlist_id: &str, track_index: usize) -> Result<()> {
+        self.send_ok(DaemonReq::SpotifyResolve {
+            playlist_id: playlist_id.into(),
+            track_index,
+        })
+        .await
+    }
+
+    fn spotify_status_from(res: DaemonRes) -> Result<SpotifyStatus> {
+        match res {
+            DaemonRes::SpotifyStatusRes { status, .. } => Ok(status),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
             _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
         }

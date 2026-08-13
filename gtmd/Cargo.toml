@@ -12,7 +12,9 @@ gtm-mpris = { path = "../gtm-mpris", optional = true }
 rusqlite = { version = "0.31", features = ["bundled"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+futures = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
+rspotify = { version = "0.16.1", default-features = false, features = ["client-reqwest", "reqwest-rustls-tls"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
@@ -27,6 +29,7 @@ hex = "0.4"
 base64 = "0.22"
 dirs = "5"
 fastrand = "2"
+chrono = "0.4"
 
 [features]
 default = ["mpris"]

@@ -55,7 +55,18 @@ impl LyricsManager {
                         timestamp: ts,
                         text: text.to_string(),
                     });
+                    continue;
                 }
+            }
+
+            // Untimed line (plain lyrics): keep it with a sentinel timestamp
+            // so non-synced lyrics still display instead of being dropped.
+            // Tag lines like "[length:...]" are skipped.
+            if !line.starts_with('[') {
+                lines.push(LrcLine {
+                    timestamp: -1.0,
+                    text: line.to_string(),
+                });
             }
         }
 
@@ -81,6 +92,28 @@ impl LyricsManager {
         }
 
         None
+    }
+
+    /// Search lrclib for a free-form "Artist - Title" pair, returning the best
+    /// match without touching sidecar files. Used by the `gtm lyrics` CLI.
+    pub async fn search(&self, artist: &str, title: &str) -> Option<LrcData> {
+        let query = format!("{} {}", artist, title);
+        let url = format!("{}/search?q={}", LRCLIB_API, urlencoding(&query),);
+
+        let resp = self.client.get(&url).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+
+        let results: Vec<serde_json::Value> = resp.json().await.ok()?;
+        for result in &results {
+            let artist_name = result.get("artistName")?.as_str()?.to_lowercase();
+            let track_name = result.get("trackName")?.as_str()?.to_lowercase();
+            if artist_name == artist.to_lowercase() && track_name == title.to_lowercase() {
+                return parse_lrclib_response(result);
+            }
+        }
+        results.first().and_then(parse_lrclib_response)
     }
 
     async fn read_sidecar(&self, track: &TrackInfo) -> Option<LrcData> {
@@ -134,6 +167,19 @@ impl LyricsManager {
     }
 }
 
+/// Derive `(artist, title)` from a file path when track tags are missing.
+/// Parses "Artist - Title" from the file stem and strips common filler tags
+/// via [`crate::metadata_cleaner::clean_youtube_title`].
+pub fn meta_from_filename(path: &str) -> (String, String) {
+    let stem = Path::new(path)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_string();
+    let (artist, title) = crate::metadata_cleaner::clean_youtube_title(&stem);
+    (artist.unwrap_or_default(), title)
+}
+
 fn parse_lrclib_response(json: &serde_json::Value) -> Option<LrcData> {
     let synced = json.get("syncLyrics").and_then(|v| v.as_str());
     let plain = json.get("plainLyrics").and_then(|v| v.as_str());
@@ -185,4 +231,58 @@ fn urlencoding(s: &str) -> String {
             other => format!("%{:02X}", other as u8),
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    #[ignore = "requires network access to lrclib.net"]
+    fn lrclib_search_returns_lyrics() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let manager = LyricsManager::new();
+        let result = rt.block_on(manager.search("The Weeknd", "Blinding Lights"));
+        assert!(result.is_some(), "expected a hit for a well-known track");
+    }
+
+    #[test]
+    fn parse_lrc_keeps_plain_lines() {
+        let lrc = LyricsManager::parse_lrc("Line one\nLine two\n\n[00:01.00]timed line");
+        assert_eq!(lrc.lines.len(), 3);
+        assert_eq!(lrc.lines[0].text, "Line one");
+        assert!(lrc.lines[0].timestamp < 0.0);
+        assert_eq!(lrc.lines[1].text, "Line two");
+        assert_eq!(lrc.lines[2].text, "timed line");
+        assert_eq!(lrc.lines[2].timestamp, 1.0);
+    }
+
+    #[test]
+    fn parse_lrc_skips_tag_lines() {
+        let lrc = LyricsManager::parse_lrc("[length:03:30]\n[00:01.00]real line");
+        assert_eq!(lrc.lines.len(), 1);
+        assert_eq!(lrc.lines[0].text, "real line");
+    }
+
+    #[test]
+    fn meta_from_filename_parses_artist_title() {
+        let (artist, title) = meta_from_filename("/tmp/music/Artist Name - Song Title.flac");
+        assert_eq!(artist, "Artist Name");
+        assert_eq!(title, "Song Title");
+    }
+
+    #[test]
+    fn meta_from_filename_defaults_to_stem() {
+        let (artist, title) = meta_from_filename("/tmp/music/Just A Title.mp3");
+        assert!(artist.is_empty());
+        assert_eq!(title, "Just A Title");
+    }
+
+    #[test]
+    fn meta_from_filename_strips_official_tags() {
+        let (artist, title) =
+            meta_from_filename("/tmp/music/Drake - God's Plan (Official Audio).flac");
+        assert_eq!(artist, "Drake");
+        assert_eq!(title, "God's Plan");
+    }
 }

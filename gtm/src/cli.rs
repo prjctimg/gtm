@@ -289,6 +289,57 @@ pub fn run(socket: Option<String>, json: bool, cmd: &CliCommand) {
                     Ok(format!("{res:?}"))
                 }
             }
+            CliCommand::Lyrics { query } => {
+                let (artist, title) = match query.split_once(" - ") {
+                    Some((a, t)) => (a.trim().to_string(), t.trim().to_string()),
+                    None => (String::new(), query.trim().to_string()),
+                };
+                let lyrics = client
+                    .lyrics_search(&artist, &title)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                if json {
+                    serde_json::to_string_pretty(&lyrics).map_err(|e| e.to_string())
+                } else {
+                    match lyrics {
+                        Some(l) => {
+                            if l.lines.is_empty() {
+                                Ok(format!(
+                                    "Found lyrics metadata for {}{} but no timed lines.",
+                                    if l.artist.is_some() {
+                                        format!("{} — ", l.artist.as_ref().unwrap())
+                                    } else {
+                                        String::new()
+                                    },
+                                    l.title.as_ref().unwrap_or(&String::from("unknown"))
+                                ))
+                            } else {
+                                let mut out = String::new();
+                                if let Some(ref t) = l.title {
+                                    out += &format!("{t}\n");
+                                }
+                                if let Some(ref a) = l.artist {
+                                    out += &format!("{a}\n");
+                                }
+                                out += &"-".repeat(32);
+                                out += "\n";
+                                for line in &l.lines {
+                                    if line.timestamp < 0.0 {
+                                        out += &line.text;
+                                        out += "\n";
+                                    } else {
+                                        let mm = (line.timestamp / 60.0) as u64;
+                                        let ss = line.timestamp % 60.0;
+                                        out += &format!("[{:02}:{:05.2}] {}\n", mm, ss, line.text);
+                                    }
+                                }
+                                Ok(out)
+                            }
+                        }
+                        None => Ok("No lyrics found.".to_string()),
+                    }
+                }
+            }
             CliCommand::Status => {
                 let state = client.get_status().await.map_err(|e| e.to_string())?;
                 if json {

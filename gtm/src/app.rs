@@ -579,11 +579,12 @@ impl App {
                 if self.show_lyrics {
                     let client3 = self.client.clone();
                     let ipc_tx3 = self.ipc_tx.clone();
+                    let tpath = self.state.current_track.as_ref().map(|t| t.path.clone());
                     self.current_lyrics = None;
                     self.lyrics_fetching = true;
                     self.lyrics_scroll = 0;
                     tokio::spawn(async move {
-                        let result = client3.get_lyrics(tid).await;
+                        let result = client3.get_lyrics(tid, tpath.as_deref()).await;
                         let _ = ipc_tx3.send(IpcResult::Lyrics(result.unwrap_or(None)));
                     });
                 }
@@ -725,6 +726,9 @@ impl App {
                         let pos = self.display_position;
                         let mut current_idx = 0;
                         for (i, line) in lyrics.lines.iter().enumerate() {
+                            if line.timestamp < 0.0 {
+                                continue;
+                            }
                             if line.timestamp <= pos {
                                 current_idx = i;
                             } else {
@@ -1167,7 +1171,7 @@ impl App {
                                     .or_else(|| tracks.last())
                                 {
                                     if let Ok(Some(lyrics_data)) =
-                                        client2.get_lyrics(track.id).await
+                                        client2.get_lyrics(track.id, Some(&track.path)).await
                                     {
                                         if !lyrics_data.lines.is_empty() {
                                             // Write .lrc sidecar next to the audio file
@@ -1186,6 +1190,11 @@ impl App {
                                                 lrc_content.push_str(&format!("[ti:{}]\n", ti));
                                             }
                                             for line in &lyrics_data.lines {
+                                                if line.timestamp < 0.0 {
+                                                    lrc_content.push_str(&line.text);
+                                                    lrc_content.push('\n');
+                                                    continue;
+                                                }
                                                 let mins = (line.timestamp / 60.0) as u64;
                                                 let secs = line.timestamp - (mins as f64 * 60.0);
                                                 lrc_content.push_str(&format!(
@@ -1352,13 +1361,16 @@ impl App {
                 });
             }
             TuiCommand::FetchLyrics => {
+                let track_path = self.state.current_track.as_ref().map(|t| t.path.clone());
                 let track_id = self.state.current_track.as_ref().map(|t| t.id).unwrap_or(0);
                 let client2 = self.client.clone();
                 let ipc_tx2 = self.ipc_tx.clone();
                 tokio::spawn(async move {
-                    let result =
-                        tokio::time::timeout(Duration::from_secs(5), client2.get_lyrics(track_id))
-                            .await;
+                    let result = tokio::time::timeout(
+                        Duration::from_secs(5),
+                        client2.get_lyrics(track_id, track_path.as_deref()),
+                    )
+                    .await;
                     let _ = ipc_tx2.send(IpcResult::Lyrics(match result {
                         Ok(r) => r.unwrap_or(None),
                         Err(_) => None,
