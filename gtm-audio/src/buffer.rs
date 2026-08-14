@@ -11,6 +11,8 @@ use std::time::Duration;
 
 use rodio::Source;
 
+use crate::stretch::speed_to_fixed;
+
 // ---------------------------------------------------------------------------
 // Ring buffer constants
 // ---------------------------------------------------------------------------
@@ -159,6 +161,10 @@ pub struct DecodeControl {
     pub finished: Arc<AtomicBool>,
     pub sample_rate: AtomicU32,
     pub channels: AtomicU16,
+    /// Fixed-point (×1000) playback rate consumed by the WSOLA time-stretch
+    /// stage on the decode thread. Written by `set_playback_speed`, read live
+    /// by `TimeStretchSource` so speed changes apply mid-track.
+    pub playback_speed: Arc<AtomicU32>,
 }
 
 impl Default for DecodeControl {
@@ -177,11 +183,17 @@ impl DecodeControl {
             finished: Arc::new(AtomicBool::new(false)),
             sample_rate: AtomicU32::new(44100),
             channels: AtomicU16::new(2),
+            playback_speed: Arc::new(AtomicU32::new(1000)),
         }
     }
 
     pub fn signal_stop(&self) {
         self.running.store(false, Ordering::Release);
+    }
+
+    pub fn set_playback_speed(&self, rate: f64) {
+        self.playback_speed
+            .store(speed_to_fixed(rate), Ordering::Relaxed);
     }
 
     pub fn signal_seek(&self, position_secs: f64) {

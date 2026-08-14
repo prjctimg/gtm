@@ -55,6 +55,15 @@ impl AppTheme {
             self.volume_low
         }
     }
+
+    /// Foreground for highlighted list items, guaranteed to contrast with
+    /// `selection_bg`.  The theme's own `selection_fg` is preserved whenever
+    /// it already passes the contrast check; otherwise a near-black or
+    /// near-white fallback is chosen so light-on-light and gray-on-white
+    /// selections never become unreadable at small font sizes.
+    pub fn selection_fg_readable(&self) -> Color {
+        readable_fg(self.selection_fg, self.selection_bg)
+    }
 }
 
 /// A theme registry entry. `name` is `Cow<'static, str>` so built-ins borrow
@@ -86,6 +95,31 @@ pub fn parse_color(s: &str) -> Result<Color, String> {
     let g = u8::from_str_radix(&s[2..4], 16).map_err(|e| e.to_string())?;
     let b = u8::from_str_radix(&s[4..6], 16).map_err(|e| e.to_string())?;
     Ok(Color::Rgb(r, g, b))
+}
+
+/// Pick the foreground colour with enough contrast against `bg`.  If the
+/// requested `fg` already has sufficient contrast it is preserved: this
+/// lets per-module colour mapping (footer, progress bars) survive instead of
+/// being replaced by a monochrome fallback.
+pub fn readable_fg(fg: Color, bg: Color) -> Color {
+    fn luminance(c: &Color) -> f64 {
+        match c {
+            Color::Rgb(r, g, b) => {
+                0.299 * *r as f64 + 0.587 * *g as f64 + 0.114 * *b as f64
+            }
+            _ => 128.0,
+        }
+    }
+    let fg_l = luminance(&fg);
+    let bg_l = luminance(&bg);
+    const CONTRAST_THRESHOLD: f64 = 90.0;
+    if (fg_l - bg_l).abs() >= CONTRAST_THRESHOLD {
+        fg
+    } else if bg_l > 128.0 {
+        Color::Rgb(20, 20, 20)
+    } else {
+        Color::Rgb(240, 240, 240)
+    }
 }
 
 // ─── Built-in presets ─────────────────────────────────────────────────
@@ -371,14 +405,16 @@ fn kanagawa() -> AppTheme {
     }
 }
 
-/// Catppuccin Latte (light): NvChad palette
+/// Catppuccin Latte (light): NvChad palette.  Rendered over the warm
+/// Solarized background family (`#fdf6e3`/`#eee8d5`) instead of a stark
+/// white/blue-white fill so the light mode reads as paper, not glare.
 fn catppuccin_latte() -> AppTheme {
     AppTheme {
-        bg: hex(0xeff1f5),
-        pane_bg: hex(0xeff1f5),
-        picker_bg: hex(0xe6e9ef),
-        elevated_bg: hex(0xdde1e9),
-        muted_border: hex(0xccd0da),
+        bg: hex(0xfdf6e3),
+        pane_bg: hex(0xfdf6e3),
+        picker_bg: hex(0xeee8d5),
+        elevated_bg: hex(0xe4ddc3),
+        muted_border: hex(0xcec8b4),
         fg: hex(0x2c2f3e),
         fg_dim: hex(0x4a5063),
         fg_bright: hex(0x14161d),
@@ -388,9 +424,9 @@ fn catppuccin_latte() -> AppTheme {
         error: hex(0xd20f39),
         warning: hex(0xfe640b),
         success: hex(0x40a02b),
-        selection_fg: hex(0xeff1f5),
+        selection_fg: hex(0xfdf6e3),
         selection_bg: hex(0x1e66f5),
-        border: hex(0xccd0da),
+        border: hex(0xcec8b4),
         border_active: hex(0x1e66f5),
         volume_low: hex(0x40a02b),
         volume_medium: hex(0xfe640b),
@@ -401,14 +437,15 @@ fn catppuccin_latte() -> AppTheme {
     }
 }
 
-/// Kanagawa Lotus (light): NvChad palette
+/// Kanagawa Lotus (light): NvChad palette over the Solarized background
+/// family so the light mode is warm paper rather than stark cream.
 fn kanagawa_lotus() -> AppTheme {
     AppTheme {
-        bg: hex(0xf2ecbc),
-        pane_bg: hex(0xf2ecbc),
-        picker_bg: hex(0xeae4c9),
-        elevated_bg: hex(0xe3dcc2),
-        muted_border: hex(0xdcdbc4),
+        bg: hex(0xfdf6e3),
+        pane_bg: hex(0xfdf6e3),
+        picker_bg: hex(0xeee8d5),
+        elevated_bg: hex(0xe4ddc3),
+        muted_border: hex(0xcec8b4),
         fg: hex(0x33333d),
         fg_dim: hex(0x4f4f5a),
         fg_bright: hex(0x23232b),
@@ -418,15 +455,79 @@ fn kanagawa_lotus() -> AppTheme {
         error: hex(0xc84053),
         warning: hex(0xb47e2b),
         success: hex(0x6a9589),
-        selection_fg: hex(0xf2ecbc),
+        selection_fg: hex(0xfdf6e3),
         selection_bg: hex(0x2d6a9f),
-        border: hex(0xdcdbc4),
+        border: hex(0xcec8b4),
         border_active: hex(0x2d6a9f),
         volume_low: hex(0x6a9589),
         volume_medium: hex(0xb47e2b),
         volume_high: hex(0xc84053),
         sidebar_active_border: hex(0x2d6a9f),
         notification_border: hex(0x2d6a9f),
+        monochromatic: false,
+    }
+}
+
+/// Solarized Light: the canonical Ethan Schoonover palette.  Backgrounds are
+/// the paper tones `base3`/`base2`, text uses the low-contrast `base01`/`base0`
+/// reads with the full spectral accent set.
+fn solarized_light() -> AppTheme {
+    AppTheme {
+        bg: hex(0xfdf6e3),
+        pane_bg: hex(0xfdf6e3),
+        picker_bg: hex(0xeee8d5),
+        elevated_bg: hex(0xe4ddc3),
+        muted_border: hex(0x93a1a1),
+        fg: hex(0x657b83),
+        fg_dim: hex(0x93a1a1),
+        fg_bright: hex(0x002b36),
+        accent: hex(0x268bd2),
+        secondary_accent: hex(0x2aa198),
+        tertiary_accent: hex(0xcb4b16),
+        error: hex(0xdc322f),
+        warning: hex(0xcb4b16),
+        success: hex(0x859900),
+        selection_fg: hex(0xfdf6e3),
+        selection_bg: hex(0x268bd2),
+        border: hex(0x93a1a1),
+        border_active: hex(0x268bd2),
+        volume_low: hex(0x859900),
+        volume_medium: hex(0xcb4b16),
+        volume_high: hex(0xdc322f),
+        sidebar_active_border: hex(0x268bd2),
+        notification_border: hex(0x268bd2),
+        monochromatic: false,
+    }
+}
+
+/// Solarized Dark: the canonical Ethan Schoonover palette.  Backgrounds are
+/// `base03`/`base02`, text uses `base0`/`base01` with the full spectral
+/// accent set.
+fn solarized_dark() -> AppTheme {
+    AppTheme {
+        bg: hex(0x002b36),
+        pane_bg: hex(0x002b36),
+        picker_bg: hex(0x073642),
+        elevated_bg: hex(0x042b36),
+        muted_border: hex(0x586e75),
+        fg: hex(0x839496),
+        fg_dim: hex(0x586e75),
+        fg_bright: hex(0x93a1a1),
+        accent: hex(0x268bd2),
+        secondary_accent: hex(0x2aa198),
+        tertiary_accent: hex(0xcb4b16),
+        error: hex(0xdc322f),
+        warning: hex(0xcb4b16),
+        success: hex(0x859900),
+        selection_fg: hex(0x002b36),
+        selection_bg: hex(0x268bd2),
+        border: hex(0x586e75),
+        border_active: hex(0x268bd2),
+        volume_low: hex(0x859900),
+        volume_medium: hex(0xcb4b16),
+        volume_high: hex(0xdc322f),
+        sidebar_active_border: hex(0x268bd2),
+        notification_border: hex(0x268bd2),
         monochromatic: false,
     }
 }
@@ -563,6 +664,16 @@ pub fn builtin_themes() -> &'static [ThemeEntry] {
                     name: Cow::Borrowed("Kanagawa Lotus"),
                     light: true,
                     theme: kanagawa_lotus(),
+                },
+                ThemeEntry {
+                    name: Cow::Borrowed("Solarized Light"),
+                    light: true,
+                    theme: solarized_light(),
+                },
+                ThemeEntry {
+                    name: Cow::Borrowed("Solarized Dark"),
+                    light: false,
+                    theme: solarized_dark(),
                 },
                 ThemeEntry {
                     name: Cow::Borrowed("Monochrome"),

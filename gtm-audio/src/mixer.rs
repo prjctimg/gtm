@@ -4,7 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -14,6 +14,7 @@ use crate::backend::{AudioError, AudioEvent, AudioResult};
 use crate::buffer::{DecodeControl, RingBufferInner, RingBufferSource, BUFFER_CAPACITY_SAMPLES};
 use crate::decoder::DecodeThread;
 use crate::eq::{EqGains, EqSource, ReverbSource};
+use crate::stretch::{speed_to_fixed, TimeStretchSource};
 use crate::symphonia::SymphoniaSource;
 use gtm_core::state::{Easing, EqPreset, ReverbConfig};
 
@@ -57,6 +58,8 @@ pub trait Mixer: Send + Sync {
     fn set_eq_preset(&self, preset: &EqPreset);
     fn set_eq_enabled(&self, enabled: bool);
     fn set_reverb(&self, config: &ReverbConfig);
+    // ─── Playback speed ───
+    fn set_playback_speed(&self, speed: f64);
 }
 
 /// Dual-player audio mixer with crossfade support.
@@ -107,6 +110,11 @@ pub struct AudioMixer {
     eq_enabled: Arc<AtomicBool>,
     reverb_enabled: Arc<AtomicBool>,
     reverb_room_size: Arc<Mutex<f32>>,
+    // ─── Playback speed ───
+    /// Fixed-point (×1000) playback rate shared with the WSOLA stretch stage.
+    /// Copied into each new decode thread's control at startup so a fresh
+    /// track begins at the current speed.
+    playback_speed: Arc<AtomicU32>,
     // ─── Decode thread / Ring buffer ───
     active_control: Option<Arc<DecodeControl>>,
     active_decode_handle: Option<std::thread::JoinHandle<()>>,
@@ -214,6 +222,10 @@ impl Mixer for AudioMixer {
         self.reverb_enabled.store(config.enabled, Ordering::Relaxed);
         *self.reverb_room_size.lock().unwrap() = config.room_size;
     }
+
+    fn set_playback_speed(&self, speed: f64) {
+        AudioMixer::set_playback_speed(self, speed);
+    }
 }
 
 impl AudioMixer {
@@ -253,6 +265,7 @@ impl AudioMixer {
             eq_enabled: Arc::new(AtomicBool::new(true)),
             reverb_enabled: Arc::new(AtomicBool::new(false)),
             reverb_room_size: Arc::new(Mutex::new(0.3)),
+            playback_speed: Arc::new(AtomicU32::new(1000)),
             active_control: None,
             active_decode_handle: None,
             standby_control: None,
@@ -332,10 +345,14 @@ impl AudioMixer {
         &self,
         source: Box<dyn Source<Item = f32> + Send>,
     ) -> Box<dyn Source<Item = f32> + Send> {
+        // Pitch-preserving time-stretch first so EQ/reverb filter the final
+        // (already sped up) signal.
+        let stretched: Box<dyn Source<Item = f32> + Send> =
+            Box::new(TimeStretchSource::new(source, self.playback_speed.clone()));
         let boxed: Box<dyn Source<Item = f32> + Send> = if self.eq_enabled.load(Ordering::Relaxed) {
-            Box::new(EqSource::new(source, self.eq_gains.clone()))
+            Box::new(EqSource::new(stretched, self.eq_gains.clone()))
         } else {
-            source
+            stretched
         };
         if self.reverb_enabled.load(Ordering::Relaxed) {
             let room_size = *self.reverb_room_size.lock().unwrap();
@@ -356,12 +373,16 @@ impl AudioMixer {
         eq_enabled: &Arc<AtomicBool>,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
+        playback_speed: &Arc<AtomicU32>,
     ) -> AudioResult<(
         Arc<DecodeControl>,
         RingBufferSource,
         std::thread::JoinHandle<()>,
     )> {
         let control = Arc::new(DecodeControl::new());
+        control
+            .playback_speed
+            .store(playback_speed.load(Ordering::Relaxed), Ordering::Relaxed);
         let shared = Arc::new(RingBufferInner::new(BUFFER_CAPACITY_SAMPLES));
 
         let thread = DecodeThread::new(
@@ -412,6 +433,7 @@ impl AudioMixer {
             &self.eq_enabled,
             &self.reverb_enabled,
             &self.reverb_room_size,
+            &self.playback_speed,
         )?;
 
         self.active().append(source);
@@ -472,6 +494,7 @@ impl AudioMixer {
             &self.eq_enabled,
             &self.reverb_enabled,
             &self.reverb_room_size,
+            &self.playback_speed,
         )?;
 
         self.standby().append(source);
@@ -574,6 +597,20 @@ impl AudioMixer {
     pub fn set_master_volume(&mut self, volume: u8) -> AudioResult<()> {
         self.master_volume.store(volume.min(100), Ordering::SeqCst);
         self.set_volume(self.volume.load(Ordering::SeqCst))
+    }
+
+    /// Update the pitch-preserving playback speed for the current track and
+    /// every decode thread currently running. Applies mid-track via the
+    /// shared atomic.
+    pub fn set_playback_speed(&self, speed: f64) {
+        let fixed = speed_to_fixed(speed);
+        self.playback_speed.store(fixed, Ordering::Relaxed);
+        if let Some(ref ctrl) = self.active_control {
+            ctrl.playback_speed.store(fixed, Ordering::Relaxed);
+        }
+        if let Some(ref ctrl) = self.standby_control {
+            ctrl.playback_speed.store(fixed, Ordering::Relaxed);
+        }
     }
 
     pub fn master_volume(&self) -> u8 {

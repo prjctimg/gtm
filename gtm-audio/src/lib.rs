@@ -10,6 +10,7 @@ pub mod decoder;
 pub mod eq;
 pub mod mixer;
 pub mod silent;
+pub mod stretch;
 pub mod symphonia;
 
 #[cfg(feature = "pulseaudio")]

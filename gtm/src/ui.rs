@@ -14,7 +14,7 @@ use crossterm::terminal::{
 };
 use gtm_core::state::{EqPreset, Tab};
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::Color;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -199,13 +199,19 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
         .split(area);
 
     render_tabs(f, chunks[0], app);
+    // gtm brand divider pinned to the top-right of the tab bar (T28):
+    // accent background with two spaces of padding on each side.
+    let brand = Paragraph::new(Span::styled(
+        "  gtm  ",
+        Style::default()
+            .fg(crate::theme::readable_fg(app.theme.fg, app.theme.accent))
+            .bg(app.theme.accent)
+            .add_modifier(Modifier::BOLD),
+    ))
+    .alignment(Alignment::Right);
+    f.render_widget(brand, chunks[0]);
     render_content(f, chunks[1], app);
     render_footer(f, chunks[2], app);
-
-    // Track info popup on Library tab
-    if app.current_tab == Tab::Library && app.track_popup_visible && !app.pickers.is_open() {
-        render_track_popup(f, chunks[1], app);
-    }
 
     // Render pickers on top of everything
     if app.pickers.is_open() {
@@ -226,22 +232,17 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
 }
 
 fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let (lib_icon, settings_icon) = if use_nerd_fonts() {
-        ("\u{f001}", "\u{f013}")
-    } else {
-        ("\u{266a}", "\u{2699}")
-    };
-    let tabs: [(u16, Tab, &str, &str); 2] = [
-        (1, Tab::Library, "Library", lib_icon),
-        (2, Tab::Settings, "Settings", settings_icon),
+    let tabs: [(u16, Tab, &str); 2] = [
+        (1, Tab::Library, "Library"),
+        (2, Tab::Settings, "Settings"),
     ];
     let mut spans: Vec<Span> = Vec::new();
-    for (num, tab, label, icon) in tabs {
+    for (num, tab, label) in tabs {
         let active = app.current_tab == tab;
-        let text = format!(" [{num}] {label} ({icon}) ");
+        let text = format!(" [{num}] {label} ");
         let style = if active {
             Style::default()
-                .fg(app.theme.selection_fg)
+                .fg(app.theme.selection_fg_readable())
                 .bg(app.theme.selection_bg)
                 .add_modifier(Modifier::BOLD)
         } else {
@@ -259,12 +260,177 @@ fn cubic_ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
 
+/// Easing: cubic ease-in for the leave animation.
+fn cubic_ease_in(t: f32) -> f32 {
+    let t = t.clamp(0.0, 1.0);
+    t * t * t
+}
+
 /// How long a notification stays on screen before being removed.
 const NOTIFICATION_LIFETIME: std::time::Duration = std::time::Duration::from_millis(1500);
 
+/// How long the slide-out (leave) animation takes once a notification
+/// expires.  During this window the card is still rendered while it drifts
+/// back off the right edge of the screen.
+const NOTIFICATION_EXIT_DURATION: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// "Up Next" card shown 5s before a crossfade begins (T10).  A bordered
+/// panel with the next track's cover, title/artist/album, and an animated
+/// top progress bar counting down to the crossfade start.
+fn render_upnext_card(f: &mut ratatui::Frame, area: Rect, app: &mut App, remaining: f64) {
+    let (display_title, artist, album, has_album, has_cover, source_label) = {
+        let u = match app.upnext.as_ref() {
+            Some(u) => u,
+            None => return,
+        };
+        let display_title = if u.track.title.is_empty() {
+            std::path::Path::new(&u.track.path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default()
+        } else {
+            u.track.title.clone()
+        };
+        let artist = if u.track.artist.is_empty() {
+            "Unknown".to_string()
+        } else {
+            u.track.artist.clone()
+        };
+        let album = u.track.album.clone();
+        let has_album = !album.is_empty();
+        let has_cover = u.cover.is_some();
+        let source = if u.track.path.contains("/audio/spotify") {
+            "Spotify"
+        } else if u.track.path.contains("/audio/youtube") {
+            "YouTube"
+        } else {
+            "Local"
+        };
+        let source_label = if use_nerd_fonts() {
+            match source {
+                "Spotify" => " \u{f1bc} Spotify",
+                "YouTube" => " \u{f167} YouTube",
+                _ => " \u{f3b5} Local",
+            }
+        } else {
+            match source {
+                "Spotify" => " ♫ Spotify",
+                "YouTube" => " ▶ YouTube",
+                _ => " ♪ Local",
+            }
+        };
+        (
+            display_title,
+            artist,
+            album,
+            has_album,
+            has_cover,
+            source_label.to_string(),
+        )
+    };
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(app.theme.notification_border))
+        .style(Style::default().bg(app.theme.elevated_bg));
+    f.render_widget(block, area);
+    let inner = area.inner(Margin {
+        horizontal: 1,
+        vertical: 1,
+    });
+
+    // Animated top progress bar counting down to the crossfade.
+    let filled_w = (inner.width as f64 * remaining).round() as u16;
+    let empty_w = inner.width.saturating_sub(filled_w);
+    if filled_w > 0 {
+        f.render_widget(
+            Block::default().style(Style::default().bg(app.theme.accent)),
+            Rect {
+                x: inner.x,
+                y: inner.y,
+                width: filled_w,
+                height: 1,
+            },
+        );
+    }
+    if empty_w > 0 {
+        f.render_widget(
+            Block::default().style(Style::default().bg(app.theme.muted_border)),
+            Rect {
+                x: inner.x + filled_w,
+                y: inner.y,
+                width: empty_w,
+                height: 1,
+            },
+        );
+    }
+
+    let body = Rect {
+        x: inner.x,
+        y: inner.y + 1,
+        width: inner.width,
+        height: inner.height.saturating_sub(1),
+    };
+
+    // Cover on the left (clamped to the body).
+    let cover_w = COVER_W.min(body.width.saturating_sub(2));
+    let cover_h = COVER_H.min(body.height);
+    if has_cover && cover_w > 0 {
+        let cover_area = Rect {
+            x: body.x,
+            y: body.y,
+            width: cover_w,
+            height: cover_h,
+        };
+        if let Some(protocol) = app.upnext.as_mut().and_then(|u| u.cover_stateful.as_mut()) {
+            let image = StatefulImage::new();
+            f.render_stateful_widget(image, cover_area, protocol);
+        } else if let Some(bytes) = app.upnext.as_ref().and_then(|u| u.cover.as_ref()) {
+            render_cover_block(f, cover_area, bytes);
+        }
+    }
+
+    // Text right of the cover.
+    let text_area = Rect {
+        x: body.x + cover_w + 1,
+        y: body.y,
+        width: body.width.saturating_sub(cover_w + 1),
+        height: body.height,
+    };
+    let text_w = text_area.width.saturating_sub(1) as usize;
+    let animated = scroll_text(&display_title, text_w.max(4), app.np_title_scroll, false);
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            "UP NEXT",
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            format!(" {}", animated),
+            Style::default()
+                .fg(app.theme.fg_bright)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(format!(" {}", artist), Style::default().fg(app.theme.fg))),
+    ];
+    if has_album {
+        lines.push(Line::from(Span::styled(
+            format!(" {}", album),
+            Style::default().fg(app.theme.fg),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        format!(" {}", source_label.trim_start()),
+        Style::default().fg(app.theme.fg_dim),
+    )));
+    f.render_widget(Paragraph::new(lines), text_area);
+}
+
 /// Floating notification overlay rendered as cards stacked from the bottom.
-/// Each card has a thick solid left border coloured by the theme, wrapped
-/// text on an opaque fill, and no outer border.
+/// Each card has a thin solid left border coloured by the theme, wrapped
+/// text on an opaque fill, and no outer border.  Cards slide in from the
+/// right on appearance and slide back out again as they leave.
 fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     // Don't show notifications when a picker is open (pickers have their own panels)
     if app.pickers.is_open() {
@@ -284,8 +450,42 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
         }
     }
 
-    // Remove expired notifications.
-    app.notifications.retain(|n| n.expires_at > now);
+    // Keep notifications alive through their slide-out animation; fully
+    // departed ones are dropped.
+    app.notifications.retain(|n| now < n.expires_at + NOTIFICATION_EXIT_DURATION);
+
+    let max_notif_width = 55u16;
+    let padding = 2u16;
+    let gap = 1u16;
+    let border_w = 1u16;
+
+    // Cursor tracking the bottom edge of the last drawn card; cards grow upward.
+    let mut y_bottom = area.y + area.height - padding;
+
+    // Up Next crossfade-countdown card (T10): pinned to the bottom-right,
+    // regular notifications stack above it.  The card is removed here once
+    // its countdown reaches zero (the crossfade has begun).
+    if let Some(remaining) = app.upnext.as_ref().and_then(|u| {
+        let remaining = 1.0 - u.started_at.elapsed().as_secs_f64() / u.total_secs;
+        (remaining > 0.0).then_some(remaining)
+    }) {
+        let card_w = 55u16;
+        let card_h = 10u16;
+        let card_x = area.x + area.width.saturating_sub(card_w + padding);
+        let card_y = y_bottom.saturating_sub(card_h);
+        if card_y >= area.y {
+            let card_area = Rect {
+                x: card_x,
+                y: card_y,
+                width: card_w,
+                height: card_h,
+            };
+            render_upnext_card(f, card_area, app, remaining);
+            y_bottom = card_y.saturating_sub(gap);
+        }
+    } else if app.upnext.is_some() {
+        app.upnext = None;
+    }
 
     // Separate volume and regular notifications.
     let mut regular: Vec<_> = app.notifications.iter().filter(|n| !n.is_volume).collect();
@@ -294,20 +494,16 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
     // Stack regular notifications from the bottom, max 5 visible.
     regular.truncate(5);
 
-    let max_notif_width = 55u16;
-    let padding = 2u16;
-    let gap = 1u16;
-    let border_w = 4u16;
-
-    // Cursor tracking the bottom edge of the last drawn card; cards grow upward.
-    let mut y_bottom = area.y + area.height - padding;
-
     for n in regular.iter() {
         // Wrap text to fit within max width minus border and padding.
         let text_area_w = max_notif_width.saturating_sub(border_w + padding * 2);
         let wrapped = wrap_text(&n.message, text_area_w as usize);
         let line_count = wrapped.len() as u16;
-        let card_h = line_count + padding * 2;
+        // A titled card spends one row on the heading (accent, bold) plus a
+        // blank separator row before the message.
+        let has_title = !n.title.is_empty();
+        let title_rows = if has_title { 2 } else { 0 };
+        let card_h = line_count + padding * 2 + title_rows;
 
         // Check if card fits in remaining area.
         let card_y = y_bottom.saturating_sub(card_h);
@@ -316,10 +512,20 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
         }
 
         // Slide-in from right: start off-screen, animate to final position.
-        let progress = cubic_ease_out(n.animation_progress);
+        // Once expired the card slides back out to the right.
         let final_x = area.x + area.width.saturating_sub(max_notif_width + padding);
         let start_x = area.x + area.width;
-        let x = (start_x as f32 + (final_x as f32 - start_x as f32) * progress) as u16;
+        let leaving = now.saturating_duration_since(n.expires_at);
+        let x = if leaving > std::time::Duration::ZERO {
+            let exit_progress = cubic_ease_in(
+                (leaving.as_millis() as f32 / NOTIFICATION_EXIT_DURATION.as_millis() as f32)
+                    .min(1.0),
+            );
+            (final_x as f32 + (start_x as f32 - final_x as f32) * exit_progress) as u16
+        } else {
+            let progress = cubic_ease_out(n.animation_progress);
+            (start_x as f32 + (final_x as f32 - start_x as f32) * progress) as u16
+        };
 
         let card_area = Rect {
             x,
@@ -354,15 +560,27 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
             height: card_area.height,
         };
 
-        // Render wrapped lines
+        // Render wrapped lines (with the optional heading on top)
         let inner = Rect {
             x: text_area.x + padding,
             y: text_area.y + padding,
             width: text_area.width.saturating_sub(padding * 2),
             height: text_area.height.saturating_sub(padding * 2),
         };
-        let para =
-            Paragraph::new(wrapped.join("\n")).style(Style::default().fg(app.theme.fg_bright));
+        let mut lines: Vec<Line> = Vec::with_capacity(1 + line_count as usize);
+        if has_title {
+            lines.push(Line::from(Span::styled(
+                n.title.clone(),
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            lines.push(Line::raw(""));
+        }
+        for l in wrapped.iter() {
+            lines.push(Line::raw(l));
+        }
+        let para = Paragraph::new(lines).style(Style::default().fg(app.theme.fg_bright));
         f.render_widget(para, inner);
 
         y_bottom = card_y.saturating_sub(gap);
@@ -371,13 +589,22 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
     // Volume notifications: vertical bar on the far right edge (stacked
     // above the regular cards).
     for n in volume.iter() {
-        let progress = cubic_ease_out(n.animation_progress);
         let bar_h = 10u16;
         let bar_w = 5u16;
 
         let final_x = area.x + area.width.saturating_sub(bar_w + padding);
         let start_x = area.x + area.width;
-        let x = (start_x as f32 + (final_x as f32 - start_x as f32) * progress) as u16;
+        let leaving = now.saturating_duration_since(n.expires_at);
+        let x = if leaving > std::time::Duration::ZERO {
+            let exit_progress = cubic_ease_in(
+                (leaving.as_millis() as f32 / NOTIFICATION_EXIT_DURATION.as_millis() as f32)
+                    .min(1.0),
+            );
+            (final_x as f32 + (start_x as f32 - final_x as f32) * exit_progress) as u16
+        } else {
+            let progress = cubic_ease_out(n.animation_progress);
+            (start_x as f32 + (final_x as f32 - start_x as f32) * progress) as u16
+        };
 
         let bar_y = y_bottom.saturating_sub(bar_h + 2);
         if bar_y < area.y {
@@ -580,6 +807,13 @@ const LIBRARY_ICONS_ASCII: &[&str] = &["♫", "♥", "▤", "♪", "≡", "☊"]
 fn use_nerd_fonts() -> bool {
     !matches!(std::env::var("GTM_NERD_FONTS"), Ok(v) if v == "0" || v == "false" || v == "no")
 }
+
+/// Canonical cover-art size across the TUI.  A terminal cell is roughly
+/// half as tall as it is wide, so a 14×7 block reads as square artwork.
+/// Every cover renderer clamps to its available space but shares these base
+/// dimensions so the layout never shifts when a cover loads or unloads (T13).
+pub const COVER_W: u16 = 14;
+pub const COVER_H: u16 = 7;
 
 /// Scroll helper that keeps the selected item centered in the viewport.
 fn centered_scroll(sel: usize, available: usize, total: usize) -> (usize, usize) {
@@ -822,9 +1056,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         if let Some(track) = app.state.current_track.clone() {
             let inner = np_inner;
 
-            const COVER_W: u16 = 12;
-            const COVER_H: u16 = 6;
-
             if inner.width >= COVER_W + 6 {
                 // Cover on the LEFT, info on the RIGHT
                 let hchunks = Layout::default()
@@ -926,7 +1157,8 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 }
 
                 // Row 3: spacer (album case) or the progress bar (no album)
-                // Row 4: Progress bar + timestamps (album case)
+                // Row 4: Progress bar (album case); the elapsed/duration
+                // timestamps sit on the row below the bar in both cases (T22).
                 // Prefer the daemon-reported duration: queued/foreign tracks
                 // carry duration 0 in their TrackInfo until played, so the
                 // panel must not show "0:00" when the real duration is known.
@@ -940,19 +1172,17 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 let dur_str = format_duration(dur as u64);
                 let ratio = if dur > 0.0 { pos / dur } else { 0.0 };
                 let ts_str = format!("{} / {}", pos_str, dur_str);
-                let bar_row = if has_album {
-                    info_chunks[4]
-                } else {
-                    info_chunks[3]
-                };
-                let bar_width =
-                    (bar_row.width.saturating_sub(ts_str.len() as u16 + 2) as usize).min(40);
+                let bar_row = info_chunks[3];
+                let ts_row = info_chunks[4];
+                let bar_width = (bar_row.width.saturating_sub(1) as usize).min(40);
                 let bar_spans = render_progress_variant_styled(ratio, bar_width, app);
-                let mut line_spans = bar_spans;
-                line_spans.push(Span::raw(" "));
-                line_spans.push(Span::raw(ts_str));
-                let bar_para = Paragraph::new(Line::from(line_spans));
+                let bar_para = Paragraph::new(Line::from(bar_spans));
                 f.render_widget(bar_para, bar_row);
+                let ts_para = Paragraph::new(Line::from(vec![Span::styled(
+                    ts_str,
+                    Style::default().fg(app.theme.fg_dim),
+                )]));
+                f.render_widget(ts_para, ts_row);
             } else {
                 // Terminal too narrow for cover: just show info text
                 let display_title = if track.title.is_empty() {
@@ -998,19 +1228,19 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     row_offset += 1;
                 }
 
-                let dur = track.duration;
+                let dur = if app.state.duration > 0.0 {
+                    app.state.duration
+                } else {
+                    track.duration
+                };
                 let pos = app.display_position;
                 let pos_str = format_duration(pos as u64);
                 let dur_str = format_duration(dur as u64);
                 let ratio = if dur > 0.0 { pos / dur } else { 0.0 };
                 let ts_str = format!("{} / {}", pos_str, dur_str);
-                let bar_width =
-                    (inner.width.saturating_sub(ts_str.len() as u16 + 2) as usize).min(40);
+                let bar_width = (inner.width.saturating_sub(1) as usize).min(40);
                 let bar_spans = render_progress_variant_styled(ratio, bar_width, app);
-                let mut line_spans = bar_spans;
-                line_spans.push(Span::raw(" "));
-                line_spans.push(Span::raw(ts_str));
-                let bar_para = Paragraph::new(Line::from(line_spans));
+                let bar_para = Paragraph::new(Line::from(bar_spans));
                 let bar_area = Rect {
                     x: inner.x,
                     y: inner.y + row_offset,
@@ -1018,12 +1248,49 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     height: 1,
                 };
                 f.render_widget(bar_para, bar_area);
+                // Timestamps move to their own row below the progress bar (T22).
+                let ts_area = Rect {
+                    x: inner.x,
+                    y: inner.y + row_offset + 1,
+                    width: inner.width,
+                    height: 1,
+                };
+                let ts_para = Paragraph::new(Line::from(vec![Span::styled(
+                    ts_str,
+                    Style::default().fg(app.theme.fg_dim),
+                )]));
+                f.render_widget(ts_para, ts_area);
             }
         } else {
             let inner = np_inner;
-            let msg = Paragraph::new("It's awfully quiet here... ")
-                .alignment(Alignment::Center)
-                .style(Style::default().fg(app.theme.fg));
+            // Idle state (T27): point the user at the quick-start actions
+            // instead of a single dead-end line.
+            let lines = vec![
+                Line::from(Span::styled(
+                    "It's awfully quiet here…",
+                    Style::default()
+                        .fg(app.theme.fg_bright)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    " Alt+Y  search YouTube",
+                    Style::default().fg(app.theme.fg),
+                )),
+                Line::from(Span::styled(
+                    " Alt+F  search library",
+                    Style::default().fg(app.theme.fg),
+                )),
+                Line::from(Span::styled(
+                    " Alt+S  link Spotify",
+                    Style::default().fg(app.theme.fg),
+                )),
+                Line::from(Span::styled(
+                    " Alt+C  change theme",
+                    Style::default().fg(app.theme.fg),
+                )),
+            ];
+            let msg = Paragraph::new(lines);
             f.render_widget(msg, inner);
         }
     }
@@ -1090,7 +1357,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             let is_active = i == app.library_category;
             let style = if is_active && left_focus {
                 Style::default()
-                    .fg(app.theme.selection_fg)
+                    .fg(app.theme.selection_fg_readable())
                     .bg(app.theme.selection_bg)
             } else if is_active {
                 Style::default().fg(app.theme.accent)
@@ -1103,14 +1370,35 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
     let left_inner = render_pane_header(f, panes[0], app, " ", left_focus, false, false);
     fill_pane(f, left_inner, app);
-    f.render_widget(List::new(left_items), left_inner);
+
+    // Reserve the bottom rows of the left pane for the embedded track-info
+    // card (replaces the deprecated floating popup).  Layout from the top:
+    // category list, stats line, then the card while a track is highlighted.
+    let track_info_h: u16 = if app.track_popup_visible {
+        TRACK_INFO_CARD_H
+    } else {
+        0
+    };
+    let left_vchunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(track_info_h),
+        ])
+        .split(left_inner);
+    let left_list_area = left_vchunks[0];
+    let left_stats_area = left_vchunks[1];
+    let left_track_info_area = left_vchunks[2];
+
+    f.render_widget(List::new(left_items), left_list_area);
 
     // Active category left-border indicator picker
     if app.library_category < LIBRARY_CATEGORIES.len() {
-        let indicator_y = left_inner.y + app.library_category as u16;
-        if indicator_y < left_inner.y + left_inner.height {
+        let indicator_y = left_list_area.y + app.library_category as u16;
+        if indicator_y < left_list_area.y + left_list_area.height {
             let indicator_area = Rect {
-                x: left_inner.x + 1,
+                x: left_list_area.x + 1,
                 y: indicator_y,
                 width: 1,
                 height: 1,
@@ -1162,14 +1450,14 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 let name_pad = avail.saturating_sub(9);
                 let style = if is_sel {
                     Style::default()
-                        .fg(app.theme.selection_fg)
+                        .fg(app.theme.selection_fg_readable())
                         .bg(app.theme.selection_bg)
                 } else {
                     Style::default().fg(app.theme.fg)
                 };
                 let dur_style = if is_sel {
                     Style::default()
-                        .fg(app.theme.selection_fg)
+                        .fg(app.theme.selection_fg_readable())
                         .bg(app.theme.selection_bg)
                 } else {
                     Style::default().fg(app.theme.fg_dim)
@@ -1226,7 +1514,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                         .add_modifier(Modifier::BOLD)
                 } else if is_sel {
                     Style::default()
-                        .fg(app.theme.selection_fg)
+                        .fg(app.theme.selection_fg_readable())
                         .bg(app.theme.selection_bg)
                 } else {
                     Style::default()
@@ -1256,7 +1544,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             };
             let style = if real_i == sel && !left_focus {
                 Style::default()
-                    .fg(app.theme.selection_fg)
+                    .fg(app.theme.selection_fg_readable())
                     .bg(app.theme.selection_bg)
             } else {
                 Style::default().fg(app.theme.fg)
@@ -1288,7 +1576,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             };
             let style = if real_i == sel && !left_focus {
                 Style::default()
-                    .fg(app.theme.selection_fg)
+                    .fg(app.theme.selection_fg_readable())
                     .bg(app.theme.selection_bg)
             } else {
                 Style::default().fg(app.theme.fg)
@@ -1320,7 +1608,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             };
             let style = if real_i == sel && !left_focus {
                 Style::default()
-                    .fg(app.theme.selection_fg)
+                    .fg(app.theme.selection_fg_readable())
                     .bg(app.theme.selection_bg)
             } else {
                 Style::default().fg(app.theme.fg)
@@ -1358,7 +1646,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 };
                 let style = if real_i == sel && !left_focus {
                     Style::default()
-                        .fg(app.theme.selection_fg)
+                        .fg(app.theme.selection_fg_readable())
                         .bg(app.theme.selection_bg)
                 } else {
                     Style::default().fg(app.theme.fg)
@@ -1407,7 +1695,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     .add_modifier(Modifier::BOLD)
             } else if is_sel {
                 Style::default()
-                    .fg(app.theme.selection_fg)
+                    .fg(app.theme.selection_fg_readable())
                     .bg(app.theme.selection_bg)
             } else {
                 Style::default()
@@ -1417,20 +1705,20 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         (lines, st_line)
     };
 
-    // Render stats at the bottom of the left pane
-    if left_inner.height > 0 {
-        let stats_y = left_inner.y + left_inner.height - 1;
-        let stats_area = Rect {
-            x: left_inner.x,
-            y: stats_y,
-            width: left_inner.width,
-            height: 1,
-        };
+    // Render stats just above the track-info card at the bottom of the left
+    // pane (previously the very last row of the pane).
+    if left_stats_area.height > 0 {
         let stats = Paragraph::new(Line::from(vec![Span::styled(
             stats_line.trim(),
             Style::default().fg(app.theme.fg_dim),
         )]));
-        f.render_widget(stats, stats_area);
+        f.render_widget(stats, left_stats_area);
+    }
+
+    // Embedded track-info card (see T1): replaces the floating popup that
+    // used to cover the lyrics pane and notifications.
+    if app.track_popup_visible && left_track_info_area.height > 0 {
+        render_track_info_in_pane(f, left_track_info_area, app);
     }
 
     let right_para = Paragraph::new(right_lines);
@@ -1483,7 +1771,7 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
             let is_active = i == app.settings_category;
             let style = if is_active && settings_focus {
                 Style::default()
-                    .fg(app.theme.selection_fg)
+                    .fg(app.theme.selection_fg_readable())
                     .bg(app.theme.selection_bg)
             } else if is_active {
                 Style::default().fg(app.theme.accent)
@@ -1669,7 +1957,7 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let is_sel = i == sel && !settings_focus;
         let style = if is_sel {
             Style::default()
-                .fg(app.theme.selection_fg)
+                .fg(app.theme.selection_fg_readable())
                 .bg(app.theme.selection_bg)
         } else {
             Style::default().fg(app.theme.fg)
@@ -1834,7 +2122,7 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         PickerId::PlaylistSelect => render_playlist_select_picker(f, picker_area, app),
         PickerId::EditMetadata => render_edit_metadata_picker(f, picker_area, app),
         PickerId::SpotifySearch => {
-            let block = picker_panel(app, " Spotify Link Token ");
+            let block = picker_panel(app, " Spotify Link Token ", Some(" [Esc] Close"));
             let inner = block.inner(picker_area);
             f.render_widget(block, picker_area);
 
@@ -1897,35 +2185,58 @@ fn picker_help(f: &mut ratatui::Frame, area: Rect, text: &str, app: &App) {
 
 /// Elevated floating panel (C4): `elevated_bg` fill (Reset when transparent)
 /// framed by a `muted_border` box instead of a loud full-border picker.
-fn picker_panel<'a>(app: &App, title: &'a str) -> Block<'a> {
-    Block::default()
+/// The title is rendered in the accent colour (bold) so it stays legible
+/// against dark picker backgrounds (T9).
+fn picker_panel<'a>(app: &App, title: &'a str, help: Option<&'a str>) -> Block<'a> {
+    let mut block = Block::default()
         .borders(Borders::ALL)
-        .title(title)
+        .title(Line::from(Span::styled(
+            title,
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )))
         .border_style(Style::default().fg(app.theme.muted_border))
         .style(Style::default().bg(if app.transparent_bg {
             ratatui::style::Color::Reset
         } else {
             app.theme.elevated_bg
-        }))
+        }));
+    if let Some(h) = help {
+        block = block.title_bottom(Line::from(Span::styled(
+            h,
+            Style::default().fg(app.theme.fg_dim),
+        )));
+    }
+    block
 }
 
 fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let sel = app.pickers.top().map_or(0, |o| o.selected);
 
-    let block = picker_panel(app, " Queue ");
+    let block = picker_panel(app, " Queue ", Some(" [Enter] Play  [d] Remove from Queue  [Esc] Close  j/k Navigate"));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let pane_w = inner.width as usize;
     let total = app.queue_cache.len();
     if total == 0 {
         let p = Paragraph::new("Queue is empty").style(Style::default().fg(app.theme.fg_dim));
         f.render_widget(p, inner);
-        picker_help(f, inner, " [Esc] Close", app);
         return;
     }
 
-    let visible = inner.height as usize;
+    // Reserve the bottom rows for the static Up Next preview (T11): it shows
+    // the track after the one currently playing and never tracks the
+    // highlighter.
+    let preview_h: u16 = if app.terminal_cols >= 80 { 5 } else { 0 };
+    let list_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: inner.height.saturating_sub(preview_h),
+    };
+
+    let visible = list_area.height as usize;
     let (scroll_start, scroll_end) = centered_scroll(sel, visible, total);
 
     let mut lines = Vec::new();
@@ -1934,9 +2245,8 @@ fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let track = &app.queue_cache[i];
         let is_current = i == app.queue_cursor;
         let is_sel = i == sel;
-        let prefix = if is_current { ">" } else { " " };
-        let num_str = format!("{}{:02}", prefix, i + 1);
-        let dur = format_duration_short(track.duration as u64);
+        let prefix = if is_sel { " > " } else { "   " };
+        let icon = if is_current { "\u{25b6} " } else { "\u{266b} " };
         let label = if track.title.is_empty() {
             std::path::Path::new(&track.path)
                 .file_stem()
@@ -1945,18 +2255,17 @@ fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         } else {
             track.title.clone()
         };
-
-        let row = format!(
-            "{:>5}  {:<w$}  {:>6}",
-            num_str,
-            label,
-            dur,
-            w = pane_w.saturating_sub(16)
-        );
+        let artist = if track.artist.is_empty() {
+            String::new()
+        } else {
+            format!(" - {}", track.artist)
+        };
+        let dur = format_duration_short(track.duration as u64);
+        let row = format!("{prefix}{icon}{label}{artist} [{}]", dur);
 
         let style = if is_sel {
             Style::default()
-                .fg(app.theme.selection_fg)
+                .fg(app.theme.selection_fg_readable())
                 .bg(app.theme.selection_bg)
         } else if is_current {
             Style::default()
@@ -1970,17 +2279,88 @@ fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
 
     let para = Paragraph::new(lines);
-    f.render_widget(para, inner);
-    picker_help(
-        f,
-        inner,
-        " [Enter] Play  [d] Remove from Queue  [Esc] Close  j/k Navigate",
-        app,
-    );
+    f.render_widget(para, list_area);
+
+    if preview_h > 0 {
+        let preview_area = Rect {
+            x: inner.x,
+            y: inner.y + inner.height - preview_h,
+            width: inner.width,
+            height: preview_h,
+        };
+        render_queue_upnext_preview(f, preview_area, app, app.queue_cursor + 1);
+    }
+}
+
+/// Static "Up Next" strip at the bottom of the queue picker (T11).  Shows the
+/// track after the one currently playing; the highlighter never changes it.
+fn render_queue_upnext_preview(f: &mut ratatui::Frame, area: Rect, app: &App, next_idx: usize) {
+    let block = Block::default()
+        .borders(Borders::TOP)
+        .title(" Up Next ")
+        .border_style(Style::default().fg(app.theme.accent))
+        .style(Style::default().bg(if app.transparent_bg {
+            Color::Reset
+        } else {
+            app.theme.elevated_bg
+        }));
+    f.render_widget(block, area);
+    let inner = Rect {
+        x: area.x,
+        y: area.y + 1,
+        width: area.width,
+        height: area.height.saturating_sub(1),
+    };
+    match app.queue_cache.get(next_idx) {
+        Some(track) => {
+            let label = if track.title.is_empty() {
+                std::path::Path::new(&track.path)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_else(|| track.path.clone())
+            } else {
+                track.title.clone()
+            };
+            let artist = if track.artist.is_empty() {
+                "Unknown artist".to_string()
+            } else {
+                track.artist.clone()
+            };
+            let album = if track.album.is_empty() {
+                None
+            } else {
+                Some(track.album.clone())
+            };
+            let mut lines: Vec<Line> = vec![
+                Line::from(Span::styled(
+                    format!("  {}", label),
+                    Style::default()
+                        .fg(app.theme.fg_bright)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    format!("  {}", artist),
+                    Style::default().fg(app.theme.fg),
+                )),
+            ];
+            if let Some(album) = album {
+                lines.push(Line::from(Span::styled(
+                    format!("  {}", album),
+                    Style::default().fg(app.theme.fg_dim),
+                )));
+            }
+            f.render_widget(Paragraph::new(lines), inner);
+        }
+        None => {
+            let p = Paragraph::new("Nothing queued after this track")
+                .style(Style::default().fg(app.theme.fg_dim));
+            f.render_widget(p, inner);
+        }
+    }
 }
 
 fn render_yt_search_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = picker_panel(app, " YouTube Search ");
+    let block = picker_panel(app, " YouTube Search ", Some(" [Enter] Play / Drill-down  [Ctrl+d] Download  [Ctrl+a] Add to Queue  [Esc] Close  Type to search (auto, 500ms)"));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2028,7 +2408,7 @@ fn render_yt_search_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let content = format!("{prefix}{}{} - {} [{}]", icon, r.channel, r.title, dur);
         let style = if i == sel {
             Style::default()
-                .fg(app.theme.selection_fg)
+                .fg(app.theme.selection_fg_readable())
                 .bg(app.theme.selection_bg)
         } else {
             Style::default()
@@ -2038,30 +2418,13 @@ fn render_yt_search_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
     let para = Paragraph::new(lines);
     f.render_widget(para, inner);
-
-    let help_text = " [Enter] Play / Drill-down  [Ctrl+d] Download  [Ctrl+a] Add to Queue  [Esc] Close  Type to search (auto, 500ms)";
-    let help = Paragraph::new(Span::styled(
-        help_text,
-        Style::default().fg(app.theme.fg_dim),
-    ))
-    .style(Style::default().bg(if app.transparent_bg {
-        ratatui::style::Color::Reset
-    } else {
-        app.theme.elevated_bg
-    }));
-    let help_area = Rect {
-        x: inner.x,
-        y: inner.y + inner.height.saturating_sub(1),
-        width: inner.width,
-        height: 1,
-    };
-    f.render_widget(help, help_area);
 }
 
 fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let source = app.pickers.top().map_or(PickerSource::All, |o| o.source);
     let title = format!(" Search: {} ", source.label());
-    let block = picker_panel(app, &title);
+    let help_text = format!(" [Enter] Open  [Tab] Source: {}  [Esc] Close  j/k Navigate", source.label());
+    let block = picker_panel(app, &title, Some(&help_text));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2102,7 +2465,7 @@ fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         let prefix = if i == sel { " > " } else { "   " };
         let style = if i == sel {
             Style::default()
-                .fg(app.theme.selection_fg)
+                .fg(app.theme.selection_fg_readable())
                 .bg(app.theme.selection_bg)
         } else {
             Style::default()
@@ -2134,15 +2497,6 @@ fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
 
     let para = Paragraph::new(lines);
     f.render_widget(para, results_area);
-    picker_help(
-        f,
-        results_area,
-        &format!(
-            " [Enter] Open  [Tab] Source: {}  [Esc] Close  j/k Navigate",
-            source.label()
-        ),
-        app,
-    );
 
     // Preview window: actual cover art as ASCII art next to the track meta.
     if preview_h > 0 {
@@ -2436,8 +2790,17 @@ fn render_lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     f.render_widget(para, inner);
 }
 
-/// Floating track info popup shown when scrolling in the Library list.
-fn render_track_popup(f: &mut ratatui::Frame, content_area: Rect, app: &mut App) {
+/// Height of the track-info card embedded at the bottom of the left Library
+/// pane: one border row plus the five content rows (title, artist, album,
+/// spacer, duration/source).  The cover art is vertically centred to match.
+const TRACK_INFO_CARD_H: u16 = 6;
+
+/// Track info card rendered at the bottom of the left Library pane.  This
+/// replaces the deprecated floating popup so the lyrics pane and
+/// notifications are never covered.  The content layout preserves the old
+/// popup: a bordered " Track Info " title row, cover art on the left and
+/// title / artist / album / [duration | source] rows on the right.
+fn render_track_info_in_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let track_id = match app.track_popup_track_id {
         Some(id) => id,
         None => return,
@@ -2448,29 +2811,6 @@ fn render_track_popup(f: &mut ratatui::Frame, content_area: Rect, app: &mut App)
     };
 
     let has_cover = app.track_popup_cover.is_some();
-    const COVER_W: u16 = 10;
-    const COVER_H: u16 = 5;
-    let text_margin = 2u16;
-
-    // Fixed dimensions to prevent layout shift when cover loads/unloads.
-    // Height must fit the 5 text rows (title, artist, album, spacer,
-    // "[duration] | [source]") plus the border; the cover is vertically
-    // centered.
-    let popup_w = (COVER_W + 1 + 38 + text_margin).min(content_area.width.saturating_sub(2));
-    let popup_h = COVER_H + 3;
-    if popup_w < 20 || popup_h > content_area.height {
-        return;
-    }
-
-    // Position at bottom-right of content area
-    let popup_x = content_area.x + content_area.width.saturating_sub(popup_w + 1);
-    let popup_y = content_area.y + content_area.height.saturating_sub(popup_h + 1);
-    let popup_area = Rect {
-        x: popup_x,
-        y: popup_y,
-        width: popup_w,
-        height: popup_h,
-    };
 
     let display_title = if track.title.is_empty() {
         std::path::Path::new(&track.path)
@@ -2498,7 +2838,7 @@ fn render_track_popup(f: &mut ratatui::Frame, content_area: Rect, app: &mut App)
     };
 
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::TOP)
         .title(format!(" Track Info{} ", fav))
         .border_style(Style::default().fg(app.theme.accent))
         .style(Style::default().bg(if app.transparent_bg {
@@ -2506,13 +2846,30 @@ fn render_track_popup(f: &mut ratatui::Frame, content_area: Rect, app: &mut App)
         } else {
             app.theme.elevated_bg
         }));
+    f.render_widget(block, area);
+    let inner = Rect {
+        x: area.x,
+        y: area.y + 1,
+        width: area.width,
+        height: area.height.saturating_sub(1),
+    };
 
-    let inner = block.inner(popup_area);
-    f.render_widget(Clear, popup_area);
-    f.render_widget(block, popup_area);
+    let source_label = if use_nerd_fonts() {
+        match source {
+            "Spotify" => " \u{f1bc} Spotify",
+            "YouTube" => " \u{f167} YouTube",
+            _ => " \u{f3b5} Local",
+        }
+    } else {
+        match source {
+            "Spotify" => " ♫ Spotify",
+            "YouTube" => " ▶ YouTube",
+            _ => " ♪ Local",
+        }
+    };
 
     if has_cover && inner.width > COVER_W + 1 {
-        // Side-by-side: cover on left, text on right
+        // Side-by-side: cover on left, text on right (preserves the popup layout)
         let split = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(COVER_W + 1), Constraint::Min(0)])
@@ -2534,19 +2891,6 @@ fn render_track_popup(f: &mut ratatui::Frame, content_area: Rect, app: &mut App)
         let text_area = split[1];
         let title_avail = text_area.width.saturating_sub(1) as usize;
         let animated_title = scroll_text(&display_title, title_avail, app.np_title_scroll, true);
-        let source_label = if use_nerd_fonts() {
-            match source {
-                "Spotify" => " \u{f1bc} Spotify",
-                "YouTube" => " \u{f167} YouTube",
-                _ => " \u{f3b5} Local",
-            }
-        } else {
-            match source {
-                "Spotify" => " ♫ Spotify",
-                "YouTube" => " ▶ YouTube",
-                _ => " ♪ Local",
-            }
-        };
         let lines = vec![
             Line::from(Span::styled(
                 format!(" {}", animated_title),
@@ -2578,19 +2922,6 @@ fn render_track_popup(f: &mut ratatui::Frame, content_area: Rect, app: &mut App)
         // Text only (no cover or too narrow)
         let title_avail = inner.width.saturating_sub(2) as usize;
         let animated_title = scroll_text(&display_title, title_avail, app.np_title_scroll, true);
-        let source_label = if use_nerd_fonts() {
-            match source {
-                "Spotify" => " \u{f1bc} Spotify",
-                "YouTube" => " \u{f167} YouTube",
-                _ => " \u{f3b5} Local",
-            }
-        } else {
-            match source {
-                "Spotify" => " ♫ Spotify",
-                "YouTube" => " ▶ YouTube",
-                _ => " ♪ Local",
-            }
-        };
         let lines = vec![
             Line::from(Span::styled(
                 format!("  {}", animated_title),
@@ -2622,7 +2953,7 @@ fn render_track_popup(f: &mut ratatui::Frame, content_area: Rect, app: &mut App)
 }
 
 fn render_about_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = picker_panel(app, " About ");
+    let block = picker_panel(app, " About ", Some(" [Esc] Close"));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2702,7 +3033,6 @@ fn render_about_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
     let p = Paragraph::new(lines).alignment(Alignment::Left);
     f.render_widget(p, inner);
-    picker_help(f, inner, " [Esc] Close", app);
 }
 
 fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -2801,7 +3131,7 @@ fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let is_sel = i == sel;
         let style = if is_sel {
             Style::default()
-                .fg(app.theme.selection_fg)
+                .fg(app.theme.selection_fg_readable())
                 .bg(app.theme.selection_bg)
         } else if *kind == "topic" {
             Style::default()
@@ -2830,7 +3160,7 @@ fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
 fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     if app.sleep_timer_input_mode {
-        let block = picker_panel(app, " Sleep Timer: Manual Input ");
+        let block = picker_panel(app, " Sleep Timer: Manual Input ", Some(" Enter minutes  [Enter] Set  [Esc] Cancel"));
         let inner = block.inner(area);
         f.render_widget(block, area);
         let label = Paragraph::new(Line::from(vec![
@@ -2847,12 +3177,17 @@ fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         return;
     }
 
-    let block = picker_panel(app, " Sleep Timer ");
+    let is_active = app.sleep_timer_remaining.is_some();
+    let help_text = if is_active {
+        " h/- Decrease  l/+ Increase  i: Input  Enter: Set  c: Cancel Timer  [Esc] Close"
+    } else {
+        " h/- Decrease  l/+ Increase  i: Input  Enter: Set  [Esc] Close"
+    };
+    let block = picker_panel(app, " Sleep Timer ", Some(help_text));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     let mins = app.sleep_timer_minutes;
-    let is_active = app.sleep_timer_remaining.is_some();
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -2904,7 +3239,7 @@ fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     for (i, &m) in quick_opts.iter().enumerate() {
         let style = if i == sel {
             Style::default()
-                .fg(app.theme.selection_fg)
+                .fg(app.theme.selection_fg_readable())
                 .bg(app.theme.selection_bg)
                 .add_modifier(Modifier::BOLD)
         } else if m == mins {
@@ -2932,7 +3267,7 @@ fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
     lines.push(Line::from(""));
 
-    // Controls
+    // Controls (kept for visual reference, same as border help)
     lines.push(Line::from(Span::styled(
         "  h/- Decrease  l/+ Increase  i: Input  Enter: Set",
         Style::default().fg(app.theme.fg_dim),
@@ -3001,6 +3336,7 @@ pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str, &str)] = &[
     ("\u{1f4cf} Footer Preset", "\u{2014}", "footer preset"),
     ("\u{25c9} Cycle Design", "\u{2014}", "cycle design"),
     ("\u{1fa7a} Health Check", ":", "health check"),
+    ("\u{1f4c8} Man Page", "M", "man"),
 ];
 
 fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -3033,7 +3369,7 @@ fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
     // Sort by score descending (longer match = better)
     filtered.sort_by_key(|b| std::cmp::Reverse(b.1));
 
-    let block = picker_panel(app, " Commands ");
+    let block = picker_panel(app, " Commands ", Some(" Type to filter  [Enter] Execute  [Esc] Close  ↑/��� Navigate"));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -3075,14 +3411,14 @@ fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
         let prefix = if is_sel { " > " } else { "   " };
         let style = if is_sel {
             Style::default()
-                .fg(app.theme.selection_fg)
+                .fg(app.theme.selection_fg_readable())
                 .bg(app.theme.selection_bg)
         } else {
             Style::default()
         };
         let key_style = if is_sel {
             Style::default()
-                .fg(app.theme.selection_fg)
+                .fg(app.theme.selection_fg_readable())
                 .bg(app.theme.selection_bg)
         } else {
             Style::default().fg(app.theme.fg_dim)
@@ -3140,7 +3476,7 @@ fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .top()
         .map_or(0, |o| o.selected.min(presets.len() - 1));
 
-    let block = picker_panel(app, " Equalizer ");
+    let block = picker_panel(app, " Equalizer ", Some(" [Enter] Apply  [Esc] Close  j/k Navigate"));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -3150,7 +3486,7 @@ fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let scroll_end = (scroll_start + visible).min(total);
 
     let mut list_items: Vec<ListItem> = Vec::new();
-    for (i, (name, desc, _)) in presets
+    for (i, (name, desc, eq)) in presets
         .iter()
         .enumerate()
         .skip(scroll_start)
@@ -3160,7 +3496,7 @@ fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let prefix = if is_sel { " > " } else { "   " };
         let style = if is_sel {
             Style::default()
-                .fg(app.theme.selection_fg)
+                .fg(app.theme.selection_fg_readable())
                 .bg(app.theme.selection_bg)
         } else if *name == app.state.eq_preset.label() {
             Style::default().fg(app.theme.success)
@@ -3168,6 +3504,8 @@ fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
             Style::default()
         };
         let mut spans = vec![Span::styled(format!("{prefix}{}", name), Style::default())];
+        // Static bar-chart preview of the gain curve (T24).
+        spans.extend(eq_preset_preview(*eq, app));
         if !is_sel {
             spans.push(Span::styled(
                 format!("  \u{2014} {desc}"),
@@ -3181,8 +3519,39 @@ fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(list, inner);
 }
 
+/// Static bar-chart preview of an EQ preset's gain curve (T24).  The fifteen
+/// ISO 1/3-octave gains (±4 dB) are mapped onto the visualizer's block glyphs
+/// — the active visualizer preset picks the glyph set — and coloured by the
+/// theme: boosts are `success`, cuts are `warning`, and neutral bands stay
+/// muted so the curve is readable at a glance.
+fn eq_preset_preview(eq: EqPreset, app: &App) -> Vec<Span<'static>> {
+    const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    const BRAILLE: [char; 8] = ['⠁', '⠃', '⠇', '⡇', '⣇', '⣧', '⣷', '⣿'];
+    let chars: &[char; 8] = match app.visualizer.preset {
+        crate::visualizer::VisualizerPreset::Braille
+        | crate::visualizer::VisualizerPreset::Gradient => &BRAILLE,
+        _ => &BLOCKS,
+    };
+    let mut spans = vec![Span::raw("  ")];
+    for g in eq.to_gains() {
+        let norm = (((g.clamp(-4.0, 4.0) + 4.0) / 8.0) * 7.0).round() as usize;
+        let color = if g > 0.75 {
+            app.theme.success
+        } else if g < -0.75 {
+            app.theme.warning
+        } else {
+            app.theme.fg_dim
+        };
+        spans.push(Span::styled(
+            chars[norm.min(7)].to_string(),
+            Style::default().fg(color),
+        ));
+    }
+    spans
+}
+
 fn render_sound_effects_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = picker_panel(app, " Sound Effects ");
+    let block = picker_panel(app, " Sound Effects ", Some(" j/k Navigate  [Enter] Toggle/Edit  [Esc] Close"));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -3230,7 +3599,7 @@ fn render_sound_effects_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
             let prefix = if i == sel { " > " } else { "   " };
             let style = if i == sel {
                 Style::default()
-                    .fg(app.theme.selection_fg)
+                    .fg(app.theme.selection_fg_readable())
                     .bg(app.theme.selection_bg)
             } else {
                 Style::default()
@@ -3244,8 +3613,8 @@ fn render_sound_effects_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = picker_panel(app, " Theme ");
-    let inner = block.inner(area);
+    let block = picker_panel(app, " Theme ", Some(" [Enter] Select  [Esc] Close"));
+    let _inner = block.inner(area);
     f.render_widget(block, area);
 
     let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
@@ -3275,6 +3644,10 @@ fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .pickers
         .top()
         .map_or(0, |o| o.selected.min(total.saturating_sub(1)));
+
+    let block = picker_panel(app, " Theme ", Some(" [Enter] Select  [Esc] Close"));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
 
     let search_line = Line::from(Span::styled(
         format!(" > {}_", query),
@@ -3324,9 +3697,19 @@ fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let left_w = name_part.chars().count() + check.chars().count() + 1;
         let pad = row_w.saturating_sub(left_w + swatch_run_w + 2);
 
+        // The highlighter covers only the name (and the padding that pushes
+        // the palette into its right-aligned column).  It stops where the
+        // swatches begin so the theme colours stay unobscured (T6).
+        let name_style = if i == sel {
+            Style::default()
+                .fg(app.theme.selection_fg_readable())
+                .bg(app.theme.selection_bg)
+        } else {
+            Style::default()
+        };
         let mut spans: Vec<Span> = vec![Span::styled(
             format!("{name_part}{:pad$}", "", pad = pad),
-            Style::default(),
+            name_style,
         )];
         for c in colors {
             spans.push(Span::styled("  ", Style::default().fg(c).bg(c)));
@@ -3335,8 +3718,6 @@ fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         spans.push(Span::styled(check, Style::default()));
         let style = if i == sel {
             Style::default()
-                .fg(app.theme.selection_fg)
-                .bg(app.theme.selection_bg)
         } else if is_active {
             Style::default()
                 .fg(app.theme.accent)
@@ -3372,30 +3753,8 @@ pub fn braille_spinner(frame: usize) -> char {
     SPINNER_FRAMES[frame % SPINNER_FRAMES.len()]
 }
 
-/// Pick the foreground colour with enough contrast against `bg`. If the
-/// requested `fg` already has sufficient contrast it is preserved: this
-/// lets the footer's per-module colour mapping do something rather than
-/// being thrown away in favour of a monochrome fallback.
-pub fn readable_fg(fg: ratatui::style::Color, bg: ratatui::style::Color) -> ratatui::style::Color {
-    fn luminance(c: &ratatui::style::Color) -> f64 {
-        match c {
-            ratatui::style::Color::Rgb(r, g, b) => {
-                0.299 * *r as f64 + 0.587 * *g as f64 + 0.114 * *b as f64
-            }
-            _ => 128.0,
-        }
-    }
-    let fg_l = luminance(&fg);
-    let bg_l = luminance(&bg);
-    const CONTRAST_THRESHOLD: f64 = 90.0;
-    if (fg_l - bg_l).abs() >= CONTRAST_THRESHOLD {
-        fg
-    } else if bg_l > 128.0 {
-        ratatui::style::Color::Rgb(20, 20, 20)
-    } else {
-        ratatui::style::Color::Rgb(240, 240, 240)
-    }
-}
+/// Re-export so footer.rs and other modules can call `crate::ui::readable_fg`.
+pub use crate::theme::readable_fg;
 
 /// Scroll text horizontally if it exceeds max_width, using a frame-based offset.
 /// Only the selected item scrolls; others are truncated with "…".
@@ -3423,7 +3782,7 @@ fn scroll_text(text: &str, max_width: usize, frame: usize, is_selected: bool) ->
 // ─── Library Motion Overlays ───
 
 fn render_playlist_select_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = picker_panel(app, " Select Playlist ");
+    let block = picker_panel(app, " Select Playlist ", Some(" [Enter] Select  [Esc] Cancel"));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -3440,7 +3799,7 @@ fn render_playlist_select_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
         let content = format!("{}{} ({} tracks)", prefix, pl.name, pl.track_count);
         let style = if i + 1 == sel {
             Style::default()
-                .fg(app.theme.selection_fg)
+                .fg(app.theme.selection_fg_readable())
                 .bg(app.theme.selection_bg)
         } else {
             Style::default().fg(app.theme.fg)
@@ -3451,12 +3810,12 @@ fn render_playlist_select_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
     let list = List::new(items);
     f.render_widget(list, inner);
 
-    let help_text = " [Enter] Select  [Esc] Cancel";
-    picker_help(f, inner, help_text, app);
+    
 }
 
 fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let block = picker_panel(app, " Edit Metadata ");
+    let help_text = " [j/k] Fields  [Ctrl+S] Sync Cover  [Tab] Next  [Enter] Save  [Esc] Cancel";
+    let block = picker_panel(app, " Edit Metadata ", Some(help_text));
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -3470,15 +3829,17 @@ fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App
         "Track #",
     ];
 
-    // Reserve a right column for the cover preview (bottom-right corner feel).
-    const COVER_W: u16 = 14;
+    // Reserve a right column for a larger cover preview (bottom-right corner
+    // feel).  The width is the canonical COVER_W scaled up ~1.7× so the 'e'
+    // window shows the artwork at a readable size (T12).
+    const COVER_W_EDIT: u16 = 24;
     let vchunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .constraints([Constraint::Min(0)])
         .split(inner);
     let content = vchunks[0];
-    let cover_col_w = if content.width > COVER_W + 2 {
-        COVER_W
+    let cover_col_w = if content.width > COVER_W_EDIT + 2 {
+        COVER_W_EDIT
     } else {
         0
     };
@@ -3496,7 +3857,7 @@ fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App
         let prefix = if is_active { " > " } else { "   " };
         let style = if is_active {
             Style::default()
-                .fg(app.theme.selection_fg)
+                .fg(app.theme.selection_fg_readable())
                 .bg(app.theme.selection_bg)
         } else {
             Style::default().fg(app.theme.fg)
@@ -3510,9 +3871,10 @@ fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App
     let para = Paragraph::new(lines);
     f.render_widget(para, list_area);
 
-    // Cover preview pinned to the bottom of the right column.
+    // Cover preview pinned to the bottom of the right column; taller than the
+    // canonical size so the artwork fills the reserved column.
     if cover_area.width > 0 {
-        let cover_h = 6u16.min(cover_area.height);
+        let cover_h = 12u16.min(cover_area.height);
         let c_area = Rect {
             x: cover_area.x,
             y: cover_area.y + cover_area.height.saturating_sub(cover_h),
@@ -3533,9 +3895,6 @@ fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App
             f.render_widget(placeholder, c_area);
         }
     }
-
-    let help_text = " [j/k] Fields  [Ctrl+S] Sync Cover  [Tab] Next  [Enter] Save  [Esc] Cancel";
-    picker_help(f, vchunks[1], help_text, app);
 }
 
 fn render_health_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -3550,7 +3909,12 @@ fn render_health_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(Clear, rect);
 
     let block = Block::default()
-        .title(" Health Check ")
+        .title(Line::from(Span::styled(
+            " Health Check ",
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )))
         .borders(Borders::ALL)
         .style(Style::default().fg(app.theme.fg).bg(if app.transparent_bg {
             ratatui::style::Color::Reset

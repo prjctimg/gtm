@@ -54,6 +54,7 @@ impl DaemonState {
             gapless: false,
             dynamic_mode: DynamicModeConfig::default(),
             scrobble: ScrobbleConfig::default(),
+            playback_speed: 1.0,
         }
     }
 }

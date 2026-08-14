@@ -31,6 +31,11 @@ pub struct DaemonConfig {
     pub verbose: bool,
     pub test_mode: bool,
     pub audio_backend: AudioBackendKind,
+    /// Permit the daemon to physically delete audio files (and their `.lrc`
+    /// sidecars) when a track is removed from the library. When disabled, the
+    /// remove action is refused with an error instead of touching the file.
+    /// Defaults to allowing deletion (matches pre-flag behaviour).
+    pub allow_delete_files: bool,
 }
 
 #[derive(Parser, Debug)]
@@ -174,6 +179,7 @@ impl DaemonConfig {
             verbose: args.verbose,
             test_mode: args.test_mode,
             audio_backend,
+            allow_delete_files: true,
         }
     }
 

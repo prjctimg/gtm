@@ -182,6 +182,10 @@ pub enum SlideDirection {
 
 #[derive(Debug, Clone)]
 pub struct Notification {
+    /// Short heading shown at the top of the card (Volume, Up Next, Theme,
+    /// Equalizer, YouTube, Spotify, Queue, Library, Playlist, Sleep Timer,
+    /// System, Error, Success).
+    pub title: String,
     pub message: String,
     pub kind: NotificationKind,
     pub expires_at: std::time::Instant,
@@ -194,6 +198,24 @@ pub struct Notification {
     /// Animation progress: 0.0 = just appeared, 1.0 = fully settled.
     /// Managed by the animation system; not user-set.
     pub animation_progress: f32,
+}
+
+/// State for the "Up Next" crossfade-countdown notification (T10).  Created
+/// when the daemon emits `CrossfadeCountdown` (the next track is ~5s out from
+/// crossfade start) and removed once the crossfade begins or the countdown
+/// elapses.
+/// State for the "Up Next" crossfade-countdown notification (T10).  Created
+/// when the daemon emits `CrossfadeCountdown` (the next track is ~5s out from
+/// crossfade start) and removed once the crossfade begins or the countdown
+/// elapses.
+pub struct UpNextNotif {
+    pub track: gtm_core::track::TrackInfo,
+    pub cover: Option<Vec<u8>>,
+    pub cover_stateful: Option<StatefulProtocol>,
+    /// Wall-clock instant the countdown started.
+    pub started_at: std::time::Instant,
+    /// Countdown length in wall-clock seconds until the crossfade begins.
+    pub total_secs: f64,
 }
 
 /// One row in the SearchLibrary fuzzy-finder, resolved from a `PickerSource`.
@@ -316,6 +338,9 @@ pub struct App {
     pub picker_preview_cover: Option<Vec<u8>>,
     pub picker_preview_stateful: Option<StatefulProtocol>,
     last_picker_preview_fetch_id: Option<i64>,
+    /// Active "Up Next" crossfade-countdown notification (T10).
+    pub upnext: Option<UpNextNotif>,
+    last_upnext_cover_fetch_id: Option<i64>,
     pub current_lyrics: Option<gtm_core::track::LrcData>,
     pub lyrics_scroll: usize,
     pub lyrics_fetching: bool,
@@ -334,6 +359,7 @@ enum IpcResult {
     RefreshDone(Box<DaemonState>, Option<Vec<u8>>, Option<i64>),
     CoverArt(Option<Vec<u8>>, Option<i64>),
     PopupCoverArt(Option<Vec<u8>>, i64),
+    UpNextCover(Option<Vec<u8>>, i64),
     MetadataCoverArt(Option<Vec<u8>>, i64),
     CoverPicker(Option<Picker>),
     Lyrics(Option<gtm_core::track::LrcData>),
@@ -342,7 +368,7 @@ enum IpcResult {
     Playlists(Vec<Playlist>),
     Queue(Vec<TrackInfo>, usize),
     YtResults(String, Vec<YTSearchResult>),
-    Notification(String, NotificationKind),
+    Notification(String, String, NotificationKind),
     Error(String),
     HealthReport(gtm_core::ipc::HealthReport),
     SpotifyStatus(SpotifyStatus),
@@ -372,7 +398,11 @@ fn spawn_sync_and_wait(
             match c.library_sync_status().await {
                 Ok(st) if !st.running => {
                     let msg = format!("{label} synced: {}/{} tracks", st.synced, st.total);
-                    let _ = ipc_tx.send(IpcResult::Notification(msg, NotificationKind::Info));
+                    let _ = ipc_tx.send(IpcResult::Notification(
+                        "Library".to_string(),
+                        msg,
+                        NotificationKind::Info,
+                    ));
                     if let Ok(DaemonRes::Tracks { tracks, .. }) =
                         c.library_get_tracks(None, None).await
                     {
@@ -404,6 +434,7 @@ pub enum TuiCommand {
     Seek(f64),
     SetVolume(u8),
     SetMasterVolume(u8),
+    SetPlaybackSpeed(f64),
     ToggleShuffle,
     CycleRepeat(RepeatMode),
     ToggleMute,
@@ -563,6 +594,8 @@ impl App {
             picker_preview_cover: None,
             picker_preview_stateful: None,
             last_picker_preview_fetch_id: None,
+            upnext: None,
+            last_upnext_cover_fetch_id: None,
             current_lyrics: None,
             lyrics_scroll: 0,
             lyrics_fetching: false,
@@ -653,7 +686,7 @@ impl App {
         } else {
             ""
         };
-        self.notify(format!("Theme: {}{}", name, light), NotificationKind::Info);
+        self.notify_titled("Theme", format!("Theme: {}{}", name, light), NotificationKind::Info);
     }
 
     /// Toggle crossfade on/off and persist.
@@ -768,25 +801,27 @@ impl App {
             let mut had_track_change = false;
             let mut had_sleep_expired = false;
             let mut had_sync_done = false;
-            let mut up_next_title: Option<String> = None;
             for ev in self.client.drain().await {
-                if let gtm_core::ipc::DaemonEvent::PlaybackStarted {
-                    track,
-                    auto_advanced,
-                    ..
-                } = &ev
-                {
-                    if *auto_advanced && !self.manual_track_advance {
-                        up_next_title = Some(track.title.clone());
-                    }
+                if let gtm_core::ipc::DaemonEvent::PlaybackStarted { .. } = &ev {
+                    // The crossfade has begun: drop the Up Next countdown.
+                    self.upnext = None;
                     // Any PlaybackStarted consumes the manual-advance flag.
                     self.manual_track_advance = false;
                 }
                 if matches!(ev, gtm_core::ipc::DaemonEvent::PlaybackStarted { .. }) {
                     had_track_change = true;
                 }
+                if matches!(ev, gtm_core::ipc::DaemonEvent::TrackEnded) {
+                    self.upnext = None;
+                }
                 if matches!(ev, gtm_core::ipc::DaemonEvent::SleepTimerExpired) {
                     had_sleep_expired = true;
+                }
+                if let gtm_core::ipc::DaemonEvent::PlaybackSpeedChanged { rate } = &ev {
+                    self.playback_speed = *rate;
+                }
+                if let gtm_core::ipc::DaemonEvent::CrossfadeCountdown { track } = &ev {
+                    self.start_upnext(track.clone());
                 }
                 // After a background metadata sync finishes, re-pull the
                 // library so scrubbed tags / fetched covers show up live.
@@ -798,15 +833,23 @@ impl App {
                 self.state.apply_event(&ev);
                 events_received = true;
             }
-            if let Some(title) = up_next_title {
-                self.notify(format!("Up next: {title}"), NotificationKind::Info);
+            // If the countdown elapsed without a PlaybackStarted (e.g. the
+            // track ended before the crossfade could fire), drop the card.
+            if let Some(u) = self.upnext.as_ref() {
+                if u.started_at.elapsed().as_secs_f64() >= u.total_secs {
+                    self.upnext = None;
+                }
             }
             if events_received {
                 self.last_event_time = std::time::Instant::now();
             }
             if had_sleep_expired {
                 self.sleep_timer_remaining = None;
-                self.notify("Sleep timer expired: shutting down", NotificationKind::Info);
+                self.notify_titled(
+                    "Sleep Timer",
+                    "Sleep timer expired: shutting down",
+                    NotificationKind::Info,
+                );
                 // Draw a final frame so the user sees the shutdown message
                 // before the terminal restores.
                 let _ = terminal.draw(|f| ui::render(f, &mut self));
@@ -977,8 +1020,9 @@ impl App {
                             self.yt_search_loading = false;
                         }
                     }
-                    IpcResult::Notification(msg, kind) => {
+                    IpcResult::Notification(title, msg, kind) => {
                         self.notifications.push(Notification {
+                            title,
                             message: msg,
                             kind,
                             expires_at: std::time::Instant::now() + Duration::from_secs(5),
@@ -1001,6 +1045,17 @@ impl App {
                         {
                             self.picker_preview_cover = cover;
                             self.sync_picker_preview_stateful();
+                        }
+                    }
+                    IpcResult::UpNextCover(cover, track_id) => {
+                        if !no_image_protocol()
+                            && self.last_upnext_cover_fetch_id == Some(track_id)
+                            && self.upnext.as_ref().is_some_and(|u| u.track.id == track_id)
+                        {
+                            if let Some(u) = self.upnext.as_mut() {
+                                u.cover = cover;
+                                self.sync_upnext_cover_stateful();
+                            }
                         }
                     }
                     IpcResult::MetadataCoverArt(cover, track_id) => {
@@ -1213,8 +1268,24 @@ impl App {
     }
 
     pub fn notify(&mut self, message: impl Into<String>, kind: NotificationKind) {
+        let title = match kind {
+            NotificationKind::Info | NotificationKind::Warning => "System",
+            NotificationKind::Success => "Success",
+            NotificationKind::Error => "Error",
+        };
+        self.notify_titled(title, message, kind);
+    }
+
+    /// Push a notification with an explicit title heading (T17).
+    pub fn notify_titled(
+        &mut self,
+        title: &str,
+        message: impl Into<String>,
+        kind: NotificationKind,
+    ) {
         let expires_at = std::time::Instant::now() + std::time::Duration::from_millis(1500);
         self.notifications.push(Notification {
+            title: title.to_string(),
             message: message.into(),
             kind,
             expires_at,
@@ -1225,13 +1296,23 @@ impl App {
         });
     }
 
-    /// Show a volume-change notification (vertical floating bar).
+    /// Show a volume-change notification (vertical floating bar).  A live
+    /// volume notification is updated in place (fill + percent, T25) so rapid
+    /// volume changes don't restart the slide-in animation.
     pub fn notify_volume(&mut self, volume: u8) {
-        let expires_at = std::time::Instant::now() + std::time::Duration::from_millis(1500);
-        // Replace any existing volume notification
-        self.notifications
-            .retain(|n| !(n.is_volume && n.expires_at > std::time::Instant::now()));
+        let now = std::time::Instant::now();
+        if let Some(existing) = self
+            .notifications
+            .iter_mut()
+            .find(|n| n.is_volume && n.expires_at > now)
+        {
+            existing.volume_value = volume;
+            existing.expires_at = now + std::time::Duration::from_millis(1500);
+            return;
+        }
+        let expires_at = now + std::time::Duration::from_millis(1500);
         self.notifications.push(Notification {
+            title: "Volume".to_string(),
             message: format!("Vol {}", volume),
             kind: NotificationKind::Info,
             expires_at,
@@ -1239,6 +1320,35 @@ impl App {
             is_volume: true,
             volume_value: volume,
             animation_progress: 0.0,
+        });
+    }
+
+    /// Begin the "Up Next" countdown notification (T10).  The daemon emits
+    /// `CrossfadeCountdown` when the next track is ~5s out from crossfade
+    /// start; the wall-clock countdown is shortened by the playback speed so
+    /// the animated bar still lands on the crossfade.
+    pub fn start_upnext(&mut self, track: gtm_core::track::TrackInfo) {
+        let total_secs = (5.0 / self.playback_speed.max(0.5)).clamp(2.0, 10.0);
+        self.upnext = Some(UpNextNotif {
+            track: track.clone(),
+            cover: None,
+            cover_stateful: None,
+            started_at: std::time::Instant::now(),
+            total_secs,
+        });
+        if no_image_protocol() {
+            return;
+        }
+        let tid = track.id;
+        self.last_upnext_cover_fetch_id = Some(tid);
+        let client2 = self.client.clone();
+        let ipc_tx2 = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            if let Ok(Some(b64)) = client2.get_cover_art(tid).await {
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
+                    let _ = ipc_tx2.send(IpcResult::UpNextCover(Some(bytes), tid));
+                }
+            }
         });
     }
 
@@ -1538,6 +1648,20 @@ impl App {
         }
     }
 
+    fn sync_upnext_cover_stateful(&mut self) {
+        let Some(picker) = self.cover_picker.as_ref() else {
+            return;
+        };
+        if let Some(u) = self.upnext.as_mut() {
+            u.cover_stateful = match u.cover.as_ref() {
+                Some(bytes) => image::load_from_memory(bytes)
+                    .ok()
+                    .map(|img| picker.new_resize_protocol(img)),
+                None => None,
+            };
+        }
+    }
+
     fn sync_picker_preview_stateful(&mut self) {
         match (&self.picker_preview_cover, &self.cover_picker) {
             (Some(bytes), Some(picker)) => {
@@ -1687,6 +1811,13 @@ impl App {
                     }
                 });
             }
+            TuiCommand::SetPlaybackSpeed(rate) => {
+                tokio::spawn(async move {
+                    if let Err(e) = client.set_playback_speed(rate).await {
+                        error_handler(e);
+                    }
+                });
+            }
             TuiCommand::ToggleShuffle => {
                 tokio::spawn(async move {
                     if let Err(e) = client.toggle_shuffle().await {
@@ -1750,7 +1881,7 @@ impl App {
                 });
             }
             TuiCommand::YtDownload(url) => {
-                self.notify("Download started…", NotificationKind::Info);
+                self.notify_titled("YouTube", "Download started…", NotificationKind::Info);
                 let ipc = ipc_tx.clone();
                 let client2 = self.client.clone();
                 tokio::spawn(async move {
@@ -1857,7 +1988,11 @@ impl App {
                     } else {
                         crate::app::NotificationKind::Error
                     };
-                    let _ = ipc.send(IpcResult::Notification(msg, kind));
+                    let _ = ipc.send(IpcResult::Notification(
+                        "YouTube".to_string(),
+                        msg,
+                        kind,
+                    ));
                 });
             }
             TuiCommand::YtResolve(u) => {
@@ -1940,6 +2075,7 @@ impl App {
                         error_handler(e);
                     } else {
                         let _ = ipc_tx.send(IpcResult::Notification(
+                            "Library".to_string(),
                             "Track deleted".to_string(),
                             NotificationKind::Success,
                         ));
@@ -1960,6 +2096,7 @@ impl App {
                         error_handler(e);
                     } else {
                         let _ = ipc_tx.send(IpcResult::Notification(
+                            "Playlist".to_string(),
                             "Removed from playlist".to_string(),
                             NotificationKind::Success,
                         ));
@@ -2385,9 +2522,9 @@ impl App {
                         self.set_last_action("Toggle Mute");
                         self.send_high(TuiCommand::ToggleMute);
                         if self.state.mute {
-                            self.notify("Unmuted", NotificationKind::Info);
+                            self.notify_titled("Volume", "Unmuted", NotificationKind::Info);
                         } else {
-                            self.notify("Muted", NotificationKind::Warning);
+                            self.notify_titled("Volume", "Muted", NotificationKind::Warning);
                         }
                     }
                     Some(KeyboardAction::CycleRepeat) => {
@@ -2433,7 +2570,7 @@ impl App {
                                         TuiCommand::RemoveFavourite(track_id)
                                     })
                                     .await;
-                                self.notify("Favourite toggled", NotificationKind::Info);
+                                self.notify_titled("Library", "Favourite toggled", NotificationKind::Info);
                             }
                             return true;
                         }
@@ -2543,7 +2680,7 @@ impl App {
                         self.set_last_action("Clear Queue");
                         let tx = self.cmd_tx();
                         let _ = tx.send(TuiCommand::QueueClear).await;
-                        self.notify("Queue cleared", NotificationKind::Info);
+                        self.notify_titled("Queue", "Queue cleared", NotificationKind::Info);
                     }
                     Some(KeyboardAction::ToggleVisualizer) => {
                         self.visualizer.toggle();
@@ -2773,6 +2910,7 @@ impl App {
                                             {
                                                 Ok(()) => {
                                                     let _ = ipc_tx2.send(IpcResult::Notification(
+                                                        "Spotify".to_string(),
                                                         "Spotify track resolved & queued"
                                                             .to_string(),
                                                         NotificationKind::Success,
@@ -3060,6 +3198,7 @@ impl App {
                                             match c.spotify_sync().await {
                                                 Ok(()) => {
                                                     let _ = ipc_tx.send(IpcResult::Notification(
+                                                        "Spotify".to_string(),
                                                         "Spotify sync complete".to_string(),
                                                         NotificationKind::Success,
                                                     ));
@@ -3090,6 +3229,7 @@ impl App {
                                                     let _ = ipc_tx
                                                         .send(IpcResult::SpotifyStatus(status));
                                                     let _ = ipc_tx.send(IpcResult::Notification(
+                                                        "Spotify".to_string(),
                                                         "Spotify account unlinked".to_string(),
                                                         NotificationKind::Info,
                                                     ));
@@ -3325,7 +3465,7 @@ impl App {
                             }
                             KeyCode::Char('S') => {
                                 // Sync covers for tracks missing cover art
-                                self.notify("Syncing covers...", NotificationKind::Info);
+                                self.notify_titled("Library", "Syncing covers...", NotificationKind::Info);
                                 spawn_sync_and_wait(
                                     self.client.clone(),
                                     gtm_core::ipc::SyncKind::Covers,
@@ -3413,7 +3553,7 @@ impl App {
                 KeyCode::Char('c') => {
                     self.sleep_timer_remaining = None;
                     self.send_high(TuiCommand::CancelSleepTimer);
-                    self.notify("Sleep timer cancelled", NotificationKind::Info);
+                    self.notify_titled("Sleep Timer", "Sleep timer cancelled", NotificationKind::Info);
                     return;
                 }
                 KeyCode::Up | KeyCode::Char('j') => {
@@ -3456,11 +3596,13 @@ impl App {
                 KeyCode::Char('h') | KeyCode::Left if sel == 0 => {
                     self.playback_speed =
                         (((self.playback_speed * 10.0).round() - 1.0).max(5.0)) / 10.0;
+                    self.send_high(TuiCommand::SetPlaybackSpeed(self.playback_speed));
                     return;
                 }
                 KeyCode::Char('l') | KeyCode::Right if sel == 0 => {
                     self.playback_speed =
                         (((self.playback_speed * 10.0).round() + 1.0).min(20.0)) / 10.0;
+                    self.send_high(TuiCommand::SetPlaybackSpeed(self.playback_speed));
                     return;
                 }
                 _ => {}
@@ -3657,6 +3799,7 @@ impl App {
                             };
                             let _ = client.library_update_metadata(track_id, patch).await;
                             let _ = ipc_tx.send(IpcResult::Notification(
+                                "Library".to_string(),
                                 "Metadata saved".to_string(),
                                 NotificationKind::Success,
                             ));
@@ -3687,6 +3830,7 @@ impl App {
                                         Ok(status) => {
                                             let _ = ipc_tx.send(IpcResult::SpotifyStatus(status));
                                             let _ = ipc_tx.send(IpcResult::Notification(
+                                                "Spotify".to_string(),
                                                 "Spotify account linked".to_string(),
                                                 NotificationKind::Success,
                                             ));
@@ -3878,12 +4022,12 @@ impl App {
                                         }
                                         let tx = self.cmd_tx();
                                         let _ = tx.send(TuiCommand::AddFavourite(track_id)).await;
-                                        self.notify("Favourite toggled", NotificationKind::Info);
+                                        self.notify_titled("Library", "Favourite toggled", NotificationKind::Info);
                                     }
                                 } else if action == "clear queue" {
                                     let tx = self.cmd_tx();
                                     let _ = tx.send(TuiCommand::QueueClear).await;
-                                    self.notify("Queue cleared", NotificationKind::Info);
+                                    self.notify_titled("Queue", "Queue cleared", NotificationKind::Info);
                                 } else if action == "prev tab" {
                                     self.current_tab = match self.current_tab {
                                         Tab::Library => Tab::Settings,
@@ -4049,24 +4193,67 @@ impl App {
                                     self.cycle_footer_preset();
                                 } else if action == "cycle design" {
                                     self.cycle_design();
+                                } else if action == "man" {
+                                    // Display the bundled man page.
+                                    // The build script sets MANPAGES_DIR env var pointing
+                                    // to the directory with generated .1 man pages.
+                                    if let Some(dir) = std::env::var_os("MANPAGES_DIR") {
+                                        let path = std::path::Path::new(&dir).join("gtm.1");
+                                        if path.exists() {
+                                            if let Ok(content) = std::fs::read_to_string(&path) {
+                                                self.notify_titled(
+                                                    "Man Page: gtm",
+                                                    content,
+                                                    NotificationKind::Info,
+                                                );
+                                            }
+                                        }
+                                    }
+                                    // Fallback: show a simple message if man page not found.
+                                    if std::env::var_os("MANPAGES_DIR").is_none() {
+                                        self.notify_titled(
+                                            "Man Page",
+                                            "Man pages not found. Run `cargo build` to generate them.",
+                                            NotificationKind::Info,
+                                        );
+                                    }
                                 } else if action == "health check" {
                                     self.send_high(TuiCommand::CheckHealth);
                                 }
                             }
-                            self.pickers.close_top();
+                            // If the action opened a sub-picker it was stacked on
+                            // top of the palette; leave it open.  Otherwise the
+                            // palette closes (T14: `open` + `close_top` used to
+                            // cancel sub-pickers immediately).
+                            if self.pickers.top().is_some_and(|o| o.id == PickerId::CommandPalette) {
+                                self.pickers.close_top();
+                            }
                         }
                         PickerId::Equalizer => {
                             // Apply selected EQ preset
                             let idx = top.selected.min(EQ_PRESETS.len() - 1);
                             let c = self.client.clone();
+                            let preset = EQ_PRESETS[idx];
                             tokio::spawn(async move {
-                                let _ = c.set_eq_preset(EQ_PRESETS[idx]).await;
+                                let _ = c.set_eq_preset(preset).await;
                             });
+                            self.notify_titled(
+                                "Equalizer",
+                                format!("Equalizer preset: {}", preset.label()),
+                                NotificationKind::Info,
+                            );
                             self.pickers.close_top();
                         }
                         PickerId::ThemePicker => {
                             let idx = top.selected;
                             self.apply_theme_index(idx);
+                            let name = &self.themes[idx].name;
+                            let light = if self.themes[idx].light { " (light)" } else { "" };
+                            self.notify_titled(
+                                "Theme",
+                                format!("Theme: {}{}", name, light),
+                                NotificationKind::Info,
+                            );
                             self.pickers.close_top();
                         }
                         PickerId::SearchLibrary => {
@@ -4119,6 +4306,7 @@ impl App {
                                 0 => {
                                     // Playback speed: reset to 1.0x
                                     self.playback_speed = 1.0;
+                                    self.send_high(TuiCommand::SetPlaybackSpeed(1.0));
                                     self.notify(
                                         "Playback speed reset to 1.0x",
                                         NotificationKind::Info,
@@ -4210,6 +4398,7 @@ impl App {
                                         let _ =
                                             client.library_update_metadata(track_id, patch).await;
                                         let _ = ipc_tx.send(IpcResult::Notification(
+                                            "Library".to_string(),
                                             "Metadata saved".to_string(),
                                             NotificationKind::Success,
                                         ));
@@ -4285,7 +4474,7 @@ impl App {
                             }
                         });
                         self.metadata_cover_dirty = true;
-                        self.notify("Syncing cover…", NotificationKind::Info);
+                        self.notify_titled("Library", "Syncing cover…", NotificationKind::Info);
                     }
                 }
             }

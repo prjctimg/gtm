@@ -169,6 +169,9 @@ struct DaemonInner {
     youtube: Arc<tokio::sync::Mutex<YoutubeManager>>,
     spotify: tokio::sync::Mutex<SpotifyManager>,
     crossfade_loaded_for: tokio::sync::Mutex<Option<String>>,
+    /// Hash of the next-track whose `CrossfadeCountdown` we already emitted,
+    /// so the daemon only notifies once per track instead of on every poll.
+    countdown_notified_for: tokio::sync::Mutex<Option<String>>,
     sleep_cancel: Arc<AtomicBool>,
     health: Arc<HealthTracker>,
     /// Per-client authentication state: true = handshake completed
@@ -209,6 +212,7 @@ impl Daemon {
             }
         }
 
+        let playback_speed = initial_state.playback_speed;
         let state = Arc::new(RwLock::new(initial_state));
 
         let mixer: Box<dyn Mixer> = if config.test_mode {
@@ -216,6 +220,7 @@ impl Daemon {
         } else {
             Self::init_mixer(&config)?
         };
+        mixer.set_playback_speed(playback_speed);
 
         let socket_path = Path::new(&config.socket_path);
         if let Some(parent) = socket_path.parent() {
@@ -279,6 +284,7 @@ impl Daemon {
             youtube: Arc::new(tokio::sync::Mutex::new(YoutubeManager::new())),
             spotify: tokio::sync::Mutex::new(SpotifyManager::new(config_dir)),
             crossfade_loaded_for: tokio::sync::Mutex::new(None),
+            countdown_notified_for: tokio::sync::Mutex::new(None),
             sleep_cancel: Arc::new(AtomicBool::new(false)),
             health: Arc::new(HealthTracker::new(audio_backend_name)),
             client_auth: tokio::sync::Mutex::new(HashMap::new()),
@@ -932,6 +938,9 @@ impl Daemon {
             DaemonReq::Queue { action } => Self::cmd_queue(inner, action).await,
             DaemonReq::SetEqPreset { preset } => Self::cmd_set_eq_preset(inner, *preset).await,
             DaemonReq::SetEqEnabled { enabled } => Self::cmd_set_eq_enabled(inner, *enabled).await,
+            DaemonReq::SetPlaybackSpeed { rate } => {
+                Self::cmd_set_playback_speed(inner, *rate).await
+            }
             DaemonReq::SetReverb { enabled, room_size } => {
                 Self::cmd_set_reverb(inner, *enabled, *room_size).await
             }
@@ -1459,6 +1468,10 @@ impl Daemon {
                     Self::finish_crossfade(inner).await;
                 }
                 let mut state = inner.state.write().await;
+                // The mixer reports wall-clock progress; scale by the playback
+                // speed so position, crossfade and countdown tracking all
+                // advance at the actual audio rate.
+                let pos = pos * state.playback_speed;
                 state.time_pos = pos;
                 let dur = state.duration;
                 let crossfade = state.crossfade.clone();
@@ -1467,8 +1480,27 @@ impl Daemon {
 
                 if let Some(cf) = crossfade {
                     if cf.enabled && dur > 0.0 && (dur - pos) <= cf.duration_secs as f64 + 0.15 {
-                        if let Some(track) = next {
-                            let _ = Self::try_start_crossfade(inner, &track).await;
+                        if let Some(track) = &next {
+                            let _ = Self::try_start_crossfade(inner, track).await;
+                        }
+                    }
+                    // Up-Next countdown: notify once, 5s before the crossfade
+                    // window opens, so the client can animate the countdown.
+                    if cf.enabled && dur > 0.0 {
+                        let remaining = dur - pos;
+                        if remaining <= cf.duration_secs as f64 + 5.0 {
+                            if let Some(track) = &next {
+                                let mut notified = inner.countdown_notified_for.lock().await;
+                                if notified.as_deref() != Some(track.hash.as_str()) {
+                                    *notified = Some(track.hash.clone());
+                                    Self::push_event(
+                                        inner,
+                                        DaemonEvent::CrossfadeCountdown {
+                                            track: track.clone(),
+                                        },
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -1881,6 +1913,20 @@ impl Daemon {
         Ok(DaemonRes::Value {
             value: serde_json::json!({ "volume": volume }),
         })
+    }
+
+    async fn cmd_set_playback_speed(
+        inner: &DaemonInner,
+        rate: f64,
+    ) -> Result<DaemonRes, CoreError> {
+        let rate = rate.clamp(0.5, 2.0);
+        inner.mixer.lock().await.set_playback_speed(rate);
+        let mut state = inner.state.write().await;
+        state.playback_speed = rate;
+        drop(state);
+        Self::push_event(inner, DaemonEvent::PlaybackSpeedChanged { rate });
+        Self::save_state(inner);
+        Ok(DaemonRes::Ok)
     }
 
     async fn cmd_list_eq_presets(_inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
@@ -2444,9 +2490,10 @@ impl Daemon {
                 let id = *id;
                 let data_dir = inner.config.data_dir.clone();
                 let library_dirs = inner.config.library_paths.clone();
+                let allow_delete_files = inner.config.allow_delete_files;
                 let result = tokio::task::spawn_blocking(move || {
                     let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    lib.remove_track_full(id, &library_dirs)
+                    lib.remove_track_full(id, &library_dirs, allow_delete_files)
                 })
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;

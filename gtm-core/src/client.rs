@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -49,6 +49,9 @@ pub struct DaemonClient {
     base_pos: Arc<Mutex<f64>>,
     base_time: Arc<Mutex<Option<Instant>>>,
     is_playing: Arc<AtomicBool>,
+    /// Fixed-point (×1000) playback speed used to scale the local position
+    /// estimate. Updated from PlaybackSpeedChanged events and GetStatus.
+    playback_speed: Arc<AtomicU32>,
 }
 
 impl DaemonClient {
@@ -91,6 +94,7 @@ impl DaemonClient {
                         base_pos: Arc::new(Mutex::new(0.0)),
                         base_time: Arc::new(Mutex::new(None)),
                         is_playing: Arc::new(AtomicBool::new(false)),
+                        playback_speed: Arc::new(AtomicU32::new(1000)),
                     };
                     tokio::spawn(worker.run());
 
@@ -194,6 +198,10 @@ impl DaemonClient {
                     *base_time = None;
                     self.is_playing.store(false, Ordering::Release);
                 }
+                DaemonEvent::PlaybackSpeedChanged { rate } => {
+                    self.playback_speed
+                        .store((rate.clamp(0.5, 2.0) * 1000.0).round() as u32, Ordering::Release);
+                }
                 _ => {}
             }
         }
@@ -205,7 +213,8 @@ impl DaemonClient {
         let base_pos = *self.base_pos.lock().await;
         if self.is_playing.load(Ordering::Acquire) {
             if let Some(base_time) = *self.base_time.lock().await {
-                let elapsed = base_time.elapsed().as_secs_f64();
+                let speed = self.playback_speed.load(Ordering::Acquire) as f64 / 1000.0;
+                let elapsed = base_time.elapsed().as_secs_f64() * speed;
                 return base_pos + elapsed;
             }
         }
@@ -224,6 +233,8 @@ impl DaemonClient {
             None
         };
         self.is_playing.store(is_playing, Ordering::Release);
+        self.playback_speed
+            .store((state.playback_speed.clamp(0.5, 2.0) * 1000.0).round() as u32, Ordering::Release);
     }
 
     async fn send_raw(&self, req: DaemonReq) -> Result<DaemonRes> {
@@ -334,6 +345,12 @@ impl DaemonClient {
             easing,
         })
         .await
+    }
+
+    pub async fn set_playback_speed(&self, rate: f64) -> Result<()> {
+        self.playback_speed
+            .store((rate.clamp(0.5, 2.0) * 1000.0).round() as u32, Ordering::Release);
+        self.send_ok(DaemonReq::SetPlaybackSpeed { rate }).await
     }
 
     pub async fn set_loudness_mode(&self, mode: state::LoudnessMode) -> Result<()> {

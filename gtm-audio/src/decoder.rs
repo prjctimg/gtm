@@ -17,6 +17,7 @@ use gtm_core::state::{EQ_DEFAULT_Q, EQ_FREQUENCIES};
 
 use crate::buffer::{DecodeControl, SharedRingBuffer, PREBUFFER_SAMPLES};
 use crate::eq::EqGains;
+use crate::stretch::TimeStretchSource;
 use crate::symphonia::SymphoniaSource;
 
 // ---------------------------------------------------------------------------
@@ -125,6 +126,10 @@ impl DecodeThread {
                     break;
                 }
             };
+
+            // Pitch-preserving time-stretch (playback speed) sits between the
+            // decoder and the EQ stage; speed changes apply live mid-track.
+            let raw = TimeStretchSource::new(raw, self.control.playback_speed.clone());
 
             let sr = raw.sample_rate().get() as f64;
             let channels = raw.channels().get();

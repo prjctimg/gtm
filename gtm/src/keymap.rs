@@ -624,14 +624,6 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // : (colon): health check (neovim-style)
-            (
-                KeyCode::Char(':').into(),
-                BoundCommand {
-                    action: KeyboardAction::CheckHealth,
-                    contexts: vec![KeyContext::Normal],
-                },
-            ),
         ],
     }
 }
@@ -683,6 +675,16 @@ mod tests {
         assert!(matches!(
             dispatch(KeyCode::Char('Q').into(), KeyContext::Global),
             Some(KeyboardAction::QuitDaemon)
+        ));
+    }
+
+    #[test]
+    fn colon_opens_command_palette_only() {
+        // `:` is the command palette; the removed duplicate (health check)
+        // binding must not shadow it (T14).
+        assert!(matches!(
+            dispatch(KeyCode::Char(':').into(), KeyContext::Normal),
+            Some(KeyboardAction::OpenOverlay(PickerId::CommandPalette))
         ));
     }
 }

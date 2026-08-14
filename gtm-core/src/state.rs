@@ -150,6 +150,7 @@ pub struct DaemonState {
     pub current_track: Option<TrackInfo>,
     pub time_pos: f64,
     pub duration: f64,
+    pub playback_speed: f64,
     pub sleep_timer: Option<u32>,
     pub eq_preset: EqPreset,
     pub eq_enabled: bool,
@@ -455,6 +456,12 @@ pub struct SavedState {
     pub gapless: bool,
     pub dynamic_mode: DynamicModeConfig,
     pub scrobble: ScrobbleConfig,
+    #[serde(default = "default_playback_speed")]
+    pub playback_speed: f64,
+}
+
+fn default_playback_speed() -> f64 {
+    1.0
 }
 
 impl SavedState {
@@ -477,6 +484,7 @@ impl SavedState {
             gapless: state.gapless,
             dynamic_mode: state.dynamic_mode.clone(),
             scrobble: state.scrobble.clone(),
+            playback_speed: state.playback_speed,
         }
     }
 
@@ -498,6 +506,7 @@ impl SavedState {
         state.gapless = self.gapless;
         state.dynamic_mode = self.dynamic_mode.clone();
         state.scrobble = self.scrobble.clone();
+        state.playback_speed = self.playback_speed;
     }
 
     /// Save to a JSON file. Creates parent directories if needed.

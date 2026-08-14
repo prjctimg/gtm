@@ -4,13 +4,14 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
 use std::sync::Mutex;
 
 use rodio::Source;
 
 use crate::backend::{AudioEvent, AudioResult};
 use crate::mixer::Mixer;
+use crate::stretch::speed_to_fixed;
 use gtm_core::state::{Easing, EqPreset, ReverbConfig};
 
 /// A silent no-op mixer for environments without audio hardware (CI, testing).
@@ -22,6 +23,7 @@ pub struct NullMixer {
     duration: Mutex<f64>,
     crossfading: Mutex<bool>,
     standby_loaded: Mutex<bool>,
+    playback_speed: AtomicU32,
 }
 
 impl Default for NullMixer {
@@ -40,6 +42,7 @@ impl NullMixer {
             duration: Mutex::new(0.0),
             crossfading: Mutex::new(false),
             standby_loaded: Mutex::new(false),
+            playback_speed: AtomicU32::new(1000),
         }
     }
 }
@@ -161,4 +164,8 @@ impl Mixer for NullMixer {
     fn set_eq_preset(&self, _preset: &EqPreset) {}
     fn set_eq_enabled(&self, _enabled: bool) {}
     fn set_reverb(&self, _config: &ReverbConfig) {}
+
+    fn set_playback_speed(&self, speed: f64) {
+        self.playback_speed.store(speed_to_fixed(speed), Ordering::Relaxed);
+    }
 }

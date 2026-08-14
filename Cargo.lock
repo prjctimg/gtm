@@ -888,7 +888,7 @@ dependencies = [
  "objc2-core-foundation",
  "objc2-foundation",
  "wasm-bindgen",
- "wasm-bindfutures",
+ "wasm-bindgen-futures",
  "web-sys",
  "windows 0.62.2",
 ]
@@ -3835,7 +3835,7 @@ dependencies = [
  "tower-service",
  "url",
  "wasm-bindgen",
- "wasm-bindfutures",
+ "wasm-bindgen-futures",
  "web-sys",
  "webpki-roots",
 ]
@@ -5518,12 +5518,12 @@ dependencies = [
  "cfg-if",
  "once_cell",
  "rustversion",
- "wasm-bindmacro",
- "wasm-bindshared",
+ "wasm-bindgen-macro",
+ "wasm-bindgen-shared",
 ]
 
 [[package]]
-name = "wasm-bindfutures"
+name = "wasm-bindgen-futures"
 version = "0.4.76"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c62df1340f32221cb9c54d6a27b030e3dba64361d4a95bed55f9aacb44da291d"
@@ -5533,17 +5533,17 @@ dependencies = [
 ]
 
 [[package]]
-name = "wasm-bindmacro"
+name = "wasm-bindgen-macro"
 version = "0.2.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "167ce5e579f6bcf889c4f7175a8a5a585de84e8ff93976ce393efa5f2837aab1"
 dependencies = [
  "quote",
- "wasm-bindmacro-support",
+ "wasm-bindgen-macro-support",
 ]
 
 [[package]]
-name = "wasm-bindmacro-support"
+name = "wasm-bindgen-macro-support"
 version = "0.2.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f3997c7839262f4ef12cf90b818d6340c18e80f263f1a94bf157d0ec4420380e"
@@ -5552,11 +5552,11 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
- "wasm-bindshared",
+ "wasm-bindgen-shared",
 ]
 
 [[package]]
-name = "wasm-bindshared"
+name = "wasm-bindgen-shared"
 version = "0.2.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc1b4cb0cc549fcf58d7dfc081778139b3d283a081644e833e84682ad71cea24"

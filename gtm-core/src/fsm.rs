@@ -380,6 +380,12 @@ impl DaemonState {
             DaemonEvent::LibraryOrganized { .. } => {
                 // No state to update
             }
+            DaemonEvent::PlaybackSpeedChanged { rate } => {
+                self.playback_speed = *rate;
+            }
+            DaemonEvent::CrossfadeCountdown { .. } => {
+                // Client-side-only signal; no mirror state field.
+            }
             DaemonEvent::LoudnessScanProgress { .. } => {}
             DaemonEvent::LoudnessScanDone { .. } => {}
             _ => {} // MetadataChanged, Custom: no state mirror field

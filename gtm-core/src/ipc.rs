@@ -167,6 +167,9 @@ pub enum DaemonReq {
         #[serde(skip_serializing_if = "Option::is_none")]
         easing: Option<state::Easing>,
     },
+    SetPlaybackSpeed {
+        rate: f64,
+    },
     SetLoudnessMode {
         mode: state::LoudnessMode,
     },
@@ -307,6 +310,7 @@ impl DaemonReq {
             DaemonReq::CycleRepeat { .. } => "cycle_repeat",
             DaemonReq::ToggleMute => "toggle_mute",
             DaemonReq::Crossfade { .. } => "crossfade",
+            DaemonReq::SetPlaybackSpeed { .. } => "set_playback_speed",
             DaemonReq::SetLoudnessMode { .. } => "set_loudness_mode",
             DaemonReq::ScanLoudness { .. } => "scan_loudness",
             DaemonReq::SetPreGain { .. } => "set_pre_gain",
@@ -435,6 +439,14 @@ impl DaemonReq {
                     duration_secs: x.duration_secs,
                     easing: x.easing,
                 }
+            }
+            "set_playback_speed" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    rate: f64,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SetPlaybackSpeed { rate: x.rate }
             }
             "set_eq_preset" => {
                 #[derive(Deserialize)]
@@ -827,6 +839,13 @@ pub enum DaemonEvent {
         #[serde(skip_serializing_if = "Option::is_none")]
         easing: Option<state::Easing>,
     },
+    /// Emitted once when the next track is about to enter crossfade (5s before
+    /// it begins). The client animates the countdown until the crossfade
+    /// starts.
+    #[serde(rename = "crossfade_countdown")]
+    CrossfadeCountdown { track: TrackInfo },
+    #[serde(rename = "playback_speed_changed")]
+    PlaybackSpeedChanged { rate: f64 },
     #[serde(rename = "loudness_mode_changed")]
     LoudnessModeChanged { mode: state::LoudnessMode },
     #[serde(rename = "loudness_scan_progress")]
