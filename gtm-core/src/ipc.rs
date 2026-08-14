@@ -167,9 +167,6 @@ pub enum DaemonReq {
         #[serde(skip_serializing_if = "Option::is_none")]
         easing: Option<state::Easing>,
     },
-    SetPlaybackSpeed {
-        rate: f64,
-    },
     SetLoudnessMode {
         mode: state::LoudnessMode,
     },
@@ -194,9 +191,6 @@ pub enum DaemonReq {
         session_token: Option<String>,
         min_play_secs: Option<u32>,
         min_play_pct: Option<f32>,
-    },
-    OrganizeLibrary {
-        dry_run: Option<bool>,
     },
     SetEqPreset {
         preset: EqPreset,
@@ -272,6 +266,7 @@ pub enum DaemonReq {
     },
     SpotifyClear,
     SpotifyStatus,
+    SpotifyPlayPause,
     SpotifySync,
     SpotifyPlaylists,
     SpotifyPlaylistTracks {
@@ -283,6 +278,9 @@ pub enum DaemonReq {
     },
     SoloistSetApiKey {
         key: String,
+    },
+    SoloistSetConfig {
+        auto_start: bool,
     },
     SoloistClear,
     SoloistStart,
@@ -321,14 +319,12 @@ impl DaemonReq {
             DaemonReq::CycleRepeat { .. } => "cycle_repeat",
             DaemonReq::ToggleMute => "toggle_mute",
             DaemonReq::Crossfade { .. } => "crossfade",
-            DaemonReq::SetPlaybackSpeed { .. } => "set_playback_speed",
             DaemonReq::SetLoudnessMode { .. } => "set_loudness_mode",
             DaemonReq::ScanLoudness { .. } => "scan_loudness",
             DaemonReq::SetPreGain { .. } => "set_pre_gain",
             DaemonReq::SetGapless { .. } => "set_gapless",
             DaemonReq::SetDynamicMode { .. } => "set_dynamic_mode",
             DaemonReq::SetScrobble { .. } => "set_scrobble",
-            DaemonReq::OrganizeLibrary { .. } => "organize_library",
             DaemonReq::SetEqPreset { .. } => "set_eq_preset",
             DaemonReq::SetEqEnabled { .. } => "set_eq_enabled",
             DaemonReq::SetReverb { .. } => "set_reverb",
@@ -355,11 +351,13 @@ impl DaemonReq {
             DaemonReq::SpotifySetToken { .. } => "spotify_set_token",
             DaemonReq::SpotifyClear => "spotify_clear",
             DaemonReq::SpotifyStatus => "spotify_status",
+            DaemonReq::SpotifyPlayPause => "spotify_play_pause",
             DaemonReq::SpotifySync => "spotify_sync",
             DaemonReq::SpotifyPlaylists => "spotify_playlists",
             DaemonReq::SpotifyPlaylistTracks { .. } => "spotify_playlist_tracks",
             DaemonReq::SpotifyResolve { .. } => "spotify_resolve",
             DaemonReq::SoloistSetApiKey { .. } => "soloist_set_api_key",
+            DaemonReq::SoloistSetConfig { .. } => "soloist_set_config",
             DaemonReq::SoloistClear => "soloist_clear",
             DaemonReq::SoloistStart => "soloist_start",
             DaemonReq::SoloistStop => "soloist_stop",
@@ -457,14 +455,6 @@ impl DaemonReq {
                     duration_secs: x.duration_secs,
                     easing: x.easing,
                 }
-            }
-            "set_playback_speed" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    rate: f64,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SetPlaybackSpeed { rate: x.rate }
             }
             "set_eq_preset" => {
                 #[derive(Deserialize)]
@@ -642,6 +632,7 @@ impl DaemonReq {
             }
             "spotify_clear" => DaemonReq::SpotifyClear,
             "spotify_status" => DaemonReq::SpotifyStatus,
+            "spotify_play_pause" => DaemonReq::SpotifyPlayPause,
             "spotify_sync" => DaemonReq::SpotifySync,
             "spotify_playlists" => DaemonReq::SpotifyPlaylists,
             "spotify_playlist_tracks" => {
@@ -671,6 +662,16 @@ impl DaemonReq {
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SoloistSetApiKey { key: x.key }
+            }
+            "soloist_set_config" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    auto_start: bool,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SoloistSetConfig {
+                    auto_start: x.auto_start,
+                }
             }
             "soloist_clear" => DaemonReq::SoloistClear,
             "soloist_start" => DaemonReq::SoloistStart,
@@ -767,14 +768,6 @@ impl DaemonReq {
                     min_play_pct: x.min_play_pct,
                 }
             }
-            "organize_library" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    dry_run: Option<bool>,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::OrganizeLibrary { dry_run: x.dry_run }
-            }
             "quit" => DaemonReq::Quit,
             other => return Err(format!("unknown command: {other}")),
         })
@@ -782,11 +775,14 @@ impl DaemonReq {
 }
 
 /// Wire request: client -> daemon.
+///
+/// `params` is a nested object so command fields can never collide with the
+/// envelope's own `id`/`cmd` keys (e.g. `library`/`remove_track` carries its
+/// own `id`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WireReq {
     pub id: u64,
     pub cmd: String,
-    #[serde(flatten)]
     pub params: Value,
 }
 
@@ -883,8 +879,6 @@ pub enum DaemonEvent {
     /// starts.
     #[serde(rename = "crossfade_countdown")]
     CrossfadeCountdown { track: TrackInfo },
-    #[serde(rename = "playback_speed_changed")]
-    PlaybackSpeedChanged { rate: f64 },
     #[serde(rename = "loudness_mode_changed")]
     LoudnessModeChanged { mode: state::LoudnessMode },
     #[serde(rename = "loudness_scan_progress")]
@@ -908,11 +902,6 @@ pub enum DaemonEvent {
     },
     #[serde(rename = "scrobble_config_changed")]
     ScrobbleConfigChanged { enabled: bool },
-    #[serde(rename = "library_organized")]
-    LibraryOrganized {
-        moves_succeeded: u32,
-        moves_failed: u32,
-    },
     #[serde(rename = "sleep_timer_tick")]
     SleepTimerTick { remaining_secs: u32 },
     #[serde(rename = "sleep_timer_expired")]

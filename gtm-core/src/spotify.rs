@@ -13,6 +13,15 @@ pub struct SpotifyStatus {
     pub linked: bool,
     /// Display name of the linked Spotify account, if known.
     pub user: Option<String>,
+    /// Whether the linked account has a Premium subscription. Playback
+    /// control endpoints (`/me/player/*`) require Premium; without it the
+    /// Settings control rows are disabled.
+    pub premium: bool,
+    /// Whether the Spotify device is currently playing (as last reported by
+    /// the Web API playback endpoint).
+    pub playing: bool,
+    /// Name of the active playback device, if the Web API reported one.
+    pub device: Option<String>,
     /// Number of synced playlists currently cached by the daemon.
     pub playlists: usize,
     /// Total number of tracks across all synced playlists.

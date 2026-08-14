@@ -54,8 +54,9 @@ impl DaemonState {
             gapless: false,
             dynamic_mode: DynamicModeConfig::default(),
             scrobble: ScrobbleConfig::default(),
-            playback_speed: 1.0,
             soloist: Default::default(),
+            soloist_auto_start: false,
+            lyrics_provider: "lrclib".to_string(),
         }
     }
 }

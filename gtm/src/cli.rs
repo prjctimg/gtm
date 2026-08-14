@@ -199,6 +199,63 @@ pub enum CliCommand {
     Quit,
     /// Open the config file in the default editor
     Config,
+    /// Set or clear the sleep timer (minutes)
+    SleepTimer {
+        /// Minutes until playback fades out and stops
+        minutes: u32,
+    },
+    /// Cancel a running sleep timer
+    CancelSleepTimer,
+    /// Edit metadata of a library track
+    UpdateMetadata {
+        /// Library track id
+        track_id: i64,
+        /// Field to change: title, artist, album, genre, year, track-number
+        #[arg(value_name = "FIELD")]
+        field: String,
+        /// New value (or blank to clear)
+        #[arg(value_name = "VALUE")]
+        value: String,
+    },
+    /// Spotify account and playback control
+    #[command(subcommand)]
+    Spotify(SpotifyAction),
+    /// Soloist playback bridge control
+    #[command(subcommand)]
+    Soloist(SoloistAction),
+}
+
+#[derive(Subcommand)]
+pub enum SpotifyAction {
+    /// Link the account with an access token (metadata/playlist APIs)
+    Connect {
+        /// Spotify OAuth access token
+        token: String,
+    },
+    /// Unlink the account and delete the stored token
+    Disconnect,
+    /// Show the current link/playback status
+    Status,
+    /// Re-sync all playlists from the Web API
+    Sync,
+}
+
+#[derive(Subcommand)]
+pub enum SoloistAction {
+    /// Start the bridge using the persisted API key
+    Start,
+    /// Stop the bridge (key is kept)
+    Stop,
+    /// Show the bridge status
+    Status,
+    /// Toggle auto-start at daemon startup (persisted in daemon state)
+    AutoStart {
+        #[arg(
+            value_name = "BOOL",
+            value_parser = clap::builder::BoolishValueParser::new()
+        )]
+        enabled: bool,
+    },
 }
 
 pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) {
@@ -697,6 +754,100 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Config => Ok("config opened".to_string()),
+            CliCommand::SleepTimer { minutes } => client
+                .set_sleep_timer(*minutes)
+                .await
+                .map(|()| format!("sleep timer set for {minutes} min"))
+                .map_err(|e| e.to_string()),
+            CliCommand::CancelSleepTimer => client
+                .cancel_sleep_timer()
+                .await
+                .map(|()| "sleep timer cancelled".to_string())
+                .map_err(|e| e.to_string()),
+            CliCommand::UpdateMetadata {
+                track_id,
+                field,
+                value,
+            } => {
+                let mut patch = gtm_core::ipc::MetadataPatch::default();
+                match field.as_str() {
+                    "title" => patch.title = Some(value.clone()),
+                    "artist" => patch.artist = Some(value.clone()),
+                    "album" => patch.album = Some(value.clone()),
+                    "genre" => patch.genre = Some(value.clone()),
+                    "year" => {
+                        patch.year = Some(
+                            value
+                                .trim()
+                                .parse::<i32>()
+                                .map_err(|_| format!("invalid year: {value}"))?,
+                        )
+                    }
+                    "track-number" | "track_number" => {
+                        patch.track_number = Some(
+                            value
+                                .trim()
+                                .parse::<i32>()
+                                .map_err(|_| format!("invalid track number: {value}"))?,
+                        )
+                    }
+                    other => {
+                        return Err(format!(
+                            "unknown field `{other}` (use title, artist, album, genre, year, \
+                             track-number)"
+                        ))
+                    }
+                }
+                if patch == gtm_core::ipc::MetadataPatch::default() {
+                    return Err("no field to update: pass a supported FIELD".to_string());
+                }
+                client
+                    .library_update_metadata(*track_id, patch)
+                    .await
+                    .map(|()| "metadata updated".to_string())
+                    .map_err(|e| e.to_string())
+            }
+            CliCommand::Spotify(action) => match action {
+                SpotifyAction::Connect { token } => {
+                    let st = client
+                        .spotify_set_token(token)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    Ok(format_spotify_status(&st))
+                }
+                SpotifyAction::Disconnect => {
+                    let st = client.spotify_clear().await.map_err(|e| e.to_string())?;
+                    Ok(format_spotify_status(&st))
+                }
+                SpotifyAction::Status => {
+                    let st = client.spotify_status().await.map_err(|e| e.to_string())?;
+                    Ok(format_spotify_status(&st))
+                }
+                SpotifyAction::Sync => client
+                    .spotify_sync()
+                    .await
+                    .map(|()| "spotify playlists synced".to_string())
+                    .map_err(|e| e.to_string()),
+            },
+            CliCommand::Soloist(action) => match action {
+                SoloistAction::Start => {
+                    let st = client.soloist_start().await.map_err(|e| e.to_string())?;
+                    Ok(format_soloist_status(&st))
+                }
+                SoloistAction::Stop => {
+                    let st = client.soloist_stop().await.map_err(|e| e.to_string())?;
+                    Ok(format_soloist_status(&st))
+                }
+                SoloistAction::Status => {
+                    let st = client.soloist_status().await.map_err(|e| e.to_string())?;
+                    Ok(format_soloist_status(&st))
+                }
+                SoloistAction::AutoStart { enabled } => client
+                    .soloist_set_config(*enabled)
+                    .await
+                    .map(|()| format!("soloist auto-start: {enabled}"))
+                    .map_err(|e| e.to_string()),
+            },
         }
     });
 
@@ -762,4 +913,65 @@ fn command_exists(name: &str) -> bool {
     std::env::var_os("PATH")
         .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
         .unwrap_or(false)
+}
+
+/// Human-readable one-line summary of a Spotify link/playback status.
+fn format_spotify_status(st: &gtm_core::spotify::SpotifyStatus) -> String {
+    let mut out = if st.linked {
+        format!("Linked as {}", st.user.as_deref().unwrap_or("(unknown)"))
+    } else {
+        "Disconnected".to_string()
+    };
+    if let Some(dev) = st.device.as_deref().filter(|d| !d.is_empty()) {
+        out += &format!(" | device: {dev}");
+    }
+    if st.linked {
+        if st.premium {
+            out += if st.playing {
+                " | playing ▶"
+            } else {
+                " | paused ❚❚"
+            };
+        } else {
+            out += " | playback control needs Premium";
+        }
+        out += &format!(" | {} playlists, {} tracks", st.playlists, st.tracks);
+    }
+    if let Some(e) = st.error.as_deref() {
+        out += &format!(" | error: {e}");
+    }
+    out
+}
+
+/// Human-readable one-line summary of a Soloist bridge status.
+fn format_soloist_status(st: &gtm_core::spotify::SoloistStatus) -> String {
+    let state = if st.connected && st.logged_in {
+        "running ✓"
+    } else if st.connected {
+        "connected (auth needed)"
+    } else if st.running {
+        "starting…"
+    } else {
+        "stopped"
+    };
+    let mut out = format!("Soloist: {state}");
+    if let Some(u) = st.user.as_deref() {
+        out += &format!(" | user: {u}");
+    }
+    if let Some(d) = st.device.as_deref() {
+        out += &format!(" | device: {d}");
+    }
+    if let Some(t) = st.track.as_ref() {
+        out += &format!(" | playing: {}{}", t.name, {
+            if t.artists.is_empty() {
+                String::new()
+            } else {
+                format!(" - {}", t.artists)
+            }
+        });
+    }
+    if let Some(e) = st.error.as_deref() {
+        out += &format!(" | error: {e}");
+    }
+    out
 }

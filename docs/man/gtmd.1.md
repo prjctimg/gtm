@@ -1,4 +1,4 @@
-% GTMD(1) GTM Daemon Manual
+% gtmd(1) gtmd daemon manual
 % prjctimg
 % 2026
 
@@ -9,109 +9,110 @@ gtmd - background music playback daemon
 # SYNOPSIS
 
 **gtmd** [**\--socket**=*path*] [**\--library**=*path*] [**\--config**=*path*]
-         [**\--verbose**] [**\--test-mode**] [**\--backend**=*backend*]
+       [**\--verbose**] [**\--test-mode**] [**\--backend**=*backend*]
 
 # DESCRIPTION
 
-**gtmd** is a background daemon that provides music playback, queue
-management, and library management services. It listens on a Unix socket
-for commands from clients such as **gtm**(1).
+**gtmd** is a background daemon that provides music playback, queue management,
+and library management services. It listens on a Unix socket for commands from
+clients such as **gtm**(1).
 
 For the IPC protocol reference, see **gtmd-ipc**(1).
-For configuration, see **gtm-config**(1).
 
-Audio playback is handled by the **rodio** backend with **symphonia** for
-format decoding. When the `pulseaudio` feature is enabled, **PulseAudio** is
-also supported as an audio backend. On Termux (Android), the daemon
-automatically falls back to PulseAudio when the `pulseaudio` feature is
-compiled in.
+Audio playback is handled by the **rodio** backend with **symphonia** for format
+decoding. When the `pulseaudio` feature is enabled, **PulseAudio** is also
+supported as an audio backend. On Termux (Android), the daemon automatically
+falls back to PulseAudio when the `pulseaudio` feature is compiled in.
 
-The daemon supports MP3, FLAC, Ogg Vorbis, Opus, WAV, AAC, ALAC, and
-MKV/WebM containers.
+The daemon supports MP3, FLAC, Ogg Vorbis, Opus, WAV, AAC, ALAC, and MKV/WebM
+containers.
 
 # INTERNAL ARCHITECTURE
 
-The daemon is built around an event-driven, multi-threaded core:
+The daemon is built around an event-driven core running on a tokio runtime:
 
 ```
-                        ┌─────────────────────────────────┐
-                        │          gtmd daemon             │
-                        │                                  │
-  ┌──────────┐          │  ┌────────────┐                  │
-  │ Clients  │ msgpack/ │  │   IPC      │  ┌────────────┐  │
-  │ (gtm)    │─────────▶│  │  Listener  │──│  Router    │  │
-  │          │  JSON    │  │  (tokio)   │  └─────┬──────┘  │
-  └──────────┘          │  └────────────┘        │         │
-                        │                        │         │
-                        │                ┌───────▼──────┐  │
-                        │                │   Handler    │  │
-                        │                │   Dispatch   │  │
-                        │                └──┬───┬───┬───┘  │
-                        │                   │   │   │      │
-                        │    ┌──────────────┘   │   └──────┐
-                        │    ▼                   ▼         ▼
-                        │  ┌────────┐  ┌──────────┐  ┌────────┐
-                        │  │Audio   │  │  Queue   │  │Library │
-                        │  │Engine  │  │  Manager │  │Manager │
-                        │  │(rodio) │  └──────────┘  └────────┘
-                        │  └───┬────┘                   │
-                        │      │                   ┌────▼────┐
-                        │      │                   │ SQLite  │
-                        │      │                   │ (rusql)│
-                        │  ┌───▼────┐              └─────────┘
-                        │  │Decoders│
-                        │  │(sym-   │
-                        │  │ phonia)│
-                        │  └────────┘
-                        └─────────────────────────────────┘
+                         ┌─────────────────────────────────┐
+                         │          gtmd daemon             │
+                         │                                  │
+   ┌──────────┐          │  ┌────────────┐                  │
+   │ Clients  │ msgpack/ │  │   IPC      │  ┌────────────┐  │
+   │ (gtm)    │─────────▶│  │  Listener  │──│  Router    │  │
+   │          │  JSON    │  │  (tokio)   │  └─────┬──────┘  │
+   └──────────┘          │  └────────────┘        │         │
+                         │                        │         │
+                         │                ┌───────▼──────┐  │
+                         │                │   Handler    │  │
+                         │                │   Dispatch   │  │
+                         │                └──┬───┬───┬───┘  │
+                         │                   │   │   │      │
+                         │    ┌──────────────┘   │   └──────┐
+                         │    ▼                   ▼         ▼
+                         │  ┌────────┐  ┌──────────┐  ┌────────┐
+                         │  │Audio   │  │  Queue   │  │Library │
+                         │  │Engine  │  │  Manager │  │Manager │
+                         │  │(rodio) │  └──────────┘  └────────┘
+                         │  └───┬────┘                   │
+                         │      │                   ┌────▼────┐
+                         │      │                   │ SQLite  │
+                         │      │                   │ (rusql)│
+                         │  ┌───▼────┐              └─────────┘
+                         │  │Decoders│
+                         │  │(sym-   │
+                         │  │ phonia)│
+                         │  └────────┘
+                         └─────────────────────────────────┘
 ```
 
 ## Thread Model
 
 Main thread
-:   Sets up the tokio runtime, initializes components, and enters the
-    IPC accept loop. Each client connection is handled on a separate
-    tokio task.
+:   Sets up the tokio runtime, initializes components, and enters the IPC
+    accept loop. Each client connection is handled on a separate tokio task.
+    A 16 ms mixer poll loop drives crossfade and playback state. A 60 s
+    interval saves persistent state. A dedicated soloist WebSocket reader task
+    runs when Spotify playback is active.
 
 Audio thread
 :   Rodio's internal audio renderer runs on a dedicated thread, pulling
     decoded PCM samples from an in-memory ring buffer.
 
-Library thread (async)
-:   Database queries run on the tokio blocking thread pool to avoid
-    blocking the event loop.
+Library queries (async)
+:   Database queries run on the tokio blocking thread pool to avoid blocking
+    the event loop.
 
 ## Playback Pipeline
 
 ```
-  ┌────────┐   ┌──────────┐   ┌──────────┐   ┌─────────┐
-  │ Source │──▶│ Decoder  │──▶│  Resampler│──▶│  Rodio  │──▶ Speakers
-  │ (file) │   │(symphonia)│  │ (if needed)│  │ Mixer   │
-  └────────┘   └──────────┘   └──────────┘   └─────────┘
+  ┌────────┐   ┌──────────┐   ┌──────────────────┐
+  │ Source │──▶│ Decoder  │──▶│ [EQ fundsp 15-b] │──▶│ [Reverb] │──▶ rodio sink/mixer
+  │ (file) │   │(symphonia)│   │                  │   │          │
+  └────────┘   └──────────┘   └──────────────────┘
 ```
 
 When a track is played:
-1. The source file is opened by **symphonia**, which detects the format
-   and initializes the appropriate decoder.
-2. Decoded PCM data is resampled to the output device's sample rate.
-3. The resampled buffer is fed into rodio's sink, which mixes and plays
-   it through the default audio output device (ALSA on Linux, CoreAudio
-   on macOS).
+
+1. The source file is opened by **symphonia**, which detects the format and
+   initializes the appropriate decoder.
+2. Decoded PCM data is passed through the 15-band equalizer (fundsp) and
+   optional reverb.
+3. The processed buffer is fed into rodio's sink, which mixes and plays it
+   through the default audio output device (ALSA on Linux, CoreAudio on macOS).
 
 ## State Machine
 
 The daemon maintains a simple playback state machine:
 
 ```
-  ┌──────────┐   play/resume   ┌──────────┐
-  │ Stopped  │───────────────▶│ Playing  │
-  └──────────┘                └────┬─────┘
-       ▲                          │
-       │ stop            pause    │
-       │                    ┌─────▼─────┐
-       │                    │  Paused   │
-       └────────────────────┴───────────┘
-         stop/end-of-track
+   ┌──────────┐   play/resume   ┌──────────┐
+   │ Stopped  │───────────────▶│ Playing  │
+   └──────────┘                └────┬─────┘
+        ▲                          │
+        │ stop            pause    │
+        │                    ┌─────▼─────┐
+        │                    │  Paused   │
+        └────────────────────┴───────────┘
+          stop/end-of-track
 ```
 
 Transitions:
@@ -137,11 +138,11 @@ Stopped → Playing
 
 **\--library**=*path*
 :   Path to the SQLite library database file. Default:
-    `$XDG_DATA_HOME/gtmd/library.db`.
+    `$XDG_DATA_HOME/gtm/library.db`.
 
 **\--config**=*path*
 :   Path to the configuration directory. Default:
-    `$XDG_CONFIG_HOME/gtmd/`.
+    `$XDG_CONFIG_HOME/gtm/`.
 
 **\--verbose**
 :   Enable verbose logging to stderr.
@@ -150,9 +151,10 @@ Stopped → Playing
 :   Run in test mode: use an ephemeral socket path, skip daemonization,
     and enable additional debug output.
 
-**\--backend**=backend
+**\--backend**=*backend*
 :   Audio backend to use. Supported values: `rodio` (default),
-    `pulseaudio` (requires the `pulseaudio` feature flag).
+    `pulseaudio` (requires the `pulseaudio` feature flag). On Termux the
+    daemon prefers PulseAudio when compiled with the feature.
 
 # SIGNALS
 
@@ -166,16 +168,33 @@ Stopped → Playing
 
 # FILES
 
-`$XDG_RUNTIME_DIR/gtm/gtmd.sock`
+$XDG_RUNTIME_DIR/gtm/gtmd.sock
 :   Default Unix socket for client IPC.
 
-`$XDG_DATA_HOME/gtmd/library.db`
-:   SQLite database containing the music library, playlists, and
-    playback history.
+$XDG_DATA_HOME/gtm/library.db
+:   SQLite database containing the music library, playlists, and playback
+    history.
 
-`$XDG_CONFIG_HOME/gtmd/config.toml`
-:   Optional daemon configuration file.
+$XDG_CONFIG_HOME/gtm/
+:   Configuration directory for daemon state (not read as config.toml — the
+    client-side preferences file is `~/.config/gtm/config.toml`, TUI only).
 
 # SEE ALSO
 
 **gtm**(1), **gtmd-ipc**(1)
+
+# AUTHORS
+
+prjctimg <prjctimg@outlook.com>
+
+# BUGS
+
+Report bugs to <https://github.com/prjctimg/gtm.rs/issues> or by email to
+<prjctimg@outlook.com>.
+
+# COPYRIGHT
+
+Copyright (c) 2026 - present prjctimg.
+
+This is free software released under the GPL-3.0 license. See the LICENSE
+file for the full license text.

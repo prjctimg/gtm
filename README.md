@@ -1,9 +1,10 @@
 # gtm.rs
 
+[![Crates.io](https://img.shields.io/crates/v/gtm)](https://crates.io/crates/gtm)
+[![Crates.io downloads](https://img.shields.io/crates/d/gtm)](https://crates.io/crates/gtm)
+[![Docs.rs](https://docs.rs/gtm/badge.svg)](https://docs.rs/gtm)
 [![CI](https://img.shields.io/github/actions/workflow/status/prjctimg/gtm.rs/ci.yml)](https://github.com/prjctimg/gtm.rs/actions/workflows/ci.yml)
-[![Version](https://img.shields.io/github/v/release/prjctimg/gtm.rs)](https://github.com/prjctimg/gtm.rs/releases/latest)
 [![License](https://img.shields.io/github/license/prjctimg/gtm.rs)](https://github.com/prjctimg/gtm.rs/blob/main/LICENSE)
-[![Rust](https://img.shields.io/badge/rustc-1.81+-orange.svg)](https://www.rust-lang.org)
 
 A terminal music player with background playback and YouTube/Spotify
 integration. Rust implementation of the [gtm spec](https://github.com/prjctimg/gtm.spec).
@@ -21,11 +22,21 @@ good through a real EQ instead of a flat toggle. gtm.rs is that.
 - **Background playback**: reattach to the client from anywhere in the terminal
 - **YouTube, Spotify, Deezer**: search, download, and resolve tracks, sync
   Spotify playlists, and fetch missing metadata/lyrics/cover art
+- **Crossfade**: gapless-ish transitions with duration and easing options,
+  picked interactively in the settings UI
+- **Lyrics**: automatic fetch from LRCLIB (default provider), syncable
+  on-demand via `gtm lyrics` / `gtm metadata sync`
+- **Metadata sync**: backfill missing tags, cover art, and lyrics for local
+  files from the TUI or the CLI
 - **Equalizer**: 16 presets plus per-band gain, headroom stage, and a spectrum
   visualizer
+- **Soloist**: Spotify playback bridge via the local `soloist` daemon, with
+  optional auto-start
+- **Export M3U**: dump the current library or queue to an m3u playlist
+- **Sleep timer**: timed shutdown with cancel, settable from the TUI or CLI
 - **Cover art**: rendered inline via the kitty/terminal image protocol
-- **Zero configuration**: sane defaults, fully customizable via TOML, 12
-  built-in themes, various widget styles
+- **Zero configuration**: sane defaults, fully customizable via TOML, 16
+  built-in themes in Classic and Modern designs, various widget styles
 - **MPRIS**: media player controls via D-Bus
 
 ## Comparison
@@ -98,6 +109,12 @@ daily driver, though still largely a WIP. See [CONTRIBUTING.md](CONTRIBUTING.md)
 for build instructions, the crate layout, and the green gates (fmt / clippy /
 test). People who have contributed code are listed in
 [CONTRIBUTORS.md](CONTRIBUTORS.md).
+
+## Development
+
+The implementation is driven by a set of feature specs under
+[`specs/`](specs/) — one file per themed chunk of work, each with acceptance
+criteria. They are the authoritative reference when changing behavior.
 
 ---
 

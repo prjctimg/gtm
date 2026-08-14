@@ -1,24 +1,27 @@
-% GTMD-IPC(1) GTM IPC Protocol Manual
+% gtmd-ipc(1) gtmd IPC protocol manual
 % prjctimg
 % 2026
 
 # NAME
 
-gtmd-ipc - IPC protocol for the GTM music daemon
+gtmd-ipc - IPC protocol for the gtm music daemon
 
 # DESCRIPTION
 
-The GTM daemon (**gtmd**(1)) communicates with clients over Unix domain
-sockets using a mixed JSON+binary protocol.  Commands are sent as
-newline-delimited JSON objects with an explicit `cmd` field.  The daemon
-responds synchronously with a JSON response per request, interleaved with
-asynchronous JSON and binary event notifications.
+The gtm daemon (**gtmd**(1)) communicates with clients over Unix domain sockets
+using a mixed JSON+binary protocol. Commands are sent as newline-delimited JSON
+objects with an explicit `cmd` field. The daemon responds synchronously with a
+JSON response per request, interleaved with asynchronous JSON and binary event
+notifications.
 
-For the canonical, normative protocol reference, see the **gtm.spec**
-repository (protocol.md, commands.md, events.md).  This manpage is a
-summary for developers and packagers.
+Commands are dispatched on the daemon via `cmd` string matching; params are
+deserialized from the envelope's `params` key. Each command variant carries
+its own params structure — the envelope `params` is a flat object with no
+wrapper key.
 
-# TRANSPORT
+The daemon's protocol version is `3` (`gtm-core/src/ipc.rs:16`). Framing is
+newline-delimited JSON for commands/responses; binary MessagePack frames for
+the dedicated pulse socket event stream.
 
 Two sockets are used:
 
@@ -28,8 +31,7 @@ Two sockets are used:
 | **Pulse** | `$XDG_RUNTIME_DIR/gtm/gtmd.pulse` | Binary event stream (MessagePack, read-only) |
 
 If `$XDG_RUNTIME_DIR` is not set, the daemon falls back in order:
-`/tmp/gtm-$USER/gtm/gtmd.sock`, `$TMPDIR/gtm/gtmd.sock`,
-`$HOME/.gtm/gtm/gtmd.sock`.
+/tmp/gtm-$USER/gtm/gtmd.sock, `$TMPDIR/gtm/gtmd.sock`, `$HOME/.gtm/gtm/gtmd.sock`.
 
 # FRAMING
 
@@ -43,10 +45,13 @@ Each command is a single JSON line terminated with `\n`:
 
 Fields:
 
-- `id` (uint64, required): Monotonically increasing sequence number.
-  Used to correlate responses.  MUST be `0` for the handshake command only.
-- `cmd` (string, required): The command name.
-- Additional fields: command-specific parameters.
+- `id` (uint64, required): Monotonically increasing sequence number. Used to
+  correlate responses. MUST be `0` for the handshake command only.
+- `cmd` (string, required): The command name. Dispatch is via
+  `DaemonReq::parse_cmd`.
+- Additional fields: command-specific parameters. The envelope's `params` key
+  holds a flat object — the nested `action` enum for `Queue`/`Library` carries
+  its fields at the top level per wire spec.
 
 ## Responses (daemon → client)
 
@@ -61,12 +66,13 @@ Fields:
 - `id` (uint64, required): Echoes the `id` from the matching request.
 - `ok` (boolean, required): `true` on success, `false` on error.
 - `error` (string, optional): Human-readable error message when `ok` is `false`.
-- Additional fields: command-specific response data.
+- Additional fields: command-specific response data encoded via
+  `DaemonRes::to_wire(id)`.
 
 ## Events (daemon → client, JSON)
 
 Events are delivered as individual JSON objects on the command socket,
-interleaved with responses.  Clients distinguish events from responses by
+interleaved with responses. Clients distinguish events from responses by
 checking for the `event` field (events) versus the `id` field (responses).
 
 ```json
@@ -76,34 +82,37 @@ checking for the `event` field (events) versus the `id` field (responses).
 ## Events (daemon → client, binary / MessagePack)
 
 The pulse socket delivers the same events in a compact binary format for
-high-frequency position updates.  Frame format:
+high-frequency position updates. Frame format:
 
 ```
 [4 bytes: payload length, big-endian uint32][payload bytes]
 ```
 
-The payload is a MessagePack-encoded array of event objects.  Each event
-is a MessagePack map with at minimum an `event` string field, matching
-the full JSON event schema.
+The payload is a MessagePack-encoded array of event objects. Each event is a
+MessagePack map with at minimum an `event` string field, matching the full JSON
+event schema.
 
-The client distinguishes responses from binary events by the first byte:
+The client distinguishes JSON responses from binary events by the first byte:
+
 - `0x7B` (`{`): JSON response (read until `\n`)
 - anything else: binary event frame (read 4-byte length, then payload)
 
-Maximum line length: 1,048,576 bytes (1 MiB).  Maximum binary frame: 16 MiB.
+Maximum JSON line length: 1,048,576 bytes (1 MiB) (`gtmd/src/daemon.rs:618`).
+Maximum binary frame: 16,777,216 bytes (16 MiB) (`gtm-core/src/client.rs:1122`).
 
 # HANDSHAKE
 
-The first message a client sends MUST be a handshake command:
+The first message a client sends MUST be a handshake command. The daemon
+responds with its version and daemon identifier.
 
 ```json
-{"id": 0, "cmd": "handshake", "version": 1, "client": "gtm", "client_version": "0.1.0"}
+{"id": 0, "cmd": "handshake", "version": 3, "client": "gtm", "client_version": "0.1.8"}
 ```
 
 Daemon response:
 
 ```json
-{"id": 0, "ok": true, "version": 1, "daemon": "gtmd-rs", "daemon_version": "0.1.0"}
+{"id": 0, "ok": true, "version": 3, "daemon": "gtmd-rs", "daemon_version": "0.1.8"}
 ```
 
 If the client's protocol version exceeds the daemon's, the daemon responds
@@ -134,9 +143,7 @@ Load a track by path and begin playback.
 {"id": 1, "cmd": "play", "path": "/path/to/file.opus", "start_pos": 0.0}
 ```
 
-Response: `{"id": 1, "ok": true}`
-
-Emits: `playback_started` event.
+Response: `{"id": 1, "ok": true}`. Emits: `playback_started` event.
 
 ## play_pause
 
@@ -146,7 +153,7 @@ Smart toggle: stopped → play, playing → pause, paused → resume.
 {"id": 2, "cmd": "play_pause"}
 ```
 
-Response: `{"id": 2, "ok": true}`
+Response: `{"id": 2, "ok": true}`.
 
 ## pause
 
@@ -154,7 +161,7 @@ Response: `{"id": 2, "ok": true}`
 {"id": 3, "cmd": "pause"}
 ```
 
-Response: `{"id": 3, "ok": true}`
+Response: `{"id": 3, "ok": true}`.
 
 ## stop
 
@@ -162,7 +169,7 @@ Response: `{"id": 3, "ok": true}`
 {"id": 4, "cmd": "stop"}
 ```
 
-Response: `{"id": 4, "ok": true}`
+Response: `{"id": 4, "ok": true}`.
 
 ## next / prev
 
@@ -171,7 +178,7 @@ Response: `{"id": 4, "ok": true}`
 {"id": 6, "cmd": "prev"}
 ```
 
-Response: `{"id": 5, "ok": true}`
+Response: `{"id": 5, "ok": true}`.
 
 ## seek
 
@@ -179,7 +186,7 @@ Response: `{"id": 5, "ok": true}`
 {"id": 7, "cmd": "seek", "position_secs": 30.0}
 ```
 
-Response: `{"id": 7, "ok": true}`
+Response: `{"id": 7, "ok": true}`.
 
 ## set_volume
 
@@ -189,7 +196,7 @@ Volume range: 0-100.
 {"id": 8, "cmd": "set_volume", "volume": 75}
 ```
 
-Response: `{"id": 8, "ok": true}`
+Response: `{"id": 8, "ok": true}`.
 
 ## get_volume
 
@@ -197,7 +204,7 @@ Response: `{"id": 8, "ok": true}`
 {"id": 9, "cmd": "get_volume"}
 ```
 
-Response: `{"id": 9, "ok": true, "volume": 75}`
+Response: `{"id": 9, "ok": true, "volume": 75}`.
 
 ## toggle_shuffle
 
@@ -205,7 +212,7 @@ Response: `{"id": 9, "ok": true, "volume": 75}`
 {"id": 10, "cmd": "toggle_shuffle"}
 ```
 
-Response: `{"id": 10, "ok": true}`
+Response: `{"id": 10, "ok": true}`.
 
 ## cycle_repeat
 
@@ -215,7 +222,7 @@ Modes: `"off"`, `"one"`, `"all"`.
 {"id": 11, "cmd": "cycle_repeat", "mode": "all"}
 ```
 
-Response: `{"id": 11, "ok": true}`
+Response: `{"id": 11, "ok": true}`.
 
 ## toggle_mute
 
@@ -223,15 +230,15 @@ Response: `{"id": 11, "ok": true}`
 {"id": 12, "cmd": "toggle_mute"}
 ```
 
-Response: `{"id": 12, "ok": true}`
+Response: `{"id": 12, "ok": true}`.
 
 ## crossfade
 
 ```json
-{"id": 13, "cmd": "crossfade", "enabled": true, "duration_secs": 3}
+{"id": 13, "cmd": "crossfade", "enabled": true, "duration_secs": 3, "easing": "linear"}
 ```
 
-Response: `{"id": 13, "ok": true}`
+Response: `{"id": 13, "ok": true}`.
 
 # AUDIO EFFECT COMMANDS
 
@@ -241,11 +248,15 @@ Response: `{"id": 13, "ok": true}`
 {"id": 14, "cmd": "set_eq_preset", "preset": "rock"}
 ```
 
+Response: `{"id": 14, "ok": true}`.
+
 ## set_eq_enabled
 
 ```json
 {"id": 15, "cmd": "set_eq_enabled", "enabled": true}
 ```
+
+Response: `{"id": 15, "ok": true}`.
 
 ## set_reverb
 
@@ -253,13 +264,15 @@ Response: `{"id": 13, "ok": true}`
 {"id": 16, "cmd": "set_reverb", "enabled": true, "room_size": 0.7}
 ```
 
+Response: `{"id": 16, "ok": true}`.
+
 ## list_eq_presets
 
 ```json
 {"id": 17, "cmd": "list_eq_presets"}
 ```
 
-Response: `{"id": 17, "ok": true, "presets": ["flat", "rock", "pop", "jazz"]}`
+Response: `{"id": 17, "ok": true, "presets": ["flat", "rock", "pop", "jazz"]}`.
 
 # QUEUE COMMANDS
 
@@ -272,28 +285,12 @@ with an `action` field.
 {"id": 20, "cmd": "queue", "action": "list"}
 ```
 
-Response:
-
-```json
-{"id": 20, "ok": true, "queue": [{"title": "...", "path": "..."}], "cursor": 0}
-```
+Response: `{"id": 20, "ok": true, "queue": [{"title": "...", "path": "..."}], "cursor": 0}`.
 
 ## queue add
 
 ```json
 {"id": 21, "cmd": "queue", "action": "add", "path": "/path/to/file.opus"}
-```
-
-## queue add_many
-
-```json
-{"id": 22, "cmd": "queue", "action": "add_many", "paths": ["/a.opus", "/b.opus"]}
-```
-
-## queue add_folder
-
-```json
-{"id": 23, "cmd": "queue", "action": "add_folder", "path": "/path/to/music/"}
 ```
 
 ## queue remove
@@ -331,7 +328,7 @@ command with an `action` field.
 {"id": 30, "cmd": "library", "action": "scan", "path": "/path/to/music"}
 ```
 
-Runs asynchronously. Emits `custom` event with `name: "scan_done"`.
+Runs asynchronously. No `custom`/`scan_done` event emitted.
 
 ## library get_tracks
 
@@ -339,11 +336,7 @@ Runs asynchronously. Emits `custom` event with `name: "scan_done"`.
 {"id": 31, "cmd": "library", "action": "get_tracks", "filter": null, "sort": null}
 ```
 
-Response:
-
-```json
-{"id": 31, "ok": true, "tracks": [{"id": "abc", "title": "...", "artist": "...", "path": "...", "duration": 240.0}]}
-```
+Response: `{"id": 31, "ok": true, "tracks": [{"id": "abc", "title": "...", "artist": "...", "path": "...", "duration": 240.0}]}`.
 
 ## library get_playlists
 
@@ -351,11 +344,7 @@ Response:
 {"id": 32, "cmd": "library", "action": "get_playlists"}
 ```
 
-Response:
-
-```json
-{"id": 32, "ok": true, "playlists": [{"id": 1, "name": "My Playlist", "track_count": 15}]}
-```
+Response: `{"id": 32, "ok": true, "playlists": [{"id": 1, "name": "My Playlist", "track_count": 15}]}`.
 
 ## library create_playlist
 
@@ -381,11 +370,15 @@ Response:
 {"id": 36, "cmd": "library", "action": "get_recent", "count": 10}
 ```
 
+Response: `{"id": 36, "ok": true, "tracks": [...]}`.
+
 ## library remove_track
 
 ```json
 {"id": 37, "cmd": "library", "action": "remove_track", "id": 42}
 ```
+
+Response: `{"id": 37, "ok": true}`.
 
 ## library update_metadata
 
@@ -393,14 +386,39 @@ Response:
 {"id": 38, "cmd": "library", "action": "update_metadata", "track_id": 42, "title": "New Title"}
 ```
 
-## library sync_covers / sync_lyrics
+Response: `{"id": 38, "ok": true}`.
+
+## library sync_covers
 
 ```json
 {"id": 39, "cmd": "library", "action": "sync_covers"}
+```
+
+Runs asynchronously. Emits `metadata_changed` event on completion.
+
+## library sync_lyrics
+
+```json
 {"id": 40, "cmd": "library", "action": "sync_lyrics"}
 ```
 
-Both run asynchronously and emit `custom` events on completion.
+Runs asynchronously. Emits `metadata_changed` event on completion.
+
+## library sync_metadata
+
+```json
+{"id": 41, "cmd": "library", "action": "sync_metadata", "path": "/path/to/file.mp3"}
+```
+
+Runs asynchronously. Emits `metadata_changed` event on completion.
+
+## library sync_status
+
+```json
+{"id": 42, "cmd": "library", "action": "sync_status"}
+```
+
+Response: `{"id": 42, "ok": true, "report": {"running": false, "kind": "covers", "synced": 15, "total": 15}}`.
 
 # SEARCH AND FAVOURITES
 
@@ -410,14 +428,10 @@ Both run asynchronously and emit `custom` events on completion.
 {"id": 41, "cmd": "search", "query": "jazz"}
 ```
 
-Response:
+Response: `{"id": 41, "ok": true, "tracks": [...]}`.
 
-```json
-{"id": 41, "ok": true, "tracks": [...]}
-```
-
-Extended parameters: `fuzzy` (bool), `ignore_diacritics` (bool),
-`fields` (string array).
+Extended parameters: none (the wire accepts **only** `query`; `fuzzy`,
+`ignore_diacritics`, `fields` are not supported).
 
 ## get_favourites
 
@@ -425,11 +439,7 @@ Extended parameters: `fuzzy` (bool), `ignore_diacritics` (bool),
 {"id": 42, "cmd": "get_favourites"}
 ```
 
-Response:
-
-```json
-{"id": 42, "ok": true, "tracks": [...]}
-```
+Response: `{"id": 42, "ok": true, "tracks": [...]}`.
 
 ## add_favourite / remove_favourite
 
@@ -454,11 +464,7 @@ Emits `custom` events with `name: "yt_search_partial"` or `"yt_search_done"`.
 {"id": 46, "cmd": "yt_search_poll"}
 ```
 
-Response:
-
-```json
-{"id": 46, "ok": true, "results": [{"title": "...", "url": "...", "duration": 240, "channel": "..."}]}
-```
+Response: `{"id": 46, "ok": true, "results": [{"title": "...", "url": "...", "duration": 240, "channel": "..."}]}`.
 
 ## yt_search_cancel
 
@@ -484,11 +490,7 @@ Response:
 {"id": 50, "cmd": "yt_download_poll"}
 ```
 
-Response:
-
-```json
-{"id": 50, "ok": true, "progress": 0.75, "status": "downloading"}
-```
+Response: `{"id": 50, "ok": true, "progress": 0.75, "status": "downloading"}`.
 
 ## yt_cancel_download
 
@@ -496,17 +498,22 @@ Response:
 {"id": 51, "cmd": "yt_cancel_download", "url": "https://youtube.com/watch?v=..."}
 ```
 
-## yt_fetch_playlist / yt_fetch_playlist_poll
+## yt_fetch_playlist
 
 ```json
 {"id": 52, "cmd": "yt_fetch_playlist", "url": "https://youtube.com/playlist?list=..."}
+```
+
+## yt_fetch_playlist_poll
+
+```json
 {"id": 53, "cmd": "yt_fetch_playlist_poll"}
 ```
 
 ## yt_set_config
 
 ```json
-{"id": 54, "cmd": "yt_set_config", "cookie_source": "/path/to/cookies.txt", "js_runtime": "deno"}
+{"id": 54, "cmd": "yt_set_config", "cookie_source": "/path/to/cookies.txt", "js_runtime": "deno", "download_dir": null, "max_concurrent": 4}
 ```
 
 # COVER ART AND LYRICS
@@ -517,11 +524,7 @@ Response:
 {"id": 55, "cmd": "get_cover_art", "track_id": 42}
 ```
 
-Response:
-
-```json
-{"id": 55, "ok": true, "data": "<base64-encoded PNG>"}
-```
+Response: `{"id": 55, "ok": true, "data": "<base64-encoded PNG>"}`.
 
 ## get_lyrics
 
@@ -529,11 +532,7 @@ Response:
 {"id": 56, "cmd": "get_lyrics", "track_id": 42}
 ```
 
-Response:
-
-```json
-{"id": 56, "ok": true, "lyrics": {"synced": true, "lines": [{"time": 0.0, "text": "..."}]}}
-```
+Response: `{"id": 56, "ok": true, "lyrics": {"synced": true, "lines": [{"time": 0.0, "text": "..."}]}}`.
 
 # AUDIO EFFECTS
 
@@ -554,6 +553,8 @@ Modes: `"off"`, `"track"`, `"album"`, `"auto"`.
 {"id": 60, "cmd": "set_loudness_mode", "mode": "auto"}
 ```
 
+Response: `{"id": 60, "ok": true}`.
+
 ## scan_loudness
 
 ```json
@@ -568,6 +569,8 @@ Runs asynchronously. Emits `loudness_scan_progress` and `loudness_scan_done`.
 {"id": 62, "cmd": "set_pre_gain", "pre_gain_db": -14.0}
 ```
 
+Response: `{"id": 62, "ok": true}`.
+
 # GAPLESS PLAYBACK
 
 ## set_gapless
@@ -575,6 +578,8 @@ Runs asynchronously. Emits `loudness_scan_progress` and `loudness_scan_done`.
 ```json
 {"id": 63, "cmd": "set_gapless", "enabled": true}
 ```
+
+Response: `{"id": 63, "ok": true}`.
 
 # DYNAMIC MODE
 
@@ -584,6 +589,8 @@ Runs asynchronously. Emits `loudness_scan_progress` and `loudness_scan_done`.
 {"id": 64, "cmd": "set_dynamic_mode", "enabled": true, "min_queue_remaining": 3, "max_history": 50}
 ```
 
+Response: `{"id": 64, "ok": true}`.
+
 # SCROBBLING
 
 ## set_scrobble
@@ -592,19 +599,7 @@ Runs asynchronously. Emits `loudness_scan_progress` and `loudness_scan_done`.
 {"id": 65, "cmd": "set_scrobble", "enabled": true, "api_key": "...", "session_token": "..."}
 ```
 
-# LIBRARY ORGANIZATION
-
-## organize_library
-
-```json
-{"id": 66, "cmd": "organize_library", "dry_run": true}
-```
-
-Response (dry_run):
-
-```json
-{"id": 66, "ok": true, "moves": [{"from": "/old/path.mp3", "to": "/new/Artist/Album/01 - Title.mp3"}]}
-```
+Response: `{"id": 65, "ok": true}`.
 
 # SYSTEM COMMANDS
 
@@ -614,17 +609,15 @@ Response (dry_run):
 {"id": 70, "cmd": "get_status"}
 ```
 
+Response: `{"id": 70, "ok": true, "state": {"uptime_secs": 3600, "clients_connected": 2, "audio_backend": "rodio"}}`.
+
 ## check_health
 
 ```json
 {"id": 71, "cmd": "check_health"}
 ```
 
-Response:
-
-```json
-{"id": 71, "ok": true, "report": {"uptime_secs": 3600, "clients_connected": 2, "audio_backend": "rodio"}}
-```
+Response: `{"id": 71, "ok": true, "report": {"uptime_secs": 3600, "clients_connected": 2, "audio_backend": "rodio"}}`.
 
 ## ping
 
@@ -632,7 +625,7 @@ Response:
 {"id": 99, "cmd": "ping"}
 ```
 
-Response: `{"id": 99, "ok": true}`
+Response: `{"id": 99, "ok": true}`.
 
 ## quit
 
@@ -640,53 +633,53 @@ Response: `{"id": 99, "ok": true}`
 {"id": 100, "cmd": "quit"}
 ```
 
-Response: `{"id": 100, "ok": true}`
+Response: `{"id": 100, "ok": true}`.
 
 The daemon persists state and closes the connection.
 
 # EVENTS
 
-Events are daemon-to-client notifications about state changes.  They are
+Events are daemon-to-client notifications about state changes. They are
 delivered as JSON objects on the command socket and as MessagePack binary
 frames on the pulse socket.
 
 ## Playback Lifecycle
 
-- `playback_started`: track begins playing.  Fields: `track` (TrackInfo),
+- `playback_started`: track begins playing. Fields: `track` (TrackInfo),
   `auto_advanced` (bool), `time_pos` (float64), `duration` (float64).
-- `playback_paused`: playback paused.  Fields: `time_pos`.
+- `playback_paused`: playback paused. Fields: `time_pos`.
 - `playback_stopped`: playback explicitly stopped.
 - `track_ended`: track reached end of file naturally.
 
 ## Position and Duration
 
-- `position_changed`: playback position updated.  Fields: `time_pos`.
-- `duration_changed`: track duration resolved.  Fields: `duration`.
+- `position_changed`: playback position updated. Fields: `time_pos` (float64).
+- `duration_changed`: track duration resolved. Fields: `duration` (float64).
 
 ## Volume
 
-- `volume_changed`: volume level changed.  Fields: `volume` (uint8, 0-100).
+- `volume_changed`: volume level changed. Fields: `volume` (uint8, 0-100).
 
 ## Playback Mode
 
-- `shuffle_changed`: shuffle toggled.  Fields: `enabled` (bool).
-- `repeat_mode_changed`: repeat mode changed.  Fields: `mode` (string).
+- `shuffle_changed`: shuffle toggled. Fields: `enabled` (bool).
+- `repeat_mode_changed`: repeat mode changed. Fields: `mode` (string).
 
 ## Queue
 
-- `queue_changed`: queue modified.  Fields: `queue` (array), `cursor`.
-- `queue_index_changed`: cursor moved.  Fields: `index`.
+- `queue_changed`: queue modified. Fields: `queue` (array), `cursor`.
+- `queue_index_changed`: cursor moved. Fields: `index`.
 
 ## Audio Effects
 
-- `crossfade_changed`: fields: `enabled`, `duration_secs`.
+- `crossfade_changed`: fields: `enabled`, `duration_secs`, `easing`.
 - `eq_preset_changed`: fields: `preset`.
 - `eq_enabled_changed`: fields: `enabled`.
 - `reverb_changed`: fields: `enabled`, `room_size`.
 
 ## Sleep Timer
 
-- `sleep_timer_tick`: emitted every second.  Fields: `remaining_secs`.
+- `sleep_timer_tick`: emitted every second. Fields: `remaining_secs`.
 - `sleep_timer_expired`: timer reached zero.
 
 ## Loudness Compensation
@@ -717,21 +710,25 @@ frames on the pulse socket.
 ## System
 
 - `heartbeat`: emitted at least every 30 seconds during active playback.
-- `custom`: extensible event type with `name` sub-type field.  Known names:
+- `custom`: extensible event type with `name` sub-type field. Known names:
   `daemon_quitting`, `backend_error`, `audio_error`, `scan_done`.
-
-# EVENT EXAMPLES
-
-```json
-{"event": "playback_started", "track": {"title": "Song", "artist": "Artist"}, "auto_advanced": false, "time_pos": 0.0, "duration": 240.0}
-{"event": "position_changed", "time_pos": 42.5}
-{"event": "volume_changed", "volume": 75}
-{"event": "queue_changed", "queue": [{"title": "Song 1"}], "cursor": 0}
-{"event": "sleep_timer_tick", "remaining_secs": 120}
-{"event": "loudness_scan_progress", "tracks_remaining": 150, "tracks_total": 500}
-{"event": "scrobble_sent", "track": {"title": "Song"}, "timestamp": 1700000000}
-```
 
 # SEE ALSO
 
 **gtmd**(1), **gtm**(1)
+
+# AUTHORS
+
+prjctimg <prjctimg@outlook.com>
+
+# BUGS
+
+Report bugs to <https://github.com/prjctimg/gtm.rs/issues> or by email to
+<prjctimg@outlook.com>.
+
+# COPYRIGHT
+
+Copyright (c) 2026 - present prjctimg.
+
+This is free software released under the GPL-3.0 license. See the LICENSE
+file for the full license text.

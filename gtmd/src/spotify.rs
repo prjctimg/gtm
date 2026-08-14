@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use chrono::Duration;
 use futures::StreamExt;
 use rspotify::clients::{BaseClient, OAuthClient};
-use rspotify::model::{PlayableItem, Token};
+use rspotify::model::{AdditionalType, PlayableItem, Token};
 use rspotify::AuthCodeSpotify;
 use tracing::{debug, info, warn};
 
@@ -30,6 +30,12 @@ pub struct SpotifyManager {
     config_dir: PathBuf,
     client: Option<AuthCodeSpotify>,
     user: Option<String>,
+    /// Whether the linked account has a Premium subscription.
+    premium: bool,
+    /// Whether the Spotify device was playing on the last playback refresh.
+    playing: bool,
+    /// Name of the active playback device, if known.
+    device: Option<String>,
     playlists: Vec<SpotifyPlaylist>,
     error: Option<String>,
 }
@@ -40,6 +46,9 @@ impl SpotifyManager {
             config_dir,
             client: None,
             user: None,
+            premium: false,
+            playing: false,
+            device: None,
             playlists: Vec::new(),
             error: None,
         }
@@ -80,6 +89,9 @@ impl SpotifyManager {
     pub fn clear(&mut self) {
         self.client = None;
         self.user = None;
+        self.premium = false;
+        self.playing = false;
+        self.device = None;
         self.playlists.clear();
         self.error = None;
         match std::fs::remove_file(self.token_path()) {
@@ -95,6 +107,9 @@ impl SpotifyManager {
         SpotifyStatus {
             linked: self.linked(),
             user: self.user.clone(),
+            premium: self.premium,
+            playing: self.playing,
+            device: self.device.clone(),
             playlists: self.playlists.len(),
             tracks,
             error: self.error.clone(),
@@ -114,6 +129,66 @@ impl SpotifyManager {
             .map(|p| p.tracks.clone())
     }
 
+    /// Poll the Web API for the current playback device and playing state.
+    ///
+    /// `/me/player` requires a Premium account: a `403 PREMIUM_REQUIRED`
+    /// response sets `premium` to false (disabling the Settings control rows),
+    /// while a successful response implies playback control is available.
+    /// Other failures leave the cached fields untouched.
+    pub async fn refresh_playback(&mut self) {
+        let Some(client) = self.client.as_ref() else {
+            self.playing = false;
+            self.device = None;
+            return;
+        };
+        match client
+            .current_playback(None, None::<&[AdditionalType]>)
+            .await
+        {
+            Ok(Some(ctx)) => {
+                self.playing = ctx.is_playing;
+                self.device = Some(ctx.device.name.clone());
+                self.premium = true;
+            }
+            Ok(None) => {
+                self.playing = false;
+                self.device = None;
+                self.premium = true;
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("403") && msg.to_lowercase().contains("premium") {
+                    debug!("spotify playback control unavailable (premium required)");
+                    self.premium = false;
+                } else {
+                    debug!("spotify playback refresh failed: {e}");
+                }
+            }
+        }
+    }
+
+    /// Toggle play/pause on the active Spotify device.
+    ///
+    /// Requires Premium; a `403 PREMIUM_REQUIRED` from the playback endpoint
+    /// is surfaced as an error and clears the `premium` flag so the UI can
+    /// disable the control rows.
+    pub async fn play_pause(&mut self) -> Result<(), String> {
+        if self.client.is_none() {
+            return Err("spotify not linked".to_string());
+        }
+        self.refresh_playback().await;
+        let device = self.device.clone();
+        let client = self.client.as_ref().ok_or_else(|| "spotify not linked".to_string())?;
+        let res = if self.playing {
+            client.pause_playback(device.as_deref()).await
+        } else {
+            client.resume_playback(device.as_deref(), None).await
+        };
+        res.map_err(|e| format!("{e}"))?;
+        self.refresh_playback().await;
+        Ok(())
+    }
+
     /// Refresh the account profile and every playlist from the Web API.
     pub async fn sync(&mut self) -> Result<(), String> {
         let client = self
@@ -123,6 +198,9 @@ impl SpotifyManager {
 
         let me = client.me().await.map_err(|e| format!("me: {e}"))?;
         self.user = me.display_name.or_else(|| Some(me.id.as_ref().to_string()));
+        // NOTE: rspotify's `me().product` was removed upstream (Spotify no
+        // longer exposes the plan); Premium is instead probed via the
+        // playback endpoint in `refresh_playback()`.
 
         // Collect the playlist metadata first (paginator borrows the client),
         // then fetch each playlist's tracks in a second pass.

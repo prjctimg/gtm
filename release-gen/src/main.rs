@@ -111,8 +111,20 @@ enum Command {
         #[arg(value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         path: String,
     },
+    /// Export a playlist to an M3U file
+    ExportM3u {
+        playlist_id: i64,
+        #[arg(value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
+        path: String,
+    },
     Recent {
         count: u64,
+    },
+    /// Enrich unreliable track metadata via Deezer and embed tags into the files
+    MetadataSync {
+        /// Only sync this single track; otherwise all unreliable tracks
+        #[arg(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
+        path: Option<String>,
     },
     Favourites,
     FavouriteAdd {
@@ -132,12 +144,81 @@ enum Command {
         #[arg(value_hint = clap::ValueHint::Url)]
         url: String,
     },
+    /// Fetch lyrics for an "Artist - Title" query via lrclib
+    Lyrics {
+        /// Search query in the form "Artist - Title"
+        query: String,
+    },
     Search {
         query: String,
     },
-    Status,
+    Status {
+        /// Stream elapsed time continuously
+        #[arg(long)]
+        stream: bool,
+    },
+    CheckHealth,
     Ping,
     Quit,
+    /// Open the config file in the default editor
+    Config,
+    /// Set or clear the sleep timer (minutes)
+    SleepTimer {
+        /// Minutes until playback fades out and stops
+        minutes: u32,
+    },
+    /// Cancel a running sleep timer
+    CancelSleepTimer,
+    /// Edit metadata of a library track
+    UpdateMetadata {
+        /// Library track id
+        track_id: i64,
+        /// Field to change: title, artist, album, genre, year, track-number
+        #[arg(value_name = "FIELD")]
+        field: String,
+        /// New value (or blank to clear)
+        #[arg(value_name = "VALUE")]
+        value: String,
+    },
+    /// Spotify account and playback control
+    #[command(subcommand)]
+    Spotify(SpotifyAction),
+    /// Soloist playback bridge control
+    #[command(subcommand)]
+    Soloist(SoloistAction),
+}
+
+#[derive(Subcommand)]
+enum SpotifyAction {
+    /// Link the account with an access token (metadata/playlist APIs)
+    Connect {
+        /// Spotify OAuth access token
+        token: String,
+    },
+    /// Unlink the account and delete the stored token
+    Disconnect,
+    /// Show the current link/playback status
+    Status,
+    /// Re-sync all playlists from the Web API
+    Sync,
+}
+
+#[derive(Subcommand)]
+enum SoloistAction {
+    /// Start the bridge using the persisted API key
+    Start,
+    /// Stop the bridge (key is kept)
+    Stop,
+    /// Show the bridge status
+    Status,
+    /// Toggle auto-start at daemon startup (persisted in daemon state)
+    AutoStart {
+        #[arg(
+            value_name = "BOOL",
+            value_parser = clap::builder::BoolishValueParser::new()
+        )]
+        enabled: bool,
+    },
 }
 
 /// GTM background audio daemon

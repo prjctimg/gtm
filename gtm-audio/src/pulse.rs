@@ -5,7 +5,7 @@
 // This is free software released under the GPL-3.0 license.
 
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::{Duration, Instant};
@@ -18,7 +18,6 @@ use crate::buffer::{DecodeControl, RingBufferInner, SharedRingBuffer, PREBUFFER_
 use crate::decoder::DecodeThread;
 use crate::eq::{EqGains, EqSource, ReverbSource};
 use crate::mixer::Mixer;
-use crate::stretch::speed_to_fixed;
 use crate::symphonia::SymphoniaSource;
 use gtm_core::state::{Easing, EqPreset, ReverbConfig};
 use rodio::Source;
@@ -176,7 +175,6 @@ pub struct PulseAudioMixer {
     eq_enabled: Arc<AtomicBool>,
     reverb_enabled: Arc<AtomicBool>,
     reverb_room_size: Arc<Mutex<f32>>,
-    playback_speed: Arc<AtomicU32>,
 }
 
 impl PulseAudioMixer {
@@ -212,7 +210,6 @@ impl PulseAudioMixer {
             eq_enabled: Arc::new(AtomicBool::new(true)),
             reverb_enabled: Arc::new(AtomicBool::new(false)),
             reverb_room_size: Arc::new(Mutex::new(0.3)),
-            playback_speed: Arc::new(AtomicU32::new(1000)),
         })
     }
 
@@ -274,11 +271,8 @@ impl PulseAudioMixer {
         eq_enabled: &Arc<AtomicBool>,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
-        playback_speed: &Arc<AtomicU32>,
     ) -> AudioResult<(Arc<DecodeControl>, std::thread::JoinHandle<()>)> {
-        let mut control = DecodeControl::new();
-        control.playback_speed = playback_speed.clone();
-        let control = Arc::new(control);
+        let control = Arc::new(DecodeControl::new());
         let thread = DecodeThread::new(
             path.to_string(),
             ring.clone(),
@@ -358,7 +352,6 @@ impl Mixer for PulseAudioMixer {
             &self.eq_enabled,
             &self.reverb_enabled,
             &self.reverb_room_size,
-            &self.playback_speed,
         )?;
 
         self.active_mut().control = Some(control);
@@ -447,7 +440,6 @@ impl Mixer for PulseAudioMixer {
             &self.eq_enabled,
             &self.reverb_enabled,
             &self.reverb_room_size,
-            &self.playback_speed,
         )?;
 
         self.standby_mut().control = Some(control);
@@ -604,8 +596,7 @@ impl Mixer for PulseAudioMixer {
             .unwrap_or(0.0);
         let start = *self.start_pos.lock().unwrap();
         let total = *self.duration.lock().unwrap();
-        let speed = self.playback_speed.load(Ordering::Relaxed) as f64 / 1000.0;
-        (start + elapsed * speed).min(total)
+        (start + elapsed).min(total)
     }
 
     fn duration(&self) -> f64 {
@@ -764,17 +755,6 @@ impl Mixer for PulseAudioMixer {
     fn set_reverb(&self, config: &ReverbConfig) {
         self.reverb_enabled.store(config.enabled, Ordering::Relaxed);
         *self.reverb_room_size.lock().unwrap() = config.room_size;
-    }
-
-    fn set_playback_speed(&self, speed: f64) {
-        let fixed = speed_to_fixed(speed);
-        self.playback_speed.store(fixed, Ordering::Relaxed);
-        if let Some(ref ctrl) = self.active().control {
-            ctrl.playback_speed.store(fixed, Ordering::Relaxed);
-        }
-        if let Some(ref ctrl) = self.standby().control {
-            ctrl.playback_speed.store(fixed, Ordering::Relaxed);
-        }
     }
 }
 

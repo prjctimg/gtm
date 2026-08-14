@@ -279,6 +279,9 @@ fn daemon_res_spotify_wire_roundtrip() {
     let status = SpotifyStatus {
         linked: true,
         user: Some("test-user".into()),
+        premium: true,
+        playing: false,
+        device: Some("Test Speaker".into()),
         playlists: 2,
         tracks: 5,
         error: None,

@@ -1,10 +1,10 @@
-% GTM(1) GTM Client Manual
+% gtm(1) gtm client manual
 % prjctimg
 % 2026
 
 # NAME
 
-gtm - terminal user interface and command-line client for the GTM music daemon
+gtm - terminal user interface and command-line client for the gtm music daemon
 
 # SYNOPSIS
 
@@ -12,47 +12,46 @@ gtm - terminal user interface and command-line client for the GTM music daemon
 
 # DESCRIPTION
 
-**gtm** is the client for the **gtmd**(1) music daemon.  When invoked without
-the **\--cli** flag, it opens a full-screen Terminal User Interface (TUI) with
-keyboard-driven navigation.  With **\--cli** (or **-c**), it acts as a
-command-line client for scripting and headless control.
+**gtm** is the client for **gtmd**(1). When invoked without the **\--cli** flag, it
+opens a full-screen Terminal User Interface (TUI) with keyboard-driven
+navigation. With **\--cli** (or **-c**), it acts as a command-line client for
+scripting and headless control.
 
-The TUI provides a built-in help buffer accessible with **?** that covers
-all keybindings, configuration options, and setup instructions.
+The TUI provides a built-in help buffer accessible with **?** that covers all
+keybindings, configuration options, and setup instructions.
 
 # TUI MODE (default)
 
-The TUI provides three tabs navigated with **Tab** and **Shift+Tab**:
+The TUI provides two tabs navigated with **1** / **2** or **Tab** /
+**Shift+Tab**:
 
-## Now Playing (1)
-Shows current track info, cover art, a progress bar, volume gauge,
-sleep timer, and control hints.
-Keys: Space (play/pause), n (next), p (prev), +/- (volume), m (mute),
-r (repeat), s (shuffle), h/l (seek).
+## Library (1)
 
-## Library (2)
-Browse tracks by category: All Tracks, Playlists, Favourites, Recent.
-Left pane selects category, right pane lists tracks.
-Keys: Tab (toggle pane), j/k or up/down (navigate), Enter (play),
-/ (filter).
+Browse tracks by category: All Tracks, Playlists, Favourites, Recent. Left
+pane selects category, right pane lists tracks. Keys: **Tab** (toggle pane),
+**j**/**k** or **Up**/**Down** (navigate), **Enter** (play), **/** (filter).
 
-## Settings (3)
-Adjust playback settings and open overlays.
-Left pane selects category (Playback, Appearance, Sleep Timer, About),
-right pane shows options.
-Keys: Tab (toggle pane), j/k (navigate), Enter (toggle/select).
+## Settings (2)
+
+Adjust playback settings and open overlays. Left pane selects category
+(Playback, Appearance, Sleep Timer, About), right pane shows options. Keys:
+**Tab** (toggle pane), **j**/**k** (navigate), **Enter** (toggle/select).
 
 ## Global Keys
 
 | Key | Action |
 |-----|--------|
 | `Tab` / `Shift+Tab` | Next / Previous tab |
+| `1` / `2` | Switch to Library / Settings tab |
 | `Space` | Play / Pause |
 | `n` / `p` | Next / Previous track |
 | `+` / `-` | Volume up / down |
 | `m` | Toggle mute |
 | `r` | Cycle repeat mode |
-| `s` | Toggle shuffle |
+| `S` | Toggle shuffle |
+| `s` | Stop |
+| `.` / `,` | Seek forward / backward |
+| `l` | Fetch lyrics for current track |
 | `:` | Command mode |
 | `?` | Toggle help |
 | `q` / `Esc` | Quit |
@@ -60,7 +59,7 @@ Keys: Tab (toggle pane), j/k (navigate), Enter (toggle/select).
 # CLI MODE
 
 With the **\--cli** (or **-c**) flag, **gtm** sends a single command to the
-daemon and prints the result.  Use **\--json** for machine-readable output.
+daemon and prints the result. Use **\--json** for machine-readable output.
 
 ## Playback
 
@@ -69,7 +68,8 @@ daemon and prints the result.  Use **\--json** for machine-readable output.
     position in seconds.
 
 **play-pause**
-:   Toggle between play and pause.
+:   Toggle between play and pause (smart: stopped → play, playing → pause,
+    paused → resume).
 
 **pause**
 :   Pause playback.
@@ -95,11 +95,12 @@ daemon and prints the result.  Use **\--json** for machine-readable output.
 **shuffle**
 :   Toggle shuffle mode for the queue.
 
-**repeat** {Off|One|All}
+**repeat** {off|one|all}
 :   Set repeat mode.
 
 **crossfade** *enabled* [*duration_secs*]
-:   Enable or disable crossfade between tracks.
+:   Enable or disable crossfade between tracks. Optional duration in seconds
+    (default: 3). Easing is picked in Settings.
 
 ## Queue
 
@@ -107,13 +108,8 @@ daemon and prints the result.  Use **\--json** for machine-readable output.
 :   Display the current playback queue.
 
 **queue-add** *path* [*position*]
-:   Add a track to the queue.
-
-**queue-add-many** *paths*...
-:   Add multiple tracks at once.
-
-**queue-add-folder** *path*
-:   Add all tracks in a folder.
+:   Add a track to the queue. Directories are scanned recursively for audio
+    files. Without a position the tracks are queued to play next.
 
 **queue-remove** *index*
 :   Remove a track by index.
@@ -125,7 +121,8 @@ daemon and prints the result.  Use **\--json** for machine-readable output.
 :   Clear the entire queue.
 
 **queue-set** *paths*... *start_idx*
-:   Replace the entire queue.
+:   Replace the entire queue with the given paths, starting playback at
+    *start_idx*.
 
 ## Library
 
@@ -160,7 +157,7 @@ daemon and prints the result.  Use **\--json** for machine-readable output.
 :   Search the library.
 
 **lyrics** *query*
-:   Fetch lyrics for an "Artist - Title" query via lrclib.
+:   Fetch lyrics for an "Artist - Title" query via LRCLIB.
 
 **check-health**
 :   Check daemon connectivity and return version info.
@@ -190,16 +187,59 @@ daemon and prints the result.  Use **\--json** for machine-readable output.
 **yt-resolve** *url*
 :   Resolve a YouTube URL to a playable stream.
 
+## Spotify
+
+**spotify** *connect* *token*
+:   Link the account with an access token (metadata/playlist APIs).
+
+**spotify** *disconnect*
+:   Unlink the account and delete the stored token.
+
+**spotify** *status*
+:   Show the current link/playback status.
+
+**spotify** *sync*
+:   Re-sync all playlists from the Web API.
+
+## Soloist
+
+**soloist** *start*
+:   Start the bridge using the persisted API key.
+
+**soloist** *stop*
+:   Stop the bridge (key is kept).
+
+**soloist** *status*
+:   Show the bridge status.
+
+**soloist** *auto-start* {true|false}
+:   Toggle auto-start at daemon startup (persisted in daemon state).
+
 ## Daemon
 
-**status**
-:   Show daemon status.
+**status** [**\--stream**]
+:   Show daemon status. With **\--stream**, stream elapsed time continuously.
 
 **ping**
 :   Ping the daemon.
 
 **quit**
 :   Shut down the daemon.
+
+## Configuration
+
+**config**
+:   Open the config file in the default editor.
+
+**sleep-timer** *minutes*
+:   Set the sleep timer (minutes until playback fades out and stops).
+
+**cancel-sleep-timer**
+:   Cancel a running sleep timer.
+
+**update-metadata** *track_id* *field* *value*
+:   Edit metadata of a library track. Fields: title, artist, album, genre,
+    year, track-number. Empty value clears the field.
 
 # OPTIONS
 
@@ -211,6 +251,9 @@ daemon and prints the result.  Use **\--json** for machine-readable output.
 
 **\--json**, **-j**
 :   Output as JSON (CLI mode only).
+
+**\--verbose**, **-v**
+:   Enable verbose output (global).
 
 **\--version**, **-V**
 :   Show version information.
@@ -225,9 +268,34 @@ daemon and prints the result.  Use **\--json** for machine-readable output.
 
 # FILES
 
-`$XDG_RUNTIME_DIR/gtm/gtmd.sock`
+$XDG_RUNTIME_DIR/gtm/gtmd.sock
 :   Default daemon IPC socket.
+
+/tmp/gtm-$USER/gtm/gtmd.sock
+:   Fallback socket path if $XDG_RUNTIME_DIR is not set.
+
+$TMPDIR/gtm/gtmd.sock
+:   Further fallback.
+
+$HOME/.gtm/gtm/gtmd.sock
+:   Final fallback.
 
 # SEE ALSO
 
 **gtmd**(1), **gtmd-ipc**(1)
+
+# AUTHORS
+
+prjctimg <prjctimg@outlook.com>
+
+# BUGS
+
+Report bugs to <https://github.com/prjctimg/gtm.rs/issues> or by email to
+<prjctimg@outlook.com>.
+
+# COPYRIGHT
+
+Copyright (c) 2026 - present prjctimg.
+
+This is free software released under the GPL-3.0 license. See the LICENSE
+file for the full license text.

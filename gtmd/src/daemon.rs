@@ -177,6 +177,9 @@ struct DaemonInner {
     /// so the daemon only notifies once per track instead of on every poll.
     countdown_notified_for: tokio::sync::Mutex<Option<String>>,
     sleep_cancel: Arc<AtomicBool>,
+    /// Set when the user issues a manual `soloist/start` or `soloist/stop`;
+    /// the auto-start supervisor stops retrying once this is set.
+    soloist_manual_override: Arc<AtomicBool>,
     health: Arc<HealthTracker>,
     /// Sender for Soloist bridge messages (used by command handlers to start).
     soloist_tx: mpsc::UnboundedSender<SoloistMsg>,
@@ -219,7 +222,6 @@ impl Daemon {
             }
         }
 
-        let playback_speed = initial_state.playback_speed;
         let state = Arc::new(RwLock::new(initial_state));
 
         let mixer: Box<dyn Mixer> = if config.test_mode {
@@ -227,7 +229,6 @@ impl Daemon {
         } else {
             Self::init_mixer(&config)?
         };
-        mixer.set_playback_speed(playback_speed);
 
         let socket_path = Path::new(&config.socket_path);
         if let Some(parent) = socket_path.parent() {
@@ -295,6 +296,7 @@ impl Daemon {
             crossfade_loaded_for: tokio::sync::Mutex::new(None),
             countdown_notified_for: tokio::sync::Mutex::new(None),
             sleep_cancel: Arc::new(AtomicBool::new(false)),
+            soloist_manual_override: Arc::new(AtomicBool::new(false)),
             health: Arc::new(HealthTracker::new(audio_backend_name)),
             client_auth: tokio::sync::Mutex::new(HashMap::new()),
             internal_req_tx,
@@ -407,18 +409,38 @@ impl Daemon {
             }
         });
 
-        // Auto-start the Soloist playback bridge when a key is persisted, so
-        // Spotify playback keeps working across restarts.
+        // Auto-start the Soloist playback bridge when auto-start is enabled in
+        // persisted state, so Spotify playback keeps working across restarts.
+        // Manual `soloist/start`/`soloist/stop` still override at runtime. A
+        // supervisor retries the initial connection with backoff while
+        // auto-start is still enabled and no manual override has been issued.
         {
             let inner = Arc::clone(&self.inner);
             let mut state = inner.state.write().await;
             state.soloist.key_set = inner.soloist.lock().await.has_key();
+            let auto_start = state.soloist_auto_start;
             drop(state);
-            if inner.soloist.lock().await.has_key() {
+            if auto_start && inner.soloist.lock().await.has_key() {
                 let tx = inner.soloist_tx.clone();
+                let inner2 = Arc::clone(&inner);
                 tokio::spawn(async move {
-                    let mut soloist = inner.soloist.lock().await;
-                    soloist.start(tx).await;
+                    let mut delay = Duration::from_secs(3);
+                    loop {
+                        let should_retry = {
+                            let state = inner2.state.read().await;
+                            state.soloist_auto_start
+                                && !inner2.soloist_manual_override.load(Ordering::SeqCst)
+                                && !state.soloist.running
+                        };
+                        if !should_retry {
+                            break;
+                        }
+                        let mut soloist = inner2.soloist.lock().await;
+                        soloist.start(tx.clone()).await;
+                        drop(soloist);
+                        tokio::time::sleep(delay).await;
+                        delay = (delay * 2).min(Duration::from_secs(30));
+                    }
                 });
             }
         }
@@ -888,9 +910,6 @@ impl Daemon {
                 )
                 .await
             }
-            DaemonReq::OrganizeLibrary { dry_run } => {
-                Self::cmd_organize_library(inner, *dry_run).await
-            }
             DaemonReq::Library { action } => Self::cmd_library(inner, action).await,
             DaemonReq::Search { query } => Self::cmd_search(inner, query).await,
             DaemonReq::GetFavourites => Self::cmd_get_favourites(inner).await,
@@ -954,6 +973,7 @@ impl Daemon {
             DaemonReq::SpotifySetToken { token } => Self::cmd_spotify_set_token(inner, token).await,
             DaemonReq::SpotifyClear => Self::cmd_spotify_clear(inner).await,
             DaemonReq::SpotifyStatus => Self::cmd_spotify_status(inner).await,
+            DaemonReq::SpotifyPlayPause => Self::cmd_spotify_play_pause(inner).await,
             DaemonReq::SpotifySync => Self::cmd_spotify_sync(inner).await,
             DaemonReq::SpotifyPlaylists => Self::cmd_spotify_playlists(inner).await,
             DaemonReq::SpotifyPlaylistTracks { id } => {
@@ -964,6 +984,9 @@ impl Daemon {
                 track_index,
             } => Self::cmd_spotify_resolve(inner, playlist_id, *track_index).await,
             DaemonReq::SoloistSetApiKey { key } => Self::cmd_soloist_set_api_key(inner, key).await,
+            DaemonReq::SoloistSetConfig { auto_start } => {
+                Self::cmd_soloist_set_config(inner, *auto_start).await
+            }
             DaemonReq::SoloistClear => Self::cmd_soloist_clear(inner).await,
             DaemonReq::SoloistStart => Self::cmd_soloist_start(inner).await,
             DaemonReq::SoloistStop => Self::cmd_soloist_stop(inner).await,
@@ -980,9 +1003,6 @@ impl Daemon {
             DaemonReq::Queue { action } => Self::cmd_queue(inner, action).await,
             DaemonReq::SetEqPreset { preset } => Self::cmd_set_eq_preset(inner, *preset).await,
             DaemonReq::SetEqEnabled { enabled } => Self::cmd_set_eq_enabled(inner, *enabled).await,
-            DaemonReq::SetPlaybackSpeed { rate } => {
-                Self::cmd_set_playback_speed(inner, *rate).await
-            }
             DaemonReq::SetReverb { enabled, room_size } => {
                 Self::cmd_set_reverb(inner, *enabled, *room_size).await
             }
@@ -1510,9 +1530,6 @@ impl Daemon {
                     Self::finish_crossfade(inner).await;
                 }
                 let mut state = inner.state.write().await;
-                // The mixer already reports track-time position (wall-clock
-                // progress scaled by the playback speed), so no further
-                // scaling is applied here.
                 state.time_pos = pos;
                 let dur = state.duration;
                 let crossfade = state.crossfade.clone();
@@ -2022,20 +2039,6 @@ impl Daemon {
         })
     }
 
-    async fn cmd_set_playback_speed(
-        inner: &DaemonInner,
-        rate: f64,
-    ) -> Result<DaemonRes, CoreError> {
-        let rate = rate.clamp(0.5, 2.0);
-        inner.mixer.lock().await.set_playback_speed(rate);
-        let mut state = inner.state.write().await;
-        state.playback_speed = rate;
-        drop(state);
-        Self::push_event(inner, DaemonEvent::PlaybackSpeedChanged { rate });
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
     async fn cmd_list_eq_presets(_inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let presets = gtm_core::state::EQ_PRESETS
             .iter()
@@ -2235,26 +2238,6 @@ impl Daemon {
         drop(state);
         Self::push_event(inner, DaemonEvent::ScrobbleConfigChanged { enabled });
         Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_organize_library(
-        inner: &DaemonInner,
-        dry_run: Option<bool>,
-    ) -> Result<DaemonRes, CoreError> {
-        let is_dry_run = dry_run.unwrap_or(true);
-        // TODO: Implement actual library organization
-        // For now, return success with 0 moves
-        if !is_dry_run {
-            warn!("library organize: destructive mode not yet implemented");
-        }
-        Self::push_event(
-            inner,
-            DaemonEvent::LibraryOrganized {
-                moves_succeeded: 0,
-                moves_failed: 0,
-            },
-        );
         Ok(DaemonRes::Ok)
     }
 
@@ -2643,20 +2626,22 @@ impl Daemon {
                 match result {
                     Ok(Some(removed_path)) => {
                         // Drop the deleted track from the daemon's queue so a
-                        // stale entry can't be played back, then let the TUI
-                        // refresh its library and queue live.
+                        // stale entry can't be played back.
                         let mut state = inner.state.write().await;
                         state.queue.retain(|t| t.path != removed_path);
-                        if state
+                        let was_current = state
                             .current_track
                             .as_ref()
-                            .is_some_and(|t| t.path == removed_path)
-                        {
-                            state.current_track = None;
-                            state.status = PlaybackStatus::Stopped;
-                        }
+                            .is_some_and(|t| t.path == removed_path);
                         drop(state);
-                        Self::push_queue_state(inner).await;
+                        if was_current {
+                            // Stop the backend first so no process holds the
+                            // file open, then clear the model (stops the
+                            // mixer, emits TrackEnded).
+                            Self::stop_playback(inner).await;
+                        } else {
+                            Self::push_queue_state(inner).await;
+                        }
                         Self::push_event(
                             inner,
                             DaemonEvent::Custom {
@@ -3144,10 +3129,22 @@ impl Daemon {
     }
 
     async fn cmd_spotify_status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let spotify = inner.spotify.lock().await;
+        let mut spotify = inner.spotify.lock().await;
+        let _ = tokio::time::timeout(Duration::from_secs(5), spotify.refresh_playback()).await;
         Ok(DaemonRes::SpotifyStatusRes {
             status: spotify.status(),
         })
+    }
+
+    /// Toggle play/pause on the active Spotify device (Premium required).
+    async fn cmd_spotify_play_pause(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let mut spotify = inner.spotify.lock().await;
+        match spotify.play_pause().await {
+            Ok(()) => Ok(DaemonRes::SpotifyStatusRes {
+                status: spotify.status(),
+            }),
+            Err(e) => Ok(DaemonRes::Error { message: e }),
+        }
     }
 
     async fn cmd_spotify_sync(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
@@ -3348,8 +3345,24 @@ impl Daemon {
         })
     }
 
+    /// Set the Soloist auto-start flag (persisted in daemon state and applied
+    /// on the next daemon restart).
+    async fn cmd_soloist_set_config(
+        inner: &DaemonInner,
+        auto_start: bool,
+    ) -> Result<DaemonRes, CoreError> {
+        {
+            let mut state = inner.state.write().await;
+            state.soloist_auto_start = auto_start;
+            state.version += 1;
+        }
+        Self::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
     /// Start the Soloist bridge using the persisted key.
     async fn cmd_soloist_start(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        inner.soloist_manual_override.store(true, Ordering::SeqCst);
         let mut soloist = inner.soloist.lock().await;
         soloist.start(inner.soloist_tx.clone()).await;
         let res = Self::cmd_soloist_status(inner).await?;
@@ -3362,6 +3375,7 @@ impl Daemon {
 
     /// Stop the Soloist bridge (does not clear the key).
     async fn cmd_soloist_stop(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        inner.soloist_manual_override.store(true, Ordering::SeqCst);
         let mut soloist = inner.soloist.lock().await;
         soloist.stop().await;
         {

@@ -151,7 +151,6 @@ pub struct DaemonState {
     pub current_track: Option<TrackInfo>,
     pub time_pos: f64,
     pub duration: f64,
-    pub playback_speed: f64,
     pub sleep_timer: Option<u32>,
     pub eq_preset: EqPreset,
     pub eq_enabled: bool,
@@ -164,6 +163,20 @@ pub struct DaemonState {
     /// Soloist playback bridge status (Spotify via the local `soloist` daemon).
     #[serde(default)]
     pub soloist: SoloistStatus,
+    /// Start the Soloist playback bridge automatically at daemon startup when
+    /// a key is persisted. Settable via `soloist/set_config` and the Settings
+    /// TUI row.
+    #[serde(default)]
+    pub soloist_auto_start: bool,
+    /// Active lyrics provider. `lrclib` is the default and the only provider
+    /// implemented; other options are documented in the README/wiki but not
+    /// wired up.
+    #[serde(default = "default_lyrics_provider")]
+    pub lyrics_provider: String,
+}
+
+fn default_lyrics_provider() -> String {
+    "lrclib".to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -460,12 +473,6 @@ pub struct SavedState {
     pub gapless: bool,
     pub dynamic_mode: DynamicModeConfig,
     pub scrobble: ScrobbleConfig,
-    #[serde(default = "default_playback_speed")]
-    pub playback_speed: f64,
-}
-
-fn default_playback_speed() -> f64 {
-    1.0
 }
 
 impl SavedState {
@@ -488,7 +495,6 @@ impl SavedState {
             gapless: state.gapless,
             dynamic_mode: state.dynamic_mode.clone(),
             scrobble: state.scrobble.clone(),
-            playback_speed: state.playback_speed,
         }
     }
 
@@ -510,7 +516,6 @@ impl SavedState {
         state.gapless = self.gapless;
         state.dynamic_mode = self.dynamic_mode.clone();
         state.scrobble = self.scrobble.clone();
-        state.playback_speed = self.playback_speed;
     }
 
     /// Save to a JSON file. Creates parent directories if needed.

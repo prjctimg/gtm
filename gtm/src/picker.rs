@@ -21,10 +21,10 @@ pub enum PickerId {
     About,
     SleepTimer,
     ThemePicker,
-    SoundEffects,
     Help,
     PlaylistSelect,
     EditMetadata,
+    Crossfade,
 }
 
 /// Which list a fuzzy-finder picker searches. `Tab` cycles through these.
@@ -65,6 +65,10 @@ pub struct Picker {
     pub id: PickerId,
     pub query: String,
     pub selected: usize,
+    /// Top row of the visible window (1-row-at-a-time scroll model, PROMPT
+    /// #10).  Only advances when the selection leaves the viewport, so the
+    /// list never recenters or jumps.
+    pub viewport_offset: usize,
     /// List the fuzzy finder filters over (`Tab` cycles it).
     pub source: PickerSource,
 }
@@ -75,6 +79,7 @@ impl Picker {
             id,
             query: String::new(),
             selected: 0,
+            viewport_offset: 0,
             source: PickerSource::default(),
         }
     }

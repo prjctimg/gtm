@@ -12,21 +12,26 @@ use gtmd::daemon::Daemon;
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
-fn test_paths() -> (PathBuf, PathBuf) {
+fn test_paths() -> (PathBuf, PathBuf, PathBuf) {
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut socket = std::env::temp_dir();
     socket.push(format!("gtmd_test_{}_{}.sock", std::process::id(), n));
     let mut db = std::env::temp_dir();
     db.push(format!("gtmd_test_{}_{}.db", std::process::id(), n));
-    (socket, db)
+    let mut config_dir = std::env::temp_dir();
+    config_dir.push(format!("gtmd_test_{}_{}_config", std::process::id(), n));
+    (socket, db, config_dir)
 }
 
 fn test_config() -> DaemonConfig {
-    let (socket, db) = test_paths();
+    let (socket, db, config_dir) = test_paths();
     let args = DaemonArgs {
         socket: Some(socket.to_string_lossy().to_string()),
         library: Some(db.to_string_lossy().to_string()),
-        config: None,
+        // Redirect data/config/cache dirs to a per-test temp location so
+        // library operations never touch the real ~/.local/share/gtm database
+        // and parallel tests can't clobber each other.
+        config: Some(config_dir.to_string_lossy().to_string()),
         verbose: false,
         test_mode: true,
         backend: None,
@@ -40,6 +45,7 @@ fn test_config() -> DaemonConfig {
 fn cleanup(config: &DaemonConfig) {
     let _ = std::fs::remove_file(&config.socket_path);
     let _ = std::fs::remove_file(&config.library_path);
+    let _ = std::fs::remove_dir_all(&config.data_dir);
 }
 
 /// A buffered reader that can handle both JSON response lines and binary
@@ -397,5 +403,125 @@ async fn test_queue_clear() {
     }
 
     handle.abort();
+    cleanup(&config);
+}
+
+/// Write a tiny PCM WAV file so the daemon can decode and "play" it.
+fn create_test_wav(path: &std::path::Path, duration_secs: f64) {
+    let sample_rate: u32 = 44100;
+    let channels: u16 = 2;
+    let bits_per_sample: u16 = 16;
+    let bytes_per_sample = bits_per_sample / 8;
+    let num_samples = (sample_rate as f64 * duration_secs) as u64 * channels as u64;
+    let data_size = num_samples * bytes_per_sample as u64;
+    let file_size = 36 + data_size;
+
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(file_size as u32).to_le_bytes());
+    wav.extend_from_slice(b"WAVE");
+    wav.extend_from_slice(b"fmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&channels.to_le_bytes());
+    wav.extend_from_slice(&sample_rate.to_le_bytes());
+    let byte_rate = sample_rate * channels as u32 * bytes_per_sample as u32;
+    wav.extend_from_slice(&byte_rate.to_le_bytes());
+    wav.extend_from_slice(&(channels * bytes_per_sample).to_le_bytes());
+    wav.extend_from_slice(&bits_per_sample.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&(data_size as u32).to_le_bytes());
+    for i in 0..num_samples {
+        let sample = (i as f64 * 440.0 * 2.0 * std::f64::consts::PI / sample_rate as f64).sin();
+        let val = (sample * 0.3 * i16::MAX as f64) as i16;
+        wav.extend_from_slice(&val.to_le_bytes());
+    }
+    std::fs::write(path, &wav).unwrap();
+}
+
+/// Deleting the currently-playing track must stop playback and drop it from
+/// the queue so neither the row nor the audio survives (pause-then-delete).
+#[tokio::test]
+async fn test_delete_playing_track() {
+    let (handle, config) = daemon_handle().await;
+
+    let audio_dir = config.data_dir.join("audio");
+    std::fs::create_dir_all(&audio_dir).unwrap();
+    let wav_path = audio_dir.join("delete_me.wav");
+    create_test_wav(&wav_path, 0.5);
+
+    let (mut reader, mut writer) = connect(&config.socket_path).await;
+
+    let path = wav_path.to_str().unwrap().to_string();
+
+    // Index the file so it gets a real library row + id.
+    let res = send_req(
+        &mut reader,
+        &mut writer,
+        &DaemonReq::Library {
+            action: gtm_core::ipc::LibraryAction::Scan {
+                path: audio_dir.to_string_lossy().to_string(),
+            },
+        },
+    )
+    .await;
+    let DaemonRes::Tracks { tracks } = res else {
+        panic!("expected Tracks, got {res:?}");
+    };
+    assert_eq!(tracks.len(), 1);
+    let track_id = tracks[0].id;
+    assert!(track_id > 0);
+
+    let res = send_req(
+        &mut reader,
+        &mut writer,
+        &DaemonReq::Queue {
+            action: QueueAction::Add {
+                paths: vec![path.clone()],
+                position: None,
+            },
+        },
+    )
+    .await;
+    assert!(matches!(res, DaemonRes::Ok));
+
+    let res = send_req(
+        &mut reader,
+        &mut writer,
+        &DaemonReq::Play {
+            path,
+            start_pos: 0.0,
+        },
+    )
+    .await;
+    assert!(matches!(res, DaemonRes::Ok));
+
+    let res = send_req(&mut reader, &mut writer, &DaemonReq::GetStatus).await;
+    let DaemonRes::Status { state } = res else {
+        panic!("expected Status, got {res:?}");
+    };
+    assert!(state.current_track.is_some(), "track should be playing");
+    assert_eq!(state.queue.len(), 1);
+
+    let res = send_req(
+        &mut reader,
+        &mut writer,
+        &DaemonReq::Library {
+            action: gtm_core::ipc::LibraryAction::RemoveTrack { id: track_id },
+        },
+    )
+    .await;
+    assert!(matches!(res, DaemonRes::Ok));
+
+    let res = send_req(&mut reader, &mut writer, &DaemonReq::GetStatus).await;
+    let DaemonRes::Status { state } = res else {
+        panic!("expected Status, got {res:?}");
+    };
+    assert_eq!(state.status, gtm_core::state::PlaybackStatus::Stopped);
+    assert!(state.current_track.is_none());
+    assert!(state.queue.is_empty());
+
+    handle.abort();
+    let _ = std::fs::remove_file(&wav_path);
     cleanup(&config);
 }

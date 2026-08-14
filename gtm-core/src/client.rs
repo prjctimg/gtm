@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -49,9 +49,6 @@ pub struct DaemonClient {
     base_pos: Arc<Mutex<f64>>,
     base_time: Arc<Mutex<Option<Instant>>>,
     is_playing: Arc<AtomicBool>,
-    /// Fixed-point (×1000) playback speed used to scale the local position
-    /// estimate. Updated from PlaybackSpeedChanged events and GetStatus.
-    playback_speed: Arc<AtomicU32>,
 }
 
 impl DaemonClient {
@@ -94,7 +91,6 @@ impl DaemonClient {
                         base_pos: Arc::new(Mutex::new(0.0)),
                         base_time: Arc::new(Mutex::new(None)),
                         is_playing: Arc::new(AtomicBool::new(false)),
-                        playback_speed: Arc::new(AtomicU32::new(1000)),
                     };
                     tokio::spawn(worker.run());
 
@@ -198,12 +194,6 @@ impl DaemonClient {
                     *base_time = None;
                     self.is_playing.store(false, Ordering::Release);
                 }
-                DaemonEvent::PlaybackSpeedChanged { rate } => {
-                    self.playback_speed.store(
-                        (rate.clamp(0.5, 2.0) * 1000.0).round() as u32,
-                        Ordering::Release,
-                    );
-                }
                 _ => {}
             }
         }
@@ -215,8 +205,7 @@ impl DaemonClient {
         let base_pos = *self.base_pos.lock().await;
         if self.is_playing.load(Ordering::Acquire) {
             if let Some(base_time) = *self.base_time.lock().await {
-                let speed = self.playback_speed.load(Ordering::Acquire) as f64 / 1000.0;
-                let elapsed = base_time.elapsed().as_secs_f64() * speed;
+                let elapsed = base_time.elapsed().as_secs_f64();
                 return base_pos + elapsed;
             }
         }
@@ -235,10 +224,6 @@ impl DaemonClient {
             None
         };
         self.is_playing.store(is_playing, Ordering::Release);
-        self.playback_speed.store(
-            (state.playback_speed.clamp(0.5, 2.0) * 1000.0).round() as u32,
-            Ordering::Release,
-        );
     }
 
     async fn send_raw(&self, req: DaemonReq) -> Result<DaemonRes> {
@@ -351,14 +336,6 @@ impl DaemonClient {
         .await
     }
 
-    pub async fn set_playback_speed(&self, rate: f64) -> Result<()> {
-        self.playback_speed.store(
-            (rate.clamp(0.5, 2.0) * 1000.0).round() as u32,
-            Ordering::Release,
-        );
-        self.send_ok(DaemonReq::SetPlaybackSpeed { rate }).await
-    }
-
     pub async fn set_loudness_mode(&self, mode: state::LoudnessMode) -> Result<()> {
         self.send_ok(DaemonReq::SetLoudnessMode { mode }).await
     }
@@ -410,10 +387,6 @@ impl DaemonClient {
             min_play_pct,
         })
         .await
-    }
-
-    pub async fn organize_library(&self, dry_run: Option<bool>) -> Result<()> {
-        self.send_ok(DaemonReq::OrganizeLibrary { dry_run }).await
     }
 
     pub async fn set_sleep_timer(&self, minutes: u32) -> Result<()> {
@@ -797,6 +770,12 @@ impl DaemonClient {
         Self::spotify_status_from(res)
     }
 
+    /// Toggle play/pause on the active Spotify device (Premium required).
+    pub async fn spotify_play_pause(&self) -> Result<SpotifyStatus> {
+        let res = self.send_raw(DaemonReq::SpotifyPlayPause).await?;
+        Self::spotify_status_from(res)
+    }
+
     /// Re-sync all playlists from the Spotify Web API.
     pub async fn spotify_sync(&self) -> Result<()> {
         self.send_ok(DaemonReq::SpotifySync).await
@@ -862,6 +841,12 @@ impl DaemonClient {
     pub async fn soloist_clear(&self) -> Result<SoloistStatus> {
         let res = self.send_raw(DaemonReq::SoloistClear).await?;
         Self::soloist_status_from(res)
+    }
+
+    /// Set the Soloist auto-start flag (persisted in daemon state).
+    pub async fn soloist_set_config(&self, auto_start: bool) -> Result<()> {
+        self.send_ok(DaemonReq::SoloistSetConfig { auto_start })
+            .await
     }
 
     /// Start the Soloist bridge using the persisted key.
