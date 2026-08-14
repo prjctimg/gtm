@@ -19,7 +19,7 @@ cd /work
 export RUSTFLAGS="-C target-feature=-crt-static"
 
 apk add --no-cache \
-  ca-certificates curl base cmake musl-dev \
+  ca-certificates curl cmake musl-dev \
   pkgconfig alsa-lib-dev pandoc
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
