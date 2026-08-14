@@ -232,10 +232,8 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
 }
 
 fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let tabs: [(u16, Tab, &str); 2] = [
-        (1, Tab::Library, "Library"),
-        (2, Tab::Settings, "Settings"),
-    ];
+    let tabs: [(u16, Tab, &str); 2] =
+        [(1, Tab::Library, "Library"), (2, Tab::Settings, "Settings")];
     let mut spans: Vec<Span> = Vec::new();
     for (num, tab, label) in tabs {
         let active = app.current_tab == tab;
@@ -299,7 +297,9 @@ fn render_upnext_card(f: &mut ratatui::Frame, area: Rect, app: &mut App, remaini
         let album = u.track.album.clone();
         let has_album = !album.is_empty();
         let has_cover = u.cover.is_some();
-        let source = if u.track.path.contains("/audio/spotify") || u.track.path.starts_with("spotify:") {
+        let source = if u.track.path.contains("/audio/spotify")
+            || u.track.path.starts_with("spotify:")
+        {
             "Spotify"
         } else if u.track.path.contains("/audio/youtube") || u.track.path.starts_with("youtube:") {
             "YouTube"
@@ -412,7 +412,10 @@ fn render_upnext_card(f: &mut ratatui::Frame, area: Rect, app: &mut App, remaini
                 .fg(app.theme.fg_bright)
                 .add_modifier(Modifier::BOLD),
         )),
-        Line::from(Span::styled(format!(" {}", artist), Style::default().fg(app.theme.fg))),
+        Line::from(Span::styled(
+            format!(" {}", artist),
+            Style::default().fg(app.theme.fg),
+        )),
     ];
     if has_album {
         lines.push(Line::from(Span::styled(
@@ -453,7 +456,8 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
 
     // Keep notifications alive through their slide-out animation; fully
     // departed ones are dropped.
-    app.notifications.retain(|n| now < n.expires_at + NOTIFICATION_EXIT_DURATION);
+    app.notifications
+        .retain(|n| now < n.expires_at + NOTIFICATION_EXIT_DURATION);
 
     let max_notif_width = 55u16;
     let padding = 2u16;
@@ -476,7 +480,10 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
         let card_w = 55u16;
         let card_h = 10u16;
         let card_x = area.x + area.width.saturating_sub(card_w + padding);
-        let card_y = area.y.saturating_add(area.height).saturating_sub(card_h + padding);
+        let card_y = area
+            .y
+            .saturating_add(area.height)
+            .saturating_sub(card_h + padding);
         if card_y >= area.y {
             let card_area = Rect {
                 x: card_x,
@@ -2241,7 +2248,11 @@ fn picker_panel<'a>(app: &App, title: &'a str, help: Option<&'a str>) -> Block<'
 fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let sel = app.pickers.top().map_or(0, |o| o.selected);
 
-    let block = picker_panel(app, " Queue ", Some(" [Enter] Play  [d] Remove from Queue  [Esc] Close  j/k Navigate"));
+    let block = picker_panel(
+        app,
+        " Queue ",
+        Some(" [Enter] Play  [d] Remove from Queue  [Esc] Close  j/k Navigate"),
+    );
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2450,7 +2461,10 @@ fn render_yt_search_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let source = app.pickers.top().map_or(PickerSource::All, |o| o.source);
     let title = format!(" Search: {} ", source.label());
-    let help_text = format!(" [Enter] Open  [Tab] Source: {}  [Esc] Close  j/k Navigate", source.label());
+    let help_text = format!(
+        " [Enter] Open  [Tab] Source: {}  [Esc] Close  j/k Navigate",
+        source.label()
+    );
     let block = picker_panel(app, &title, Some(&help_text));
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -3187,7 +3201,11 @@ fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
 fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     if app.sleep_timer_input_mode {
-        let block = picker_panel(app, " Sleep Timer: Manual Input ", Some(" Enter minutes  [Enter] Set  [Esc] Cancel"));
+        let block = picker_panel(
+            app,
+            " Sleep Timer: Manual Input ",
+            Some(" Enter minutes  [Enter] Set  [Esc] Cancel"),
+        );
         let inner = block.inner(area);
         f.render_widget(block, area);
         let label = Paragraph::new(Line::from(vec![
@@ -3396,7 +3414,11 @@ fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
     // Sort by score descending (longer match = better)
     filtered.sort_by_key(|b| std::cmp::Reverse(b.1));
 
-    let block = picker_panel(app, " Commands ", Some(" Type to filter  [Enter] Execute  [Esc] Close  ↑/��� Navigate"));
+    let block = picker_panel(
+        app,
+        " Commands ",
+        Some(" Type to filter  [Enter] Execute  [Esc] Close  ↑/��� Navigate"),
+    );
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -3503,7 +3525,11 @@ fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .top()
         .map_or(0, |o| o.selected.min(presets.len() - 1));
 
-    let block = picker_panel(app, " Equalizer ", Some(" [Enter] Apply  [Esc] Close  j/k Navigate"));
+    let block = picker_panel(
+        app,
+        " Equalizer ",
+        Some(" [Enter] Apply  [Esc] Close  j/k Navigate"),
+    );
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -3578,7 +3604,11 @@ fn eq_preset_preview(eq: EqPreset, app: &App) -> Vec<Span<'static>> {
 }
 
 fn render_sound_effects_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = picker_panel(app, " Sound Effects ", Some(" j/k Navigate  [Enter] Toggle/Edit  [Esc] Close"));
+    let block = picker_panel(
+        app,
+        " Sound Effects ",
+        Some(" j/k Navigate  [Enter] Toggle/Edit  [Esc] Close"),
+    );
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -3809,7 +3839,11 @@ fn scroll_text(text: &str, max_width: usize, frame: usize, is_selected: bool) ->
 // ─── Library Motion Overlays ───
 
 fn render_playlist_select_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = picker_panel(app, " Select Playlist ", Some(" [Enter] Select  [Esc] Cancel"));
+    let block = picker_panel(
+        app,
+        " Select Playlist ",
+        Some(" [Enter] Select  [Esc] Cancel"),
+    );
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -3836,8 +3870,6 @@ fn render_playlist_select_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
 
     let list = List::new(items);
     f.render_widget(list, inner);
-
-    
 }
 
 fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {

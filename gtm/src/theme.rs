@@ -104,9 +104,7 @@ pub fn parse_color(s: &str) -> Result<Color, String> {
 pub fn readable_fg(fg: Color, bg: Color) -> Color {
     fn luminance(c: &Color) -> f64 {
         match c {
-            Color::Rgb(r, g, b) => {
-                0.299 * *r as f64 + 0.587 * *g as f64 + 0.114 * *b as f64
-            }
+            Color::Rgb(r, g, b) => 0.299 * *r as f64 + 0.587 * *g as f64 + 0.114 * *b as f64,
             _ => 128.0,
         }
     }

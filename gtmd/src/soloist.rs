@@ -9,11 +9,11 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use futures::{SinkExt, StreamExt};
 use serde_json::Value;
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::Message;
-use futures::{SinkExt, StreamExt};
 use tracing::{debug, info, warn};
 
 use gtm_core::spotify::SoloistStatus;
@@ -88,8 +88,7 @@ impl SoloistManager {
         if key.is_empty() {
             return Err("empty Soloist API key".into());
         }
-        std::fs::create_dir_all(&self.config_dir)
-            .map_err(|e| format!("create config dir: {e}"))?;
+        std::fs::create_dir_all(&self.config_dir).map_err(|e| format!("create config dir: {e}"))?;
         let path = self.key_path();
         std::fs::write(&path, &key).map_err(|e| format!("write key file: {e}"))?;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(KEY_PERMS))
@@ -123,9 +122,8 @@ impl SoloistManager {
                 match self.key.clone() {
                     Some(k) => k,
                     None => {
-                        let _ = msg_tx.send(SoloistMsg::Failed(
-                            "no soloist API key configured".into(),
-                        ));
+                        let _ =
+                            msg_tx.send(SoloistMsg::Failed("no soloist API key configured".into()));
                         return;
                     }
                 }
@@ -172,7 +170,11 @@ impl SoloistManager {
                 Some(ep) => break ep,
                 None => {
                     // Early exit (e.g. expired build, exit code 10)?
-                    if let Some(status) = self.child.as_mut().and_then(|c| c.try_wait().ok()).flatten()
+                    if let Some(status) = self
+                        .child
+                        .as_mut()
+                        .and_then(|c| c.try_wait().ok())
+                        .flatten()
                     {
                         let _ = msg_tx.send(SoloistMsg::Failed(format!(
                             "soloist exited during startup with status {status}; \
@@ -218,9 +220,7 @@ impl SoloistManager {
         let msg_tx_writer = msg_tx.clone();
         tokio::spawn(async move {
             Self::writer_loop(write, ws_rx).await;
-            let _ = msg_tx_writer.send(SoloistMsg::Disconnected(
-                "soloist WebSocket closed".into(),
-            ));
+            let _ = msg_tx_writer.send(SoloistMsg::Disconnected("soloist WebSocket closed".into()));
         });
 
         info!("soloist playback bridge started at {ws_url}");
@@ -259,20 +259,13 @@ impl SoloistManager {
     fn parse_message(text: &str) -> Option<SoloistMsg> {
         let parsed: Value = serde_json::from_str(text).ok()?;
         let name = parsed.get("type")?.as_str()?.to_string();
-        Some(SoloistMsg::Event {
-            name,
-            data: parsed,
-        })
+        Some(SoloistMsg::Event { name, data: parsed })
     }
 
     async fn reader_loop<R>(mut read: R, msg_tx: mpsc::UnboundedSender<SoloistMsg>)
     where
-        R: futures::StreamExt<
-            Item = Result<
-                Message,
-                tokio_tungstenite::tungstenite::Error,
-            >,
-        > + Unpin,
+        R: futures::StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>>
+            + Unpin,
     {
         while let Some(item) = read.next().await {
             match item {
@@ -300,10 +293,8 @@ impl SoloistManager {
         let _ = msg_tx.send(SoloistMsg::Disconnected("soloist connection closed".into()));
     }
 
-    async fn writer_loop<S>(
-        mut write: S,
-        mut ws_rx: mpsc::UnboundedReceiver<String>,
-    ) where
+    async fn writer_loop<S>(mut write: S, mut ws_rx: mpsc::UnboundedReceiver<String>)
+    where
         S: futures::Sink<Message, Error = tokio_tungstenite::tungstenite::Error> + Unpin,
     {
         while let Some(json) = ws_rx.recv().await {

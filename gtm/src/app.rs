@@ -702,7 +702,11 @@ impl App {
         } else {
             ""
         };
-        self.notify_titled("Theme", format!("Theme: {}{}", name, light), NotificationKind::Info);
+        self.notify_titled(
+            "Theme",
+            format!("Theme: {}{}", name, light),
+            NotificationKind::Info,
+        );
     }
 
     /// Toggle crossfade on/off and persist.
@@ -1732,9 +1736,9 @@ impl App {
 
     fn settings_options_for_category(&self) -> usize {
         match self.settings_category {
-            0 => 3, // Audio: Master Volume, Volume, Mute
-            1 => 8, // YouTube
-            2 => 4, // Playback: Repeat, Shuffle, Crossfade, Easing
+            0 => 3,  // Audio: Master Volume, Volume, Mute
+            1 => 8,  // YouTube
+            2 => 4,  // Playback: Repeat, Shuffle, Crossfade, Easing
             3 => 7, // System: Theme, Transparent BG, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer Preset
             4 => 11, // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Soloist, Link Soloist, Start, Stop, Activate
             _ => 0,
@@ -2009,11 +2013,7 @@ impl App {
                     } else {
                         crate::app::NotificationKind::Error
                     };
-                    let _ = ipc.send(IpcResult::Notification(
-                        "YouTube".to_string(),
-                        msg,
-                        kind,
-                    ));
+                    let _ = ipc.send(IpcResult::Notification("YouTube".to_string(), msg, kind));
                 });
             }
             TuiCommand::YtResolve(u) => {
@@ -2372,7 +2372,7 @@ impl App {
                     self.search_query.pop();
                 }
                 _ => {}
-            }
+            },
             InputMode::Normal => {
                 // If a delete confirmation is pending, intercept Enter/Esc
                 if self.pending_delete.is_some() {
@@ -2591,7 +2591,11 @@ impl App {
                                         TuiCommand::RemoveFavourite(track_id)
                                     })
                                     .await;
-                                self.notify_titled("Library", "Favourite toggled", NotificationKind::Info);
+                                self.notify_titled(
+                                    "Library",
+                                    "Favourite toggled",
+                                    NotificationKind::Info,
+                                );
                             }
                             return true;
                         }
@@ -2948,10 +2952,13 @@ impl App {
                                                 let c = self.client.clone();
                                                 let ipc_tx2 = self.ipc_tx.clone();
                                                 tokio::spawn(async move {
-                                                    match c.spotify_resolve(&playlist_id, track_index).await
+                                                    match c
+                                                        .spotify_resolve(&playlist_id, track_index)
+                                                        .await
                                                     {
                                                         Ok(()) => {
-                                                            let _ = ipc_tx2.send(IpcResult::Notification(
+                                                            let _ = ipc_tx2
+                                                                .send(IpcResult::Notification(
                                                                 "Spotify".to_string(),
                                                                 "Spotify track resolved & queued"
                                                                     .to_string(),
@@ -2959,9 +2966,11 @@ impl App {
                                                             ));
                                                         }
                                                         Err(e) => {
-                                                            let _ = ipc_tx2.send(IpcResult::Error(
-                                                                format!("Spotify resolve failed: {e}"),
-                                                            ));
+                                                            let _ =
+                                                                ipc_tx2
+                                                                    .send(IpcResult::Error(format!(
+                                                                    "Spotify resolve failed: {e}"
+                                                                )));
                                                         }
                                                     }
                                                 });
@@ -3509,7 +3518,11 @@ impl App {
                             }
                             KeyCode::Char('S') => {
                                 // Sync covers for tracks missing cover art
-                                self.notify_titled("Library", "Syncing covers...", NotificationKind::Info);
+                                self.notify_titled(
+                                    "Library",
+                                    "Syncing covers...",
+                                    NotificationKind::Info,
+                                );
                                 spawn_sync_and_wait(
                                     self.client.clone(),
                                     gtm_core::ipc::SyncKind::Covers,
@@ -3597,7 +3610,11 @@ impl App {
                 KeyCode::Char('c') => {
                     self.sleep_timer_remaining = None;
                     self.send_high(TuiCommand::CancelSleepTimer);
-                    self.notify_titled("Sleep Timer", "Sleep timer cancelled", NotificationKind::Info);
+                    self.notify_titled(
+                        "Sleep Timer",
+                        "Sleep timer cancelled",
+                        NotificationKind::Info,
+                    );
                     return;
                 }
                 KeyCode::Up | KeyCode::Char('j') => {
@@ -3869,14 +3886,16 @@ impl App {
                                 );
                             } else {
                                 // Check if we're in Soloist mode (settings category 4, option 7)
-                                let is_soloist = self.settings_category == 4 && self.settings_option == 7;
+                                let is_soloist =
+                                    self.settings_category == 4 && self.settings_option == 7;
                                 let c = self.client.clone();
                                 let ipc_tx = self.ipc_tx.clone();
                                 tokio::spawn(async move {
                                     if is_soloist {
                                         match c.soloist_set_api_key(&token).await {
                                             Ok(status) => {
-                                                let _ = ipc_tx.send(IpcResult::SoloistStatus(status));
+                                                let _ =
+                                                    ipc_tx.send(IpcResult::SoloistStatus(status));
                                                 let _ = ipc_tx.send(IpcResult::Notification(
                                                     "Soloist".to_string(),
                                                     "Soloist API key saved".to_string(),
@@ -3892,7 +3911,8 @@ impl App {
                                     } else {
                                         match c.spotify_set_token(&token).await {
                                             Ok(status) => {
-                                                let _ = ipc_tx.send(IpcResult::SpotifyStatus(status));
+                                                let _ =
+                                                    ipc_tx.send(IpcResult::SpotifyStatus(status));
                                                 let _ = ipc_tx.send(IpcResult::Notification(
                                                     "Spotify".to_string(),
                                                     "Spotify account linked".to_string(),
@@ -4087,12 +4107,20 @@ impl App {
                                         }
                                         let tx = self.cmd_tx();
                                         let _ = tx.send(TuiCommand::AddFavourite(track_id)).await;
-                                        self.notify_titled("Library", "Favourite toggled", NotificationKind::Info);
+                                        self.notify_titled(
+                                            "Library",
+                                            "Favourite toggled",
+                                            NotificationKind::Info,
+                                        );
                                     }
                                 } else if action == "clear queue" {
                                     let tx = self.cmd_tx();
                                     let _ = tx.send(TuiCommand::QueueClear).await;
-                                    self.notify_titled("Queue", "Queue cleared", NotificationKind::Info);
+                                    self.notify_titled(
+                                        "Queue",
+                                        "Queue cleared",
+                                        NotificationKind::Info,
+                                    );
                                 } else if action == "prev tab" {
                                     self.current_tab = match self.current_tab {
                                         Tab::Library => Tab::Settings,
@@ -4290,7 +4318,11 @@ impl App {
                             // top of the palette; leave it open.  Otherwise the
                             // palette closes (T14: `open` + `close_top` used to
                             // cancel sub-pickers immediately).
-                            if self.pickers.top().is_some_and(|o| o.id == PickerId::CommandPalette) {
+                            if self
+                                .pickers
+                                .top()
+                                .is_some_and(|o| o.id == PickerId::CommandPalette)
+                            {
                                 self.pickers.close_top();
                             }
                         }
@@ -4313,7 +4345,11 @@ impl App {
                             let idx = top.selected;
                             self.apply_theme_index(idx);
                             let name = &self.themes[idx].name;
-                            let light = if self.themes[idx].light { " (light)" } else { "" };
+                            let light = if self.themes[idx].light {
+                                " (light)"
+                            } else {
+                                ""
+                            };
                             self.notify_titled(
                                 "Theme",
                                 format!("Theme: {}{}", name, light),

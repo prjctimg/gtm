@@ -72,14 +72,14 @@ use gtm_audio::{AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
 use gtm_core::ipc::{
     DaemonEvent, DaemonReq, DaemonRes, QueueAction, SyncKind, WireReq, PROTOCOL_VERSION,
 };
+use gtm_core::spotify::{SoloistStatus, SpotifyTrack};
 use gtm_core::state::{
     DaemonState, EqPreset, PlaybackStatus, RepeatMode, ReverbConfig, SavedState,
 };
-use gtm_core::spotify::{SoloistStatus, SpotifyTrack};
-use serde_json::Value;
 use gtm_core::track::TrackInfo;
 use gtm_core::wire;
 use gtm_core::CoreError;
+use serde_json::Value;
 
 use crate::config::DaemonConfig;
 use crate::cover::CoverCache;
@@ -1706,12 +1706,12 @@ impl Daemon {
                 return Self::soloist_control(inner, "pause", vec![])
                     .await
                     .map(|_| DaemonRes::Ok)
-                    .map_err(|e| CoreError::Daemon(e));
+                    .map_err(CoreError::Daemon);
             } else {
                 return Self::soloist_control(inner, "play", vec![])
                     .await
                     .map(|_| DaemonRes::Ok)
-                    .map_err(|e| CoreError::Daemon(e));
+                    .map_err(CoreError::Daemon);
             }
         }
 
@@ -1779,7 +1779,7 @@ impl Daemon {
             return Self::soloist_control(inner, "pause", vec![])
                 .await
                 .map(|_| DaemonRes::Ok)
-                .map_err(|e| CoreError::Daemon(e));
+                .map_err(CoreError::Daemon);
         }
 
         let pos = {
@@ -1823,7 +1823,7 @@ impl Daemon {
             return Self::soloist_control(inner, "skip_next", vec![])
                 .await
                 .map(|_| DaemonRes::Ok)
-                .map_err(|e| CoreError::Daemon(e));
+                .map_err(CoreError::Daemon);
         }
 
         // Mid-crossfade navigation: the mixer is already fading the standby
@@ -1879,7 +1879,7 @@ impl Daemon {
             return Self::soloist_control(inner, "skip_prev", vec![])
                 .await
                 .map(|_| DaemonRes::Ok)
-                .map_err(|e| CoreError::Daemon(e));
+                .map_err(CoreError::Daemon);
         }
 
         // Cancel any in-flight crossfade by promoting the standby so the
@@ -1934,10 +1934,14 @@ impl Daemon {
         // If Soloist is the active playback backend, forward the command.
         if Self::soloist_ready(inner).await {
             let pos_ms = (pos * 1000.0).round() as u64;
-            return Self::soloist_control(inner, "seek", vec![("position_ms", Value::from(pos_ms))])
-                .await
-                .map(|_| DaemonRes::Ok)
-                .map_err(|e| CoreError::Daemon(e));
+            return Self::soloist_control(
+                inner,
+                "seek",
+                vec![("position_ms", Value::from(pos_ms))],
+            )
+            .await
+            .map(|_| DaemonRes::Ok)
+            .map_err(CoreError::Daemon);
         }
 
         let state = inner.state.read().await;
@@ -1977,10 +1981,14 @@ impl Daemon {
     async fn cmd_set_volume(inner: &DaemonInner, volume: u8) -> Result<DaemonRes, CoreError> {
         // If Soloist is the active playback backend, forward the command.
         if Self::soloist_ready(inner).await {
-            return Self::soloist_control(inner, "set_volume", vec![("volume", Value::from(volume))])
-                .await
-                .map(|_| DaemonRes::Ok)
-                .map_err(|e| CoreError::Daemon(e));
+            return Self::soloist_control(
+                inner,
+                "set_volume",
+                vec![("volume", Value::from(volume))],
+            )
+            .await
+            .map(|_| DaemonRes::Ok)
+            .map_err(CoreError::Daemon);
         }
 
         inner.mixer.lock().await.set_volume(volume)?;
@@ -2042,10 +2050,14 @@ impl Daemon {
             let state = inner.state.read().await;
             let enabled = !state.shuffle;
             drop(state);
-            return Self::soloist_control(inner, "set_shuffle", vec![("enabled", Value::Bool(enabled))])
-                .await
-                .map(|_| DaemonRes::Ok)
-                .map_err(|e| CoreError::Daemon(e));
+            return Self::soloist_control(
+                inner,
+                "set_shuffle",
+                vec![("enabled", Value::Bool(enabled))],
+            )
+            .await
+            .map(|_| DaemonRes::Ok)
+            .map_err(CoreError::Daemon);
         }
 
         let mut state = inner.state.write().await;
@@ -2069,8 +2081,14 @@ impl Daemon {
                 RepeatMode::All => (true, false),
                 RepeatMode::One => (false, true),
             };
-            let ctx_json = SoloistManager::cmd("set_repeat_context", vec![("enabled", Value::Bool(ctx_enabled))]);
-            let track_json = SoloistManager::cmd("set_repeat_track", vec![("enabled", Value::Bool(track_enabled))]);
+            let ctx_json = SoloistManager::cmd(
+                "set_repeat_context",
+                vec![("enabled", Value::Bool(ctx_enabled))],
+            );
+            let track_json = SoloistManager::cmd(
+                "set_repeat_track",
+                vec![("enabled", Value::Bool(track_enabled))],
+            );
             inner.soloist.lock().await.send(ctx_json).await;
             inner.soloist.lock().await.send(track_json).await;
             return Ok(DaemonRes::Ok);
@@ -3299,7 +3317,7 @@ impl Daemon {
         key: &str,
     ) -> Result<DaemonRes, CoreError> {
         let mut soloist = inner.soloist.lock().await;
-        soloist.save_key(key).map_err(|e| CoreError::Daemon(e))?;
+        soloist.save_key(key).map_err(CoreError::Daemon)?;
         soloist.start(inner.soloist_tx.clone()).await;
         let res = Self::cmd_soloist_status(inner).await?;
         let status = match res {
@@ -3325,7 +3343,9 @@ impl Daemon {
                 status: SoloistStatus::default(),
             },
         );
-        Ok(DaemonRes::SoloistStatusRes { status: SoloistStatus::default() })
+        Ok(DaemonRes::SoloistStatusRes {
+            status: SoloistStatus::default(),
+        })
     }
 
     /// Start the Soloist bridge using the persisted key.
@@ -3360,7 +3380,9 @@ impl Daemon {
         };
         Self::push_event(
             inner,
-            DaemonEvent::SoloistStatusChanged { status: status.clone() },
+            DaemonEvent::SoloistStatusChanged {
+                status: status.clone(),
+            },
         );
         Ok(DaemonRes::SoloistStatusRes { status })
     }
@@ -3368,7 +3390,9 @@ impl Daemon {
     /// Query the current Soloist bridge status.
     async fn cmd_soloist_status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let state = inner.state.read().await;
-        Ok(DaemonRes::SoloistStatusRes { status: state.soloist.clone() })
+        Ok(DaemonRes::SoloistStatusRes {
+            status: state.soloist.clone(),
+        })
     }
 
     /// Send a `play` command to Soloist with an optional Spotify URI.
@@ -3419,7 +3443,10 @@ impl Daemon {
     async fn apply_soloist_event(inner: &DaemonInner, name: &str, data: &Value) {
         match name {
             "auth_state" => {
-                let logged_in = data.get("logged_in").and_then(Value::as_bool).unwrap_or(false);
+                let logged_in = data
+                    .get("logged_in")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
                 let device_name = data
                     .get("device_name")
                     .and_then(Value::as_str)
@@ -3431,10 +3458,7 @@ impl Daemon {
                 }
                 let st = state.soloist.clone();
                 drop(state);
-                Self::push_event(
-                    inner,
-                    DaemonEvent::SoloistStatusChanged { status: st },
-                );
+                Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
                 // On successful auth, request full playback snapshot.
                 if logged_in {
                     let _ = Self::soloist_send(inner, "get_state").await;
@@ -3461,12 +3485,7 @@ impl Daemon {
 
                 let mut state = inner.state.write().await;
                 let was_playing = state.soloist.playing;
-                // Stop local mixer if Soloist starts playing.
-                if status == "playing" || status == "buffering" {
-                    state.soloist.playing = true;
-                } else {
-                    state.soloist.playing = false;
-                }
+                state.soloist.playing = status == "playing" || status == "buffering";
                 state.volume = volume;
                 state.shuffle = shuffle;
                 state.repeat = match repeat {
@@ -3476,24 +3495,22 @@ impl Daemon {
                 };
                 state.time_pos = pos_ms as f64 / 1000.0;
                 state.version += 1;
-                let track_opt = item.and_then(|it| Self::soloist_track_info(it));
+                let track_opt = item.and_then(Self::soloist_track_info);
                 if let Some(st_track) = track_opt {
                     let track = Self::soloist_to_track_info(&st_track);
                     state.soloist.track = Some(st_track.clone());
                     state.current_track = Some(track);
-                    state.duration = st_track.duration_ms.map(|d| d as f64 / 1000.0).unwrap_or(0.0);
+                    state.duration = st_track
+                        .duration_ms
+                        .map(|d| d as f64 / 1000.0)
+                        .unwrap_or(0.0);
                 }
                 let st = state.soloist.clone();
                 drop(state);
-                Self::push_event(
-                    inner,
-                    DaemonEvent::SoloistStatusChanged { status: st },
-                );
+                Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
                 // Stop local mixer if Soloist starts playing (do this after dropping state lock).
-                if status == "playing" || status == "buffering" {
-                    if !was_playing {
-                        let _ = inner.mixer.lock().await.stop();
-                    }
+                if (status == "playing" || status == "buffering") && !was_playing {
+                    let _ = inner.mixer.lock().await.stop();
                 }
                 if status == "playing" {
                     let s = inner.state.read().await;
@@ -3518,28 +3535,31 @@ impl Daemon {
             }
             "track_changed" => {
                 let item = data.get("item");
-                if let Some(st_track) = item.and_then(|it| Self::soloist_track_info(it)) {
+                if let Some(st_track) = item.and_then(Self::soloist_track_info) {
                     let track = Self::soloist_to_track_info(&st_track);
                     let mut state = inner.state.write().await;
                     state.soloist.track = Some(st_track.clone());
                     state.current_track = Some(track.clone());
-                    state.duration = st_track.duration_ms.map(|d| d as f64 / 1000.0).unwrap_or(0.0);
+                    state.duration = st_track
+                        .duration_ms
+                        .map(|d| d as f64 / 1000.0)
+                        .unwrap_or(0.0);
                     state.time_pos = 0.0;
                     state.soloist.playing = true;
                     state.version += 1;
                     let st = state.soloist.clone();
                     drop(state);
-                    Self::push_event(
-                        inner,
-                        DaemonEvent::SoloistStatusChanged { status: st },
-                    );
+                    Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
                     Self::push_event(
                         inner,
                         DaemonEvent::PlaybackStarted {
                             track,
                             auto_advanced: false,
                             time_pos: 0.0,
-                            duration: st_track.duration_ms.map(|d| d as f64 / 1000.0).unwrap_or(0.0),
+                            duration: st_track
+                                .duration_ms
+                                .map(|d| d as f64 / 1000.0)
+                                .unwrap_or(0.0),
                         },
                     );
                 }
@@ -3553,19 +3573,13 @@ impl Daemon {
                     let st = state.soloist.clone();
                     drop(state);
                     let _ = inner.mixer.lock().await.stop();
-                    Self::push_event(
-                        inner,
-                        DaemonEvent::SoloistStatusChanged { status: st },
-                    );
+                    Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
                 } else if status == "paused" {
                     state.soloist.playing = false;
                     state.version += 1;
                     let st = state.soloist.clone();
                     drop(state);
-                    Self::push_event(
-                        inner,
-                        DaemonEvent::SoloistStatusChanged { status: st },
-                    );
+                    Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
                     let s = inner.state.read().await;
                     Self::push_event(
                         inner,
@@ -3587,7 +3601,9 @@ impl Daemon {
                 drop(state);
                 Self::push_event(
                     inner,
-                    DaemonEvent::PositionChanged { time_pos: pos_ms as f64 / 1000.0 },
+                    DaemonEvent::PositionChanged {
+                        time_pos: pos_ms as f64 / 1000.0,
+                    },
                 );
             }
             "volume_changed" => {
@@ -3596,10 +3612,7 @@ impl Daemon {
                 state.volume = volume;
                 state.version += 1;
                 drop(state);
-                Self::push_event(
-                    inner,
-                    DaemonEvent::VolumeChanged { volume },
-                );
+                Self::push_event(inner, DaemonEvent::VolumeChanged { volume });
             }
             "device_changed" => {
                 let device_name = data
@@ -3610,10 +3623,7 @@ impl Daemon {
                 state.soloist.device = device_name;
                 let st = state.soloist.clone();
                 drop(state);
-                Self::push_event(
-                    inner,
-                    DaemonEvent::SoloistStatusChanged { status: st },
-                );
+                Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
             }
             "options_changed" => {
                 let options = data.get("options");
@@ -3636,29 +3646,20 @@ impl Daemon {
                 state.version += 1;
                 let st = state.soloist.clone();
                 drop(state);
-                Self::push_event(
-                    inner,
-                    DaemonEvent::SoloistStatusChanged { status: st },
-                );
-                Self::push_event(
-                    inner,
-                    DaemonEvent::ShuffleChanged { enabled: shuffle },
-                );
-                Self::push_event(
-                    inner,
-                    DaemonEvent::RepeatModeChanged { mode: new_repeat },
-                );
+                Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
+                Self::push_event(inner, DaemonEvent::ShuffleChanged { enabled: shuffle });
+                Self::push_event(inner, DaemonEvent::RepeatModeChanged { mode: new_repeat });
             }
             "error" => {
-                let msg = data.get("message").and_then(Value::as_str).unwrap_or("soloist error");
+                let msg = data
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("soloist error");
                 let mut state = inner.state.write().await;
                 state.soloist.error = Some(msg.into());
                 let st = state.soloist.clone();
                 drop(state);
-                Self::push_event(
-                    inner,
-                    DaemonEvent::SoloistStatusChanged { status: st },
-                );
+                Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
             }
             _ => {}
         }
@@ -3739,7 +3740,10 @@ impl Daemon {
 
     async fn handle_soloist_msg(inner: &DaemonInner, msg: SoloistMsg) {
         match msg {
-            SoloistMsg::Connected { logged_in, device_name } => {
+            SoloistMsg::Connected {
+                logged_in,
+                device_name,
+            } => {
                 let mut state = inner.state.write().await;
                 state.soloist.running = true;
                 state.soloist.connected = true;
@@ -3748,10 +3752,7 @@ impl Daemon {
                 state.version += 1;
                 let st = state.soloist.clone();
                 drop(state);
-                Self::push_event(
-                    inner,
-                    DaemonEvent::SoloistStatusChanged { status: st },
-                );
+                Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
                 if logged_in {
                     let _ = Self::soloist_send(inner, "get_state").await;
                 }
@@ -3769,10 +3770,7 @@ impl Daemon {
                 state.version += 1;
                 let st = state.soloist.clone();
                 drop(state);
-                Self::push_event(
-                    inner,
-                    DaemonEvent::SoloistStatusChanged { status: st },
-                );
+                Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
             }
             SoloistMsg::Event { name, data } => {
                 Self::apply_soloist_event(inner, &name, &data).await;
@@ -3785,10 +3783,7 @@ impl Daemon {
                 state.version += 1;
                 let st = state.soloist.clone();
                 drop(state);
-                Self::push_event(
-                    inner,
-                    DaemonEvent::SoloistStatusChanged { status: st },
-                );
+                Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
             }
         }
     }

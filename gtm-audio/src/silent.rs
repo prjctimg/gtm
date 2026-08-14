@@ -4,7 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use std::sync::Mutex;
 
 use rodio::Source;
@@ -166,6 +166,7 @@ impl Mixer for NullMixer {
     fn set_reverb(&self, _config: &ReverbConfig) {}
 
     fn set_playback_speed(&self, speed: f64) {
-        self.playback_speed.store(speed_to_fixed(speed), Ordering::Relaxed);
+        self.playback_speed
+            .store(speed_to_fixed(speed), Ordering::Relaxed);
     }
 }

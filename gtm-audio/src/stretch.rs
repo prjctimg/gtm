@@ -224,8 +224,7 @@ where
         let ch = self.channels;
         let window = &self.window;
         let input = &self.input;
-        for f in 0..ANALYSIS_N {
-            let w = window[f];
+        for (f, &w) in window.iter().enumerate().take(ANALYSIS_N) {
             let src = (rel + f) * ch;
             let dst = f * ch;
             for c in 0..ch {

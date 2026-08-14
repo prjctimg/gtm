@@ -161,7 +161,9 @@ impl Library {
         allow_delete_files: bool,
     ) -> Result<Option<String>, String> {
         if !allow_delete_files {
-            return Err("file deletion is disabled by the daemon (allow_delete_files=false)".into());
+            return Err(
+                "file deletion is disabled by the daemon (allow_delete_files=false)".into(),
+            );
         }
         let track = self.get_track(id).map_err(|e| format!("lookup: {e}"))?;
         let Some(track) = track else {

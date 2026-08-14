@@ -1026,9 +1026,7 @@ impl DaemonRes {
                 Some(serde_json::json!({ "playlists": playlists }))
             }
             DaemonRes::SpotifyTracksRes { tracks } => Some(serde_json::json!({ "tracks": tracks })),
-            DaemonRes::SoloistStatusRes { status } => {
-                Some(serde_json::json!({ "status": status }))
-            }
+            DaemonRes::SoloistStatusRes { status } => Some(serde_json::json!({ "status": status })),
             DaemonRes::CoverArt { data } => Some(serde_json::json!({ "data": data })),
             DaemonRes::SyncStatus {
                 running,

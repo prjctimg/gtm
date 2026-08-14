@@ -199,8 +199,10 @@ impl DaemonClient {
                     self.is_playing.store(false, Ordering::Release);
                 }
                 DaemonEvent::PlaybackSpeedChanged { rate } => {
-                    self.playback_speed
-                        .store((rate.clamp(0.5, 2.0) * 1000.0).round() as u32, Ordering::Release);
+                    self.playback_speed.store(
+                        (rate.clamp(0.5, 2.0) * 1000.0).round() as u32,
+                        Ordering::Release,
+                    );
                 }
                 _ => {}
             }
@@ -233,8 +235,10 @@ impl DaemonClient {
             None
         };
         self.is_playing.store(is_playing, Ordering::Release);
-        self.playback_speed
-            .store((state.playback_speed.clamp(0.5, 2.0) * 1000.0).round() as u32, Ordering::Release);
+        self.playback_speed.store(
+            (state.playback_speed.clamp(0.5, 2.0) * 1000.0).round() as u32,
+            Ordering::Release,
+        );
     }
 
     async fn send_raw(&self, req: DaemonReq) -> Result<DaemonRes> {
@@ -348,8 +352,10 @@ impl DaemonClient {
     }
 
     pub async fn set_playback_speed(&self, rate: f64) -> Result<()> {
-        self.playback_speed
-            .store((rate.clamp(0.5, 2.0) * 1000.0).round() as u32, Ordering::Release);
+        self.playback_speed.store(
+            (rate.clamp(0.5, 2.0) * 1000.0).round() as u32,
+            Ordering::Release,
+        );
         self.send_ok(DaemonReq::SetPlaybackSpeed { rate }).await
     }
 
