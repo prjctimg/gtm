@@ -28,7 +28,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 
 cargo build --release
 
-./scripts/manpages.sh artifacts
+./scripts/build/manpages.sh artifacts
 cargo run --release --bin release-gen completions artifacts
 
 # ── Complete per-target archive ──
@@ -76,7 +76,7 @@ cp dist/gtm.desktop stage/usr/share/applications/
 cp assets/gtm.svg stage/usr/share/icons/hicolor/scalable/apps/
 cp LICENSE stage/usr/share/licenses/gtm/
 
-bash /work/scripts/alpine-apk.sh "$version" "$arch" stage \
+bash /work/scripts/build/alpine-apk.sh "$version" "$arch" stage \
   "release-assets/gtm-${version}-r0-${arch}.apk"
 
 echo "musl build complete: $(ls -1 release-assets)"
