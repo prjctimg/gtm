@@ -20,7 +20,8 @@ export RUSTFLAGS="-C target-feature=-crt-static"
 
 apk add --no-cache \
   ca-certificates curl cmake musl-dev \
-  pkgconfig alsa-lib-dev pandoc
+  pkgconfig alsa-lib-dev pandoc \
+  gcc g++ binutils build-base
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
 export PATH="$HOME/.cargo/bin:$PATH"
