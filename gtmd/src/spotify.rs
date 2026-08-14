@@ -221,6 +221,7 @@ fn track_from_playable(item: &PlayableItem) -> Option<SpotifyTrack> {
                 .join(", "),
             album: Some(t.album.name.clone()),
             duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
+            uri: t.id.as_ref().map(|id| format!("spotify:track:{id}")),
         }),
         PlayableItem::Episode(_) | PlayableItem::Unknown(_) => None,
     }

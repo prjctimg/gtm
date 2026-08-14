@@ -4,7 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
+use crate::spotify::{SoloistStatus, SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::state::{self, DaemonState, EqPreset, RepeatMode, YTFilter};
 use crate::track::{LrcData, Playlist, StreamInfo, TrackInfo, YTSearchResult};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -281,6 +281,17 @@ pub enum DaemonReq {
         playlist_id: String,
         track_index: usize,
     },
+    SoloistSetApiKey {
+        key: String,
+    },
+    SoloistClear,
+    SoloistStart,
+    SoloistStop,
+    SoloistStatus,
+    SoloistPlay {
+        uri: String,
+    },
+    SoloistActivate,
     SetSleepTimer {
         minutes: u32,
     },
@@ -348,6 +359,13 @@ impl DaemonReq {
             DaemonReq::SpotifyPlaylists => "spotify_playlists",
             DaemonReq::SpotifyPlaylistTracks { .. } => "spotify_playlist_tracks",
             DaemonReq::SpotifyResolve { .. } => "spotify_resolve",
+            DaemonReq::SoloistSetApiKey { .. } => "soloist_set_api_key",
+            DaemonReq::SoloistClear => "soloist_clear",
+            DaemonReq::SoloistStart => "soloist_start",
+            DaemonReq::SoloistStop => "soloist_stop",
+            DaemonReq::SoloistStatus => "soloist_status",
+            DaemonReq::SoloistPlay { .. } => "soloist_play",
+            DaemonReq::SoloistActivate => "soloist_activate",
             DaemonReq::SetSleepTimer { .. } => "set_sleep_timer",
             DaemonReq::CancelSleepTimer => "cancel_sleep_timer",
             DaemonReq::GetStatus => "get_status",
@@ -646,6 +664,27 @@ impl DaemonReq {
                     track_index: x.track_index,
                 }
             }
+            "soloist_set_api_key" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    key: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SoloistSetApiKey { key: x.key }
+            }
+            "soloist_clear" => DaemonReq::SoloistClear,
+            "soloist_start" => DaemonReq::SoloistStart,
+            "soloist_stop" => DaemonReq::SoloistStop,
+            "soloist_status" => DaemonReq::SoloistStatus,
+            "soloist_play" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    uri: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SoloistPlay { uri: x.uri }
+            }
+            "soloist_activate" => DaemonReq::SoloistActivate,
             "set_sleep_timer" => {
                 #[derive(Deserialize)]
                 struct Params {
@@ -889,6 +928,9 @@ pub enum DaemonEvent {
         name: String,
         data: HashMap<String, String>,
     },
+    /// Soloist playback bridge status changed (running/connected/auth/track).
+    #[serde(rename = "soloist_status_changed")]
+    SoloistStatusChanged { status: SoloistStatus },
     #[serde(rename = "heartbeat")]
     Heartbeat,
 }
@@ -930,6 +972,9 @@ pub enum DaemonRes {
     },
     SpotifyTracksRes {
         tracks: Vec<SpotifyTrack>,
+    },
+    SoloistStatusRes {
+        status: SoloistStatus,
     },
     CoverArt {
         data: Option<String>,
@@ -981,6 +1026,9 @@ impl DaemonRes {
                 Some(serde_json::json!({ "playlists": playlists }))
             }
             DaemonRes::SpotifyTracksRes { tracks } => Some(serde_json::json!({ "tracks": tracks })),
+            DaemonRes::SoloistStatusRes { status } => {
+                Some(serde_json::json!({ "status": status }))
+            }
             DaemonRes::CoverArt { data } => Some(serde_json::json!({ "data": data })),
             DaemonRes::SyncStatus {
                 running,

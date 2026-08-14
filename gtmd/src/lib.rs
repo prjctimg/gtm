@@ -12,6 +12,7 @@ pub mod deezer;
 pub mod library;
 pub mod lyrics;
 pub mod queue;
+pub mod soloist;
 pub mod spotify;
 pub mod tags;
 pub mod youtube;

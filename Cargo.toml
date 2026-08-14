@@ -21,5 +21,4 @@ readme = "README.md"
 
 [profile.release]
 lto = "thin"
-codeunits = 1
 strip = "symbols"

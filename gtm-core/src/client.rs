@@ -18,7 +18,7 @@ use crate::ipc::{
     DaemonEvent, DaemonReq, DaemonRes, LibraryAction, MetadataPatch, QueueAction, SyncKind,
     WireEvent, WireReq, WireRes, PROTOCOL_VERSION,
 };
-use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
+use crate::spotify::{SoloistStatus, SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::state::{self, DaemonState, EqPreset, PlaybackStatus, RepeatMode, YTFilter};
 use crate::track;
 use crate::wire;
@@ -834,6 +834,57 @@ impl DaemonClient {
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
             _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
         }
+    }
+
+    fn soloist_status_from(res: DaemonRes) -> Result<SoloistStatus> {
+        match res {
+            DaemonRes::SoloistStatusRes { status, .. } => Ok(status),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+        }
+    }
+
+    /// Set the Soloist API key and start the bridge.
+    pub async fn soloist_set_api_key(&self, key: &str) -> Result<SoloistStatus> {
+        let res = self
+            .send_raw(DaemonReq::SoloistSetApiKey { key: key.into() })
+            .await?;
+        Self::soloist_status_from(res)
+    }
+
+    /// Clear the Soloist API key and stop the bridge.
+    pub async fn soloist_clear(&self) -> Result<SoloistStatus> {
+        let res = self.send_raw(DaemonReq::SoloistClear).await?;
+        Self::soloist_status_from(res)
+    }
+
+    /// Start the Soloist bridge using the persisted key.
+    pub async fn soloist_start(&self) -> Result<SoloistStatus> {
+        let res = self.send_raw(DaemonReq::SoloistStart).await?;
+        Self::soloist_status_from(res)
+    }
+
+    /// Stop the Soloist bridge (does not clear the key).
+    pub async fn soloist_stop(&self) -> Result<SoloistStatus> {
+        let res = self.send_raw(DaemonReq::SoloistStop).await?;
+        Self::soloist_status_from(res)
+    }
+
+    /// Query the current Soloist bridge status.
+    pub async fn soloist_status(&self) -> Result<SoloistStatus> {
+        let res = self.send_raw(DaemonReq::SoloistStatus).await?;
+        Self::soloist_status_from(res)
+    }
+
+    /// Send a `play` command to Soloist with a Spotify URI.
+    pub async fn soloist_play(&self, uri: &str) -> Result<()> {
+        self.send_ok(DaemonReq::SoloistPlay { uri: uri.into() })
+            .await
+    }
+
+    /// Ask Soloist to become the active Spotify Connect device.
+    pub async fn soloist_activate(&self) -> Result<()> {
+        self.send_ok(DaemonReq::SoloistActivate).await
     }
 
     pub async fn check_health(&self) -> Result<crate::ipc::HealthReport> {

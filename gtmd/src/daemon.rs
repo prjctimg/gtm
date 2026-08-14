@@ -75,6 +75,8 @@ use gtm_core::ipc::{
 use gtm_core::state::{
     DaemonState, EqPreset, PlaybackStatus, RepeatMode, ReverbConfig, SavedState,
 };
+use gtm_core::spotify::{SoloistStatus, SpotifyTrack};
+use serde_json::Value;
 use gtm_core::track::TrackInfo;
 use gtm_core::wire;
 use gtm_core::CoreError;
@@ -84,6 +86,7 @@ use crate::cover::CoverCache;
 use crate::library::Library;
 use crate::lyrics::LyricsManager;
 use crate::queue;
+use crate::soloist::{SoloistManager, SoloistMsg};
 use crate::spotify::SpotifyManager;
 use crate::youtube::YoutubeManager;
 
@@ -168,12 +171,15 @@ struct DaemonInner {
     lyrics_manager: Option<LyricsManager>,
     youtube: Arc<tokio::sync::Mutex<YoutubeManager>>,
     spotify: tokio::sync::Mutex<SpotifyManager>,
+    soloist: tokio::sync::Mutex<SoloistManager>,
     crossfade_loaded_for: tokio::sync::Mutex<Option<String>>,
     /// Hash of the next-track whose `CrossfadeCountdown` we already emitted,
     /// so the daemon only notifies once per track instead of on every poll.
     countdown_notified_for: tokio::sync::Mutex<Option<String>>,
     sleep_cancel: Arc<AtomicBool>,
     health: Arc<HealthTracker>,
+    /// Sender for Soloist bridge messages (used by command handlers to start).
+    soloist_tx: mpsc::UnboundedSender<SoloistMsg>,
     /// Per-client authentication state: true = handshake completed
     client_auth: tokio::sync::Mutex<HashMap<ClientId, bool>>,
     /// Channel for internal requests (e.g., auto-advance from audio events)
@@ -197,6 +203,7 @@ pub struct Daemon {
     req_tx: mpsc::UnboundedSender<(ClientId, u64, DaemonReq, ReplyTx)>,
     req_rx: mpsc::UnboundedReceiver<(ClientId, u64, DaemonReq, ReplyTx)>,
     internal_req_rx: mpsc::UnboundedReceiver<DaemonReq>,
+    soloist_msg_rx: Option<mpsc::UnboundedReceiver<SoloistMsg>>,
     next_client_id: ClientId,
 }
 
@@ -265,6 +272,7 @@ impl Daemon {
         let (event_tx, _) = broadcast::channel::<DaemonEvent>(1024);
         let (req_tx, req_rx) = mpsc::unbounded_channel();
         let (internal_req_tx, internal_req_rx) = mpsc::unbounded_channel();
+        let (soloist_tx, soloist_msg_rx) = mpsc::unbounded_channel::<SoloistMsg>();
 
         let cache_dir = config.cache_dir.clone();
         let config_dir = config.config_dir.clone();
@@ -282,13 +290,15 @@ impl Daemon {
             cover_cache: tokio::sync::Mutex::new(Some(CoverCache::new(cache_dir.clone()))),
             lyrics_manager: Some(LyricsManager::with_cache_dir(cache_dir.join("lyrics"))),
             youtube: Arc::new(tokio::sync::Mutex::new(YoutubeManager::new())),
-            spotify: tokio::sync::Mutex::new(SpotifyManager::new(config_dir)),
+            spotify: tokio::sync::Mutex::new(SpotifyManager::new(config_dir.clone())),
+            soloist: tokio::sync::Mutex::new(SoloistManager::new(config_dir)),
             crossfade_loaded_for: tokio::sync::Mutex::new(None),
             countdown_notified_for: tokio::sync::Mutex::new(None),
             sleep_cancel: Arc::new(AtomicBool::new(false)),
             health: Arc::new(HealthTracker::new(audio_backend_name)),
             client_auth: tokio::sync::Mutex::new(HashMap::new()),
             internal_req_tx,
+            soloist_tx,
             cmd_lock: tokio::sync::Mutex::new(()),
             play_history: tokio::sync::Mutex::new(Vec::new()),
             sync_progress: Arc::new(SyncProgress::default()),
@@ -301,6 +311,7 @@ impl Daemon {
             req_tx,
             req_rx,
             internal_req_rx,
+            soloist_msg_rx: Some(soloist_msg_rx),
             next_client_id: 0,
         })
     }
@@ -393,6 +404,30 @@ impl Daemon {
                     Ok(()) => info!("spotify auto-synced on startup"),
                     Err(e) => warn!("spotify auto-sync failed: {e}"),
                 }
+            }
+        });
+
+        // Auto-start the Soloist playback bridge when a key is persisted, so
+        // Spotify playback keeps working across restarts.
+        {
+            let inner = Arc::clone(&self.inner);
+            let mut state = inner.state.write().await;
+            state.soloist.key_set = inner.soloist.lock().await.has_key();
+            drop(state);
+            if inner.soloist.lock().await.has_key() {
+                let tx = inner.soloist_tx.clone();
+                tokio::spawn(async move {
+                    let mut soloist = inner.soloist.lock().await;
+                    soloist.start(tx).await;
+                });
+            }
+        }
+
+        let mut soloist_msg_rx = std::mem::take(&mut self.soloist_msg_rx).unwrap();
+        let soloist_inner = Arc::clone(&self.inner);
+        tokio::spawn(async move {
+            while let Some(msg) = soloist_msg_rx.recv().await {
+                Self::handle_soloist_msg(&soloist_inner, msg).await;
             }
         });
 
@@ -928,6 +963,13 @@ impl Daemon {
                 playlist_id,
                 track_index,
             } => Self::cmd_spotify_resolve(inner, playlist_id, *track_index).await,
+            DaemonReq::SoloistSetApiKey { key } => Self::cmd_soloist_set_api_key(inner, key).await,
+            DaemonReq::SoloistClear => Self::cmd_soloist_clear(inner).await,
+            DaemonReq::SoloistStart => Self::cmd_soloist_start(inner).await,
+            DaemonReq::SoloistStop => Self::cmd_soloist_stop(inner).await,
+            DaemonReq::SoloistStatus => Self::cmd_soloist_status(inner).await,
+            DaemonReq::SoloistPlay { uri } => Self::cmd_soloist_play(inner, uri).await,
+            DaemonReq::SoloistActivate => Self::cmd_soloist_activate(inner).await,
             DaemonReq::SetSleepTimer { minutes } => {
                 Self::cmd_set_sleep_timer(inner, *minutes).await
             }
@@ -1468,39 +1510,37 @@ impl Daemon {
                     Self::finish_crossfade(inner).await;
                 }
                 let mut state = inner.state.write().await;
-                // The mixer reports wall-clock progress; scale by the playback
-                // speed so position, crossfade and countdown tracking all
-                // advance at the actual audio rate.
-                let pos = pos * state.playback_speed;
+                // The mixer already reports track-time position (wall-clock
+                // progress scaled by the playback speed), so no further
+                // scaling is applied here.
                 state.time_pos = pos;
                 let dur = state.duration;
                 let crossfade = state.crossfade.clone();
                 let next = Self::next_track(&state);
                 drop(state);
 
+                // Up-Next countdown: notify once, 10s before the end of the
+                // current track, so the client can animate the countdown.
+                // Fires regardless of crossfade.
+                if dur > 0.0 && (dur - pos) <= 10.0 {
+                    if let Some(track) = &next {
+                        let mut notified = inner.countdown_notified_for.lock().await;
+                        if notified.as_deref() != Some(track.hash.as_str()) {
+                            *notified = Some(track.hash.clone());
+                            Self::push_event(
+                                inner,
+                                DaemonEvent::CrossfadeCountdown {
+                                    track: track.clone(),
+                                },
+                            );
+                        }
+                    }
+                }
+
                 if let Some(cf) = crossfade {
                     if cf.enabled && dur > 0.0 && (dur - pos) <= cf.duration_secs as f64 + 0.15 {
                         if let Some(track) = &next {
                             let _ = Self::try_start_crossfade(inner, track).await;
-                        }
-                    }
-                    // Up-Next countdown: notify once, 5s before the crossfade
-                    // window opens, so the client can animate the countdown.
-                    if cf.enabled && dur > 0.0 {
-                        let remaining = dur - pos;
-                        if remaining <= cf.duration_secs as f64 + 5.0 {
-                            if let Some(track) = &next {
-                                let mut notified = inner.countdown_notified_for.lock().await;
-                                if notified.as_deref() != Some(track.hash.as_str()) {
-                                    *notified = Some(track.hash.clone());
-                                    Self::push_event(
-                                        inner,
-                                        DaemonEvent::CrossfadeCountdown {
-                                            track: track.clone(),
-                                        },
-                                    );
-                                }
-                            }
                         }
                     }
                 }
@@ -1657,6 +1697,24 @@ impl Daemon {
     ///   - If stopped with no current track but queue is non-empty → play from queue cursor
     ///   - If stopped with no track and empty queue → no-op
     async fn cmd_playpause(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        // If Soloist is the active playback backend, forward the command.
+        if Self::soloist_ready(inner).await {
+            let state = inner.state.read().await;
+            let is_playing = state.soloist.playing;
+            drop(state);
+            if is_playing {
+                return Self::soloist_control(inner, "pause", vec![])
+                    .await
+                    .map(|_| DaemonRes::Ok)
+                    .map_err(|e| CoreError::Daemon(e));
+            } else {
+                return Self::soloist_control(inner, "play", vec![])
+                    .await
+                    .map(|_| DaemonRes::Ok)
+                    .map_err(|e| CoreError::Daemon(e));
+            }
+        }
+
         let is_playing = inner.mixer.lock().await.is_playing();
         if is_playing {
             Self::cmd_pause(inner).await
@@ -1716,6 +1774,14 @@ impl Daemon {
     }
 
     async fn cmd_pause(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        // If Soloist is the active playback backend, forward the command.
+        if Self::soloist_ready(inner).await {
+            return Self::soloist_control(inner, "pause", vec![])
+                .await
+                .map(|_| DaemonRes::Ok)
+                .map_err(|e| CoreError::Daemon(e));
+        }
+
         let pos = {
             let mut mixer = inner.mixer.lock().await;
             mixer.pause()?;
@@ -1752,6 +1818,14 @@ impl Daemon {
     /// entry, then play the next queued / default-list / freshly-built
     /// fallback track.  Stops playback when there is nothing left to play.
     async fn cmd_next(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        // If Soloist is the active playback backend, forward the command.
+        if Self::soloist_ready(inner).await {
+            return Self::soloist_control(inner, "skip_next", vec![])
+                .await
+                .map(|_| DaemonRes::Ok)
+                .map_err(|e| CoreError::Daemon(e));
+        }
+
         // Mid-crossfade navigation: the mixer is already fading the standby
         // in.  Drop the outgoing (fading-out) track and promote the standby
         // instead of restarting it, so rapid next/prev through a crossfade
@@ -1800,6 +1874,14 @@ impl Daemon {
     /// user-queue entries and into the default list.  If the current track
     /// has been playing for a while, restart it instead.
     async fn cmd_prev(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        // If Soloist is the active playback backend, forward the command.
+        if Self::soloist_ready(inner).await {
+            return Self::soloist_control(inner, "skip_prev", vec![])
+                .await
+                .map(|_| DaemonRes::Ok)
+                .map_err(|e| CoreError::Daemon(e));
+        }
+
         // Cancel any in-flight crossfade by promoting the standby so the
         // prev logic operates on a stable single-player state (and reports
         // the promoted track if it ends up being restarted via seek).
@@ -1849,6 +1931,15 @@ impl Daemon {
     /// seek-skip fast-forward (the decode runs on a blocking task so the
     /// event loop isn't starved).  Reports the requested (clamped) position.
     async fn cmd_seek(inner: &DaemonInner, pos: f64) -> Result<DaemonRes, CoreError> {
+        // If Soloist is the active playback backend, forward the command.
+        if Self::soloist_ready(inner).await {
+            let pos_ms = (pos * 1000.0).round() as u64;
+            return Self::soloist_control(inner, "seek", vec![("position_ms", Value::from(pos_ms))])
+                .await
+                .map(|_| DaemonRes::Ok)
+                .map_err(|e| CoreError::Daemon(e));
+        }
+
         let state = inner.state.read().await;
         if state.status == PlaybackStatus::Stopped {
             return Ok(DaemonRes::Ok);
@@ -1884,6 +1975,14 @@ impl Daemon {
     }
 
     async fn cmd_set_volume(inner: &DaemonInner, volume: u8) -> Result<DaemonRes, CoreError> {
+        // If Soloist is the active playback backend, forward the command.
+        if Self::soloist_ready(inner).await {
+            return Self::soloist_control(inner, "set_volume", vec![("volume", Value::from(volume))])
+                .await
+                .map(|_| DaemonRes::Ok)
+                .map_err(|e| CoreError::Daemon(e));
+        }
+
         inner.mixer.lock().await.set_volume(volume)?;
         let mut state = inner.state.write().await;
         state.set_volume(volume)?;
@@ -1938,6 +2037,17 @@ impl Daemon {
     }
 
     async fn cmd_toggle_shuffle(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        // If Soloist is the active playback backend, forward the command.
+        if Self::soloist_ready(inner).await {
+            let state = inner.state.read().await;
+            let enabled = !state.shuffle;
+            drop(state);
+            return Self::soloist_control(inner, "set_shuffle", vec![("enabled", Value::Bool(enabled))])
+                .await
+                .map(|_| DaemonRes::Ok)
+                .map_err(|e| CoreError::Daemon(e));
+        }
+
         let mut state = inner.state.write().await;
         state.toggle_shuffle()?;
         let enabled = state.shuffle;
@@ -1951,6 +2061,21 @@ impl Daemon {
         inner: &DaemonInner,
         mode: gtm_core::state::RepeatMode,
     ) -> Result<DaemonRes, CoreError> {
+        // If Soloist is the active playback backend, forward the command.
+        // Soloist uses two separate commands: set_repeat_context and set_repeat_track.
+        if Self::soloist_ready(inner).await {
+            let (ctx_enabled, track_enabled) = match mode {
+                RepeatMode::Off => (false, false),
+                RepeatMode::All => (true, false),
+                RepeatMode::One => (false, true),
+            };
+            let ctx_json = SoloistManager::cmd("set_repeat_context", vec![("enabled", Value::Bool(ctx_enabled))]);
+            let track_json = SoloistManager::cmd("set_repeat_track", vec![("enabled", Value::Bool(track_enabled))]);
+            inner.soloist.lock().await.send(ctx_json).await;
+            inner.soloist.lock().await.send(track_json).await;
+            return Ok(DaemonRes::Ok);
+        }
+
         let mut state = inner.state.write().await;
         state.cycle_repeat(mode)?;
         let m = state.repeat;
@@ -3164,6 +3289,508 @@ impl Daemon {
             }
         }
         Err("download produced no file".into())
+    }
+
+    // ─── Soloist playback bridge ───
+
+    /// Set or update the Soloist API key, persist it, and start the bridge.
+    async fn cmd_soloist_set_api_key(
+        inner: &DaemonInner,
+        key: &str,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut soloist = inner.soloist.lock().await;
+        soloist.save_key(key).map_err(|e| CoreError::Daemon(e))?;
+        soloist.start(inner.soloist_tx.clone()).await;
+        let res = Self::cmd_soloist_status(inner).await?;
+        let status = match res {
+            DaemonRes::SoloistStatusRes { status } => status,
+            _ => SoloistStatus::default(),
+        };
+        Ok(DaemonRes::SoloistStatusRes { status })
+    }
+
+    /// Clear the Soloist API key and stop the bridge.
+    async fn cmd_soloist_clear(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let mut soloist = inner.soloist.lock().await;
+        soloist.clear_key();
+        soloist.stop().await;
+        {
+            let mut state = inner.state.write().await;
+            state.soloist = SoloistStatus::default();
+            state.version += 1;
+        }
+        Self::push_event(
+            inner,
+            DaemonEvent::SoloistStatusChanged {
+                status: SoloistStatus::default(),
+            },
+        );
+        Ok(DaemonRes::SoloistStatusRes { status: SoloistStatus::default() })
+    }
+
+    /// Start the Soloist bridge using the persisted key.
+    async fn cmd_soloist_start(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let mut soloist = inner.soloist.lock().await;
+        soloist.start(inner.soloist_tx.clone()).await;
+        let res = Self::cmd_soloist_status(inner).await?;
+        let status = match res {
+            DaemonRes::SoloistStatusRes { status } => status,
+            _ => SoloistStatus::default(),
+        };
+        Ok(DaemonRes::SoloistStatusRes { status })
+    }
+
+    /// Stop the Soloist bridge (does not clear the key).
+    async fn cmd_soloist_stop(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let mut soloist = inner.soloist.lock().await;
+        soloist.stop().await;
+        {
+            let mut state = inner.state.write().await;
+            state.soloist.running = false;
+            state.soloist.connected = false;
+            state.soloist.logged_in = false;
+            state.soloist.track = None;
+            state.soloist.playing = false;
+            state.version += 1;
+        }
+        let res = Self::cmd_soloist_status(inner).await?;
+        let status = match res {
+            DaemonRes::SoloistStatusRes { status } => status,
+            _ => SoloistStatus::default(),
+        };
+        Self::push_event(
+            inner,
+            DaemonEvent::SoloistStatusChanged { status: status.clone() },
+        );
+        Ok(DaemonRes::SoloistStatusRes { status })
+    }
+
+    /// Query the current Soloist bridge status.
+    async fn cmd_soloist_status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let state = inner.state.read().await;
+        Ok(DaemonRes::SoloistStatusRes { status: state.soloist.clone() })
+    }
+
+    /// Send a `play` command to Soloist with an optional Spotify URI.
+    async fn cmd_soloist_play(inner: &DaemonInner, uri: &str) -> Result<DaemonRes, CoreError> {
+        let json = SoloistManager::cmd("play", vec![("uri", Value::String(uri.into()))]);
+        if inner.soloist.lock().await.send(json).await {
+            Ok(DaemonRes::Ok)
+        } else {
+            Ok(DaemonRes::Error {
+                message: "soloist not connected".into(),
+            })
+        }
+    }
+
+    /// Ask Soloist to become the active Spotify Connect device.
+    async fn cmd_soloist_activate(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let json = SoloistManager::cmd("activate", vec![]);
+        if inner.soloist.lock().await.send(json).await {
+            Ok(DaemonRes::Ok)
+        } else {
+            Ok(DaemonRes::Error {
+                message: "soloist not connected".into(),
+            })
+        }
+    }
+
+    /// Forward a control command to Soloist when it's the active playback backend.
+    async fn soloist_control(
+        inner: &DaemonInner,
+        command: &str,
+        fields: Vec<(&str, Value)>,
+    ) -> Result<(), String> {
+        let json = SoloistManager::cmd(command, fields);
+        if inner.soloist.lock().await.send(json).await {
+            Ok(())
+        } else {
+            Err("soloist not connected".into())
+        }
+    }
+
+    /// Check if Soloist is connected and logged in (active playback backend).
+    async fn soloist_ready(inner: &DaemonInner) -> bool {
+        let state = inner.state.read().await;
+        state.soloist.connected && state.soloist.logged_in
+    }
+
+    /// Apply a Soloist event to the daemon state and broadcast changes.
+    async fn apply_soloist_event(inner: &DaemonInner, name: &str, data: &Value) {
+        match name {
+            "auth_state" => {
+                let logged_in = data.get("logged_in").and_then(Value::as_bool).unwrap_or(false);
+                let device_name = data
+                    .get("device_name")
+                    .and_then(Value::as_str)
+                    .map(|s| s.to_string());
+                let mut state = inner.state.write().await;
+                state.soloist.logged_in = logged_in;
+                if let Some(d) = device_name {
+                    state.soloist.device = Some(d);
+                }
+                let st = state.soloist.clone();
+                drop(state);
+                Self::push_event(
+                    inner,
+                    DaemonEvent::SoloistStatusChanged { status: st },
+                );
+                // On successful auth, request full playback snapshot.
+                if logged_in {
+                    let _ = Self::soloist_send(inner, "get_state").await;
+                }
+            }
+            "playback_state" => {
+                let status = data.get("status").and_then(Value::as_str).unwrap_or("idle");
+                let volume = data.get("volume").and_then(Value::as_u64).unwrap_or(100) as u8;
+                let options = data.get("options");
+                let shuffle = options
+                    .and_then(|o| o.get("shuffle"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let repeat = options
+                    .and_then(|o| o.get("repeat"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("off");
+                let pos_ms = data
+                    .get("position")
+                    .and_then(|p| p.get("position_ms"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let item = data.get("item");
+
+                let mut state = inner.state.write().await;
+                let was_playing = state.soloist.playing;
+                // Stop local mixer if Soloist starts playing.
+                if status == "playing" || status == "buffering" {
+                    state.soloist.playing = true;
+                } else {
+                    state.soloist.playing = false;
+                }
+                state.volume = volume;
+                state.shuffle = shuffle;
+                state.repeat = match repeat {
+                    "context" => RepeatMode::All,
+                    "track" => RepeatMode::One,
+                    _ => RepeatMode::Off,
+                };
+                state.time_pos = pos_ms as f64 / 1000.0;
+                state.version += 1;
+                let track_opt = item.and_then(|it| Self::soloist_track_info(it));
+                if let Some(st_track) = track_opt {
+                    let track = Self::soloist_to_track_info(&st_track);
+                    state.soloist.track = Some(st_track.clone());
+                    state.current_track = Some(track);
+                    state.duration = st_track.duration_ms.map(|d| d as f64 / 1000.0).unwrap_or(0.0);
+                }
+                let st = state.soloist.clone();
+                drop(state);
+                Self::push_event(
+                    inner,
+                    DaemonEvent::SoloistStatusChanged { status: st },
+                );
+                // Stop local mixer if Soloist starts playing (do this after dropping state lock).
+                if status == "playing" || status == "buffering" {
+                    if !was_playing {
+                        let _ = inner.mixer.lock().await.stop();
+                    }
+                }
+                if status == "playing" {
+                    let s = inner.state.read().await;
+                    Self::push_event(
+                        inner,
+                        DaemonEvent::PlaybackStarted {
+                            track: s.current_track.clone().unwrap(),
+                            auto_advanced: false,
+                            time_pos: s.time_pos,
+                            duration: s.duration,
+                        },
+                    );
+                } else if status == "paused" {
+                    let s = inner.state.read().await;
+                    Self::push_event(
+                        inner,
+                        DaemonEvent::PlaybackPaused {
+                            time_pos: s.time_pos,
+                        },
+                    );
+                }
+            }
+            "track_changed" => {
+                let item = data.get("item");
+                if let Some(st_track) = item.and_then(|it| Self::soloist_track_info(it)) {
+                    let track = Self::soloist_to_track_info(&st_track);
+                    let mut state = inner.state.write().await;
+                    state.soloist.track = Some(st_track.clone());
+                    state.current_track = Some(track.clone());
+                    state.duration = st_track.duration_ms.map(|d| d as f64 / 1000.0).unwrap_or(0.0);
+                    state.time_pos = 0.0;
+                    state.soloist.playing = true;
+                    state.version += 1;
+                    let st = state.soloist.clone();
+                    drop(state);
+                    Self::push_event(
+                        inner,
+                        DaemonEvent::SoloistStatusChanged { status: st },
+                    );
+                    Self::push_event(
+                        inner,
+                        DaemonEvent::PlaybackStarted {
+                            track,
+                            auto_advanced: false,
+                            time_pos: 0.0,
+                            duration: st_track.duration_ms.map(|d| d as f64 / 1000.0).unwrap_or(0.0),
+                        },
+                    );
+                }
+            }
+            "playback_changed" => {
+                let status = data.get("status").and_then(Value::as_str).unwrap_or("idle");
+                let mut state = inner.state.write().await;
+                if status == "playing" || status == "buffering" {
+                    state.soloist.playing = true;
+                    state.version += 1;
+                    let st = state.soloist.clone();
+                    drop(state);
+                    let _ = inner.mixer.lock().await.stop();
+                    Self::push_event(
+                        inner,
+                        DaemonEvent::SoloistStatusChanged { status: st },
+                    );
+                } else if status == "paused" {
+                    state.soloist.playing = false;
+                    state.version += 1;
+                    let st = state.soloist.clone();
+                    drop(state);
+                    Self::push_event(
+                        inner,
+                        DaemonEvent::SoloistStatusChanged { status: st },
+                    );
+                    let s = inner.state.read().await;
+                    Self::push_event(
+                        inner,
+                        DaemonEvent::PlaybackPaused {
+                            time_pos: s.time_pos,
+                        },
+                    );
+                }
+            }
+            "position_sync" => {
+                let pos = data.get("position");
+                let pos_ms = pos
+                    .and_then(|p| p.get("position_ms"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(0);
+                let mut state = inner.state.write().await;
+                state.time_pos = pos_ms as f64 / 1000.0;
+                state.version += 1;
+                drop(state);
+                Self::push_event(
+                    inner,
+                    DaemonEvent::PositionChanged { time_pos: pos_ms as f64 / 1000.0 },
+                );
+            }
+            "volume_changed" => {
+                let volume = data.get("volume").and_then(Value::as_u64).unwrap_or(100) as u8;
+                let mut state = inner.state.write().await;
+                state.volume = volume;
+                state.version += 1;
+                drop(state);
+                Self::push_event(
+                    inner,
+                    DaemonEvent::VolumeChanged { volume },
+                );
+            }
+            "device_changed" => {
+                let device_name = data
+                    .get("device_name")
+                    .and_then(Value::as_str)
+                    .map(|s| s.to_string());
+                let mut state = inner.state.write().await;
+                state.soloist.device = device_name;
+                let st = state.soloist.clone();
+                drop(state);
+                Self::push_event(
+                    inner,
+                    DaemonEvent::SoloistStatusChanged { status: st },
+                );
+            }
+            "options_changed" => {
+                let options = data.get("options");
+                let shuffle = options
+                    .and_then(|o| o.get("shuffle"))
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false);
+                let repeat = options
+                    .and_then(|o| o.get("repeat"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("off");
+                let new_repeat = match repeat {
+                    "context" => RepeatMode::All,
+                    "track" => RepeatMode::One,
+                    _ => RepeatMode::Off,
+                };
+                let mut state = inner.state.write().await;
+                state.shuffle = shuffle;
+                state.repeat = new_repeat;
+                state.version += 1;
+                let st = state.soloist.clone();
+                drop(state);
+                Self::push_event(
+                    inner,
+                    DaemonEvent::SoloistStatusChanged { status: st },
+                );
+                Self::push_event(
+                    inner,
+                    DaemonEvent::ShuffleChanged { enabled: shuffle },
+                );
+                Self::push_event(
+                    inner,
+                    DaemonEvent::RepeatModeChanged { mode: new_repeat },
+                );
+            }
+            "error" => {
+                let msg = data.get("message").and_then(Value::as_str).unwrap_or("soloist error");
+                let mut state = inner.state.write().await;
+                state.soloist.error = Some(msg.into());
+                let st = state.soloist.clone();
+                drop(state);
+                Self::push_event(
+                    inner,
+                    DaemonEvent::SoloistStatusChanged { status: st },
+                );
+            }
+            _ => {}
+        }
+    }
+
+    /// Helper to send a raw Soloist command and ignore the result.
+    async fn soloist_send(inner: &DaemonInner, command: &str) -> bool {
+        let json = SoloistManager::cmd(command, vec![]);
+        inner.soloist.lock().await.send(json).await
+    }
+
+    /// Build a `SpotifyTrack` from a Soloist entity payload.
+    fn soloist_track_info(entity: &Value) -> Option<SpotifyTrack> {
+        let uri = entity.get("uri").and_then(Value::as_str)?.to_string();
+        if uri.is_empty() || !uri.starts_with("spotify:") {
+            return None;
+        }
+        let name = entity
+            .get("decorations")
+            .and_then(|d| d.get("identity"))
+            .and_then(|i| i.get("name"))
+            .and_then(Value::as_str)?
+            .to_string();
+        let artists = entity
+            .get("decorations")
+            .and_then(|d| d.get("creators"))
+            .and_then(|c| c.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|a| {
+                        a.get("entity")
+                            .and_then(|e| e.get("decorations"))
+                            .and_then(|d| d.get("identity"))
+                            .and_then(|i| i.get("name"))
+                            .and_then(Value::as_str)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default();
+        let album = entity
+            .get("decorations")
+            .and_then(|d| d.get("parent"))
+            .and_then(|p| p.get("entity"))
+            .and_then(|e| e.get("decorations"))
+            .and_then(|d| d.get("identity"))
+            .and_then(|i| i.get("name"))
+            .and_then(Value::as_str)
+            .map(|s| s.to_string());
+        let duration_ms = entity
+            .get("decorations")
+            .and_then(|d| d.get("playback"))
+            .and_then(|p| p.get("duration_ms"))
+            .and_then(Value::as_u64);
+        Some(SpotifyTrack {
+            index: 0,
+            name,
+            artists,
+            album,
+            duration_ms,
+            uri: Some(uri),
+        })
+    }
+
+    /// Convert a Soloist `SpotifyTrack` to a daemon `TrackInfo` for playback state.
+    fn soloist_to_track_info(st: &SpotifyTrack) -> TrackInfo {
+        TrackInfo {
+            id: 0,
+            path: st.uri.clone().unwrap_or_default(),
+            title: st.name.clone(),
+            artist: st.artists.clone(),
+            album: st.album.clone().unwrap_or_default(),
+            duration: st.duration_ms.map(|d| d as f64 / 1000.0).unwrap_or(0.0),
+            hash: st.uri.clone().unwrap_or_default(),
+            ..Default::default()
+        }
+    }
+
+    async fn handle_soloist_msg(inner: &DaemonInner, msg: SoloistMsg) {
+        match msg {
+            SoloistMsg::Connected { logged_in, device_name } => {
+                let mut state = inner.state.write().await;
+                state.soloist.running = true;
+                state.soloist.connected = true;
+                state.soloist.logged_in = logged_in;
+                state.soloist.device = device_name;
+                state.version += 1;
+                let st = state.soloist.clone();
+                drop(state);
+                Self::push_event(
+                    inner,
+                    DaemonEvent::SoloistStatusChanged { status: st },
+                );
+                if logged_in {
+                    let _ = Self::soloist_send(inner, "get_state").await;
+                }
+            }
+            SoloistMsg::Disconnected(reason) => {
+                let mut state = inner.state.write().await;
+                state.soloist.connected = false;
+                state.soloist.running = false;
+                state.soloist.logged_in = false;
+                state.soloist.track = None;
+                state.soloist.playing = false;
+                if state.soloist.error.is_none() {
+                    state.soloist.error = Some(reason);
+                }
+                state.version += 1;
+                let st = state.soloist.clone();
+                drop(state);
+                Self::push_event(
+                    inner,
+                    DaemonEvent::SoloistStatusChanged { status: st },
+                );
+            }
+            SoloistMsg::Event { name, data } => {
+                Self::apply_soloist_event(inner, &name, &data).await;
+            }
+            SoloistMsg::Failed(err) => {
+                let mut state = inner.state.write().await;
+                state.soloist.error = Some(err);
+                state.soloist.running = false;
+                state.soloist.connected = false;
+                state.version += 1;
+                let st = state.soloist.clone();
+                drop(state);
+                Self::push_event(
+                    inner,
+                    DaemonEvent::SoloistStatusChanged { status: st },
+                );
+            }
+        }
     }
 }
 

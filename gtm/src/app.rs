@@ -10,7 +10,7 @@ use std::time::Duration;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use gtm_core::client::DaemonClient;
 use gtm_core::ipc::DaemonRes;
-use gtm_core::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
+use gtm_core::spotify::{SoloistStatus, SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use gtm_core::state::EqPreset;
 use gtm_core::state::{DaemonState, Easing, PlaybackStatus, RepeatMode, Tab};
 use gtm_core::track::{Playlist, TrackInfo, YTSearchResult};
@@ -89,6 +89,12 @@ struct Prefs {
     design: Design,
     #[serde(default)]
     visualizer_preset: crate::visualizer::VisualizerPreset,
+    #[serde(default = "default_playback_speed")]
+    playback_speed: f64,
+}
+
+fn default_playback_speed() -> f64 {
+    1.0
 }
 
 fn default_theme_name() -> String {
@@ -128,6 +134,7 @@ impl Default for Prefs {
             progress_style: crate::progress::ProgressStyle::default(),
             design: Design::default(),
             visualizer_preset: crate::visualizer::VisualizerPreset::default(),
+            playback_speed: default_playback_speed(),
         }
     }
 }
@@ -256,6 +263,7 @@ pub struct App {
     pub playlist_cache: Vec<gtm_core::track::Playlist>,
     pub playlist_tracks_cache: Vec<TrackInfo>,
     pub spotify_status: Option<SpotifyStatus>,
+    pub soloist_status: Option<SoloistStatus>,
     pub spotify_playlists: Vec<SpotifyPlaylist>,
     pub spotify_playlist_tracks_cache: Vec<SpotifyTrack>,
     pub spotify_token_input: String,
@@ -374,6 +382,7 @@ enum IpcResult {
     SpotifyStatus(SpotifyStatus),
     SpotifyPlaylists(Vec<SpotifyPlaylist>),
     SpotifyTracks(Vec<SpotifyTrack>),
+    SoloistStatus(SoloistStatus),
 }
 
 fn spawn_sync_and_wait(
@@ -489,6 +498,11 @@ impl App {
             .iter()
             .position(|p| p.name == prefs.footer_preset_name)
             .unwrap_or(0);
+        // Apply the persisted playback speed so it survives restarts; the
+        // daemon confirms via PlaybackSpeedChanged.
+        if prefs.playback_speed != 1.0 {
+            let _ = client.set_playback_speed(prefs.playback_speed).await;
+        }
 
         Ok(Self {
             theme,
@@ -516,12 +530,13 @@ impl App {
             playlist_cache: Vec::new(),
             playlist_tracks_cache: Vec::new(),
             spotify_status: None,
+            soloist_status: None,
             spotify_playlists: Vec::new(),
             spotify_playlist_tracks_cache: Vec::new(),
             spotify_token_input: String::new(),
             cookie_file: None,
             notifications: Vec::new(),
-            crossfade_duration: 7,
+            crossfade_duration: 6,
             pending_delete: None,
             yt_search_loading: false,
             yt_search_debounce: None,
@@ -531,7 +546,7 @@ impl App {
             sleep_timer_minutes: 30,
             sleep_timer_input_mode: false,
             sleep_timer_input_buf: String::new(),
-            playback_speed: 1.0,
+            playback_speed: prefs.playback_speed,
             current_cover: None,
             last_cover_track_id: None,
             cover_picker: None,
@@ -635,6 +650,7 @@ impl App {
             progress_style: self.progress_style,
             design: self.design,
             visualizer_preset: self.visualizer.preset,
+            playback_speed: self.playback_speed,
         }
     }
 
@@ -759,6 +775,9 @@ impl App {
                 }
                 if let Ok(playlists) = c.spotify_playlists().await {
                     let _ = ipc_tx.send(IpcResult::SpotifyPlaylists(playlists));
+                }
+                if let Ok(status) = c.soloist_status().await {
+                    let _ = ipc_tx.send(IpcResult::SoloistStatus(status));
                 }
             });
         }
@@ -1083,6 +1102,7 @@ impl App {
                     IpcResult::SpotifyStatus(s) => self.spotify_status = Some(s),
                     IpcResult::SpotifyPlaylists(p) => self.spotify_playlists = p,
                     IpcResult::SpotifyTracks(t) => self.spotify_playlist_tracks_cache = t,
+                    IpcResult::SoloistStatus(s) => self.soloist_status = Some(s),
                 }
             }
 
@@ -1324,11 +1344,12 @@ impl App {
     }
 
     /// Begin the "Up Next" countdown notification (T10).  The daemon emits
-    /// `CrossfadeCountdown` when the next track is ~5s out from crossfade
-    /// start; the wall-clock countdown is shortened by the playback speed so
-    /// the animated bar still lands on the crossfade.
+    /// `CrossfadeCountdown` when the next track is ~10s out from the end of
+    /// the current track (regardless of crossfade); the wall-clock countdown
+    /// is shortened by the playback speed so the animated bar still lands on
+    /// the track change.
     pub fn start_upnext(&mut self, track: gtm_core::track::TrackInfo) {
-        let total_secs = (5.0 / self.playback_speed.max(0.5)).clamp(2.0, 10.0);
+        let total_secs = (10.0 / self.playback_speed.max(0.5)).clamp(3.0, 15.0);
         self.upnext = Some(UpNextNotif {
             track: track.clone(),
             cover: None,
@@ -1715,7 +1736,7 @@ impl App {
             1 => 8, // YouTube
             2 => 4, // Playback: Repeat, Shuffle, Crossfade, Easing
             3 => 7, // System: Theme, Transparent BG, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer Preset
-            4 => 6, // Spotify: Status, Account, Playlists, Link, Sync, Unlink
+            4 => 11, // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Soloist, Link Soloist, Start, Stop, Activate
             _ => 0,
         }
     }
@@ -2351,7 +2372,7 @@ impl App {
                     self.search_query.pop();
                 }
                 _ => {}
-            },
+            }
             InputMode::Normal => {
                 // If a delete confirmation is pending, intercept Enter/Esc
                 if self.pending_delete.is_some() {
@@ -2898,31 +2919,54 @@ impl App {
                                     // local stream (via YouTube) and enqueue it.
                                     if self.scroll_offset < self.spotify_playlist_tracks_cache.len()
                                     {
-                                        let playlist_id =
-                                            self.browse_detail.clone().unwrap_or_default();
-                                        let track_index = self.spotify_playlist_tracks_cache
+                                        let track = self.spotify_playlist_tracks_cache
                                             [self.scroll_offset]
-                                            .index;
-                                        let c = self.client.clone();
-                                        let ipc_tx2 = self.ipc_tx.clone();
-                                        tokio::spawn(async move {
-                                            match c.spotify_resolve(&playlist_id, track_index).await
-                                            {
-                                                Ok(()) => {
-                                                    let _ = ipc_tx2.send(IpcResult::Notification(
-                                                        "Spotify".to_string(),
-                                                        "Spotify track resolved & queued"
-                                                            .to_string(),
-                                                        NotificationKind::Success,
-                                                    ));
+                                            .clone();
+                                        // If Soloist is connected and logged in, play via Soloist instead of resolving
+                                        if let Some(soloist) = &self.soloist_status {
+                                            if soloist.connected && soloist.logged_in {
+                                                if let Some(uri) = &track.uri {
+                                                    let c = self.client.clone();
+                                                    let uri_clone = uri.clone();
+                                                    tokio::spawn(async move {
+                                                        let _ = c.soloist_play(&uri_clone).await;
+                                                    });
+                                                    self.notify(
+                                                        format!("Soloist: playing {}", track.name),
+                                                        NotificationKind::Info,
+                                                    );
+                                                } else {
+                                                    self.notify(
+                                                        "Track has no URI for Soloist playback",
+                                                        NotificationKind::Warning,
+                                                    );
                                                 }
-                                                Err(e) => {
-                                                    let _ = ipc_tx2.send(IpcResult::Error(
-                                                        format!("Spotify resolve failed: {e}"),
-                                                    ));
-                                                }
+                                            } else {
+                                                let playlist_id =
+                                                    self.browse_detail.clone().unwrap_or_default();
+                                                let track_index = track.index;
+                                                let c = self.client.clone();
+                                                let ipc_tx2 = self.ipc_tx.clone();
+                                                tokio::spawn(async move {
+                                                    match c.spotify_resolve(&playlist_id, track_index).await
+                                                    {
+                                                        Ok(()) => {
+                                                            let _ = ipc_tx2.send(IpcResult::Notification(
+                                                                "Spotify".to_string(),
+                                                                "Spotify track resolved & queued"
+                                                                    .to_string(),
+                                                                NotificationKind::Success,
+                                                            ));
+                                                        }
+                                                        Err(e) => {
+                                                            let _ = ipc_tx2.send(IpcResult::Error(
+                                                                format!("Spotify resolve failed: {e}"),
+                                                            ));
+                                                        }
+                                                    }
+                                                });
                                             }
-                                        });
+                                        }
                                     }
                                 } else {
                                     self.play_filtered_highlighted();
@@ -3591,6 +3635,7 @@ impl App {
             match key.code {
                 KeyCode::Esc => {
                     self.pickers.close_top();
+                    save_prefs(&self.current_prefs());
                     return;
                 }
                 KeyCode::Char('h') | KeyCode::Left if sel == 0 => {
@@ -3823,22 +3868,42 @@ impl App {
                                     NotificationKind::Info,
                                 );
                             } else {
+                                // Check if we're in Soloist mode (settings category 4, option 7)
+                                let is_soloist = self.settings_category == 4 && self.settings_option == 7;
                                 let c = self.client.clone();
                                 let ipc_tx = self.ipc_tx.clone();
                                 tokio::spawn(async move {
-                                    match c.spotify_set_token(&token).await {
-                                        Ok(status) => {
-                                            let _ = ipc_tx.send(IpcResult::SpotifyStatus(status));
-                                            let _ = ipc_tx.send(IpcResult::Notification(
-                                                "Spotify".to_string(),
-                                                "Spotify account linked".to_string(),
-                                                NotificationKind::Success,
-                                            ));
+                                    if is_soloist {
+                                        match c.soloist_set_api_key(&token).await {
+                                            Ok(status) => {
+                                                let _ = ipc_tx.send(IpcResult::SoloistStatus(status));
+                                                let _ = ipc_tx.send(IpcResult::Notification(
+                                                    "Soloist".to_string(),
+                                                    "Soloist API key saved".to_string(),
+                                                    NotificationKind::Success,
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                    "Soloist key failed: {e}"
+                                                )));
+                                            }
                                         }
-                                        Err(e) => {
-                                            let _ = ipc_tx.send(IpcResult::Error(format!(
-                                                "Spotify link failed: {e}"
-                                            )));
+                                    } else {
+                                        match c.spotify_set_token(&token).await {
+                                            Ok(status) => {
+                                                let _ = ipc_tx.send(IpcResult::SpotifyStatus(status));
+                                                let _ = ipc_tx.send(IpcResult::Notification(
+                                                    "Spotify".to_string(),
+                                                    "Spotify account linked".to_string(),
+                                                    NotificationKind::Success,
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                    "Spotify link failed: {e}"
+                                                )));
+                                            }
                                         }
                                     }
                                 });

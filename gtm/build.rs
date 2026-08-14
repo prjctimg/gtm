@@ -78,7 +78,10 @@ fn main() {
                 }
             }
         } else {
-            eprintln!("manpage generation failed: {}", str::from_utf8(&output.stderr).unwrap_or(""));
+            eprintln!(
+                "manpage generation failed: {}",
+                str::from_utf8(&output.stderr).unwrap_or("")
+            );
         }
     } else {
         eprintln!("manpage generation: script not found, skipping");

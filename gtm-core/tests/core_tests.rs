@@ -293,6 +293,7 @@ fn daemon_res_spotify_wire_roundtrip() {
             artists: "Artist".into(),
             album: Some("Album".into()),
             duration_ms: Some(240000),
+            uri: None,
         }],
     };
     let cases: Vec<(&str, DaemonRes)> = vec![

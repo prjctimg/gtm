@@ -299,9 +299,9 @@ fn render_upnext_card(f: &mut ratatui::Frame, area: Rect, app: &mut App, remaini
         let album = u.track.album.clone();
         let has_album = !album.is_empty();
         let has_cover = u.cover.is_some();
-        let source = if u.track.path.contains("/audio/spotify") {
+        let source = if u.track.path.contains("/audio/spotify") || u.track.path.starts_with("spotify:") {
             "Spotify"
-        } else if u.track.path.contains("/audio/youtube") {
+        } else if u.track.path.contains("/audio/youtube") || u.track.path.starts_with("youtube:") {
             "YouTube"
         } else {
             "Local"
@@ -427,10 +427,11 @@ fn render_upnext_card(f: &mut ratatui::Frame, area: Rect, app: &mut App, remaini
     f.render_widget(Paragraph::new(lines), text_area);
 }
 
-/// Floating notification overlay rendered as cards stacked from the bottom.
+/// Floating notification overlay rendered as cards stacked from the top-right.
 /// Each card has a thin solid left border coloured by the theme, wrapped
 /// text on an opaque fill, and no outer border.  Cards slide in from the
-/// right on appearance and slide back out again as they leave.
+/// right on appearance and slide back out again as they leave. The stack is
+/// capped at 3/4 of the screen height.
 fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     // Don't show notifications when a picker is open (pickers have their own panels)
     if app.pickers.is_open() {
@@ -459,8 +460,11 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
     let gap = 1u16;
     let border_w = 1u16;
 
-    // Cursor tracking the bottom edge of the last drawn card; cards grow upward.
-    let mut y_bottom = area.y + area.height - padding;
+    // Notifications live in the top-right corner and stack downward. The
+    // overlay is capped at 3/4 of the screen height so it never hides the
+    // bottom of the UI (progress, footer) or the Up Next card.
+    let mut y_top = area.y + padding;
+    let max_y = area.y + (area.height * 3) / 4;
 
     // Up Next crossfade-countdown card (T10): pinned to the bottom-right,
     // regular notifications stack above it.  The card is removed here once
@@ -472,7 +476,7 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
         let card_w = 55u16;
         let card_h = 10u16;
         let card_x = area.x + area.width.saturating_sub(card_w + padding);
-        let card_y = y_bottom.saturating_sub(card_h);
+        let card_y = area.y.saturating_add(area.height).saturating_sub(card_h + padding);
         if card_y >= area.y {
             let card_area = Rect {
                 x: card_x,
@@ -481,7 +485,6 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
                 height: card_h,
             };
             render_upnext_card(f, card_area, app, remaining);
-            y_bottom = card_y.saturating_sub(gap);
         }
     } else if app.upnext.is_some() {
         app.upnext = None;
@@ -491,7 +494,7 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
     let mut regular: Vec<_> = app.notifications.iter().filter(|n| !n.is_volume).collect();
     let volume: Vec<_> = app.notifications.iter().filter(|n| n.is_volume).collect();
 
-    // Stack regular notifications from the bottom, max 5 visible.
+    // Stack regular notifications downward from the top, max 5 visible.
     regular.truncate(5);
 
     for n in regular.iter() {
@@ -505,9 +508,9 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
         let title_rows = if has_title { 2 } else { 0 };
         let card_h = line_count + padding * 2 + title_rows;
 
-        // Check if card fits in remaining area.
-        let card_y = y_bottom.saturating_sub(card_h);
-        if card_y < area.y {
+        // Check if card fits in remaining area (3/4-height cap).
+        let card_y = y_top;
+        if card_y + card_h > max_y {
             break;
         }
 
@@ -583,11 +586,11 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
         let para = Paragraph::new(lines).style(Style::default().fg(app.theme.fg_bright));
         f.render_widget(para, inner);
 
-        y_bottom = card_y.saturating_sub(gap);
+        y_top = card_y + card_h + gap;
     }
 
     // Volume notifications: vertical bar on the far right edge (stacked
-    // above the regular cards).
+    // below the regular cards).
     for n in volume.iter() {
         let bar_h = 10u16;
         let bar_w = 5u16;
@@ -606,8 +609,8 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
             (start_x as f32 + (final_x as f32 - start_x as f32) * progress) as u16
         };
 
-        let bar_y = y_bottom.saturating_sub(bar_h + 2);
-        if bar_y < area.y {
+        let bar_y = y_top;
+        if bar_y + bar_h + 2 > max_y {
             break;
         }
         let bar_area = Rect {
@@ -653,7 +656,7 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
             .style(Style::default().fg(app.theme.fg_bright));
         f.render_widget(label, label_area);
 
-        y_bottom = bar_y.saturating_sub(gap);
+        y_top = bar_y + bar_h + 2 + gap;
     }
 }
 
@@ -1915,6 +1918,20 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
             } else {
                 connected.to_string()
             };
+            let soloist = app.soloist_status.clone().unwrap_or_default();
+            let soloist_state = if soloist.running {
+                if soloist.connected {
+                    if soloist.logged_in {
+                        "Running ✓"
+                    } else {
+                        "Auth needed"
+                    }
+                } else {
+                    "Starting…"
+                }
+            } else {
+                "Stopped"
+            };
             vec![
                 format!("Status          [ {status_label} ]"),
                 format!("Account         [ {user:<10} ]"),
@@ -1922,6 +1939,11 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
                 format!("Link Account    [ Enter ]"),
                 format!("Sync Now        [ Enter ]"),
                 format!("Unlink          [ Enter ]"),
+                format!("Soloist         [ {soloist_state} ]"),
+                format!("Link Soloist    [ Enter ]"),
+                format!("Start Soloist   [ Enter ]"),
+                format!("Stop Soloist    [ Enter ]"),
+                format!("Activate Device [ Enter ]"),
             ]
         }
         5 => {
@@ -1997,6 +2019,11 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         (4, 3) => lines.push(Line::from(Span::styled(" Link Account: Press Enter to paste a Spotify access token (OAuth). Token is stored at ~/.config/gtm/spotify.json.", Style::default().fg(app.theme.fg_dim)))),
         (4, 4) => lines.push(Line::from(Span::styled(" Sync Now: Re-fetch playlists from the Spotify Web API.", Style::default().fg(app.theme.fg_dim)))),
         (4, 5) => lines.push(Line::from(Span::styled(" Unlink: Remove the token and disconnect the account.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 6) => lines.push(Line::from(Span::styled(" Soloist: Status of the local soloist daemon (running/connected/auth).", Style::default().fg(app.theme.fg_dim)))),
+        (4, 7) => lines.push(Line::from(Span::styled(" Link Soloist: Press Enter to paste a Soloist API key (from Spotify developer dashboard). Key stored at ~/.config/gtm/soloist.key.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 8) => lines.push(Line::from(Span::styled(" Start Soloist: Launch the soloist daemon with the saved key.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 9) => lines.push(Line::from(Span::styled(" Stop Soloist: Terminate the soloist daemon (key is retained).", Style::default().fg(app.theme.fg_dim)))),
+        (4, 10) => lines.push(Line::from(Span::styled(" Activate Device: Ask Soloist to become the active Spotify Connect device.", Style::default().fg(app.theme.fg_dim)))),
         _ => {}
     }
 
@@ -2829,9 +2856,9 @@ fn render_track_info_in_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) 
     let dur = format_duration(track.duration as u64);
     let fav = if track.favourite { " \u{2665}" } else { "" };
 
-    let source = if track.path.contains("/audio/spotify") {
+    let source = if track.path.contains("/audio/spotify") || track.path.starts_with("spotify:") {
         "Spotify"
-    } else if track.path.contains("/audio/youtube") {
+    } else if track.path.contains("/audio/youtube") || track.path.starts_with("youtube:") {
         "YouTube"
     } else {
         "Local"

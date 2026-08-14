@@ -36,6 +36,7 @@ base64 = "0.22"
 dirs = "5"
 fastrand = "2"
 chrono = "0.4"
+tokio-tungstenite = "0.30.0"
 
 [features]
 default = ["mpris"]

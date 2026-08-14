@@ -39,7 +39,7 @@ impl DaemonState {
             mute: false,
             crossfade: Some(crate::state::CrossfadeConfig {
                 enabled: true,
-                duration_secs: 5,
+                duration_secs: 6,
                 easing: crate::state::Easing::Linear,
             }),
             current_track: None,
@@ -55,6 +55,7 @@ impl DaemonState {
             dynamic_mode: DynamicModeConfig::default(),
             scrobble: ScrobbleConfig::default(),
             playback_speed: 1.0,
+            soloist: Default::default(),
         }
     }
 }

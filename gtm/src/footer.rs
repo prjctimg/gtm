@@ -43,6 +43,7 @@ pub enum FooterModule {
     Device,
     EqPreset,
     SleepTimer,
+    Speed,
 }
 
 impl FooterModule {
@@ -63,6 +64,7 @@ impl FooterModule {
             FooterModule::Device => "Device",
             FooterModule::EqPreset => "EqPreset",
             FooterModule::SleepTimer => "SleepTimer",
+            FooterModule::Speed => "Speed",
         }
     }
 
@@ -83,6 +85,7 @@ impl FooterModule {
             "Device" => FooterModule::Device,
             "EqPreset" => FooterModule::EqPreset,
             "SleepTimer" => FooterModule::SleepTimer,
+            "Speed" => FooterModule::Speed,
             _ => return None,
         })
     }
@@ -111,6 +114,7 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::Shuffle,
                 FooterModule::Volume,
                 FooterModule::EqPreset,
+                FooterModule::Speed,
             ],
             middle: vec![FooterModule::KeyAction, FooterModule::SleepTimer],
             right: vec![],
@@ -131,6 +135,7 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::Repeat,
                 FooterModule::Shuffle,
                 FooterModule::EqPreset,
+                FooterModule::Speed,
                 FooterModule::Progress,
             ],
             middle: vec![FooterModule::KeyAction, FooterModule::SleepTimer],
@@ -355,6 +360,7 @@ fn module_color(m: FooterModule, theme: &crate::theme::AppTheme) -> Color {
         FooterModule::Device => theme.tertiary_accent,
         FooterModule::EqPreset => theme.secondary_accent,
         FooterModule::SleepTimer => theme.accent,
+        FooterModule::Speed => theme.tertiary_accent,
     }
 }
 
@@ -385,6 +391,7 @@ fn module_text(m: FooterModule, app: &App) -> Option<String> {
         FooterModule::Device => render_device(app),
         FooterModule::EqPreset => render_eq_preset(app),
         FooterModule::SleepTimer => render_sleep_timer(app),
+        FooterModule::Speed => render_speed(app),
     }
 }
 
@@ -463,6 +470,16 @@ fn render_sleep_timer(app: &App) -> Option<String> {
         Some(format!("zzz {}:{:02}", m, s))
     } else {
         None
+    }
+}
+
+fn render_speed(app: &App) -> Option<String> {
+    // Show the raw rate only when it deviates from normal so the footer
+    // stays compact during regular playback; the picker still shows 1.0x.
+    if (app.playback_speed - 1.0).abs() < f64::EPSILON {
+        None
+    } else {
+        Some(format!("{:.1}x", app.playback_speed))
     }
 }
 

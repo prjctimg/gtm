@@ -379,10 +379,9 @@ impl AudioMixer {
         RingBufferSource,
         std::thread::JoinHandle<()>,
     )> {
-        let control = Arc::new(DecodeControl::new());
-        control
-            .playback_speed
-            .store(playback_speed.load(Ordering::Relaxed), Ordering::Relaxed);
+        let mut control = DecodeControl::new();
+        control.playback_speed = playback_speed.clone();
+        let control = Arc::new(control);
         let shared = Arc::new(RingBufferInner::new(BUFFER_CAPACITY_SAMPLES));
 
         let thread = DecodeThread::new(
@@ -621,7 +620,10 @@ impl AudioMixer {
         self.playing.load(Ordering::SeqCst) && !self.pending_pause
     }
 
-    pub fn current_position(&self) -> f64 {
+    /// Track-time playback position: the mixer reports wall-clock progress,
+    /// scaled by the pitch-preserving playback speed so position, crossfade
+    /// and countdown tracking all advance at the actual audio rate.
+    pub fn track_position(&self) -> f64 {
         let elapsed = self
             .start_time
             .lock()
@@ -630,7 +632,12 @@ impl AudioMixer {
             .unwrap_or(0.0);
         let start = *self.start_pos.lock().unwrap();
         let total = *self.duration.lock().unwrap();
-        (start + elapsed).min(total)
+        let speed = self.playback_speed.load(Ordering::Relaxed) as f64 / 1000.0;
+        (start + elapsed * speed).min(total)
+    }
+
+    pub fn current_position(&self) -> f64 {
+        self.track_position()
     }
 
     pub fn duration(&self) -> f64 {
@@ -849,14 +856,7 @@ impl AudioMixer {
                 self.pending_pause = false;
                 self.pause_fade_start = None;
                 self.active().pause();
-                let elapsed_time = self
-                    .start_time
-                    .lock()
-                    .unwrap()
-                    .map(|t| t.elapsed().as_secs_f64())
-                    .unwrap_or(0.0);
-                let current = *self.start_pos.lock().unwrap();
-                let paused_pos = current + elapsed_time;
+                let paused_pos = self.track_position();
                 *self.position.lock().unwrap() = paused_pos;
                 *self.start_pos.lock().unwrap() = paused_pos;
                 *self.start_time.lock().unwrap() = None;
@@ -897,15 +897,7 @@ impl AudioMixer {
         self.underrun_since = None;
 
         if !self.active().is_paused() {
-            let elapsed = self
-                .start_time
-                .lock()
-                .unwrap()
-                .map(|t| t.elapsed().as_secs_f64())
-                .unwrap_or(0.0);
-            let start = *self.start_pos.lock().unwrap();
-            let total = *self.duration.lock().unwrap();
-            let pos = (start + elapsed).min(total);
+            let pos = self.track_position();
             *self.position.lock().unwrap() = pos;
             if (pos - self.last_reported_pos).abs() >= 0.05 {
                 self.last_reported_pos = pos;
