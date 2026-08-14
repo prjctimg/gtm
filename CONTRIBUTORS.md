@@ -7,3 +7,4 @@ listed here automatically.
 github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
 iseeheaven <iseeheaven@outlook.com>
 prjctimg <prjctimg@outlook.com>
+skchr <prjctimg@yandex.com>
