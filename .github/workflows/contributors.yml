@@ -16,7 +16,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Regenerate CONTRIBUTORS.md
-        run: bash scripts/build/gen-contributors.sh
+        run: bash scripts/build/contributors.sh
       - name: Commit if changed
         run: |
           if ! git diff --quiet CONTRIBUTORS.md; then
