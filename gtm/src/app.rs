@@ -2966,11 +2966,11 @@ impl App {
                                                             ));
                                                         }
                                                         Err(e) => {
-                                                            let _ =
-                                                                ipc_tx2
-                                                                    .send(IpcResult::Error(format!(
+                                                            let _ = ipc_tx2.send(IpcResult::Error(
+                                                                format!(
                                                                     "Spotify resolve failed: {e}"
-                                                                )));
+                                                                ),
+                                                            ));
                                                         }
                                                     }
                                                 });
