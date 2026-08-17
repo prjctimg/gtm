@@ -1,6 +1,6 @@
 # Maintainer: prjctimg <prjctimg@outlook.com>
 pkgname=gtm
-pkgver=0.2.2
+pkgver=0.2.3
 pkgrel=1
 pkgdesc="Terminal-based music player daemon and client"
 arch=('x86_64' 'aarch64')

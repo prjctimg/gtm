@@ -11,8 +11,8 @@ categories.workspace = true
 readme = "README.md"
 
 [dependencies]
-gtm-core = { path = "../gtm-core", version = "0.2.2" }
-gtm-audio = { path = "../gtm-audio", version = "0.2.2" }
+gtm-core = { path = "../gtm-core", version = "0.2.3" }
+gtm-audio = { path = "../gtm-audio", version = "0.2.3" }
 ratatui = "0.30"
 crossterm = { version = "0.28", features = ["bracketed-paste"] }
 tachyonfx = "0.22"

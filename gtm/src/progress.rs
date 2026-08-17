@@ -104,12 +104,12 @@ pub fn render_progress_styled<'a>(
                         lerp_color(secondary, tertiary, (t - 0.5) * 2.0)
                     };
                     spans.push(Span::styled(
-                        "▓",
+                        "━",
                         ratatui::style::Style::default().fg(color),
                     ));
                 } else {
                     spans.push(Span::styled(
-                        "░",
+                        "─",
                         ratatui::style::Style::default().fg(Color::Rgb(60, 60, 60)),
                     ));
                 }
@@ -154,7 +154,7 @@ pub fn render_progress(ratio: f64, width: usize, style: ProgressStyle) -> String
         }
         ProgressStyle::Classic => {
             for i in 0..inner_w {
-                line.push(if i < filled { '▓' } else { '░' });
+                line.push(if i < filled { '━' } else { '─' });
             }
         }
         ProgressStyle::Dots => {
@@ -196,14 +196,14 @@ pub fn render_progress(ratio: f64, width: usize, style: ProgressStyle) -> String
                 if i < filled {
                     let dist = (filled - i) as f64 / filled.max(1) as f64;
                     if dist > 0.66 {
-                        line.push('▓');
+                        line.push('━');
                     } else if dist > 0.33 {
-                        line.push('▒');
+                        line.push('╌');
                     } else {
-                        line.push('░');
+                        line.push('─');
                     }
                 } else {
-                    line.push('░');
+                    line.push('─');
                 }
             }
             line.push(' ');

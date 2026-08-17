@@ -3,7 +3,7 @@
 %global debug_package %{nil}
 
 Name: gtmd
-Version: 0.2.2
+Version: 0.2.3
 Release: 1%{?dist}
 Summary: gtm background audio daemon
 License: GPL-3.0-only

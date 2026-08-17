@@ -989,9 +989,9 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
                 let cover_area = Rect {
                     x: hchunks[0].x,
-                    y: hchunks[0].y + 1,
+                    y: hchunks[0].y + 2,
                     width: COVER_W.min(hchunks[0].width),
-                    height: COVER_H.min(hchunks[0].height).saturating_sub(1),
+                    height: COVER_H.min(hchunks[0].height).saturating_sub(2),
                 };
                 render_cover(
                     f,
@@ -3738,7 +3738,6 @@ fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
         let selected_name = presets.get(sel).map(|p| p.0).unwrap_or("");
         let selected_eq = presets.get(sel).map(|p| p.2);
-        let selected_desc = presets.get(sel).map(|p| p.1).unwrap_or("");
 
         let mut preview_spans = vec![Span::styled(
             format!(" {selected_name} "),
@@ -3754,19 +3753,6 @@ fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             Rect {
                 x: preview_area.x,
                 y: preview_area.y + 1,
-                width: preview_area.width,
-                height: 1,
-            },
-        );
-
-        f.render_widget(
-            Paragraph::new(Line::from(Span::styled(
-                format!("  {selected_desc}"),
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            Rect {
-                x: preview_area.x,
-                y: preview_area.y + 2,
                 width: preview_area.width,
                 height: 1,
             },
@@ -3798,6 +3784,133 @@ fn eq_preset_preview(eq: EqPreset, app: &App) -> Vec<Span<'static>> {
         ));
     }
     spans
+}
+
+fn visualizer_preview_lines(
+    preset: crate::visualizer::VisualizerPreset,
+    bars: &[f32],
+    width: u16,
+    app: &App,
+) -> Vec<Line<'static>> {
+    let w = width as usize;
+    let mut lines = Vec::new();
+
+    match preset {
+        crate::visualizer::VisualizerPreset::Braille => {
+            for row in 0..2 {
+                let mut spans = Vec::with_capacity(w);
+                for &b in bars.iter().take(w) {
+                    let level = (b * 4.0) as u32;
+                    let ch = match row {
+                        0 => {
+                            if level >= 4 {
+                                '⣿'
+                            } else if level >= 3 {
+                                '⣷'
+                            } else if level >= 2 {
+                                '⣧'
+                            } else if level >= 1 {
+                                '⣇'
+                            } else {
+                                '⠀'
+                            }
+                        }
+                        _ => {
+                            if level >= 2 {
+                                '⣿'
+                            } else if level >= 1 {
+                                '⡇'
+                            } else {
+                                '⠀'
+                            }
+                        }
+                    };
+                    spans.push(Span::styled(
+                        ch.to_string(),
+                        Style::default().fg(app.theme.accent),
+                    ));
+                }
+                lines.push(Line::from(spans));
+            }
+        }
+        crate::visualizer::VisualizerPreset::Blocks
+        | crate::visualizer::VisualizerPreset::Mirror => {
+            let levels = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+            for row in 0..2 {
+                let mut spans = Vec::with_capacity(w);
+                for &b in bars.iter().take(w) {
+                    let idx = ((b * 7.0).round() as usize).min(7);
+                    let ch = if row == 0 {
+                        levels[idx]
+                    } else {
+                        levels[7 - idx]
+                    };
+                    let color = if b > 0.7 {
+                        app.theme.warning
+                    } else {
+                        app.theme.accent
+                    };
+                    spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+                }
+                lines.push(Line::from(spans));
+            }
+        }
+        crate::visualizer::VisualizerPreset::Gradient => {
+            for row in 0..2 {
+                let mut spans = Vec::with_capacity(w);
+                for (i, &b) in bars.iter().take(w).enumerate() {
+                    let t = i as f64 / w.max(1) as f64;
+                    let color = if t < 0.33 {
+                        app.theme.accent
+                    } else if t < 0.66 {
+                        app.theme.secondary_accent
+                    } else {
+                        app.theme.tertiary_accent
+                    };
+                    let ch = if row == 0 {
+                        if b > 0.5 {
+                            '█'
+                        } else if b > 0.25 {
+                            '▄'
+                        } else {
+                            '▁'
+                        }
+                    } else {
+                        if b > 0.5 {
+                            '█'
+                        } else if b > 0.25 {
+                            '▀'
+                        } else {
+                            '▔'
+                        }
+                    };
+                    spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+                }
+                lines.push(Line::from(spans));
+            }
+        }
+        crate::visualizer::VisualizerPreset::Spectrum => {
+            for row in 0..2 {
+                let mut spans = Vec::with_capacity(w);
+                for &b in bars.iter().take(w) {
+                    let level = (b * 7.0).round() as usize;
+                    let ch = if row == 0 {
+                        ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'][level.min(7)]
+                    } else {
+                        ['█', '▇', '▆', '▅', '▄', '▃', '▂', '▁'][level.min(7)]
+                    };
+                    let color = ratatui::style::Color::Rgb(
+                        ((b * 200.0) as u8).min(255),
+                        ((b * 120.0 + 40.0) as u8).min(255),
+                        ((120.0 - b * 80.0) as u8).min(255),
+                    );
+                    spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+                }
+                lines.push(Line::from(spans));
+            }
+        }
+    }
+    lines
 }
 
 fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
@@ -4027,7 +4140,7 @@ fn render_crossfade_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(para, inner);
 }
 
-fn render_visualizer_preset_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
+fn render_visualizer_preset_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let block = picker_panel(app, " Visualizer Preset ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -4040,10 +4153,27 @@ fn render_visualizer_preset_picker(f: &mut ratatui::Frame, area: Rect, app: &App
         .top()
         .map_or(0, |o| o.selected.min(presets.len() - 1));
 
-    let visible = inner.height as usize;
+    let preview_height: u16 = 4;
+    let list_h = inner.height.saturating_sub(preview_height);
+    let list_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: list_h,
+    };
+    let preview_area = Rect {
+        x: inner.x,
+        y: inner.y + list_h,
+        width: inner.width,
+        height: inner.height.saturating_sub(list_h),
+    };
+
+    let visible = list_h as usize;
     let total = presets.len();
-    let (scroll_start, scroll_end) = if let Some(top) = app.pickers.top() {
-        step_viewport(top.viewport_offset, sel, visible, total)
+    let (scroll_start, scroll_end) = if let Some(top) = app.pickers.top_mut() {
+        let (s, e) = step_viewport(top.viewport_offset, sel, visible, total);
+        top.viewport_offset = s;
+        (s, e)
     } else {
         (0, total)
     };
@@ -4075,10 +4205,53 @@ fn render_visualizer_preset_picker(f: &mut ratatui::Frame, area: Rect, app: &App
     }
 
     let list = List::new(lines.into_iter().map(ListItem::new).collect::<Vec<_>>());
-    f.render_widget(list, inner);
+    f.render_widget(list, list_area);
+
+    if preview_area.height >= 3 {
+        let rule = Line::from(Span::styled(
+            "\u{2500}".repeat(preview_area.width as usize),
+            Style::default().fg(app.theme.muted_border),
+        ));
+        f.render_widget(
+            Paragraph::new(rule),
+            Rect {
+                x: preview_area.x,
+                y: preview_area.y,
+                width: preview_area.width,
+                height: 1,
+            },
+        );
+
+        let sel_preset = presets.get(sel).copied().unwrap_or(current);
+        let bar_w = preview_area.width.saturating_sub(4) as usize;
+        let sample_bars: Vec<f32> = (0..bar_w)
+            .map(|i| {
+                let t = i as f64 / bar_w.max(1) as f64;
+                ((t * 6.28).sin() * 0.5 + 0.5) as f32
+            })
+            .collect();
+
+        let preview_lines =
+            visualizer_preview_lines(sel_preset, &sample_bars, preview_area.width, app);
+        for (row, line) in preview_lines
+            .iter()
+            .enumerate()
+            .take(preview_area.height.saturating_sub(1) as usize)
+        {
+            f.render_widget(
+                Paragraph::new(line.clone()),
+                Rect {
+                    x: preview_area.x,
+                    y: preview_area.y + 1 + row as u16,
+                    width: preview_area.width,
+                    height: 1,
+                },
+            );
+        }
+    }
 }
 
-fn render_progress_style_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
+fn render_progress_style_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let block = picker_panel(app, " Progress Style ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -4091,10 +4264,27 @@ fn render_progress_style_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .top()
         .map_or(0, |o| o.selected.min(styles.len() - 1));
 
-    let visible = inner.height as usize;
+    let preview_height: u16 = 4;
+    let list_h = inner.height.saturating_sub(preview_height);
+    let list_area = Rect {
+        x: inner.x,
+        y: inner.y,
+        width: inner.width,
+        height: list_h,
+    };
+    let preview_area = Rect {
+        x: inner.x,
+        y: inner.y + list_h,
+        width: inner.width,
+        height: inner.height.saturating_sub(list_h),
+    };
+
+    let visible = list_h as usize;
     let total = styles.len();
-    let (scroll_start, scroll_end) = if let Some(top) = app.pickers.top() {
-        step_viewport(top.viewport_offset, sel, visible, total)
+    let (scroll_start, scroll_end) = if let Some(top) = app.pickers.top_mut() {
+        let (s, e) = step_viewport(top.viewport_offset, sel, visible, total);
+        top.viewport_offset = s;
+        (s, e)
     } else {
         (0, total)
     };
@@ -4126,7 +4316,57 @@ fn render_progress_style_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
 
     let list = List::new(lines.into_iter().map(ListItem::new).collect::<Vec<_>>());
-    f.render_widget(list, inner);
+    f.render_widget(list, list_area);
+
+    if preview_area.height >= 3 {
+        let rule = Line::from(Span::styled(
+            "\u{2500}".repeat(preview_area.width as usize),
+            Style::default().fg(app.theme.muted_border),
+        ));
+        f.render_widget(
+            Paragraph::new(rule),
+            Rect {
+                x: preview_area.x,
+                y: preview_area.y,
+                width: preview_area.width,
+                height: 1,
+            },
+        );
+
+        let sel_style = styles.get(sel).copied().unwrap_or(current);
+        let preview_w = preview_area.width.saturating_sub(2) as usize;
+        let spans = crate::progress::render_progress_styled(
+            0.6,
+            preview_w,
+            sel_style,
+            app.theme.accent,
+            app.theme.secondary_accent,
+            app.theme.tertiary_accent,
+        );
+        f.render_widget(
+            Paragraph::new(Line::from(spans)),
+            Rect {
+                x: preview_area.x,
+                y: preview_area.y + 1,
+                width: preview_area.width,
+                height: 1,
+            },
+        );
+
+        let preview_label = Line::from(Span::styled(
+            format!("  60% filled, {} chars wide", preview_w),
+            Style::default().fg(app.theme.fg_dim),
+        ));
+        f.render_widget(
+            Paragraph::new(preview_label),
+            Rect {
+                x: preview_area.x,
+                y: preview_area.y + 2,
+                width: preview_area.width,
+                height: 1,
+            },
+        );
+    }
 }
 
 fn format_duration_short(secs: u64) -> String {

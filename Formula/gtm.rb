@@ -2,7 +2,7 @@ class Gtm < Formula
   desc "Terminal-based music player daemon and client"
   homepage "https://github.com/prjctimg/gtm.rs"
   license "GPL-3.0-only"
-  version "0.2.2"
+  version "0.2.3"
 
   on_macos do
     on_arm do
