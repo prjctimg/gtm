@@ -1,12 +1,14 @@
 // Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
-// Centralised logging to file: replaces eprintln! in library code
 //
 // This is free software released under the GPL-3.0 license.
 
 use std::fs::OpenOptions;
 use std::io::Write;
+use std::os::unix::io::AsRawFd;
 use std::sync::OnceLock;
+
+use chrono::Local;
 
 static LOG_PATH: OnceLock<std::path::PathBuf> = OnceLock::new();
 static LOG_FILE: OnceLock<std::sync::Mutex<std::fs::File>> = OnceLock::new();
@@ -42,9 +44,7 @@ fn log_file() -> &'static std::sync::Mutex<std::fs::File> {
     })
 }
 
-/// Write a timestamped line to the log file.
 pub fn log(msg: &str) {
-    use chrono::Local;
     let ts = Local::now().format("%Y-%m-%d %H:%M:%S");
     let line = format!("[{ts}] {msg}\n");
     if let Ok(mut f) = log_file().lock() {
@@ -53,15 +53,11 @@ pub fn log(msg: &str) {
     }
 }
 
-/// Return the path to the log file.
 pub fn log_file_path() -> std::path::PathBuf {
     log_path().clone()
 }
 
-/// Redirect process stderr to the log file.
-/// Returns the original stderr fd for later restoration.
 pub fn redirect_stderr_to_log() -> std::os::unix::io::RawFd {
-    use std::os::unix::io::AsRawFd;
     let path = log_path();
     let file = match OpenOptions::new().create(true).append(true).open(path) {
         Ok(f) => f,

@@ -1,22 +1,24 @@
 // Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
-// TUI rendering: tab layout, pickers, library, now-playing, settings
 //
 // This is free software released under the GPL-3.0 license.
 
 use std::path::PathBuf;
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::app::{
     no_image_protocol, App, InputMode, LibraryPick, TrackInfoKind, LIBRARY_CATEGORIES,
 };
 use crate::footer::format_duration;
 use crate::picker::{Picker, PickerId, PickerSource};
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use gtm_core::state::{EqPreset, Tab};
 use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Offset, Rect};
 use ratatui::style::Color;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -30,7 +32,6 @@ pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>>
         .map(PathBuf::from)
         .unwrap_or_else(gtm_core::resolve_command_socket);
 
-    // Redirect stderr to log file so diagnostic messages don't break the TUI
     let _original_stderr = gtm_core::log::redirect_stderr_to_log();
 
     let rt = tokio::runtime::Runtime::new()?;
@@ -41,7 +42,7 @@ pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>>
 
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
-        crossterm::execute!(stdout, EnterAlternateScreen)?;
+        crossterm::execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
         terminal.clear()?;
 
@@ -49,7 +50,7 @@ pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>>
         std::panic::set_hook(Box::new(move |panic| {
             let _ = disable_raw_mode();
             let mut stdout = std::io::stdout();
-            let _ = crossterm::execute!(stdout, LeaveAlternateScreen);
+            let _ = crossterm::execute!(stdout, DisableBracketedPaste, LeaveAlternateScreen);
             panic_hook(panic);
         }));
 
@@ -61,7 +62,7 @@ pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>>
 
         let _ = disable_raw_mode();
         let mut stdout = std::io::stdout();
-        let _ = crossterm::execute!(stdout, LeaveAlternateScreen);
+        let _ = crossterm::execute!(stdout, DisableBracketedPaste, LeaveAlternateScreen);
 
         res
     })
@@ -70,10 +71,8 @@ pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>>
 async fn ensure_daemon_running(
     socket_path: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // If socket exists, try a quick ping to check if daemon is alive
     if socket_path.exists() {
         if let Ok(mut stream) = tokio::net::UnixStream::connect(socket_path).await {
-            use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let ping = serde_json::to_string(&gtm_core::ipc::WireReq {
                 id: 0,
                 cmd: "ping".to_string(),
@@ -90,7 +89,6 @@ async fn ensure_daemon_running(
                 }
             }
         }
-        // Socket exists but daemon is dead/stale: remove it
         let _ = std::fs::remove_file(socket_path);
     }
 
@@ -112,14 +110,10 @@ async fn ensure_daemon_running(
         let _ = child.wait();
     });
 
-    // Wait for the daemon socket to appear (cold start can take a while
-    // for audio backend init + library scan).
     for _ in 0..120 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         if socket_path.exists() {
-            // Socket exists: try a ping to confirm daemon is responsive
             if let Ok(mut stream) = tokio::net::UnixStream::connect(socket_path).await {
-                use tokio::io::{AsyncReadExt, AsyncWriteExt};
                 let ping = serde_json::to_string(&gtm_core::ipc::WireReq {
                     id: 0,
                     cmd: "ping".to_string(),
@@ -141,9 +135,6 @@ async fn ensure_daemon_running(
         }
     }
 
-    // Daemon didn't become ready in time: let App::new handle the connection
-    // error with its own retries. The TUI will show an empty state and the
-    // daemon may still come up.
     Ok(())
 }
 
@@ -185,12 +176,10 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
         f.render_widget(msg, area);
         return;
     }
-    // Explicit background fill: the TUI defines its own background
     f.render_widget(
         ratatui::widgets::Block::default().style(ratatui::style::Style::default().bg(app.theme.bg)),
         area,
     );
-    // help bar shows on Library tab, hidden during pickers
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -201,8 +190,6 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
         .split(area);
 
     render_tabs(f, chunks[0], app);
-    // gtm brand divider pinned to the top-right of the tab bar (T28):
-    // accent background with two spaces of padding on each side.
     let brand = Paragraph::new(Span::styled(
         "  gtm  ",
         Style::default()
@@ -215,21 +202,16 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
     render_content(f, chunks[1], app);
     render_footer(f, chunks[2], app);
 
-    // Render pickers on top of everything
     if app.pickers.is_open() {
         render_picker(f, area, app);
     }
 
-    // Floating notification overlay (rendered last, on top of everything)
     render_notification_overlay(f, area, app);
 
-    // Health check panel overlay
     if app.show_health_panel {
         render_health_panel(f, area, app);
     }
 
-    // The animation trigger fires once per track change: keep it set for this
-    // frame only, then let the EffectManager carry the effect to completion.
     app.track_anim_trigger = false;
 }
 
@@ -254,29 +236,20 @@ fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(para, area);
 }
 
-/// Easing: cubic ease-out for smooth deceleration.
 fn cubic_ease_out(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     1.0 - (1.0 - t).powi(3)
 }
 
-/// Easing: cubic ease-in for the leave animation.
 fn cubic_ease_in(t: f32) -> f32 {
     let t = t.clamp(0.0, 1.0);
     t * t * t
 }
 
-/// How long a notification stays on screen before being removed.
 const NOTIFICATION_LIFETIME: std::time::Duration = std::time::Duration::from_millis(1500);
 
-/// How long the slide-out (leave) animation takes once a notification
-/// expires.  During this window the card is still rendered while it drifts
-/// back off the right edge of the screen.
 const NOTIFICATION_EXIT_DURATION: std::time::Duration = std::time::Duration::from_millis(300);
 
-/// "Up Next" card shown 5s before a crossfade begins (T10).  A bordered
-/// panel with the next track's cover, title/artist/album, and an animated
-/// top progress bar counting down to the crossfade start.
 fn render_upnext_card(f: &mut ratatui::Frame, area: Rect, app: &mut App, remaining: f64) {
     let (display_title, artist, album, has_album, has_cover, source_label) = {
         let u = match app.upnext.as_ref() {
@@ -331,17 +304,31 @@ fn render_upnext_card(f: &mut ratatui::Frame, area: Rect, app: &mut App, remaini
         )
     };
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(app.theme.notification_border))
-        .style(Style::default().bg(app.theme.elevated_bg));
-    f.render_widget(block, area);
+    let bg = Block::default().style(Style::default().bg(app.theme.elevated_bg));
+    f.render_widget(bg, area);
+
+    let border_color = app.theme.notification_border;
+    for col in 0..2u16 {
+        f.render_widget(
+            Block::default().style(Style::default().bg(border_color)),
+            Rect {
+                x: area.x,
+                y: area.y,
+                width: 1,
+                height: area.height,
+            }
+            .offset(Offset {
+                x: col as i32,
+                y: 0,
+            }),
+        );
+    }
+
     let inner = area.inner(Margin {
-        horizontal: 1,
+        horizontal: 2,
         vertical: 1,
     });
 
-    // Animated top progress bar counting down to the crossfade.
     let filled_w = (inner.width as f64 * remaining).round() as u16;
     let empty_w = inner.width.saturating_sub(filled_w);
     if filled_w > 0 {
@@ -374,7 +361,6 @@ fn render_upnext_card(f: &mut ratatui::Frame, area: Rect, app: &mut App, remaini
         height: inner.height.saturating_sub(1),
     };
 
-    // Cover on the left (clamped to the body).
     let cover_w = COVER_W.min(body.width.saturating_sub(2));
     let cover_h = COVER_H.min(body.height);
     if has_cover && cover_w > 0 {
@@ -392,7 +378,6 @@ fn render_upnext_card(f: &mut ratatui::Frame, area: Rect, app: &mut App, remaini
         }
     }
 
-    // Text right of the cover.
     let text_area = Rect {
         x: body.x + cover_w + 1,
         y: body.y,
@@ -432,20 +417,13 @@ fn render_upnext_card(f: &mut ratatui::Frame, area: Rect, app: &mut App, remaini
     f.render_widget(Paragraph::new(lines), text_area);
 }
 
-/// Floating notification overlay rendered as cards stacked from the top-right.
-/// Each card has a thin solid left border coloured by the theme, wrapped
-/// text on an opaque fill, and no outer border.  Cards slide in from the
-/// right on appearance and slide back out again as they leave. The stack is
-/// capped at 3/4 of the screen height.
 fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    // Don't show notifications when a picker is open (pickers have their own panels)
     if app.pickers.is_open() {
         return;
     }
 
     let now = std::time::Instant::now();
 
-    // Advance animation progress for each notification.
     let slide_duration_ms: f32 = 300.0;
     for n in &mut app.notifications {
         if n.animation_progress < 1.0 {
@@ -456,35 +434,23 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
         }
     }
 
-    // Keep notifications alive through their slide-out animation; fully
-    // departed ones are dropped.
     app.notifications
         .retain(|n| now < n.expires_at + NOTIFICATION_EXIT_DURATION);
 
-    let max_notif_width = 55u16;
+    let max_notif_width = 42u16;
     let padding = 2u16;
     let gap = 1u16;
 
-    // Notifications live in the top-right corner and stack downward. The
-    // overlay is capped at 3/4 of the screen height so it never hides the
-    // bottom of the UI (progress, footer) or the Up Next card.
-    let mut y_top = area.y + padding;
-    let max_y = area.y + (area.height * 3) / 4;
+    let mut y_bottom = area.y + area.height - padding;
 
-    // Up Next crossfade-countdown card (T10): pinned to the bottom-right,
-    // regular notifications stack above it.  The card is removed here once
-    // its countdown reaches zero (the crossfade has begun).
     if let Some(remaining) = app.upnext.as_ref().and_then(|u| {
         let remaining = 1.0 - u.started_at.elapsed().as_secs_f64() / u.total_secs;
         (remaining > 0.0).then_some(remaining)
     }) {
-        let card_w = 55u16;
-        let card_h = 10u16;
+        let card_w = 42u16;
+        let card_h = 8u16;
         let card_x = area.x + area.width.saturating_sub(card_w + padding);
-        let card_y = area
-            .y
-            .saturating_add(area.height)
-            .saturating_sub(card_h + padding);
+        let card_y = y_bottom.saturating_sub(card_h);
         if card_y >= area.y {
             let card_area = Rect {
                 x: card_x,
@@ -493,37 +459,34 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
                 height: card_h,
             };
             render_upnext_card(f, card_area, app, remaining);
+            y_bottom = card_y.saturating_sub(gap);
         }
     } else if app.upnext.is_some() {
         app.upnext = None;
     }
 
-    // Separate volume and regular notifications.
-    let mut regular: Vec<_> = app.notifications.iter().filter(|n| !n.is_volume).collect();
+    let mut regular: Vec<_> = app
+        .notifications
+        .iter()
+        .filter(|n| !n.is_volume && !n.trivial)
+        .collect();
     let volume: Vec<_> = app.notifications.iter().filter(|n| n.is_volume).collect();
 
-    // Stack regular notifications downward from the top, max 5 visible.
     regular.truncate(5);
 
     for n in regular.iter() {
-        // Wrap text to fit within max width minus border (both sides) and padding.
-        let text_area_w = max_notif_width.saturating_sub(2 + padding * 2);
+        let text_area_w = max_notif_width.saturating_sub(3 + padding * 2);
         let wrapped = wrap_text(&n.message, text_area_w as usize);
         let line_count = wrapped.len() as u16;
-        // A titled card spends one row on the heading (accent, bold) plus a
-        // blank separator row before the message.
         let has_title = !n.title.is_empty();
         let title_rows = if has_title { 2 } else { 0 };
         let card_h = line_count + padding * 2 + title_rows;
 
-        // Check if card fits in remaining area (3/4-height cap).
-        let card_y = y_top;
-        if card_y + card_h > max_y {
+        let card_y = y_bottom.saturating_sub(card_h);
+        if card_y < area.y {
             break;
         }
 
-        // Slide-in from right: start off-screen, animate to final position.
-        // Once expired the card slides back out to the right.
         let final_x = area.x + area.width.saturating_sub(max_notif_width + padding);
         let start_x = area.x + area.width;
         let leaving = now.saturating_duration_since(n.expires_at);
@@ -545,16 +508,28 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
             height: card_h,
         };
 
-        // Rounded border with a solid full-area background (PROMPT #2).
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(app.theme.notification_border))
-            .style(Style::default().bg(app.theme.elevated_bg));
-        f.render_widget(block, card_area);
+        let bg = Block::default().style(Style::default().bg(app.theme.elevated_bg));
+        f.render_widget(bg, card_area);
 
-        // Text inside the border, padded.
+        let border_color = app.theme.notification_border;
+        for col in 0..2u16 {
+            f.render_widget(
+                Block::default().style(Style::default().bg(border_color)),
+                Rect {
+                    x: card_area.x,
+                    y: card_area.y,
+                    width: 1,
+                    height: card_area.height,
+                }
+                .offset(Offset {
+                    x: col as i32,
+                    y: 0,
+                }),
+            );
+        }
+
         let inner = card_area.inner(Margin {
-            horizontal: padding,
+            horizontal: padding + 1,
             vertical: padding,
         });
         let mut lines: Vec<Line> = Vec::with_capacity(1 + line_count as usize);
@@ -573,11 +548,9 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
         let para = Paragraph::new(lines).style(Style::default().fg(app.theme.fg_bright));
         f.render_widget(para, inner);
 
-        y_top = card_y + card_h + gap;
+        y_bottom = card_y.saturating_sub(gap);
     }
 
-    // Volume notifications: vertical bar on the far right edge (stacked
-    // below the regular cards).
     for n in volume.iter() {
         let bar_h = 10u16;
         let bar_w = 5u16;
@@ -596,8 +569,8 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
             (start_x as f32 + (final_x as f32 - start_x as f32) * progress) as u16
         };
 
-        let bar_y = y_top;
-        if bar_y + bar_h + 2 > max_y {
+        let bar_y = y_bottom.saturating_sub(bar_h + 2);
+        if bar_y < area.y {
             break;
         }
         let bar_area = Rect {
@@ -607,7 +580,6 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
             height: bar_h + 2,
         };
 
-        // Background
         f.render_widget(
             Block::default()
                 .borders(Borders::ALL)
@@ -616,7 +588,6 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
             bar_area,
         );
 
-        // Fill bar (bottom-up, respecting theme volume colors)
         let fill_h = ((n.volume_value as f64 / 100.0) * bar_h as f64) as u16;
         if fill_h > 0 {
             let fill_area = Rect {
@@ -632,7 +603,6 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
             );
         }
 
-        // Percentage label below bar
         let label_area = Rect {
             x: bar_area.x,
             y: bar_area.y + bar_h + 1,
@@ -643,11 +613,10 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
             .style(Style::default().fg(app.theme.fg_bright));
         f.render_widget(label, label_area);
 
-        y_top = bar_y + bar_h + 2 + gap;
+        y_bottom = bar_y.saturating_sub(gap);
     }
 }
 
-/// Wrap text to fit within `max_chars` per line, breaking at spaces when possible.
 fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
     if max_chars == 0 {
         return vec![text.to_string()];
@@ -688,8 +657,6 @@ fn render_content(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     }
 }
 
-/// Render the help keybinding hints right-aligned in the footer row so the
-/// TUI keeps a single status line instead of a dedicated help row.
 fn render_footer_help(f: &mut ratatui::Frame, area: Rect, app: &App) {
     if app.current_tab != Tab::Library || app.pickers.is_open() || app.hide_help_bar {
         return;
@@ -708,7 +675,6 @@ fn render_cover(
     current_cover: Option<&[u8]>,
     placeholder_fg: Color,
 ) {
-    // Skip image rendering in terminals without protocol passthrough
     if std::env::var("NVIM").is_ok() || std::env::var("ZELLIJ").is_ok() {
         let placeholder = Paragraph::new(Span::styled(
             " \u{266b} Cover art unavailable in this terminal ",
@@ -739,7 +705,6 @@ fn render_cover_block(f: &mut ratatui::Frame, area: Rect, cover_bytes: &[u8]) {
     let disp_w = (area.width as u32).max(1);
     let disp_h = (area.height as u32 * 2).max(1);
 
-    // Crop-then-resize: CSS background-size: cover behavior
     let src_w = img.width() as f64;
     let src_h = img.height() as f64;
     let target_ratio = disp_w as f64 / disp_h as f64;
@@ -748,12 +713,10 @@ fn render_cover_block(f: &mut ratatui::Frame, area: Rect, cover_bytes: &[u8]) {
     let cropped = if (source_ratio - target_ratio).abs() < 0.01 {
         img
     } else if source_ratio > target_ratio {
-        // Source is wider: crop sides
         let new_w = (src_h * target_ratio) as u32;
         let offset = ((src_w as u32 - new_w) / 2).min(img.width() - 1);
         image::imageops::crop_imm(&img, offset, 0, new_w, img.height()).to_image()
     } else {
-        // Source is taller: crop top/bottom
         let new_h = (src_w / target_ratio) as u32;
         let offset = ((img.height() - new_h) / 2).min(img.height() - 1);
         image::imageops::crop_imm(&img, 0, offset, img.width(), new_h).to_image()
@@ -798,16 +761,9 @@ fn use_nerd_fonts() -> bool {
     !matches!(std::env::var("GTM_NERD_FONTS"), Ok(v) if v == "0" || v == "false" || v == "no")
 }
 
-/// Canonical cover-art size across the TUI.  A terminal cell is roughly
-/// half as tall as it is wide, so a 14×7 block reads as square artwork.
-/// Every cover renderer clamps to its available space but shares these base
-/// dimensions so the layout never shifts when a cover loads or unloads (T13).
 pub const COVER_W: u16 = 14;
 pub const COVER_H: u16 = 7;
 
-/// 1-row-at-a-time viewport (PROMPT #10): the stored `offset` only changes by
-/// ±1 when the selection leaves the visible window, so the list never
-/// recenters or jumps.  Returns the new `(start, end)` range.
 fn step_viewport(offset: usize, sel: usize, visible: usize, total: usize) -> (usize, usize) {
     if total <= visible || visible == 0 {
         return (0, total);
@@ -822,17 +778,6 @@ fn step_viewport(offset: usize, sel: usize, visible: usize, total: usize) -> (us
     (o, (o + visible).min(total))
 }
 
-/// Render `widget` into `area`, applying a tachyonfx evolve animation so the
-/// text resolves from placeholder glyphs (which read as stray "escape
-/// characters") into the real content.  The effect (re)starts whenever
-/// `app.track_anim_trigger` is set and either this pane may animate on track
-/// change (`animate_on_track_change`) or this is the very first frame
-/// (`app.frame_count == 0`, i.e. startup).  While it is running, subsequent
-/// refresh frames keep advancing it (keyed uniquely) until it completes, at
-/// which point rendering returns to the plain `render_widget` path.  The
-/// scratch buffer isolates the effect to `area` so it never leaks into
-/// neighbours, and the widget is re-rendered underneath every frame so the
-/// effect always resolves to clean text.
 fn render_evolving<W: ratatui::widgets::Widget>(
     f: &mut ratatui::Frame,
     area: Rect,
@@ -864,8 +809,6 @@ fn render_evolving<W: ratatui::widgets::Widget>(
     f.buffer_mut().merge(&buf);
 }
 
-/// Fill a pane body rectangle with the theme's `pane_bg` (the configurable
-/// "fill area" background) before the pane content renders on top.
 fn fill_pane(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(
         ratatui::widgets::Block::default()
@@ -874,11 +817,6 @@ fn fill_pane(f: &mut ratatui::Frame, area: Rect, app: &App) {
     );
 }
 
-/// Borderless pane header (C1/C2): a 1-row BOLD label: `accent` + a `▎`
-/// edge bar when `focused`, `fg_bright` otherwise: with an optional muted
-/// separator beneath.  When `left_rule` is set a thin `muted_border` vertical
-/// rule is drawn along the pane's left edge and content is indented past it.
-/// Returns the content rect (1-cell horizontal padding) below the header.
 fn render_pane_header(
     f: &mut ratatui::Frame,
     area: Rect,
@@ -974,8 +912,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         28u16.min(area.width.saturating_sub(2))
     };
 
-    // Lyrics always get a right column spanning the full height.
-    // Left side has Now Playing on top + Library/Content below.
     let lyrics_takes_full_height = app.show_lyrics && !is_narrow;
 
     let (left_area, lyrics_area) = if lyrics_takes_full_height {
@@ -1034,36 +970,30 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
     let left_focus = app.library_pane_focus;
 
-    // ── Now Playing section ──
     {
-        // Borderless pane: bold header + muted separator, content below.
         let np_inner = render_pane_header(f, np_area, app, "", false, true, false);
         fill_pane(f, np_inner, app);
 
-        // Clone the current track out of the app state so the render calls
-        // below (which borrow `app` mutably for the evolve animation) can
-        // coexist with the track lookup.
         if let Some(track) = app.state.current_track.clone() {
             let inner = np_inner;
 
             if inner.width >= COVER_W + 6 {
-                // Cover on the LEFT, info on the RIGHT
+                let left_pad = inner.width.saturating_sub(COVER_W + 2) / 2;
                 let hchunks = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([
+                        Constraint::Length(left_pad),
                         Constraint::Length(COVER_W),
                         Constraint::Length(2),
                         Constraint::Min(0),
                     ])
                     .split(inner);
 
-                // Inset the cover 1 cell from the block's left/top so it never
-                // butts against the pane edge or the divider column.
                 let cover_area = Rect {
-                    x: hchunks[0].x + 1,
-                    y: hchunks[0].y + 1,
-                    width: hchunks[0].width.saturating_sub(1),
-                    height: COVER_H.min(hchunks[0].height).saturating_sub(1),
+                    x: hchunks[1].x,
+                    y: hchunks[1].y + 1,
+                    width: COVER_W.min(hchunks[1].width),
+                    height: COVER_H.min(hchunks[1].height).saturating_sub(1),
                 };
                 render_cover(
                     f,
@@ -1073,7 +1003,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     app.theme.fg_dim,
                 );
 
-                let info_area = hchunks[2];
+                let info_area = hchunks[3];
 
                 let display_title = if track.title.is_empty() {
                     std::path::Path::new(&track.path)
@@ -1089,11 +1019,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     &track.artist
                 };
 
-                // Vertically center the details block against the cover:
-                // title, artist, album (when present), a spacer, progress,
-                // another spacer and the timestamps row (T22).  The blank
-                // rows give the progress indicator and the timestamps some
-                // breathing room instead of abutting the rows above.
                 let has_album = !track.album.is_empty();
                 let content_h: u16 = 7;
                 let offset = COVER_H.saturating_sub(content_h) / 2;
@@ -1120,7 +1045,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     ])
                     .split(content_area);
 
-                // Row 0: animated title (fav icon + title)
                 let fav_prefix = if track.favourite { "\u{2665} " } else { "" };
                 let title_text = format!("{}{}", fav_prefix, display_title);
                 let title_avail = info_chunks[0].width as usize;
@@ -1134,15 +1058,12 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 )]));
                 render_evolving(f, info_chunks[0], title_para, "np", app, true);
 
-                // Row 1: Artist (icon instead of a text label)
                 let artist_para = Paragraph::new(Line::from(vec![
                     Span::styled("\u{1f3a4} ", Style::default().fg(app.theme.fg)),
                     Span::styled(display_artist, Style::default().fg(app.theme.fg_bright)),
                 ]));
                 f.render_widget(artist_para, info_chunks[1]);
 
-                // Row 2: Album when present (icon instead of a text label),
-                // otherwise a blank spacer row.
                 if has_album {
                     let album_para = Paragraph::new(Line::from(vec![
                         Span::styled("\u{1f4bf} ", Style::default().fg(app.theme.fg)),
@@ -1151,12 +1072,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     f.render_widget(album_para, info_chunks[2]);
                 }
 
-                // Row 3: blank spacer above the progress indicator (T22).
-                // Row 4: Progress bar.  Row 5: blank spacer above the
-                // timestamps.  Row 6: elapsed/duration timestamps.  Prefer
-                // the daemon-reported duration: queued/foreign tracks carry
-                // duration 0 in their TrackInfo until played, so the panel
-                // must not show "0:00" when the real duration is known.
                 let dur = if app.state.duration > 0.0 {
                     app.state.duration
                 } else {
@@ -1179,7 +1094,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 )]));
                 f.render_widget(ts_para, ts_row);
             } else {
-                // Terminal too narrow for cover: just show info text
                 let display_title = if track.title.is_empty() {
                     std::path::Path::new(&track.path)
                         .file_stem()
@@ -1222,7 +1136,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     f.render_widget(album_para, album_area);
                     row_offset += 1;
                 }
-                // Blank spacer above the progress indicator.
                 row_offset += 1;
 
                 let dur = if app.state.duration > 0.0 {
@@ -1245,8 +1158,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     height: 1,
                 };
                 f.render_widget(bar_para, bar_area);
-                // Blank spacer above the timestamps, then the timestamps on
-                // their own row below the progress bar (T22).
                 let ts_area = Rect {
                     x: inner.x,
                     y: inner.y + row_offset + 2,
@@ -1261,41 +1172,17 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             }
         } else {
             let inner = np_inner;
-            // Idle state (T27): point the user at the quick-start actions
-            // instead of a single dead-end line.
-            let lines = vec![
-                Line::from(Span::styled(
-                    "It's awfully quiet here…",
-                    Style::default()
-                        .fg(app.theme.fg_bright)
-                        .add_modifier(Modifier::BOLD),
-                )),
-                Line::from(""),
-                Line::from(Span::styled(
-                    " Alt+Y  search YouTube",
-                    Style::default().fg(app.theme.fg),
-                )),
-                Line::from(Span::styled(
-                    " Alt+F  search library",
-                    Style::default().fg(app.theme.fg),
-                )),
-                Line::from(Span::styled(
-                    " Alt+S  link Spotify",
-                    Style::default().fg(app.theme.fg),
-                )),
-                Line::from(Span::styled(
-                    " Alt+C  change theme",
-                    Style::default().fg(app.theme.fg),
-                )),
-            ];
+            let lines = vec![Line::from(Span::styled(
+                "It's awfully quiet here…",
+                Style::default()
+                    .fg(app.theme.fg_bright)
+                    .add_modifier(Modifier::BOLD),
+            ))];
             let msg = Paragraph::new(lines);
-            // Animate the idle message once when the TUI boots (frame_count 0)
-            // instead of leaving it static; golden strings keep the same text.
             render_evolving(f, inner, msg, "idle", app, false);
         }
     }
 
-    // ── Visualizer (right of Now Playing) ──
     if let Some(vis_a) = vis_area {
         if vis_a.width >= 4 && vis_a.height >= 3 {
             app.visualizer.tick(
@@ -1329,7 +1216,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         }
     }
 
-    // ── Left pane: categories with icons ──
     let lib_icons = if use_nerd_fonts() {
         LIBRARY_ICONS_NERD
     } else {
@@ -1342,7 +1228,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             let icon = lib_icons.get(i).unwrap_or(&" ");
             let count = match *cat {
                 "All Tracks" => app.tracks_cache.len(),
-
+                "Liked" => app.tracks_cache.iter().filter(|t| t.favourite).count(),
                 "Albums" => app.unique_albums().len(),
                 "Artists" => app.unique_artists().len(),
                 "Playlists" => app.playlist_cache.len(),
@@ -1371,10 +1257,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let left_inner = render_pane_header(f, panes[0], app, " ", left_focus, false, false);
     fill_pane(f, left_inner, app);
 
-    // Reserve the bottom rows of the left pane for the embedded track-info
-    // block (replaces the deprecated floating popup).  Layout from the top:
-    // category list, then the track-info separator + content (cover, meta and
-    // the library stats row) while a track is highlighted.
     let track_info_h: u16 = if app.track_popup_visible {
         track_info_block_height()
     } else {
@@ -1394,7 +1276,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
     f.render_widget(List::new(left_items), left_list_area);
 
-    // Active category left-border indicator picker
     if app.library_category < LIBRARY_CATEGORIES.len() {
         let indicator_y = left_list_area.y + app.library_category as u16;
         if indicator_y < left_list_area.y + left_list_area.height {
@@ -1409,15 +1290,12 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             f.render_widget(indicator, indicator_area);
         }
     }
-    // end library rendering
 
-    // ── Stats at bottom of left pane ──
     let category_label = LIBRARY_CATEGORIES
         .get(app.library_category)
         .unwrap_or(&"All Tracks");
 
     let (right_lines, _stats_line) = if app.browse_detail.is_some() && app.library_category == 5 {
-        // Spotify playlist detail: cached track list, resolved via the daemon.
         let tracks = &app.spotify_playlist_tracks_cache;
         let total_len = tracks.len();
         let st_line = format!(" {} tracks ", total_len);
@@ -1474,7 +1352,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             (lines, st_line)
         }
     } else if app.browse_detail.is_some() {
-        // Detail view: show tracks filtered by album/artist/playlist
         let (total_len, hours, mins) = {
             let f = app.filtered_tracks();
             let total_dur: u64 = f.iter().map(|t| t.duration as u64).sum();
@@ -1525,7 +1402,6 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             (lines, st_line)
         }
     } else if app.library_category == 2 {
-        // Albums browse
         let albums = app.unique_albums();
         let total_len = albums.len();
         let sel = app.list_pos().min(total_len.saturating_sub(1));
@@ -1536,7 +1412,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
         app.list_scroll = list_scroll;
         let mut lines = vec![Line::from("")];
-        for (i, (name, count)) in albums[app.list_scroll..end].iter().enumerate() {
+        for (i, (name, _count)) in albums[app.list_scroll..end].iter().enumerate() {
             let real_i = app.list_scroll + i;
             let prefix = if real_i == sel && !left_focus {
                 " >"
@@ -1551,13 +1427,12 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 Style::default().fg(app.theme.fg)
             };
             lines.push(Line::from(Span::styled(
-                format!("{}{:<40} {:>4} tracks", prefix, name, count),
+                format!("{}{}", prefix, name),
                 style,
             )));
         }
         (lines, st_line)
     } else if app.library_category == 3 {
-        // Artists browse
         let artists = app.unique_artists();
         let total_len = artists.len();
         let sel = app.list_pos().min(total_len.saturating_sub(1));
@@ -1568,7 +1443,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
         app.list_scroll = list_scroll;
         let mut lines = vec![Line::from("")];
-        for (i, (name, count)) in artists[app.list_scroll..end].iter().enumerate() {
+        for (i, (name, _count)) in artists[app.list_scroll..end].iter().enumerate() {
             let real_i = app.list_scroll + i;
             let prefix = if real_i == sel && !left_focus {
                 " >"
@@ -1583,13 +1458,12 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 Style::default().fg(app.theme.fg)
             };
             lines.push(Line::from(Span::styled(
-                format!("{}{:<40} {:>4} tracks", prefix, name, count),
+                format!("{}{}", prefix, name),
                 style,
             )));
         }
         (lines, st_line)
     } else if app.library_category == 4 {
-        // Playlists browse
         let playlists = &app.playlist_cache;
         let total_len = playlists.len();
         let sel = app.list_pos().min(total_len.saturating_sub(1));
@@ -1615,13 +1489,12 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 Style::default().fg(app.theme.fg)
             };
             lines.push(Line::from(Span::styled(
-                format!("{}{:<40} {:>4} tracks", prefix, pl.name, pl.track_count),
+                format!("{}{}", prefix, pl.name),
                 style,
             )));
         }
         (lines, st_line)
     } else if app.library_category == 5 {
-        // Spotify playlists browse
         let playlists = &app.spotify_playlists;
         let total_len = playlists.len();
         let sel = app.list_pos().min(total_len.saturating_sub(1));
@@ -1653,14 +1526,13 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     Style::default().fg(app.theme.fg)
                 };
                 lines.push(Line::from(Span::styled(
-                    format!("{}{:<40} {:>4} tracks", prefix, pl.name, pl.track_count()),
+                    format!("{}{}", prefix, pl.name),
                     style,
                 )));
             }
         }
         (lines, st_line)
     } else {
-        // All Tracks or other: flat track table
         let (total_len, total_dur) = {
             let f = app.filtered_tracks();
             let dur: u64 = f.iter().map(|t| t.duration as u64).sum();
@@ -1706,9 +1578,8 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         (lines, st_line)
     };
 
-    // Render the embedded track-info block (see above): the stats row now
-    // lives inside the block, below the track meta.
     if app.track_popup_visible
+        && left_track_info_area.height >= track_info_block_height()
         && (left_track_info_sep_area.height > 0 || left_track_info_area.height > 0)
     {
         render_track_info_in_pane(f, left_track_info_sep_area, left_track_info_area, app);
@@ -1723,9 +1594,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let right_inner = render_pane_header(f, panes[1], app, &header_label, !left_focus, false, true);
     fill_pane(f, right_inner, app);
     render_evolving(f, right_inner, right_para, "lib", app, false);
-    // end content rendering
 
-    // ── Right lyrics pane (full height) ──
     if let Some(lyrics_area) = lyrics_area {
         render_lyrics_pane(f, lyrics_area, app);
     } else if app.show_lyrics && panes.len() == 1 {
@@ -1747,7 +1616,6 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .constraints([Constraint::Length(22), Constraint::Min(0)])
         .split(chunks[1]);
 
-    // ── Left pane: categories with icons ──
     let settings_icons = if use_nerd_fonts() {
         SETTINGS_ICONS_NERD
     } else {
@@ -1777,7 +1645,6 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
     fill_pane(f, left_inner, app);
     f.render_widget(List::new(left_items), left_inner);
 
-    // Active category left-border indicator
     if app.settings_category < SETTINGS_CATEGORIES.len() {
         let indicator_y = left_inner.y + app.settings_category as u16;
         if indicator_y < left_inner.y + left_inner.height {
@@ -1793,7 +1660,6 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         }
     }
 
-    // ── Right pane: options for selected category ──
     let items: Vec<String> = match app.settings_category {
         0 => vec![
             format!("Master Volume   [ {:>3}%  ]", app.state.master_volume),
@@ -1861,11 +1727,7 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
                 ),
                 format!(
                     "Reverb          [ {} ]",
-                    if reverb_on {
-                        "●   On "
-                    } else {
-                        "○   Off"
-                    }
+                    if reverb_on { "●   On " } else { "○   Off" }
                 ),
             ]
         }
@@ -2051,10 +1913,6 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
 // ─── Overlay Rendering ───
 
-/// Content-driven sizing hint for a floating picker: `(width, height)` the
-/// picker's content needs so the panel is never wider (or taller) than
-/// necessary.  Row counts are clamped so very large lists scroll instead of
-/// covering the whole screen.
 fn picker_content_hint(top: &Picker, app: &App) -> (u16, u16) {
     match top.id {
         PickerId::Queue => {
@@ -2088,7 +1946,6 @@ fn picker_content_hint(top: &Picker, app: &App) -> (u16, u16) {
                 .max()
                 .unwrap_or(46)
                 .clamp(44, 72);
-            // Reserve extra rows for the cover-art preview window.
             let h = (n as u16 + 12).clamp(24, 34);
             (w, h)
         }
@@ -2097,14 +1954,13 @@ fn picker_content_hint(top: &Picker, app: &App) -> (u16, u16) {
         PickerId::PlaylistSelect => (48, 20),
         PickerId::SpotifySearch => (60, 12),
         PickerId::Crossfade => (58, 20),
-        // Equalizer / SleepTimer / About / EditMetadata
+        PickerId::VisualizerPreset => (48, 14),
+        PickerId::ProgressStyle => (48, 18),
         _ => (56, 22),
     }
 }
 
 fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    // Keep the SearchLibrary preview cover in sync with the highlight (the
-    // fetch is guarded, so this only does work when the row changes).
     app.update_picker_preview();
     let Some(top) = app.pickers.top() else {
         return;
@@ -2115,12 +1971,6 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let picker_area = if top_help {
         area
     } else {
-        // Content-driven size, centered on both axes. Scrolling list pickers
-        // are capped at half the terminal so they never dominate the screen;
-        // the old 40-row square floor made even short lists balloon. Their
-        // internal renderers use `step_viewport`, so the highlighted row
-        // stays in view as the viewport shrinks. Fixed-layout pickers (EQ,
-        // About, EditMetadata, …) keep their content height.
         let square_min = 40
             .min(area.width.saturating_sub(2))
             .min(area.height.saturating_sub(2));
@@ -2167,8 +2017,10 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         PickerId::PlaylistSelect => render_playlist_select_picker(f, picker_area, app),
         PickerId::EditMetadata => render_edit_metadata_picker(f, picker_area, app),
         PickerId::Crossfade => render_crossfade_picker(f, picker_area, app),
+        PickerId::VisualizerPreset => render_visualizer_preset_picker(f, picker_area, app),
+        PickerId::ProgressStyle => render_progress_style_picker(f, picker_area, app),
         PickerId::SpotifySearch => {
-            let block = picker_panel(app, " Spotify Link Token ", Some(" [Esc] Close"));
+            let block = picker_panel(app, " Spotify Link Token ", None);
             let inner = block.inner(picker_area);
             f.render_widget(block, picker_area);
 
@@ -2229,10 +2081,6 @@ fn picker_help(f: &mut ratatui::Frame, area: Rect, text: &str, app: &App) {
     f.render_widget(help, help_area);
 }
 
-/// Elevated floating panel (C4): `elevated_bg` fill (Reset when transparent)
-/// framed by a `muted_border` box instead of a loud full-border picker.
-/// The title is rendered in the accent colour (bold) so it stays legible
-/// against dark picker backgrounds (T9).
 fn picker_panel<'a>(app: &App, title: &'a str, help: Option<&'a str>) -> Block<'a> {
     let mut block = Block::default()
         .borders(Borders::ALL)
@@ -2260,11 +2108,7 @@ fn picker_panel<'a>(app: &App, title: &'a str, help: Option<&'a str>) -> Block<'
 fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let sel = app.pickers.top().map_or(0, |o| o.selected);
 
-    let block = picker_panel(
-        app,
-        " Queue ",
-        Some(" [Enter] Play  [d] Remove from Queue  [Esc] Close  j/k Navigate"),
-    );
+    let block = picker_panel(app, " Queue ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2275,10 +2119,7 @@ fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    // Reserve the bottom rows for the static Up Next preview (T11): it shows
-    // the track after the one currently playing and never tracks the
-    // highlighter.
-    let preview_h: u16 = if app.terminal_cols >= 80 { 5 } else { 0 };
+    let preview_h: u16 = if app.terminal_cols >= 80 { 7 } else { 0 };
     let list_area = Rect {
         x: inner.x,
         y: inner.y,
@@ -2348,9 +2189,6 @@ fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     }
 }
 
-/// Static "Up Next" strip at the bottom of the queue picker (T11).  Shows the
-/// track after the one currently playing (with cover art when available); the
-/// highlighter never changes it.
 fn render_queue_upnext_preview(f: &mut ratatui::Frame, area: Rect, app: &mut App, next_idx: usize) {
     app.update_queue_preview_cover();
     let block = Block::default()
@@ -2389,9 +2227,7 @@ fn render_queue_upnext_preview(f: &mut ratatui::Frame, area: Rect, app: &mut App
             } else {
                 Some(track.album.clone())
             };
-            // Cover on the left (clamped to the strip), with a glyph
-            // fallback while none is available yet.
-            let cover_w = COVER_W.min(inner.width.saturating_sub(2));
+            let cover_w = 20u16.min(inner.width.saturating_sub(24).max(8));
             let cover_h = COVER_H.min(inner.height);
             let has_cover = app.queue_preview_cover.is_some();
             if cover_w > 0 && cover_h > 0 {
@@ -2452,7 +2288,7 @@ fn render_queue_upnext_preview(f: &mut ratatui::Frame, area: Rect, app: &mut App
 }
 
 fn render_yt_search_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let block = picker_panel(app, " YouTube Search ", Some(" [Enter] Play / Drill-down  [Ctrl+d] Download  [Ctrl+a] Add to Queue  [Esc] Close  Type to search (auto, 500ms)"));
+    let block = picker_panel(app, " YouTube Search ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2520,11 +2356,7 @@ fn render_yt_search_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let source = app.pickers.top().map_or(PickerSource::All, |o| o.source);
     let title = format!(" Search: {} ", source.label());
-    let help_text = format!(
-        " [Enter] Open  [Tab] Source: {}  [Esc] Close  j/k Navigate",
-        source.label()
-    );
-    let block = picker_panel(app, &title, Some(&help_text));
+    let block = picker_panel(app, &title, None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2538,7 +2370,6 @@ fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         Style::default().fg(app.theme.fg),
     ));
 
-    // Reserve the bottom rows for the preview window (ASCII cover + meta).
     let preview_h: u16 = if app.terminal_cols >= 80 { 7 } else { 0 };
     let results_area = Rect {
         x: inner.x,
@@ -2603,7 +2434,6 @@ fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     let para = Paragraph::new(lines);
     f.render_widget(para, results_area);
 
-    // Preview window: actual cover art as ASCII art next to the track meta.
     if preview_h > 0 {
         let preview_area = Rect {
             x: inner.x,
@@ -2615,8 +2445,6 @@ fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     }
 }
 
-/// Bottom preview pane of the SearchLibrary picker: ASCII cover art on the
-/// left, track metadata on the right.
 fn render_search_preview(
     f: &mut ratatui::Frame,
     area: Rect,
@@ -2734,8 +2562,6 @@ fn render_search_preview(
 fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     match app.input_mode {
         InputMode::Normal => {
-            // A committed library filter (from `/`) stays active; keep the
-            // query visible so the user knows the list is filtered. Esc clears.
             if !app.search_query.is_empty() {
                 f.render_widget(
                     Paragraph::new(format!(" > {}  [Esc] clear filter", app.search_query)).style(
@@ -2747,8 +2573,6 @@ fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 );
                 return;
             }
-            // During tab transitions, preserve the last footer render to avoid
-            // visual jumps from stale state becoming momentarily visible.
             if app.footer_cache.suppress_refresh {
                 if let Some(ref cached) = app.footer_cache.last {
                     crate::footer::draw(f, area, cached);
@@ -2785,8 +2609,6 @@ pub fn render_progress_variant(ratio: f64, width: usize, app: &App) -> String {
     crate::progress::render_progress(ratio, width, app.progress_style)
 }
 
-/// Render the progress bar as styled spans (supports per-character coloring
-/// for the `TrueGradient` style).
 pub fn render_progress_variant_styled<'a>(
     ratio: f64,
     width: usize,
@@ -2802,7 +2624,6 @@ pub fn render_progress_variant_styled<'a>(
     )
 }
 
-/// Time-synced lyrics pane on the right side of the library view.
 fn render_lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let inner = render_pane_header(f, area, app, "LYRICS", app.lyrics_pane_focus, false, true);
     fill_pane(f, inner, app);
@@ -2835,16 +2656,11 @@ fn render_lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
     let total = lyrics.lines.len();
     let width = inner.width.max(1) as usize;
-    // A lyric line renders as "<marker> <text>" (" > " for the active line).
-    // B7 wraps long lines, so compute per-line display-row heights and keep
-    // the scroll window in display-row space (not logical LRC lines).
     let mut row_offsets = Vec::with_capacity(total);
     let mut text = Vec::with_capacity(total);
     let mut cumulative = 0usize;
     for (i, line) in lyrics.lines.iter().enumerate() {
         let is_current = i == app.lyrics_scroll;
-        // Active-verse left marker is a bright accent so the playing line
-        // stands out against the muted gutter of the other rows.
         let marker_ch = if is_current { ">" } else { " " };
         let marker_fg = if is_current {
             app.theme.secondary_accent
@@ -2877,15 +2693,11 @@ fn render_lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         0
     } else if app.lyrics_manual_scroll {
         if anchor == total - 1 {
-            // Last line reached: snap to the bottom so a wrapped tail is
-            // never clipped by centering.
             bottom
         } else {
-            // Free manual scroll keeps the active line roughly centered.
             row_offsets[anchor].saturating_sub(visible / 2).min(bottom)
         }
     } else {
-        // Auto-follow: active line pinned to the top of the pane.
         row_offsets[anchor].min(bottom)
     };
 
@@ -2895,21 +2707,10 @@ fn render_lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     f.render_widget(para, inner);
 }
 
-/// Height of the track-info card embedded at the bottom of the left Library
-/// pane: one border row plus the five content rows (title, artist, album,
-/// spacer, duration/source).  The cover art is vertically centred to match.
-/// Height of the track-info block content reserved at the bottom of the left
-/// Library pane when an image protocol is available: cover art (7 rows) plus
-/// title, artist, album, duration, a spacer and the library stats row.  The
-/// separator line above is sized separately in the pane layout.
 const TRACK_INFO_CARD_H: u16 = 14;
 
-/// Height of the track-info block in cover-less terminals (no image
-/// protocol): title, artist, album, duration and the stats row, one row each.
 const TRACK_INFO_TEXT_H: u16 = 6;
 
-/// Height of the track-info block for the current terminal.  Image-protocol
-/// detection is session-constant, so the pane height never shifts mid-render.
 fn track_info_block_height() -> u16 {
     if no_image_protocol() {
         TRACK_INFO_TEXT_H
@@ -2918,9 +2719,6 @@ fn track_info_block_height() -> u16 {
     }
 }
 
-/// Library stats label (" X tracks | Xh Xm " / " X albums " / ...) for the
-/// list rendered in the right pane, mirroring the per-category renderer
-/// branches so the block below the track meta stays consistent.
 fn library_stats_line(app: &App) -> String {
     if app.browse_detail.is_some() {
         if app.library_category == 5 {
@@ -2953,8 +2751,6 @@ fn library_stats_line(app: &App) -> String {
     }
 }
 
-/// Source label for the meta line (nerd-font aware, leading space trimmed by
-/// the caller through `meta_line`).
 fn source_label(use_nerd: bool, source: &str) -> String {
     if use_nerd {
         match source {
@@ -2971,18 +2767,12 @@ fn source_label(use_nerd: bool, source: &str) -> String {
     }
 }
 
-/// Display fields for the library track-info block, context aware of the
-/// active list type (PROMPT #20).  Returns `None` when the selected row is
-/// out of range, which lets the caller fall back to the stats-only block.
 struct TrackInfoFields {
     title: String,
     artist: String,
     album: Option<String>,
-    /// Right meta line content: `[3:45] | Local` or `[12 tracks] | Spotify`.
     meta: String,
-    /// Favourite marker appended to the separator label.
     fav: String,
-    /// Whether cover art is currently loaded for the block.
     has_cover: bool,
 }
 
@@ -3011,7 +2801,8 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
             } else {
                 Some(track.album.clone())
             };
-            let source = if track.path.contains("/audio/spotify") || track.path.starts_with("spotify:")
+            let source = if track.path.contains("/audio/spotify")
+                || track.path.starts_with("spotify:")
             {
                 "Spotify"
             } else if track.path.contains("/audio/youtube") || track.path.starts_with("youtube:") {
@@ -3042,7 +2833,11 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                 .tracks_cache
                 .iter()
                 .find(|t| {
-                    let album: &str = if t.album.is_empty() { "Unknown Album" } else { &t.album };
+                    let album: &str = if t.album.is_empty() {
+                        "Unknown Album"
+                    } else {
+                        &t.album
+                    };
                     album == name
                 })
                 .map(|t| {
@@ -3141,18 +2936,7 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
     }
 }
 
-/// Track info block rendered at the bottom of the left Library pane, directly
-/// on the pane background (no container with its own background).  This
-/// replaces the deprecated floating popup so the lyrics pane and
-/// notifications are never covered.  Layout: a separator line, cover art on
-/// top, then the meta rows (title / artist / album / [duration | source]) and
-/// finally the library stats row.
-fn render_track_info_in_pane(
-    f: &mut ratatui::Frame,
-    sep_area: Rect,
-    area: Rect,
-    app: &mut App,
-) {
+fn render_track_info_in_pane(f: &mut ratatui::Frame, sep_area: Rect, area: Rect, app: &mut App) {
     let fields = match track_info_fields(app) {
         Some(fields) => fields,
         None => return,
@@ -3160,14 +2944,18 @@ fn render_track_info_in_pane(
     let has_cover = fields.has_cover;
     let can_cover = !no_image_protocol() && area.width > COVER_W + 1;
 
-    // Separator line on the pane background, replacing the old bordered card.
     let sep_w = sep_area.width.saturating_sub(1) as usize;
     let sep_label = format!(" Track Info{} ", fields.fav);
     let sep_style = Style::default().fg(app.theme.fg_dim);
     let sep_line = if sep_w >= sep_label.len() {
         let side = (sep_w - sep_label.len()) / 2;
         let extra = (sep_w - sep_label.len()) % 2;
-        format!("{}{}{}", "─".repeat(side), sep_label, "─".repeat(side + extra))
+        format!(
+            "{}{}{}",
+            "─".repeat(side),
+            sep_label,
+            "─".repeat(side + extra)
+        )
     } else {
         sep_label
     };
@@ -3179,8 +2967,6 @@ fn render_track_info_in_pane(
     let stats_line = library_stats_line(app);
 
     if can_cover {
-        // Cover on top, meta + stats below (no layout shift when a cover
-        // loads, since the block height is fixed for this session).
         let split = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Length(COVER_H + 1), Constraint::Min(0)])
@@ -3220,7 +3006,10 @@ fn render_track_info_in_pane(
             } else {
                 Span::raw("")
             }),
-            Line::from(Span::styled(fields.meta.clone(), Style::default().fg(app.theme.fg_dim))),
+            Line::from(Span::styled(
+                fields.meta.clone(),
+                Style::default().fg(app.theme.fg_dim),
+            )),
             Line::from(""),
             Line::from(Span::styled(
                 stats_line.trim(),
@@ -3230,7 +3019,6 @@ fn render_track_info_in_pane(
         let para = Paragraph::new(lines);
         f.render_widget(para, text_area);
     } else {
-        // Text only (no cover or too narrow): meta then stats.
         let title_avail = area.width.saturating_sub(2) as usize;
         let animated_title = scroll_text(&fields.title, title_avail, app.np_title_scroll, true);
         let lines = vec![
@@ -3250,7 +3038,10 @@ fn render_track_info_in_pane(
                 Span::raw("")
             }),
             Line::from(""),
-            Line::from(Span::styled(fields.meta.clone(), Style::default().fg(app.theme.fg_dim))),
+            Line::from(Span::styled(
+                fields.meta.clone(),
+                Style::default().fg(app.theme.fg_dim),
+            )),
             Line::from(Span::styled(
                 stats_line.trim(),
                 Style::default().fg(app.theme.fg_dim),
@@ -3262,7 +3053,7 @@ fn render_track_info_in_pane(
 }
 
 fn render_about_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = picker_panel(app, " About ", Some(" [Esc] Close"));
+    let block = picker_panel(app, " About ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -3473,11 +3264,7 @@ fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
 fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     if app.sleep_timer_input_mode {
-        let block = picker_panel(
-            app,
-            " Sleep Timer: Manual Input ",
-            Some(" Enter minutes  [Enter] Set  [Esc] Cancel"),
-        );
+        let block = picker_panel(app, " Sleep Timer: Manual Input ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
         let label = Paragraph::new(Line::from(vec![
@@ -3495,12 +3282,7 @@ fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
 
     let is_active = app.sleep_timer_remaining.is_some();
-    let help_text = if is_active {
-        " h/- Decrease  l/+ Increase  i: Input  Enter: Set  c: Cancel Timer  [Esc] Close"
-    } else {
-        " h/- Decrease  l/+ Increase  i: Input  Enter: Set  [Esc] Close"
-    };
-    let block = picker_panel(app, " Sleep Timer ", Some(help_text));
+    let block = picker_panel(app, " Sleep Timer ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -3508,7 +3290,6 @@ fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
     let mut lines: Vec<Line> = Vec::new();
 
-    // Current value
     lines.push(Line::from(vec![Span::styled(
         format!("  Timer: {} minutes", mins),
         Style::default()
@@ -3517,7 +3298,6 @@ fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     )]));
     lines.push(Line::from(""));
 
-    // Slider
     let slider_w = inner.width.saturating_sub(4) as u32;
     let pos = if slider_w > 0 {
         ((mins as f32 / 180.0) * slider_w as f32) as u32
@@ -3546,7 +3326,6 @@ fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     ]));
     lines.push(Line::from(""));
 
-    // Quick options
     let quick_opts = [5u32, 10, 15, 30, 60, 90, 120];
     let sel = app
         .pickers
@@ -3569,7 +3348,6 @@ fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     lines.push(Line::from(spans));
     lines.push(Line::from(""));
 
-    // Active status
     if is_active {
         if let Some(remaining) = app.sleep_timer_remaining {
             let r_mins = remaining / 60;
@@ -3584,7 +3362,6 @@ fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
     lines.push(Line::from(""));
 
-    // Controls (kept for visual reference, same as border help)
     lines.push(Line::from(Span::styled(
         "  h/- Decrease  l/+ Increase  i: Input  Enter: Set",
         Style::default().fg(app.theme.fg_dim),
@@ -3605,9 +3382,6 @@ fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(paragraph, inner);
 }
 
-/// (emoji label, keybinding, action id). The action id is the stable handle
-/// the app dispatches on, so label text or emoji glyph changes can never
-/// break command execution.
 pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str, &str)] = &[
     ("\u{25b6}\u{fe0f} Play/Pause", "Space", "play/pause"),
     ("\u{23ed}\u{fe0f} Next Track", "n", "next track"),
@@ -3632,7 +3406,7 @@ pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str, &str)] = &[
     ("\u{2139}\u{fe0f} About", "Alt+A", "about"),
     ("\u{1f3b5} Spotify", "Alt+S", "spotify"),
     ("\u{1f4dd} Fetch Lyrics", "l", "fetch lyrics"),
-    ("\u{1f3a8} Progress Style", "P", "progress style"),
+    ("\u{1f3a8} Progress Style", "Alt+P", "progress style"),
     ("\u{1f3b6} Visualizer: Toggle", "Ctrl+V", "visualizer"),
     ("\u{1f3b6} Visualizer Preset", "Alt+V", "visualizer preset"),
     ("\u{23f9}\u{fe0f} Stop", "s", "stop"),
@@ -3652,6 +3426,7 @@ pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str, &str)] = &[
     ("\u{1f4cf} Footer Preset", "\u{2014}", "footer preset"),
     ("\u{25c9} Cycle Design", "\u{2014}", "cycle design"),
     ("\u{1fa7a} Health Check", ":", "health check"),
+    ("\u{1f4e5} Check for Updates", "\u{2014}", "check updates"),
 ];
 
 fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
@@ -3666,7 +3441,6 @@ fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &mut A
             .iter()
             .filter_map(|c| {
                 let lower = c.0.to_lowercase();
-                // Fuzzy subsequence match: each char in q must appear in order
                 let mut qi = 0usize;
                 for ch in lower.chars() {
                     if qi < q.len() && ch == q.as_bytes()[qi] as char {
@@ -3681,14 +3455,9 @@ fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &mut A
             })
             .collect()
     };
-    // Sort by score descending (longer match = better)
     filtered.sort_by_key(|b| std::cmp::Reverse(b.1));
 
-    let block = picker_panel(
-        app,
-        " Commands ",
-        Some(" Type to filter  [Enter] Execute  [Esc] Close  \u{2191}/\u{2193} Navigate"),
-    );
+    let block = picker_panel(app, " Commands ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -3715,7 +3484,6 @@ fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &mut A
         (0, 0)
     };
 
-    // Pad names so keybindings line up in a column.
     let name_w = filtered
         .iter()
         .map(|((name, _, _), _)| name.chars().count())
@@ -3747,7 +3515,6 @@ fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &mut A
         } else {
             Style::default().fg(app.theme.fg_dim)
         };
-        // Selected row highlights edge-to-edge: pad the name to fill the width.
         let pad = if is_sel {
             row_w.saturating_sub(prefix.len() + key.len() + 4)
         } else {
@@ -3800,59 +3567,26 @@ fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .top()
         .map_or(0, |o| o.selected.min(presets.len() - 1));
 
-    let block = picker_panel(
-        app,
-        " Equalizer ",
-        Some(" [Enter] Apply  [Esc] Close  j/k Navigate"),
-    );
+    let block = picker_panel(app, " Equalizer ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Live EQ preview panel below the list (PROMPT #3): a separator, the
-    // active/highlighted preset label, then the gain curve with a dB scale.
-    let preview_h = 4u16;
-    let sep_y = inner.y + inner.height.saturating_sub(preview_h + 1);
+    let preview_height: u16 = 4;
+    let list_h = inner.height.saturating_sub(preview_height);
     let list_area = Rect {
         x: inner.x,
         y: inner.y,
         width: inner.width,
-        height: inner.height.saturating_sub(preview_h + 1),
+        height: list_h,
     };
     let preview_area = Rect {
         x: inner.x,
-        y: sep_y + 1,
+        y: inner.y + list_h,
         width: inner.width,
-        height: preview_h,
+        height: inner.height.saturating_sub(list_h),
     };
 
-    let sep_w = inner.width.saturating_sub(2) as usize;
-    let sep_label = " EQ Preview ";
-    let sep = if sep_w >= sep_label.len() {
-        let side = (sep_w - sep_label.len()) / 2;
-        format!(
-            "{}{}{}",
-            "─".repeat(side),
-            sep_label,
-            "─".repeat(sep_w - sep_label.len() - side)
-        )
-    } else {
-        sep_label.to_string()
-    };
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            sep,
-            Style::default().fg(app.theme.fg_dim),
-        ))),
-        Rect {
-            x: inner.x,
-            y: sep_y,
-            width: inner.width,
-            height: 1,
-        },
-    );
-
-    // Preset list (1-row-at-a-time scroll, PROMPT #10).
-    let visible = list_area.height as usize;
+    let visible = list_h as usize;
     let total = presets.len();
     let (scroll_start, scroll_end) = if let Some(top) = app.pickers.top_mut() {
         let (s, e) = step_viewport(top.viewport_offset, sel, visible, total);
@@ -3863,7 +3597,7 @@ fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     };
 
     let mut list_items: Vec<ListItem> = Vec::new();
-    for (i, (name, desc, eq)) in presets
+    for (i, (name, desc, _eq)) in presets
         .iter()
         .enumerate()
         .skip(scroll_start)
@@ -3881,139 +3615,69 @@ fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             Style::default()
         };
         let mut spans = vec![Span::styled(format!("{prefix}{}", name), Style::default())];
-        // Static bar-chart preview of the gain curve (T24).
-        spans.extend(eq_preset_preview(*eq, app));
-        if !is_sel {
-            spans.push(Span::styled(
-                format!("  \u{2014} {desc}"),
-                Style::default().fg(app.theme.fg_dim),
-            ));
-        }
+        spans.push(Span::styled(
+            format!("  \u{2014} {desc}"),
+            Style::default().fg(app.theme.fg_dim),
+        ));
         list_items.push(ListItem::new(Line::from(spans)).style(style));
     }
 
     let list = List::new(list_items);
     f.render_widget(list, list_area);
 
-    // Preview: which preset is active (and which is highlighted when they
-    // differ), then the live gain curve of the highlighted preset.
-    let highlighted = presets[sel];
-    let active_label = app.state.eq_preset.label();
-    let current_line = if app.state.eq_preset == highlighted.2 {
-        Line::from(Span::styled(
-            format!(" Current: {}", active_label),
-            Style::default().fg(app.theme.success),
-        ))
-    } else {
-        Line::from(vec![
-            Span::styled(
-                format!(" Current: {}", active_label),
-                Style::default().fg(app.theme.success),
-            ),
-            Span::styled(
-                format!("  \u{2192} {}", highlighted.0),
-                Style::default().fg(app.theme.accent),
-            ),
-        ])
-    };
-    f.render_widget(
-        current_line,
-        Rect {
-            x: inner.x,
-            y: preview_area.y,
-            width: inner.width,
-            height: 1,
-        },
-    );
-    let curve_area = Rect {
-        x: inner.x,
-        y: preview_area.y + 1,
-        width: inner.width,
-        height: preview_h - 1,
-    };
-    render_eq_curve(f, curve_area, highlighted.2.to_gains(), app);
+    if preview_area.height >= 3 {
+        let rule = Line::from(Span::styled(
+            "\u{2500}".repeat(preview_area.width as usize),
+            Style::default().fg(app.theme.muted_border),
+        ));
+        f.render_widget(
+            Paragraph::new(rule),
+            Rect {
+                x: preview_area.x,
+                y: preview_area.y,
+                width: preview_area.width,
+                height: 1,
+            },
+        );
+
+        let selected_name = presets.get(sel).map(|p| p.0).unwrap_or("");
+        let selected_eq = presets.get(sel).map(|p| p.2);
+        let selected_desc = presets.get(sel).map(|p| p.1).unwrap_or("");
+
+        let mut preview_spans = vec![Span::styled(
+            format!(" {selected_name} "),
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )];
+        if let Some(eq) = selected_eq {
+            preview_spans.extend(eq_preset_preview(eq, app));
+        }
+        f.render_widget(
+            Paragraph::new(Line::from(preview_spans)),
+            Rect {
+                x: preview_area.x,
+                y: preview_area.y + 1,
+                width: preview_area.width,
+                height: 1,
+            },
+        );
+
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!("  {selected_desc}"),
+                Style::default().fg(app.theme.fg_dim),
+            ))),
+            Rect {
+                x: preview_area.x,
+                y: preview_area.y + 2,
+                width: preview_area.width,
+                height: 1,
+            },
+        );
+    }
 }
 
-/// Draw an EQ gain curve (15 ISO 1/3-octave band gains in dB) into `area`
-/// with a vertical dB scale and gridlines (PROMPT #3).  The zero line is a
-/// row of `─`; the curve is traced with `█` and the edges are marked `▔`/`▁`.
-fn render_eq_curve(f: &mut ratatui::Frame, area: Rect, gains: [f32; 15], app: &App) {
-    if area.width < 8 || area.height < 2 {
-        return;
-    }
-    let rows = area.height as usize;
-    let cols = area.width as usize;
-    let zero_row = rows.saturating_sub(1) / 2;
-    let to_row = |g: f32| {
-        let n = ((g.clamp(-6.0, 6.0) + 6.0) / 12.0) as f64;
-        ((1.0 - n) * (rows as f64 - 1.0)).round() as usize
-    };
-
-    let mut grid: Vec<Vec<char>> = vec![vec![' '; cols]; rows];
-    for x in 0..cols {
-        let frac = if cols > 1 {
-            x as f64 / (cols - 1) as f64
-        } else {
-            0.0
-        };
-        let pos = frac * 14.0;
-        let lo = pos.floor() as usize;
-        let hi = (pos.ceil() as usize).min(14);
-        let t = pos - lo as f64;
-        let g = gains[lo] as f64 * (1.0 - t) + gains[hi] as f64 * t;
-        let row = to_row(g as f32);
-        if let Some(cell) = grid.get_mut(row).and_then(|r| r.get_mut(x)) {
-            *cell = '█';
-        }
-    }
-    for (r, row) in grid.iter_mut().enumerate() {
-        for cell in row.iter_mut() {
-            if *cell == ' ' {
-                *cell = if r == zero_row {
-                    '─'
-                } else if r == rows - 1 {
-                    '▁'
-                } else if r == 0 {
-                    '▔'
-                } else {
-                    '·'
-                };
-            }
-        }
-    }
-
-    let mut lines: Vec<Line> = Vec::with_capacity(rows);
-    for (r, row) in grid.iter().enumerate() {
-        let label = if r == 0 {
-            "+6 "
-        } else if r == zero_row {
-            " 0 "
-        } else if r == rows - 1 {
-            "-6 "
-        } else {
-            "   "
-        };
-        let mut spans = vec![Span::styled(label, Style::default().fg(app.theme.fg_dim))];
-        for &ch in row {
-            let style = if ch == '█' {
-                Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(app.theme.fg_dim)
-            };
-            spans.push(Span::styled(ch.to_string(), style));
-        }
-        lines.push(Line::from(spans));
-    }
-    f.render_widget(Paragraph::new(lines), area);
-}
-
-/// Static bar-chart preview of an EQ preset's gain curve (T24).  The fifteen
-/// ISO 1/3-octave gains (±4 dB) are mapped onto the visualizer's block glyphs
-/// — the active visualizer preset picks the glyph set — and coloured by the
-/// theme: boosts are `success`, cuts are `warning`, and neutral bands stay
-/// muted so the curve is readable at a glance.
 fn eq_preset_preview(eq: EqPreset, app: &App) -> Vec<Span<'static>> {
     const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
     const BRAILLE: [char; 8] = ['⠁', '⠃', '⠇', '⡇', '⣇', '⣧', '⣷', '⣿'];
@@ -4041,7 +3705,7 @@ fn eq_preset_preview(eq: EqPreset, app: &App) -> Vec<Span<'static>> {
 }
 
 fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let block = picker_panel(app, " Theme ", Some(" [Enter] Select  [Esc] Close"));
+    let block = picker_panel(app, " Theme ", None);
     let _inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -4073,7 +3737,7 @@ fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App)
         .top()
         .map_or(0, |o| o.selected.min(total.saturating_sub(1)));
 
-    let block = picker_panel(app, " Theme ", Some(" [Enter] Select  [Esc] Close"));
+    let block = picker_panel(app, " Theme ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -4082,7 +3746,7 @@ fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App)
         Style::default().fg(app.theme.fg),
     ));
 
-    let visible = inner.height.saturating_sub(1) as usize;
+    let visible = inner.height.saturating_sub(1).checked_div(2).unwrap_or(0) as usize;
     let (scroll_start, scroll_end) = if total > 0 {
         if let Some(top) = app.pickers.top_mut() {
             let (s, e) = step_viewport(top.viewport_offset, sel, visible, total);
@@ -4099,7 +3763,6 @@ fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App)
     let row_w = inner.width as usize;
     let mut first_row = true;
     for &(i, entry) in &filtered[scroll_start..scroll_end] {
-        // Faint horizontal rule between items (not above the first row).
         if !first_row {
             let rule = Span::styled(
                 "  ".to_string() + &"\u{2500}".repeat(row_w.saturating_sub(6)),
@@ -4112,12 +3775,9 @@ fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App)
         let is_active = i == app.theme_index;
         let prefix = if i == sel { " > " } else { "   " };
         let check = if is_active { " \u{2713}" } else { "" };
-        // Badge light themes so users can spot them at a glance.
         let light_badge = if entry.light { " \u{2600}" } else { "" };
         let name_part = format!("{}{}{}", prefix, entry.name, light_badge);
 
-        // Swatch run of the theme's core colours, right-aligned with a
-        // 2-cell margin so the palette reads as a consistent column.
         let colors = [
             entry.theme.bg,
             entry.theme.fg,
@@ -4130,9 +3790,6 @@ fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App)
         let left_w = name_part.chars().count() + check.chars().count() + 1;
         let pad = row_w.saturating_sub(left_w + swatch_run_w + 2);
 
-        // The highlighter covers only the name (and the padding that pushes
-        // the palette into its right-aligned column).  It stops where the
-        // swatches begin so the theme colours stay unobscured (T6).
         let name_style = if i == sel {
             Style::default()
                 .fg(app.theme.selection_fg_readable())
@@ -4165,10 +3822,8 @@ fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App)
     f.render_widget(list, inner);
 }
 
-/// Crossfade duration options (seconds) shown in the crossfade picker.
 pub const CROSSFADE_DURATIONS: [u8; 5] = [3, 5, 10, 15, 30];
 
-/// Easing options shown in the crossfade picker, in display order.
 pub const CROSSFADE_EASINGS: [gtm_core::state::Easing; 7] = [
     gtm_core::state::Easing::Linear,
     gtm_core::state::Easing::SlowFadeInFastFadeOut,
@@ -4181,36 +3836,20 @@ pub const CROSSFADE_EASINGS: [gtm_core::state::Easing; 7] = [
 
 fn easing_description(e: gtm_core::state::Easing) -> &'static str {
     match e {
-        gtm_core::state::Easing::Linear => {
-            "Linear: constant gain ramp; abrupt but predictable."
-        }
-        gtm_core::state::Easing::Smoothstep => {
-            "Smoothstep: smooth start and end, no clicks."
-        }
+        gtm_core::state::Easing::Linear => "Linear: constant gain ramp; abrupt but predictable.",
+        gtm_core::state::Easing::Smoothstep => "Smoothstep: smooth start and end, no clicks.",
         gtm_core::state::Easing::EqualPower => {
             "Equal Power: constant perceived loudness, no mid-fade dip."
         }
-        gtm_core::state::Easing::Logarithmic => {
-            "Logarithmic: fast attack, fast release profile."
-        }
-        gtm_core::state::Easing::Exponential => {
-            "Exponential: fast attack, fast release profile."
-        }
-        gtm_core::state::Easing::SlowFadeInFastFadeOut => {
-            "Slow In, Fast Out: asymmetric curve."
-        }
-        gtm_core::state::Easing::FastFadeInSlowFadeOut => {
-            "Fast In, Slow Out: asymmetric curve."
-        }
+        gtm_core::state::Easing::Logarithmic => "Logarithmic: fast attack, fast release profile.",
+        gtm_core::state::Easing::Exponential => "Exponential: fast attack, fast release profile.",
+        gtm_core::state::Easing::SlowFadeInFastFadeOut => "Slow In, Fast Out: asymmetric curve.",
+        gtm_core::state::Easing::FastFadeInSlowFadeOut => "Fast In, Slow Out: asymmetric curve.",
     }
 }
 
 fn render_crossfade_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = picker_panel(
-        app,
-        " Crossfade Options ",
-        Some(" j/k Navigate  [Enter] Select  [Esc] Close"),
-    );
+    let block = picker_panel(app, " Crossfade Options ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -4227,8 +3866,6 @@ fn render_crossfade_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         .map(|c| c.easing)
         .unwrap_or_default();
 
-    // Rows: [0] "Duration" header, [1..=5] durations, [6] "Easing" header,
-    // [7..=13] easings.
     let mut rows: Vec<String> = Vec::new();
     rows.push(" Duration ".to_string());
     for d in CROSSFADE_DURATIONS {
@@ -4252,7 +3889,9 @@ fn render_crossfade_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let line = if is_header {
             Line::from(Span::styled(
                 row.clone(),
-                Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
             ))
         } else {
             let prefix = if is_sel { " > " } else { "   " };
@@ -4268,7 +3907,6 @@ fn render_crossfade_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         lines.push(line);
     }
 
-    // Bottom panel: describe the highlighted easing.
     lines.push(Line::from(""));
     if sel >= 7 && sel < 7 + CROSSFADE_EASINGS.len() {
         let e = CROSSFADE_EASINGS[sel - 7];
@@ -4293,6 +3931,108 @@ fn render_crossfade_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(para, inner);
 }
 
+fn render_visualizer_preset_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let block = picker_panel(app, " Visualizer Preset ", None);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let current = app.visualizer.preset;
+    let presets = crate::visualizer::VisualizerPreset::all();
+
+    let sel = app
+        .pickers
+        .top()
+        .map_or(0, |o| o.selected.min(presets.len() - 1));
+
+    let visible = inner.height as usize;
+    let total = presets.len();
+    let (scroll_start, scroll_end) = if let Some(top) = app.pickers.top() {
+        step_viewport(top.viewport_offset, sel, visible, total)
+    } else {
+        (0, total)
+    };
+
+    let mut lines = Vec::new();
+    for (i, preset) in presets
+        .iter()
+        .enumerate()
+        .skip(scroll_start)
+        .take(scroll_end - scroll_start)
+    {
+        let is_sel = i == sel;
+        let is_cur = *preset == current;
+        let prefix = if is_sel { " > " } else { "   " };
+        let cur = if is_cur { "   (current)" } else { "" };
+        let style = if is_sel {
+            Style::default()
+                .fg(app.theme.selection_fg_readable())
+                .bg(app.theme.selection_bg)
+        } else if is_cur {
+            Style::default().fg(app.theme.accent)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{prefix}{}{cur}", preset.name()),
+            style,
+        )));
+    }
+
+    let list = List::new(lines.into_iter().map(ListItem::new).collect::<Vec<_>>());
+    f.render_widget(list, inner);
+}
+
+fn render_progress_style_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let block = picker_panel(app, " Progress Style ", None);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let current = app.progress_style;
+    let styles = crate::progress::ProgressStyle::all();
+
+    let sel = app
+        .pickers
+        .top()
+        .map_or(0, |o| o.selected.min(styles.len() - 1));
+
+    let visible = inner.height as usize;
+    let total = styles.len();
+    let (scroll_start, scroll_end) = if let Some(top) = app.pickers.top() {
+        step_viewport(top.viewport_offset, sel, visible, total)
+    } else {
+        (0, total)
+    };
+
+    let mut lines = Vec::new();
+    for (i, style) in styles
+        .iter()
+        .enumerate()
+        .skip(scroll_start)
+        .take(scroll_end - scroll_start)
+    {
+        let is_sel = i == sel;
+        let is_cur = *style == current;
+        let prefix = if is_sel { " > " } else { "   " };
+        let cur = if is_cur { "   (current)" } else { "" };
+        let line_style = if is_sel {
+            Style::default()
+                .fg(app.theme.selection_fg_readable())
+                .bg(app.theme.selection_bg)
+        } else if is_cur {
+            Style::default().fg(app.theme.accent)
+        } else {
+            Style::default()
+        };
+        lines.push(Line::from(Span::styled(
+            format!("{prefix}{}{cur}", style.name()),
+            line_style,
+        )));
+    }
+
+    let list = List::new(lines.into_iter().map(ListItem::new).collect::<Vec<_>>());
+    f.render_widget(list, inner);
+}
+
 fn format_duration_short(secs: u64) -> String {
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
@@ -4306,19 +4046,14 @@ fn format_duration_short(secs: u64) -> String {
 
 // ─── Aesthetic Helpers ───
 
-/// Braille spinner frames for loading states.
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
-/// Return a braille spinner character cycling by `frame` (incremented each tick).
 pub fn braille_spinner(frame: usize) -> char {
     SPINNER_FRAMES[frame % SPINNER_FRAMES.len()]
 }
 
-/// Re-export so footer.rs and other modules can call `crate::ui::readable_fg`.
 pub use crate::theme::readable_fg;
 
-/// Scroll text horizontally if it exceeds max_width, using a frame-based offset.
-/// Only the selected item scrolls; others are truncated with "…".
 fn scroll_text(text: &str, max_width: usize, frame: usize, is_selected: bool) -> String {
     if text.chars().count() <= max_width {
         return format!("{:<width$}", text, width = max_width);
@@ -4327,8 +4062,6 @@ fn scroll_text(text: &str, max_width: usize, frame: usize, is_selected: bool) ->
         let truncated: String = text.chars().take(max_width.saturating_sub(1)).collect();
         return format!("{}…", truncated);
     }
-    // Animated scroll: shift by (frame / 3) characters, wrap around.
-    // Rotate on character boundaries to avoid slicing mid-UTF-8-sequence.
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
     let scroll = (frame / 3) % n.max(1);
@@ -4343,18 +4076,13 @@ fn scroll_text(text: &str, max_width: usize, frame: usize, is_selected: bool) ->
 // ─── Library Motion Overlays ───
 
 fn render_playlist_select_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = picker_panel(
-        app,
-        " Select Playlist ",
-        Some(" [Enter] Select  [Esc] Cancel"),
-    );
+    let block = picker_panel(app, " Select Playlist ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
     let sel = app.pickers.top().map_or(0, |o| o.selected);
     let mut items: Vec<ListItem> = Vec::new();
 
-    // "Create New" option at the top
     items.push(
         ListItem::new("  + Create New Playlist").style(Style::default().fg(app.theme.accent)),
     );
@@ -4377,8 +4105,7 @@ fn render_playlist_select_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
 }
 
 fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let help_text = " [j/k] Fields  [Ctrl+S] Sync Cover  [Tab] Next  [Enter] Save  [Esc] Cancel";
-    let block = picker_panel(app, " Edit Metadata ", Some(help_text));
+    let block = picker_panel(app, " Edit Metadata ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -4392,9 +4119,6 @@ fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App
         "Track #",
     ];
 
-    // Reserve a right column for a larger cover preview (bottom-right corner
-    // feel).  The width is the canonical COVER_W scaled up ~1.7× so the 'e'
-    // window shows the artwork at a readable size (T12).
     const COVER_W_EDIT: u16 = 24;
     let vchunks = Layout::default()
         .direction(Direction::Vertical)
@@ -4430,12 +4154,19 @@ fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App
             Span::styled(value.to_string(), style),
         ]));
     }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " Tab: next field   Enter: save   Ctrl+S: sync cover",
+        Style::default().fg(app.theme.fg_dim),
+    )));
+    lines.push(Line::from(Span::styled(
+        " Esc: cancel       Type to edit the active field",
+        Style::default().fg(app.theme.fg_dim),
+    )));
 
     let para = Paragraph::new(lines);
     f.render_widget(para, list_area);
 
-    // Cover preview pinned to the bottom of the right column; taller than the
-    // canonical size so the artwork fills the reserved column.
     if cover_area.width > 0 {
         let cover_h = 12u16.min(cover_area.height);
         let c_area = Rect {
@@ -4461,8 +4192,6 @@ fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App
 }
 
 fn render_health_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    use ratatui::widgets::{Block, Borders, Clear};
-
     let panel_width = area.width.min(60);
     let panel_height = area.height.min(20);
     let x = (area.width.saturating_sub(panel_width)) / 2;
@@ -4498,7 +4227,10 @@ fn render_health_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                format!("  uptime {:.0}s", report.daemon_uptime_secs),
+                format!(
+                    "  uptime {}",
+                    crate::footer::format_uptime(report.daemon_uptime_secs)
+                ),
                 Style::default().fg(app.theme.fg_dim),
             ),
         ]));
@@ -4552,7 +4284,6 @@ mod tests {
     #[test]
     fn scroll_text_handles_multibyte_utf8() {
         let text = "Artist \u{2014} T\u{e9}t\u{e9} Song Title That Is Quite Long";
-        // Exercise a range of frame offsets so byte/char boundaries vary.
         for frame in 0..600 {
             for width in [8usize, 16, 24] {
                 let out = scroll_text(text, width, frame, true);

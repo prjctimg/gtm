@@ -197,35 +197,22 @@ pub enum SlideDirection {
 
 #[derive(Debug, Clone)]
 pub struct Notification {
-    /// Short heading shown at the top of the card (Volume, Up Next, Theme,
-    /// Equalizer, YouTube, Spotify, Queue, Library, Playlist, Sleep Timer,
-    /// System, Error, Success).
     pub title: String,
     pub message: String,
     pub kind: NotificationKind,
     pub expires_at: std::time::Instant,
-    /// Direction the notification slides in from.
     pub slide_direction: SlideDirection,
-    /// Whether this is a volume-change notification (vertical bar).
     pub is_volume: bool,
-    /// Volume level (0–100) for volume notifications.
     pub volume_value: u8,
-    /// Animation progress: 0.0 = just appeared, 1.0 = fully settled.
-    /// Managed by the animation system; not user-set.
     pub animation_progress: f32,
+    pub trivial: bool,
 }
 
-/// State for the "Up Next" crossfade-countdown notification (T10).  Created
-/// when the daemon emits `CrossfadeCountdown` (the next track is ~5s out from
-/// crossfade start) and removed once the crossfade begins or the countdown
-/// elapses.
 pub struct UpNextNotif {
     pub track: gtm_core::track::TrackInfo,
     pub cover: Option<Vec<u8>>,
     pub cover_stateful: Option<StatefulProtocol>,
-    /// Wall-clock instant the countdown started.
     pub started_at: std::time::Instant,
-    /// Countdown length in wall-clock seconds until the crossfade begins.
     pub total_secs: f64,
 }
 
@@ -276,6 +263,7 @@ pub struct App {
     pub spotify_token_input: String,
     pub cookie_file: Option<String>,
     pub notifications: Vec<Notification>,
+    pub footer_notification: Option<(String, std::time::Instant)>,
     pub crossfade_duration: u8,
     pub yt_search_loading: bool,
     pub yt_search_debounce: Option<std::time::Instant>,
@@ -542,6 +530,7 @@ impl App {
             spotify_token_input: String::new(),
             cookie_file: None,
             notifications: Vec::new(),
+            footer_notification: None,
             crossfade_duration: 6,
             pending_delete: None,
             yt_search_loading: false,
@@ -713,6 +702,7 @@ impl App {
             "Theme",
             format!("Theme: {}{}", name, light),
             NotificationKind::Info,
+            true,
         );
     }
 
@@ -857,6 +847,7 @@ impl App {
                     "Sleep Timer",
                     "Sleep timer expired: shutting down",
                     NotificationKind::Info,
+                    false,
                 );
                 // Draw a final frame so the user sees the shutdown message
                 // before the terminal restores.
@@ -1038,6 +1029,7 @@ impl App {
                             is_volume: false,
                             volume_value: 0,
                             animation_progress: 0.0,
+                            trivial: false,
                         });
                     }
                     IpcResult::Error(e) => {
@@ -1231,12 +1223,18 @@ impl App {
             }
 
             if event::poll(Duration::from_millis(16)).unwrap_or(false) {
-                if let Ok(Event::Key(key)) = event::read() {
-                    if key.kind == KeyEventKind::Press
-                        && (!self.handle_key(key).await || self.pending_quit)
-                    {
-                        break;
+                match event::read() {
+                    Ok(Event::Key(key)) => {
+                        if key.kind == KeyEventKind::Press
+                            && (!self.handle_key(key).await || self.pending_quit)
+                        {
+                            break;
+                        }
                     }
+                    Ok(Event::Paste(text)) => {
+                        self.handle_paste(&text).await;
+                    }
+                    _ => {}
                 }
             }
         }
@@ -1287,15 +1285,15 @@ impl App {
             NotificationKind::Success => "Success",
             NotificationKind::Error => "Error",
         };
-        self.notify_titled(title, message, kind);
+        self.notify_titled(title, message, kind, false);
     }
 
-    /// Push a notification with an explicit title heading (T17).
     pub fn notify_titled(
         &mut self,
         title: &str,
         message: impl Into<String>,
         kind: NotificationKind,
+        trivial: bool,
     ) {
         let expires_at = std::time::Instant::now() + std::time::Duration::from_millis(1500);
         self.notifications.push(Notification {
@@ -1307,12 +1305,17 @@ impl App {
             is_volume: false,
             volume_value: 0,
             animation_progress: 0.0,
+            trivial,
         });
     }
 
-    /// Show a volume-change notification (vertical floating bar).  A live
-    /// volume notification is updated in place (fill + percent, T25) so rapid
-    /// volume changes don't restart the slide-in animation.
+    pub fn notify_footer(&mut self, message: impl Into<String>) {
+        self.footer_notification = Some((
+            message.into(),
+            std::time::Instant::now() + std::time::Duration::from_secs(2),
+        ));
+    }
+
     pub fn notify_volume(&mut self, volume: u8) {
         let now = std::time::Instant::now();
         if let Some(existing) = self
@@ -1334,14 +1337,12 @@ impl App {
             is_volume: true,
             volume_value: volume,
             animation_progress: 0.0,
+            trivial: true,
         });
     }
 
-    /// Begin the "Up Next" countdown notification (T10).  The daemon emits
-    /// `CrossfadeCountdown` when the next track is ~10s out from the end of
-    /// the current track (regardless of crossfade).
     pub fn start_upnext(&mut self, track: gtm_core::track::TrackInfo) {
-        let total_secs = 10.0;
+        let total_secs = self.crossfade_duration as f64 + 3.0;
         self.upnext = Some(UpNextNotif {
             track: track.clone(),
             cover: None,
@@ -1399,33 +1400,41 @@ impl App {
                 let albums = self.unique_albums();
                 let pos = self.list_pos();
                 albums.get(pos).and_then(|(name, _)| {
-                    self.tracks_cache.iter().find(|t| {
-                        let album: &str = if t.album.is_empty() {
-                            "Unknown Album"
-                        } else {
-                            &t.album
-                        };
-                        album == name
-                    }).map(|t| (t.id, t.path.clone()))
+                    self.tracks_cache
+                        .iter()
+                        .find(|t| {
+                            let album: &str = if t.album.is_empty() {
+                                "Unknown Album"
+                            } else {
+                                &t.album
+                            };
+                            album == name
+                        })
+                        .map(|t| (t.id, t.path.clone()))
                 })
             }
             TrackInfoKind::Artist => {
                 let artists = self.unique_artists();
                 let pos = self.list_pos();
                 artists.get(pos).and_then(|(name, _)| {
-                    self.tracks_cache.iter().find(|t| {
-                        let artist: &str = if t.artist.is_empty() {
-                            "Unknown Artist"
-                        } else {
-                            &t.artist
-                        };
-                        artist == name
-                    }).map(|t| (t.id, t.path.clone()))
+                    self.tracks_cache
+                        .iter()
+                        .find(|t| {
+                            let artist: &str = if t.artist.is_empty() {
+                                "Unknown Artist"
+                            } else {
+                                &t.artist
+                            };
+                            artist == name
+                        })
+                        .map(|t| (t.id, t.path.clone()))
                 })
             }
             // Playlist and Spotify rows never resolve a cover; the block still
             // describes the selected row (playlist name / spotify track).
-            TrackInfoKind::Playlist | TrackInfoKind::SpotifyPlaylist | TrackInfoKind::SpotifyTrack => None,
+            TrackInfoKind::Playlist
+            | TrackInfoKind::SpotifyPlaylist
+            | TrackInfoKind::SpotifyTrack => None,
         };
 
         let valid = match kind {
@@ -1850,7 +1859,7 @@ impl App {
             0 => 2,  // Audio: Master Volume, Mute
             1 => 4,  // YouTube: Cookie Source, Cookie File, JS Runtime, Auto Download
             2 => 6,  // Playback: Repeat, Shuffle, Crossfade, Easing, EQ Enabled, Reverb
-            3 => 8,  // System: Theme, Transparent BG, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Design
+            3 => 8, // System: Theme, Transparent BG, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Design
             4 => 14, // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Soloist, Link Soloist, Start, Stop, Activate, Device, Auto-Start, Lyrics Provider
             _ => 0,
         }
@@ -2020,7 +2029,12 @@ impl App {
                 });
             }
             TuiCommand::YtDownload(url) => {
-                self.notify_titled("YouTube", "Download started…", NotificationKind::Info);
+                self.notify_titled(
+                    "YouTube",
+                    "Download started…",
+                    NotificationKind::Info,
+                    false,
+                );
                 let ipc = ipc_tx.clone();
                 let client2 = self.client.clone();
                 tokio::spawn(async move {
@@ -2314,6 +2328,12 @@ impl App {
             PickerId::Equalizer => EQ_PRESETS.len().saturating_sub(1),
             PickerId::SleepTimer => 4,
             PickerId::Crossfade => 13,
+            PickerId::VisualizerPreset => crate::visualizer::VisualizerPreset::all()
+                .len()
+                .saturating_sub(1),
+            PickerId::ProgressStyle => crate::progress::ProgressStyle::all()
+                .len()
+                .saturating_sub(1),
             PickerId::ThemePicker => {
                 let q = query.to_lowercase();
                 if q.is_empty() {
@@ -2653,9 +2673,9 @@ impl App {
                         self.set_last_action("Toggle Mute");
                         self.send_high(TuiCommand::ToggleMute);
                         if self.state.mute {
-                            self.notify_titled("Volume", "Unmuted", NotificationKind::Info);
+                            self.notify_titled("Volume", "Unmuted", NotificationKind::Info, true);
                         } else {
-                            self.notify_titled("Volume", "Muted", NotificationKind::Warning);
+                            self.notify_titled("Volume", "Muted", NotificationKind::Warning, true);
                         }
                     }
                     Some(KeyboardAction::CycleRepeat) => {
@@ -2705,6 +2725,7 @@ impl App {
                                     "Library",
                                     "Favourite toggled",
                                     NotificationKind::Info,
+                                    true,
                                 );
                             }
                             return true;
@@ -2715,8 +2736,7 @@ impl App {
                         let (ids, label) = match self.library_category {
                             2 => {
                                 // Album row: all tracks in the album
-                                if let Some((name, _)) = self.unique_albums().get(self.list_pos())
-                                {
+                                if let Some((name, _)) = self.unique_albums().get(self.list_pos()) {
                                     let ids: Vec<i64> = self
                                         .tracks_cache
                                         .iter()
@@ -2813,7 +2833,7 @@ impl App {
                         self.set_last_action("Clear Queue");
                         let tx = self.cmd_tx();
                         let _ = tx.send(TuiCommand::QueueClear).await;
-                        self.notify_titled("Queue", "Queue cleared", NotificationKind::Info);
+                        self.notify_titled("Queue", "Queue cleared", NotificationKind::Info, true);
                     }
                     Some(KeyboardAction::ToggleVisualizer) => {
                         self.visualizer.toggle();
@@ -2823,6 +2843,24 @@ impl App {
                             "OFF"
                         };
                         self.notify(format!("Visualizer: {}", state), NotificationKind::Info);
+                    }
+                    Some(KeyboardAction::CycleVisualizerPreset) => {
+                        let next = self.visualizer.preset.next();
+                        self.visualizer.preset = next;
+                        save_prefs(&self.current_prefs());
+                        self.notify(
+                            format!("Visualizer: {}", next.name()),
+                            NotificationKind::Info,
+                        );
+                    }
+                    Some(KeyboardAction::CycleProgressStyle) => {
+                        let next = self.progress_style.next();
+                        self.progress_style = next;
+                        save_prefs(&self.current_prefs());
+                        self.notify(
+                            format!("Progress: {}", next.name()),
+                            NotificationKind::Info,
+                        );
                     }
                     Some(KeyboardAction::ToggleTheme) => {
                         self.toggle_theme();
@@ -3030,8 +3068,9 @@ impl App {
                                     // Spotify playlist: resolve track to a playable
                                     // local stream (via YouTube) and enqueue it.
                                     if self.list_pos() < self.spotify_playlist_tracks_cache.len() {
-                                        let track = self.spotify_playlist_tracks_cache[self.list_pos()]
-                                            .clone();
+                                        let track = self.spotify_playlist_tracks_cache
+                                            [self.list_pos()]
+                                        .clone();
                                         // If Soloist is connected and logged in, play via Soloist instead of resolving
                                         if let Some(soloist) = &self.soloist_status {
                                             if soloist.connected && soloist.logged_in {
@@ -3315,16 +3354,8 @@ impl App {
                                         }
                                     }
                                     6 => {
-                                        // Visualizer Preset cycle
-                                        self.visualizer.cycle_preset();
-                                        save_prefs(&self.current_prefs());
-                                        self.notify(
-                                            format!(
-                                                "Visualizer: {}",
-                                                self.visualizer.preset.name()
-                                            ),
-                                            NotificationKind::Info,
-                                        );
+                                        // Visualizer Preset picker
+                                        self.pickers.open(PickerId::VisualizerPreset);
                                     }
                                     7 => {
                                         // Design cycle
@@ -3342,14 +3373,13 @@ impl App {
                                         tokio::spawn(async move {
                                             match c.spotify_play_pause().await {
                                                 Ok(status) => {
-                                                    let _ = ipc_tx.send(IpcResult::SpotifyStatus(
-                                                        status,
-                                                    ));
+                                                    let _ = ipc_tx
+                                                        .send(IpcResult::SpotifyStatus(status));
                                                 }
                                                 Err(e) => {
-                                                    let _ = ipc_tx.send(IpcResult::Error(
-                                                        format!("Spotify play/pause: {e}"),
-                                                    ));
+                                                    let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                        "Spotify play/pause: {e}"
+                                                    )));
                                                 }
                                             }
                                         });
@@ -3664,6 +3694,7 @@ impl App {
                                     "Library",
                                     "Syncing covers...",
                                     NotificationKind::Info,
+                                    true,
                                 );
                                 spawn_sync_and_wait(
                                     self.client.clone(),
@@ -3784,6 +3815,7 @@ impl App {
                         "Sleep Timer",
                         "Sleep timer cancelled",
                         NotificationKind::Info,
+                        true,
                     );
                     return;
                 }
@@ -3952,6 +3984,7 @@ impl App {
                 }
                 self.clamp_picker_selection();
                 self.apply_eq_on_navigation().await;
+                self.apply_preset_preview();
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 let has_input = matches!(
@@ -3988,6 +4021,7 @@ impl App {
                 }
                 self.clamp_picker_selection();
                 self.apply_eq_on_navigation().await;
+                self.apply_preset_preview();
             }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if matches!(
@@ -4131,8 +4165,7 @@ impl App {
                                     .map(|c| c.enabled)
                                     .unwrap_or(true);
                                 let tx = self.cmd_tx();
-                                let _ =
-                                    tx.send(TuiCommand::Crossfade(enabled, dur)).await;
+                                let _ = tx.send(TuiCommand::Crossfade(enabled, dur)).await;
                                 if let Some(ref mut cf) = self.state.crossfade {
                                     cf.duration_secs = dur;
                                 }
@@ -4145,6 +4178,32 @@ impl App {
                                 }
                                 self.pickers.close_top();
                             }
+                        }
+                        PickerId::VisualizerPreset => {
+                            let presets = crate::visualizer::VisualizerPreset::all();
+                            if let Some(top) = self.pickers.top() {
+                                let idx = top.selected.min(presets.len() - 1);
+                                self.visualizer.preset = presets[idx];
+                                save_prefs(&self.current_prefs());
+                                self.notify(
+                                    format!("Visualizer: {}", self.visualizer.preset.name()),
+                                    NotificationKind::Info,
+                                );
+                            }
+                            self.pickers.close_top();
+                        }
+                        PickerId::ProgressStyle => {
+                            let styles = crate::progress::ProgressStyle::all();
+                            if let Some(top) = self.pickers.top() {
+                                let idx = top.selected.min(styles.len() - 1);
+                                self.progress_style = styles[idx];
+                                save_prefs(&self.current_prefs());
+                                self.notify(
+                                    format!("Progress: {}", self.progress_style.name()),
+                                    NotificationKind::Info,
+                                );
+                            }
+                            self.pickers.close_top();
                         }
                         PickerId::CommandPalette => {
                             let commands = crate::ui::COMMAND_PALETTE_COMMANDS;
@@ -4239,19 +4298,9 @@ impl App {
                                     self.show_lyrics = true;
                                     self.send_high(TuiCommand::FetchLyrics);
                                 } else if action == "progress style" {
-                                    self.progress_style = self.progress_style.next();
-                                    save_prefs(&self.current_prefs());
-                                    self.notify(
-                                        format!("Progress: {}", self.progress_style.name()),
-                                        crate::app::NotificationKind::Info,
-                                    );
+                                    self.pickers.open(PickerId::ProgressStyle);
                                 } else if action == "visualizer preset" {
-                                    self.visualizer.cycle_preset();
-                                    save_prefs(&self.current_prefs());
-                                    self.notify(
-                                        format!("Visualizer: {}", self.visualizer.preset.name()),
-                                        crate::app::NotificationKind::Info,
-                                    );
+                                    self.pickers.open(PickerId::VisualizerPreset);
                                 } else if action == "visualizer" {
                                     self.visualizer.toggle();
                                     let state = if self.visualizer.is_enabled() {
@@ -4291,6 +4340,7 @@ impl App {
                                             "Library",
                                             "Favourite toggled",
                                             NotificationKind::Info,
+                                            true,
                                         );
                                     }
                                 } else if action == "clear queue" {
@@ -4300,6 +4350,7 @@ impl App {
                                         "Queue",
                                         "Queue cleared",
                                         NotificationKind::Info,
+                                        true,
                                     );
                                 } else if action == "prev tab" {
                                     self.current_tab = match self.current_tab {
@@ -4468,6 +4519,34 @@ impl App {
                                     self.cycle_design();
                                 } else if action == "health check" {
                                     self.send_high(TuiCommand::CheckHealth);
+                                } else if action == "check updates" {
+                                    let c = self.client.clone();
+                                    let ipc_tx = self.ipc_tx.clone();
+                                    tokio::spawn(async move {
+                                        match c.trigger_update().await {
+                                            Ok(Some(_v)) => {
+                                                let _ = ipc_tx.send(IpcResult::Notification(
+                                                    "Update".into(),
+                                                    "Update installed, restart required".into(),
+                                                    NotificationKind::Info,
+                                                ));
+                                            }
+                                            Ok(None) => {
+                                                let _ = ipc_tx.send(IpcResult::Notification(
+                                                    "Update".into(),
+                                                    "Already up to date".into(),
+                                                    NotificationKind::Info,
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                let _ = ipc_tx.send(IpcResult::Notification(
+                                                    "Update".into(),
+                                                    format!("Update check failed: {}", e),
+                                                    NotificationKind::Error,
+                                                ));
+                                            }
+                                        }
+                                    });
                                 }
                             }
                             // If the action opened a sub-picker it was stacked on
@@ -4494,6 +4573,7 @@ impl App {
                                 "Equalizer",
                                 format!("Equalizer preset: {}", preset.label()),
                                 NotificationKind::Info,
+                                true,
                             );
                             self.pickers.close_top();
                         }
@@ -4510,6 +4590,7 @@ impl App {
                                 "Theme",
                                 format!("Theme: {}{}", name, light),
                                 NotificationKind::Info,
+                                true,
                             );
                             self.pickers.close_top();
                         }
@@ -4658,7 +4739,12 @@ impl App {
                             }
                         });
                         self.metadata_cover_dirty = true;
-                        self.notify_titled("Library", "Syncing cover…", NotificationKind::Info);
+                        self.notify_titled(
+                            "Library",
+                            "Syncing cover…",
+                            NotificationKind::Info,
+                            true,
+                        );
                     }
                 }
             }
@@ -4725,12 +4811,57 @@ impl App {
         }
     }
 
+    async fn handle_paste(&mut self, text: &str) {
+        if let Some(top) = self.pickers.top_mut() {
+            match top.id {
+                PickerId::SpotifySearch => {
+                    self.spotify_token_input.push_str(text);
+                }
+                PickerId::EditMetadata => {
+                    self.metadata_fields[self.metadata_field_idx].push_str(text);
+                }
+                PickerId::YTSearch
+                | PickerId::SearchLibrary
+                | PickerId::CommandPalette
+                | PickerId::ThemePicker
+                | PickerId::Help => {
+                    top.query.push_str(text);
+                    if top.id == PickerId::YTSearch {
+                        self.yt_results_cache.clear();
+                        self.yt_search_loading = false;
+                        self.yt_search_debounce =
+                            Some(std::time::Instant::now() + Duration::from_millis(500));
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
     async fn apply_eq_on_navigation(&mut self) {
         if let Some(top) = self.pickers.top() {
             if top.id == PickerId::Equalizer {
                 let idx = top.selected.min(EQ_PRESETS.len() - 1);
                 self.send_high(TuiCommand::SetEqPreset(EQ_PRESETS[idx]));
                 self.state.eq_preset = EQ_PRESETS[idx];
+            }
+        }
+    }
+
+    fn apply_preset_preview(&mut self) {
+        if let Some(top) = self.pickers.top() {
+            match top.id {
+                PickerId::VisualizerPreset => {
+                    let presets = crate::visualizer::VisualizerPreset::all();
+                    let idx = top.selected.min(presets.len() - 1);
+                    self.visualizer.preset = presets[idx];
+                }
+                PickerId::ProgressStyle => {
+                    let styles = crate::progress::ProgressStyle::all();
+                    let idx = top.selected.min(styles.len() - 1);
+                    self.progress_style = styles[idx];
+                }
+                _ => {}
             }
         }
     }

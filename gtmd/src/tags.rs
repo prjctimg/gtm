@@ -1,6 +1,5 @@
 // Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
-// Audio tag writing via lofty
 //
 // This is free software released under the GPL-3.0 license.
 
@@ -11,7 +10,12 @@ use lofty::read_from_path;
 use lofty::tag::items::Timestamp;
 use lofty::tag::{Accessor, Tag};
 
-/// Metadata fields to write into an audio file.
+#[cfg(test)]
+use std::process::{Command, Stdio};
+
+#[cfg(test)]
+use lofty::file::FileType;
+
 #[derive(Debug, Clone, Default)]
 pub struct MetadataToWrite {
     pub title: String,
@@ -22,9 +26,6 @@ pub struct MetadataToWrite {
     pub track_number: Option<i32>,
 }
 
-/// Write clean metadata (and optionally a front cover) into the audio file at
-/// `path`. Existing tags are updated in place; only non-empty fields replace
-/// stored values, preserving any other tags on the file.
 pub fn write_tags(
     path: &str,
     meta: &MetadataToWrite,
@@ -93,10 +94,8 @@ pub fn write_tags(
         .map_err(|e| format!("save tags: {e}"))
 }
 
-/// True for formats lofty recognizes as a writable audio file type.
 #[cfg(test)]
 fn is_writable_ext(ext: &str) -> bool {
-    use lofty::file::FileType;
     matches!(
         FileType::from_ext(ext),
         Some(
@@ -131,9 +130,6 @@ mod tests {
 
     #[test]
     fn test_roundtrip_write_and_read() {
-        use std::process::{Command, Stdio};
-
-        // Skip unless ffmpeg is available to synthesize a wav fixture.
         if Command::new("ffmpeg").arg("-version").output().is_err() {
             return;
         }

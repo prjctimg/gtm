@@ -1,6 +1,5 @@
 // Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
-// CLI mode: dispatches subcommands to the daemon via IPC
 //
 // This is free software released under the GPL-3.0 license.
 
@@ -25,11 +24,14 @@
 //!  └────────────────────────┘
 //! ```
 
+use std::io::Write;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use gtm_core::client::DaemonClient;
 use gtm_core::state::RepeatMode;
+
+use crate::footer::format_uptime;
 
 #[derive(Parser)]
 #[command(
@@ -56,9 +58,7 @@ pub struct Args {
 
 #[derive(Subcommand)]
 pub enum CliCommand {
-    /// Play a track at an optional start position
     Play {
-        /// Path to the audio file
         #[arg(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         path: String,
         #[arg(value_name = "SECONDS")]
@@ -76,13 +76,11 @@ pub enum CliCommand {
         volume: u8,
     },
     Shuffle,
-    /// Cycle or set the repeat mode
     Repeat {
         #[arg(value_name = "MODE", value_parser = ["off", "one", "all"])]
         mode: String,
     },
     Mute,
-    /// Toggle crossfade between tracks
     Crossfade {
         #[arg(
             value_name = "ENABLED",
@@ -92,18 +90,11 @@ pub enum CliCommand {
         enabled: bool,
         duration_secs: Option<u8>,
     },
-    /// Show the current queue
     Queue,
-    /// Add one or more files or folders to the queue
-    ///
-    /// Directories are scanned recursively for audio files. Without a
-    /// position the tracks are queued to play next.
     QueueAdd {
-        /// File or folder paths to add
         #[arg(value_name = "PATH", value_hint = clap::ValueHint::AnyPath, num_args = 1..)]
         paths: Vec<String>,
 
-        /// Insert at this merged-view index instead of "play next"
         #[arg(long, value_name = "INDEX")]
         position: Option<u64>,
     },
@@ -115,15 +106,12 @@ pub enum CliCommand {
         to: u64,
     },
     QueueClear,
-    /// Replace the queue with a set of tracks
     QueueSet {
         #[arg(value_name = "PATH", value_hint = clap::ValueHint::AnyPath, num_args = 1..)]
         paths: Vec<String>,
-        /// Merged-view index of the entry to start playback at
         #[arg(long, value_name = "INDEX")]
         start_idx: u64,
     },
-    /// Scan a directory for tracks
     Scan {
         #[arg(value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
         path: String,
@@ -143,12 +131,10 @@ pub enum CliCommand {
         playlist_id: i64,
         track_ids: Vec<i64>,
     },
-    /// Import an M3U playlist file
     ImportM3u {
         #[arg(value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         path: String,
     },
-    /// Export a playlist to an M3U file
     ExportM3u {
         playlist_id: i64,
         #[arg(value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
@@ -157,9 +143,7 @@ pub enum CliCommand {
     Recent {
         count: u64,
     },
-    /// Enrich unreliable track metadata via Deezer and embed tags into the files
     MetadataSync {
-        /// Only sync this single track; otherwise all unreliable tracks
         #[arg(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         path: Option<String>,
     },
@@ -176,79 +160,55 @@ pub enum CliCommand {
     },
     YtPoll,
     YtCancel,
-    /// Resolve a stream URL for playback
     YtResolve {
         #[arg(value_hint = clap::ValueHint::Url)]
         url: String,
     },
-    /// Fetch lyrics for an "Artist - Title" query via lrclib
     Lyrics {
-        /// Search query in the form "Artist - Title"
         query: String,
     },
     Search {
         query: String,
     },
     Status {
-        /// Stream elapsed time continuously
         #[arg(long)]
         stream: bool,
     },
     CheckHealth,
     Ping,
     Quit,
-    /// Open the config file in the default editor
     Config,
-    /// Set or clear the sleep timer (minutes)
     SleepTimer {
-        /// Minutes until playback fades out and stops
         minutes: u32,
     },
-    /// Cancel a running sleep timer
     CancelSleepTimer,
-    /// Edit metadata of a library track
+    Update,
     UpdateMetadata {
-        /// Library track id
         track_id: i64,
-        /// Field to change: title, artist, album, genre, year, track-number
         #[arg(value_name = "FIELD")]
         field: String,
-        /// New value (or blank to clear)
         #[arg(value_name = "VALUE")]
         value: String,
     },
-    /// Spotify account and playback control
     #[command(subcommand)]
     Spotify(SpotifyAction),
-    /// Soloist playback bridge control
     #[command(subcommand)]
     Soloist(SoloistAction),
 }
 
 #[derive(Subcommand)]
 pub enum SpotifyAction {
-    /// Link the account with an access token (metadata/playlist APIs)
-    Connect {
-        /// Spotify OAuth access token
-        token: String,
-    },
-    /// Unlink the account and delete the stored token
+    Connect { token: String },
     Disconnect,
-    /// Show the current link/playback status
     Status,
-    /// Re-sync all playlists from the Web API
     Sync,
 }
 
 #[derive(Subcommand)]
 pub enum SoloistAction {
-    /// Start the bridge using the persisted API key
     Start,
-    /// Stop the bridge (key is kept)
     Stop,
-    /// Show the bridge status
     Status,
-    /// Toggle auto-start at daemon startup (persisted in daemon state)
     AutoStart {
         #[arg(
             value_name = "BOOL",
@@ -259,7 +219,6 @@ pub enum SoloistAction {
 }
 
 pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) {
-    // `gtm config` edits the config file locally: no daemon needed.
     if matches!(cmd, CliCommand::Config) {
         if let Err(e) = open_config_in_editor() {
             eprintln!("error: {e}");
@@ -630,7 +589,6 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
             }
             CliCommand::Status { stream } => {
                 if *stream {
-                    // Stream mode: continuously print status every second
                     loop {
                         let state = client.get_status().await.map_err(|e| e.to_string())?;
                         let elapsed = state.time_pos as u64;
@@ -647,7 +605,6 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                             "\rStream: {} | {}s / {}s | {}%   ",
                             track, elapsed, dur, vol
                         );
-                        use std::io::Write;
                         std::io::stdout().flush().ok();
                         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                     }
@@ -727,8 +684,9 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 } else {
                     let mut out = format!(
                         "\x1b[1mGTM Health Report\x1b[0m (v{})\n\
-                         Daemon uptime: {:.0}s\n",
-                        report.version, report.daemon_uptime_secs
+                         Daemon uptime: {}\n",
+                        report.version,
+                        format_uptime(report.daemon_uptime_secs)
                     );
                     for c in &report.components {
                         let icon = match c.status {
@@ -764,6 +722,16 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .await
                 .map(|()| "sleep timer cancelled".to_string())
                 .map_err(|e| e.to_string()),
+            CliCommand::Update => {
+                let version = client.trigger_update().await.map_err(|e| e.to_string())?;
+                match version {
+                    Some(v) => Ok(format!("Updated to v{}!", v)),
+                    None => Ok(format!(
+                        "Already up to date (v{})",
+                        env!("CARGO_PKG_VERSION")
+                    )),
+                }
+            }
             CliCommand::UpdateMetadata {
                 track_id,
                 field,
@@ -860,11 +828,6 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
     }
 }
 
-/// Open the config file (`~/.config/gtm/config.toml`) in the user's default
-/// editor, creating it with defaults if it does not exist yet.
-///
-/// Editor resolution order: `$VISUAL` → `$EDITOR` → first installed editor
-/// from a common list. Values may include arguments (e.g. `code --wait`).
 fn open_config_in_editor() -> Result<(), String> {
     let path = crate::app::ensure_prefs_file();
     let editor = pick_editor().ok_or_else(|| {
@@ -915,7 +878,6 @@ fn command_exists(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// Human-readable one-line summary of a Spotify link/playback status.
 fn format_spotify_status(st: &gtm_core::spotify::SpotifyStatus) -> String {
     let mut out = if st.linked {
         format!("Linked as {}", st.user.as_deref().unwrap_or("(unknown)"))
@@ -943,7 +905,6 @@ fn format_spotify_status(st: &gtm_core::spotify::SpotifyStatus) -> String {
     out
 }
 
-/// Human-readable one-line summary of a Soloist bridge status.
 fn format_soloist_status(st: &gtm_core::spotify::SoloistStatus) -> String {
     let state = if st.connected && st.logged_in {
         "running ✓"

@@ -178,7 +178,10 @@ impl SpotifyManager {
         }
         self.refresh_playback().await;
         let device = self.device.clone();
-        let client = self.client.as_ref().ok_or_else(|| "spotify not linked".to_string())?;
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "spotify not linked".to_string())?;
         let res = if self.playing {
             client.pause_playback(device.as_deref()).await
         } else {

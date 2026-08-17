@@ -25,6 +25,8 @@ pub enum PickerId {
     PlaylistSelect,
     EditMetadata,
     Crossfade,
+    VisualizerPreset,
+    ProgressStyle,
 }
 
 /// Which list a fuzzy-finder picker searches. `Tab` cycles through these.

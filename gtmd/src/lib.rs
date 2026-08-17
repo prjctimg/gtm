@@ -15,6 +15,7 @@ pub mod queue;
 pub mod soloist;
 pub mod spotify;
 pub mod tags;
+pub mod updater;
 pub mod youtube;
 
 pub use config::DaemonConfig;

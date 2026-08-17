@@ -104,6 +104,8 @@ pub enum KeyboardAction {
     ToggleHelp,
     HideHelpBar,
     ToggleVisualizer,
+    CycleVisualizerPreset,
+    CycleProgressStyle,
     ToggleTheme,
     CheckHealth,
 }
@@ -539,7 +541,14 @@ pub fn default_keybindings() -> Keybindings {
             (
                 KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT),
                 BoundCommand {
-                    action: KeyboardAction::OpenOverlay(PickerId::CommandPalette),
+                    action: KeyboardAction::CycleProgressStyle,
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('v'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::CycleVisualizerPreset,
                     contexts: vec![KeyContext::Normal],
                 },
             ),

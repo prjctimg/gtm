@@ -555,6 +555,8 @@ jobs:
       CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
 
       # cargo publish verifies each package by compiling it (with default
       # features), which pulls in alsa-sys via rodio on Linux. ubuntu-latest

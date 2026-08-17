@@ -8,12 +8,12 @@ repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
-readme.workspace = true
+readme = "README.md"
 
 [dependencies]
-gtm-core = { path = "../gtm-core", version = "0.1.7" }
-gtm-audio = { path = "../gtm-audio", version = "0.1.7" }
-gtm-mpris = { path = "../gtm-mpris", version = "0.1.7", optional = true }
+gtm-core = { path = "../gtm-core", version = "0.2.0" }
+gtm-audio = { path = "../gtm-audio", version = "0.2.0" }
+gtm-mpris = { path = "../gtm-mpris", version = "0.2.0", optional = true }
 rusqlite = { version = "0.31", features = ["bundled"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
@@ -37,6 +37,9 @@ dirs = "5"
 fastrand = "2"
 chrono = "0.4"
 tokio-tungstenite = "0.30.0"
+image = "0.25"
+tar = "0.4"
+flate2 = "1"
 
 [features]
 default = ["mpris"]

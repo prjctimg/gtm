@@ -18,6 +18,7 @@ use tracing::warn;
 const CACHE_SIZE: usize = 500;
 const DEEZER_API: &str = "https://api.deezer.com/search";
 const RATE_LIMIT_MS: u64 = 200;
+const MIN_COVER_DIM: u32 = 300;
 
 #[derive(Debug, Clone)]
 pub struct CoverData {
@@ -40,6 +41,13 @@ impl CoverCache {
             ))),
             cache_dir,
             client: Client::new(),
+        }
+    }
+
+    pub fn cover_too_small(data: &[u8]) -> bool {
+        match image::load_from_memory(data) {
+            Ok(img) => img.width() < MIN_COVER_DIM || img.height() < MIN_COVER_DIM,
+            Err(_) => true,
         }
     }
 
@@ -69,20 +77,26 @@ impl CoverCache {
         {
             let mut mem = self.memory.lock().await;
             if let Some(c) = mem.get(&key) {
-                return Some(c.clone());
+                if !Self::cover_too_small(&c.data) {
+                    return Some(c.clone());
+                }
             }
         }
 
         let disk = self.disk_path(&key);
         if disk.exists() {
             if let Ok(data) = fs::read(&disk) {
-                let cd = CoverData {
-                    mime: "image/jpeg".to_string(),
-                    data,
-                };
-                let mut mem = self.memory.lock().await;
-                mem.put(key, cd.clone());
-                return Some(cd);
+                if !Self::cover_too_small(&data) {
+                    let cd = CoverData {
+                        mime: "image/jpeg".to_string(),
+                        data,
+                    };
+                    let mut mem = self.memory.lock().await;
+                    mem.put(key, cd.clone());
+                    return Some(cd);
+                }
+                // Small cover on disk: remove it and re-fetch from Deezer
+                fs::remove_file(&disk).ok();
             }
         }
 

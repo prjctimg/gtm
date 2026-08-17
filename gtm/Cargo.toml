@@ -8,13 +8,13 @@ repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
-readme.workspace = true
+readme = "README.md"
 
 [dependencies]
-gtm-core = { path = "../gtm-core", version = "0.1.7" }
-gtm-audio = { path = "../gtm-audio", version = "0.1.7" }
+gtm-core = { path = "../gtm-core", version = "0.2.0" }
+gtm-audio = { path = "../gtm-audio", version = "0.2.0" }
 ratatui = "0.30"
-crossterm = "0.28"
+crossterm = { version = "0.28", features = ["bracketed-paste"] }
 tachyonfx = "0.22"
 tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }

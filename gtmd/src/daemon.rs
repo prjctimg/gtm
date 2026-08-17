@@ -1,6 +1,5 @@
 // Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
-// Daemon event loop, IPC command handlers, and audio event processing
 //
 // This is free software released under the GPL-3.0 license.
 
@@ -66,11 +65,13 @@ use gtm_core::paths::resolve_pid_file;
 
 #[cfg(feature = "pulseaudio")]
 use crate::config::AudioBackendKind;
+use base64::Engine;
 #[cfg(feature = "pulseaudio")]
 use gtm_audio::PulseAudioMixer;
 use gtm_audio::{AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
 use gtm_core::ipc::{
-    DaemonEvent, DaemonReq, DaemonRes, QueueAction, SyncKind, WireReq, PROTOCOL_VERSION,
+    ComponentHealth, DaemonEvent, DaemonReq, DaemonRes, HealthReport, HealthStatus, QueueAction,
+    SyncKind, WireReq, PROTOCOL_VERSION,
 };
 use gtm_core::spotify::{SoloistStatus, SpotifyTrack};
 use gtm_core::state::{
@@ -93,13 +94,10 @@ use crate::youtube::YoutubeManager;
 type ClientId = u64;
 type ReplyTx = mpsc::UnboundedSender<(u64, DaemonRes)>;
 
-/// Above this position `Prev` restarts the current track instead of going
-/// back through playback history.
 const RESTART_THRESHOLD_SECS: f64 = 3.0;
 
 use std::time::Instant;
 
-/// Tracks daemon component health for diagnostic reports.
 struct HealthTracker {
     start_time: Instant,
     audio_backend: String,
@@ -134,16 +132,11 @@ impl HealthTracker {
     }
 }
 
-/// One previously-played track used by `Prev` for full back-traversal
-/// (through user queue entries, then into the default list).
 enum HistoryEntry {
     User(TrackInfo),
     Default { index: usize, track: TrackInfo },
 }
 
-/// Shared progress of a background library sync (covers/lyrics/metadata).
-/// Atomically updated from blocking sync threads and read by the IPC
-/// `SyncStatus` handler without ever holding `cmd_lock` across the sync.
 struct SyncProgress {
     running: AtomicBool,
     kind: std::sync::Mutex<SyncKind>,
@@ -173,29 +166,15 @@ struct DaemonInner {
     spotify: tokio::sync::Mutex<SpotifyManager>,
     soloist: tokio::sync::Mutex<SoloistManager>,
     crossfade_loaded_for: tokio::sync::Mutex<Option<String>>,
-    /// Hash of the next-track whose `CrossfadeCountdown` we already emitted,
-    /// so the daemon only notifies once per track instead of on every poll.
     countdown_notified_for: tokio::sync::Mutex<Option<String>>,
     sleep_cancel: Arc<AtomicBool>,
-    /// Set when the user issues a manual `soloist/start` or `soloist/stop`;
-    /// the auto-start supervisor stops retrying once this is set.
     soloist_manual_override: Arc<AtomicBool>,
     health: Arc<HealthTracker>,
-    /// Sender for Soloist bridge messages (used by command handlers to start).
     soloist_tx: mpsc::UnboundedSender<SoloistMsg>,
-    /// Per-client authentication state: true = handshake completed
     client_auth: tokio::sync::Mutex<HashMap<ClientId, bool>>,
-    /// Channel for internal requests (e.g., auto-advance from audio events)
-    /// that bypass client authentication and are processed sequentially
-    /// alongside client requests to prevent state mutation races.
     internal_req_tx: mpsc::UnboundedSender<DaemonReq>,
-    /// Serialises all handle_request calls (both spawned client dispatch
-    /// and internal commands) so that only one state mutation runs at a
-    /// time, preventing races between concurrent IPC commands and auto-advance.
     cmd_lock: tokio::sync::Mutex<()>,
-    /// Playback history for Prev back-traversal (guarded by cmd_lock in use).
     play_history: tokio::sync::Mutex<Vec<HistoryEntry>>,
-    /// Progress of any background library sync (covers/lyrics/metadata).
     sync_progress: Arc<SyncProgress>,
 }
 
@@ -214,7 +193,6 @@ impl Daemon {
     pub fn new(config: DaemonConfig) -> Result<Self, CoreError> {
         let mut initial_state = DaemonState::new();
 
-        // Load persisted state if available
         if !config.test_mode {
             if let Some(saved) = SavedState::load(&config.state_file) {
                 info!("loaded saved state from {}", config.state_file.display());
@@ -261,7 +239,6 @@ impl Daemon {
         let pulse_listener = UnixListener::bind(pulse_path)
             .map_err(|e| CoreError::Daemon(format!("bind pulse socket: {e}")))?;
 
-        // Write PID file per daemon.md spec
         let pid_file = resolve_pid_file();
         if let Some(parent) = pid_file.parent() {
             let _ = std::fs::create_dir_all(parent);
@@ -324,8 +301,6 @@ impl Daemon {
             match PulseAudioMixer::new() {
                 Ok(m) => Ok(Box::new(m)),
                 Err(e) => {
-                    // On Termux, rodio/cpal cannot open a device, so falling
-                    // back to it is pointless: surface the actionable error.
                     if gtm_core::is_termux() {
                         return Err(CoreError::Daemon(format!(
                             "PulseAudio init failed: {e}. On Termux start the server first: \
@@ -353,11 +328,6 @@ impl Daemon {
             .map_err(|e| CoreError::Daemon(format!("audio mixer init: {e}")))
     }
 
-    /// Main daemon event loop: multiplexes three sources:
-    ///
-    ///   1. **new connections** : accept_client() spawns per-client read/write tasks
-    ///   2. **IPC requests**    : dispatch() → handle_request() → cmd_*()
-    ///   3. **audio events**    : handle_audio_event() updates state, pushes events
     pub async fn run(&mut self) -> Result<(), CoreError> {
         info!(
             "daemon started on {} (pulse: {})",
@@ -365,7 +335,6 @@ impl Daemon {
             self.inner.config.socket_pulse_path.display()
         );
 
-        // Kick off background auto-scan so clients can connect immediately
         let bg_state = self.inner.state.clone();
         let bg_lib_paths = self.inner.config.library_paths.clone();
         let bg_data_dir = self.inner.config.data_dir.clone();
@@ -386,7 +355,6 @@ impl Daemon {
             .await;
         });
 
-        // Periodic heartbeat so clients can detect stale connections
         let hb_event_tx = self.inner.event_tx.clone();
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(30));
@@ -396,8 +364,8 @@ impl Daemon {
             }
         });
 
-        // Load a persisted Spotify token (if any) in the background so a slow
-        // playlist refresh never delays daemon startup or client connects.
+        tokio::spawn(crate::updater::update_check_loop());
+
         let spotify_inner = Arc::clone(&self.inner);
         tokio::spawn(async move {
             let mut spotify = spotify_inner.spotify.lock().await;
@@ -409,11 +377,6 @@ impl Daemon {
             }
         });
 
-        // Auto-start the Soloist playback bridge when auto-start is enabled in
-        // persisted state, so Spotify playback keeps working across restarts.
-        // Manual `soloist/start`/`soloist/stop` still override at runtime. A
-        // supervisor retries the initial connection with backoff while
-        // auto-start is still enabled and no manual override has been issued.
         {
             let inner = Arc::clone(&self.inner);
             let mut state = inner.state.write().await;
@@ -509,8 +472,6 @@ impl Daemon {
         }
     }
 
-    /// Background scan: runs auto-scan concurrently with the event loop
-    /// so clients don't block waiting for the library to be indexed.
     async fn background_scan(
         state: Arc<RwLock<DaemonState>>,
         library_paths: Vec<std::path::PathBuf>,
@@ -573,30 +534,20 @@ impl Daemon {
         }
     }
 
-    /// Accept a new client connection and spawn two background tasks:
-    ///
-    ///   **Reader task**: reads JSON lines from the Unix socket,
-    ///                    deserializes into DaemonReq, sends to req_tx.
-    ///   **Writer task**: receives responses (via reply_rx) and broadcast
-    ///                    events (via event_rx), writes JSON back to socket.
     async fn accept_client(
         client_id: ClientId,
         stream: UnixStream,
         inner: Arc<DaemonInner>,
         req_tx: mpsc::UnboundedSender<(ClientId, u64, DaemonReq, ReplyTx)>,
     ) {
-        // Initialize client auth state as unauthenticated
         inner.client_auth.lock().await.insert(client_id, false);
 
         let (reader, writer) = stream.into_split();
         let event_rx = inner.event_tx.subscribe();
         let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<(u64, DaemonRes)>();
 
-        // Cancellation token: any one of reader/writer/watchdog cancelling it
-        // causes the other two to shut down within one select cycle.
         let token = tokio_util::sync::CancellationToken::new();
 
-        // Reader task: JSON lines → req_tx
         let r_tx = reply_tx.clone();
         let inner_clone = inner.clone();
         let token_reader = token.clone();
@@ -616,16 +567,12 @@ impl Daemon {
                                     continue;
                                 }
                                 if trimmed.len() > 1_048_576 {
-                                    // protocol.md: "Lines exceeding this limit MUST be
-                                    // rejected and the connection closed."
                                     warn!("client {client_id}: line too long ({} bytes), disconnecting", trimmed.len());
                                     break;
                                 }
                                 let wire_req: WireReq = match serde_json::from_str(trimmed) {
                                     Ok(r) => r,
                                     Err(e) => {
-                                        // protocol.md: "If the daemon receives malformed
-                                        // JSON, it MUST close the connection."
                                         warn!("client {client_id} malformed JSON, closing: {e}");
                                         break;
                                     }
@@ -633,7 +580,6 @@ impl Daemon {
                                 let daemon_req = match DaemonReq::parse_cmd(&wire_req.cmd, wire_req.params.clone()) {
                                     Ok(r) => r,
                                     Err(e) if e.starts_with("unknown command:") => {
-                                        // protocol.md: unknown `cmd` → error response, keep alive.
                                         let _ = r_tx.send((wire_req.id, DaemonRes::Error {
                                             message: e,
                                         }));
@@ -641,7 +587,6 @@ impl Daemon {
                                         continue;
                                     }
                                     Err(e) => {
-                                        // Params parsed wrong for a known `cmd`: recoverable.
                                         let _ = r_tx.send((wire_req.id, DaemonRes::Error {
                                             message: format!("invalid params for {}: {}", wire_req.cmd, e),
                                         }));
@@ -663,15 +608,10 @@ impl Daemon {
                 }
             }
             token_reader.cancel();
-            // Clean up auth state on disconnect
             inner_clone.client_auth.lock().await.remove(&client_id);
             info!("client {client_id} disconnected");
         });
 
-        // Watchdog task: enforce 10 s handshake deadline.
-        // Closed as soon as the reader exits (reader cancels `token`
-        // on any exit path, so this task is woken and exits via the
-        // cancelled branch above).
         let token_watchdog = token.clone();
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(10)).await;
@@ -687,7 +627,6 @@ impl Daemon {
             }
         });
 
-        // Writer task: responses + broadcast events → socket
         tokio::spawn(async move {
             let mut writer = writer;
             let mut event_rx = event_rx;
@@ -743,11 +682,6 @@ impl Daemon {
         info!("client {client_id} connected");
     }
 
-    /// Accept a dedicated pulse client connection.
-    ///
-    /// Pulse clients only receive binary-encoded events on a separate socket,
-    /// never JSON command/response traffic. This keeps the event stream
-    /// clean and avoids the heuristic first-byte sniffing.
     async fn accept_pulse_client(stream: UnixStream, inner: &DaemonInner) {
         let event_rx = inner.event_tx.subscribe();
         tokio::spawn(async move {
@@ -783,7 +717,6 @@ impl Daemon {
         req: DaemonReq,
         reply_tx: ReplyTx,
     ) {
-        // Check if client has completed handshake
         let authenticated = {
             inner
                 .client_auth
@@ -794,7 +727,6 @@ impl Daemon {
                 .unwrap_or(false)
         };
 
-        // Handshake is the only command allowed before authentication
         if !authenticated && !matches!(req, DaemonReq::Handshake { .. }) {
             let _ = reply_tx.send((
                 request_id,
@@ -825,12 +757,17 @@ impl Daemon {
         _authenticated: bool,
     ) -> Result<DaemonRes, CoreError> {
         match req {
+            DaemonReq::Update => match crate::updater::perform_update().await {
+                Ok(version) => Ok(DaemonRes::UpdateResult {
+                    version: Some(version),
+                }),
+                Err(_) => Ok(DaemonRes::UpdateResult { version: None }),
+            },
             DaemonReq::Handshake {
                 version,
                 client,
                 client_version,
             } => {
-                // protocol.md "Version Negotiation": client > daemon ⇒ ok:false.
                 if *version > PROTOCOL_VERSION {
                     info!(
                         "client {client_id}: handshake rejected: client protocol v{version} > daemon v{PROTOCOL_VERSION}"
@@ -852,8 +789,6 @@ impl Daemon {
                 })
             }
             DaemonReq::Play { path, start_pos } => {
-                // Explicit user play: reset Prev back-traversal and re-enable
-                // the default-list fallback.
                 Self::clear_history(inner).await;
                 Self::enable_fallback(inner).await;
                 Self::cmd_play(inner, path, *start_pos, false).await
@@ -1010,7 +945,6 @@ impl Daemon {
             DaemonReq::Quit => {
                 info!("quit requested");
                 let _ = Self::cmd_stop(inner).await;
-                // Save state before shutdown
                 if !inner.config.test_mode {
                     let s = inner.state.read().await;
                     let saved = SavedState::from_state(&s);
@@ -1023,13 +957,10 @@ impl Daemon {
                     name: "daemon_quitting".into(),
                     data: [].into(),
                 });
-                // Reply Ok first so clients can finish their quit() call, then
-                // shut down shortly after the response has been flushed.
                 let socket_path = inner.config.socket_path.clone();
                 let socket_pulse_path = inner.config.socket_pulse_path.clone();
                 tokio::spawn(async move {
                     tokio::time::sleep(Duration::from_millis(200)).await;
-                    // Clean up socket files
                     let _ = std::fs::remove_file(&socket_path);
                     let _ = std::fs::remove_file(&socket_pulse_path);
                     let _ = std::fs::remove_file(resolve_pid_file());
@@ -1045,7 +976,6 @@ impl Daemon {
         let _ = inner.event_tx.send(event);
     }
 
-    /// Save persistent state to disk. Non-blocking and failure-tolerant.
     fn save_state(inner: &DaemonInner) {
         if inner.config.test_mode {
             return;
@@ -1062,17 +992,14 @@ impl Daemon {
         });
     }
 
-    /// Re-enable the default-list fallback (explicit play / queue add intent).
     async fn enable_fallback(inner: &DaemonInner) {
         inner.state.write().await.fallback_disabled = false;
     }
 
-    /// Clear the Prev back-traversal history (explicit play / queue reset).
     async fn clear_history(inner: &DaemonInner) {
         inner.play_history.lock().await.clear();
     }
 
-    /// Push a QueueChanged event carrying the merged queue view.
     async fn push_queue_state(inner: &DaemonInner) {
         let state = inner.state.read().await;
         let (queue, cursor) = queue::visible_queue(&state);
@@ -1080,11 +1007,6 @@ impl Daemon {
         Self::push_event(inner, DaemonEvent::QueueChanged { queue, cursor });
     }
 
-    /// The track that will play after the current one, without mutating any
-    /// state.  Used to preload the crossfade standby.
-    ///
-    /// The default-list cursor points at the currently-playing (or most
-    /// recently played) default entry, so the resume point is `cursor + 1`.
     fn next_track(state: &DaemonState) -> Option<TrackInfo> {
         let cur_is_queued = state
             .current_track
@@ -1123,10 +1045,6 @@ impl Daemon {
         }
     }
 
-    /// Build the default playback list: the whole library sorted by title
-    /// (case-insensitive), shuffled when enabled.  When not shuffling, the
-    /// list is rotated so it resumes at the first title at/after the leading
-    /// letter of `resume_key`.
     async fn build_default_list(inner: &DaemonInner, resume_key: Option<&str>) -> Vec<TrackInfo> {
         let data_dir = inner.config.data_dir.clone();
         let tracks = tokio::task::spawn_blocking(move || {
@@ -1169,15 +1087,6 @@ impl Daemon {
         list
     }
 
-    /// Consume the current entry (recording it for Prev back-traversal) and
-    /// return the next track to play per the queue model:
-    ///
-    ///   1. the next user-queue entry, if any
-    ///   2. the next default-list entry (RepeatMode governs the list end)
-    ///   3. a freshly-built default list (resuming at the letter of the last
-    ///      played track) once the user queue exhausts, unless disabled
-    ///
-    /// Returns None when playback should stop.  Does not start playback.
     async fn step_next(inner: &DaemonInner) -> Result<Option<TrackInfo>, CoreError> {
         let mut resume_key: Option<String> = None;
         {
@@ -1200,14 +1109,11 @@ impl Daemon {
                         return Ok(Some(next));
                     }
                 } else {
-                    // Standalone interruption with queue items pending: the
-                    // next queue entry plays without consuming anything.
                     let next = state.queue[0].clone();
                     drop(state);
                     drop(history);
                     return Ok(Some(next));
                 }
-                // User queue exhausted → fall through to the default list.
             }
             if !state.default_list.is_empty() {
                 let len = state.default_list.len();
@@ -1242,8 +1148,6 @@ impl Daemon {
                     drop(history);
                     return Ok(next);
                 } else {
-                    // Cursor already past the end (e.g. after an Off-stop);
-                    // honor RepeatMode without re-recording history.
                     let next = match state.repeat {
                         RepeatMode::Off => None,
                         RepeatMode::All => {
@@ -1284,7 +1188,6 @@ impl Daemon {
         Ok(Some(first))
     }
 
-    /// Stop the mixer and reset playback state, broadcasting TrackEnded.
     async fn stop_playback(inner: &DaemonInner) {
         {
             let mut mixer = inner.mixer.lock().await;
@@ -1299,13 +1202,6 @@ impl Daemon {
         Self::push_event(inner, DaemonEvent::TrackEnded);
     }
 
-    /// Start playback of `track` as an auto-advanced next entry, using a
-    /// crossfade when enabled and straightforward, else a plain play.
-    /// Pushes PlaybackStarted.
-    /// Preload `track` as a crossfade standby and start the fade without
-    /// advancing the model.  Returns true when the fade started; the model is
-    /// advanced later by `finish_crossfade` once the mixer swaps the standby
-    /// into the active slot.
     async fn try_start_crossfade(inner: &DaemonInner, track: &TrackInfo) -> bool {
         let (enabled, dur, easing) = {
             let state = inner.state.read().await;
@@ -1340,20 +1236,6 @@ impl Daemon {
         true
     }
 
-    /// Resolve the full metadata for a track that is about to play, treating
-    /// the library as the single source of truth.  Used by both `cmd_play`
-    /// and crossfade auto-advance so queued tracks never carry bare
-    /// (filename-stem) metadata into `PlaybackStarted` / `state.current_track`.
-    ///
-    /// Resolution order:
-    ///   1. exact `Library::track_by_path` match (after canonicalisation)
-    ///   2. substring path match against the library
-    ///   3. cleaned filename stem + `Unknown Artist` / `Unknown Album`
-    ///
-    /// The caller-provided `dur` is always stamped on, since the mixer probes
-    /// it from the decoded source.  The path is canonicalised so the result
-    /// agrees with `queue::resolve_track`'s canonicalisation on later
-    /// path-equality checks (queue consumption, Play/Prev tracking).
     fn resolve_track_meta(inner: &DaemonInner, path: &std::path::Path, dur: f64) -> TrackInfo {
         let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
         let path_str = path.to_string_lossy().into_owned();
@@ -1364,8 +1246,6 @@ impl Daemon {
             .to_string();
 
         if !inner.config.test_mode {
-            // Prefer the library row (full tags + favourite + cover) when the
-            // track has been scanned.
             if let Ok(lib) = Library::new(inner.config.data_dir.to_str().unwrap_or("")) {
                 if let Ok(Some(mut t)) = lib.track_by_path(&path_str) {
                     t.duration = dur;
@@ -1383,9 +1263,6 @@ impl Daemon {
                 }
             }
 
-            // Not in the library (by-path/foreign track): read real tags from
-            // the file so the UI shows clean metadata instead of the raw
-            // filename as the artist/title.
             let cache_dir = inner.config.cache_dir.to_string_lossy().into_owned();
             if let Ok((meta, hash)) = crate::library::extract_metadata(&path_str, Some(&cache_dir))
             {
@@ -1421,9 +1298,6 @@ impl Daemon {
             }
         }
 
-        // Final fallback: parse an "Artist - Title" pair from the filename so
-        // even untagged files render a meaningful artist instead of the raw
-        // stem.
         let (cleaned_artist, cleaned_title) = crate::cleaner::clean_filename_stem(&stem);
         let title = if cleaned_title.is_empty() {
             stem
@@ -1442,16 +1316,12 @@ impl Daemon {
         }
     }
 
-    /// Finalize a crossfade: the standby (next) track is already playing on
-    /// the mixer, so only the state must be advanced and reported.
     async fn finish_crossfade(inner: &DaemonInner) {
         let actual = inner.mixer.lock().await.current_position();
         *inner.crossfade_loaded_for.lock().await = None;
         match Self::step_next(inner).await {
             Ok(Some(mut next)) => {
                 let dur = inner.mixer.lock().await.duration();
-                // Stamp the real duration onto the TrackInfo so the queued
-                // track's metadata isn't left at 0 after a crossfade.
                 next = Self::resolve_track_meta(inner, std::path::Path::new(&next.path), dur);
                 {
                     let mut state = inner.state.write().await;
@@ -1481,24 +1351,6 @@ impl Daemon {
         }
     }
 
-    /// Process an audio event from the mixer backend.
-    ///
-    /// ```text
-    ///  ┌──────────────┐
-    ///  │ AudioEvent   │
-    ///  ├──────────────┤
-    ///  │ Position(p)  │──→ update state.time_pos
-    ///  │              │──→ check crossfade trigger
-    ///  │              │──→ push PositionChanged event
-    ///  ├──────────────┤
-    ///  │ Duration(d)  │──→ update state.duration, push DurationChanged
-    ///  ├──────────────┤
-    ///  │ Finished     │──→ mark Stopped, push TrackEnded
-    ///  │              │──→ auto-advance → cmd_next() (unless crossfading)
-    ///  ├──────────────┤
-    ///  │ Error(msg)   │──→ log + push Custom event
-    ///  └──────────────┘
-    /// ```
     async fn handle_audio_event(inner: &DaemonInner, result: AudioResult<Option<AudioEvent>>) {
         let ev = match result {
             Ok(Some(e)) => e,
@@ -1520,9 +1372,6 @@ impl Daemon {
 
         match ev {
             AudioEvent::Position(pos) => {
-                // Crossfade completion: the mixer has swapped the standby
-                // into the active slot, so the model must catch up before
-                // time_pos is updated.
                 if inner.crossfade_loaded_for.lock().await.is_some()
                     && !inner.mixer.lock().await.is_crossfading()
                 {
@@ -1536,10 +1385,11 @@ impl Daemon {
                 let next = Self::next_track(&state);
                 drop(state);
 
-                // Up-Next countdown: notify once, 10s before the end of the
-                // current track, so the client can animate the countdown.
-                // Fires regardless of crossfade.
-                if dur > 0.0 && (dur - pos) <= 10.0 {
+                let cf_secs = crossfade
+                    .as_ref()
+                    .filter(|c| c.enabled)
+                    .map_or(0.0, |c| c.duration_secs as f64);
+                if dur > 0.0 && (dur - pos) <= cf_secs + 3.0 {
                     if let Some(track) = &next {
                         let mut notified = inner.countdown_notified_for.lock().await;
                         if notified.as_deref() != Some(track.hash.as_str()) {
@@ -1571,15 +1421,10 @@ impl Daemon {
             AudioEvent::Finished => {
                 let was_crossfading = inner.crossfade_loaded_for.lock().await.is_some();
                 if was_crossfading {
-                    // Rare: the completion-detection poll was missed, so the
-                    // crossfaded standby already ended. Finalize the model,
-                    // then keep auto-advancing past it.
                     let _lock = inner.cmd_lock.lock().await;
                     Self::finish_crossfade(inner).await;
                     let _ = Self::cmd_next(inner).await;
                 } else {
-                    // Genuine end-of-track: auto-advance through the internal
-                    // request channel so it is serialized with client commands.
                     let _ = inner.internal_req_tx.send(DaemonReq::Next);
                 }
             }
@@ -1598,16 +1443,8 @@ impl Daemon {
 
     // ─── Command handlers ──────────────────────────────────────────────
     //
-    // Each cmd_* method implements one IPC command.  The pattern is:
     //
-    //   1. Perform the action on the audio mixer
-    //   2. Update the daemon state (behind RwLock)
-    //   3. Push a DaemonEvent to the broadcast channel for all clients
-    //   4. Return a DaemonRes to the requesting client
 
-    /// If a crossfade is in flight with a loaded standby, cut the outgoing
-    /// (fading-out) active track and promote the standby into the active
-    /// slot.  Returns the promoted track's path when a promotion happened.
     async fn promote_crossfade(inner: &DaemonInner) -> Option<String> {
         let mut mixer = inner.mixer.lock().await;
         if !mixer.is_crossfading() || !mixer.standby_is_loaded() {
@@ -1618,8 +1455,6 @@ impl Daemon {
         inner.crossfade_loaded_for.lock().await.take()
     }
 
-    /// Stamp a promoted crossfade standby in as the current track and report
-    /// it, so the daemon model matches the mixer after `promote_crossfade`.
     async fn report_promoted(inner: &DaemonInner, path: &str) {
         let dur = inner.mixer.lock().await.duration();
         let track = Self::resolve_track_meta(inner, std::path::Path::new(path), dur);
@@ -1642,11 +1477,6 @@ impl Daemon {
         Self::push_queue_state(inner).await;
     }
 
-    /// Play a track from `path` (absolute or relative to daemon CWD),
-    /// optionally starting at `start_pos` seconds.
-    ///
-    /// Stops any current playback first, then loads and plays the new track.
-    /// Creates a minimal TrackInfo (metadata extraction is future work).
     async fn cmd_play(
         inner: &DaemonInner,
         path: &str,
@@ -1682,9 +1512,6 @@ impl Daemon {
         let mut state = inner.state.write().await;
 
         let track = Self::resolve_track_meta(inner, std::path::Path::new(&path_owned), dur);
-        // Rotate the user queue so the explicitly-played track sits at index
-        // 0 (the one-time queue consumes from the head).  No-op when the track
-        // isn't queued (standalone interruption) or already at the head.
         if let Some(pos) = state.queue.iter().position(|t| t.path == track.path) {
             if pos > 0 {
                 state.queue.rotate_left(pos);
@@ -1706,15 +1533,7 @@ impl Daemon {
         Ok(DaemonRes::Ok)
     }
 
-    /// Smart play/pause toggle:
-    ///
-    ///   - If mixer is playing → pause
-    ///   - If paused → resume (no reload, just unpause backend)
-    ///   - If stopped with a current track → play from beginning
-    ///   - If stopped with no current track but queue is non-empty → play from queue cursor
-    ///   - If stopped with no track and empty queue → no-op
     async fn cmd_playpause(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        // If Soloist is the active playback backend, forward the command.
         if Self::soloist_ready(inner).await {
             let state = inner.state.read().await;
             let is_playing = state.soloist.playing;
@@ -1775,8 +1594,6 @@ impl Daemon {
             } else if !path.is_empty() {
                 Self::cmd_play(inner, &path, 0.0, false).await
             } else {
-                // Stopped with nothing current: play the merged view's entry
-                // at the cursor (next user entry or default-list entry).
                 let state = inner.state.read().await;
                 let (queue, cursor) = queue::visible_queue(&state);
                 drop(state);
@@ -1791,7 +1608,6 @@ impl Daemon {
     }
 
     async fn cmd_pause(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        // If Soloist is the active playback backend, forward the command.
         if Self::soloist_ready(inner).await {
             return Self::soloist_control(inner, "pause", vec![])
                 .await
@@ -1813,9 +1629,6 @@ impl Daemon {
         Ok(DaemonRes::Ok)
     }
 
-    /// Stop playback: stops the mixer backend, transitions state to Stopped,
-    /// and broadcasts PlaybackStopped.  Safe to call when already stopped
-    /// (checks status before calling state.stop() to avoid assert).
     async fn cmd_stop(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         {
             let mut mixer = inner.mixer.lock().await;
@@ -1831,11 +1644,7 @@ impl Daemon {
         Ok(DaemonRes::Ok)
     }
 
-    /// Advance to the next track per the queue model: consume the current
-    /// entry, then play the next queued / default-list / freshly-built
-    /// fallback track.  Stops playback when there is nothing left to play.
     async fn cmd_next(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        // If Soloist is the active playback backend, forward the command.
         if Self::soloist_ready(inner).await {
             return Self::soloist_control(inner, "skip_next", vec![])
                 .await
@@ -1843,23 +1652,12 @@ impl Daemon {
                 .map_err(CoreError::Daemon);
         }
 
-        // Mid-crossfade navigation: the mixer is already fading the standby
-        // in.  Drop the outgoing (fading-out) track and promote the standby
-        // instead of restarting it, so rapid next/prev through a crossfade
-        // chain of 2+ tracks is never rejected or clipped.
         if let Some(path) = Self::promote_crossfade(inner).await {
-            // The promoted standby is already playing: consume the outgoing
-            // track from the model so history/cursor stay consistent.
             let _ = Self::step_next(inner).await;
             Self::report_promoted(inner, &path).await;
             return Ok(DaemonRes::Ok);
         }
-        // Clear any in-progress crossfade state before starting a new one
-        // so连续 prev/next works with >2 tracks (spec 09.1).
         *inner.crossfade_loaded_for.lock().await = None;
-        // Crossfade path: look up the standby without advancing the model and
-        // start the fade; `finish_crossfade` advances at completion.  Falls
-        // through to an immediate step for the non-crossfade case.
         let standby = {
             let state = inner.state.read().await;
             Self::next_track(&state)
@@ -1887,11 +1685,7 @@ impl Daemon {
         Ok(DaemonRes::Ok)
     }
 
-    /// Go to the previous track, traversing playback history back through
-    /// user-queue entries and into the default list.  If the current track
-    /// has been playing for a while, restart it instead.
     async fn cmd_prev(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        // If Soloist is the active playback backend, forward the command.
         if Self::soloist_ready(inner).await {
             return Self::soloist_control(inner, "skip_prev", vec![])
                 .await
@@ -1899,9 +1693,6 @@ impl Daemon {
                 .map_err(CoreError::Daemon);
         }
 
-        // Cancel any in-flight crossfade by promoting the standby so the
-        // prev logic operates on a stable single-player state (and reports
-        // the promoted track if it ends up being restarted via seek).
         if let Some(path) = Self::promote_crossfade(inner).await {
             Self::report_promoted(inner, &path).await;
         }
@@ -1943,12 +1734,7 @@ impl Daemon {
         }
     }
 
-    /// Seek to absolute position in seconds.  No-op if status is Stopped.
-    /// Re-decodes the current track from `pos` via `SymphoniaSource`'s
-    /// seek-skip fast-forward (the decode runs on a blocking task so the
-    /// event loop isn't starved).  Reports the requested (clamped) position.
     async fn cmd_seek(inner: &DaemonInner, pos: f64) -> Result<DaemonRes, CoreError> {
-        // If Soloist is the active playback backend, forward the command.
         if Self::soloist_ready(inner).await {
             let pos_ms = (pos * 1000.0).round() as u64;
             return Self::soloist_control(
@@ -1996,7 +1782,6 @@ impl Daemon {
     }
 
     async fn cmd_set_volume(inner: &DaemonInner, volume: u8) -> Result<DaemonRes, CoreError> {
-        // If Soloist is the active playback backend, forward the command.
         if Self::soloist_ready(inner).await {
             return Self::soloist_control(
                 inner,
@@ -2048,7 +1833,6 @@ impl Daemon {
     }
 
     async fn cmd_toggle_shuffle(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        // If Soloist is the active playback backend, forward the command.
         if Self::soloist_ready(inner).await {
             let state = inner.state.read().await;
             let enabled = !state.shuffle;
@@ -2076,8 +1860,6 @@ impl Daemon {
         inner: &DaemonInner,
         mode: gtm_core::state::RepeatMode,
     ) -> Result<DaemonRes, CoreError> {
-        // If Soloist is the active playback backend, forward the command.
-        // Soloist uses two separate commands: set_repeat_context and set_repeat_track.
         if Self::soloist_ready(inner).await {
             let (ctx_enabled, track_enabled) = match mode {
                 RepeatMode::Off => (false, false),
@@ -2340,17 +2122,6 @@ impl Daemon {
         Ok(DaemonRes::Ok)
     }
 
-    /// Queue command dispatcher.
-    ///
-    /// ```text
-    ///  QueueAction
-    ///  ├── List       → return current queue + cursor
-    ///  ├── Clear      → clear queue, push QueueChanged
-    ///  ├── Remove(i)  → remove at index, push QueueChanged
-    ///  ├── Move(f,t)  → move from→to, push QueueChanged
-    ///  ├── Add(paths) → expand files/dirs, add tracks, auto-play if empty
-    ///  └── Set        → replace entire queue
-    /// ```
     async fn cmd_queue(inner: &DaemonInner, action: &QueueAction) -> Result<DaemonRes, CoreError> {
         match action {
             QueueAction::List => {
@@ -2625,8 +2396,6 @@ impl Daemon {
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
                     Ok(Some(removed_path)) => {
-                        // Drop the deleted track from the daemon's queue so a
-                        // stale entry can't be played back.
                         let mut state = inner.state.write().await;
                         state.queue.retain(|t| t.path != removed_path);
                         let was_current = state
@@ -2635,9 +2404,6 @@ impl Daemon {
                             .is_some_and(|t| t.path == removed_path);
                         drop(state);
                         if was_current {
-                            // Stop the backend first so no process holds the
-                            // file open, then clear the model (stops the
-                            // mixer, emits TrackEnded).
                             Self::stop_playback(inner).await;
                         } else {
                             Self::push_queue_state(inner).await;
@@ -2676,10 +2442,6 @@ impl Daemon {
         Ok(res)
     }
 
-    /// Kick off a background library sync (covers/lyrics/metadata). Returns
-    /// immediately so the client's short response timeout is never hit and
-    /// `cmd_lock` is not held across the long-running sync. Progress is
-    /// reported via [`Self::cmd_sync_status`] and a `sync_done` event.
     async fn cmd_sync_start(
         inner: &DaemonInner,
         kind: SyncKind,
@@ -2809,10 +2571,6 @@ impl Daemon {
         filter: Option<gtm_core::state::YTFilter>,
     ) -> Result<DaemonRes, CoreError> {
         inner.health.yt_search_count.fetch_add(1, Ordering::Relaxed);
-        // Fire-and-forget: the manager cancels any in-flight yt-dlp search and
-        // starts a new one immediately, so the request returns before the
-        // client's short response timeout. Results are picked up via
-        // `cmd_yt_search_poll`, which echoes the query they belong to.
         inner.youtube.lock().await.start_search(query, filter);
         Ok(DaemonRes::Ok)
     }
@@ -2848,8 +2606,6 @@ impl Daemon {
     async fn cmd_get_status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let state = inner.state.read().await;
         let mut state_clone = state.clone();
-        // Report the merged queue view so clients see the same list they get
-        // from QueueChanged events (user entries + remaining default list).
         let (queue, cursor) = queue::visible_queue(&state);
         state_clone.queue = queue;
         state_clone.queue_cursor = cursor;
@@ -2860,11 +2616,9 @@ impl Daemon {
     }
 
     async fn cmd_check_health(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        use gtm_core::ipc::{ComponentHealth, HealthReport, HealthStatus};
         let h = &inner.health;
         let mut components = Vec::new();
 
-        // Audio backend
         components.push(ComponentHealth {
             name: "audio_backend".into(),
             status: HealthStatus::Ok,
@@ -2872,7 +2626,6 @@ impl Daemon {
             uptime_secs: Some(h.uptime_secs()),
         });
 
-        // Library scan
         let scans = h.scan_count.load(Ordering::Relaxed);
         let scan_errs = h.scan_errors.load(Ordering::Relaxed);
         components.push(ComponentHealth {
@@ -2886,7 +2639,6 @@ impl Daemon {
             uptime_secs: None,
         });
 
-        // YouTube
         let yt = h.yt_search_count.load(Ordering::Relaxed);
         let yt_errs = h.yt_search_errors.load(Ordering::Relaxed);
         components.push(ComponentHealth {
@@ -2900,7 +2652,6 @@ impl Daemon {
             uptime_secs: None,
         });
 
-        // Cover art
         let covers = h.cover_fetch_count.load(Ordering::Relaxed);
         let cover_errs = h.cover_fetch_errors.load(Ordering::Relaxed);
         components.push(ComponentHealth {
@@ -2914,7 +2665,6 @@ impl Daemon {
             uptime_secs: None,
         });
 
-        // Lyrics
         let lyrics = h.lyrics_fetch_count.load(Ordering::Relaxed);
         let lyrics_errs = h.lyrics_fetch_errors.load(Ordering::Relaxed);
         components.push(ComponentHealth {
@@ -2928,7 +2678,6 @@ impl Daemon {
             uptime_secs: None,
         });
 
-        // Event channel capacity
         components.push(ComponentHealth {
             name: "event_channel".into(),
             status: HealthStatus::Ok,
@@ -2953,7 +2702,6 @@ impl Daemon {
         let mut discovered_artist = String::new();
         let mut discovered_album = String::new();
 
-        // Try embedded cover / sidecar from library first
         let lib = if !inner.config.test_mode {
             Library::new(inner.config.data_dir.to_str().unwrap_or("")).ok()
         } else {
@@ -2963,21 +2711,22 @@ impl Daemon {
             if let Ok(Some(track)) = library.get_track(track_id) {
                 if let Some(ref path) = track.cover_path {
                     if let Ok(data) = tokio::fs::read(path).await {
-                        use base64::Engine;
-                        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                        return Ok(DaemonRes::CoverArt { data: Some(b64) });
+                        if !crate::cover::CoverCache::cover_too_small(&data) {
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                            return Ok(DaemonRes::CoverArt { data: Some(b64) });
+                        }
                     }
                 }
-                // Sidecar .jpg/.jpeg/.png/.webp next to the audio file
                 let audio_path = std::path::Path::new(&track.path);
                 let parent = audio_path.parent().unwrap_or(std::path::Path::new(""));
                 let stem = audio_path.file_stem().unwrap_or_default();
                 for ext in ["jpg", "jpeg", "png", "webp"] {
                     let sidecar = parent.join(format!("{}.{}", stem.to_string_lossy(), ext));
                     if let Ok(data) = tokio::fs::read(&sidecar).await {
-                        use base64::Engine;
-                        let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                        return Ok(DaemonRes::CoverArt { data: Some(b64) });
+                        if !crate::cover::CoverCache::cover_too_small(&data) {
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                            return Ok(DaemonRes::CoverArt { data: Some(b64) });
+                        }
                     }
                 }
                 discovered_artist = track.artist;
@@ -2985,8 +2734,6 @@ impl Daemon {
             }
         }
 
-        // If not found in library, search the merged queue view and the
-        // current track for the requested track_id.
         if discovered_artist.is_empty() {
             let state = inner.state.read().await;
             let in_merged = state
@@ -3003,7 +2750,6 @@ impl Daemon {
             }
         }
 
-        // Deezer fallback via CoverCache with discovered artist/album
         if !discovered_artist.is_empty() && !discovered_album.is_empty() {
             let mut guard = inner.cover_cache.lock().await;
             if let Some(ref mut cache) = *guard {
@@ -3015,7 +2761,6 @@ impl Daemon {
                         .ok()
                         .flatten();
                 if let Some(cover) = cover {
-                    use base64::Engine;
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&cover.data);
                     return Ok(DaemonRes::CoverArt { data: Some(b64) });
                 }
@@ -3049,9 +2794,6 @@ impl Daemon {
         let track = match current {
             Some(t) => t,
             None => {
-                // Prefer the library row (full tags) when available; otherwise
-                // fall back to a path-derived track so queued/foreign tracks
-                // (id == 0) can still be looked up.
                 let resolved = if !inner.config.test_mode {
                     Library::new(inner.config.data_dir.to_str().unwrap_or(""))
                         .ok()
@@ -3066,8 +2808,6 @@ impl Daemon {
             }
         };
 
-        // If tags are missing, derive artist/title from the filename so the
-        // lrclib exact/search lookup gets meaningful metadata.
         let mut track = track;
         if track.artist.is_empty() || track.title.is_empty() {
             let (artist, title) = crate::lyrics::meta_from_filename(&track.path);
@@ -3136,7 +2876,6 @@ impl Daemon {
         })
     }
 
-    /// Toggle play/pause on the active Spotify device (Premium required).
     async fn cmd_spotify_play_pause(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let mut spotify = inner.spotify.lock().await;
         match spotify.play_pause().await {
@@ -3188,8 +2927,6 @@ impl Daemon {
         }
     }
 
-    /// Resolve a cached Spotify track to a YouTube stream, download it into
-    /// the cache, and append it to the user queue (auto-playing if empty).
     async fn cmd_spotify_resolve(
         inner: &DaemonInner,
         playlist_id: &str,
@@ -3238,25 +2975,60 @@ impl Daemon {
         };
         drop(yt);
 
+        let spotify_title = track.name.clone();
+        let spotify_artist = track.artists.clone();
+        let spotify_album = track.album.unwrap_or_default();
         let was_empty = {
             let mut state = inner.state.write().await;
             state.fallback_disabled = false;
             let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
-            queue::queue_add(&mut state, &path, None);
+            let added = queue::queue_add(&mut state, &path, None);
+            if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == added.path) {
+                entry.title = spotify_title.clone();
+                entry.artist = spotify_artist.clone();
+                entry.album = spotify_album.clone();
+            }
             drop(state);
             w
         };
         if was_empty {
             let _ = Self::cmd_play(inner, &path, 0.0, false).await;
         }
+
+        {
+            let mut guard = inner.cover_cache.lock().await;
+            if let Some(ref mut cc) = *guard {
+                let _ = cc.get_cover(&spotify_artist, &spotify_album).await;
+            }
+        }
+
         Self::push_queue_state(inner).await;
         Self::save_state(inner);
         Ok(DaemonRes::Ok)
     }
 
-    /// Download a stream URL into `cache_dir/spotify/` via yt-dlp, returning
-    /// the local file path. Stale files with the same prefix are replaced.
     async fn download_audio_to_cache(
+        cache_dir: &Path,
+        prefix: &str,
+        url: &str,
+    ) -> Result<String, String> {
+        let max_retries = 3u32;
+        let mut last_err = String::new();
+        for attempt in 1..=max_retries {
+            match Self::try_download_audio_to_cache(cache_dir, prefix, url).await {
+                Ok(path) => return Ok(path),
+                Err(e) => {
+                    last_err = e;
+                    if attempt < max_retries {
+                        tokio::time::sleep(Duration::from_secs(2 * attempt as u64)).await;
+                    }
+                }
+            }
+        }
+        Err(last_err)
+    }
+
+    async fn try_download_audio_to_cache(
         cache_dir: &Path,
         prefix: &str,
         url: &str,
@@ -3308,7 +3080,6 @@ impl Daemon {
 
     // ─── Soloist playback bridge ───
 
-    /// Set or update the Soloist API key, persist it, and start the bridge.
     async fn cmd_soloist_set_api_key(
         inner: &DaemonInner,
         key: &str,
@@ -3324,7 +3095,6 @@ impl Daemon {
         Ok(DaemonRes::SoloistStatusRes { status })
     }
 
-    /// Clear the Soloist API key and stop the bridge.
     async fn cmd_soloist_clear(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let mut soloist = inner.soloist.lock().await;
         soloist.clear_key();
@@ -3345,8 +3115,6 @@ impl Daemon {
         })
     }
 
-    /// Set the Soloist auto-start flag (persisted in daemon state and applied
-    /// on the next daemon restart).
     async fn cmd_soloist_set_config(
         inner: &DaemonInner,
         auto_start: bool,
@@ -3360,7 +3128,6 @@ impl Daemon {
         Ok(DaemonRes::Ok)
     }
 
-    /// Start the Soloist bridge using the persisted key.
     async fn cmd_soloist_start(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         inner.soloist_manual_override.store(true, Ordering::SeqCst);
         let mut soloist = inner.soloist.lock().await;
@@ -3373,7 +3140,6 @@ impl Daemon {
         Ok(DaemonRes::SoloistStatusRes { status })
     }
 
-    /// Stop the Soloist bridge (does not clear the key).
     async fn cmd_soloist_stop(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         inner.soloist_manual_override.store(true, Ordering::SeqCst);
         let mut soloist = inner.soloist.lock().await;
@@ -3401,7 +3167,6 @@ impl Daemon {
         Ok(DaemonRes::SoloistStatusRes { status })
     }
 
-    /// Query the current Soloist bridge status.
     async fn cmd_soloist_status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let state = inner.state.read().await;
         Ok(DaemonRes::SoloistStatusRes {
@@ -3409,7 +3174,6 @@ impl Daemon {
         })
     }
 
-    /// Send a `play` command to Soloist with an optional Spotify URI.
     async fn cmd_soloist_play(inner: &DaemonInner, uri: &str) -> Result<DaemonRes, CoreError> {
         let json = SoloistManager::cmd("play", vec![("uri", Value::String(uri.into()))]);
         if inner.soloist.lock().await.send(json).await {
@@ -3421,7 +3185,6 @@ impl Daemon {
         }
     }
 
-    /// Ask Soloist to become the active Spotify Connect device.
     async fn cmd_soloist_activate(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let json = SoloistManager::cmd("activate", vec![]);
         if inner.soloist.lock().await.send(json).await {
@@ -3433,7 +3196,6 @@ impl Daemon {
         }
     }
 
-    /// Forward a control command to Soloist when it's the active playback backend.
     async fn soloist_control(
         inner: &DaemonInner,
         command: &str,
@@ -3447,13 +3209,11 @@ impl Daemon {
         }
     }
 
-    /// Check if Soloist is connected and logged in (active playback backend).
     async fn soloist_ready(inner: &DaemonInner) -> bool {
         let state = inner.state.read().await;
         state.soloist.connected && state.soloist.logged_in
     }
 
-    /// Apply a Soloist event to the daemon state and broadcast changes.
     async fn apply_soloist_event(inner: &DaemonInner, name: &str, data: &Value) {
         match name {
             "auth_state" => {
@@ -3473,7 +3233,6 @@ impl Daemon {
                 let st = state.soloist.clone();
                 drop(state);
                 Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
-                // On successful auth, request full playback snapshot.
                 if logged_in {
                     let _ = Self::soloist_send(inner, "get_state").await;
                 }
@@ -3522,7 +3281,6 @@ impl Daemon {
                 let st = state.soloist.clone();
                 drop(state);
                 Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
-                // Stop local mixer if Soloist starts playing (do this after dropping state lock).
                 if (status == "playing" || status == "buffering") && !was_playing {
                     let _ = inner.mixer.lock().await.stop();
                 }
@@ -3679,13 +3437,11 @@ impl Daemon {
         }
     }
 
-    /// Helper to send a raw Soloist command and ignore the result.
     async fn soloist_send(inner: &DaemonInner, command: &str) -> bool {
         let json = SoloistManager::cmd(command, vec![]);
         inner.soloist.lock().await.send(json).await
     }
 
-    /// Build a `SpotifyTrack` from a Soloist entity payload.
     fn soloist_track_info(entity: &Value) -> Option<SpotifyTrack> {
         let uri = entity.get("uri").and_then(Value::as_str)?.to_string();
         if uri.is_empty() || !uri.starts_with("spotify:") {
@@ -3738,7 +3494,6 @@ impl Daemon {
         })
     }
 
-    /// Convert a Soloist `SpotifyTrack` to a daemon `TrackInfo` for playback state.
     fn soloist_to_track_info(st: &SpotifyTrack) -> TrackInfo {
         TrackInfo {
             id: 0,
@@ -3803,11 +3558,6 @@ impl Daemon {
     }
 }
 
-/// Derive the artist/title pair to query Deezer with for a library track.
-///
-/// Falls back to cleaning the filename stem when the stored metadata is empty,
-/// still equals the raw stem, or otherwise looks like an unparsed filename
-/// (e.g. yt-dlp underscore names that survived an older scan).
 fn metadata_query_for(track: &TrackInfo) -> (String, String) {
     let stem = Path::new(&track.path)
         .file_stem()
@@ -3828,9 +3578,6 @@ fn metadata_query_for(track: &TrackInfo) -> (String, String) {
     (query_artist, query_title)
 }
 
-/// Background sync: fetch cover art for tracks missing it. Runs on a blocking
-/// thread so the daemon event loop stays responsive; progress is mirrored into
-/// `progress` for the `SyncStatus` poll.
 fn run_covers_sync(
     data_dir: PathBuf,
     cache_dir: PathBuf,
@@ -3878,7 +3625,6 @@ fn run_covers_sync(
     Ok((synced, total))
 }
 
-/// Background sync: write `.lrc` sidecars for tracks without one.
 fn run_lyrics_sync(
     data_dir: PathBuf,
     lyrics_manager: Option<LyricsManager>,
@@ -3911,9 +3657,6 @@ fn run_lyrics_sync(
     Ok((synced, total))
 }
 
-/// Background sync: enrich unreliable track metadata via Deezer and embed tags
-/// into the files. Tracks with no verified match fall back to the cleaned
-/// filename stem so the library never displays a raw yt-dlp filename.
 fn run_metadata_sync(
     data_dir: PathBuf,
     cache_dir: PathBuf,
@@ -3999,8 +3742,6 @@ fn run_metadata_sync(
             }
             synced += 1;
         } else {
-            // No verified Deezer match: fall back to the cleaned filename stem
-            // so the library shows a real title/artist instead of the raw name.
             let (cleaned_artist, cleaned_title) = crate::cleaner::clean_filename_stem(stem);
             if !cleaned_title.is_empty() || cleaned_artist.is_some() {
                 let patch = gtm_core::MetadataPatch {

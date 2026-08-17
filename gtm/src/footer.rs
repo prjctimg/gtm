@@ -43,6 +43,7 @@ pub enum FooterModule {
     Device,
     EqPreset,
     SleepTimer,
+    Notification,
 }
 
 impl FooterModule {
@@ -62,6 +63,7 @@ impl FooterModule {
             FooterModule::Device => "Device",
             FooterModule::EqPreset => "EqPreset",
             FooterModule::SleepTimer => "SleepTimer",
+            FooterModule::Notification => "Notification",
         }
     }
 
@@ -82,6 +84,7 @@ impl FooterModule {
             "Device" => FooterModule::Device,
             "EqPreset" => FooterModule::EqPreset,
             "SleepTimer" => FooterModule::SleepTimer,
+            "Notification" => FooterModule::Notification,
             _ => return None,
         })
     }
@@ -111,7 +114,11 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::Volume,
                 FooterModule::EqPreset,
             ],
-            middle: vec![FooterModule::KeyAction, FooterModule::SleepTimer],
+            middle: vec![
+                FooterModule::KeyAction,
+                FooterModule::Notification,
+                FooterModule::SleepTimer,
+            ],
             right: vec![],
         },
         // Bare minimum for termux or very small viewports.
@@ -255,7 +262,7 @@ pub fn render(app: &App) -> Option<FooterRenderOutput> {
         darken(app.theme.secondary_accent, 0.25)
     };
     let middle_bg = darken(app.theme.secondary_accent, 0.20);
-    let right_bg = darken(app.theme.tertiary_accent, 0.20);
+    let right_bg = darken(app.theme.accent, 0.20);
 
     let slots: [(&[FooterModule], Color); 3] = [
         (&preset.left, left_bg),
@@ -354,6 +361,7 @@ fn module_color(m: FooterModule, theme: &crate::theme::AppTheme) -> Color {
         FooterModule::Device => theme.tertiary_accent,
         FooterModule::EqPreset => theme.secondary_accent,
         FooterModule::SleepTimer => theme.accent,
+        FooterModule::Notification => theme.fg_bright,
     }
 }
 
@@ -384,7 +392,16 @@ fn module_text(m: FooterModule, app: &App) -> Option<String> {
         FooterModule::Device => render_device(app),
         FooterModule::EqPreset => render_eq_preset(app),
         FooterModule::SleepTimer => render_sleep_timer(app),
+        FooterModule::Notification => render_footer_notification(app),
     }
+}
+
+fn render_footer_notification(app: &App) -> Option<String> {
+    let (msg, expires) = app.footer_notification.as_ref()?;
+    if std::time::Instant::now() >= *expires {
+        return None;
+    }
+    Some(msg.clone())
 }
 
 fn render_playback(app: &App) -> String {
@@ -491,6 +508,23 @@ pub fn format_duration(secs: u64) -> String {
         format!("{}:{:02}:{:02}", h, m, s)
     } else {
         format!("{}:{:02}", m, s)
+    }
+}
+
+pub fn format_uptime(secs: f64) -> String {
+    let total = secs as u64;
+    let d = total / 86400;
+    let h = (total % 86400) / 3600;
+    let m = (total % 3600) / 60;
+    let s = total % 60;
+    if d > 0 {
+        format!("{}d {}h {}m {}s", d, h, m, s)
+    } else if h > 0 {
+        format!("{}h {}m {}s", h, m, s)
+    } else if m > 0 {
+        format!("{}m {}s", m, s)
+    } else {
+        format!("{}s", s)
     }
 }
 

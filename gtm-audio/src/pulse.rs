@@ -1,9 +1,10 @@
 // Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
-// PulseAudio mixer backend with dual-stream crossfade
 //
 // This is free software released under the GPL-3.0 license.
 
+use std::fs::File;
+use std::io::BufReader;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
@@ -60,10 +61,6 @@ impl PlaybackSource for PaPlaybackSource {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Stream state
-// ---------------------------------------------------------------------------
 
 struct PaStreamState {
     stream: pulseaudio::PlaybackStream,
@@ -144,10 +141,6 @@ impl PaStreamState {
         });
     }
 }
-
-// ---------------------------------------------------------------------------
-// PulseAudioMixer
-// ---------------------------------------------------------------------------
 
 pub struct PulseAudioMixer {
     _client: Client,
@@ -246,8 +239,6 @@ impl PulseAudioMixer {
     }
 
     fn decode(path: &str) -> AudioResult<Box<dyn Source<Item = f32> + Send>> {
-        use std::fs::File;
-        use std::io::BufReader;
         let file = File::open(path).map_err(|e| AudioError::OpenFailed(e.to_string()))?;
         let reader = BufReader::new(file);
         if let Ok(source) = rodio::Decoder::new(reader) {
@@ -305,20 +296,16 @@ impl PulseAudioMixer {
     fn swap_active_standby(&mut self) {
         let vol = self.get_mixer_volume();
 
-        // Stop old active decode
         self.active_mut().stop_decode();
 
-        // Swap
         self.is_a_active = !self.is_a_active;
 
-        // New active gets volume, old active muted
         Self::set_stream_volume(&self.active(), vol);
         self.active().uncork();
         self.standby().flush();
         self.standby().cork();
         Self::set_stream_volume(&self.standby(), 0);
 
-        // Transfer decode state
         self.active_mut().control = self.standby_mut().control.take();
         self.active_mut().decode_handle = self.standby_mut().decode_handle.take();
 

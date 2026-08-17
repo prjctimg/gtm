@@ -8,14 +8,14 @@ repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
 categories.workspace = true
-readme.workspace = true
+readme = "README.md"
 
 [features]
 default = []
 pulseaudio = ["dep:pulseaudio", "dep:tokio"]
 
 [dependencies]
-gtm-core = { path = "../gtm-core", version = "0.1.7" }
+gtm-core = { path = "../gtm-core", version = "0.2.0" }
 rodio = { version = "0.22", default-features = false, features = ["playback", "symphonia-all"] }
 symphonia = { version = "0.6", default-features = false, features = ["all-codecs", "all-formats", "all-meta"] }
 symphonia-adapter-libopus = "0.3"

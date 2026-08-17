@@ -1,9 +1,10 @@
 // Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
-// Mixer trait and rodio-based implementation with EQ, reverb, and crossfade
 //
 // This is free software released under the GPL-3.0 license.
 
+use std::fs::File;
+use std::io::BufReader;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -17,7 +18,6 @@ use crate::eq::{EqGains, EqSource, ReverbSource};
 use crate::symphonia::SymphoniaSource;
 use gtm_core::state::{Easing, EqPreset, ReverbConfig};
 
-/// Trait abstracting over audio mixer implementations (real or null).
 pub trait Mixer: Send + Sync {
     fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()>;
     fn load_active_decoded(
@@ -47,9 +47,6 @@ pub trait Mixer: Send + Sync {
     fn set_crossfade_easing(&mut self, easing: Easing);
     fn is_crossfading(&self) -> bool;
     fn force_complete_crossfade(&mut self);
-    /// Cut the fading-out (active) track and promote the fading-in standby
-    /// to active immediately.  Used when next/prev arrives mid-crossfade so
-    /// navigation is never rejected while the mixer is already fading.
     fn drop_active(&mut self);
     fn poll(&mut self) -> AudioResult<Option<AudioEvent>>;
 
@@ -59,30 +56,7 @@ pub trait Mixer: Send + Sync {
     fn set_reverb(&self, config: &ReverbConfig);
 }
 
-/// Dual-player audio mixer with crossfade support.
-///
-/// ```text
-///  Normal playback:                    Crossfade:
-///
-///  Player A (active) ───▶ Mixer ──▶   A: volume ▓▓░░░░ 0%  (fade out)
-///  Player B (standby) ───┤  Sink      B: volume ░░░░▓▓ 100% (fade in)
-///                          Sink
-///                                    After crossfade completes:
-///  swap() flips active/standby
-///  so the just-faded-in player       Player A (standby) ─ stopped
-///  becomes the active one.           Player B (active)   ─ playing
-/// ```
-///
-/// Two `rodio::Player`s feed the same hardware mixer (`rodio::MixerDeviceSink`).
-/// During normal playback only the *active* player is audible at full volume.
-/// During crossfade the *standby* player fades in while the active fades out
-/// (implemented by `step_crossfade()` called from `poll()`), then they swap
-/// roles via `force_complete_crossfade()`.
 pub struct AudioMixer {
-    /// Keep-alive for the cpal device stream. The two `rodio::Player`s mix
-    /// into `sink.0.mixer()` (see `new()`), so dropping this field would drop
-    /// the `MixerDeviceSink` and instantly silence output. Never read by
-    /// design; hence the `dead_code` allow.
     #[allow(dead_code)]
     sink: Arc<MixerDeviceSink>,
     player_a: Player,
@@ -97,9 +71,6 @@ pub struct AudioMixer {
     start_pos: Arc<Mutex<f64>>,
     crossfade_start: Option<Instant>,
     crossfade_duration: f64,
-    /// Duration of the standby track, captured when it is decoded so the
-    /// shared `duration` field can be switched to it at the crossfade swap.
-    /// Zero when unknown (decode-thread path).
     standby_duration: f64,
     pending_pause: bool,
     pause_fade_start: Option<Instant>,
@@ -116,14 +87,9 @@ pub struct AudioMixer {
     active_decode_handle: Option<std::thread::JoinHandle<()>>,
     standby_control: Option<Arc<DecodeControl>>,
     standby_decode_handle: Option<std::thread::JoinHandle<()>>,
-    /// When the active sink first ran dry while still marked playing.
-    /// Emit `Finished` only after the grace period elapses so transient
-    /// buffer gaps (seek restarts, source swaps) never truncate a track.
     underrun_since: Option<Instant>,
 }
 
-/// Grace period before an empty sink is declared finished.  All supported
-/// sources only run dry at genuine EOF, so this is purely a jitter filter.
 const UNDERFLOW_GRACE: Duration = Duration::from_millis(100);
 
 struct MixerDeviceSink(rodio::MixerDeviceSink);
@@ -281,15 +247,10 @@ impl AudioMixer {
         }
     }
 
-    /// Decode a file (blocking I/O). Safe to call from `spawn_blocking`.
-    /// Kept for `load_active_decoded` / `load_standby_decoded` paths.
     pub fn decode_file(path: &str) -> AudioResult<Box<dyn Source<Item = f32> + Send>> {
         Self::decode(path)
     }
 
-    /// Decode a file starting at `start_pos` seconds (blocking I/O).
-    /// Safe to call from `spawn_blocking`. Uses the seek-skip fast-forward
-    /// in `SymphoniaSource`, so it works for every supported format.
     pub fn decode_file_at(
         path: &str,
         start_pos: f64,
@@ -298,8 +259,6 @@ impl AudioMixer {
     }
 
     fn decode(path: &str) -> AudioResult<Box<dyn Source<Item = f32> + Send>> {
-        use std::fs::File;
-        use std::io::BufReader;
         let file = File::open(path).map_err(|e| AudioError::OpenFailed(e.to_string()))?;
         let reader = BufReader::new(file);
         if let Ok(source) = Decoder::new(reader) {
@@ -308,7 +267,6 @@ impl AudioMixer {
         SymphoniaSource::from_file(path, 0.0)
     }
 
-    /// Probe the duration of an audio file without fully decoding it.
     fn probe_duration(path: &str) -> AudioResult<f64> {
         let source = Self::decode(path)?;
         Ok(source
@@ -317,7 +275,6 @@ impl AudioMixer {
             .unwrap_or(0.0))
     }
 
-    /// Stop a decode thread and drain its handle.
     fn stop_decode_thread(
         control: &Option<Arc<DecodeControl>>,
         handle: &mut Option<std::thread::JoinHandle<()>>,
@@ -330,8 +287,6 @@ impl AudioMixer {
         }
     }
 
-    /// Wrap a decoded source with EQ and optional reverb.
-    /// Used only for pre-decoded sources (load_active_decoded / load_standby_decoded).
     fn wrap_source(
         &self,
         source: Box<dyn Source<Item = f32> + Send>,
@@ -353,7 +308,6 @@ impl AudioMixer {
         }
     }
 
-    /// Start a decode thread for the given path, wait for prebuffer, return (control, source, handle).
     fn start_decode_thread(
         path: &str,
         eq_gains: &EqGains,
@@ -395,7 +349,6 @@ impl AudioMixer {
     }
 
     pub fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()> {
-        // Stop old decode thread
         Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
 
         let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
@@ -403,13 +356,11 @@ impl AudioMixer {
         self.active()
             .set_volume(vol * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0));
 
-        // Probe duration
         let dur = Self::probe_duration(path)?;
         if dur > 0.0 {
             *self.duration.lock().unwrap() = dur;
         }
 
-        // Start decode thread + ring buffer
         let (control, source, handle) = Self::start_decode_thread(
             path,
             &self.eq_gains,
@@ -432,14 +383,11 @@ impl AudioMixer {
         Ok(())
     }
 
-    /// Like `load_active` but source is pre-decoded (avoids blocking in async context).
-    /// Uses EQ/reverb wrapping directly (no decode thread needed).
     pub fn load_active_decoded(
         &mut self,
         source: Box<dyn Source<Item = f32> + Send>,
         start_pos: f64,
     ) -> AudioResult<()> {
-        // Stop old decode thread
         Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
 
         let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
@@ -492,8 +440,6 @@ impl AudioMixer {
 
         self.standby().stop();
         self.standby().set_volume(0.0);
-        // Capture the standby duration before wrapping so the shared
-        // `duration` field can be switched to it at the crossfade swap.
         self.standby_duration = source
             .total_duration()
             .map(|d| d.as_secs_f64())
@@ -511,7 +457,6 @@ impl AudioMixer {
     pub fn play(&mut self) -> AudioResult<()> {
         if self.active().is_paused() {
             self.active().play();
-            // Restore volume: the sink was faded to 0 during the pause fade-out.
             let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
             self.active()
                 .set_volume(vol * (self.master_volume.load(Ordering::SeqCst) as f32 / 100.0));
@@ -588,7 +533,6 @@ impl AudioMixer {
         self.playing.load(Ordering::SeqCst) && !self.pending_pause
     }
 
-    /// Track-time playback position: the mixer reports wall-clock progress.
     pub fn track_position(&self) -> f64 {
         let elapsed = self
             .start_time
@@ -635,11 +579,6 @@ impl AudioMixer {
         self.crossfade_start.is_some()
     }
 
-    /// Immediately cut the fading-out (active) player and promote the
-    /// fading-in standby to active.  This is the "drop oldest" path used
-    /// when next/prev arrives mid-crossfade: instead of rejecting the
-    /// navigation (the mixer only ever fades between two players), the
-    /// outgoing track is dropped so the fade-in finishes seamlessly.
     pub fn drop_active(&mut self) {
         let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
         let master = self.master_volume.load(Ordering::SeqCst) as f32 / 100.0;
@@ -667,8 +606,6 @@ impl AudioMixer {
         self.playing.store(true, Ordering::SeqCst);
         self.underrun_since = None;
 
-        // Roles swapped: the promoted standby now owns the active slot, so
-        // the decode-thread bookkeeping must follow it.
         std::mem::swap(&mut self.active_control, &mut self.standby_control);
         std::mem::swap(
             &mut self.active_decode_handle,
@@ -767,20 +704,10 @@ impl AudioMixer {
         } as f32);
 
         if progress >= 1.0 {
-            // EOF-aware swap (B6): only cut the outgoing track once it has
-            // effectively finished (<= ~50 ms of audio left, or an unknown
-            // duration).  When it still has a tail, leave it playing at
-            // silent volume so the final notes reach natural EOF instead of
-            // being truncated.  The standby player's drain is invisible to
-            // the active-sink EOF detection in `poll`, so no spurious
-            // `Finished` event is emitted for the tail.
             let cut_old = self.active_remaining() <= 0.05;
 
             self.is_a_active = !self.is_a_active;
             self.crossfade_start = None;
-            // The standby becomes the active player: switch the shared
-            // duration to its value so position tracking and the daemon's
-            // `finish_crossfade` see the new track's length.
             if self.standby_duration > 0.0 {
                 *self.duration.lock().unwrap() = self.standby_duration;
             }
@@ -844,10 +771,6 @@ impl AudioMixer {
                 }
             }
             if self.playing.load(Ordering::SeqCst) {
-                // Underrun guard: the sink can run dry transiently while a
-                // source is swapped or a decode thread restarts. Give it a
-                // short grace period, then emit Finished unconditionally so
-                // auto-advance always fires at end of track.
                 let since = self.underrun_since.get_or_insert_with(Instant::now);
                 if since.elapsed() < UNDERFLOW_GRACE {
                     return Ok(None);

@@ -110,12 +110,6 @@ for build instructions, the crate layout, and the green gates (fmt / clippy /
 test). People who have contributed code are listed in
 [CONTRIBUTORS.md](CONTRIBUTORS.md).
 
-## Development
-
-The implementation is driven by a set of feature specs under
-[`specs/`](specs/) — one file per themed chunk of work, each with acceptance
-criteria. They are the authoritative reference when changing behavior.
-
 ---
 
 (c) 2026 - present, [prjctimg](https://prjctimg.me)
