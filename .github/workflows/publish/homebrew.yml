@@ -78,8 +78,8 @@ jobs:
           FORMULA
 
           cd tap-repo
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "prjctimg"
+          git config user.email "prjctimg@outlook.com"
           git add Formula/gtm.rb
           git commit -m "gtm v${version}" || echo "No changes to commit"
           git push

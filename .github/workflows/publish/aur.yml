@@ -26,15 +26,16 @@ jobs:
           chmod 600 ~/.ssh/aur_key
 
           GIT_SSH_COMMAND="ssh -i ~/.ssh/aur_key" \
-            git clone "ssh://aur@aur.archlinux.org/gtmd-git.git" aur-repo
+            git clone "ssh://aur@aur.archlinux.org/gtm.git" aur-repo
 
           cd aur-repo
           sed -i "s/pkgver=.*/pkgver=${version}/" PKGBUILD
           sed -i "s/pkgrel=.*/pkgrel=1/" PKGBUILD
+          sed -i '/^pkgver()/,/^}/d' PKGBUILD
           makepkg --printsrcinfo > .SRCINFO
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "prjctimg"
+          git config user.email "prjctimg@outlook.com"
           git add PKGBUILD .SRCINFO
           git commit -m "Update to v${version}" || echo "No changes to commit"
           GIT_SSH_COMMAND="ssh -i ~/.ssh/aur_key" git push

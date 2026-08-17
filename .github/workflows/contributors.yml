@@ -20,8 +20,8 @@ jobs:
       - name: Commit if changed
         run: |
           if ! git diff --quiet CONTRIBUTORS.md; then
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git config user.name "prjctimg"
+            git config user.email "prjctimg@outlook.com"
             git add CONTRIBUTORS.md
             git commit -m "docs: update CONTRIBUTORS"
             git push

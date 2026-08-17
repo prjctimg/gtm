@@ -2066,10 +2066,7 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             let inner = block.inner(picker_area);
             f.render_widget(block, picker_area);
 
-            let query = app
-                .pickers
-                .top()
-                .map_or(String::new(), |o| o.query.clone());
+            let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
             let cursor = if app
                 .pickers
                 .top()
@@ -2136,10 +2133,8 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                             .duration_ms
                             .map(|ms| format_duration_short(ms / 1000))
                             .unwrap_or_default();
-                        let content = format!(
-                            "{}{} - {} [{}]",
-                            prefix, track.artists, track.name, dur
-                        );
+                        let content =
+                            format!("{}{} - {} [{}]", prefix, track.artists, track.name, dur);
                         let style = if i == sel {
                             Style::default()
                                 .fg(app.theme.selection_fg_readable())

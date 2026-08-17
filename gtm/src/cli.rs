@@ -76,13 +76,9 @@ pub enum CliCommand {
     /// Skip to previous track
     Prev,
     /// Seek to a position in seconds
-    Seek {
-        position_secs: f64,
-    },
+    Seek { position_secs: f64 },
     /// Set volume (0-100)
-    Volume {
-        volume: u8,
-    },
+    Volume { volume: u8 },
     /// Toggle shuffle
     Shuffle,
     /// Set repeat mode (off, one, all)
@@ -113,14 +109,9 @@ pub enum CliCommand {
         position: Option<u64>,
     },
     /// Remove a track from the queue by index
-    QueueRemove {
-        index: u64,
-    },
+    QueueRemove { index: u64 },
     /// Move a track within the queue
-    QueueMove {
-        from: u64,
-        to: u64,
-    },
+    QueueMove { from: u64, to: u64 },
     /// Clear the entire queue
     QueueClear,
     /// Replace the queue with the given tracks
@@ -143,13 +134,9 @@ pub enum CliCommand {
     /// List playlists
     Playlists,
     /// Create a new playlist
-    CreatePlaylist {
-        name: String,
-    },
+    CreatePlaylist { name: String },
     /// Delete a playlist
-    DeletePlaylist {
-        id: i64,
-    },
+    DeletePlaylist { id: i64 },
     /// Add tracks to a playlist
     AddToPlaylist {
         playlist_id: i64,
@@ -167,9 +154,7 @@ pub enum CliCommand {
         path: String,
     },
     /// Show recently played tracks
-    Recent {
-        count: u64,
-    },
+    Recent { count: u64 },
     /// Sync metadata for a file or all library tracks
     MetadataSync {
         #[arg(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
@@ -178,21 +163,13 @@ pub enum CliCommand {
     /// List favourite tracks
     Favourites,
     /// Add a track to favourites
-    FavouriteAdd {
-        track_id: i64,
-    },
+    FavouriteAdd { track_id: i64 },
     /// Remove a track from favourites
-    FavouriteRemove {
-        track_id: i64,
-    },
+    FavouriteRemove { track_id: i64 },
     /// Search for lyrics (format: "artist - title")
-    Lyrics {
-        query: String,
-    },
+    Lyrics { query: String },
     /// Search the library
-    Search {
-        query: String,
-    },
+    Search { query: String },
     /// Show daemon status
     Status {
         #[arg(long)]
@@ -207,9 +184,7 @@ pub enum CliCommand {
     /// Open config file in editor
     Config,
     /// Set a sleep timer in minutes
-    SleepTimer {
-        minutes: u32,
-    },
+    SleepTimer { minutes: u32 },
     /// Cancel the current sleep timer
     CancelSleepTimer,
     /// Edit track metadata (field: title, artist, album, genre, year, track-number)

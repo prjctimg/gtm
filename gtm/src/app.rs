@@ -1612,8 +1612,11 @@ impl App {
                         .to_lowercase()
                         .contains(&q)
                 {
-                    self.spotify_search_results
-                        .push((pl.id.clone(), pl.name.clone(), track.clone()));
+                    self.spotify_search_results.push((
+                        pl.id.clone(),
+                        pl.name.clone(),
+                        track.clone(),
+                    ));
                 }
             }
         }
@@ -3773,17 +3776,13 @@ impl App {
                             ));
                         }
                         Err(e) => {
-                            let _ = ipc_tx.send(IpcResult::Error(format!(
-                                "Spotify resolve failed: {e}"
-                            )));
+                            let _ = ipc_tx
+                                .send(IpcResult::Error(format!("Spotify resolve failed: {e}")));
                         }
                     }
                 });
             } else {
-                self.notify(
-                    "No track selected to download",
-                    NotificationKind::Info,
-                );
+                self.notify("No track selected to download", NotificationKind::Info);
             }
             return;
         }
@@ -4126,8 +4125,7 @@ impl App {
                                     NotificationKind::Info,
                                 );
                             } else {
-                                let idx =
-                                    top.selected.min(self.spotify_search_results.len() - 1);
+                                let idx = top.selected.min(self.spotify_search_results.len() - 1);
                                 let (playlist_id, _, track) =
                                     self.spotify_search_results[idx].clone();
                                 let track_index = track.index;
@@ -4135,14 +4133,14 @@ impl App {
                                 let ipc_tx = self.ipc_tx.clone();
                                 self.pickers.close_top();
                                 tokio::spawn(async move {
-                                    match c
-                                        .spotify_resolve(&playlist_id, track_index)
-                                        .await
-                                    {
+                                    match c.spotify_resolve(&playlist_id, track_index).await {
                                         Ok(()) => {
                                             let _ = ipc_tx.send(IpcResult::Notification(
                                                 "Spotify".to_string(),
-                                                format!("Queued: {} - {}", track.artists, track.name),
+                                                format!(
+                                                    "Queued: {} - {}",
+                                                    track.artists, track.name
+                                                ),
                                                 NotificationKind::Success,
                                             ));
                                         }
@@ -4169,8 +4167,7 @@ impl App {
                                 tokio::spawn(async move {
                                     match c.spotify_set_token(&token).await {
                                         Ok(status) => {
-                                            let _ =
-                                                ipc_tx.send(IpcResult::SpotifyStatus(status));
+                                            let _ = ipc_tx.send(IpcResult::SpotifyStatus(status));
                                             let _ = ipc_tx.send(IpcResult::Notification(
                                                 "Spotify".to_string(),
                                                 "Spotify account linked!".to_string(),

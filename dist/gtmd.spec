@@ -3,7 +3,7 @@
 %global debug_package %{nil}
 
 Name: gtmd
-Version: 0.2.1
+Version: 0.2.2
 Release: 1%{?dist}
 Summary: gtm background audio daemon
 License: GPL-3.0-only
@@ -97,5 +97,5 @@ cargo test --workspace
 %{_datadir}/fish/vendor_completions.d/gtm.fish
 
 %changelog
-* %{lua:print(strftime("%a %b %d %Y"))} prjctimg <prjctimg@outlook.com> - 0.2.1-1
-- Patch release: Spotify search, packaging infra, UI polish
+* %{lua:print(strftime("%a %b %d %Y"))} prjctimg <prjctimg@outlook.com> - 0.2.2-1
+- Patch: fmt, repology badge, AUR package name fix

@@ -72,10 +72,10 @@ deb: release man completions
 
 rpm: release
 	@command -v rpmbuild >/dev/null 2>&1 || { echo "rpmbuild not found."; exit 1; }
-	tar czf /tmp/gtmd-0.2.1.tar.gz --transform 's|^|gtmd-0.2.1/|' \
+	tar czf /tmp/gtmd-0.2.2.tar.gz --transform 's|^|gtmd-0.2.2/|' \
 		--exclude=target --exclude=.git \
 		.
-	rpmbuild -tb /tmp/gtmd-0.2.1.tar.gz
+	rpmbuild -tb /tmp/gtmd-0.2.2.tar.gz
 
 # ── Android / Termux targets ──────────────────────────────────────────
 

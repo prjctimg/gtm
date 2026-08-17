@@ -117,8 +117,8 @@ jobs:
 
       - name: Delete and recreate tag
         run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+          git config user.name "prjctimg"
+          git config user.email "prjctimg@outlook.com"
           tag="${{ steps.set-tag.outputs.tag }}"
           git tag -d "${tag}" 2>/dev/null || true
           git push origin ":refs/tags/${tag}" 2>/dev/null || true
