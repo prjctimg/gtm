@@ -2078,19 +2078,20 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             };
 
             if app.spotify_status.as_ref().is_none_or(|s| !s.linked) {
-                let mut lines = Vec::new();
-                lines.push(Line::from(Span::styled(
-                    "No Spotify account linked.",
-                    Style::default().fg(app.theme.fg),
-                )));
-                lines.push(Line::from(Span::styled(
-                    "Link one in Settings > Spotify > Link Account,",
-                    Style::default().fg(app.theme.fg_dim),
-                )));
-                lines.push(Line::from(Span::styled(
-                    "then sync playlists to enable search.",
-                    Style::default().fg(app.theme.fg_dim),
-                )));
+                let lines = vec![
+                    Line::from(Span::styled(
+                        "No Spotify account linked.",
+                        Style::default().fg(app.theme.fg),
+                    )),
+                    Line::from(Span::styled(
+                        "Link one in Settings > Spotify > Link Account,",
+                        Style::default().fg(app.theme.fg_dim),
+                    )),
+                    Line::from(Span::styled(
+                        "then sync playlists to enable search.",
+                        Style::default().fg(app.theme.fg_dim),
+                    )),
+                ];
                 let p = Paragraph::new(lines);
                 f.render_widget(p, inner);
             } else {
@@ -3900,9 +3901,9 @@ fn visualizer_preview_lines(
                         ['█', '▇', '▆', '▅', '▄', '▃', '▂', '▁'][level.min(7)]
                     };
                     let color = ratatui::style::Color::Rgb(
-                        ((b * 200.0) as u8).min(255),
-                        ((b * 120.0 + 40.0) as u8).min(255),
-                        ((120.0 - b * 80.0) as u8).min(255),
+                        (b * 200.0) as u8,
+                        (b * 120.0 + 40.0) as u8,
+                        (120.0 - b * 80.0) as u8,
                     );
                     spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
                 }
@@ -4227,7 +4228,7 @@ fn render_visualizer_preset_picker(f: &mut ratatui::Frame, area: Rect, app: &mut
         let sample_bars: Vec<f32> = (0..bar_w)
             .map(|i| {
                 let t = i as f64 / bar_w.max(1) as f64;
-                ((t * 6.28).sin() * 0.5 + 0.5) as f32
+                ((t * std::f64::consts::TAU).sin() * 0.5 + 0.5) as f32
             })
             .collect();
 
