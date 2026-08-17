@@ -1,5 +1,5 @@
 # Maintainer: prjctimg <prjctimg@outlook.com>
-pkgname=gtm
+pkgname=gtm-player
 pkgver=0.2.3
 pkgrel=1
 pkgdesc="Terminal-based music player daemon and client"

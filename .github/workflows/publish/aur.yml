@@ -26,7 +26,7 @@ jobs:
           chmod 600 ~/.ssh/aur_key
 
           GIT_SSH_COMMAND="ssh -i ~/.ssh/aur_key" \
-            git clone "ssh://aur@aur.archlinux.org/gtm.git" aur-repo
+            git clone "ssh://aur@aur.archlinux.org/gtm-player.git" aur-repo
 
           cd aur-repo
           sed -i "s/pkgver=.*/pkgver=${version}/" PKGBUILD

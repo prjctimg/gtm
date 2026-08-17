@@ -448,7 +448,7 @@ async fn test_delete_playing_track() {
     let audio_dir = config.data_dir.join("audio");
     std::fs::create_dir_all(&audio_dir).unwrap();
     let wav_path = audio_dir.join("delete_me.wav");
-    create_test_wav(&wav_path, 2.0);
+    create_test_wav(&wav_path, 30.0);
 
     let (mut reader, mut writer) = connect(&config.socket_path).await;
 
@@ -513,11 +513,23 @@ async fn test_delete_playing_track() {
     .await;
     assert!(matches!(res, DaemonRes::Ok));
 
+    let mut status = gtm_core::state::PlaybackStatus::Playing;
+    for _ in 0..50 {
+        let res = send_req(&mut reader, &mut writer, &DaemonReq::GetStatus).await;
+        let DaemonRes::Status { state } = res else {
+            panic!("expected Status, got {res:?}");
+        };
+        if state.status == gtm_core::state::PlaybackStatus::Stopped {
+            status = state.status;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
     let res = send_req(&mut reader, &mut writer, &DaemonReq::GetStatus).await;
     let DaemonRes::Status { state } = res else {
         panic!("expected Status, got {res:?}");
     };
-    assert_eq!(state.status, gtm_core::state::PlaybackStatus::Stopped);
+    assert_eq!(status, gtm_core::state::PlaybackStatus::Stopped);
     assert!(state.current_track.is_none());
     assert!(state.queue.is_empty());
 
