@@ -448,7 +448,7 @@ async fn test_delete_playing_track() {
     let audio_dir = config.data_dir.join("audio");
     std::fs::create_dir_all(&audio_dir).unwrap();
     let wav_path = audio_dir.join("delete_me.wav");
-    create_test_wav(&wav_path, 0.5);
+    create_test_wav(&wav_path, 2.0);
 
     let (mut reader, mut writer) = connect(&config.socket_path).await;
 
