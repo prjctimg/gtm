@@ -1,0 +1,54 @@
+name: cloudsmith
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  deb:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download deb packages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "${GITHUB_REF_NAME}" \
+            --pattern "gtm_*.deb" \
+            --dir artifacts
+
+      - name: Install cloudsmith-cli
+        run: pip install --break-system-packages cloudsmith-cli
+
+      - name: Publish
+        env:
+          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+        run: |
+          for deb in artifacts/gtm_*.deb; do
+            echo "Publishing ${deb}..."
+            cloudsmith push deb prjctimg/gtm/ubuntu/bookworm "$deb" \
+              --api-key="$CLOUDSMITH_API_KEY"
+          done
+
+  rpm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download rpm packages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "${GITHUB_REF_NAME}" \
+            --pattern "gtm-*.rpm" \
+            --dir artifacts
+
+      - name: Install cloudsmith-cli
+        run: pip install --break-system-packages cloudsmith-cli
+
+      - name: Publish
+        env:
+          CLOUDSMITH_API_KEY: ${{ secrets.CLOUDSMITH_API_KEY }}
+        run: |
+          for rpm in artifacts/gtm-*.rpm; do
+            echo "Publishing ${rpm}..."
+            cloudsmith push rpm prjctimg/gtm/fedora/39 "$rpm" \
+              --api-key="$CLOUDSMITH_API_KEY"
+          done

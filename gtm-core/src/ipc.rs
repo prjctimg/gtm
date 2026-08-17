@@ -1,6 +1,6 @@
 // Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
-// IPC protocol: wire format with explicit cmd/event fields per GTM Protocol v2
+// IPC protocol: wire format with explicit cmd/event fields per gtm protocol v2
 //
 // This is free software released under the GPL-3.0 license.
 
@@ -298,7 +298,6 @@ pub enum DaemonReq {
     CheckHealth,
     Ping,
     Quit,
-    Update,
 }
 
 impl DaemonReq {
@@ -370,7 +369,6 @@ impl DaemonReq {
             DaemonReq::GetStatus => "get_status",
             DaemonReq::CheckHealth => "check_health",
             DaemonReq::Ping => "ping",
-            DaemonReq::Update => "update",
             DaemonReq::Quit => "quit",
         }
     }
@@ -770,7 +768,6 @@ impl DaemonReq {
                     min_play_pct: x.min_play_pct,
                 }
             }
-            "update" => DaemonReq::Update,
             "quit" => DaemonReq::Quit,
             other => return Err(format!("unknown command: {other}")),
         })
@@ -989,9 +986,6 @@ pub enum DaemonRes {
         daemon: String,
         daemon_version: String,
     },
-    UpdateResult {
-        version: Option<String>,
-    },
     Error {
         message: String,
     },
@@ -1045,7 +1039,6 @@ impl DaemonRes {
                 "daemon": daemon,
                 "daemon_version": daemon_version,
             })),
-            DaemonRes::UpdateResult { version } => Some(serde_json::json!({ "version": version })),
             DaemonRes::Error { message } => return WireRes::err(id, message),
             DaemonRes::Pong => None,
         };
@@ -1228,13 +1221,6 @@ impl DaemonRes {
                 }
             }
             "ping" => DaemonRes::Pong,
-            "update" => {
-                let version = data
-                    .get("version")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                DaemonRes::UpdateResult { version }
-            }
             _ => {
                 if data.is_null() {
                     DaemonRes::Ok

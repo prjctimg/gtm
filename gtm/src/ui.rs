@@ -438,7 +438,7 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
         .retain(|n| now < n.expires_at + NOTIFICATION_EXIT_DURATION);
 
     let max_notif_width = 42u16;
-    let padding = 2u16;
+    let padding = 1u16;
     let gap = 1u16;
 
     let mut y_bottom = area.y + area.height - padding;
@@ -448,7 +448,7 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
         (remaining > 0.0).then_some(remaining)
     }) {
         let card_w = 42u16;
-        let card_h = 8u16;
+        let card_h = 7u16;
         let card_x = area.x + area.width.saturating_sub(card_w + padding);
         let card_y = y_bottom.saturating_sub(card_h);
         if card_y >= area.y {
@@ -978,11 +978,9 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             let inner = np_inner;
 
             if inner.width >= COVER_W + 6 {
-                let left_pad = inner.width.saturating_sub(COVER_W + 2) / 2;
                 let hchunks = Layout::default()
                     .direction(Direction::Horizontal)
                     .constraints([
-                        Constraint::Length(left_pad),
                         Constraint::Length(COVER_W),
                         Constraint::Length(2),
                         Constraint::Min(0),
@@ -990,10 +988,10 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     .split(inner);
 
                 let cover_area = Rect {
-                    x: hchunks[1].x,
-                    y: hchunks[1].y + 1,
-                    width: COVER_W.min(hchunks[1].width),
-                    height: COVER_H.min(hchunks[1].height).saturating_sub(1),
+                    x: hchunks[0].x,
+                    y: hchunks[0].y + 1,
+                    width: COVER_W.min(hchunks[0].width),
+                    height: COVER_H.min(hchunks[0].height).saturating_sub(1),
                 };
                 render_cover(
                     f,
@@ -1003,7 +1001,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     app.theme.fg_dim,
                 );
 
-                let info_area = hchunks[3];
+                let info_area = hchunks[2];
 
                 let display_title = if track.title.is_empty() {
                     std::path::Path::new(&track.path)
@@ -1952,7 +1950,8 @@ fn picker_content_hint(top: &Picker, app: &App) -> (u16, u16) {
         PickerId::ThemePicker => (58, 24),
         PickerId::CommandPalette => (46, 18),
         PickerId::PlaylistSelect => (48, 20),
-        PickerId::SpotifySearch => (60, 12),
+        PickerId::SpotifySearch => (60, 22),
+        PickerId::SpotifyLinkToken => (60, 12),
         PickerId::Crossfade => (58, 20),
         PickerId::VisualizerPreset => (48, 14),
         PickerId::ProgressStyle => (48, 18),
@@ -1984,6 +1983,7 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 | PickerId::CommandPalette
                 | PickerId::ThemePicker
                 | PickerId::PlaylistSelect
+                | PickerId::SpotifySearch
         );
         let picker_height = if scrolling {
             let height_cap = (area.height.saturating_sub(2) / 2).max(10);
@@ -2019,7 +2019,7 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         PickerId::Crossfade => render_crossfade_picker(f, picker_area, app),
         PickerId::VisualizerPreset => render_visualizer_preset_picker(f, picker_area, app),
         PickerId::ProgressStyle => render_progress_style_picker(f, picker_area, app),
-        PickerId::SpotifySearch => {
+        PickerId::SpotifyLinkToken => {
             let block = picker_panel(app, " Spotify Link Token ", None);
             let inner = block.inner(picker_area);
             f.render_widget(block, picker_area);
@@ -2060,6 +2060,107 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             )));
             let p = Paragraph::new(lines);
             f.render_widget(p, inner);
+        }
+        PickerId::SpotifySearch => {
+            let block = picker_panel(app, " Spotify Search ", None);
+            let inner = block.inner(picker_area);
+            f.render_widget(block, picker_area);
+
+            let query = app
+                .pickers
+                .top()
+                .map_or(String::new(), |o| o.query.clone());
+            let cursor = if app
+                .pickers
+                .top()
+                .is_some_and(|o| o.id == PickerId::SpotifySearch)
+            {
+                "_"
+            } else {
+                ""
+            };
+
+            if app.spotify_status.as_ref().is_none_or(|s| !s.linked) {
+                let mut lines = Vec::new();
+                lines.push(Line::from(Span::styled(
+                    "No Spotify account linked.",
+                    Style::default().fg(app.theme.fg),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "Link one in Settings > Spotify > Link Account,",
+                    Style::default().fg(app.theme.fg_dim),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "then sync playlists to enable search.",
+                    Style::default().fg(app.theme.fg_dim),
+                )));
+                let p = Paragraph::new(lines);
+                f.render_widget(p, inner);
+            } else {
+                let search_line = Line::from(Span::styled(
+                    format!(" > {}{}", query, cursor),
+                    Style::default().fg(app.theme.fg),
+                ));
+
+                let sel = app.pickers.top().map_or(0, |o| o.selected);
+                let total = app.spotify_search_results.len();
+                let visible = inner.height.saturating_sub(1) as usize;
+                let (scroll_start, scroll_end) = if total > 0 {
+                    if let Some(top) = app.pickers.top_mut() {
+                        let (s, e) = step_viewport(top.viewport_offset, sel, visible, total);
+                        top.viewport_offset = s;
+                        (s, e)
+                    } else {
+                        (0, total)
+                    }
+                } else {
+                    (0, 0)
+                };
+
+                let mut lines: Vec<Line> = vec![search_line];
+                if query.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        "  Type to search your synced playlists...",
+                        Style::default().fg(app.theme.fg_dim),
+                    )));
+                } else if total == 0 {
+                    lines.push(Line::from(Span::styled(
+                        "  No results found",
+                        Style::default().fg(app.theme.fg_dim),
+                    )));
+                } else {
+                    for i in scroll_start..scroll_end {
+                        let (_, _pl_name, track) = &app.spotify_search_results[i];
+                        let prefix = if i == sel { " > " } else { "   " };
+                        let dur = track
+                            .duration_ms
+                            .map(|ms| format_duration_short(ms / 1000))
+                            .unwrap_or_default();
+                        let content = format!(
+                            "{}{} - {} [{}]",
+                            prefix, track.artists, track.name, dur
+                        );
+                        let style = if i == sel {
+                            Style::default()
+                                .fg(app.theme.selection_fg_readable())
+                                .bg(app.theme.selection_bg)
+                        } else {
+                            Style::default()
+                        };
+                        lines.push(Line::from(Span::styled(content, style)));
+                    }
+                }
+
+                let help = Line::from(Span::styled(
+                    " Enter: queue   Ctrl+D: download   Esc: close",
+                    Style::default().fg(app.theme.fg_dim),
+                ));
+                lines.push(Line::raw(""));
+                lines.push(help);
+
+                let p = Paragraph::new(lines);
+                f.render_widget(p, inner);
+            }
         }
     }
 }
@@ -2945,7 +3046,7 @@ fn render_track_info_in_pane(f: &mut ratatui::Frame, sep_area: Rect, area: Rect,
     let can_cover = !no_image_protocol() && area.width > COVER_W + 1;
 
     let sep_w = sep_area.width.saturating_sub(1) as usize;
-    let sep_label = format!(" Track Info{} ", fields.fav);
+    let sep_label = format!(" Info{} ", fields.fav);
     let sep_style = Style::default().fg(app.theme.fg_dim);
     let sep_line = if sep_w >= sep_label.len() {
         let side = (sep_w - sep_label.len()) / 2;
@@ -2972,8 +3073,9 @@ fn render_track_info_in_pane(f: &mut ratatui::Frame, sep_area: Rect, area: Rect,
             .constraints([Constraint::Length(COVER_H + 1), Constraint::Min(0)])
             .split(area);
 
+        let cover_hpad = split[0].width.saturating_sub(COVER_W) / 2;
         let cover_area = Rect {
-            x: split[0].x,
+            x: split[0].x + cover_hpad,
             y: split[0].y,
             width: COVER_W.min(split[0].width),
             height: COVER_H.min(split[0].height),
@@ -3426,7 +3528,6 @@ pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str, &str)] = &[
     ("\u{1f4cf} Footer Preset", "\u{2014}", "footer preset"),
     ("\u{25c9} Cycle Design", "\u{2014}", "cycle design"),
     ("\u{1fa7a} Health Check", ":", "health check"),
-    ("\u{1f4e5} Check for Updates", "\u{2014}", "check updates"),
 ];
 
 fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {

@@ -39,7 +39,7 @@ pub struct DaemonConfig {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "gtmd", about = "GTM background audio daemon")]
+#[command(name = "gtmd", about = "gtm background audio daemon")]
 pub struct DaemonArgs {
     #[arg(long, help = "Unix socket path", value_hint = clap::ValueHint::AnyPath)]
     pub socket: Option<String>,

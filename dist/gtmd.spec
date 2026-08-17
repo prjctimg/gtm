@@ -3,9 +3,9 @@
 %global debug_package %{nil}
 
 Name: gtmd
-Version: 0.1.5
+Version: 0.2.1
 Release: 1%{?dist}
-Summary: GTM background audio daemon
+Summary: gtm background audio daemon
 License: GPL-3.0-only
 URL: https://github.com/prjctimg/gtm.rs
 Source0: %{name}-%{version}.tar.gz
@@ -23,7 +23,7 @@ from clients such as gtm(1). Supports MP3, FLAC, Ogg Vorbis, Opus, WAV,
 AAC, ALAC, and MKV/WebM containers.
 
 %package -n gtm
-Summary: GTM music player client - TUI and CLI modes
+Summary: gtm music player client - TUI and CLI modes
 %{?systemd_requires}
 Requires: gtmd = %{version}-%{release}
 
@@ -97,5 +97,5 @@ cargo test --workspace
 %{_datadir}/fish/vendor_completions.d/gtm.fish
 
 %changelog
-* %{lua:print(strftime("%a %b %d %Y"))} prjctimg <prjctimg@outlook.com> - 0.1.0-1
-- Initial RPM release
+* %{lua:print(strftime("%a %b %d %Y"))} prjctimg <prjctimg@outlook.com> - 0.2.1-1
+- Patch release: Spotify search, packaging infra, UI polish

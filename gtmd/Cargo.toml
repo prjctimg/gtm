@@ -3,7 +3,7 @@ name = "gtmd"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "GTM background audio daemon"
+description = "gtm background audio daemon"
 repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
@@ -11,9 +11,9 @@ categories.workspace = true
 readme = "README.md"
 
 [dependencies]
-gtm-core = { path = "../gtm-core", version = "0.2.0" }
-gtm-audio = { path = "../gtm-audio", version = "0.2.0" }
-gtm-mpris = { path = "../gtm-mpris", version = "0.2.0", optional = true }
+gtm-core = { path = "../gtm-core", version = "0.2.1" }
+gtm-audio = { path = "../gtm-audio", version = "0.2.1" }
+gtm-mpris = { path = "../gtm-mpris", version = "0.2.1", optional = true }
 rusqlite = { version = "0.31", features = ["bundled"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
@@ -25,7 +25,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }
 serde = "1"
 serde_json = "1"
-uuid = { version = "1", features = ["v4"] }
 sha2 = "0.10"
 walkdir = "2"
 symphonia = { version = "0.6", default-features = false, features = ["all-codecs", "all-formats", "all-meta"] }
@@ -38,8 +37,6 @@ fastrand = "2"
 chrono = "0.4"
 tokio-tungstenite = "0.30.0"
 image = "0.25"
-tar = "0.4"
-flate2 = "1"
 
 [features]
 default = ["mpris"]
@@ -50,7 +47,7 @@ pulseaudio = ["gtm-audio/pulseaudio"]
 maintainer = "prjctimg <prjctimg@outlook.com>"
 copyright = "2026 - present prjctimg"
 license-file = ["../LICENSE"]
-extended-description = "GTM background audio daemon. Manages playback, library, and IPC for the GTM music player."
+extended-description = "gtm background audio daemon. Manages playback, library, and IPC for the gtm music player."
 section = "sound"
 priority = "optional"
 depends = "$auto"

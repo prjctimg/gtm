@@ -3,7 +3,7 @@
 # produced by the release workflow or `make termux-release`.
 control:
     Package: gtm
-    Version: 0.1.5
+    Version: 0.2.1
     Architecture: aarch64
     Maintainer: prjctimg <prjctimg@outlook.com>
     Depends: libpulseaudio
@@ -12,7 +12,7 @@ control:
     Description: |2-
         Terminal music player (TUI + CLI) and daemon with PulseAudio backend.
          .
-        GTM is a terminal-based music player with a TUI client, a background
+        gtm is a terminal-based music player with a TUI client, a background
         daemon, and optional MPRIS D-Bus integration. This package bundles
         both the gtm client and the gtmd daemon.
 

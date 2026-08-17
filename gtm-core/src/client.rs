@@ -638,14 +638,6 @@ impl DaemonClient {
         self.send_ok(DaemonReq::RemoveFavourite { track_id }).await
     }
 
-    pub async fn trigger_update(&self) -> Result<Option<String>> {
-        match self.send_raw(DaemonReq::Update).await? {
-            DaemonRes::UpdateResult { version } => Ok(version),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            other => Err(CoreError::Daemon(format!("unexpected response: {other:?}"))),
-        }
-    }
-
     // ─── YouTube ───
 
     pub async fn yt_search(&self, query: &str, filter: Option<YTFilter>) -> Result<DaemonRes> {

@@ -1,0 +1,51 @@
+name: crates-io
+
+on:
+  release:
+    types: [published]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  publish:
+    if: "!github.event.release.prerelease"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev
+
+      - name: Publish crates
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+
+          publish_crate() {
+            local crate="$1"
+            local attempt
+            for attempt in 1 2 3 4; do
+              local out
+              if out="$(cargo publish --locked -p "${crate}" 2>&1)"; then
+                echo "${crate} v${version} published"
+                return 0
+              fi
+              if grep -q "already exists" <<<"${out}"; then
+                echo "${crate} v${version}: already published, skipping"
+                return 0
+              fi
+              echo "${out}"
+              echo "Retrying ${crate} after index propagation delay (attempt ${attempt}/4)..."
+              sleep 20
+            done
+            return 1
+          }
+          for crate in gtm-core gtm-audio gtm-mpris gtmd gtm; do
+            echo "Publishing ${crate} v${version}..."
+            publish_crate "${crate}"
+          done

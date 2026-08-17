@@ -1,0 +1,85 @@
+name: homebrew
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  tap:
+    if: "!github.event.release.prerelease"
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download macOS archives
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release download "${GITHUB_REF_NAME}" \
+            --pattern "gtm-*-darwin.tar.gz" \
+            --dir artifacts
+
+      - name: Update tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+
+          sha_arm64=$(sha256sum artifacts/gtm-aarch64-darwin.tar.gz | awk '{print $1}')
+          sha_amd64=$(sha256sum artifacts/gtm-x86_64-darwin.tar.gz | awk '{print $1}')
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/prjctimg/homebrew-tap.git" tap-repo
+          mkdir -p tap-repo/Formula
+
+          cat > tap-repo/Formula/gtm.rb << FORMULA
+          class Gtm < Formula
+            desc "Terminal-based music player daemon and client"
+            homepage "https://github.com/prjctimg/gtm.rs"
+            license "GPL-3.0-only"
+            version "${version}"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/prjctimg/gtm.rs/releases/download/v#{version}/gtm-aarch64-darwin.tar.gz"
+                sha256 "${sha_arm64}"
+              end
+              on_intel do
+                url "https://github.com/prjctimg/gtm.rs/releases/download/v#{version}/gtm-x86_64-darwin.tar.gz"
+                sha256 "${sha_amd64}"
+              end
+            end
+
+            def install
+              bin.install "bin/gtm" "bin/gtmd"
+              man1.install "man/man1/gtm.1", "man/man1/gtmd.1", "man/man1/gtmd-ipc.1"
+              bash_completion.install "completions/gtm.bash" => "gtm"
+              zsh_completion.install "completions/_gtm"
+              fish_completion.install "completions/gtm.fish" => "gtm.fish"
+            end
+
+            def caveats
+              <<~EOS
+                Start the daemon:
+                  gtmd &
+
+                Then use gtm to control playback.
+
+                Systemd user service is also available:
+                  systemctl --user start gtmd
+              EOS
+            end
+
+            test do
+              system "#{bin}/gtm", "--version"
+              system "#{bin}/gtmd", "--version"
+            end
+          end
+          FORMULA
+
+          cd tap-repo
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/gtm.rb
+          git commit -m "gtm v${version}" || echo "No changes to commit"
+          git push

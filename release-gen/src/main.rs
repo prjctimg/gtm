@@ -3,7 +3,7 @@ use std::fs;
 use clap::{Parser, Subcommand};
 use clap_complete::Shell;
 
-/// GTM music player client
+/// gtm music player client
 #[derive(Parser)]
 #[command(name = "gtm")]
 struct Cli {
@@ -221,7 +221,7 @@ enum SoloistAction {
     },
 }
 
-/// GTM background audio daemon
+/// gtm background audio daemon
 #[derive(Parser, Debug)]
 #[command(name = "gtmd")]
 struct DaemonArgs {

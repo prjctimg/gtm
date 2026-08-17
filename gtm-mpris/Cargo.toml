@@ -3,7 +3,7 @@ name = "gtm-mpris"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "MPRIS D-Bus integration for the GTM music player daemon"
+description = "MPRIS D-Bus integration for the gtm music player daemon"
 repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
@@ -11,7 +11,7 @@ categories.workspace = true
 readme = "README.md"
 
 [dependencies]
-gtm-core = { path = "../gtm-core", version = "0.2.0" }
+gtm-core = { path = "../gtm-core", version = "0.2.1" }
 zbus = { version = "4", features = ["tokio"] }
 zvariant = "4"
 tracing = "0.1"

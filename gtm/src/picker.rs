@@ -16,6 +16,7 @@ pub enum PickerId {
     YTSearch,
     SearchLibrary,
     SpotifySearch,
+    SpotifyLinkToken,
     Equalizer,
     CommandPalette,
     About,

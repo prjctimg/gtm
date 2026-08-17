@@ -5,6 +5,7 @@
 [![Docs.rs](https://docs.rs/gtm/badge.svg)](https://docs.rs/gtm)
 [![CI](https://img.shields.io/github/actions/workflow/status/prjctimg/gtm.rs/ci.yml)](https://github.com/prjctimg/gtm.rs/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/prjctimg/gtm.rs)](https://github.com/prjctimg/gtm.rs/blob/main/LICENSE)
+[![Packaging status](https://repology.org/badge/vertical-allrepos/gtm.svg)](https://repology.org/project/gtm/versions)
 
 A terminal music player with background playback and YouTube/Spotify
 integration. Rust implementation of the [gtm spec](https://github.com/prjctimg/gtm.spec).

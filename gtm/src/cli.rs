@@ -37,7 +37,7 @@ use crate::footer::format_uptime;
 #[command(
     name = "gtm",
     version = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0"),
-    about = "GTM music player"
+    about = "gtm music player"
 )]
 pub struct Args {
     #[arg(long, short, help = "Run in CLI mode instead of TUI")]
@@ -58,29 +58,41 @@ pub struct Args {
 
 #[derive(Subcommand)]
 pub enum CliCommand {
+    /// Play an audio file or resume playback
     Play {
         #[arg(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         path: String,
         #[arg(value_name = "SECONDS")]
         start_pos: Option<f64>,
     },
+    /// Toggle play/pause
     PlayPause,
+    /// Pause playback
     Pause,
+    /// Stop playback
     Stop,
+    /// Skip to next track
     Next,
+    /// Skip to previous track
     Prev,
+    /// Seek to a position in seconds
     Seek {
         position_secs: f64,
     },
+    /// Set volume (0-100)
     Volume {
         volume: u8,
     },
+    /// Toggle shuffle
     Shuffle,
+    /// Set repeat mode (off, one, all)
     Repeat {
         #[arg(value_name = "MODE", value_parser = ["off", "one", "all"])]
         mode: String,
     },
+    /// Toggle mute
     Mute,
+    /// Enable/disable crossfade with optional duration
     Crossfade {
         #[arg(
             value_name = "ENABLED",
@@ -90,7 +102,9 @@ pub enum CliCommand {
         enabled: bool,
         duration_secs: Option<u8>,
     },
+    /// Show the current queue
     Queue,
+    /// Add audio files or directories to the queue
     QueueAdd {
         #[arg(value_name = "PATH", value_hint = clap::ValueHint::AnyPath, num_args = 1..)]
         paths: Vec<String>,
@@ -98,91 +112,107 @@ pub enum CliCommand {
         #[arg(long, value_name = "INDEX")]
         position: Option<u64>,
     },
+    /// Remove a track from the queue by index
     QueueRemove {
         index: u64,
     },
+    /// Move a track within the queue
     QueueMove {
         from: u64,
         to: u64,
     },
+    /// Clear the entire queue
     QueueClear,
+    /// Replace the queue with the given tracks
     QueueSet {
         #[arg(value_name = "PATH", value_hint = clap::ValueHint::AnyPath, num_args = 1..)]
         paths: Vec<String>,
         #[arg(long, value_name = "INDEX")]
         start_idx: u64,
     },
+    /// Scan a directory for audio files and add to library
     Scan {
         #[arg(value_name = "DIR", value_hint = clap::ValueHint::DirPath)]
         path: String,
     },
+    /// List library tracks with optional filter and sort
     Tracks {
         filter: Option<String>,
         sort: Option<String>,
     },
+    /// List playlists
     Playlists,
+    /// Create a new playlist
     CreatePlaylist {
         name: String,
     },
+    /// Delete a playlist
     DeletePlaylist {
         id: i64,
     },
+    /// Add tracks to a playlist
     AddToPlaylist {
         playlist_id: i64,
         track_ids: Vec<i64>,
     },
+    /// Import an M3U playlist file
     ImportM3u {
         #[arg(value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         path: String,
     },
+    /// Export a playlist to M3U file
     ExportM3u {
         playlist_id: i64,
         #[arg(value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         path: String,
     },
+    /// Show recently played tracks
     Recent {
         count: u64,
     },
+    /// Sync metadata for a file or all library tracks
     MetadataSync {
         #[arg(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
         path: Option<String>,
     },
+    /// List favourite tracks
     Favourites,
+    /// Add a track to favourites
     FavouriteAdd {
         track_id: i64,
     },
+    /// Remove a track from favourites
     FavouriteRemove {
         track_id: i64,
     },
-    YtSearch {
-        query: String,
-        filter: Option<String>,
-    },
-    YtPoll,
-    YtCancel,
-    YtResolve {
-        #[arg(value_hint = clap::ValueHint::Url)]
-        url: String,
-    },
+    /// Search for lyrics (format: "artist - title")
     Lyrics {
         query: String,
     },
+    /// Search the library
     Search {
         query: String,
     },
+    /// Show daemon status
     Status {
         #[arg(long)]
         stream: bool,
     },
+    /// Check daemon health
     CheckHealth,
+    /// Ping the daemon
     Ping,
+    /// Quit the daemon
     Quit,
+    /// Open config file in editor
     Config,
+    /// Set a sleep timer in minutes
     SleepTimer {
         minutes: u32,
     },
+    /// Cancel the current sleep timer
     CancelSleepTimer,
-    Update,
+    /// Edit track metadata (field: title, artist, album, genre, year, track-number)
     UpdateMetadata {
         track_id: i64,
         #[arg(value_name = "FIELD")]
@@ -191,24 +221,34 @@ pub enum CliCommand {
         value: String,
     },
     #[command(subcommand)]
+    /// Spotify integration commands
     Spotify(SpotifyAction),
     #[command(subcommand)]
+    /// Soloist integration commands
     Soloist(SoloistAction),
 }
 
 #[derive(Subcommand)]
 pub enum SpotifyAction {
+    /// Link a Spotify account with an access token
     Connect { token: String },
+    /// Unlink the Spotify account
     Disconnect,
+    /// Show Spotify connection status
     Status,
+    /// Sync Spotify playlists to the library
     Sync,
 }
 
 #[derive(Subcommand)]
 pub enum SoloistAction {
+    /// Start Soloist playback
     Start,
+    /// Stop Soloist playback
     Stop,
+    /// Show Soloist status
     Status,
+    /// Enable or disable Soloist auto-start
     AutoStart {
         #[arg(
             value_name = "BOOL",
@@ -497,44 +537,6 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     Ok(format!("{res:?}"))
                 }
             }
-            CliCommand::YtSearch { query, filter } => {
-                let filter = filter.as_ref().and_then(|f| {
-                    serde_json::from_str::<gtm_core::state::YTFilter>(&format!("\"{f}\"")).ok()
-                });
-                let res = client
-                    .yt_search(query, filter)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                if json {
-                    serde_json::to_string_pretty(&res).map_err(|e| e.to_string())
-                } else {
-                    Ok(format!("{res:?}"))
-                }
-            }
-            CliCommand::YtPoll => {
-                let res = client.yt_search_poll().await.map_err(|e| e.to_string())?;
-                if json {
-                    serde_json::to_string_pretty(&res).map_err(|e| e.to_string())
-                } else {
-                    Ok(format!("{res:?}"))
-                }
-            }
-            CliCommand::YtCancel => client
-                .yt_search_cancel()
-                .await
-                .map(|()| "ok".to_string())
-                .map_err(|e| e.to_string()),
-            CliCommand::YtResolve { url } => {
-                let res = client
-                    .yt_resolve_stream(url)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                if json {
-                    serde_json::to_string_pretty(&res).map_err(|e| e.to_string())
-                } else {
-                    Ok(format!("{res:?}"))
-                }
-            }
             CliCommand::Lyrics { query } => {
                 let (artist, title) = match query.split_once(" - ") {
                     Some((a, t)) => (a.trim().to_string(), t.trim().to_string()),
@@ -683,7 +685,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     serde_json::to_string_pretty(&report).map_err(|e| e.to_string())
                 } else {
                     let mut out = format!(
-                        "\x1b[1mGTM Health Report\x1b[0m (v{})\n\
+                        "\x1b[1mgtm Health Report\x1b[0m (v{})\n\
                          Daemon uptime: {}\n",
                         report.version,
                         format_uptime(report.daemon_uptime_secs)
@@ -722,16 +724,6 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .await
                 .map(|()| "sleep timer cancelled".to_string())
                 .map_err(|e| e.to_string()),
-            CliCommand::Update => {
-                let version = client.trigger_update().await.map_err(|e| e.to_string())?;
-                match version {
-                    Some(v) => Ok(format!("Updated to v{}!", v)),
-                    None => Ok(format!(
-                        "Already up to date (v{})",
-                        env!("CARGO_PKG_VERSION")
-                    )),
-                }
-            }
             CliCommand::UpdateMetadata {
                 track_id,
                 field,

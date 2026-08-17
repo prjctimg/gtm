@@ -1,5 +1,5 @@
 {
-  description = "GTM – terminal-based music player daemon and client";
+  description = "gtm – terminal-based music player daemon and client";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -29,7 +29,7 @@
       {
         packages.default = pkgs.stdenv.mkDerivation {
           pname = "gtm";
-          version = "0.1.0";
+          version = "0.2.1";
 
           src = ./.;
 
@@ -74,7 +74,7 @@
 
           meta = with pkgs.lib; {
             description = "Terminal-based music player daemon and client";
-            homepage = "https://github.com/skchr/gtm-rs";
+            homepage = "https://github.com/prjctimg/gtm.rs";
             license = licenses.gpl3Only;
             maintainers = [ "prjctimg <prjctimg@outlook.com>" ];
             platforms = platforms.linux;

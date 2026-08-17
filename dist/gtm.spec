@@ -16,7 +16,7 @@
 Name: gtm
 Version: %{gtm_version}
 Release: 1
-Summary: GTM terminal music player - client and daemon
+Summary: gtm terminal music player - client and daemon
 License: GPL-3.0-only
 URL: https://github.com/prjctimg/gtm.rs
 Requires: alsa-lib

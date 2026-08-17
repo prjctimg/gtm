@@ -260,6 +260,7 @@ pub struct App {
     pub soloist_status: Option<SoloistStatus>,
     pub spotify_playlists: Vec<SpotifyPlaylist>,
     pub spotify_playlist_tracks_cache: Vec<SpotifyTrack>,
+    pub spotify_search_results: Vec<(String, String, SpotifyTrack)>,
     pub spotify_token_input: String,
     pub cookie_file: Option<String>,
     pub notifications: Vec<Notification>,
@@ -527,6 +528,7 @@ impl App {
             soloist_status: None,
             spotify_playlists: Vec::new(),
             spotify_playlist_tracks_cache: Vec::new(),
+            spotify_search_results: Vec::new(),
             spotify_token_input: String::new(),
             cookie_file: None,
             notifications: Vec::new(),
@@ -1588,6 +1590,33 @@ impl App {
             }
         }
         picks
+    }
+
+    pub fn search_spotify(&mut self) {
+        let q = self
+            .pickers
+            .top()
+            .map_or(String::new(), |o| o.query.to_lowercase());
+        self.spotify_search_results.clear();
+        if q.is_empty() {
+            return;
+        }
+        for pl in &self.spotify_playlists {
+            for track in &pl.tracks {
+                if track.name.to_lowercase().contains(&q)
+                    || track.artists.to_lowercase().contains(&q)
+                    || track
+                        .album
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&q)
+                {
+                    self.spotify_search_results
+                        .push((pl.id.clone(), pl.name.clone(), track.clone()));
+                }
+            }
+        }
     }
 
     /// Filtered tracks for the current library view, respecting search query, browse_detail, and category.
@@ -2844,24 +2873,6 @@ impl App {
                         };
                         self.notify(format!("Visualizer: {}", state), NotificationKind::Info);
                     }
-                    Some(KeyboardAction::CycleVisualizerPreset) => {
-                        let next = self.visualizer.preset.next();
-                        self.visualizer.preset = next;
-                        save_prefs(&self.current_prefs());
-                        self.notify(
-                            format!("Visualizer: {}", next.name()),
-                            NotificationKind::Info,
-                        );
-                    }
-                    Some(KeyboardAction::CycleProgressStyle) => {
-                        let next = self.progress_style.next();
-                        self.progress_style = next;
-                        save_prefs(&self.current_prefs());
-                        self.notify(
-                            format!("Progress: {}", next.name()),
-                            NotificationKind::Info,
-                        );
-                    }
                     Some(KeyboardAction::ToggleTheme) => {
                         self.toggle_theme();
                     }
@@ -3387,7 +3398,7 @@ impl App {
                                     3 => {
                                         // Link Spotify account: open token input picker
                                         self.spotify_token_input.clear();
-                                        self.pickers.open(PickerId::SpotifySearch);
+                                        self.pickers.open(PickerId::SpotifyLinkToken);
                                     }
                                     4 => {
                                         // Sync playlists now
@@ -3718,7 +3729,7 @@ impl App {
         if let Some(top) = self.pickers.top() {
             match top.id {
                 PickerId::SleepTimer => self.sleep_timer_remaining = None,
-                PickerId::SpotifySearch => self.spotify_token_input.clear(),
+                PickerId::SpotifySearch => self.spotify_search_results.clear(),
                 PickerId::EditMetadata => {
                     self.metadata_cover = None;
                     self.metadata_cover_stateful = None;
@@ -3732,6 +3743,50 @@ impl App {
 
     async fn handle_picker_key(&mut self, key: event::KeyEvent) {
         let tx = self.cmd_tx();
+
+        // Ctrl+D in SpotifySearch picker: download the selected track via YouTube
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('d')
+            && self
+                .pickers
+                .top()
+                .is_some_and(|o| o.id == PickerId::SpotifySearch)
+        {
+            if !self.spotify_search_results.is_empty() {
+                let idx = self
+                    .pickers
+                    .top()
+                    .map_or(0, |o| o.selected)
+                    .min(self.spotify_search_results.len() - 1);
+                let (playlist_id, _, track) = self.spotify_search_results[idx].clone();
+                let track_index = track.index;
+                let c = self.client.clone();
+                let ipc_tx = self.ipc_tx.clone();
+                self.pickers.close_top();
+                tokio::spawn(async move {
+                    match c.spotify_resolve(&playlist_id, track_index).await {
+                        Ok(()) => {
+                            let _ = ipc_tx.send(IpcResult::Notification(
+                                "Spotify".to_string(),
+                                format!("Queued: {} - {}", track.artists, track.name),
+                                NotificationKind::Success,
+                            ));
+                        }
+                        Err(e) => {
+                            let _ = ipc_tx.send(IpcResult::Error(format!(
+                                "Spotify resolve failed: {e}"
+                            )));
+                        }
+                    }
+                });
+            } else {
+                self.notify(
+                    "No track selected to download",
+                    NotificationKind::Info,
+                );
+            }
+            return;
+        }
 
         if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::SleepTimer)) {
             if self.sleep_timer_input_mode {
@@ -4065,57 +4120,71 @@ impl App {
                 if let Some(top) = self.pickers.top() {
                     match top.id {
                         PickerId::SpotifySearch => {
-                            let token = self.spotify_token_input.clone();
-                            if token.trim().is_empty() {
+                            if self.spotify_search_results.is_empty() {
                                 self.notify(
-                                    "Enter a Spotify access token to link your account",
+                                    "Type to search your synced Spotify playlists",
                                     NotificationKind::Info,
                                 );
                             } else {
-                                // Check if we're in Soloist mode (settings category 4, option 7)
-                                let is_soloist =
-                                    self.settings_category == 4 && self.settings_option == 7;
+                                let idx =
+                                    top.selected.min(self.spotify_search_results.len() - 1);
+                                let (playlist_id, _, track) =
+                                    self.spotify_search_results[idx].clone();
+                                let track_index = track.index;
                                 let c = self.client.clone();
                                 let ipc_tx = self.ipc_tx.clone();
+                                self.pickers.close_top();
                                 tokio::spawn(async move {
-                                    if is_soloist {
-                                        match c.soloist_set_api_key(&token).await {
-                                            Ok(status) => {
-                                                let _ =
-                                                    ipc_tx.send(IpcResult::SoloistStatus(status));
-                                                let _ = ipc_tx.send(IpcResult::Notification(
-                                                    "Soloist".to_string(),
-                                                    "Soloist API key saved".to_string(),
-                                                    NotificationKind::Success,
-                                                ));
-                                            }
-                                            Err(e) => {
-                                                let _ = ipc_tx.send(IpcResult::Error(format!(
-                                                    "Soloist key failed: {e}"
-                                                )));
-                                            }
+                                    match c
+                                        .spotify_resolve(&playlist_id, track_index)
+                                        .await
+                                    {
+                                        Ok(()) => {
+                                            let _ = ipc_tx.send(IpcResult::Notification(
+                                                "Spotify".to_string(),
+                                                format!("Queued: {} - {}", track.artists, track.name),
+                                                NotificationKind::Success,
+                                            ));
                                         }
-                                    } else {
-                                        match c.spotify_set_token(&token).await {
-                                            Ok(status) => {
-                                                let _ =
-                                                    ipc_tx.send(IpcResult::SpotifyStatus(status));
-                                                let _ = ipc_tx.send(IpcResult::Notification(
-                                                    "Spotify".to_string(),
-                                                    "Spotify account linked".to_string(),
-                                                    NotificationKind::Success,
-                                                ));
-                                            }
-                                            Err(e) => {
-                                                let _ = ipc_tx.send(IpcResult::Error(format!(
-                                                    "Spotify link failed: {e}"
-                                                )));
-                                            }
+                                        Err(e) => {
+                                            let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                "Spotify resolve failed: {e}"
+                                            )));
+                                        }
+                                    }
+                                });
+                            }
+                        }
+                        PickerId::SpotifyLinkToken => {
+                            let token = self.spotify_token_input.trim().to_string();
+                            if token.is_empty() {
+                                self.notify(
+                                    "Paste a Spotify access token first",
+                                    NotificationKind::Warning,
+                                );
+                            } else {
+                                let c = self.client.clone();
+                                let ipc_tx = self.ipc_tx.clone();
+                                self.pickers.close_top();
+                                tokio::spawn(async move {
+                                    match c.spotify_set_token(&token).await {
+                                        Ok(status) => {
+                                            let _ =
+                                                ipc_tx.send(IpcResult::SpotifyStatus(status));
+                                            let _ = ipc_tx.send(IpcResult::Notification(
+                                                "Spotify".to_string(),
+                                                "Spotify account linked!".to_string(),
+                                                NotificationKind::Success,
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                "Spotify link failed: {e}"
+                                            )));
                                         }
                                     }
                                 });
                                 self.spotify_token_input.clear();
-                                self.pickers.close_top();
                             }
                         }
                         PickerId::Queue => {
@@ -4519,34 +4588,6 @@ impl App {
                                     self.cycle_design();
                                 } else if action == "health check" {
                                     self.send_high(TuiCommand::CheckHealth);
-                                } else if action == "check updates" {
-                                    let c = self.client.clone();
-                                    let ipc_tx = self.ipc_tx.clone();
-                                    tokio::spawn(async move {
-                                        match c.trigger_update().await {
-                                            Ok(Some(_v)) => {
-                                                let _ = ipc_tx.send(IpcResult::Notification(
-                                                    "Update".into(),
-                                                    "Update installed, restart required".into(),
-                                                    NotificationKind::Info,
-                                                ));
-                                            }
-                                            Ok(None) => {
-                                                let _ = ipc_tx.send(IpcResult::Notification(
-                                                    "Update".into(),
-                                                    "Already up to date".into(),
-                                                    NotificationKind::Info,
-                                                ));
-                                            }
-                                            Err(e) => {
-                                                let _ = ipc_tx.send(IpcResult::Notification(
-                                                    "Update".into(),
-                                                    format!("Update check failed: {}", e),
-                                                    NotificationKind::Error,
-                                                ));
-                                            }
-                                        }
-                                    });
                                 }
                             }
                             // If the action opened a sub-picker it was stacked on
@@ -4770,6 +4811,10 @@ impl App {
                             self.metadata_fields[self.metadata_field_idx].push(c);
                         }
                         PickerId::SpotifySearch => {
+                            top.query.push(c);
+                            self.search_spotify();
+                        }
+                        PickerId::SpotifyLinkToken => {
                             self.spotify_token_input.push(c);
                         }
                         _ => {}
@@ -4793,6 +4838,10 @@ impl App {
                             self.metadata_fields[self.metadata_field_idx].pop();
                         }
                         PickerId::SpotifySearch => {
+                            top.query.pop();
+                            self.search_spotify();
+                        }
+                        PickerId::SpotifyLinkToken => {
                             self.spotify_token_input.pop();
                         }
                         _ => {
@@ -4815,6 +4864,10 @@ impl App {
         if let Some(top) = self.pickers.top_mut() {
             match top.id {
                 PickerId::SpotifySearch => {
+                    top.query.push_str(text);
+                    self.search_spotify();
+                }
+                PickerId::SpotifyLinkToken => {
                     self.spotify_token_input.push_str(text);
                 }
                 PickerId::EditMetadata => {

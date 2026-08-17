@@ -3,7 +3,7 @@ name = "gtm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "GTM music player client - TUI and CLI modes"
+description = "gtm music player client - TUI and CLI modes"
 repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
@@ -11,8 +11,8 @@ categories.workspace = true
 readme = "README.md"
 
 [dependencies]
-gtm-core = { path = "../gtm-core", version = "0.2.0" }
-gtm-audio = { path = "../gtm-audio", version = "0.2.0" }
+gtm-core = { path = "../gtm-core", version = "0.2.1" }
+gtm-audio = { path = "../gtm-audio", version = "0.2.1" }
 ratatui = "0.30"
 crossterm = { version = "0.28", features = ["bracketed-paste"] }
 tachyonfx = "0.22"
@@ -33,7 +33,7 @@ name = "gtm"
 maintainer = "prjctimg <prjctimg@outlook.com>"
 copyright = "2026 - present prjctimg"
 license-file = ["../LICENSE"]
-extended-description = "GTM music player client - provides both a Terminal UI (TUI) and command-line interface for controlling the GTM music daemon."
+extended-description = "gtm music player client - provides both a Terminal UI (TUI) and command-line interface for controlling the gtm music daemon."
 section = "sound"
 priority = "optional"
 depends = "$auto"

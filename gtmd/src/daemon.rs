@@ -364,8 +364,6 @@ impl Daemon {
             }
         });
 
-        tokio::spawn(crate::updater::update_check_loop());
-
         let spotify_inner = Arc::clone(&self.inner);
         tokio::spawn(async move {
             let mut spotify = spotify_inner.spotify.lock().await;
@@ -757,12 +755,6 @@ impl Daemon {
         _authenticated: bool,
     ) -> Result<DaemonRes, CoreError> {
         match req {
-            DaemonReq::Update => match crate::updater::perform_update().await {
-                Ok(version) => Ok(DaemonRes::UpdateResult {
-                    version: Some(version),
-                }),
-                Err(_) => Ok(DaemonRes::UpdateResult { version: None }),
-            },
             DaemonReq::Handshake {
                 version,
                 client,
