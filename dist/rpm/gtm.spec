@@ -5,7 +5,7 @@
 #     --define "_topdir $PWD/rpmbuild" \
 #     --define "gtm_version <X.Y.Z>" \
 #     --define "gtm_staging $PWD/stage" \
-#     dist/gtm.spec
+#     dist/rpm/gtm.spec
 #
 # The stage tree is a rootfs-style layout (usr/bin/gtm, usr/share/man/man1,
 # ...) assembled by the release workflow.

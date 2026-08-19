@@ -422,7 +422,7 @@ jobs:
             --define "gtm_version $version" \
             --define "gtm_staging $PWD/stage" \
             --define "gtm_changelog_date $(date -u +'%a %b %d %Y')" \
-            dist/gtm.spec
+            dist/rpm/gtm.spec
           cp rpmbuild/RPMS/*/*.rpm "release-assets/gtm-${version}-1.${rpm_arch}.rpm"
 
       - name: Build Arch Linux package

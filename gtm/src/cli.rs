@@ -1,28 +1,8 @@
 // Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
+// CLI subcommand dispatch via daemon IPC
 //
 // This is free software released under the GPL-3.0 license.
-
-//! CLI mode: dispatches subcommands to the daemon via IPC.
-//!
-//! ```text
-//!  gtm play <path>
-//!  gtm next
-//!  gtm queue
-//!  gtm status
-//!       │
-//!       ▼
-//!  ┌────────────────────────┐
-//!  │  DaemonClient::connect │  → Unix socket → gtmd
-//!  │  serde_json over pipe  │
-//!  └────────┬───────────────┘
-//!           │ IPC request
-//!           ▼
-//!  ┌────────────────────────┐
-//!  │  command match arms    │  Each CliCommand → client.method()
-//!  │  Print result (or JSON)│
-//!  └────────────────────────┘
-//! ```
 
 use std::io::Write;
 use std::path::PathBuf;
@@ -181,8 +161,13 @@ pub enum CliCommand {
     Ping,
     /// Quit the daemon
     Quit,
-    /// Open config file in editor
-    Config,
+    /// Manage config file
+    Config {
+        #[arg(long)]
+        reset: bool,
+        #[arg(long)]
+        validate: bool,
+    },
     /// Set a sleep timer in minutes
     SleepTimer { minutes: u32 },
     /// Cancel the current sleep timer
@@ -234,10 +219,32 @@ pub enum SoloistAction {
 }
 
 pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) {
-    if matches!(cmd, CliCommand::Config) {
-        if let Err(e) = open_config_in_editor() {
-            eprintln!("error: {e}");
-            std::process::exit(1);
+    if let CliCommand::Config { reset, validate } = cmd {
+        if *reset {
+            let path = crate::app::ensure_prefs_file();
+            let _ = std::fs::remove_file(&path);
+            let path = crate::app::ensure_prefs_file();
+            println!("config reset to defaults at {}", path.display());
+        } else if *validate {
+            let path = crate::app::ensure_prefs_file();
+            match std::fs::read_to_string(&path) {
+                Ok(contents) => match toml::from_str::<crate::app::Prefs>(&contents) {
+                    Ok(_) => println!("config is valid"),
+                    Err(e) => {
+                        eprintln!("config error: {e}");
+                        std::process::exit(1);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("failed to read config: {e}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            if let Err(e) = open_config_in_editor() {
+                eprintln!("error: {e}");
+                std::process::exit(1);
+            }
         }
         return;
     }
@@ -688,7 +695,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
-            CliCommand::Config => Ok("config opened".to_string()),
+            CliCommand::Config { .. } => unreachable!(),
             CliCommand::SleepTimer { minutes } => client
                 .set_sleep_timer(*minutes)
                 .await

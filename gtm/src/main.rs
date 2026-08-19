@@ -4,22 +4,6 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-//! gtm music player: single binary, TUI + CLI modes.
-//!
-//! ```text
-//! ┌──────────────────────────────────────────────────────────┐
-//! │                     gtm (this binary)                     │
-//! │                                                          │
-//! │  gtm              → TUI mode (ratatui + crossterm)       │
-//! │  gtm -c           → CLI mode (prints help)               │
-//! │  gtm play <path>  → CLI mode (direct subcommand)         │
-//! │  gtm --version    → prints version                       │
-//! │                                                          │
-//! │  Both modes communicate with gtmd via Unix socket IPC    │
-//! │  over JSON lines (DaemonClient in gtm-core).             │
-//! └──────────────────────────────────────────────────────────┘
-//! ```
-
 use clap::{CommandFactory, Parser};
 
 use gtm::cli;

@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use chrono::Duration;
 use futures::StreamExt;
 use rspotify::clients::{BaseClient, OAuthClient};
-use rspotify::model::{AdditionalType, PlayableItem, Token};
+use rspotify::model::{AdditionalType, PlayableItem, SearchType, Token};
 use rspotify::AuthCodeSpotify;
 use tracing::{debug, info, warn};
 
@@ -285,6 +285,37 @@ impl SpotifyManager {
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(TOKEN_ACCESS_PERMS))
             .map_err(|e| format!("set token permissions: {e}"))?;
         Ok(())
+    }
+
+    pub async fn search(&self, query: &str, limit: u32) -> Vec<SpotifyTrack> {
+        let Some(client) = self.client.as_ref() else {
+            return Vec::new();
+        };
+        let q = format!("track:{query}");
+        match client
+            .search(&q, SearchType::Track, None, None, Some(limit), None)
+            .await
+        {
+            Ok(rspotify::model::SearchResult::Tracks(page)) => page
+                .items
+                .iter()
+                .enumerate()
+                .map(|(i, t)| SpotifyTrack {
+                    index: i,
+                    name: t.name.clone(),
+                    artists: t
+                        .artists
+                        .iter()
+                        .map(|a| a.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    album: Some(t.album.name.clone()),
+                    duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
+                    uri: t.id.as_ref().map(|id| format!("spotify:track:{id}")),
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
     }
 }
 

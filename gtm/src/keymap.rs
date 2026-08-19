@@ -1,32 +1,8 @@
 // Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
-// Keybinding dispatch system with context-aware matching
+// Keybinding dispatch with context-aware matching
 //
 // This is free software released under the GPL-3.0 license.
-
-//! Keybinding dispatch system with context-aware matching.
-//!
-//! ```text
-//!  Key press
-//!      │
-//!      ▼
-//!  ┌──────────────────────┐
-//!  │ key_matches()        │  Scan binding list for matching KeyEvent
-//!  │ && context matches   │  AND current KeyContext (Normal, Filter, etc.)
-//!  └──────────┬───────────┘
-//!             │ hit
-//!             ▼
-//!  ┌──────────────────────┐
-//!  │ KeyboardAction enum  │  → e.g. PlayPause, NextTab, Quit, VolumeUp
-//!  └──────────────────────┘
-//!
-//!  Contexts:
-//!    Global : active everywhere (q, space, ?)
-//!    Normal : main view mode (tab, cursor, volume)
-//!    List   : when a list widget has focus (j/k, enter)
-//!    Filter : typing a search query
-//!    Picker: modal picker is open
-//! ```
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 

@@ -1,5 +1,6 @@
 // Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
+// Library scanning and persistence: discover tracks, sync metadata
 //
 // This is free software released under the GPL-3.0 license.
 

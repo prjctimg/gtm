@@ -1,5 +1,6 @@
 // Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
+// Audio mixer: crossfade, volume, EQ, and backend abstraction
 //
 // This is free software released under the GPL-3.0 license.
 
@@ -49,6 +50,7 @@ pub trait Mixer: Send + Sync {
     fn force_complete_crossfade(&mut self);
     fn drop_active(&mut self);
     fn poll(&mut self) -> AudioResult<Option<AudioEvent>>;
+    fn current_peak_level(&self) -> f32;
 
     // ─── EQ / Reverb ───
     fn set_eq_preset(&self, preset: &EqPreset);
@@ -183,6 +185,15 @@ impl Mixer for AudioMixer {
     fn set_reverb(&self, config: &ReverbConfig) {
         self.reverb_enabled.store(config.enabled, Ordering::Relaxed);
         *self.reverb_room_size.lock().unwrap() = config.room_size;
+    }
+
+    fn current_peak_level(&self) -> f32 {
+        if !self.playing.load(Ordering::SeqCst) {
+            return 0.0;
+        }
+        let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
+        let master = self.master_volume.load(Ordering::SeqCst) as f32 / 100.0;
+        vol * master
     }
 }
 

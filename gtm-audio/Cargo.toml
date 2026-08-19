@@ -15,7 +15,7 @@ default = []
 pulseaudio = ["dep:pulseaudio", "dep:tokio"]
 
 [dependencies]
-gtm-core = { path = "../gtm-core", version = "0.2.3" }
+gtm-core.workspace = true
 rodio = { version = "0.22", default-features = false, features = ["playback", "symphonia-all"] }
 symphonia = { version = "0.6", default-features = false, features = ["all-codecs", "all-formats", "all-meta"] }
 symphonia-adapter-libopus = "0.3"

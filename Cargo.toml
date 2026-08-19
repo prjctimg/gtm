@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.3"
+version = "0.2.4"
 edition = "2021"
 license = "GPL-3.0-only"
 repository = "https://github.com/prjctimg/gtm.rs"
@@ -18,6 +18,11 @@ homepage = "https://github.com/prjctimg/gtm.rs"
 keywords = ["music", "player", "tui", "audio", "youtube"]
 categories = ["command-line-utilities", "multimedia::audio"]
 readme = "README.md"
+
+[workspace.dependencies]
+gtm-core = { path = "gtm-core" }
+gtm-audio = { path = "gtm-audio" }
+gtm-mpris = { path = "gtm-mpris" }
 
 [profile.release]
 lto = "thin"

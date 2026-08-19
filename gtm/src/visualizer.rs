@@ -1,3 +1,9 @@
+// Copyright (c) 2026 - present
+// Author: prjctimg <prjctimg@outlook.com>
+// Audio visualizer with multiple render presets
+//
+// This is free software released under the GPL-3.0 license.
+
 use std::time::Instant;
 
 use ratatui::layout::Rect;
@@ -52,7 +58,7 @@ pub struct AudioVisualizer {
     bars: Vec<f32>,
     target_bars: Vec<f32>,
     last_tick: Instant,
-    seed: f64,
+    spectrum_offset: f64,
 }
 
 impl AudioVisualizer {
@@ -63,7 +69,7 @@ impl AudioVisualizer {
             bars: vec![0.0; 32],
             target_bars: vec![0.0; 32],
             last_tick: Instant::now(),
-            seed: 0.0,
+            spectrum_offset: 0.0,
         }
     }
 
@@ -79,7 +85,7 @@ impl AudioVisualizer {
         self.enabled
     }
 
-    pub fn tick(&mut self, is_playing: bool, width: u16) {
+    pub fn tick(&mut self, is_playing: bool, width: u16, audio_levels: &[f32]) {
         if !self.enabled || width == 0 {
             return;
         }
@@ -93,16 +99,12 @@ impl AudioVisualizer {
             self.target_bars.resize(num_bars, 0.0);
         }
 
-        if is_playing {
-            self.seed += dt * 3.0;
+        if is_playing && !audio_levels.is_empty() {
             for (i, target) in self.target_bars.iter_mut().enumerate() {
-                let phase = self.seed + i as f64 * 0.7;
-                let wave1 = (phase * 1.1).sin() * 0.3;
-                let wave2 = (phase * 2.3 + 1.0).sin() * 0.2;
-                let wave3 = (phase * 0.7 + 2.0).cos() * 0.15;
-                let base = 0.3 + wave1 + wave2 + wave3;
-                let jitter = (phase * 5.0 + i as f64).sin() * 0.1;
-                *target = (base + jitter).clamp(0.05, 1.0) as f32;
+                let idx = i * audio_levels.len() / num_bars;
+                let level = audio_levels.get(idx).copied().unwrap_or(0.0);
+                let jitter = ((i as f64 * 1.7 + self.spectrum_offset * 5.0).sin() * 0.05) as f32;
+                *target = (level + jitter).clamp(0.05, 1.0);
             }
         } else {
             for target in self.target_bars.iter_mut() {
@@ -110,7 +112,8 @@ impl AudioVisualizer {
             }
         }
 
-        // Snap bars to target when paused (no sweep/decay animation)
+        self.spectrum_offset += dt;
+
         let decay = if is_playing { 0.25 } else { 1.0 };
         for (bar, target) in self.bars.iter_mut().zip(self.target_bars.iter()) {
             let diff = target - *bar;
@@ -240,7 +243,7 @@ impl AudioVisualizer {
     /// waveform appears to travel across the screen.
     fn render_spectrum(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
         const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-        let shift = (self.seed * 2.0) as usize % num_bars.max(1);
+        let shift = (self.spectrum_offset * 2.0) as usize % num_bars.max(1);
         let mut lines: Vec<Line<'static>> = Vec::new();
         for row_from_top in (0..height).rev() {
             let mut spans: Vec<Span<'static>> = Vec::new();

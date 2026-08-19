@@ -173,6 +173,8 @@ pub struct DaemonState {
     /// wired up.
     #[serde(default = "default_lyrics_provider")]
     pub lyrics_provider: String,
+    #[serde(default)]
+    pub audio_levels: Vec<f32>,
 }
 
 fn default_lyrics_provider() -> String {

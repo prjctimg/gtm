@@ -1,13 +1,8 @@
 // Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
-// Picker system: floating panels accessible via Alt+key from any tab
+// Floating picker panels for settings and search
 //
 // This is free software released under the GPL-3.0 license.
-
-//! Picker system: floating panels accessible via Alt+key from any tab.
-//!
-//! Each picker is a self-contained UI module that renders on top of the
-//! current tab content with a semi-transparent background.
 
 /// Every picker variant.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

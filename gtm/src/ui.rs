@@ -1,5 +1,6 @@
 // Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
+// TUI rendering: layout, widgets, and theme application
 //
 // This is free software released under the GPL-3.0 license.
 
@@ -12,7 +13,7 @@ use crate::app::{
 };
 use crate::footer::format_duration;
 use crate::picker::{Picker, PickerId, PickerSource};
-use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
+use crossterm::event::{DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
@@ -42,7 +43,7 @@ pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>>
 
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
-        crossterm::execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+        crossterm::execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableMouseCapture)?;
         let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
         terminal.clear()?;
 
@@ -50,7 +51,7 @@ pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>>
         std::panic::set_hook(Box::new(move |panic| {
             let _ = disable_raw_mode();
             let mut stdout = std::io::stdout();
-            let _ = crossterm::execute!(stdout, DisableBracketedPaste, LeaveAlternateScreen);
+            let _ = crossterm::execute!(stdout, DisableMouseCapture, DisableBracketedPaste, LeaveAlternateScreen);
             panic_hook(panic);
         }));
 
@@ -62,7 +63,7 @@ pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>>
 
         let _ = disable_raw_mode();
         let mut stdout = std::io::stdout();
-        let _ = crossterm::execute!(stdout, DisableBracketedPaste, LeaveAlternateScreen);
+        let _ = crossterm::execute!(stdout, DisableMouseCapture, DisableBracketedPaste, LeaveAlternateScreen);
 
         res
     })
@@ -963,8 +964,8 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                 render_cover(
                     f,
                     cover_area,
-                    app.cover_stateful.as_mut(),
-                    app.current_cover.as_deref(),
+                    app.np_cover.stateful.as_mut(),
+                    app.np_cover.image.as_deref(),
                     app.theme.fg_dim,
                 );
 
@@ -1153,6 +1154,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             app.visualizer.tick(
                 app.state.status == gtm_core::state::PlaybackStatus::Playing,
                 vis_a.width,
+                &app.state.audio_levels,
             );
             let vis_header = Paragraph::new(Line::from(Span::styled(
                 " ",
@@ -1551,15 +1553,31 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     }
 
     let right_para = Paragraph::new(right_lines);
-    let stats_line = library_stats_line(app);
     let header_label = if let Some(detail) = app.browse_detail.as_deref() {
-        format!("▶ {detail}{}", stats_line.trim())
+        format!("▶ {detail}")
     } else {
-        format!("{}{}", category_label, stats_line.trim())
+        category_label.to_string()
     };
     let right_inner = render_pane_header(f, panes[1], app, &header_label, !left_focus, false, true);
     fill_pane(f, right_inner, app);
     render_evolving(f, right_inner, right_para, "lib", app, false);
+
+    {
+        let stats_line = library_stats_line(app);
+        if !stats_line.trim().is_empty() {
+            let stats_area = Rect {
+                x: area.x + area.width.saturating_sub(stats_line.len() as u16 + 1),
+                y: area.y + area.height.saturating_sub(1),
+                width: (stats_line.len() as u16 + 1).min(area.width),
+                height: 1,
+            };
+            let stats_para = Paragraph::new(Span::styled(
+                stats_line,
+                Style::default().fg(app.theme.fg_dim),
+            ));
+            f.render_widget(stats_para, stats_area);
+        }
+    }
 
     if let Some(lyrics_area) = lyrics_area {
         render_lyrics_pane(f, lyrics_area, app);
@@ -1719,7 +1737,6 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
                 "Sync Metadata   [ Enter  ▶ ]".to_string(),
                 format!("Footer Preset   [ {:>8} ▶ ]", preset_name),
                 format!("Visualizer      [ {:>8} ▶ ]", app.visualizer.preset.name()),
-                format!("Design          [ {:>7} ▶ ]", app.design.name()),
             ]
         }
         4 => {
@@ -1852,7 +1869,6 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         (3, 4) => lines.push(Line::from(Span::styled(" Sync Metadata: Resolve unreliable track metadata via Deezer and embed clean tags (title, artist, album, genre, year, track, cover) into the files.", Style::default().fg(app.theme.fg_dim)))),
         (3, 5) => lines.push(Line::from(Span::styled(" Footer Preset: Press Enter to cycle. Also available via the Command Palette. Add or override presets in ~/.config/gtm/footer.toml.", Style::default().fg(app.theme.fg_dim)))),
         (3, 6) => lines.push(Line::from(Span::styled(" Visualizer Preset: Press Enter to cycle (Braille, Blocks, Mirror, Gradient, Spectrum). Also toggled via Alt+V.", Style::default().fg(app.theme.fg_dim)))),
-        (3, 7) => lines.push(Line::from(Span::styled(" Design: Press Enter to cycle between Modern and Classic layouts.", Style::default().fg(app.theme.fg_dim)))),
         (4, 0) => lines.push(Line::from(Span::styled(" Spotify: Integration status for the linked account.", Style::default().fg(app.theme.fg_dim)))),
         (4, 1) => lines.push(Line::from(Span::styled(" Account: Display name of the linked Spotify user.", Style::default().fg(app.theme.fg_dim)))),
         (4, 2) => lines.push(Line::from(Span::styled(" Playlists: Number of playlists synced by the daemon.", Style::default().fg(app.theme.fg_dim)))),
@@ -2843,7 +2859,7 @@ fn render_lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     f.render_widget(para, inner);
 }
 
-const TRACK_INFO_CARD_H: u16 = 14;
+const TRACK_INFO_CARD_H: u16 = 16;
 
 const TRACK_INFO_TEXT_H: u16 = 6;
 
@@ -3124,15 +3140,20 @@ fn render_track_info_in_pane(f: &mut ratatui::Frame, sep_area: Rect, area: Rect,
     if can_cover {
         let split = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(COVER_H + 1), Constraint::Min(0)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Length(COVER_H),
+                Constraint::Length(1),
+                Constraint::Min(0),
+            ])
             .split(area);
 
-        let cover_hpad = split[0].width.saturating_sub(COVER_W) / 2;
+        let cover_hpad = split[1].width.saturating_sub(COVER_W) / 2;
         let cover_area = Rect {
-            x: split[0].x + cover_hpad,
-            y: split[0].y,
-            width: COVER_W.min(split[0].width),
-            height: COVER_H.min(split[0].height),
+            x: split[1].x + cover_hpad,
+            y: split[1].y,
+            width: COVER_W.min(split[1].width),
+            height: COVER_H.min(split[1].height),
         };
         if has_cover {
             if let Some(ref mut protocol) = app.popup_cover_stateful {
@@ -3143,7 +3164,7 @@ fn render_track_info_in_pane(f: &mut ratatui::Frame, sep_area: Rect, area: Rect,
             }
         }
 
-        let text_area = split[1];
+        let text_area = split[3];
         let title_avail = text_area.width.saturating_sub(1) as usize;
         let animated_title = scroll_text(&fields.title, title_avail, app.np_title_scroll, true);
         let lines = vec![
@@ -3284,57 +3305,8 @@ fn render_about_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 
 fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
-    let help_lines = vec![
-        ("topic", "Playback"),
-        ("key", "   Space        Play / Pause"),
-        ("key", "   n / Ctrl+N   Next track"),
-        ("key", "   p / Ctrl+P   Previous track"),
-        ("key", "   s            Stop"),
-        ("key", "   . / ,        Seek forward / back"),
-        ("", ""),
-        ("topic", "Volume"),
-        ("key", "   + / =        Volume up"),
-        ("key", "   -            Volume down"),
-        ("key", "   m            Toggle mute"),
-        ("", ""),
-        ("topic", "Queue & Library"),
-        ("key", "   Enter        Play selected / drill-down"),
-        ("key", "   d / Del      Remove item"),
-        ("key", "   F            Toggle favourite"),
-        ("key", "   D            Clear queue"),
-        ("key", "   /            Filter mode"),
-        ("", ""),
-        ("topic", "Navigation"),
-        ("key", "   Tab          Toggle left/right pane focus"),
-        ("key", "   j/k / arrows Move up/down"),
-        ("key", "   h/l          Focus left/right pane"),
-        ("key", "   ?            Toggle this help"),
-        ("", ""),
-        ("topic", "Overlays (Alt+key)"),
-        ("key", "   Alt+Q        Queue"),
-        ("key", "   Alt+Y        YouTube Search"),
-        ("key", "   Alt+F        Search Library"),
-        ("key", "   Alt+A        About"),
-        ("key", "   Alt+C        Theme Picker"),
-        ("key", "   Alt+E        Equalizer"),
-        ("key", "   Alt+P        Command Palette"),
-        ("key", "   Alt+Z        Sleep Timer"),
-        ("key", "   Alt+S        Spotify Search"),
-        ("", ""),
-        ("topic", "Other"),
-        ("key", "   q            Quit"),
-        ("key", "   Q            Quit & stop daemon"),
-        ("key", "   S            Toggle shuffle"),
-        ("key", "   r / R        Cycle repeat"),
-        ("key", "   :            Command palette"),
-        ("", ""),
-        ("topic", "Help"),
-        ("key", "   ?            Toggle this help"),
-        ("key", "   gg / G       Jump to top / bottom"),
-        ("key", "   0 / $        Jump to first / last line"),
-        ("key", "   /            Search"),
-        ("key", "   n / N        Next / previous match"),
-        ("key", "   Esc / q      Close"),
+    let help_lines = [
+        ("", "   [Esc] Close  ? Toggle / Search"),
     ];
 
     let filtered: Vec<(&str, &str)> = if query.is_empty() {
@@ -3410,14 +3382,14 @@ fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 }
 
 fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    if app.sleep_timer_input_mode {
+    if app.sleep_timer.input_mode {
         let block = picker_panel(app, " Sleep Timer: Manual Input ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
         let label = Paragraph::new(Line::from(vec![
             Span::styled(" Enter minutes: ", Style::default().fg(app.theme.fg_dim)),
             Span::styled(
-                &app.sleep_timer_input_buf,
+                &app.sleep_timer.input_buf,
                 Style::default()
                     .fg(app.theme.accent)
                     .add_modifier(Modifier::BOLD),
@@ -3428,12 +3400,12 @@ fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         return;
     }
 
-    let is_active = app.sleep_timer_remaining.is_some();
+    let is_active = app.sleep_timer.remaining.is_some();
     let block = picker_panel(app, " Sleep Timer ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    let mins = app.sleep_timer_minutes;
+    let mins = app.sleep_timer.minutes;
 
     let mut lines: Vec<Line> = Vec::new();
 
@@ -3496,7 +3468,7 @@ fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     lines.push(Line::from(""));
 
     if is_active {
-        if let Some(remaining) = app.sleep_timer_remaining {
+        if let Some(remaining) = app.sleep_timer.remaining {
             let r_mins = remaining / 60;
             let r_secs = remaining % 60;
             lines.push(Line::from(Span::styled(
@@ -3571,7 +3543,6 @@ pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str, &str)] = &[
     ("\u{2753} Toggle Help", "?", "toggle help"),
     ("\u{1f6ab} Hide Help Bar", "Ctrl+H", "hide help bar"),
     ("\u{1f4cf} Footer Preset", "\u{2014}", "footer preset"),
-    ("\u{25c9} Cycle Design", "\u{2014}", "cycle design"),
     ("\u{1fa7a} Health Check", ":", "health check"),
 ];
 
@@ -4562,8 +4533,8 @@ fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App
 
     let mut lines: Vec<Line> = Vec::new();
     for (i, name) in field_names.iter().enumerate() {
-        let value = app.metadata_fields.get(i).map(|s| s.as_str()).unwrap_or("");
-        let is_active = i == app.metadata_field_idx;
+        let value = app.metadata.fields.get(i).map(|s| s.as_str()).unwrap_or("");
+        let is_active = i == app.metadata.field_idx;
         let prefix = if is_active { " > " } else { "   " };
         let style = if is_active {
             Style::default()
@@ -4598,10 +4569,10 @@ fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App
             width: cover_area.width,
             height: cover_h,
         };
-        if let Some(ref mut protocol) = app.metadata_cover_stateful {
+        if let Some(ref mut protocol) = app.metadata.cover_stateful {
             let image = StatefulImage::new();
             f.render_stateful_widget(image, c_area, protocol);
-        } else if let Some(ref cover_bytes) = app.metadata_cover {
+        } else if let Some(ref cover_bytes) = app.metadata.cover {
             render_cover_block(f, c_area, cover_bytes);
         } else {
             let placeholder = Paragraph::new(Line::from(Span::styled(

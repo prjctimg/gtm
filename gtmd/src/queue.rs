@@ -1,16 +1,8 @@
 // Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
-// Queue management helpers: add, remove, move, clear, scan
+// Queue management: add, remove, move, clear
 //
 // This is free software released under the GPL-3.0 license.
-
-//! Queue management helpers: add, remove, move, clear, scan.
-//!
-//! The queue is a one-time FIFO of user-added tracks: the currently-playing
-//! entry sits at index 0 and is removed once it finishes or Next is pressed.
-//! When the user queue is empty, playback falls back to `default_list` (the
-//! whole library sorted by title, or shuffled), whose entries persist while
-//! `default_cursor` advances.  Clients see a merged view of both.
 
 use std::path::Path;
 

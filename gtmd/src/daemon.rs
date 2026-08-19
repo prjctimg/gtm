@@ -1,54 +1,8 @@
 // Copyright (c) 2026 - present
 // Author: prjctimg <prjctimg@outlook.com>
+// Daemon event loop and IPC command handlers
 //
 // This is free software released under the GPL-3.0 license.
-
-//! Daemon event loop, IPC command handlers, and audio event processing.
-//!
-//! ```text
-//!  ┌─────────────────────────────────────────────────────────┐
-//!  │  Daemon event loop (run)                               │
-//!  │                                                         │
-//!  │  tokio::select! waits on three sources:                 │
-//!  │                                                         │
-//!  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  │
-//!  │  │ Unix socket  │  │ Request chan │  │ Audio mixer  │  │
-//!  │  │ listener     │  │ (req_rx)     │  │ (poll)       │  │
-//!  │  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘  │
-//!  │         │                 │                  │          │
-//!  │         ▼                 ▼                  ▼          │
-//!  │  accept_client()    dispatch()          handle_        │
-//!  │  spawn read+write   → cmd_play,        audio_event()   │
-//!  │  tasks per client      cmd_queue,      Position/Dur/   │
-//!  │                        cmd_seek,       Finished/Error  │
-//!  │                        cmd_stop etc.                   │
-//!  └─────────────────────────────────────────────────────────┘
-//! ```
-//!
-//! ## Per-client architecture
-//!
-//! Each connected client gets two spawned tokio tasks:
-//!
-//! ```text
-//!  Client ──→ Reader task: read JSON lines, send to req_tx
-//!           ──→ Writer task: recv responses + broadcast events,
-//!               write JSON frames back to client
-//! ```
-//!
-//! ## Audio event flow
-//!
-//! ```text
-//!  AudioMixer::poll()  ──→  AudioEvent::Position(pos)
-//!                        ──→  AudioEvent::Duration(dur)
-//!                        ──→  AudioEvent::Finished
-//!                        ──→  AudioEvent::Error(msg)
-//!                                  │
-//!                                  ▼
-//!                           handle_audio_event()
-//!                           → update state, push DaemonEvent
-//!                           → crossfade trigger
-//!                           → auto-advance on track end
-//! ```
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -421,6 +375,12 @@ impl Daemon {
                 _ = poll_interval.tick() => {
                     let result = { self.inner.mixer.lock().await.poll() };
                     Self::handle_audio_event(&self.inner, result).await;
+                    let level = self.inner.mixer.lock().await.current_peak_level();
+                    let mut state = self.inner.state.write().await;
+                    state.audio_levels.push(level);
+                    if state.audio_levels.len() > 32 {
+                        state.audio_levels.remove(0);
+                    }
                 }
                 _ = save_interval.tick() => {
                     Self::save_state(&self.inner);
@@ -924,6 +884,14 @@ impl Daemon {
                 playlist_id,
                 track_index,
             } => Self::cmd_spotify_resolve(inner, playlist_id, *track_index).await,
+            DaemonReq::SpotifySearchWeb { query } => {
+                Self::cmd_spotify_search_web(inner, query).await
+            }
+            DaemonReq::SpotifyResolveTrack {
+                name,
+                artists,
+                album,
+            } => Self::cmd_spotify_resolve_track(inner, name, artists, album).await,
             DaemonReq::SoloistSetApiKey { key } => Self::cmd_soloist_set_api_key(inner, key).await,
             DaemonReq::SoloistSetConfig { auto_start } => {
                 Self::cmd_soloist_set_config(inner, *auto_start).await
@@ -3003,6 +2971,86 @@ impl Daemon {
         let spotify_title = track.name.clone();
         let spotify_artist = track.artists.clone();
         let spotify_album = track.album.unwrap_or_default();
+        let was_empty = {
+            let mut state = inner.state.write().await;
+            state.fallback_disabled = false;
+            let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
+            let added = queue::queue_add(&mut state, &path, None);
+            if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == added.path) {
+                entry.title = spotify_title.clone();
+                entry.artist = spotify_artist.clone();
+                entry.album = spotify_album.clone();
+            }
+            drop(state);
+            w
+        };
+        if was_empty {
+            let _ = Self::cmd_play(inner, &path, 0.0, false).await;
+        }
+
+        {
+            let mut guard = inner.cover_cache.lock().await;
+            if let Some(ref mut cc) = *guard {
+                let _ = cc.get_cover(&spotify_artist, &spotify_album).await;
+            }
+        }
+
+        Self::push_queue_state(inner).await;
+        Self::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    async fn cmd_spotify_search_web(
+        inner: &DaemonInner,
+        query: &str,
+    ) -> Result<DaemonRes, CoreError> {
+        let tracks = {
+            let spotify = inner.spotify.lock().await;
+            spotify.search(query, 20).await
+        };
+        Ok(DaemonRes::SpotifyTracksRes { tracks })
+    }
+
+    async fn cmd_spotify_resolve_track(
+        inner: &DaemonInner,
+        name: &str,
+        artists: &str,
+        album: &str,
+    ) -> Result<DaemonRes, CoreError> {
+        let query = if artists.is_empty() {
+            name.to_string()
+        } else {
+            format!("{artists} - {name}")
+        };
+        let spotify_title = name.to_string();
+        let spotify_artist = artists.to_string();
+        let spotify_album = album.to_string();
+
+        let mut yt = inner.youtube.lock().await;
+        if let Err(e) = yt.search(&query, None).await {
+            return Ok(DaemonRes::Error { message: e });
+        }
+        let top = match yt.poll_results().await {
+            Ok(Some((_, mut results))) if !results.is_empty() => results.remove(0),
+            _ => {
+                return Ok(DaemonRes::Error {
+                    message: "no youtube results for track".into(),
+                })
+            }
+        };
+        let info = match yt.resolve_stream(&top.url).await {
+            Ok(info) => info,
+            Err(e) => return Ok(DaemonRes::Error { message: e }),
+        };
+        let prefix = format!("spotify-web-{name}");
+        let path = match Self::download_audio_to_cache(&inner.config.cache_dir, &prefix, &info.url)
+            .await
+        {
+            Ok(path) => path,
+            Err(e) => return Ok(DaemonRes::Error { message: e }),
+        };
+        drop(yt);
+
         let was_empty = {
             let mut state = inner.state.write().await;
             state.fallback_disabled = false;

@@ -24,7 +24,7 @@ jobs:
             --exclude='target' --exclude='.git' \
             .
 
-          cp dist/gtmd.spec /tmp/gtmd.spec
+          cp dist/rpm/gtmd.spec /tmp/gtmd.spec
           sed -i "s/^Version:.*/Version: ${version}/" /tmp/gtmd.spec
           sed -i "s/^Source:.*/Source: gtmd-${version}.tar.gz/" /tmp/gtmd.spec
 

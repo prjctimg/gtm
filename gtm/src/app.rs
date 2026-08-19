@@ -76,7 +76,7 @@ const EQ_PRESETS: [EqPreset; 16] = [
 ];
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
-struct Prefs {
+pub struct Prefs {
     #[serde(default = "default_theme_name")]
     theme_name: String,
     #[serde(default)]
@@ -85,8 +85,7 @@ struct Prefs {
     footer_preset_name: String,
     #[serde(default)]
     progress_style: crate::progress::ProgressStyle,
-    #[serde(default)]
-    design: Design,
+
     #[serde(default)]
     visualizer_preset: crate::visualizer::VisualizerPreset,
 }
@@ -98,26 +97,7 @@ fn default_theme_name() -> String {
 fn default_footer_preset_name() -> String {
     "Default".into()
 }
-#[derive(Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum Design {
-    #[default]
-    Modern,
-    Classic,
-}
 
-impl Design {
-    pub fn all() -> &'static [Design] {
-        &[Design::Modern, Design::Classic]
-    }
-
-    pub fn name(&self) -> &'static str {
-        match self {
-            Design::Modern => "Modern",
-            Design::Classic => "Classic",
-        }
-    }
-}
 
 impl Default for Prefs {
     fn default() -> Self {
@@ -126,7 +106,7 @@ impl Default for Prefs {
             transparent_bg: false,
             footer_preset_name: default_footer_preset_name(),
             progress_style: crate::progress::ProgressStyle::default(),
-            design: Design::default(),
+
             visualizer_preset: crate::visualizer::VisualizerPreset::default(),
         }
     }
@@ -225,6 +205,29 @@ pub enum LibraryPick {
     Playlist(usize),
 }
 
+pub struct SleepTimerState {
+    pub remaining: Option<u64>,
+    pub minutes: u32,
+    pub input_mode: bool,
+    pub input_buf: String,
+}
+
+pub struct MetadataEditState {
+    pub edit_track_id: Option<i64>,
+    pub fields: [String; 7],
+    pub field_idx: usize,
+    pub cover: Option<Vec<u8>>,
+    pub cover_stateful: Option<StatefulProtocol>,
+    pub cover_dirty: bool,
+}
+
+pub struct NowPlayingCoverState {
+    pub image: Option<Vec<u8>>,
+    pub track_id: Option<i64>,
+    pub picker: Option<Picker>,
+    pub stateful: Option<StatefulProtocol>,
+}
+
 pub struct App {
     pub theme: AppTheme,
     pub themes: Vec<ThemeEntry>,
@@ -271,14 +274,8 @@ pub struct App {
     pub yt_search_poll_deadline: Option<std::time::Instant>,
     pub pending_delete: Option<(i64, String)>,
     pub pickers: PickerManager,
-    pub sleep_timer_remaining: Option<u64>,
-    pub sleep_timer_minutes: u32,
-    pub sleep_timer_input_mode: bool,
-    pub sleep_timer_input_buf: String,
-    pub current_cover: Option<Vec<u8>>,
-    pub last_cover_track_id: Option<i64>,
-    pub cover_picker: Option<Picker>,
-    pub cover_stateful: Option<StatefulProtocol>,
+    pub sleep_timer: SleepTimerState,
+    pub np_cover: NowPlayingCoverState,
     pub terminal_cols: u16,
     pub terminal_rows: u16,
     pub cmd_rx: mpsc::Receiver<TuiCommand>,
@@ -312,18 +309,11 @@ pub struct App {
     last_event_time: std::time::Instant,
     pub multiselect_mode: bool,
     pub progress_style: crate::progress::ProgressStyle,
-    pub design: Design,
     pub visualizer: crate::visualizer::AudioVisualizer,
     pub selected_indices: std::collections::HashSet<usize>,
     pending_motion: Option<char>,
     pub pending_playlist_track_ids: Vec<i64>,
-    pub metadata_edit_track_id: Option<i64>,
-    pub metadata_fields: [String; 7],
-    pub metadata_field_idx: usize,
-    /// Cover art preview shown in the Edit Metadata floating window.
-    pub metadata_cover: Option<Vec<u8>>,
-    pub metadata_cover_stateful: Option<StatefulProtocol>,
-    pub metadata_cover_dirty: bool,
+    pub metadata: MetadataEditState,
     pub pending_quit: bool,
     pub np_title_scroll: usize,
     /// Set on the first frame and on each track change; the render layer
@@ -390,6 +380,7 @@ enum IpcResult {
     SpotifyStatus(SpotifyStatus),
     SpotifyPlaylists(Vec<SpotifyPlaylist>),
     SpotifyTracks(Vec<SpotifyTrack>),
+    SpotifySearchWebResults(Vec<SpotifyTrack>),
     SoloistStatus(SoloistStatus),
 }
 
@@ -546,14 +537,18 @@ impl App {
             yt_search_debounce: None,
             yt_search_poll_deadline: None,
             pickers: PickerManager::new(),
-            sleep_timer_remaining: None,
-            sleep_timer_minutes: 30,
-            sleep_timer_input_mode: false,
-            sleep_timer_input_buf: String::new(),
-            current_cover: None,
-            last_cover_track_id: None,
-            cover_picker: None,
-            cover_stateful: None,
+            sleep_timer: SleepTimerState {
+                remaining: None,
+                minutes: 30,
+                input_mode: false,
+                input_buf: String::new(),
+            },
+            np_cover: NowPlayingCoverState {
+                image: None,
+                track_id: None,
+                picker: None,
+                stateful: None,
+            },
             terminal_cols: 80,
             terminal_rows: 24,
             cmd_rx,
@@ -585,7 +580,6 @@ impl App {
             last_event_time: std::time::Instant::now(),
             multiselect_mode: false,
             progress_style: prefs.progress_style,
-            design: prefs.design,
             visualizer: {
                 let mut v = crate::visualizer::AudioVisualizer::new();
                 v.preset = prefs.visualizer_preset;
@@ -594,12 +588,14 @@ impl App {
             selected_indices: std::collections::HashSet::new(),
             pending_motion: None,
             pending_playlist_track_ids: Vec::new(),
-            metadata_edit_track_id: None,
-            metadata_fields: Default::default(),
-            metadata_field_idx: 0,
-            metadata_cover: None,
-            metadata_cover_stateful: None,
-            metadata_cover_dirty: false,
+            metadata: MetadataEditState {
+                edit_track_id: None,
+                fields: Default::default(),
+                field_idx: 0,
+                cover: None,
+                cover_stateful: None,
+                cover_dirty: false,
+            },
             pending_quit: false,
             np_title_scroll: 0,
             track_anim_trigger: false,
@@ -657,7 +653,6 @@ impl App {
                 .map(|p| p.name.to_string())
                 .unwrap_or_else(default_footer_preset_name),
             progress_style: self.progress_style,
-            design: self.design,
             visualizer_preset: self.visualizer.preset,
         }
     }
@@ -678,25 +673,6 @@ impl App {
         let idx = idx.min(self.themes.len().saturating_sub(1));
         self.theme = self.themes[idx].theme;
         self.theme_index = idx;
-        save_prefs(&self.current_prefs());
-    }
-
-    /// Cycle the design and auto-switch the theme to match, then persist.
-    fn cycle_design(&mut self) {
-        let all = Design::all();
-        let idx = all.iter().position(|d| *d == self.design).unwrap_or(0);
-        self.design = all[(idx + 1) % all.len()];
-        let target_theme = match self.design {
-            Design::Classic => "Classic",
-            Design::Modern => "Chadrula",
-        };
-        if let Some(idx) = self.themes.iter().position(|t| t.name == target_theme) {
-            self.theme_index = idx;
-        }
-        self.notify(
-            format!("Design: {}", self.design.name()),
-            NotificationKind::Info,
-        );
         save_prefs(&self.current_prefs());
     }
 
@@ -854,7 +830,7 @@ impl App {
                 self.last_event_time = std::time::Instant::now();
             }
             if had_sleep_expired {
-                self.sleep_timer_remaining = None;
+                self.sleep_timer.remaining = None;
                 self.notify_titled(
                     "Sleep Timer",
                     "Sleep timer expired: shutting down",
@@ -874,9 +850,9 @@ impl App {
             }
             // Sync sleep_timer_remaining from daemon state
             if let Some(secs) = self.state.sleep_timer {
-                self.sleep_timer_remaining = Some(secs as u64);
-            } else if self.sleep_timer_remaining.is_some() && self.state.sleep_timer.is_none() {
-                self.sleep_timer_remaining = None;
+                self.sleep_timer.remaining = Some(secs as u64);
+            } else if self.sleep_timer.remaining.is_some() && self.state.sleep_timer.is_none() {
+                self.sleep_timer.remaining = None;
             }
             // Re-seed clock from state after track change events so the
             // local position estimate stays in sync with the daemon.
@@ -929,13 +905,13 @@ impl App {
             // Clear stale cover immediately so we don't show old art on the
             // new track, then trigger a cover fetch + lyrics auto-fetch.
             if track_changed {
-                self.current_cover = None;
-                self.cover_stateful = None;
+                self.np_cover.image = None;
+                self.np_cover.stateful = None;
                 // Skip cover art in Neovim terminal (no image protocol passthrough)
                 if !no_image_protocol() {
                     if let Some(tid) = current_tid {
-                        if Some(tid) != self.last_cover_track_id {
-                            self.last_cover_track_id = Some(tid);
+                        if Some(tid) != self.np_cover.track_id {
+                            self.np_cover.track_id = Some(tid);
                             let client2 = self.client.clone();
                             let ipc_tx2 = self.ipc_tx.clone();
                             tokio::spawn(async move {
@@ -991,8 +967,8 @@ impl App {
                             // every second.
                             if !no_image_protocol() {
                                 if let Some(c) = cover {
-                                    self.current_cover = Some(c);
-                                    self.last_cover_track_id = cover_tid;
+                                    self.np_cover.image = Some(c);
+                                    self.np_cover.track_id = cover_tid;
                                     self.sync_cover_stateful();
                                 }
                             }
@@ -1000,8 +976,8 @@ impl App {
                     }
                     IpcResult::CoverArt(cover, cover_tid) => {
                         if !no_image_protocol() {
-                            self.current_cover = cover;
-                            self.last_cover_track_id = cover_tid;
+                            self.np_cover.image = cover;
+                            self.np_cover.track_id = cover_tid;
                             self.sync_cover_stateful();
                             self.cover_art_dirty = true;
                         }
@@ -1081,10 +1057,10 @@ impl App {
                         }
                     }
                     IpcResult::MetadataCoverArt(cover, track_id) => {
-                        if !no_image_protocol() && self.metadata_edit_track_id == Some(track_id) {
-                            self.metadata_cover = cover;
+                        if !no_image_protocol() && self.metadata.edit_track_id == Some(track_id) {
+                            self.metadata.cover = cover;
                             self.sync_metadata_cover_stateful();
-                            self.metadata_cover_dirty = true;
+                            self.metadata.cover_dirty = true;
                         }
                     }
                     IpcResult::ArtistCoverArt(cover, artist) => {
@@ -1094,7 +1070,7 @@ impl App {
                         }
                     }
                     IpcResult::CoverPicker(picker) => {
-                        self.cover_picker = picker;
+                        self.np_cover.picker = picker;
                     }
                     IpcResult::Lyrics(lyrics) => {
                         self.current_lyrics = lyrics;
@@ -1111,6 +1087,12 @@ impl App {
                     IpcResult::SpotifyStatus(s) => self.spotify_status = Some(s),
                     IpcResult::SpotifyPlaylists(p) => self.spotify_playlists = p,
                     IpcResult::SpotifyTracks(t) => self.spotify_playlist_tracks_cache = t,
+                    IpcResult::SpotifySearchWebResults(tracks) => {
+                        for track in tracks {
+                            self.spotify_search_results
+                                .push(("web".into(), "Spotify".into(), track));
+                        }
+                    }
                     IpcResult::SoloistStatus(s) => self.soloist_status = Some(s),
                 }
             }
@@ -1174,8 +1156,8 @@ impl App {
             if self.state.volume != self.prev_volume {
                 self.prev_volume = self.state.volume;
             }
-            if self.last_cover_track_id != self.prev_cover_id {
-                self.prev_cover_id = self.last_cover_track_id;
+            if self.np_cover.track_id != self.prev_cover_id {
+                self.prev_cover_id = self.np_cover.track_id;
             }
 
             let raw_pos = self.client.estimated_position().await;
@@ -1223,11 +1205,11 @@ impl App {
                 || !self.notifications.is_empty()
                 || frame_count.is_multiple_of(10)
                 || self.cover_art_dirty
-                || self.metadata_cover_dirty
+                || self.metadata.cover_dirty
                 || self.track_anim_trigger
                 || self.anim_fx.is_running();
             self.cover_art_dirty = false;
-            self.metadata_cover_dirty = false;
+            self.metadata.cover_dirty = false;
             self.last_display_position = self.display_position;
 
             if force_render {
@@ -1256,6 +1238,20 @@ impl App {
                     }
                     Ok(Event::Paste(text)) => {
                         self.handle_paste(&text).await;
+                    }
+                    Ok(Event::Mouse(mouse)) => {
+                        use crossterm::event::MouseEventKind;
+                        match mouse.kind {
+                            MouseEventKind::ScrollUp => {
+                                let key = event::KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+                                self.handle_key(key).await;
+                            }
+                            MouseEventKind::ScrollDown => {
+                                let key = event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+                                self.handle_key(key).await;
+                            }
+                            _ => {}
+                        }
                     }
                     _ => {}
                 }
@@ -1489,7 +1485,7 @@ impl App {
             .as_ref()
             .is_some_and(|t| t.path == path);
         if current_is_selected {
-            self.track_popup_cover = self.current_cover.clone();
+            self.track_popup_cover = self.np_cover.image.clone();
             self.sync_popup_cover_stateful();
             self.last_popup_cover_fetch_id = None;
         } else if self.last_popup_cover_fetch_id != Some(tid) && !no_image_protocol() {
@@ -1681,6 +1677,24 @@ impl App {
                 }
             }
         }
+        let query = self
+            .pickers
+            .top()
+            .map_or(String::new(), |o| o.query.clone());
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            match c.spotify_search_web(&query).await {
+                Ok(tracks) => {
+                    let _ = ipc_tx.send(IpcResult::SpotifySearchWebResults(tracks));
+                }
+                Err(e) => {
+                    let _ = ipc_tx.send(IpcResult::Error(format!(
+                        "Spotify Web search failed: {e}"
+                    )));
+                }
+            }
+        });
     }
 
     /// Filtered tracks for the current library view, respecting search query, browse_detail, and category.
@@ -1816,20 +1830,20 @@ impl App {
     }
 
     fn sync_cover_stateful(&mut self) {
-        match (&self.current_cover, &self.cover_picker) {
+        match (&self.np_cover.image, &self.np_cover.picker) {
             (Some(bytes), Some(picker)) => {
                 if let Ok(img) = image::load_from_memory(bytes) {
-                    self.cover_stateful = Some(picker.new_resize_protocol(img));
+                    self.np_cover.stateful = Some(picker.new_resize_protocol(img));
                 } else {
-                    self.cover_stateful = None;
+                    self.np_cover.stateful = None;
                 }
             }
-            _ => self.cover_stateful = None,
+            _ => self.np_cover.stateful = None,
         }
     }
 
     fn sync_popup_cover_stateful(&mut self) {
-        match (&self.track_popup_cover, &self.cover_picker) {
+        match (&self.track_popup_cover, &self.np_cover.picker) {
             (Some(bytes), Some(picker)) => {
                 if let Ok(img) = image::load_from_memory(bytes) {
                     self.popup_cover_stateful = Some(picker.new_resize_protocol(img));
@@ -1842,7 +1856,7 @@ impl App {
     }
 
     fn sync_upnext_cover_stateful(&mut self) {
-        let Some(picker) = self.cover_picker.as_ref() else {
+        let Some(picker) = self.np_cover.picker.as_ref() else {
             return;
         };
         if let Some(u) = self.upnext.as_mut() {
@@ -1888,7 +1902,7 @@ impl App {
     }
 
     fn sync_queue_preview_cover_stateful(&mut self) {
-        match (&self.queue_preview_cover, &self.cover_picker) {
+        match (&self.queue_preview_cover, &self.np_cover.picker) {
             (Some(bytes), Some(picker)) => {
                 if let Ok(img) = image::load_from_memory(bytes) {
                     self.queue_preview_cover_stateful = Some(picker.new_resize_protocol(img));
@@ -1901,7 +1915,7 @@ impl App {
     }
 
     fn sync_picker_preview_stateful(&mut self) {
-        match (&self.picker_preview_cover, &self.cover_picker) {
+        match (&self.picker_preview_cover, &self.np_cover.picker) {
             (Some(bytes), Some(picker)) => {
                 if let Ok(img) = image::load_from_memory(bytes) {
                     self.picker_preview_stateful = Some(picker.new_resize_protocol(img));
@@ -1915,20 +1929,20 @@ impl App {
 
     /// (Re)build the stateful cover protocol for the Edit Metadata preview.
     fn sync_metadata_cover_stateful(&mut self) {
-        match (&self.metadata_cover, &self.cover_picker) {
+        match (&self.metadata.cover, &self.np_cover.picker) {
             (Some(bytes), Some(picker)) => {
                 if let Ok(img) = image::load_from_memory(bytes) {
-                    self.metadata_cover_stateful = Some(picker.new_resize_protocol(img));
+                    self.metadata.cover_stateful = Some(picker.new_resize_protocol(img));
                 } else {
-                    self.metadata_cover_stateful = None;
+                    self.metadata.cover_stateful = None;
                 }
             }
-            _ => self.metadata_cover_stateful = None,
+            _ => self.metadata.cover_stateful = None,
         }
     }
 
     fn sync_artist_cover_stateful(&mut self) {
-        match (&self.artist_cover, &self.cover_picker) {
+        match (&self.artist_cover, &self.np_cover.picker) {
             (Some(bytes), Some(picker)) => {
                 if let Ok(img) = image::load_from_memory(bytes) {
                     self.artist_cover_stateful = Some(picker.new_resize_protocol(img));
@@ -1943,7 +1957,7 @@ impl App {
     /// Fetch the cover art for the track currently being edited and stream it
     /// to the `MetadataCoverArt` IPC channel so the preview can refresh.
     fn fetch_metadata_cover(&self) {
-        let Some(track_id) = self.metadata_edit_track_id else {
+        let Some(track_id) = self.metadata.edit_track_id else {
             return;
         };
         if no_image_protocol() {
@@ -1965,7 +1979,7 @@ impl App {
             0 => 2,  // Audio: Master Volume, Mute
             1 => 4,  // YouTube: Cookie Source, Cookie File, JS Runtime, Auto Download
             2 => 6,  // Playback: Repeat, Shuffle, Crossfade, Easing, EQ Enabled, Reverb
-            3 => 8, // System: Theme, Transparent BG, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Design
+            3 => 7, // System: Theme, Transparent BG, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer
             4 => 13, // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Soloist, Link Soloist, Start, Stop, Activate, Device, Auto-Start
             _ => 0,
         }
@@ -2492,56 +2506,7 @@ impl App {
 
     fn help_picker_total(&self) -> usize {
         let help_lines = [
-            ("topic", "Playback"),
-            ("key", "   Space        Play / Pause"),
-            ("key", "   n            Next track"),
-            ("key", "   p            Previous track"),
-            ("key", "   s            Stop"),
-            ("key", "   . / ,        Seek forward / back"),
-            ("", ""),
-            ("topic", "Volume"),
-            ("key", "   + / =        Volume up"),
-            ("key", "   -            Volume down"),
-            ("key", "   m            Toggle mute"),
-            ("", ""),
-            ("topic", "Queue & Library"),
-            ("key", "   Enter        Play selected / drill-down"),
-            ("key", "   d / Del      Remove item"),
-            ("key", "   f            Toggle favourite"),
-            ("key", "   D            Clear queue"),
-            ("key", "   /            Filter mode"),
-            ("", ""),
-            ("topic", "Navigation"),
-            ("key", "   Tab          Toggle left/right pane focus"),
-            ("key", "   j/k / arrows Move up/down"),
-            ("key", "   h/l          Focus left/right pane"),
-            ("key", "   ?            Toggle this help"),
-            ("", ""),
-            ("topic", "Overlays (Alt+key)"),
-            ("key", "   Alt+Q        Queue"),
-            ("key", "   Alt+Y        YouTube Search"),
-            ("key", "   Alt+F        Search Library"),
-            ("key", "   Alt+A        About"),
-            ("key", "   Alt+C        Theme Picker"),
-            ("key", "   Alt+E        Equalizer"),
-            ("key", "   Alt+P        Command Palette"),
-            ("key", "   Alt+Z        Sleep Timer"),
-            ("key", "   Alt+S        Spotify Search"),
-            ("", ""),
-            ("topic", "Other"),
-            ("key", "   q            Quit"),
-            ("key", "   Q / Ctrl+Q   Quit & stop daemon"),
-            ("key", "   S            Toggle shuffle"),
-            ("key", "   r / R        Cycle repeat"),
-            ("key", "   :            Command palette"),
-            ("", ""),
-            ("topic", "Help"),
-            ("key", "   ?            Toggle this help"),
-            ("key", "   gg / G       Jump to top / bottom"),
-            ("key", "   0 / $        Jump to first / last line"),
-            ("key", "   /            Search"),
-            ("key", "   n / N        Next / previous match"),
-            ("key", "   Esc / q      Close"),
+            ("", "   [Esc] Close  ? Toggle / Search"),
         ];
         if let Some(top) = self.pickers.top() {
             if top.id == PickerId::Help {
@@ -3334,7 +3299,6 @@ impl App {
                                 }
                                 2 => match opt {
                                     0 => {
-                                        // Repeat cycle
                                         let next = match self.state.repeat {
                                             gtm_core::state::RepeatMode::Off => {
                                                 gtm_core::state::RepeatMode::One
@@ -3353,7 +3317,6 @@ impl App {
                                         self.state.repeat = next;
                                     }
                                     1 => {
-                                        // Shuffle toggle
                                         let c = self.client.clone();
                                         tokio::spawn(async move {
                                             let _ = c.toggle_shuffle().await;
@@ -3361,15 +3324,12 @@ impl App {
                                         self.state.shuffle = !self.state.shuffle;
                                     }
                                     2 => {
-                                        // Open the crossfade options picker
                                         self.pickers.open(PickerId::Crossfade);
                                     }
                                     3 => {
-                                        // Open the crossfade options picker (easing)
                                         self.pickers.open(PickerId::Crossfade);
                                     }
                                     4 => {
-                                        // EQ Enabled toggle
                                         let new_enabled = !self.state.eq_enabled;
                                         self.state.eq_enabled = new_enabled;
                                         let c = self.client.clone();
@@ -3378,7 +3338,6 @@ impl App {
                                         });
                                     }
                                     5 => {
-                                        // Reverb toggle
                                         let new_enabled = !self.state.reverb.enabled;
                                         let room_size = self.state.reverb.room_size;
                                         self.state.reverb.enabled = new_enabled;
@@ -3398,13 +3357,14 @@ impl App {
                                     _ => {}
                                 },
                                 3 => match opt {
+                                    0 => {
+                                        self.pickers.open(PickerId::ThemePicker);
+                                    }
                                     1 => {
-                                        // Transparent BG toggle
                                         self.transparent_bg = !self.transparent_bg;
                                         save_prefs(&self.current_prefs());
                                     }
                                     2 => {
-                                        // Sync Covers
                                         spawn_sync_and_wait(
                                             self.client.clone(),
                                             gtm_core::ipc::SyncKind::Covers,
@@ -3413,7 +3373,6 @@ impl App {
                                         );
                                     }
                                     3 => {
-                                        // Sync Lyrics
                                         spawn_sync_and_wait(
                                             self.client.clone(),
                                             gtm_core::ipc::SyncKind::Lyrics,
@@ -3422,7 +3381,6 @@ impl App {
                                         );
                                     }
                                     4 => {
-                                        // Sync Metadata
                                         spawn_sync_and_wait(
                                             self.client.clone(),
                                             gtm_core::ipc::SyncKind::Metadata,
@@ -3431,7 +3389,6 @@ impl App {
                                         );
                                     }
                                     5 => {
-                                        // Footer Preset cycle
                                         self.cycle_footer_preset();
                                         if let Some(p) = self.footer_presets.get(self.footer_preset)
                                         {
@@ -3442,20 +3399,12 @@ impl App {
                                         }
                                     }
                                     6 => {
-                                        // Visualizer Preset picker
                                         self.pickers.open(PickerId::VisualizerPreset);
-                                    }
-                                    7 => {
-                                        // Design cycle
-                                        self.cycle_design();
                                     }
                                     _ => {}
                                 },
                                 4 => match opt {
                                     0 => {
-                                        // Toggle play/pause on the Spotify device
-                                        // (requires Premium; errors surface in
-                                        // the status row / notification).
                                         let c = self.client.clone();
                                         let ipc_tx = self.ipc_tx.clone();
                                         tokio::spawn(async move {
@@ -3473,12 +3422,10 @@ impl App {
                                         });
                                     }
                                     3 => {
-                                        // Link Spotify account: open token input picker
                                         self.spotify_token_input.clear();
                                         self.pickers.open(PickerId::SpotifyLinkToken);
                                     }
                                     4 => {
-                                        // Sync playlists now
                                         let c = self.client.clone();
                                         let ipc_tx = self.ipc_tx.clone();
                                         tokio::spawn(async move {
@@ -3507,7 +3454,6 @@ impl App {
                                         });
                                     }
                                     5 => {
-                                        // Unlink account
                                         let c = self.client.clone();
                                         let ipc_tx = self.ipc_tx.clone();
                                         tokio::spawn(async move {
@@ -3530,8 +3476,6 @@ impl App {
                                         });
                                     }
                                     12 => {
-                                        // Toggle Soloist auto-start (persisted in
-                                        // daemon state, applied on restart).
                                         let new_val = !self.state.soloist_auto_start;
                                         self.state.soloist_auto_start = new_val;
                                         let c = self.client.clone();
@@ -3703,8 +3647,8 @@ impl App {
                             if let Some((id, title, artist, album, genre, year, track_num)) =
                                 track_data
                             {
-                                self.metadata_edit_track_id = Some(id);
-                                self.metadata_fields = [
+                                self.metadata.edit_track_id = Some(id);
+                                self.metadata.fields = [
                                     title,
                                     artist,
                                     album,
@@ -3713,7 +3657,7 @@ impl App {
                                     year.map_or(String::new(), |y| y.to_string()),
                                     track_num.map_or(String::new(), |n| n.to_string()),
                                 ];
-                                self.metadata_field_idx = 0;
+                                self.metadata.field_idx = 0;
                                 self.pickers.open(PickerId::EditMetadata);
                                 self.fetch_metadata_cover();
                             }
@@ -3805,12 +3749,12 @@ impl App {
     fn close_top_picker_with_cleanup(&mut self) {
         if let Some(top) = self.pickers.top() {
             match top.id {
-                PickerId::SleepTimer => self.sleep_timer_remaining = None,
+                PickerId::SleepTimer => self.sleep_timer.remaining = None,
                 PickerId::SpotifySearch => self.spotify_search_results.clear(),
                 PickerId::EditMetadata => {
-                    self.metadata_cover = None;
-                    self.metadata_cover_stateful = None;
-                    self.metadata_edit_track_id = None;
+                    self.metadata.cover = None;
+                    self.metadata.cover_stateful = None;
+                    self.metadata.edit_track_id = None;
                 }
                 _ => {}
             }
@@ -3862,24 +3806,24 @@ impl App {
         }
 
         if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::SleepTimer)) {
-            if self.sleep_timer_input_mode {
+            if self.sleep_timer.input_mode {
                 match key.code {
                     KeyCode::Esc => {
-                        self.sleep_timer_input_mode = false;
-                        self.sleep_timer_input_buf.clear();
+                        self.sleep_timer.input_mode = false;
+                        self.sleep_timer.input_buf.clear();
                     }
                     KeyCode::Enter => {
-                        if let Ok(m) = self.sleep_timer_input_buf.parse::<u32>() {
-                            self.sleep_timer_minutes = m.min(180);
+                        if let Ok(m) = self.sleep_timer.input_buf.parse::<u32>() {
+                            self.sleep_timer.minutes = m.min(180);
                         }
-                        self.sleep_timer_input_mode = false;
-                        self.sleep_timer_input_buf.clear();
+                        self.sleep_timer.input_mode = false;
+                        self.sleep_timer.input_buf.clear();
                     }
                     KeyCode::Backspace => {
-                        self.sleep_timer_input_buf.pop();
+                        self.sleep_timer.input_buf.pop();
                     }
                     KeyCode::Char(c) if c.is_ascii_digit() => {
-                        self.sleep_timer_input_buf.push(c);
+                        self.sleep_timer.input_buf.push(c);
                     }
                     _ => {}
                 }
@@ -3887,42 +3831,42 @@ impl App {
             }
             match key.code {
                 KeyCode::Esc => {
-                    self.sleep_timer_remaining = None;
-                    self.sleep_timer_minutes = 30;
-                    self.sleep_timer_input_mode = false;
-                    self.sleep_timer_input_buf.clear();
+                    self.sleep_timer.remaining = None;
+                    self.sleep_timer.minutes = 30;
+                    self.sleep_timer.input_mode = false;
+                    self.sleep_timer.input_buf.clear();
                     self.pickers.close_top();
                     return;
                 }
                 // Arrows are navigation only: Left/Right leave the picker like
                 // Esc (PROMPT #7).  Minute stepping stays on h/l and +/-.
                 KeyCode::Left | KeyCode::Right => {
-                    self.sleep_timer_remaining = None;
-                    self.sleep_timer_minutes = 30;
-                    self.sleep_timer_input_mode = false;
-                    self.sleep_timer_input_buf.clear();
+                    self.sleep_timer.remaining = None;
+                    self.sleep_timer.minutes = 30;
+                    self.sleep_timer.input_mode = false;
+                    self.sleep_timer.input_buf.clear();
                     self.pickers.close_top();
                     return;
                 }
                 KeyCode::Char('h') => {
-                    self.sleep_timer_minutes = self.sleep_timer_minutes.saturating_sub(5);
+                    self.sleep_timer.minutes = self.sleep_timer.minutes.saturating_sub(5);
                     return;
                 }
                 KeyCode::Char('l') => {
-                    self.sleep_timer_minutes = (self.sleep_timer_minutes + 5).min(180);
+                    self.sleep_timer.minutes = (self.sleep_timer.minutes + 5).min(180);
                     return;
                 }
                 KeyCode::Char('-') => {
-                    self.sleep_timer_minutes = self.sleep_timer_minutes.saturating_sub(1);
+                    self.sleep_timer.minutes = self.sleep_timer.minutes.saturating_sub(1);
                     return;
                 }
                 KeyCode::Char('+') | KeyCode::Char('=') => {
-                    self.sleep_timer_minutes = (self.sleep_timer_minutes + 1).min(180);
+                    self.sleep_timer.minutes = (self.sleep_timer.minutes + 1).min(180);
                     return;
                 }
                 KeyCode::Enter => {
-                    let mins = self.sleep_timer_minutes;
-                    self.sleep_timer_remaining = Some(mins as u64);
+                    let mins = self.sleep_timer.minutes;
+                    self.sleep_timer.remaining = Some(mins as u64);
                     self.send_high(TuiCommand::SetSleepTimer(mins));
                     self.notify(
                         format!("Sleep timer set: {} min", mins),
@@ -3932,12 +3876,12 @@ impl App {
                     return;
                 }
                 KeyCode::Char('i') => {
-                    self.sleep_timer_input_mode = true;
-                    self.sleep_timer_input_buf.clear();
+                    self.sleep_timer.input_mode = true;
+                    self.sleep_timer.input_buf.clear();
                     return;
                 }
                 KeyCode::Char('c') => {
-                    self.sleep_timer_remaining = None;
+                    self.sleep_timer.remaining = None;
                     self.send_high(TuiCommand::CancelSleepTimer);
                     self.notify_titled(
                         "Sleep Timer",
@@ -3951,7 +3895,7 @@ impl App {
                     let quick_opts = [5u32, 10, 15, 30, 60, 90, 120];
                     if let Some(top) = self.pickers.top_mut() {
                         top.selected = (top.selected + 1) % quick_opts.len();
-                        self.sleep_timer_minutes = quick_opts[top.selected];
+                        self.sleep_timer.minutes = quick_opts[top.selected];
                     }
                     return;
                 }
@@ -3963,7 +3907,7 @@ impl App {
                         } else {
                             top.selected - 1
                         };
-                        self.sleep_timer_minutes = quick_opts[top.selected];
+                        self.sleep_timer.minutes = quick_opts[top.selected];
                     }
                     return;
                 }
@@ -4090,8 +4034,8 @@ impl App {
                     Some(PickerId::EditMetadata)
                 );
                 if is_metadata {
-                    if self.metadata_field_idx > 0 {
-                        self.metadata_field_idx -= 1;
+                    if self.metadata.field_idx > 0 {
+                        self.metadata.field_idx -= 1;
                     }
                     return;
                 }
@@ -4127,8 +4071,8 @@ impl App {
                     Some(PickerId::EditMetadata)
                 );
                 if is_metadata {
-                    if self.metadata_field_idx < 6 {
-                        self.metadata_field_idx += 1;
+                    if self.metadata.field_idx < 6 {
+                        self.metadata.field_idx += 1;
                     }
                     return;
                 }
@@ -4156,13 +4100,13 @@ impl App {
                     self.pickers.top().map(|o| o.id),
                     Some(PickerId::EditMetadata)
                 ) {
-                    if let Some(track_id) = self.metadata_edit_track_id {
-                        let title = self.metadata_fields[0].clone();
-                        let artist = self.metadata_fields[1].clone();
-                        let album = self.metadata_fields[2].clone();
-                        let genre = self.metadata_fields[4].clone();
-                        let year = self.metadata_fields[5].parse::<i32>().ok();
-                        let track_number = self.metadata_fields[6].parse::<i32>().ok();
+                    if let Some(track_id) = self.metadata.edit_track_id {
+                        let title = self.metadata.fields[0].clone();
+                        let artist = self.metadata.fields[1].clone();
+                        let album = self.metadata.fields[2].clone();
+                        let genre = self.metadata.fields[4].clone();
+                        let year = self.metadata.fields[5].parse::<i32>().ok();
+                        let track_number = self.metadata.fields[6].parse::<i32>().ok();
                         let client = self.client.clone();
                         let ipc_tx = self.ipc_tx.clone();
                         tokio::spawn(async move {
@@ -4181,9 +4125,9 @@ impl App {
                                 NotificationKind::Success,
                             ));
                         });
-                        self.metadata_cover = None;
-                        self.metadata_cover_stateful = None;
-                        self.metadata_edit_track_id = None;
+                        self.metadata.cover = None;
+                        self.metadata.cover_stateful = None;
+                        self.metadata.edit_track_id = None;
                     }
                     self.pickers.close_top();
                 }
@@ -4206,25 +4150,57 @@ impl App {
                                 let c = self.client.clone();
                                 let ipc_tx = self.ipc_tx.clone();
                                 self.pickers.close_top();
-                                tokio::spawn(async move {
-                                    match c.spotify_resolve(&playlist_id, track_index).await {
-                                        Ok(()) => {
-                                            let _ = ipc_tx.send(IpcResult::Notification(
-                                                "Spotify".to_string(),
-                                                format!(
-                                                    "Queued: {} - {}",
-                                                    track.artists, track.name
-                                                ),
-                                                NotificationKind::Success,
-                                            ));
+                                if playlist_id == "web" {
+                                    let c2 = c.clone();
+                                    let ipc_tx2 = ipc_tx.clone();
+                                    let track_clone = track.clone();
+                                    tokio::spawn(async move {
+                                        match c2
+                                            .spotify_resolve_track(
+                                                &track_clone.name,
+                                                &track_clone.artists,
+                                                track_clone.album.as_deref().unwrap_or(""),
+                                            )
+                                            .await
+                                        {
+                                            Ok(()) => {
+                                                let _ = ipc_tx2.send(IpcResult::Notification(
+                                                    "Spotify".to_string(),
+                                                    format!(
+                                                        "Queued: {} - {}",
+                                                        track_clone.artists, track_clone.name
+                                                    ),
+                                                    NotificationKind::Success,
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                let _ = ipc_tx2.send(IpcResult::Error(format!(
+                                                    "Spotify resolve failed: {e}"
+                                                )));
+                                            }
                                         }
-                                        Err(e) => {
-                                            let _ = ipc_tx.send(IpcResult::Error(format!(
-                                                "Spotify resolve failed: {e}"
-                                            )));
+                                    });
+                                } else {
+                                    tokio::spawn(async move {
+                                        match c.spotify_resolve(&playlist_id, track_index).await {
+                                            Ok(()) => {
+                                                let _ = ipc_tx.send(IpcResult::Notification(
+                                                    "Spotify".to_string(),
+                                                    format!(
+                                                        "Queued: {} - {}",
+                                                        track.artists, track.name
+                                                    ),
+                                                    NotificationKind::Success,
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                    "Spotify resolve failed: {e}"
+                                                )));
+                                            }
                                         }
-                                    }
-                                });
+                                    });
+                                }
                             }
                         }
                         PickerId::SpotifyLinkToken => {
@@ -4630,8 +4606,8 @@ impl App {
                                             track_num,
                                         )) = track_data
                                         {
-                                            self.metadata_edit_track_id = Some(id);
-                                            self.metadata_fields = [
+                                            self.metadata.edit_track_id = Some(id);
+                                            self.metadata.fields = [
                                                 title,
                                                 artist,
                                                 album,
@@ -4640,7 +4616,7 @@ impl App {
                                                 year.map_or(String::new(), |y| y.to_string()),
                                                 track_num.map_or(String::new(), |n| n.to_string()),
                                             ];
-                                            self.metadata_field_idx = 0;
+                                            self.metadata.field_idx = 0;
                                             self.pickers.open(PickerId::EditMetadata);
                                             self.fetch_metadata_cover();
                                         }
@@ -4655,8 +4631,6 @@ impl App {
                                     self.hide_help_bar = !self.hide_help_bar;
                                 } else if action == "footer preset" {
                                     self.cycle_footer_preset();
-                                } else if action == "cycle design" {
-                                    self.cycle_design();
                                 } else if action == "health check" {
                                     self.send_high(TuiCommand::CheckHealth);
                                 }
@@ -4751,16 +4725,16 @@ impl App {
                             self.pickers.close_top();
                         }
                         PickerId::EditMetadata => {
-                            if self.metadata_field_idx < 6 {
-                                self.metadata_field_idx += 1;
+                            if self.metadata.field_idx < 6 {
+                                self.metadata.field_idx += 1;
                             } else {
-                                if let Some(track_id) = self.metadata_edit_track_id {
-                                    let title = self.metadata_fields[0].clone();
-                                    let artist = self.metadata_fields[1].clone();
-                                    let album = self.metadata_fields[2].clone();
-                                    let genre = self.metadata_fields[4].clone();
-                                    let year = self.metadata_fields[5].parse::<i32>().ok();
-                                    let track_number = self.metadata_fields[6].parse::<i32>().ok();
+                                if let Some(track_id) = self.metadata.edit_track_id {
+                                    let title = self.metadata.fields[0].clone();
+                                    let artist = self.metadata.fields[1].clone();
+                                    let album = self.metadata.fields[2].clone();
+                                    let genre = self.metadata.fields[4].clone();
+                                    let year = self.metadata.fields[5].parse::<i32>().ok();
+                                    let track_number = self.metadata.fields[6].parse::<i32>().ok();
                                     let client = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
@@ -4780,9 +4754,9 @@ impl App {
                                             NotificationKind::Success,
                                         ));
                                     });
-                                    self.metadata_cover = None;
-                                    self.metadata_cover_stateful = None;
-                                    self.metadata_edit_track_id = None;
+                                    self.metadata.cover = None;
+                                    self.metadata.cover_stateful = None;
+                                    self.metadata.edit_track_id = None;
                                 }
                                 self.pickers.close_top();
                             }
@@ -4820,13 +4794,13 @@ impl App {
             KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
                 // Edit Metadata: sync cover using the currently-entered metadata.
                 if top_id == Some(PickerId::EditMetadata) {
-                    if let Some(track_id) = self.metadata_edit_track_id {
-                        let title = self.metadata_fields[0].clone();
-                        let artist = self.metadata_fields[1].clone();
-                        let album = self.metadata_fields[2].clone();
-                        let genre = self.metadata_fields[4].clone();
-                        let year = self.metadata_fields[5].parse::<i32>().ok();
-                        let track_number = self.metadata_fields[6].parse::<i32>().ok();
+                    if let Some(track_id) = self.metadata.edit_track_id {
+                        let title = self.metadata.fields[0].clone();
+                        let artist = self.metadata.fields[1].clone();
+                        let album = self.metadata.fields[2].clone();
+                        let genre = self.metadata.fields[4].clone();
+                        let year = self.metadata.fields[5].parse::<i32>().ok();
+                        let track_number = self.metadata.fields[6].parse::<i32>().ok();
                         let client = self.client.clone();
                         let ipc_tx = self.ipc_tx.clone();
                         tokio::spawn(async move {
@@ -4850,7 +4824,7 @@ impl App {
                                 }
                             }
                         });
-                        self.metadata_cover_dirty = true;
+                        self.metadata.cover_dirty = true;
                         self.notify_titled(
                             "Library",
                             "Syncing cover…",
@@ -4879,7 +4853,7 @@ impl App {
                             }
                         }
                         PickerId::EditMetadata => {
-                            self.metadata_fields[self.metadata_field_idx].push(c);
+                            self.metadata.fields[self.metadata.field_idx].push(c);
                         }
                         PickerId::SpotifySearch => {
                             top.query.push(c);
@@ -4898,7 +4872,7 @@ impl App {
                         top.source = top.source.next();
                         top.selected = 0;
                     } else if top.id == PickerId::EditMetadata {
-                        self.metadata_field_idx = (self.metadata_field_idx + 1) % 7;
+                        self.metadata.field_idx = (self.metadata.field_idx + 1) % 7;
                     }
                 }
             }
@@ -4906,7 +4880,7 @@ impl App {
                 if let Some(top) = self.pickers.top_mut() {
                     match top.id {
                         PickerId::EditMetadata => {
-                            self.metadata_fields[self.metadata_field_idx].pop();
+                            self.metadata.fields[self.metadata.field_idx].pop();
                         }
                         PickerId::SpotifySearch => {
                             top.query.pop();
@@ -4942,7 +4916,7 @@ impl App {
                     self.spotify_token_input.push_str(text);
                 }
                 PickerId::EditMetadata => {
-                    self.metadata_fields[self.metadata_field_idx].push_str(text);
+                    self.metadata.fields[self.metadata.field_idx].push_str(text);
                 }
                 PickerId::YTSearch
                 | PickerId::SearchLibrary

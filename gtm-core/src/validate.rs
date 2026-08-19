@@ -57,6 +57,7 @@ impl DaemonState {
             soloist: Default::default(),
             soloist_auto_start: false,
             lyrics_provider: "lrclib".to_string(),
+            audio_levels: Vec::new(),
         }
     }
 }

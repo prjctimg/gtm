@@ -279,6 +279,14 @@ pub enum DaemonReq {
         playlist_id: String,
         track_index: usize,
     },
+    SpotifySearchWeb {
+        query: String,
+    },
+    SpotifyResolveTrack {
+        name: String,
+        artists: String,
+        album: String,
+    },
     SoloistSetApiKey {
         key: String,
     },
@@ -360,6 +368,8 @@ impl DaemonReq {
             DaemonReq::SpotifyPlaylists => "spotify_playlists",
             DaemonReq::SpotifyPlaylistTracks { .. } => "spotify_playlist_tracks",
             DaemonReq::SpotifyResolve { .. } => "spotify_resolve",
+            DaemonReq::SpotifySearchWeb { .. } => "spotify_search_web",
+            DaemonReq::SpotifyResolveTrack { .. } => "spotify_resolve_track",
             DaemonReq::SoloistSetApiKey { .. } => "soloist_set_api_key",
             DaemonReq::SoloistSetConfig { .. } => "soloist_set_config",
             DaemonReq::SoloistClear => "soloist_clear",
@@ -665,6 +675,28 @@ impl DaemonReq {
                 DaemonReq::SpotifyResolve {
                     playlist_id: x.playlist_id,
                     track_index: x.track_index,
+                }
+            }
+            "spotify_search_web" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    query: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SpotifySearchWeb { query: x.query }
+            }
+            "spotify_resolve_track" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    name: String,
+                    artists: String,
+                    album: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SpotifyResolveTrack {
+                    name: x.name,
+                    artists: x.artists,
+                    album: x.album,
                 }
             }
             "soloist_set_api_key" => {

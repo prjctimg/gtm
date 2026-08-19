@@ -824,6 +824,36 @@ impl DaemonClient {
         .await
     }
 
+    /// Search the Spotify Web API for tracks matching a query.
+    pub async fn spotify_search_web(&self, query: &str) -> Result<Vec<SpotifyTrack>> {
+        let res = self
+            .send_raw(DaemonReq::SpotifySearchWeb {
+                query: query.into(),
+            })
+            .await?;
+        match res {
+            DaemonRes::SpotifyTracksRes { tracks, .. } => Ok(tracks),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+        }
+    }
+
+    /// Resolve a Spotify track (by metadata) to a playable local stream via
+    /// YouTube search and append it to the user queue.
+    pub async fn spotify_resolve_track(
+        &self,
+        name: &str,
+        artists: &str,
+        album: &str,
+    ) -> Result<()> {
+        self.send_ok(DaemonReq::SpotifyResolveTrack {
+            name: name.into(),
+            artists: artists.into(),
+            album: album.into(),
+        })
+        .await
+    }
+
     fn spotify_status_from(res: DaemonRes) -> Result<SpotifyStatus> {
         match res {
             DaemonRes::SpotifyStatusRes { status, .. } => Ok(status),

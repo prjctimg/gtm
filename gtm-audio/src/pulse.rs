@@ -743,6 +743,15 @@ impl Mixer for PulseAudioMixer {
         self.reverb_enabled.store(config.enabled, Ordering::Relaxed);
         *self.reverb_room_size.lock().unwrap() = config.room_size;
     }
+
+    fn current_peak_level(&self) -> f32 {
+        if !self.playing.load(Ordering::SeqCst) {
+            return 0.0;
+        }
+        let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
+        let master = self.master_volume.load(Ordering::SeqCst) as f32 / 100.0;
+        vol * master
+    }
 }
 
 impl PulseAudioMixer {
