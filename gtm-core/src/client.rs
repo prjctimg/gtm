@@ -712,6 +712,17 @@ impl DaemonClient {
         }
     }
 
+    pub async fn get_artist_cover_art(&self, artist: String) -> Result<Option<String>> {
+        let res = self
+            .send_raw(DaemonReq::GetArtistCoverArt { artist })
+            .await?;
+        match res {
+            DaemonRes::CoverArt { data, .. } => Ok(data),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+        }
+    }
+
     pub async fn get_lyrics(
         &self,
         track_id: i64,

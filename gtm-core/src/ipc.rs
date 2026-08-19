@@ -253,6 +253,9 @@ pub enum DaemonReq {
     GetCoverArt {
         track_id: i64,
     },
+    GetArtistCoverArt {
+        artist: String,
+    },
     GetLyrics {
         track_id: i64,
         path: Option<String>,
@@ -346,6 +349,7 @@ impl DaemonReq {
             DaemonReq::YtFetchPlaylistPoll => "yt_fetch_playlist_poll",
             DaemonReq::YtSetConfig { .. } => "yt_set_config",
             DaemonReq::GetCoverArt { .. } => "get_cover_art",
+            DaemonReq::GetArtistCoverArt { .. } => "get_artist_cover_art",
             DaemonReq::GetLyrics { .. } => "get_lyrics",
             DaemonReq::LyricsSearch { .. } => "lyrics_search",
             DaemonReq::SpotifySetToken { .. } => "spotify_set_token",
@@ -597,6 +601,14 @@ impl DaemonReq {
                 DaemonReq::GetCoverArt {
                     track_id: x.track_id,
                 }
+            }
+            "get_artist_cover_art" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    artist: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::GetArtistCoverArt { artist: x.artist }
             }
             "get_lyrics" => {
                 #[derive(Deserialize)]
@@ -1164,7 +1176,7 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "get_cover_art" => {
+            "get_cover_art" | "get_artist_cover_art" => {
                 let d = data.get("data").cloned().unwrap_or(Value::Null);
                 match serde_json::from_value::<Option<String>>(d) {
                     Ok(data) => DaemonRes::CoverArt { data },

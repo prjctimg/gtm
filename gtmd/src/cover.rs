@@ -16,6 +16,7 @@ use tokio::sync::Mutex;
 use tracing::warn;
 
 const CACHE_SIZE: usize = 500;
+const ARTIST_CACHE_SIZE: usize = 200;
 const DEEZER_API: &str = "https://api.deezer.com/search";
 const RATE_LIMIT_MS: u64 = 200;
 const MIN_COVER_DIM: u32 = 300;
@@ -28,6 +29,7 @@ pub struct CoverData {
 
 pub struct CoverCache {
     memory: Arc<Mutex<LruCache<String, CoverData>>>,
+    artist_memory: Arc<Mutex<LruCache<String, CoverData>>>,
     cache_dir: PathBuf,
     client: Client,
 }
@@ -35,9 +37,13 @@ pub struct CoverCache {
 impl CoverCache {
     pub fn new(cache_dir: PathBuf) -> Self {
         fs::create_dir_all(cache_dir.join("covers")).ok();
+        fs::create_dir_all(cache_dir.join("artist_covers")).ok();
         Self {
             memory: Arc::new(Mutex::new(LruCache::new(
                 NonZeroUsize::new(CACHE_SIZE).unwrap(),
+            ))),
+            artist_memory: Arc::new(Mutex::new(LruCache::new(
+                NonZeroUsize::new(ARTIST_CACHE_SIZE).unwrap(),
             ))),
             cache_dir,
             client: Client::new(),
@@ -106,6 +112,58 @@ impl CoverCache {
             mem.put(key, cd.clone());
         }
         cd
+    }
+
+    pub async fn get_artist_image(&mut self, artist: &str) -> Option<CoverData> {
+        let artist = if artist.is_empty() {
+            return None;
+        } else {
+            artist
+        };
+        let key = Self::artist_key(artist);
+        {
+            let mut mem = self.artist_memory.lock().await;
+            if let Some(c) = mem.get(&key) {
+                return Some(c.clone());
+            }
+        }
+        let disk = self.artist_disk_path(&key);
+        if disk.exists() {
+            if let Ok(data) = fs::read(&disk) {
+                let cd = CoverData {
+                    mime: "image/jpeg".to_string(),
+                    data,
+                };
+                let mut mem = self.artist_memory.lock().await;
+                mem.put(key, cd.clone());
+                return Some(cd);
+            }
+        }
+        let deezer = crate::deezer::DeezerSearch::new();
+        let img_bytes = deezer.artist_image(artist).await?;
+        let cd = CoverData {
+            data: img_bytes.clone(),
+            mime: "image/jpeg".to_string(),
+        };
+        if let Some(parent) = disk.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+        if let Err(e) = fs::write(&disk, &img_bytes) {
+            warn!("Failed to write artist image to disk {disk:?}: {e}");
+        }
+        let mut mem = self.artist_memory.lock().await;
+        mem.put(key, cd.clone());
+        Some(cd)
+    }
+
+    fn artist_key(artist: &str) -> String {
+        let mut h = Sha256::new();
+        h.update(format!("artist:{artist}").as_bytes());
+        hex::encode(&h.finalize()[..8])
+    }
+
+    fn artist_disk_path(&self, key: &str) -> PathBuf {
+        self.cache_dir.join("artist_covers").join(format!("{key}.jpg"))
     }
 
     async fn fetch_from_deezer(&self, artist: &str, album: &str, key: &str) -> Option<CoverData> {

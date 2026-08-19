@@ -1,5 +1,7 @@
 # gtm.rs
 
+![](./logo.png)
+
 [![Crates.io](https://img.shields.io/crates/v/gtm)](https://crates.io/crates/gtm)
 [![Crates.io downloads](https://img.shields.io/crates/d/gtm)](https://crates.io/crates/gtm)
 [![Docs.rs](https://docs.rs/gtm/badge.svg)](https://docs.rs/gtm)

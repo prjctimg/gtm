@@ -30,6 +30,8 @@ pub struct TrackInfo {
     pub loudness_peak_db: Option<f32>,
     #[serde(default)]
     pub loudness_range: Option<f32>,
+    #[serde(default)]
+    pub artist_image: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

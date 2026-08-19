@@ -28,6 +28,13 @@ fn darken(c: Color, factor: f64) -> Color {
     }
 }
 
+fn bg_luminance(c: Color) -> f64 {
+    match c {
+        Color::Rgb(r, g, b) => 0.299 * r as f64 + 0.587 * g as f64 + 0.114 * b as f64,
+        _ => 128.0,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FooterModule {
     Playback,
@@ -303,7 +310,11 @@ pub fn render(app: &App) -> Option<FooterRenderOutput> {
     }
     Some(FooterRenderOutput {
         groups: out_groups,
-        right_bg: app.theme.border,
+        right_bg: if bg_luminance(app.theme.bg) > 180.0 {
+            darken(app.theme.bg, 0.85)
+        } else {
+            app.theme.border
+        },
     })
 }
 

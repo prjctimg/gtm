@@ -745,6 +745,17 @@ impl Daemon {
                 }
             }
         };
+        if matches!(&req, DaemonReq::SoloistSetApiKey { .. }) {
+            let inner2 = Arc::clone(&inner);
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_secs(2)).await;
+                let mut spotify = inner2.spotify.lock().await;
+                if spotify.has_token_file() {
+                    let _ =
+                        tokio::time::timeout(Duration::from_secs(60), spotify.sync()).await;
+                }
+            });
+        }
         let _ = reply_tx.send((request_id, res));
     }
 
@@ -891,6 +902,9 @@ impl Daemon {
                 Ok(DaemonRes::Ok)
             }
             DaemonReq::GetCoverArt { track_id } => Self::cmd_get_cover_art(inner, *track_id).await,
+            DaemonReq::GetArtistCoverArt { artist } => {
+                Self::cmd_get_artist_cover_art(inner, artist).await
+            }
             DaemonReq::GetLyrics { track_id, path } => {
                 Self::cmd_get_lyrics(inner, *track_id, path.clone()).await
             }
@@ -2759,6 +2773,25 @@ impl Daemon {
             }
         }
 
+        Ok(DaemonRes::CoverArt { data: None })
+    }
+
+    async fn cmd_get_artist_cover_art(
+        inner: &DaemonInner,
+        artist: &str,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut guard = inner.cover_cache.lock().await;
+        if let Some(ref mut cache) = *guard {
+            let cover =
+                tokio::time::timeout(Duration::from_secs(8), cache.get_artist_image(artist))
+                    .await
+                    .ok()
+                    .flatten();
+            if let Some(cover) = cover {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&cover.data);
+                return Ok(DaemonRes::CoverArt { data: Some(b64) });
+            }
+        }
         Ok(DaemonRes::CoverArt { data: None })
     }
 

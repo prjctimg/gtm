@@ -341,6 +341,10 @@ pub struct App {
     pub picker_preview_cover: Option<Vec<u8>>,
     pub picker_preview_stateful: Option<StatefulProtocol>,
     last_picker_preview_fetch_id: Option<i64>,
+    /// Cover art for artist selections in the search picker preview.
+    pub artist_cover: Option<Vec<u8>>,
+    pub artist_cover_stateful: Option<StatefulProtocol>,
+    last_artist_cover_fetch: Option<String>,
     /// Active "Up Next" crossfade-countdown notification (T10).
     pub upnext: Option<UpNextNotif>,
     last_upnext_cover_fetch_id: Option<i64>,
@@ -369,7 +373,10 @@ enum IpcResult {
     CoverArt(Option<Vec<u8>>, Option<i64>),
     PopupCoverArt(Option<Vec<u8>>, i64),
     UpNextCover(Option<Vec<u8>>, i64),
+    QueuePreviewCover(Option<Vec<u8>>, i64),
+    PickerPreviewCover(Option<Vec<u8>>, i64),
     MetadataCoverArt(Option<Vec<u8>>, i64),
+    ArtistCoverArt(Option<Vec<u8>>, String),
     CoverPicker(Option<Picker>),
     Lyrics(Option<gtm_core::track::LrcData>),
     LibraryTracks(Vec<TrackInfo>),
@@ -605,6 +612,9 @@ impl App {
             picker_preview_cover: None,
             picker_preview_stateful: None,
             last_picker_preview_fetch_id: None,
+            artist_cover: None,
+            artist_cover_stateful: None,
+            last_artist_cover_fetch: None,
             upnext: None,
             last_upnext_cover_fetch_id: None,
             queue_preview_cover: None,
@@ -1039,9 +1049,30 @@ impl App {
                     }
                     IpcResult::PopupCoverArt(cover, track_id) => {
                         if !no_image_protocol() && self.track_popup_track_id == Some(track_id) {
-                            self.track_popup_cover = cover.clone();
+                            self.track_popup_cover = cover;
                             self.sync_popup_cover_stateful();
                         }
+                    }
+                    IpcResult::UpNextCover(cover, track_id) => {
+                        if !no_image_protocol()
+                            && self.last_upnext_cover_fetch_id == Some(track_id)
+                            && self.upnext.as_ref().is_some_and(|u| u.track.id == track_id)
+                        {
+                            if let Some(u) = self.upnext.as_mut() {
+                                u.cover = cover;
+                                self.sync_upnext_cover_stateful();
+                            }
+                        }
+                    }
+                    IpcResult::QueuePreviewCover(cover, track_id) => {
+                        if !no_image_protocol()
+                            && self.last_queue_preview_cover_fetch_id == Some(track_id)
+                        {
+                            self.queue_preview_cover = cover;
+                            self.sync_queue_preview_cover_stateful();
+                        }
+                    }
+                    IpcResult::PickerPreviewCover(cover, track_id) => {
                         if !no_image_protocol()
                             && self.last_picker_preview_fetch_id == Some(track_id)
                         {
@@ -1049,27 +1080,17 @@ impl App {
                             self.sync_picker_preview_stateful();
                         }
                     }
-                    IpcResult::UpNextCover(cover, track_id) => {
-                        if !no_image_protocol() {
-                            if self.last_upnext_cover_fetch_id == Some(track_id)
-                                && self.upnext.as_ref().is_some_and(|u| u.track.id == track_id)
-                            {
-                                if let Some(u) = self.upnext.as_mut() {
-                                    u.cover = cover.clone();
-                                    self.sync_upnext_cover_stateful();
-                                }
-                            }
-                            if self.last_queue_preview_cover_fetch_id == Some(track_id) {
-                                self.queue_preview_cover = cover;
-                                self.sync_queue_preview_cover_stateful();
-                            }
-                        }
-                    }
                     IpcResult::MetadataCoverArt(cover, track_id) => {
                         if !no_image_protocol() && self.metadata_edit_track_id == Some(track_id) {
                             self.metadata_cover = cover;
                             self.sync_metadata_cover_stateful();
                             self.metadata_cover_dirty = true;
+                        }
+                    }
+                    IpcResult::ArtistCoverArt(cover, artist) => {
+                        if !no_image_protocol() && self.last_artist_cover_fetch.as_deref() == Some(&artist) {
+                            self.artist_cover = cover;
+                            self.sync_artist_cover_stateful();
                         }
                     }
                     IpcResult::CoverPicker(picker) => {
@@ -1532,7 +1553,47 @@ impl App {
         tokio::spawn(async move {
             if let Ok(Some(b64)) = client2.get_cover_art(tid).await {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                    let _ = ipc_tx2.send(IpcResult::PopupCoverArt(Some(bytes), tid));
+                    let _ = ipc_tx2.send(IpcResult::PickerPreviewCover(Some(bytes), tid));
+                }
+            }
+        });
+    }
+
+    pub fn update_artist_cover(&mut self) {
+        let Some(top) = self.pickers.top() else {
+            self.artist_cover = None;
+            return;
+        };
+        if top.id != PickerId::SearchLibrary {
+            self.artist_cover = None;
+            return;
+        }
+        let picks = self.search_library_picks();
+        if picks.is_empty() {
+            self.artist_cover = None;
+            return;
+        }
+        let sel = top.selected.min(picks.len() - 1);
+        let LibraryPick::Artist(name) = &picks[sel] else {
+            self.artist_cover = None;
+            return;
+        };
+        if self.last_artist_cover_fetch.as_deref() == Some(name.as_str()) {
+            return;
+        }
+        self.last_artist_cover_fetch = Some(name.clone());
+        self.artist_cover = None;
+        self.artist_cover_stateful = None;
+        if no_image_protocol() {
+            return;
+        }
+        let client2 = self.client.clone();
+        let ipc_tx2 = self.ipc_tx.clone();
+        let artist = name.clone();
+        tokio::spawn(async move {
+            if let Ok(Some(b64)) = client2.get_artist_cover_art(artist.clone()).await {
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
+                    let _ = ipc_tx2.send(IpcResult::ArtistCoverArt(Some(bytes), artist));
                 }
             }
         });
@@ -1820,7 +1881,7 @@ impl App {
         tokio::spawn(async move {
             if let Ok(Some(b64)) = client2.get_cover_art(tid).await {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                    let _ = ipc_tx2.send(IpcResult::UpNextCover(Some(bytes), tid));
+                    let _ = ipc_tx2.send(IpcResult::QueuePreviewCover(Some(bytes), tid));
                 }
             }
         });
@@ -1866,6 +1927,19 @@ impl App {
         }
     }
 
+    fn sync_artist_cover_stateful(&mut self) {
+        match (&self.artist_cover, &self.cover_picker) {
+            (Some(bytes), Some(picker)) => {
+                if let Ok(img) = image::load_from_memory(bytes) {
+                    self.artist_cover_stateful = Some(picker.new_resize_protocol(img));
+                } else {
+                    self.artist_cover_stateful = None;
+                }
+            }
+            _ => self.artist_cover_stateful = None,
+        }
+    }
+
     /// Fetch the cover art for the track currently being edited and stream it
     /// to the `MetadataCoverArt` IPC channel so the preview can refresh.
     fn fetch_metadata_cover(&self) {
@@ -1892,7 +1966,7 @@ impl App {
             1 => 4,  // YouTube: Cookie Source, Cookie File, JS Runtime, Auto Download
             2 => 6,  // Playback: Repeat, Shuffle, Crossfade, Easing, EQ Enabled, Reverb
             3 => 8, // System: Theme, Transparent BG, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Design
-            4 => 14, // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Soloist, Link Soloist, Start, Stop, Activate, Device, Auto-Start, Lyrics Provider
+            4 => 13, // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Soloist, Link Soloist, Start, Stop, Activate, Device, Auto-Start
             _ => 0,
         }
     }

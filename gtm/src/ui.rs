@@ -250,7 +250,7 @@ const NOTIFICATION_LIFETIME: std::time::Duration = std::time::Duration::from_mil
 
 const NOTIFICATION_EXIT_DURATION: std::time::Duration = std::time::Duration::from_millis(300);
 
-fn render_upnext_card(f: &mut ratatui::Frame, area: Rect, app: &mut App, remaining: f64) {
+fn render_upnext_card(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let (display_title, artist, album, has_album, has_cover, source_label) = {
         let u = match app.upnext.as_ref() {
             Some(u) => u,
@@ -329,44 +329,12 @@ fn render_upnext_card(f: &mut ratatui::Frame, area: Rect, app: &mut App, remaini
         vertical: 1,
     });
 
-    let filled_w = (inner.width as f64 * remaining).round() as u16;
-    let empty_w = inner.width.saturating_sub(filled_w);
-    if filled_w > 0 {
-        f.render_widget(
-            Block::default().style(Style::default().bg(app.theme.accent)),
-            Rect {
-                x: inner.x,
-                y: inner.y,
-                width: filled_w,
-                height: 1,
-            },
-        );
-    }
-    if empty_w > 0 {
-        f.render_widget(
-            Block::default().style(Style::default().bg(app.theme.muted_border)),
-            Rect {
-                x: inner.x + filled_w,
-                y: inner.y,
-                width: empty_w,
-                height: 1,
-            },
-        );
-    }
-
-    let body = Rect {
-        x: inner.x,
-        y: inner.y + 1,
-        width: inner.width,
-        height: inner.height.saturating_sub(1),
-    };
-
-    let cover_w = COVER_W.min(body.width.saturating_sub(2));
-    let cover_h = COVER_H.min(body.height);
+    let cover_w = COVER_W.min(inner.width.saturating_sub(2));
+    let cover_h = COVER_H.min(inner.height);
     if has_cover && cover_w > 0 {
         let cover_area = Rect {
-            x: body.x,
-            y: body.y,
+            x: inner.x,
+            y: inner.y,
             width: cover_w,
             height: cover_h,
         };
@@ -379,10 +347,10 @@ fn render_upnext_card(f: &mut ratatui::Frame, area: Rect, app: &mut App, remaini
     }
 
     let text_area = Rect {
-        x: body.x + cover_w + 1,
-        y: body.y,
-        width: body.width.saturating_sub(cover_w + 1),
-        height: body.height,
+        x: inner.x + cover_w + 1,
+        y: inner.y,
+        width: inner.width.saturating_sub(cover_w + 1),
+        height: inner.height,
     };
     let text_w = text_area.width.saturating_sub(1) as usize;
     let animated = scroll_text(&display_title, text_w.max(4), app.np_title_scroll, false);
@@ -443,10 +411,7 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
 
     let mut y_bottom = area.y + area.height - padding;
 
-    if let Some(remaining) = app.upnext.as_ref().and_then(|u| {
-        let remaining = 1.0 - u.started_at.elapsed().as_secs_f64() / u.total_secs;
-        (remaining > 0.0).then_some(remaining)
-    }) {
+    if app.upnext.is_some() {
         let card_w = 42u16;
         let card_h = 7u16;
         let card_x = area.x + area.width.saturating_sub(card_w + padding);
@@ -458,7 +423,7 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
                 width: card_w,
                 height: card_h,
             };
-            render_upnext_card(f, card_area, app, remaining);
+            render_upnext_card(f, card_area, app);
             y_bottom = card_y.saturating_sub(gap);
         }
     } else if app.upnext.is_some() {
@@ -512,26 +477,26 @@ fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App
         f.render_widget(bg, card_area);
 
         let border_color = app.theme.notification_border;
-        for col in 0..2u16 {
-            f.render_widget(
-                Block::default().style(Style::default().bg(border_color)),
-                Rect {
-                    x: card_area.x,
-                    y: card_area.y,
-                    width: 1,
-                    height: card_area.height,
-                }
-                .offset(Offset {
-                    x: col as i32,
-                    y: 0,
-                }),
-            );
-        }
+        f.render_widget(
+            Block::default().style(Style::default().bg(border_color)),
+            Rect {
+                x: card_area.x,
+                y: card_area.y,
+                width: 1,
+                height: card_area.height,
+            },
+        );
 
         let inner = card_area.inner(Margin {
             horizontal: padding + 1,
             vertical: padding,
         });
+        let inner = Rect {
+            x: inner.x + 1,
+            y: inner.y,
+            width: inner.width.saturating_sub(1),
+            height: inner.height,
+        };
         let mut lines: Vec<Line> = Vec::with_capacity(1 + line_count as usize);
         if has_title {
             lines.push(Line::from(Span::styled(
@@ -645,7 +610,9 @@ fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
 
 fn render_content(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     if !app.is_ready {
-        let loading = Paragraph::new(" Loading library…")
+        fill_pane(f, area, app);
+        let spinner = braille_spinner(app.frame_count as usize);
+        let loading = Paragraph::new(format!(" {} Loading library…", spinner))
             .alignment(Alignment::Center)
             .style(Style::default().fg(app.theme.fg_dim));
         f.render_widget(loading, area);
@@ -761,8 +728,8 @@ fn use_nerd_fonts() -> bool {
     !matches!(std::env::var("GTM_NERD_FONTS"), Ok(v) if v == "0" || v == "false" || v == "no")
 }
 
-pub const COVER_W: u16 = 14;
-pub const COVER_H: u16 = 7;
+pub const COVER_W: u16 = 18;
+pub const COVER_H: u16 = 9;
 
 fn step_viewport(offset: usize, sel: usize, visible: usize, total: usize) -> (usize, usize) {
     if total <= visible || visible == 0 {
@@ -1296,7 +1263,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let (right_lines, _stats_line) = if app.browse_detail.is_some() && app.library_category == 5 {
         let tracks = &app.spotify_playlist_tracks_cache;
         let total_len = tracks.len();
-        let st_line = format!(" {} tracks ", total_len);
+        let st_line =                 format!(" {} {} ", total_len, plural(total_len, "track", "tracks"));
         let reserve = 3usize;
         let available = panes[1].height.saturating_sub(reserve as u16) as usize;
         app.viewport_items = available;
@@ -1355,7 +1322,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             let total_dur: u64 = f.iter().map(|t| t.duration as u64).sum();
             (f.len(), total_dur / 3600, (total_dur % 3600) / 60)
         };
-        let st_line = format!(" {} tracks | {}h {}m ", total_len, hours, mins);
+        let st_line = format!(" {} {} | {}h {}m ", total_len, plural(total_len, "track", "tracks"), hours, mins);
 
         let reserve = 3usize;
         let available = panes[1].height.saturating_sub(reserve as u16) as usize;
@@ -1403,7 +1370,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let albums = app.unique_albums();
         let total_len = albums.len();
         let sel = app.list_pos().min(total_len.saturating_sub(1));
-        let st_line = format!(" {} albums ", total_len);
+        let st_line = format!(" {} {} ", total_len, plural(total_len, "album", "albums"));
         let reserve = 3usize;
         let available = panes[1].height.saturating_sub(reserve as u16) as usize;
         app.viewport_items = available;
@@ -1434,7 +1401,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let artists = app.unique_artists();
         let total_len = artists.len();
         let sel = app.list_pos().min(total_len.saturating_sub(1));
-        let st_line = format!(" {} artists ", total_len);
+        let st_line = format!(" {} {} ", total_len, plural(total_len, "artist", "artists"));
         let reserve = 3usize;
         let available = panes[1].height.saturating_sub(reserve as u16) as usize;
         app.viewport_items = available;
@@ -1465,7 +1432,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let playlists = &app.playlist_cache;
         let total_len = playlists.len();
         let sel = app.list_pos().min(total_len.saturating_sub(1));
-        let st_line = format!(" {} playlists ", total_len);
+        let st_line = format!(" {} {} ", total_len, plural(total_len, "playlist", "playlists"));
         let reserve = 3usize;
         let available = panes[1].height.saturating_sub(reserve as u16) as usize;
         app.viewport_items = available;
@@ -1496,7 +1463,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let playlists = &app.spotify_playlists;
         let total_len = playlists.len();
         let sel = app.list_pos().min(total_len.saturating_sub(1));
-        let st_line = format!(" {} playlists ", total_len);
+        let st_line = format!(" {} {} ", total_len, plural(total_len, "playlist", "playlists"));
         let reserve = 3usize;
         let available = panes[1].height.saturating_sub(reserve as u16) as usize;
         app.viewport_items = available;
@@ -1538,7 +1505,7 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         };
         let hours = total_dur / 3600;
         let mins = (total_dur % 3600) / 60;
-        let st_line = format!(" {} tracks | {}h {}m ", total_len, hours, mins);
+        let st_line = format!(" {} {} | {}h {}m ", total_len, plural(total_len, "track", "tracks"), hours, mins);
 
         let reserve = 3usize;
         let available = panes[1].height.saturating_sub(reserve as u16) as usize;
@@ -1584,10 +1551,11 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     }
 
     let right_para = Paragraph::new(right_lines);
+    let stats_line = library_stats_line(app);
     let header_label = if let Some(detail) = app.browse_detail.as_deref() {
-        format!("▶ {detail}")
+        format!("▶ {detail}{}", stats_line.trim())
     } else {
-        category_label.to_string()
+        format!("{}{}", category_label, stats_line.trim())
     };
     let right_inner = render_pane_header(f, panes[1], app, &header_label, !left_focus, false, true);
     fill_pane(f, right_inner, app);
@@ -1799,11 +1767,6 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
                 "Stopped"
             };
             let auto_start = app.state.soloist_auto_start;
-            let lyrics_provider = if app.state.lyrics_provider.is_empty() {
-                "lrclib".to_string()
-            } else {
-                app.state.lyrics_provider.clone()
-            };
             vec![
                 if st.linked && st.premium {
                     format!("Status          [ {status_label}  Enter ]")
@@ -1822,10 +1785,9 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
                 format!("Activate Device [ Enter ]"),
                 format!("Device          [ {device_label:<14} ]"),
                 format!(
-                    "Soloist: Auto-Start [ {} ]",
+                    "Auto-Start      [ {} ]",
                     if auto_start { "●" } else { "○" }
                 ),
-                format!("Lyrics Provider [ {lyrics_provider} ]"),
             ]
         }
         _ => vec![],
@@ -1902,6 +1864,8 @@ fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         (4, 8) => lines.push(Line::from(Span::styled(" Start Soloist: Launch the soloist daemon with the saved key.", Style::default().fg(app.theme.fg_dim)))),
         (4, 9) => lines.push(Line::from(Span::styled(" Stop Soloist: Terminate the soloist daemon (key is retained).", Style::default().fg(app.theme.fg_dim)))),
         (4, 10) => lines.push(Line::from(Span::styled(" Activate Device: Ask Soloist to become the active Spotify Connect device.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 11) => lines.push(Line::from(Span::styled(" Device: Currently active Spotify Connect device label.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 12) => lines.push(Line::from(Span::styled(" Auto-Start: Press Enter to toggle auto-starting Soloist on launch.", Style::default().fg(app.theme.fg_dim)))),
         _ => {}
     }
 
@@ -1950,7 +1914,7 @@ fn picker_content_hint(top: &Picker, app: &App) -> (u16, u16) {
         PickerId::ThemePicker => (58, 24),
         PickerId::CommandPalette => (46, 18),
         PickerId::PlaylistSelect => (48, 20),
-        PickerId::SpotifySearch => (60, 22),
+        PickerId::SpotifySearch => (60, 28),
         PickerId::SpotifyLinkToken => (60, 12),
         PickerId::Crossfade => (58, 20),
         PickerId::VisualizerPreset => (48, 14),
@@ -1961,6 +1925,7 @@ fn picker_content_hint(top: &Picker, app: &App) -> (u16, u16) {
 
 fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     app.update_picker_preview();
+    app.update_artist_cover();
     let Some(top) = app.pickers.top() else {
         return;
     };
@@ -2062,7 +2027,7 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             f.render_widget(p, inner);
         }
         PickerId::SpotifySearch => {
-            let block = picker_panel(app, " Spotify Search ", None);
+            let block = picker_panel(app, " \u{f1bc} Search ", None);
             let inner = block.inner(picker_area);
             f.render_widget(block, picker_area);
 
@@ -2102,7 +2067,8 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
                 let sel = app.pickers.top().map_or(0, |o| o.selected);
                 let total = app.spotify_search_results.len();
-                let visible = inner.height.saturating_sub(1) as usize;
+                let preview_h: u16 = if total > 0 { 7 } else { 0 };
+                let visible = inner.height.saturating_sub(1).saturating_sub(preview_h) as usize;
                 let (scroll_start, scroll_end) = if total > 0 {
                     if let Some(top) = app.pickers.top_mut() {
                         let (s, e) = step_viewport(top.viewport_offset, sel, visible, total);
@@ -2113,6 +2079,13 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     }
                 } else {
                     (0, 0)
+                };
+
+                let results_area = Rect {
+                    x: inner.x,
+                    y: inner.y,
+                    width: inner.width,
+                    height: inner.height.saturating_sub(preview_h),
                 };
 
                 let mut lines: Vec<Line> = vec![search_line];
@@ -2147,15 +2120,60 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
                     }
                 }
 
+                let para = Paragraph::new(lines);
+                f.render_widget(para, results_area);
+
+                if preview_h > 0 && total > 0 && !query.is_empty() {
+                    let preview_area = Rect {
+                        x: inner.x,
+                        y: inner.y + inner.height - preview_h,
+                        width: inner.width,
+                        height: preview_h,
+                    };
+                    let rule = Line::from(Span::styled(
+                        "\u{2500}".repeat(preview_area.width as usize),
+                        Style::default().fg(app.theme.muted_border),
+                    ));
+                    f.render_widget(
+                        Paragraph::new(rule),
+                        Rect { x: preview_area.x, y: preview_area.y, width: preview_area.width, height: 1 },
+                    );
+                    let body = Rect {
+                        x: preview_area.x,
+                        y: preview_area.y + 1,
+                        width: preview_area.width,
+                        height: preview_area.height.saturating_sub(1),
+                    };
+                    let (_, _, track) = &app.spotify_search_results[sel.min(total - 1)];
+                    let mut meta_lines = Vec::new();
+                    let mut push = |key: &str, value: &str| {
+                        meta_lines.push(Line::from(vec![
+                            Span::styled(format!("{key:>9} "), Style::default().fg(app.theme.fg_dim)),
+                            Span::styled(value.to_string(), Style::default().fg(app.theme.fg_bright)),
+                        ]));
+                    };
+                    push("Track", &track.name);
+                    push("Artist", &track.artists);
+                    if let Some(ref album) = track.album {
+                        push("Album", album);
+                    }
+                    if let Some(ms) = track.duration_ms {
+                        push("Length", &format_duration_short(ms / 1000));
+                    }
+                    f.render_widget(Paragraph::new(meta_lines), body);
+                }
+
                 let help = Line::from(Span::styled(
-                    " Enter: queue   Ctrl+D: download   Esc: close",
+                    " Enter: play   Ctrl+D: download   Esc: close",
                     Style::default().fg(app.theme.fg_dim),
                 ));
-                lines.push(Line::raw(""));
-                lines.push(help);
-
-                let p = Paragraph::new(lines);
-                f.render_widget(p, inner);
+                let help_area = Rect {
+                    x: inner.x,
+                    y: inner.y + inner.height.saturating_sub(1),
+                    width: inner.width,
+                    height: 1,
+                };
+                f.render_widget(Paragraph::new(help), help_area);
             }
         }
     }
@@ -2188,6 +2206,10 @@ fn picker_panel<'a>(app: &App, title: &'a str, help: Option<&'a str>) -> Block<'
                 .add_modifier(Modifier::BOLD),
         )))
         .border_style(Style::default().fg(app.theme.muted_border))
+        .title_bottom(Line::from(Span::styled(
+            " \u{2699} ",
+            Style::default().fg(app.theme.fg_dim),
+        )))
         .style(Style::default().bg(if app.transparent_bg {
             ratatui::style::Color::Reset
         } else {
@@ -2216,7 +2238,7 @@ fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    let preview_h: u16 = if app.terminal_cols >= 80 { 7 } else { 0 };
+    let preview_h: u16 = 7;
     let list_area = Rect {
         x: inner.x,
         y: inner.y,
@@ -2385,7 +2407,7 @@ fn render_queue_upnext_preview(f: &mut ratatui::Frame, area: Rect, app: &mut App
 }
 
 fn render_yt_search_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let block = picker_panel(app, " YouTube Search ", None);
+    let block = picker_panel(app, " \u{f167} Search ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2446,6 +2468,12 @@ fn render_yt_search_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         lines.push(Line::from(Span::styled(content, style)));
     }
 
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        " Enter: play   Ctrl+D: download   Ctrl+A: queue   Esc: close",
+        Style::default().fg(app.theme.fg_dim),
+    )));
+
     let para = Paragraph::new(lines);
     f.render_widget(para, inner);
 }
@@ -2467,7 +2495,7 @@ fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         Style::default().fg(app.theme.fg),
     ));
 
-    let preview_h: u16 = if app.terminal_cols >= 80 { 7 } else { 0 };
+    let preview_h: u16 = 7;
     let results_area = Rect {
         x: inner.x,
         y: inner.y,
@@ -2512,11 +2540,10 @@ fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
                     format!("{} - ", t.artist)
                 };
                 format!(
-                    "{}\u{266b} {}{} [{}]",
+                    "{}\u{266b} {}{}",
                     prefix,
                     artist,
                     t.title,
-                    format_duration(t.duration as u64)
                 )
             }
             LibraryPick::Artist(name) => format!("{}\u{1f465} {}", prefix, name),
@@ -2573,7 +2600,19 @@ fn render_search_preview(
         width: hchunks[0].width.saturating_sub(1),
         height: hchunks[0].height,
     };
-    if let Some(protocol) = app.picker_preview_stateful.as_mut() {
+    let is_artist = picks.get(sel).is_some_and(|p| matches!(p, LibraryPick::Artist(_)));
+    if is_artist {
+        if let Some(protocol) = app.artist_cover_stateful.as_mut() {
+            let image = StatefulImage::new();
+            f.render_stateful_widget(image, cover_area, protocol);
+        } else {
+            let placeholder = Paragraph::new(Line::from(Span::styled(
+                format!("{:^width$}", "\u{1f465}", width = cover_w as usize),
+                Style::default().fg(app.theme.fg_dim),
+            )));
+            f.render_widget(placeholder, cover_area);
+        }
+    } else if let Some(protocol) = app.picker_preview_stateful.as_mut() {
         let image = StatefulImage::new();
         f.render_stateful_widget(image, cover_area, protocol);
     } else if let Some(bytes) = app.picker_preview_cover.as_deref() {
@@ -2819,28 +2858,43 @@ fn track_info_block_height() -> u16 {
 fn library_stats_line(app: &App) -> String {
     if app.browse_detail.is_some() {
         if app.library_category == 5 {
-            return format!(" {} tracks ", app.spotify_playlist_tracks_cache.len());
+            let n = app.spotify_playlist_tracks_cache.len();
+            return format!(" {} {} ", n, plural(n, "track", "tracks"));
         }
         let f = app.filtered_tracks();
         let total_dur: u64 = f.iter().map(|t| t.duration as u64).sum();
         return format!(
-            " {} tracks | {}h {}m ",
+            " {} {} | {}h {}m ",
             f.len(),
+            plural(f.len(), "track", "tracks"),
             total_dur / 3600,
             (total_dur % 3600) / 60
         );
     }
     match app.library_category {
-        2 => format!(" {} albums ", app.unique_albums().len()),
-        3 => format!(" {} artists ", app.unique_artists().len()),
-        4 => format!(" {} playlists ", app.playlist_cache.len()),
-        5 => format!(" {} playlists ", app.spotify_playlists.len()),
+        2 => {
+            let n = app.unique_albums().len();
+            format!(" {} {} ", n, plural(n, "album", "albums"))
+        }
+        3 => {
+            let n = app.unique_artists().len();
+            format!(" {} {} ", n, plural(n, "artist", "artists"))
+        }
+        4 => {
+            let n = app.playlist_cache.len();
+            format!(" {} {} ", n, plural(n, "playlist", "playlists"))
+        }
+        5 => {
+            let n = app.spotify_playlists.len();
+            format!(" {} {} ", n, plural(n, "playlist", "playlists"))
+        }
         _ => {
             let f = app.filtered_tracks();
             let total_dur: u64 = f.iter().map(|t| t.duration as u64).sum();
             format!(
-                " {} tracks | {}h {}m ",
+                " {} {} | {}h {}m ",
                 f.len(),
+                plural(f.len(), "track", "tracks"),
                 total_dur / 3600,
                 (total_dur % 3600) / 60
             )
@@ -2908,7 +2962,7 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                 "Local"
             };
             let meta = format!(
-                " [{}] | {}",
+                " {} | {}",
                 format_duration(track.duration as u64),
                 source_label(use_nerd, source).trim_start()
             );
@@ -2950,8 +3004,9 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                 artist,
                 album: None,
                 meta: format!(
-                    " [{} tracks] | {}",
-                    count,
+                    " [{} {}] | {}",
+                    *count,
+                    plural(*count, "track", "tracks"),
                     source_label(use_nerd, "Local").trim_start()
                 ),
                 fav: String::new(),
@@ -2967,8 +3022,9 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                 artist: String::new(),
                 album: None,
                 meta: format!(
-                    " [{} tracks] | {}",
-                    count,
+                    " [{} {}] | {}",
+                    *count,
+                    plural(*count, "track", "tracks"),
                     source_label(use_nerd, "Local").trim_start()
                 ),
                 fav: String::new(),
@@ -2979,13 +3035,15 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
             let playlists = &app.playlist_cache;
             let pos = app.list_pos();
             let pl = playlists.get(pos)?;
+            let tc = pl.track_count as usize;
             Some(TrackInfoFields {
                 title: pl.name.clone(),
                 artist: String::new(),
                 album: None,
                 meta: format!(
-                    " [{} tracks] | {}",
-                    pl.track_count,
+                    " [{} {}] | {}",
+                    tc,
+                    plural(tc, "track", "tracks"),
                     source_label(use_nerd, "Local").trim_start()
                 ),
                 fav: String::new(),
@@ -2996,13 +3054,15 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
             let playlists = &app.spotify_playlists;
             let pos = app.list_pos();
             let pl = playlists.get(pos)?;
+            let tc = pl.tracks.len();
             Some(TrackInfoFields {
                 title: pl.name.clone(),
                 artist: pl.owner.clone(),
                 album: None,
                 meta: format!(
-                    " [{} tracks] | {}",
-                    pl.tracks.len(),
+                    " [{} {}] | {}",
+                    tc,
+                    plural(tc, "track", "tracks"),
                     source_label(use_nerd, "Spotify").trim_start()
                 ),
                 fav: String::new(),
@@ -3061,8 +3121,6 @@ fn render_track_info_in_pane(f: &mut ratatui::Frame, sep_area: Rect, area: Rect,
         sep_area,
     );
 
-    let stats_line = library_stats_line(app);
-
     if can_cover {
         let split = Layout::default()
             .direction(Direction::Vertical)
@@ -3108,11 +3166,6 @@ fn render_track_info_in_pane(f: &mut ratatui::Frame, sep_area: Rect, area: Rect,
                 fields.meta.clone(),
                 Style::default().fg(app.theme.fg_dim),
             )),
-            Line::from(""),
-            Line::from(Span::styled(
-                stats_line.trim(),
-                Style::default().fg(app.theme.fg_dim),
-            )),
         ];
         let para = Paragraph::new(lines);
         f.render_widget(para, text_area);
@@ -3138,10 +3191,6 @@ fn render_track_info_in_pane(f: &mut ratatui::Frame, sep_area: Rect, area: Rect,
             Line::from(""),
             Line::from(Span::styled(
                 fields.meta.clone(),
-                Style::default().fg(app.theme.fg_dim),
-            )),
-            Line::from(Span::styled(
-                stats_line.trim(),
                 Style::default().fg(app.theme.fg_dim),
             )),
         ];
@@ -3209,11 +3258,11 @@ fn render_about_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
             Style::default().fg(app.theme.volume_color(app.state.volume)),
         )),
         Line::from(Span::styled(
-            format!("   Queue:    {} tracks", queue_count),
+            format!("   Queue:    {} {}", queue_count, plural(queue_count, "track", "tracks")),
             Style::default().fg(app.theme.fg_bright),
         )),
         Line::from(Span::styled(
-            format!("   Library:  {} tracks", lib_count),
+            format!("   Library:  {} {}", lib_count, plural(lib_count, "track", "tracks")),
             Style::default().fg(app.theme.fg_bright),
         )),
         Line::from(Span::styled(
@@ -3723,10 +3772,23 @@ fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     f.render_widget(list, list_area);
 
     if preview_area.height >= 3 {
-        let rule = Line::from(Span::styled(
-            "\u{2500}".repeat(preview_area.width as usize),
-            Style::default().fg(app.theme.muted_border),
-        ));
+        let selected_name = presets.get(sel).map(|p| p.0).unwrap_or("");
+        let rule = Line::from(vec![
+            Span::styled(
+                "\u{2500}".to_string(),
+                Style::default().fg(app.theme.muted_border),
+            ),
+            Span::styled(
+                format!(" {selected_name} "),
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "\u{2500}".repeat(preview_area.width.saturating_sub(selected_name.len() as u16 + 4).max(1) as usize),
+                Style::default().fg(app.theme.muted_border),
+            ),
+        ]);
         f.render_widget(
             Paragraph::new(rule),
             Rect {
@@ -3737,15 +3799,9 @@ fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             },
         );
 
-        let selected_name = presets.get(sel).map(|p| p.0).unwrap_or("");
         let selected_eq = presets.get(sel).map(|p| p.2);
 
-        let mut preview_spans = vec![Span::styled(
-            format!(" {selected_name} "),
-            Style::default()
-                .fg(app.theme.accent)
-                .add_modifier(Modifier::BOLD),
-        )];
+        let mut preview_spans = Vec::new();
         if let Some(eq) = selected_eq {
             preview_spans.extend(eq_preset_preview(eq, app));
         }
@@ -4209,10 +4265,23 @@ fn render_visualizer_preset_picker(f: &mut ratatui::Frame, area: Rect, app: &mut
     f.render_widget(list, list_area);
 
     if preview_area.height >= 3 {
-        let rule = Line::from(Span::styled(
-            "\u{2500}".repeat(preview_area.width as usize),
-            Style::default().fg(app.theme.muted_border),
-        ));
+        let selected_name = presets.get(sel).map(|p| p.name()).unwrap_or("");
+        let rule = Line::from(vec![
+            Span::styled(
+                "\u{2500}".to_string(),
+                Style::default().fg(app.theme.muted_border),
+            ),
+            Span::styled(
+                format!(" {selected_name} "),
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "\u{2500}".repeat(preview_area.width.saturating_sub(selected_name.len() as u16 + 4).max(1) as usize),
+                Style::default().fg(app.theme.muted_border),
+            ),
+        ]);
         f.render_widget(
             Paragraph::new(rule),
             Rect {
@@ -4320,10 +4389,23 @@ fn render_progress_style_picker(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
     f.render_widget(list, list_area);
 
     if preview_area.height >= 3 {
-        let rule = Line::from(Span::styled(
-            "\u{2500}".repeat(preview_area.width as usize),
-            Style::default().fg(app.theme.muted_border),
-        ));
+        let selected_name = styles.get(sel).map(|s| s.name()).unwrap_or("");
+        let rule = Line::from(vec![
+            Span::styled(
+                "\u{2500}".to_string(),
+                Style::default().fg(app.theme.muted_border),
+            ),
+            Span::styled(
+                format!(" {selected_name} "),
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "\u{2500}".repeat(preview_area.width.saturating_sub(selected_name.len() as u16 + 4).max(1) as usize),
+                Style::default().fg(app.theme.muted_border),
+            ),
+        ]);
         f.render_widget(
             Paragraph::new(rule),
             Rect {
@@ -4385,6 +4467,10 @@ fn format_duration_short(secs: u64) -> String {
 
 const SPINNER_FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
+fn plural(count: usize, singular: &'static str, plural: &'static str) -> &'static str {
+    if count == 1 { singular } else { plural }
+}
+
 pub fn braille_spinner(frame: usize) -> char {
     SPINNER_FRAMES[frame % SPINNER_FRAMES.len()]
 }
@@ -4426,7 +4512,7 @@ fn render_playlist_select_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
 
     for (i, pl) in app.playlist_cache.iter().enumerate() {
         let prefix = if i + 1 == sel { " > " } else { "   " };
-        let content = format!("{}{} ({} tracks)", prefix, pl.name, pl.track_count);
+        let content = format!("{}{} ({} {})", prefix, pl.name, pl.track_count, plural(pl.track_count as usize, "track", "tracks"));
         let style = if i + 1 == sel {
             Style::default()
                 .fg(app.theme.selection_fg_readable())

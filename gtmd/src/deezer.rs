@@ -11,6 +11,7 @@ use serde_json::Value;
 use tracing::warn;
 
 const DEEZER_API: &str = "https://api.deezer.com/search";
+const DEEZER_ARTIST_API: &str = "https://api.deezer.com/artist";
 const RATE_LIMIT_MS: u64 = 200;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -100,6 +101,72 @@ impl DeezerSearch {
                 None
             }
         }
+    }
+
+    /// Fetch an artist portrait image URL from Deezer, then download the bytes.
+    pub async fn artist_image(&self, artist: &str) -> Option<Vec<u8>> {
+        let artist = artist.trim();
+        if artist.is_empty() {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_millis(RATE_LIMIT_MS)).await;
+        let query = format!("artist:\"{artist}\"");
+        let resp = match self
+            .client
+            .get(DEEZER_API)
+            .query(&[("q", query.as_str())])
+            .send()
+            .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Deezer search failed for artist '{artist}': {e}");
+                return None;
+            }
+        };
+        let json: Value = match resp.json().await {
+            Ok(j) => j,
+            Err(e) => {
+                warn!("Deezer JSON parse failed for artist '{artist}': {e}");
+                return None;
+            }
+        };
+        let artist_id = json
+            .get("data")
+            .and_then(|d| d.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|r| r.get("artist"))
+            .and_then(|a| a.get("id"))
+            .and_then(|v| v.as_u64());
+        let artist_id = match artist_id {
+            Some(id) => id,
+            None => return None,
+        };
+        tokio::time::sleep(Duration::from_millis(RATE_LIMIT_MS)).await;
+        let url = format!("{DEEZER_ARTIST_API}/{artist_id}");
+        let resp = match self.client.get(&url).send().await {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("Deezer artist request failed for id {artist_id}: {e}");
+                return None;
+            }
+        };
+        let json: Value = match resp.json().await {
+            Ok(j) => j,
+            Err(e) => {
+                warn!("Deezer artist JSON parse failed for id {artist_id}: {e}");
+                return None;
+            }
+        };
+        let img_url = json
+            .get("picture_big")
+            .or_else(|| json.get("picture_medium"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if img_url.is_empty() {
+            return None;
+        }
+        self.download_cover(img_url).await
     }
 }
 

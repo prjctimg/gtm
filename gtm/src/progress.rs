@@ -7,6 +7,7 @@
 use ratatui::style::Color;
 use ratatui::text::Span;
 use serde::{Deserialize, Serialize};
+use std::cell::Cell;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ProgressStyle {
@@ -56,6 +57,11 @@ impl ProgressStyle {
     }
 }
 
+thread_local! {
+    static PREV_GRADIENT_FILL: Cell<f64> = const { Cell::new(0.0) };
+    static PREV_TRUEGRADIENT_FILL: Cell<f64> = const { Cell::new(0.0) };
+}
+
 /// Interpolate between two RGB colors by factor `t` (0.0..=1.0).
 fn lerp_color(a: Color, b: Color, t: f64) -> Color {
     match (a, b) {
@@ -84,20 +90,25 @@ pub fn render_progress_styled<'a>(
     tertiary: Color,
 ) -> Vec<Span<'a>> {
     let inner_w = width.saturating_sub(2).max(4);
-    let filled = (ratio.clamp(0.0, 1.0) * inner_w as f64).round() as usize;
 
     match style {
         ProgressStyle::TrueGradient => {
+            let cell = PREV_TRUEGRADIENT_FILL.with(|c| c.clone());
+            let target = ratio.clamp(0.0, 1.0);
+            let prev_val = cell.get();
+            let smoothed = prev_val + (target - prev_val) * 0.35;
+            cell.set(smoothed);
+            let eased_filled = (smoothed * inner_w as f64).round() as usize;
+
             let mut spans = Vec::with_capacity(inner_w + 2);
             spans.push(Span::raw(" "));
             for i in 0..inner_w {
-                if i < filled {
-                    let t = if filled > 1 {
-                        i as f64 / (filled - 1) as f64
+                if i < eased_filled.saturating_sub(1) {
+                    let t = if eased_filled > 1 {
+                        i as f64 / (eased_filled - 1) as f64
                     } else {
                         0.0
                     };
-                    // Three-stop gradient: accent -> secondary -> tertiary
                     let color = if t < 0.5 {
                         lerp_color(accent, secondary, t * 2.0)
                     } else {
@@ -105,6 +116,21 @@ pub fn render_progress_styled<'a>(
                     };
                     spans.push(Span::styled(
                         "━",
+                        ratatui::style::Style::default().fg(color),
+                    ));
+                } else if i == eased_filled.saturating_sub(1) && eased_filled > 0 {
+                    let t = if eased_filled > 1 {
+                        (i - 1) as f64 / (eased_filled - 1) as f64
+                    } else {
+                        0.0
+                    };
+                    let color = if t < 0.5 {
+                        lerp_color(accent, secondary, t * 2.0)
+                    } else {
+                        lerp_color(secondary, tertiary, (t - 0.5) * 2.0)
+                    };
+                    spans.push(Span::styled(
+                        "●",
                         ratatui::style::Style::default().fg(color),
                     ));
                 } else {
@@ -191,10 +217,19 @@ pub fn render_progress(ratio: f64, width: usize, style: ProgressStyle) -> String
             line.push(' ');
         }
         ProgressStyle::Gradient | ProgressStyle::TrueGradient => {
+            let cell = match style {
+                ProgressStyle::TrueGradient => PREV_TRUEGRADIENT_FILL.with(|c| c.clone()),
+                _ => PREV_GRADIENT_FILL.with(|c| c.clone()),
+            };
+            let target = ratio.clamp(0.0, 1.0);
+            let prev_val = cell.get();
+            let smoothed = prev_val + (target - prev_val) * 0.35;
+            cell.set(smoothed);
+            let eased_filled = (smoothed * inner_w as f64).round() as usize;
             line.push(' ');
             for i in 0..inner_w {
-                if i < filled {
-                    let dist = (filled - i) as f64 / filled.max(1) as f64;
+                if i < eased_filled.saturating_sub(1) {
+                    let dist = (eased_filled - i) as f64 / eased_filled.max(1) as f64;
                     if dist > 0.66 {
                         line.push('━');
                     } else if dist > 0.33 {
@@ -202,6 +237,8 @@ pub fn render_progress(ratio: f64, width: usize, style: ProgressStyle) -> String
                     } else {
                         line.push('─');
                     }
+                } else if i == eased_filled.saturating_sub(1) && eased_filled > 0 {
+                    line.push('●');
                 } else {
                     line.push('─');
                 }
