@@ -375,11 +375,12 @@ impl Daemon {
                 _ = poll_interval.tick() => {
                     let result = { self.inner.mixer.lock().await.poll() };
                     Self::handle_audio_event(&self.inner, result).await;
-                    let level = self.inner.mixer.lock().await.current_peak_level();
+                    let spectrum = self.inner.mixer.lock().await.current_spectrum();
                     let mut state = self.inner.state.write().await;
-                    state.audio_levels.push(level);
-                    if state.audio_levels.len() > 32 {
-                        state.audio_levels.remove(0);
+                    if spectrum.is_empty() {
+                        state.audio_levels.clear();
+                    } else {
+                        state.audio_levels = spectrum;
                     }
                 }
                 _ = save_interval.tick() => {

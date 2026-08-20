@@ -1734,6 +1734,7 @@ dependencies = [
  "gtm-audio",
  "gtm-core",
  "image",
+ "libc",
  "ratatui",
  "ratatui-image",
  "serde",

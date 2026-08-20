@@ -169,7 +169,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Numbered tab switching: 1 = Library, 2 = Settings
+            // Numbered tab switching: 1 = Library
             (
                 KeyCode::Char('1').into(),
                 BoundCommand {
@@ -177,10 +177,11 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
+            // Ctrl+,: open settings picker
             (
-                KeyCode::Char('2').into(),
+                KeyEvent::new(KeyCode::Char(','), KeyModifiers::CONTROL),
                 BoundCommand {
-                    action: KeyboardAction::SwitchTab(Tab::Settings),
+                    action: KeyboardAction::OpenOverlay(PickerId::Settings),
                     contexts: vec![KeyContext::Normal],
                 },
             ),
@@ -275,13 +276,6 @@ pub fn default_keybindings() -> Keybindings {
             ),
             (
                 KeyCode::Char('p').into(),
-                BoundCommand {
-                    action: KeyboardAction::Prev,
-                    contexts: vec![KeyContext::Global, KeyContext::Normal],
-                },
-            ),
-            (
-                KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
                 BoundCommand {
                     action: KeyboardAction::Prev,
                     contexts: vec![KeyContext::Global, KeyContext::Normal],
@@ -637,8 +631,11 @@ mod tests {
             Some(KeyboardAction::SwitchTab(Tab::Library))
         ));
         assert!(matches!(
-            dispatch(KeyCode::Char('2').into(), KeyContext::Normal),
-            Some(KeyboardAction::SwitchTab(Tab::Settings))
+            dispatch(
+                KeyEvent::new(KeyCode::Char(','), KeyModifiers::CONTROL),
+                KeyContext::Normal
+            ),
+            Some(KeyboardAction::OpenOverlay(PickerId::Settings))
         ));
     }
 

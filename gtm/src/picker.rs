@@ -23,6 +23,7 @@ pub enum PickerId {
     Crossfade,
     VisualizerPreset,
     ProgressStyle,
+    Settings,
 }
 
 /// Which list a fuzzy-finder picker searches. `Tab` cycles through these.

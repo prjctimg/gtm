@@ -204,7 +204,7 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
     render_footer(f, chunks[2], app);
 
     if app.pickers.is_open() {
-        render_picker(f, area, app);
+        Pickers::render_picker(f, area, app);
     }
 
     render_notification_overlay(f, area, app);
@@ -217,8 +217,8 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
 }
 
 fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let tabs: [(u16, Tab, &str); 2] =
-        [(1, Tab::Library, "Library"), (2, Tab::Settings, "Settings")];
+    let tabs: [(u16, Tab, &str); 1] =
+        [(1, Tab::Library, "Library")];
     let mut spans: Vec<Span> = Vec::new();
     for (num, tab, label) in tabs {
         let active = app.current_tab == tab;
@@ -621,7 +621,7 @@ fn render_content(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     }
     match app.current_tab {
         Tab::Library => render_library(f, area, app),
-        Tab::Settings => render_settings(f, area, app),
+        Tab::Settings => render_library(f, area, app),
     }
 }
 
@@ -1590,307 +1590,12 @@ const SETTINGS_ICONS_NERD: &[&str] = &["\u{f028}", "\u{f16a}", "\u{f04b}", "\u{f
 const SETTINGS_ICONS_ASCII: &[&str] = &["♪", "YT", "▶", "⚙", "★"];
 const SETTINGS_CATEGORIES: &[&str] = &["Audio", "YouTube", "Playback", "System", "Spotify"];
 
-fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Min(0)])
-        .split(area);
-    let panes = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(22), Constraint::Min(0)])
-        .split(chunks[1]);
-
-    let settings_icons = if use_nerd_fonts() {
-        SETTINGS_ICONS_NERD
-    } else {
-        SETTINGS_ICONS_ASCII
-    };
-    let settings_focus = app.settings_pane_focus;
-    let left_items: Vec<ListItem> = SETTINGS_CATEGORIES
-        .iter()
-        .enumerate()
-        .map(|(i, cat)| {
-            let icon = settings_icons.get(i).unwrap_or(&" ");
-            let is_active = i == app.settings_category;
-            let style = if is_active && settings_focus {
-                Style::default()
-                    .fg(app.theme.selection_fg_readable())
-                    .bg(app.theme.selection_bg)
-            } else if is_active {
-                Style::default().fg(app.theme.accent)
-            } else {
-                Style::default().fg(app.theme.fg)
-            };
-            ListItem::new(format!(" {} {}", icon, cat)).style(style)
-        })
-        .collect();
-
-    let left_inner = render_pane_header(f, panes[0], app, " ", settings_focus, false, false);
-    fill_pane(f, left_inner, app);
-    f.render_widget(List::new(left_items), left_inner);
-
-    if app.settings_category < SETTINGS_CATEGORIES.len() {
-        let indicator_y = left_inner.y + app.settings_category as u16;
-        if indicator_y < left_inner.y + left_inner.height {
-            let indicator_area = Rect {
-                x: left_inner.x + 1,
-                y: indicator_y,
-                width: 1,
-                height: 1,
-            };
-            let indicator =
-                Paragraph::new("▎").style(Style::default().fg(app.theme.sidebar_active_border));
-            f.render_widget(indicator, indicator_area);
-        }
-    }
-
-    let items: Vec<String> = match app.settings_category {
-        0 => vec![
-            format!("Master Volume   [ {:>3}%  ]", app.state.master_volume),
-            format!(
-                "Mute            [ {} ]",
-                if app.state.mute {
-                    "●   On "
-                } else {
-                    "○   Off"
-                }
-            ),
-        ],
-        1 => vec![
-            format!("Cookie Source   [ chromium ]"),
-            format!(
-                "Cookie File     [ {} ]",
-                app.cookie_file.as_deref().unwrap_or("(none)")
-            ),
-            format!("JS Runtime      [ deno ]"),
-            "Auto Download   [ read-only ]".to_string(),
-        ],
-        2 => {
-            let crossfade_on = app
-                .state
-                .crossfade
-                .as_ref()
-                .map(|c| c.enabled)
-                .unwrap_or(false);
-            let crossfade_dur = app
-                .state
-                .crossfade
-                .as_ref()
-                .map(|c| c.duration_secs)
-                .unwrap_or(0);
-            let easing = app
-                .state
-                .crossfade
-                .as_ref()
-                .map(|c| c.easing.name())
-                .unwrap_or("N/A");
-            let reverb_on = app.state.reverb.enabled;
-            vec![
-                format!("Repeat          [ {:?}       ▶ ]", app.state.repeat),
-                format!(
-                    "Shuffle         [ {} ]",
-                    if app.state.shuffle {
-                        "●   On "
-                    } else {
-                        "○   Off"
-                    }
-                ),
-                if crossfade_on {
-                    format!("Crossfade       [ ● ]  On  {}s", crossfade_dur)
-                } else {
-                    "Crossfade       [ ○ ]  Off".to_string()
-                },
-                format!("Easing          [ {}   ▶ ]", easing),
-                format!(
-                    "EQ Enabled      [ {} ]",
-                    if app.state.eq_enabled {
-                        "●   On "
-                    } else {
-                        "○   Off"
-                    }
-                ),
-                format!(
-                    "Reverb          [ {} ]",
-                    if reverb_on { "●   On " } else { "○   Off" }
-                ),
-            ]
-        }
-        3 => {
-            let preset_name = app
-                .footer_presets
-                .get(app.footer_preset)
-                .map(|p| p.name.as_ref())
-                .unwrap_or("Default");
-            let theme_name = app
-                .themes
-                .get(app.theme_index)
-                .map(|t| t.name.as_ref())
-                .unwrap_or("Chadrula");
-            vec![
-                format!("Theme           [ {:>8} ▶ ]", theme_name),
-                format!(
-                    "Transparent BG  [ {} ]",
-                    if app.transparent_bg { "●" } else { "○" }
-                ),
-                "Sync Covers     [ Enter  ▶ ]".to_string(),
-                "Sync Lyrics     [ Enter  ▶ ]".to_string(),
-                "Sync Metadata   [ Enter  ▶ ]".to_string(),
-                format!("Footer Preset   [ {:>8} ▶ ]", preset_name),
-                format!("Visualizer      [ {:>8} ▶ ]", app.visualizer.preset.name()),
-            ]
-        }
-        4 => {
-            let st = app.spotify_status.clone().unwrap_or_default();
-            let connected = if st.linked {
-                "Connected"
-            } else {
-                "Disconnected"
-            };
-            let user = st.user.as_deref().unwrap_or("(none)");
-            let status_label = if !st.linked {
-                connected.to_string()
-            } else if let Some(err) = st.error.as_deref() {
-                let mut e = err.chars().take(14).collect::<String>();
-                if err.chars().count() > 14 {
-                    e.push('…');
-                }
-                format!("{connected}: {e}")
-            } else if st.premium {
-                if st.playing {
-                    "Playing ▶".to_string()
-                } else {
-                    "Paused  ❚❚".to_string()
-                }
-            } else {
-                "Unavailable (needs Premium)".to_string()
-            };
-            let device_label = st
-                .device
-                .clone()
-                .filter(|d| !d.is_empty())
-                .unwrap_or_else(|| "(none)".to_string());
-            let soloist = app.soloist_status.clone().unwrap_or_default();
-            let soloist_state = if soloist.running {
-                if soloist.connected {
-                    if soloist.logged_in {
-                        "Running ✓"
-                    } else {
-                        "Auth needed"
-                    }
-                } else {
-                    "Starting…"
-                }
-            } else {
-                "Stopped"
-            };
-            let auto_start = app.state.soloist_auto_start;
-            vec![
-                if st.linked && st.premium {
-                    format!("Status          [ {status_label}  Enter ]")
-                } else {
-                    format!("Status          [ {status_label} ]")
-                },
-                format!("Account         [ {user:<10} ]"),
-                format!("Playlists       [ {:>3} ]", st.playlists),
-                format!("Link Account    [ Enter ]"),
-                format!("Sync Now        [ Enter ]"),
-                format!("Unlink          [ Enter ]"),
-                format!("Soloist         [ {soloist_state} ]"),
-                format!("Link Soloist    [ Enter ]"),
-                format!("Start Soloist   [ Enter ]"),
-                format!("Stop Soloist    [ Enter ]"),
-                format!("Activate Device [ Enter ]"),
-                format!("Device          [ {device_label:<14} ]"),
-                format!(
-                    "Auto-Start      [ {} ]",
-                    if auto_start { "●" } else { "○" }
-                ),
-            ]
-        }
-        _ => vec![],
-    };
-
-    let category_label = SETTINGS_CATEGORIES
-        .get(app.settings_category)
-        .unwrap_or(&"");
-    let right_inner = render_pane_header(
-        f,
-        panes[1],
-        app,
-        category_label,
-        !settings_focus,
-        false,
-        true,
-    );
-    fill_pane(f, right_inner, app);
-
-    let mut lines = Vec::new();
-    let sel = app.settings_option;
-    for (i, item) in items.iter().enumerate() {
-        let is_sel = i == sel && !settings_focus;
-        let style = if is_sel {
-            Style::default()
-                .fg(app.theme.selection_fg_readable())
-                .bg(app.theme.selection_bg)
-        } else {
-            Style::default().fg(app.theme.fg)
-        };
-        lines.push(Line::from(Span::styled(item, style)));
-    }
-    lines.push(Line::from(""));
-    match (app.settings_category, sel) {
-        (0, 0) => lines.push(Line::from(Span::styled(" Master Volume: Press Enter to cycle (caps maximum loudness).", Style::default().fg(app.theme.fg_dim)))),
-        (0, 1) => lines.push(Line::from(Span::styled(" Mute: Press Enter to toggle mute on/off.", Style::default().fg(app.theme.fg_dim)))),
-        (1, 0) => lines.push(Line::from(Span::styled(" Cookie Source: Read-only. Configured via the config file.", Style::default().fg(app.theme.fg_dim)))),
-        (1, 1) => lines.push(Line::from(Span::styled(" Cookie File: Press Enter to toggle the YouTube cookie path (~/.cookies/youtube.txt).", Style::default().fg(app.theme.fg_dim)))),
-        (1, 2) => lines.push(Line::from(Span::styled(" JS Runtime: Read-only. Configured via the config file.", Style::default().fg(app.theme.fg_dim)))),
-        (1, 3) => lines.push(Line::from(Span::styled(" Auto Download: Read-only. Download behaviour is configured via the config file.", Style::default().fg(app.theme.fg_dim)))),
-        (2, 0) => lines.push(Line::from(Span::styled(format!(" Repeat: Press Enter to cycle (current: {:?}).", app.state.repeat), Style::default().fg(app.theme.fg_dim)))),
-        (2, 1) => lines.push(Line::from(Span::styled(" Shuffle: Press Enter to toggle shuffle on/off.", Style::default().fg(app.theme.fg_dim)))),
-        (2, 2) => {
-            let cf_on = app.state.crossfade.as_ref().map(|c| c.enabled).unwrap_or(false);
-            lines.push(Line::from(Span::styled(if cf_on { " Crossfade: On. Press Enter to open the crossfade picker (duration + easing)." } else { " Crossfade: Off. Press Enter to open the crossfade picker (duration + easing)." }, Style::default().fg(app.theme.fg_dim))));
-        }
-        (2, 3) => {
-            lines.push(Line::from(Span::styled(" Easing: Press Enter to open the crossfade picker and choose the volume curve.", Style::default().fg(app.theme.fg_dim))));
-        }
-        (2, 4) => {
-            let eq_on = app.state.eq_enabled;
-            lines.push(Line::from(Span::styled(if eq_on { " EQ: On. Press Enter to disable the equalizer." } else { " EQ: Off. Press Enter to enable the equalizer." }, Style::default().fg(app.theme.fg_dim))));
-        }
-        (2, 5) => {
-            let rev_on = app.state.reverb.enabled;
-            lines.push(Line::from(Span::styled(if rev_on { " Reverb: On. Press Enter to disable the reverb effect." } else { " Reverb: Off. Press Enter to enable the reverb effect." }, Style::default().fg(app.theme.fg_dim))));
-        }
-        (3, 0) => lines.push(Line::from(Span::styled(" Theme: Press Enter to open the Theme Picker (Alt+C). Drop custom themes in ~/.config/gtm/themes/*.toml.", Style::default().fg(app.theme.fg_dim)))),
-        (3, 1) => lines.push(Line::from(Span::styled(" Transparent BG: Press Enter to toggle. When on, picker backgrounds become transparent.", Style::default().fg(app.theme.fg_dim)))),
-        (3, 2) => lines.push(Line::from(Span::styled(" Sync Covers: Download missing cover art from Deezer for all library tracks.", Style::default().fg(app.theme.fg_dim)))),
-        (3, 3) => lines.push(Line::from(Span::styled(" Sync Lyrics: Fetch and save lyrics files alongside all library tracks.", Style::default().fg(app.theme.fg_dim)))),
-        (3, 4) => lines.push(Line::from(Span::styled(" Sync Metadata: Resolve unreliable track metadata via Deezer and embed clean tags (title, artist, album, genre, year, track, cover) into the files.", Style::default().fg(app.theme.fg_dim)))),
-        (3, 5) => lines.push(Line::from(Span::styled(" Footer Preset: Press Enter to cycle. Also available via the Command Palette. Add or override presets in ~/.config/gtm/footer.toml.", Style::default().fg(app.theme.fg_dim)))),
-        (3, 6) => lines.push(Line::from(Span::styled(" Visualizer Preset: Press Enter to cycle (Braille, Blocks, Mirror, Gradient, Spectrum). Also toggled via Alt+V.", Style::default().fg(app.theme.fg_dim)))),
-        (4, 0) => lines.push(Line::from(Span::styled(" Spotify: Integration status for the linked account.", Style::default().fg(app.theme.fg_dim)))),
-        (4, 1) => lines.push(Line::from(Span::styled(" Account: Display name of the linked Spotify user.", Style::default().fg(app.theme.fg_dim)))),
-        (4, 2) => lines.push(Line::from(Span::styled(" Playlists: Number of playlists synced by the daemon.", Style::default().fg(app.theme.fg_dim)))),
-        (4, 3) => lines.push(Line::from(Span::styled(" Link Account: Press Enter to paste a Spotify access token (OAuth). Token is stored at ~/.config/gtm/spotify.json.", Style::default().fg(app.theme.fg_dim)))),
-        (4, 4) => lines.push(Line::from(Span::styled(" Sync Now: Re-fetch playlists from the Spotify Web API.", Style::default().fg(app.theme.fg_dim)))),
-        (4, 5) => lines.push(Line::from(Span::styled(" Unlink: Remove the token and disconnect the account.", Style::default().fg(app.theme.fg_dim)))),
-        (4, 6) => lines.push(Line::from(Span::styled(" Soloist: Status of the local soloist daemon (running/connected/auth).", Style::default().fg(app.theme.fg_dim)))),
-        (4, 7) => lines.push(Line::from(Span::styled(" Link Soloist: Press Enter to paste a Soloist API key (from Spotify developer dashboard). Key stored at ~/.config/gtm/soloist.key.", Style::default().fg(app.theme.fg_dim)))),
-        (4, 8) => lines.push(Line::from(Span::styled(" Start Soloist: Launch the soloist daemon with the saved key.", Style::default().fg(app.theme.fg_dim)))),
-        (4, 9) => lines.push(Line::from(Span::styled(" Stop Soloist: Terminate the soloist daemon (key is retained).", Style::default().fg(app.theme.fg_dim)))),
-        (4, 10) => lines.push(Line::from(Span::styled(" Activate Device: Ask Soloist to become the active Spotify Connect device.", Style::default().fg(app.theme.fg_dim)))),
-        (4, 11) => lines.push(Line::from(Span::styled(" Device: Currently active Spotify Connect device label.", Style::default().fg(app.theme.fg_dim)))),
-        (4, 12) => lines.push(Line::from(Span::styled(" Auto-Start: Press Enter to toggle auto-starting Soloist on launch.", Style::default().fg(app.theme.fg_dim)))),
-        _ => {}
-    }
-
-    let right_para = Paragraph::new(lines);
-    f.render_widget(right_para, right_inner);
-}
-
 // ─── Overlay Rendering ───
 
+pub(crate) struct Pickers;
+
+
+impl Pickers {
 fn picker_content_hint(top: &Picker, app: &App) -> (u16, u16) {
     match top.id {
         PickerId::Queue => {
@@ -1935,6 +1640,7 @@ fn picker_content_hint(top: &Picker, app: &App) -> (u16, u16) {
         PickerId::Crossfade => (58, 20),
         PickerId::VisualizerPreset => (48, 14),
         PickerId::ProgressStyle => (48, 18),
+        PickerId::Settings => (64, 28),
         _ => (56, 22),
     }
 }
@@ -1954,7 +1660,7 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let square_min = 40
             .min(area.width.saturating_sub(2))
             .min(area.height.saturating_sub(2));
-        let (content_w, content_h) = picker_content_hint(top, app);
+        let (content_w, content_h) = Self::picker_content_hint(top, app);
         let picker_width = content_w.max(square_min).min(area.width.saturating_sub(2));
         let scrolling = matches!(
             top.id,
@@ -1986,22 +1692,23 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     f.render_widget(Clear, picker_area);
 
     match top_id {
-        PickerId::Queue => render_queue_picker(f, picker_area, app),
-        PickerId::YTSearch => render_yt_search_picker(f, picker_area, app),
-        PickerId::SearchLibrary => render_search_library_picker(f, picker_area, app),
-        PickerId::About => render_about_picker(f, picker_area, app),
-        PickerId::SleepTimer => render_sleep_timer_picker(f, picker_area, app),
-        PickerId::CommandPalette => render_command_palette_picker(f, picker_area, app),
-        PickerId::Equalizer => render_equalizer_picker(f, picker_area, app),
-        PickerId::ThemePicker => render_theme_picker_picker(f, picker_area, app),
-        PickerId::Help => render_help_picker(f, picker_area, app),
-        PickerId::PlaylistSelect => render_playlist_select_picker(f, picker_area, app),
-        PickerId::EditMetadata => render_edit_metadata_picker(f, picker_area, app),
-        PickerId::Crossfade => render_crossfade_picker(f, picker_area, app),
-        PickerId::VisualizerPreset => render_visualizer_preset_picker(f, picker_area, app),
-        PickerId::ProgressStyle => render_progress_style_picker(f, picker_area, app),
+        PickerId::Queue => Self::render_queue_picker(f, picker_area, app),
+        PickerId::YTSearch => Self::render_yt_search_picker(f, picker_area, app),
+        PickerId::SearchLibrary => Self::render_search_library_picker(f, picker_area, app),
+        PickerId::About => Self::render_about_picker(f, picker_area, app),
+        PickerId::SleepTimer => Self::render_sleep_timer_picker(f, picker_area, app),
+        PickerId::CommandPalette => Self::render_command_palette_picker(f, picker_area, app),
+        PickerId::Equalizer => Self::render_equalizer_picker(f, picker_area, app),
+        PickerId::ThemePicker => Self::render_theme_picker_picker(f, picker_area, app),
+        PickerId::Help => Self::render_help_picker(f, picker_area, app),
+        PickerId::PlaylistSelect => Self::render_playlist_select_picker(f, picker_area, app),
+        PickerId::EditMetadata => Self::render_edit_metadata_picker(f, picker_area, app),
+        PickerId::Crossfade => Self::render_crossfade_picker(f, picker_area, app),
+        PickerId::VisualizerPreset => Self::render_visualizer_preset_picker(f, picker_area, app),
+        PickerId::ProgressStyle => Self::render_progress_style_picker(f, picker_area, app),
+        PickerId::Settings => Self::render_settings_picker(f, picker_area, app),
         PickerId::SpotifyLinkToken => {
-            let block = picker_panel(app, " Spotify Link Token ", None);
+            let block = Self::picker_panel(app, " Spotify Link Token ", None);
             let inner = block.inner(picker_area);
             f.render_widget(block, picker_area);
 
@@ -2043,7 +1750,7 @@ fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             f.render_widget(p, inner);
         }
         PickerId::SpotifySearch => {
-            let block = picker_panel(app, " \u{f1bc} Search ", None);
+            let block = Self::picker_panel(app, " \u{f1bc} Search ", None);
             let inner = block.inner(picker_area);
             f.render_widget(block, picker_area);
 
@@ -2243,7 +1950,7 @@ fn picker_panel<'a>(app: &App, title: &'a str, help: Option<&'a str>) -> Block<'
 fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let sel = app.pickers.top().map_or(0, |o| o.selected);
 
-    let block = picker_panel(app, " Queue ", None);
+    let block = Self::picker_panel(app, " Queue ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2320,7 +2027,7 @@ fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             width: inner.width,
             height: preview_h,
         };
-        render_queue_upnext_preview(f, preview_area, app, app.queue_cursor + 1);
+        Self::render_queue_upnext_preview(f, preview_area, app, app.queue_cursor + 1);
     }
 }
 
@@ -2423,7 +2130,7 @@ fn render_queue_upnext_preview(f: &mut ratatui::Frame, area: Rect, app: &mut App
 }
 
 fn render_yt_search_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let block = picker_panel(app, " \u{f167} Search ", None);
+    let block = Self::picker_panel(app, " \u{f167} Search ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2497,7 +2204,7 @@ fn render_yt_search_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let source = app.pickers.top().map_or(PickerSource::All, |o| o.source);
     let title = format!(" Search: {} ", source.label());
-    let block = picker_panel(app, &title, None);
+    let block = Self::picker_panel(app, &title, None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -2581,7 +2288,7 @@ fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
             width: inner.width,
             height: preview_h,
         };
-        render_search_preview(f, preview_area, app, &picks, sel);
+        Self::render_search_preview(f, preview_area, app, &picks, sel);
     }
 }
 
@@ -2707,6 +2414,279 @@ fn render_search_preview(
         }
     }
     f.render_widget(Paragraph::new(meta_lines), meta_area);
+}
+
+fn render_settings_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    let block = Self::picker_panel(app, " Settings ", Some("Tab: switch pane   Enter: act   ←/→: cycle values"));
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+
+    let panes = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Length(18), Constraint::Min(0)])
+        .split(inner);
+
+    let settings_icons = if use_nerd_fonts() {
+        SETTINGS_ICONS_NERD
+    } else {
+        SETTINGS_ICONS_ASCII
+    };
+    let settings_focus = app.settings_pane_focus;
+
+    let left_items: Vec<ListItem> = SETTINGS_CATEGORIES
+        .iter()
+        .enumerate()
+        .map(|(i, cat)| {
+            let icon = settings_icons.get(i).unwrap_or(&" ");
+            let is_active = i == app.settings_category;
+            let style = if is_active && settings_focus {
+                Style::default()
+                    .fg(app.theme.selection_fg_readable())
+                    .bg(app.theme.selection_bg)
+            } else if is_active {
+                Style::default().fg(app.theme.accent)
+            } else {
+                Style::default().fg(app.theme.fg)
+            };
+            ListItem::new(format!(" {} {}", icon, cat)).style(style)
+        })
+        .collect();
+    f.render_widget(List::new(left_items), panes[0]);
+
+    if app.settings_category < SETTINGS_CATEGORIES.len() {
+        let indicator_y = panes[0].y + app.settings_category as u16;
+        if indicator_y < panes[0].y + panes[0].height {
+            let indicator_area = Rect {
+                x: panes[0].x + 1,
+                y: indicator_y,
+                width: 1,
+                height: 1,
+            };
+            let indicator =
+                Paragraph::new("▎").style(Style::default().fg(app.theme.sidebar_active_border));
+            f.render_widget(indicator, indicator_area);
+        }
+    }
+
+    let items: Vec<String> = match app.settings_category {
+        0 => vec![
+            format!("Master Volume  {:>3}%", app.state.master_volume),
+            format!(
+                "Mute           {}",
+                if app.state.mute { "On" } else { "Off" }
+            ),
+        ],
+        1 => vec![
+            "Cookie Source  chromium".to_string(),
+            format!(
+                "Cookie File    {}",
+                app.cookie_file.as_deref().unwrap_or("(none)")
+            ),
+            "JS Runtime     deno".to_string(),
+            "Auto Download  read-only".to_string(),
+        ],
+        2 => {
+            let crossfade_on = app
+                .state
+                .crossfade
+                .as_ref()
+                .map(|c| c.enabled)
+                .unwrap_or(false);
+            let crossfade_dur = app
+                .state
+                .crossfade
+                .as_ref()
+                .map(|c| c.duration_secs)
+                .unwrap_or(0);
+            let easing = app
+                .state
+                .crossfade
+                .as_ref()
+                .map(|c| c.easing.name())
+                .unwrap_or("N/A");
+            let reverb_on = app.state.reverb.enabled;
+            vec![
+                format!("Repeat         {:?}  ▶", app.state.repeat),
+                format!(
+                    "Shuffle        {}",
+                    if app.state.shuffle { "On" } else { "Off" }
+                ),
+                if crossfade_on {
+                    format!("Crossfade      On  {}s  ▶", crossfade_dur)
+                } else {
+                    "Crossfade      Off  ▶".to_string()
+                },
+                format!("Easing         {}   ▶", easing),
+                format!(
+                    "EQ Enabled     {}",
+                    if app.state.eq_enabled { "On" } else { "Off" }
+                ),
+                format!(
+                    "Reverb         {}",
+                    if reverb_on { "On" } else { "Off" }
+                ),
+            ]
+        }
+        3 => {
+            let preset_name = app
+                .footer_presets
+                .get(app.footer_preset)
+                .map(|p| p.name.as_ref())
+                .unwrap_or("Default");
+            let theme_name = app
+                .themes
+                .get(app.theme_index)
+                .map(|t| t.name.as_ref())
+                .unwrap_or("Chadrula");
+            vec![
+                format!("Theme          {}  ▶", theme_name),
+                format!(
+                    "Transparent BG {}",
+                    if app.transparent_bg { "On" } else { "Off" }
+                ),
+                "Sync Covers    Enter  ▶".to_string(),
+                "Sync Lyrics    Enter  ▶".to_string(),
+                "Sync Metadata  Enter  ▶".to_string(),
+                format!("Footer Preset  {}  ▶", preset_name),
+                format!("Visualizer     {}  ▶", app.visualizer.preset.name()),
+            ]
+        }
+        4 => {
+            let st = app.spotify_status.clone().unwrap_or_default();
+            let connected = if st.linked {
+                "Connected"
+            } else {
+                "Disconnected"
+            };
+            let user = st.user.as_deref().unwrap_or("(none)");
+            let status_label = if !st.linked {
+                connected.to_string()
+            } else if let Some(err) = st.error.as_deref() {
+                let mut e = err.chars().take(14).collect::<String>();
+                if err.chars().count() > 14 {
+                    e.push('…');
+                }
+                format!("{connected}: {e}")
+            } else if st.premium {
+                if st.playing {
+                    "Playing ▶".to_string()
+                } else {
+                    "Paused  ❚❚".to_string()
+                }
+            } else {
+                "Unavailable (Premium)".to_string()
+            };
+            let device_label = st
+                .device
+                .clone()
+                .filter(|d| !d.is_empty())
+                .unwrap_or_else(|| "(none)".to_string());
+            let soloist = app.soloist_status.clone().unwrap_or_default();
+            let soloist_state = if soloist.running {
+                if soloist.connected {
+                    if soloist.logged_in {
+                        "Running ✓"
+                    } else {
+                        "Auth needed"
+                    }
+                } else {
+                    "Starting…"
+                }
+            } else {
+                "Stopped"
+            };
+            let auto_start = app.state.soloist_auto_start;
+            vec![
+                format!("Status         {status_label}"),
+                format!("Account        {user:<10}"),
+                format!("Playlists      {:>3}", st.playlists),
+                "Link Account   Enter".to_string(),
+                "Sync Now       Enter".to_string(),
+                "Unlink         Enter".to_string(),
+                format!("Soloist        {soloist_state}"),
+                "Link Soloist   Enter".to_string(),
+                "Start Soloist  Enter".to_string(),
+                "Stop Soloist   Enter".to_string(),
+                "Activate Dev   Enter".to_string(),
+                format!("Device         {device_label}"),
+                format!(
+                    "Auto-Start     {}",
+                    if auto_start { "On" } else { "Off" }
+                ),
+            ]
+        }
+        _ => vec![],
+    };
+
+    let category_label = SETTINGS_CATEGORIES
+        .get(app.settings_category)
+        .unwrap_or(&"");
+    let right_title = format!(" {category_label} ");
+    let right_block = Block::default()
+        .borders(Borders::TOP | Borders::RIGHT | Borders::BOTTOM)
+        .border_style(Style::default().fg(if settings_focus {
+            app.theme.accent
+        } else {
+            app.theme.fg_dim
+        }))
+        .title(Span::styled(
+            right_title,
+            Style::default().fg(app.theme.fg_bright),
+        ));
+    let right_inner = right_block.inner(panes[1]);
+    f.render_widget(right_block, panes[1]);
+
+    let mut lines = Vec::new();
+    let sel = app.settings_option;
+    for (i, item) in items.iter().enumerate() {
+        let is_sel = i == sel && !settings_focus;
+        let style = if is_sel {
+            Style::default()
+                .fg(app.theme.selection_fg_readable())
+                .bg(app.theme.selection_bg)
+        } else {
+            Style::default().fg(app.theme.fg)
+        };
+        lines.push(Line::from(Span::styled(item, style)));
+    }
+    lines.push(Line::from(""));
+    match (app.settings_category, sel) {
+        (0, 0) => lines.push(Line::from(Span::styled(" Press Enter to cycle volume.", Style::default().fg(app.theme.fg_dim)))),
+        (0, 1) => lines.push(Line::from(Span::styled(" Press Enter to toggle mute.", Style::default().fg(app.theme.fg_dim)))),
+        (1, 1) => lines.push(Line::from(Span::styled(" Press Enter to toggle cookie path.", Style::default().fg(app.theme.fg_dim)))),
+        (2, 0) => lines.push(Line::from(Span::styled(format!(" Press Enter to cycle (current: {:?}).", app.state.repeat), Style::default().fg(app.theme.fg_dim)))),
+        (2, 1) => lines.push(Line::from(Span::styled(" Press Enter to toggle shuffle.", Style::default().fg(app.theme.fg_dim)))),
+        (2, 2) | (2, 3) => lines.push(Line::from(Span::styled(" Press Enter to open crossfade picker.", Style::default().fg(app.theme.fg_dim)))),
+        (2, 4) => {
+            let eq_on = app.state.eq_enabled;
+            lines.push(Line::from(Span::styled(if eq_on { " Press Enter to disable EQ." } else { " Press Enter to enable EQ." }, Style::default().fg(app.theme.fg_dim))));
+        }
+        (2, 5) => {
+            let rev_on = app.state.reverb.enabled;
+            lines.push(Line::from(Span::styled(if rev_on { " Press Enter to disable reverb." } else { " Press Enter to enable reverb." }, Style::default().fg(app.theme.fg_dim))));
+        }
+        (3, 0) => lines.push(Line::from(Span::styled(" Press Enter to open Theme Picker.", Style::default().fg(app.theme.fg_dim)))),
+        (3, 1) => lines.push(Line::from(Span::styled(" Press Enter to toggle transparent background.", Style::default().fg(app.theme.fg_dim)))),
+        (3, 2) => lines.push(Line::from(Span::styled(" Download missing cover art from Deezer.", Style::default().fg(app.theme.fg_dim)))),
+        (3, 3) => lines.push(Line::from(Span::styled(" Fetch and save lyrics for all tracks.", Style::default().fg(app.theme.fg_dim)))),
+        (3, 4) => lines.push(Line::from(Span::styled(" Resolve and embed clean tags into files.", Style::default().fg(app.theme.fg_dim)))),
+        (3, 5) => lines.push(Line::from(Span::styled(" Press Enter to cycle footer preset.", Style::default().fg(app.theme.fg_dim)))),
+        (3, 6) => lines.push(Line::from(Span::styled(" Press Enter to open visualizer picker.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 0) => lines.push(Line::from(Span::styled(" Spotify integration status.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 3) => lines.push(Line::from(Span::styled(" Press Enter to paste a Spotify access token.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 4) => lines.push(Line::from(Span::styled(" Re-fetch playlists from Spotify.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 5) => lines.push(Line::from(Span::styled(" Remove token and disconnect.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 7) => lines.push(Line::from(Span::styled(" Press Enter to paste Soloist API key.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 8) => lines.push(Line::from(Span::styled(" Launch soloist daemon.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 9) => lines.push(Line::from(Span::styled(" Terminate soloist daemon.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 10) => lines.push(Line::from(Span::styled(" Become active Spotify Connect device.", Style::default().fg(app.theme.fg_dim)))),
+        (4, 12) => lines.push(Line::from(Span::styled(" Press Enter to toggle auto-start.", Style::default().fg(app.theme.fg_dim)))),
+        _ => {}
+    }
+
+    let right_para = Paragraph::new(lines);
+    f.render_widget(right_para, right_inner);
+}
 }
 
 // ─── Footer ───
@@ -3220,8 +3200,66 @@ fn render_track_info_in_pane(f: &mut ratatui::Frame, sep_area: Rect, area: Rect,
     }
 }
 
+pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str, &str)] = &[
+    ("\u{25b6}\u{fe0f} Play/Pause", "Space", "play/pause"),
+    ("\u{23ed}\u{fe0f} Next Track", "n", "next track"),
+    ("\u{23ee}\u{fe0f} Prev Track", "p", "prev track"),
+    ("\u{1f50a} Volume Up", "+", "volume up"),
+    ("\u{1f509} Volume Down", "-", "volume down"),
+    ("\u{1f507} Mute: Toggle", "m", "mute"),
+    ("\u{1f501} Repeat Mode", "r", "repeat"),
+    ("\u{1f500} Shuffle Library", "S", "shuffle"),
+    ("\u{23f9}\u{fe0f} Quit", "q", "quit"),
+    ("\u{23f9}\u{fe0f} Quit Daemon", "Q/Ctrl+Q", "quit daemon"),
+    ("\u{27a1}\u{fe0f} Tab Cycle", "Tab", "tab cycle"),
+    ("\u{1f3b5} Library", "1", "library"),
+    ("\u{2699}\u{fe0f} Settings", "2", "settings"),
+    ("\u{1f50d} Search Track", "/", "search"),
+    ("\u{1f4cb} Queue", "Alt+Q", "queue"),
+    ("\u{25b6}\u{fe0f} YouTube Search", "Alt+Y", "youtube"),
+    ("\u{1f50e} Search Library", "Alt+F", "search lib"),
+    ("\u{1f39a} Equalizer", "Alt+E", "eq"),
+    ("\u{23f0}\u{fe0f} Sleep Timer", "Alt+Z", "sleeptimer"),
+    ("\u{1f3a8} Theme", "Alt+C", "themepicker"),
+    ("\u{2139}\u{fe0f} About", "Alt+A", "about"),
+    ("\u{1f3b5} Spotify", "Alt+S", "spotify"),
+    ("\u{1f4dd} Fetch Lyrics", "l", "fetch lyrics"),
+    ("\u{1f3a8} Progress Style", "Alt+P", "progress style"),
+    ("\u{1f3b6} Visualizer: Toggle", "Ctrl+V", "visualizer"),
+    ("\u{1f3b6} Visualizer Preset", "Alt+V", "visualizer preset"),
+    ("\u{23f9}\u{fe0f} Stop", "s", "stop"),
+    ("\u{23e9}\u{fe0f} Seek Forward", ".", "seek forward"),
+    ("\u{23ea}\u{fe0f} Seek Backward", ",", "seek backward"),
+    ("\u{2764}\u{fe0f} Toggle Favourite", "f", "toggle favourite"),
+    ("\u{1f5d1} Clear Queue", "D", "clear queue"),
+    ("\u{2b05}\u{fe0f} Prev Tab", "Shift+Tab", "prev tab"),
+    ("\u{2611}\u{fe0f} Multiselect", "v", "multiselect"),
+    ("\u{2795} Add to Queue", "a", "add to queue"),
+    ("\u{1f4dc} Add to Playlist", "A", "add to playlist"),
+    ("\u{274c} Delete from List", "x", "delete from list"),
+    ("\u{2b07}\u{fe0f} Jump to End", "G", "jump to end"),
+    ("\u{270f}\u{fe0f} Edit Metadata", "e", "edit metadata"),
+    ("\u{2753} Toggle Help", "?", "toggle help"),
+    ("\u{1f6ab} Hide Help Bar", "Ctrl+H", "hide help bar"),
+    ("\u{1f4cf} Footer Preset", "\u{2014}", "footer preset"),
+    ("\u{1fa7a} Health Check", ":", "health check"),
+];
+
+pub const CROSSFADE_DURATIONS: [u8; 5] = [3, 5, 10, 15, 30];
+
+pub const CROSSFADE_EASINGS: [gtm_core::state::Easing; 7] = [
+    gtm_core::state::Easing::Linear,
+    gtm_core::state::Easing::SlowFadeInFastFadeOut,
+    gtm_core::state::Easing::FastFadeInSlowFadeOut,
+    gtm_core::state::Easing::Logarithmic,
+    gtm_core::state::Easing::Smoothstep,
+    gtm_core::state::Easing::EqualPower,
+    gtm_core::state::Easing::Exponential,
+];
+
+impl Pickers {
 fn render_about_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = picker_panel(app, " About ", None);
+    let block = Self::picker_panel(app, " About ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -3378,12 +3416,12 @@ fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         "[Esc] Close  ? Toggle  gg/G Top/Bottom  0/$ First/Last  / Search  n/N Next/Prev"
             .to_string()
     };
-    picker_help(f, area, &footer, app);
+    Self::picker_help(f, area, &footer, app);
 }
 
 fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     if app.sleep_timer.input_mode {
-        let block = picker_panel(app, " Sleep Timer: Manual Input ", None);
+        let block = Self::picker_panel(app, " Sleep Timer: Manual Input ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
         let label = Paragraph::new(Line::from(vec![
@@ -3401,7 +3439,7 @@ fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     }
 
     let is_active = app.sleep_timer.remaining.is_some();
-    let block = picker_panel(app, " Sleep Timer ", None);
+    let block = Self::picker_panel(app, " Sleep Timer ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -3501,51 +3539,6 @@ fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(paragraph, inner);
 }
 
-pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str, &str)] = &[
-    ("\u{25b6}\u{fe0f} Play/Pause", "Space", "play/pause"),
-    ("\u{23ed}\u{fe0f} Next Track", "n", "next track"),
-    ("\u{23ee}\u{fe0f} Prev Track", "p", "prev track"),
-    ("\u{1f50a} Volume Up", "+", "volume up"),
-    ("\u{1f509} Volume Down", "-", "volume down"),
-    ("\u{1f507} Mute: Toggle", "m", "mute"),
-    ("\u{1f501} Repeat Mode", "r", "repeat"),
-    ("\u{1f500} Shuffle Library", "S", "shuffle"),
-    ("\u{23f9}\u{fe0f} Quit", "q", "quit"),
-    ("\u{23f9}\u{fe0f} Quit Daemon", "Q/Ctrl+Q", "quit daemon"),
-    ("\u{27a1}\u{fe0f} Tab Cycle", "Tab", "tab cycle"),
-    ("\u{1f3b5} Library", "1", "library"),
-    ("\u{2699}\u{fe0f} Settings", "2", "settings"),
-    ("\u{1f50d} Search Track", "/", "search"),
-    ("\u{1f4cb} Queue", "Alt+Q", "queue"),
-    ("\u{25b6}\u{fe0f} YouTube Search", "Alt+Y", "youtube"),
-    ("\u{1f50e} Search Library", "Alt+F", "search lib"),
-    ("\u{1f39a} Equalizer", "Alt+E", "eq"),
-    ("\u{23f0}\u{fe0f} Sleep Timer", "Alt+Z", "sleeptimer"),
-    ("\u{1f3a8} Theme", "Alt+C", "themepicker"),
-    ("\u{2139}\u{fe0f} About", "Alt+A", "about"),
-    ("\u{1f3b5} Spotify", "Alt+S", "spotify"),
-    ("\u{1f4dd} Fetch Lyrics", "l", "fetch lyrics"),
-    ("\u{1f3a8} Progress Style", "Alt+P", "progress style"),
-    ("\u{1f3b6} Visualizer: Toggle", "Ctrl+V", "visualizer"),
-    ("\u{1f3b6} Visualizer Preset", "Alt+V", "visualizer preset"),
-    ("\u{23f9}\u{fe0f} Stop", "s", "stop"),
-    ("\u{23e9}\u{fe0f} Seek Forward", ".", "seek forward"),
-    ("\u{23ea}\u{fe0f} Seek Backward", ",", "seek backward"),
-    ("\u{2764}\u{fe0f} Toggle Favourite", "f", "toggle favourite"),
-    ("\u{1f5d1} Clear Queue", "D", "clear queue"),
-    ("\u{2b05}\u{fe0f} Prev Tab", "Shift+Tab", "prev tab"),
-    ("\u{2611}\u{fe0f} Multiselect", "v", "multiselect"),
-    ("\u{2795} Add to Queue", "a", "add to queue"),
-    ("\u{1f4dc} Add to Playlist", "A", "add to playlist"),
-    ("\u{274c} Delete from List", "x", "delete from list"),
-    ("\u{2b07}\u{fe0f} Jump to End", "G", "jump to end"),
-    ("\u{270f}\u{fe0f} Edit Metadata", "e", "edit metadata"),
-    ("\u{2753} Toggle Help", "?", "toggle help"),
-    ("\u{1f6ab} Hide Help Bar", "Ctrl+H", "hide help bar"),
-    ("\u{1f4cf} Footer Preset", "\u{2014}", "footer preset"),
-    ("\u{1fa7a} Health Check", ":", "health check"),
-];
-
 fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     let commands = COMMAND_PALETTE_COMMANDS;
 
@@ -3574,7 +3567,7 @@ fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &mut A
     };
     filtered.sort_by_key(|b| std::cmp::Reverse(b.1));
 
-    let block = picker_panel(app, " Commands ", None);
+    let block = Self::picker_panel(app, " Commands ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -3684,7 +3677,7 @@ fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         .top()
         .map_or(0, |o| o.selected.min(presets.len() - 1));
 
-    let block = picker_panel(app, " Equalizer ", None);
+    let block = Self::picker_panel(app, " Equalizer ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -3774,7 +3767,7 @@ fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
         let mut preview_spans = Vec::new();
         if let Some(eq) = selected_eq {
-            preview_spans.extend(eq_preset_preview(eq, app));
+            preview_spans.extend(Self::eq_preset_preview(eq, app));
         }
         f.render_widget(
             Paragraph::new(Line::from(preview_spans)),
@@ -3942,7 +3935,7 @@ fn visualizer_preview_lines(
 }
 
 fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let block = picker_panel(app, " Theme ", None);
+    let block = Self::picker_panel(app, " Theme ", None);
     let _inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -3974,7 +3967,7 @@ fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App)
         .top()
         .map_or(0, |o| o.selected.min(total.saturating_sub(1)));
 
-    let block = picker_panel(app, " Theme ", None);
+    let block = Self::picker_panel(app, " Theme ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -4059,18 +4052,6 @@ fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App)
     f.render_widget(list, inner);
 }
 
-pub const CROSSFADE_DURATIONS: [u8; 5] = [3, 5, 10, 15, 30];
-
-pub const CROSSFADE_EASINGS: [gtm_core::state::Easing; 7] = [
-    gtm_core::state::Easing::Linear,
-    gtm_core::state::Easing::SlowFadeInFastFadeOut,
-    gtm_core::state::Easing::FastFadeInSlowFadeOut,
-    gtm_core::state::Easing::Logarithmic,
-    gtm_core::state::Easing::Smoothstep,
-    gtm_core::state::Easing::EqualPower,
-    gtm_core::state::Easing::Exponential,
-];
-
 fn easing_description(e: gtm_core::state::Easing) -> &'static str {
     match e {
         gtm_core::state::Easing::Linear => "Linear: constant gain ramp; abrupt but predictable.",
@@ -4086,7 +4067,7 @@ fn easing_description(e: gtm_core::state::Easing) -> &'static str {
 }
 
 fn render_crossfade_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = picker_panel(app, " Crossfade Options ", None);
+    let block = Self::picker_panel(app, " Crossfade Options ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -4147,7 +4128,7 @@ fn render_crossfade_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
     lines.push(Line::from(""));
     if sel >= 7 && sel < 7 + CROSSFADE_EASINGS.len() {
         let e = CROSSFADE_EASINGS[sel - 7];
-        let desc = easing_description(e);
+        let desc = Self::easing_description(e);
         lines.push(Line::from(Span::styled(
             format!(" {desc}"),
             Style::default().fg(app.theme.fg_dim),
@@ -4169,7 +4150,7 @@ fn render_crossfade_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 fn render_visualizer_preset_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let block = picker_panel(app, " Visualizer Preset ", None);
+    let block = Self::picker_panel(app, " Visualizer Preset ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -4273,7 +4254,7 @@ fn render_visualizer_preset_picker(f: &mut ratatui::Frame, area: Rect, app: &mut
             .collect();
 
         let preview_lines =
-            visualizer_preview_lines(sel_preset, &sample_bars, preview_area.width, app);
+            Self::visualizer_preview_lines(sel_preset, &sample_bars, preview_area.width, app);
         for (row, line) in preview_lines
             .iter()
             .enumerate()
@@ -4293,7 +4274,7 @@ fn render_visualizer_preset_picker(f: &mut ratatui::Frame, area: Rect, app: &mut
 }
 
 fn render_progress_style_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let block = picker_panel(app, " Progress Style ", None);
+    let block = Self::picker_panel(app, " Progress Style ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -4422,6 +4403,7 @@ fn render_progress_style_picker(f: &mut ratatui::Frame, area: Rect, app: &mut Ap
         );
     }
 }
+}
 
 fn format_duration_short(secs: u64) -> String {
     let h = secs / 3600;
@@ -4469,8 +4451,9 @@ fn scroll_text(text: &str, max_width: usize, frame: usize, is_selected: bool) ->
 
 // ─── Library Motion Overlays ───
 
+impl Pickers {
 fn render_playlist_select_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let block = picker_panel(app, " Select Playlist ", None);
+    let block = Self::picker_panel(app, " Select Playlist ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -4499,7 +4482,7 @@ fn render_playlist_select_picker(f: &mut ratatui::Frame, area: Rect, app: &App) 
 }
 
 fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let block = picker_panel(app, " Edit Metadata ", None);
+    let block = Self::picker_panel(app, " Edit Metadata ", None);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -4583,6 +4566,7 @@ fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App
             f.render_widget(placeholder, c_area);
         }
     }
+}
 }
 
 fn render_health_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {

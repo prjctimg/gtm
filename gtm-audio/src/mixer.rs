@@ -51,6 +51,7 @@ pub trait Mixer: Send + Sync {
     fn drop_active(&mut self);
     fn poll(&mut self) -> AudioResult<Option<AudioEvent>>;
     fn current_peak_level(&self) -> f32;
+    fn current_spectrum(&self) -> Vec<f32>;
 
     // ─── EQ / Reverb ───
     fn set_eq_preset(&self, preset: &EqPreset);
@@ -90,6 +91,8 @@ pub struct AudioMixer {
     standby_control: Option<Arc<DecodeControl>>,
     standby_decode_handle: Option<std::thread::JoinHandle<()>>,
     underrun_since: Option<Instant>,
+    // ─── Spectrum ───
+    spectrum: Arc<Mutex<Vec<f32>>>,
 }
 
 const UNDERFLOW_GRACE: Duration = Duration::from_millis(100);
@@ -195,6 +198,9 @@ impl Mixer for AudioMixer {
         let master = self.master_volume.load(Ordering::SeqCst) as f32 / 100.0;
         vol * master
     }
+    fn current_spectrum(&self) -> Vec<f32> {
+        self.spectrum.lock().unwrap().clone()
+    }
 }
 
 impl AudioMixer {
@@ -239,6 +245,7 @@ impl AudioMixer {
             standby_control: None,
             standby_decode_handle: None,
             underrun_since: None,
+            spectrum: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -325,6 +332,7 @@ impl AudioMixer {
         eq_enabled: &Arc<AtomicBool>,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
+        spectrum: &Arc<Mutex<Vec<f32>>>,
     ) -> AudioResult<(
         Arc<DecodeControl>,
         RingBufferSource,
@@ -341,6 +349,7 @@ impl AudioMixer {
             eq_enabled.clone(),
             reverb_enabled.clone(),
             reverb_room_size.clone(),
+            spectrum.clone(),
         );
         let handle = thread.spawn().map_err(AudioError::DecodeError)?;
 
@@ -378,6 +387,7 @@ impl AudioMixer {
             &self.eq_enabled,
             &self.reverb_enabled,
             &self.reverb_room_size,
+            &self.spectrum,
         )?;
 
         self.active().append(source);
@@ -435,6 +445,7 @@ impl AudioMixer {
             &self.eq_enabled,
             &self.reverb_enabled,
             &self.reverb_room_size,
+            &self.spectrum,
         )?;
 
         self.standby().append(source);

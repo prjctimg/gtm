@@ -64,6 +64,38 @@ impl ReverbState {
 }
 
 // ---------------------------------------------------------------------------
+// Spectrum analysis: simple DFT for visualizer
+// ---------------------------------------------------------------------------
+
+const SPECTRUM_BINS: usize = 32;
+const SPECTRUM_WINDOW: usize = 64;
+
+/// Compute DFT magnitudes for `SPECTRUM_BINS` frequency bins from `window` samples.
+/// Returns magnitudes normalized to [0.0, 1.0].
+fn compute_spectrum(window: &[f32]) -> [f32; SPECTRUM_BINS] {
+    let n = window.len();
+    let mut magnitudes = [0.0f32; SPECTRUM_BINS];
+    for k in 0..SPECTRUM_BINS {
+        let mut re = 0.0f64;
+        let mut im = 0.0f64;
+        for (i, &sample) in window.iter().enumerate() {
+            let angle = -2.0 * std::f64::consts::PI * (k as f64) * (i as f64) / (n as f64);
+            re += sample as f64 * angle.cos();
+            im += sample as f64 * angle.sin();
+        }
+        magnitudes[k] = ((re * re + im * im).sqrt() / (n as f64)) as f32;
+    }
+    // Normalize: find peak and scale to [0, 1]
+    let peak = magnitudes.iter().copied().fold(0.0f32, f32::max);
+    if peak > 0.001 {
+        for m in &mut magnitudes {
+            *m = (*m / peak).clamp(0.0, 1.0);
+        }
+    }
+    magnitudes
+}
+
+// ---------------------------------------------------------------------------
 // DecodeThread owns a dedicated std::thread
 // ---------------------------------------------------------------------------
 
@@ -75,6 +107,7 @@ pub struct DecodeThread {
     eq_enabled: Arc<AtomicBool>,
     reverb_enabled: Arc<AtomicBool>,
     reverb_room_size: Arc<Mutex<f32>>,
+    spectrum: Arc<Mutex<Vec<f32>>>,
 }
 
 impl DecodeThread {
@@ -86,6 +119,7 @@ impl DecodeThread {
         eq_enabled: Arc<AtomicBool>,
         reverb_enabled: Arc<AtomicBool>,
         reverb_room_size: Arc<Mutex<f32>>,
+        spectrum: Arc<Mutex<Vec<f32>>>,
     ) -> Self {
         Self {
             path,
@@ -95,6 +129,7 @@ impl DecodeThread {
             eq_enabled,
             reverb_enabled,
             reverb_room_size,
+            spectrum,
         }
     }
 
@@ -154,6 +189,8 @@ impl DecodeThread {
 
             let mut sample_count: usize = 0;
             let mut prebuffered = false;
+            let mut spectrum_window = Vec::with_capacity(SPECTRUM_WINDOW);
+            let mut spectrum_count: usize = 0;
 
             // Decode loop: read from SymphoniaSource, process, write to ring buffer
             // Use an explicit loop over the iterator so we can check seek/running flags.
@@ -294,6 +331,21 @@ impl DecodeThread {
 
                 self.shared.push_blocking(final_sample);
                 sample_count += 1;
+
+                // Accumulate samples for spectrum analysis (every Nth sample to downsample)
+                if spectrum_count % 2 == 0 && spectrum_window.len() < SPECTRUM_WINDOW {
+                    spectrum_window.push(final_sample.abs());
+                }
+                spectrum_count += 1;
+                if spectrum_window.len() >= SPECTRUM_WINDOW {
+                    let magnitudes = compute_spectrum(&spectrum_window);
+                    if let Ok(mut spec) = self.spectrum.lock() {
+                        spec.clear();
+                        spec.extend_from_slice(&magnitudes);
+                    }
+                    spectrum_window.clear();
+                }
+
                 prebuffer_check(&self.shared, &self.control, &mut prebuffered);
             }
         }

@@ -100,11 +100,14 @@ impl AudioVisualizer {
         }
 
         if is_playing && !audio_levels.is_empty() {
+            let bins = audio_levels.len();
             for (i, target) in self.target_bars.iter_mut().enumerate() {
-                let idx = i * audio_levels.len() / num_bars;
-                let level = audio_levels.get(idx).copied().unwrap_or(0.0);
-                let jitter = ((i as f64 * 1.7 + self.spectrum_offset * 5.0).sin() * 0.05) as f32;
-                *target = (level + jitter).clamp(0.05, 1.0);
+                // Map bar index to spectrum bin index (log-ish mapping: lower frequencies get more bars)
+                let ratio = i as f64 / num_bars as f64;
+                let idx = (ratio * bins as f64 * 0.8) as usize; // compress high end slightly
+                let idx = idx.min(bins - 1);
+                let level = audio_levels[idx];
+                *target = level.clamp(0.0, 1.0);
             }
         } else {
             for target in self.target_bars.iter_mut() {
@@ -112,12 +115,13 @@ impl AudioVisualizer {
             }
         }
 
-        self.spectrum_offset += dt;
-
-        let decay = if is_playing { 0.25 } else { 1.0 };
+        // Exponential smoothing: faster attack, slower decay for natural feel
+        let attack = 0.4;
+        let decay = if is_playing { 0.15 } else { 0.8 };
         for (bar, target) in self.bars.iter_mut().zip(self.target_bars.iter()) {
             let diff = target - *bar;
-            *bar += diff * decay as f32 * (dt * 60.0) as f32;
+            let rate = if diff > 0.0 { attack } else { decay };
+            *bar += diff * rate as f32 * (dt * 60.0) as f32;
             *bar = bar.clamp(0.0, 1.0);
         }
     }

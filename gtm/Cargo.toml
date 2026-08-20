@@ -3,7 +3,7 @@ name = "gtm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "gtm music player client - TUI and CLI modes"
+description = "Feature rich and cross platform terminal audio player"
 repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
@@ -27,13 +27,14 @@ serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
 toml = "0.8"
+libc = "0.2"
 
 [package.metadata.deb]
 name = "gtm"
 maintainer = "prjctimg <prjctimg@outlook.com>"
 copyright = "2026 - present prjctimg"
 license-file = ["../LICENSE"]
-extended-description = "gtm music player client - provides both a Terminal UI (TUI) and command-line interface for controlling the gtm music daemon."
+extended-description = "Feature rich and cross platform terminal audio player with background playback and YouTube/Spotify integration."
 section = "sound"
 priority = "optional"
 depends = "$auto"

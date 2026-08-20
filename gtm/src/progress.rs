@@ -60,6 +60,7 @@ impl ProgressStyle {
 thread_local! {
     static PREV_GRADIENT_FILL: Cell<f64> = const { Cell::new(0.0) };
     static PREV_TRUEGRADIENT_FILL: Cell<f64> = const { Cell::new(0.0) };
+    static PREV_SEEKHEAD_FILL: Cell<f64> = const { Cell::new(0.0) };
 }
 
 /// Interpolate between two RGB colors by factor `t` (0.0..=1.0).
@@ -168,9 +169,14 @@ pub fn render_progress(ratio: f64, width: usize, style: ProgressStyle) -> String
             line.push('⠤');
         }
         ProgressStyle::SeekHead => {
+            let target = ratio.clamp(0.0, 1.0);
+            let prev_val = PREV_SEEKHEAD_FILL.with(|c| c.get());
+            let smoothed = prev_val + (target - prev_val) * 0.35;
+            PREV_SEEKHEAD_FILL.with(|c| c.set(smoothed));
+            let eased_filled = (smoothed * inner_w as f64).round() as usize;
             line.push('─');
             for i in 0..inner_w {
-                if i == filled {
+                if i == eased_filled {
                     line.push('●');
                 } else {
                     line.push('─');

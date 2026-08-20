@@ -2,7 +2,7 @@
 pkgname=gtm-player
 pkgver=0.2.4
 pkgrel=1
-pkgdesc="Terminal-based music player daemon and client"
+pkgdesc="Feature rich and cross platform terminal audio player with background playback and YouTube/Spotify integration"
 arch=('x86_64' 'aarch64')
 url="https://github.com/prjctimg/gtm.rs"
 license=('GPL-3.0-only')

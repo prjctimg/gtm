@@ -168,6 +168,7 @@ pub struct PulseAudioMixer {
     eq_enabled: Arc<AtomicBool>,
     reverb_enabled: Arc<AtomicBool>,
     reverb_room_size: Arc<Mutex<f32>>,
+    spectrum: Arc<Mutex<Vec<f32>>>,
 }
 
 impl PulseAudioMixer {
@@ -203,6 +204,7 @@ impl PulseAudioMixer {
             eq_enabled: Arc::new(AtomicBool::new(true)),
             reverb_enabled: Arc::new(AtomicBool::new(false)),
             reverb_room_size: Arc::new(Mutex::new(0.3)),
+            spectrum: Arc::new(Mutex::new(Vec::new())),
         })
     }
 
@@ -262,6 +264,7 @@ impl PulseAudioMixer {
         eq_enabled: &Arc<AtomicBool>,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
+        spectrum: &Arc<Mutex<Vec<f32>>>,
     ) -> AudioResult<(Arc<DecodeControl>, std::thread::JoinHandle<()>)> {
         let control = Arc::new(DecodeControl::new());
         let thread = DecodeThread::new(
@@ -272,6 +275,7 @@ impl PulseAudioMixer {
             eq_enabled.clone(),
             reverb_enabled.clone(),
             reverb_room_size.clone(),
+            spectrum.clone(),
         );
         let handle = thread.spawn().map_err(AudioError::DecodeError)?;
 
@@ -339,6 +343,7 @@ impl Mixer for PulseAudioMixer {
             &self.eq_enabled,
             &self.reverb_enabled,
             &self.reverb_room_size,
+            &self.spectrum,
         )?;
 
         self.active_mut().control = Some(control);
@@ -427,6 +432,7 @@ impl Mixer for PulseAudioMixer {
             &self.eq_enabled,
             &self.reverb_enabled,
             &self.reverb_room_size,
+            &self.spectrum,
         )?;
 
         self.standby_mut().control = Some(control);
@@ -751,6 +757,9 @@ impl Mixer for PulseAudioMixer {
         let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
         let master = self.master_volume.load(Ordering::SeqCst) as f32 / 100.0;
         vol * master
+    }
+    fn current_spectrum(&self) -> Vec<f32> {
+        self.spectrum.lock().unwrap().clone()
     }
 }
 

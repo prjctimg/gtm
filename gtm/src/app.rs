@@ -7,7 +7,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
 use gtm_core::client::DaemonClient;
 use gtm_core::ipc::DaemonRes;
 use gtm_core::spotify::{SoloistStatus, SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
@@ -194,6 +194,7 @@ pub struct UpNextNotif {
     pub cover_stateful: Option<StatefulProtocol>,
     pub started_at: std::time::Instant,
     pub total_secs: f64,
+    pub cover_fetch_id: Option<i64>,
 }
 
 /// One row in the SearchLibrary fuzzy-finder, resolved from a `PickerSource`.
@@ -240,6 +241,14 @@ pub struct App {
     /// EMA lag that smooths the progress bar.
     raw_position: f64,
     pub frame_count: u64,
+    /// Progress whip scanner position (Knight Rider style).
+    pub scanner_pos: i32,
+    /// Scanner direction: 1 = forward, -1 = backward.
+    pub scanner_dir: i32,
+    /// Hold frames at each end before reversing.
+    pub scanner_hold: i32,
+    /// Cursor blink toggle for search pickers (alternates every ~8 frames).
+    pub cursor_blink: bool,
     pub current_tab: Tab,
     pub input_mode: InputMode,
     pub search_query: String,
@@ -337,7 +346,6 @@ pub struct App {
     last_artist_cover_fetch: Option<String>,
     /// Active "Up Next" crossfade-countdown notification (T10).
     pub upnext: Option<UpNextNotif>,
-    last_upnext_cover_fetch_id: Option<i64>,
     /// Cover art for the queue picker "Up Next" strip (T11): fetched for the
     /// track after the current one, including locally-inserted (`id == 0`)
     /// entries (PROMPT #4).
@@ -356,6 +364,8 @@ pub struct App {
     pub health_report: Option<gtm_core::ipc::HealthReport>,
     pub hide_help_bar: bool,
     pub lyrics_manual_scroll: bool,
+    pub pending_suspend: bool,
+    last_config_mtime: Option<std::time::SystemTime>,
 }
 
 enum IpcResult {
@@ -506,6 +516,10 @@ impl App {
             last_display_position: 0.0,
             raw_position: 0.0,
             frame_count: 0,
+            scanner_pos: 0,
+            scanner_dir: 1,
+            scanner_hold: 0,
+            cursor_blink: true,
             current_tab: Tab::Library,
             input_mode: InputMode::Normal,
             search_query: String::new(),
@@ -612,7 +626,6 @@ impl App {
             artist_cover_stateful: None,
             last_artist_cover_fetch: None,
             upnext: None,
-            last_upnext_cover_fetch_id: None,
             queue_preview_cover: None,
             queue_preview_cover_stateful: None,
             last_queue_preview_cover_fetch_id: None,
@@ -624,8 +637,54 @@ impl App {
             show_health_panel: false,
             health_report: None,
             hide_help_bar: false,
+            pending_suspend: false,
             lyrics_manual_scroll: false,
+            last_config_mtime: std::fs::metadata(prefs_path()).ok().and_then(|m| m.modified().ok()),
         })
+    }
+
+    /// Check if config.toml was modified since last load; if so, re-parse
+    /// and apply hot-reloadable settings (theme, footer preset, transparent_bg,
+    /// progress_style, visualizer_preset). Non-hot settings (like keybindings)
+    /// are left for the next full restart.
+    fn check_config_reload(&mut self) {
+        let path = prefs_path();
+        let mtime = match std::fs::metadata(&path).and_then(|m| m.modified()) {
+            Ok(t) => t,
+            Err(_) => return,
+        };
+        if self.last_config_mtime == Some(mtime) {
+            return;
+        }
+        self.last_config_mtime = Some(mtime);
+        let prefs = load_prefs();
+
+        // Theme
+        let theme_index = self
+            .themes
+            .iter()
+            .position(|t| t.name == prefs.theme_name)
+            .unwrap_or(0);
+        self.theme = self.themes[theme_index].theme;
+        self.theme_index = theme_index;
+
+        // Transparent bg
+        self.transparent_bg = prefs.transparent_bg;
+
+        // Footer preset
+        let footer_preset = self
+            .footer_presets
+            .iter()
+            .position(|p| p.name == prefs.footer_preset_name)
+            .unwrap_or(0);
+        self.footer_preset = footer_preset;
+        self.footer_cache.suppress_refresh = true;
+
+        // Progress style
+        self.progress_style = prefs.progress_style;
+
+        // Visualizer preset
+        self.visualizer.preset = prefs.visualizer_preset;
     }
 
     pub fn cmd_tx(&self) -> mpsc::Sender<TuiCommand> {
@@ -873,10 +932,10 @@ impl App {
             if self.last_event_time.elapsed() > Duration::from_secs(8) && self.client.is_connected()
             {
                 let c = self.client.clone();
-                let ipc_tx2 = self.ipc_tx.clone();
+                let ipc_tx = self.ipc_tx.clone();
                 tokio::spawn(async move {
                     if let Ok(state) = c.get_status().await {
-                        let _ = ipc_tx2.send(IpcResult::RefreshDone(Box::new(state), None, None));
+                        let _ = ipc_tx.send(IpcResult::RefreshDone(Box::new(state), None, None));
                     }
                 });
                 self.last_event_time = std::time::Instant::now();
@@ -912,14 +971,14 @@ impl App {
                     if let Some(tid) = current_tid {
                         if Some(tid) != self.np_cover.track_id {
                             self.np_cover.track_id = Some(tid);
-                            let client2 = self.client.clone();
-                            let ipc_tx2 = self.ipc_tx.clone();
+                            let client = self.client.clone();
+                            let ipc_tx = self.ipc_tx.clone();
                             tokio::spawn(async move {
-                                if let Ok(Some(b64)) = client2.get_cover_art(tid).await {
+                                if let Ok(Some(b64)) = client.get_cover_art(tid).await {
                                     if let Ok(bytes) =
                                         base64::engine::general_purpose::STANDARD.decode(&b64)
                                     {
-                                        let _ = ipc_tx2
+                                        let _ = ipc_tx
                                             .send(IpcResult::CoverArt(Some(bytes), Some(tid)));
                                     }
                                 }
@@ -929,17 +988,17 @@ impl App {
                 }
                 // Auto-fetch lyrics if lyrics pane is visible
                 if self.show_lyrics {
-                    let client3 = self.client.clone();
-                    let ipc_tx3 = self.ipc_tx.clone();
+                    let client = self.client.clone();
+                    let ipc_tx = self.ipc_tx.clone();
                     let tpath = self.state.current_track.as_ref().map(|t| t.path.clone());
                     self.current_lyrics = None;
                     self.lyrics_fetching = true;
                     self.lyrics_scroll = 0;
                     tokio::spawn(async move {
-                        let result = client3
+                        let result = client
                             .get_lyrics(current_tid.unwrap_or(0), tpath.as_deref())
                             .await;
-                        let _ = ipc_tx3.send(IpcResult::Lyrics(result.unwrap_or(None)));
+                        let _ = ipc_tx.send(IpcResult::Lyrics(result.unwrap_or(None)));
                     });
                 }
             }
@@ -1031,8 +1090,9 @@ impl App {
                     }
                     IpcResult::UpNextCover(cover, track_id) => {
                         if !no_image_protocol()
-                            && self.last_upnext_cover_fetch_id == Some(track_id)
-                            && self.upnext.as_ref().is_some_and(|u| u.track.id == track_id)
+                            && self.upnext.as_ref().is_some_and(|u| {
+                                u.cover_fetch_id == Some(track_id) && u.track.id == track_id
+                            })
                         {
                             if let Some(u) = self.upnext.as_mut() {
                                 u.cover = cover;
@@ -1194,6 +1254,33 @@ impl App {
             // to reduce CPU usage.  Always render every 10th frame as a safety net.
             let frame_count = self.frame_count.wrapping_add(1);
             self.frame_count = frame_count;
+
+            // Advance progress whip scanner (Knight Rider style)
+            const SCANNER_WIDTH: i32 = 12;
+            const SCANNER_HOLD: i32 = 3;
+            if self.scanner_hold > 0 {
+                self.scanner_hold -= 1;
+            } else {
+                self.scanner_pos += self.scanner_dir;
+                if self.scanner_pos >= SCANNER_WIDTH - 1 {
+                    self.scanner_dir = -1;
+                    self.scanner_hold = SCANNER_HOLD;
+                } else if self.scanner_pos <= 0 {
+                    self.scanner_dir = 1;
+                    self.scanner_hold = SCANNER_HOLD;
+                }
+            }
+
+            // Blink cursor every 8 frames
+            if frame_count.is_multiple_of(8) {
+                self.cursor_blink = !self.cursor_blink;
+            }
+
+            // Hot-reload config every 120 frames (~2s at 60fps)
+            if frame_count.is_multiple_of(120) {
+                self.check_config_reload();
+            }
+
             let pos_changed = (self.display_position - self.last_display_position).abs() >= 0.1;
             // Advance title scroll animations (every 3rd frame)
             if frame_count.is_multiple_of(3) {
@@ -1240,7 +1327,6 @@ impl App {
                         self.handle_paste(&text).await;
                     }
                     Ok(Event::Mouse(mouse)) => {
-                        use crossterm::event::MouseEventKind;
                         match mouse.kind {
                             MouseEventKind::ScrollUp => {
                                 let key = event::KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
@@ -1255,6 +1341,31 @@ impl App {
                     }
                     _ => {}
                 }
+            }
+
+            // Handle Ctrl+Z suspend: leave terminal, SIGTSTP, re-init on resume
+            if self.pending_suspend {
+                self.pending_suspend = false;
+                let _ = crossterm::terminal::disable_raw_mode();
+                let mut stdout = std::io::stdout();
+                let _ = crossterm::execute!(
+                    stdout,
+                    crossterm::terminal::LeaveAlternateScreen,
+                    crossterm::event::DisableBracketedPaste,
+                    crossterm::event::DisableMouseCapture
+                );
+                // Suspend: this blocks until SIGCONT
+                unsafe { libc::raise(libc::SIGTSTP); }
+                // Resumed: re-init terminal
+                crossterm::terminal::enable_raw_mode()?;
+                let mut stdout = std::io::stdout();
+                crossterm::execute!(
+                    stdout,
+                    crossterm::terminal::EnterAlternateScreen,
+                    crossterm::event::EnableBracketedPaste,
+                    crossterm::event::EnableMouseCapture
+                )?;
+                terminal.clear()?;
             }
         }
         Ok(())
@@ -1362,24 +1473,29 @@ impl App {
 
     pub fn start_upnext(&mut self, track: gtm_core::track::TrackInfo) {
         let total_secs = self.crossfade_duration as f64 + 3.0;
+        let fetch_id = if no_image_protocol() {
+            None
+        } else {
+            Some(track.id)
+        };
         self.upnext = Some(UpNextNotif {
             track: track.clone(),
             cover: None,
             cover_stateful: None,
             started_at: std::time::Instant::now(),
             total_secs,
+            cover_fetch_id: fetch_id,
         });
         if no_image_protocol() {
             return;
         }
         let tid = track.id;
-        self.last_upnext_cover_fetch_id = Some(tid);
-        let client2 = self.client.clone();
-        let ipc_tx2 = self.ipc_tx.clone();
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client2.get_cover_art(tid).await {
+            if let Ok(Some(b64)) = client.get_cover_art(tid).await {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                    let _ = ipc_tx2.send(IpcResult::UpNextCover(Some(bytes), tid));
+                    let _ = ipc_tx.send(IpcResult::UpNextCover(Some(bytes), tid));
                 }
             }
         });
@@ -1492,12 +1608,12 @@ impl App {
             self.last_popup_cover_fetch_id = Some(tid);
             self.track_popup_cover = None;
             self.popup_cover_stateful = None;
-            let client2 = self.client.clone();
-            let ipc_tx2 = self.ipc_tx.clone();
+            let client = self.client.clone();
+            let ipc_tx = self.ipc_tx.clone();
             tokio::spawn(async move {
-                if let Ok(Some(b64)) = client2.get_cover_art(tid).await {
+                if let Ok(Some(b64)) = client.get_cover_art(tid).await {
                     if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                        let _ = ipc_tx2.send(IpcResult::PopupCoverArt(Some(bytes), tid));
+                        let _ = ipc_tx.send(IpcResult::PopupCoverArt(Some(bytes), tid));
                     }
                 }
             });
@@ -1544,12 +1660,12 @@ impl App {
         if no_image_protocol() {
             return;
         }
-        let client2 = self.client.clone();
-        let ipc_tx2 = self.ipc_tx.clone();
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client2.get_cover_art(tid).await {
+            if let Ok(Some(b64)) = client.get_cover_art(tid).await {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                    let _ = ipc_tx2.send(IpcResult::PickerPreviewCover(Some(bytes), tid));
+                    let _ = ipc_tx.send(IpcResult::PickerPreviewCover(Some(bytes), tid));
                 }
             }
         });
@@ -1583,13 +1699,13 @@ impl App {
         if no_image_protocol() {
             return;
         }
-        let client2 = self.client.clone();
-        let ipc_tx2 = self.ipc_tx.clone();
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
         let artist = name.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client2.get_artist_cover_art(artist.clone()).await {
+            if let Ok(Some(b64)) = client.get_artist_cover_art(artist.clone()).await {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                    let _ = ipc_tx2.send(IpcResult::ArtistCoverArt(Some(bytes), artist));
+                    let _ = ipc_tx.send(IpcResult::ArtistCoverArt(Some(bytes), artist));
                 }
             }
         });
@@ -1890,12 +2006,12 @@ impl App {
         self.last_queue_preview_cover_fetch_id = Some(tid);
         self.queue_preview_cover = None;
         self.queue_preview_cover_stateful = None;
-        let client2 = self.client.clone();
-        let ipc_tx2 = self.ipc_tx.clone();
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client2.get_cover_art(tid).await {
+            if let Ok(Some(b64)) = client.get_cover_art(tid).await {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                    let _ = ipc_tx2.send(IpcResult::QueuePreviewCover(Some(bytes), tid));
+                    let _ = ipc_tx.send(IpcResult::QueuePreviewCover(Some(bytes), tid));
                 }
             }
         });
@@ -2504,9 +2620,112 @@ impl App {
         }
     }
 
+    /// Returns the item count (max+1) for wrap navigation.
+    fn picker_item_count(&self) -> usize {
+        let (id, query) = match self.pickers.top() {
+            Some(t) => (t.id, t.query.clone()),
+            None => return 0,
+        };
+        match id {
+            PickerId::Queue => self.queue_cache.len(),
+            PickerId::YTSearch => self.yt_results_cache.len(),
+            PickerId::SearchLibrary => self.search_library_picks().len(),
+            PickerId::Equalizer => EQ_PRESETS.len(),
+            PickerId::SleepTimer => 7,
+            PickerId::Crossfade => 14,
+            PickerId::VisualizerPreset => crate::visualizer::VisualizerPreset::all().len(),
+            PickerId::ProgressStyle => crate::progress::ProgressStyle::all().len(),
+            PickerId::ThemePicker => {
+                let q = query.to_lowercase();
+                if q.is_empty() {
+                    self.themes.len()
+                } else {
+                    self.themes
+                        .iter()
+                        .filter(|entry| {
+                            let lower = entry.name.to_lowercase();
+                            let mut qi = 0usize;
+                            for ch in lower.chars() {
+                                if qi < q.len() && ch == q.as_bytes()[qi] as char {
+                                    qi += 1;
+                                }
+                            }
+                            qi == q.len()
+                        })
+                        .count()
+                }
+            }
+            PickerId::CommandPalette => {
+                let commands = crate::ui::COMMAND_PALETTE_COMMANDS;
+                let q = query.to_lowercase();
+                if q.is_empty() {
+                    commands.len()
+                } else {
+                    commands
+                        .iter()
+                        .filter(|c| {
+                            let lower = c.0.to_lowercase();
+                            let mut qi = 0usize;
+                            for ch in lower.chars() {
+                                if qi < q.len() && ch == q.as_bytes()[qi] as char {
+                                    qi += 1;
+                                }
+                            }
+                            qi == q.len()
+                        })
+                        .count()
+                }
+            }
+            _ => 0,
+        }
+    }
+
     fn help_picker_total(&self) -> usize {
         let help_lines = [
-            ("", "   [Esc] Close  ? Toggle / Search"),
+            ("topic", "── Playback ──"),
+            ("", "   Space       Play / Pause"),
+            ("", "   n           Next Track"),
+            ("", "   p           Previous Track"),
+            ("", "   s           Stop"),
+            ("", "   .           Seek Forward"),
+            ("", "   ,           Seek Backward"),
+            ("", "   + / -       Volume Up / Down"),
+            ("", "   m           Mute Toggle"),
+            ("", "   r           Repeat Mode"),
+            ("", "   S           Shuffle Library"),
+            ("", "   f           Toggle Favourite"),
+            ("topic", "── Navigation ──"),
+            ("", "   1 / 2       Library / Settings"),
+            ("", "   Tab         Next Tab"),
+            ("", "   Shift+Tab   Previous Tab"),
+            ("", "   /           Search Track"),
+            ("", "   Alt+Q       Queue"),
+            ("", "   Alt+F       Search Library"),
+            ("", "   Alt+Y       YouTube Search"),
+            ("", "   Alt+S       Spotify"),
+            ("topic", "── View ──"),
+            ("", "   ?           Toggle Help"),
+            ("", "   Ctrl+H      Hide Help Bar"),
+            ("", "   Ctrl+V      Visualizer Toggle"),
+            ("", "   Alt+V       Visualizer Preset"),
+            ("", "   Alt+P       Progress Style"),
+            ("", "   Alt+C       Theme Picker"),
+            ("", "   Alt+A       About"),
+            ("", "   Alt+E       Equalizer"),
+            ("", "   Alt+Z       Sleep Timer"),
+            ("", "   l           Fetch Lyrics"),
+            ("topic", "── Queue ──"),
+            ("", "   a           Add to Queue"),
+            ("", "   A           Add to Playlist"),
+            ("", "   x           Delete from List"),
+            ("", "   D           Clear Queue"),
+            ("", "   v           Multiselect"),
+            ("", "   e           Edit Metadata"),
+            ("topic", "── System ──"),
+            ("", "   q           Quit"),
+            ("", "   Q / Ctrl+Q  Quit Daemon"),
+            ("", "   :           Health Check"),
+            ("", "   \u{2014}          Footer Preset"),
         ];
         if let Some(top) = self.pickers.top() {
             if top.id == PickerId::Help {
@@ -2528,6 +2747,13 @@ impl App {
     }
 
     async fn handle_key(&mut self, key: event::KeyEvent) -> bool {
+        // Ctrl+Z: suspend to background (pass-through SIGTSTP)
+        if key.modifiers.contains(KeyModifiers::CONTROL)
+            && key.code == KeyCode::Char('z')
+        {
+            self.pending_suspend = true;
+            return false;
+        }
         // Reset pending_motion if the key is not 'g'
         if key.code != KeyCode::Char('g') {
             self.pending_motion = None;
@@ -2663,7 +2889,9 @@ impl App {
                         self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::SwitchTab(tab)) => {
-                        if self.current_tab != tab {
+                        if tab == Tab::Settings {
+                            self.pickers.open(PickerId::Settings);
+                        } else if self.current_tab != tab {
                             self.current_tab = tab;
                             self.library_pane_focus = false;
                             self.settings_pane_focus = false;
@@ -3175,7 +3403,10 @@ impl App {
                                             }
                                         }
                                     }
-                                } else {
+                                } else if matches!(
+                                    self.library_category,
+                                    0 | 1
+                                ) {
                                     self.play_filtered_highlighted();
                                 }
                             } else if self.library_category == 2 {
@@ -3236,8 +3467,8 @@ impl App {
                                         }
                                     });
                                 }
-                            } else {
-                                // Default: play track from flat list
+                            } else if self.library_category <= 1 {
+                                // Default: play track from flat list (All Tracks / Liked)
                                 self.play_filtered_highlighted();
                             }
                         } else if self.current_tab == Tab::Settings && !self.settings_pane_focus {
@@ -3916,6 +4147,349 @@ impl App {
             return;
         }
 
+        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::Settings)) {
+            let settings_focus = self.settings_pane_focus;
+            match key.code {
+                KeyCode::Esc => {
+                    self.pickers.close_top();
+                    return;
+                }
+                KeyCode::Tab => {
+                    self.settings_pane_focus = !self.settings_pane_focus;
+                    return;
+                }
+                KeyCode::Left | KeyCode::Char('h') => {
+                    if !settings_focus {
+                        match self.settings_category {
+                            2 => match self.settings_option {
+                                0 => {
+                                    let next = match self.state.repeat {
+                                        gtm_core::state::RepeatMode::Off => gtm_core::state::RepeatMode::One,
+                                        gtm_core::state::RepeatMode::One => gtm_core::state::RepeatMode::All,
+                                        gtm_core::state::RepeatMode::All => gtm_core::state::RepeatMode::Off,
+                                    };
+                                    let c = self.client.clone();
+                                    tokio::spawn(async move { let _ = c.cycle_repeat(next).await; });
+                                    self.state.repeat = next;
+                                }
+                                1 => {
+                                    let c = self.client.clone();
+                                    tokio::spawn(async move { let _ = c.toggle_shuffle().await; });
+                                    self.state.shuffle = !self.state.shuffle;
+                                }
+                                4 => {
+                                    let new_enabled = !self.state.eq_enabled;
+                                    self.state.eq_enabled = new_enabled;
+                                    let c = self.client.clone();
+                                    tokio::spawn(async move { let _ = c.set_eq_enabled(new_enabled).await; });
+                                }
+                                5 => {
+                                    let new_enabled = !self.state.reverb.enabled;
+                                    let room_size = self.state.reverb.room_size;
+                                    self.state.reverb.enabled = new_enabled;
+                                    let c = self.client.clone();
+                                    tokio::spawn(async move { let _ = c.set_reverb(new_enabled, room_size).await; });
+                                }
+                                _ => {}
+                            },
+                            3 => match self.settings_option {
+                                1 => {
+                                    self.transparent_bg = !self.transparent_bg;
+                                    save_prefs(&self.current_prefs());
+                                }
+                                5 => {
+                                    self.cycle_footer_preset();
+                                }
+                                _ => {}
+                            },
+                            4 => match self.settings_option {
+                                12 => {
+                                    let new_val = !self.state.soloist_auto_start;
+                                    self.state.soloist_auto_start = new_val;
+                                    let c = self.client.clone();
+                                    tokio::spawn(async move { let _ = c.soloist_set_config(new_val).await; });
+                                }
+                                _ => {}
+                            },
+                            _ => {}
+                        }
+                    }
+                    return;
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    if !settings_focus {
+                        match self.settings_category {
+                            0 => match self.settings_option {
+                                0 => {
+                                    let current = self.state.master_volume;
+                                    let new_vol = if current >= 100 { 50 } else { (current + 10).min(100) };
+                                    self.send_high(TuiCommand::SetMasterVolume(new_vol));
+                                }
+                                1 => {
+                                    let muted = !self.state.mute;
+                                    self.send_high(TuiCommand::SetVolume(if muted { 0 } else { self.state.volume }));
+                                    self.state.mute = muted;
+                                }
+                                _ => {}
+                            },
+                            2 => match self.settings_option {
+                                0 => {
+                                    let next = match self.state.repeat {
+                                        gtm_core::state::RepeatMode::Off => gtm_core::state::RepeatMode::One,
+                                        gtm_core::state::RepeatMode::One => gtm_core::state::RepeatMode::All,
+                                        gtm_core::state::RepeatMode::All => gtm_core::state::RepeatMode::Off,
+                                    };
+                                    let c = self.client.clone();
+                                    tokio::spawn(async move { let _ = c.cycle_repeat(next).await; });
+                                    self.state.repeat = next;
+                                }
+                                1 => {
+                                    let c = self.client.clone();
+                                    tokio::spawn(async move { let _ = c.toggle_shuffle().await; });
+                                    self.state.shuffle = !self.state.shuffle;
+                                }
+                                4 => {
+                                    let new_enabled = !self.state.eq_enabled;
+                                    self.state.eq_enabled = new_enabled;
+                                    let c = self.client.clone();
+                                    tokio::spawn(async move { let _ = c.set_eq_enabled(new_enabled).await; });
+                                }
+                                5 => {
+                                    let new_enabled = !self.state.reverb.enabled;
+                                    let room_size = self.state.reverb.room_size;
+                                    self.state.reverb.enabled = new_enabled;
+                                    let c = self.client.clone();
+                                    tokio::spawn(async move { let _ = c.set_reverb(new_enabled, room_size).await; });
+                                }
+                                _ => {}
+                            },
+                            3 => match self.settings_option {
+                                1 => {
+                                    self.transparent_bg = !self.transparent_bg;
+                                    save_prefs(&self.current_prefs());
+                                }
+                                5 => {
+                                    self.cycle_footer_preset();
+                                }
+                                _ => {}
+                            },
+                            4 => match self.settings_option {
+                                12 => {
+                                    let new_val = !self.state.soloist_auto_start;
+                                    self.state.soloist_auto_start = new_val;
+                                    let c = self.client.clone();
+                                    tokio::spawn(async move { let _ = c.soloist_set_config(new_val).await; });
+                                }
+                                _ => {}
+                            },
+                            _ => {}
+                        }
+                    }
+                    return;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if settings_focus {
+                        self.settings_category = self.settings_category.saturating_sub(1);
+                        self.settings_option = 0;
+                    } else {
+                        self.settings_option = self.settings_option.saturating_sub(1);
+                    }
+                    return;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if settings_focus {
+                        self.settings_category = (self.settings_category + 1).min(NUM_SETTINGS_CATEGORIES - 1);
+                        self.settings_option = 0;
+                    } else {
+                        let max = self.settings_options_for_category().saturating_sub(1);
+                        self.settings_option = (self.settings_option + 1).min(max);
+                    }
+                    return;
+                }
+                KeyCode::Enter => {
+                    if !settings_focus {
+                        let opt = self.settings_option;
+                        match self.settings_category {
+                            0 => match opt {
+                                0 => {
+                                    let current = self.state.master_volume;
+                                    let new_vol = if current >= 100 { 50 } else { (current + 10).min(100) };
+                                    self.send_high(TuiCommand::SetMasterVolume(new_vol));
+                                }
+                                1 => {
+                                    let muted = !self.state.mute;
+                                    self.send_high(TuiCommand::SetVolume(if muted { 0 } else { self.state.volume }));
+                                    self.state.mute = muted;
+                                }
+                                _ => {}
+                            },
+                            1 => {
+                                if opt == 1 {
+                                    let current = self.cookie_file.clone();
+                                    let new_path = if current.is_some() { None } else {
+                                        let home = std::env::var("HOME").unwrap_or_default();
+                                        Some(format!("{home}/.cookies/youtube.txt"))
+                                    };
+                                    let display = new_path.clone().unwrap_or_else(|| "(none)".to_string());
+                                    self.cookie_file = new_path.clone();
+                                    let c = self.client.clone();
+                                    let cf = new_path;
+                                    tokio::spawn(async move { let _ = c.yt_set_config(None, cf, None, None, None).await; });
+                                    self.notify(format!("Cookie file: {display}"), NotificationKind::Info);
+                                }
+                            }
+                            2 => match opt {
+                                0 => {
+                                    let next = match self.state.repeat {
+                                        gtm_core::state::RepeatMode::Off => gtm_core::state::RepeatMode::One,
+                                        gtm_core::state::RepeatMode::One => gtm_core::state::RepeatMode::All,
+                                        gtm_core::state::RepeatMode::All => gtm_core::state::RepeatMode::Off,
+                                    };
+                                    let c = self.client.clone();
+                                    tokio::spawn(async move { let _ = c.cycle_repeat(next).await; });
+                                    self.state.repeat = next;
+                                }
+                                1 => {
+                                    let c = self.client.clone();
+                                    tokio::spawn(async move { let _ = c.toggle_shuffle().await; });
+                                    self.state.shuffle = !self.state.shuffle;
+                                }
+                                2 | 3 => {
+                                    self.pickers.open(PickerId::Crossfade);
+                                }
+                                4 => {
+                                    let new_enabled = !self.state.eq_enabled;
+                                    self.state.eq_enabled = new_enabled;
+                                    let c = self.client.clone();
+                                    tokio::spawn(async move { let _ = c.set_eq_enabled(new_enabled).await; });
+                                }
+                                5 => {
+                                    let new_enabled = !self.state.reverb.enabled;
+                                    let room_size = self.state.reverb.room_size;
+                                    self.state.reverb.enabled = new_enabled;
+                                    let c = self.client.clone();
+                                    tokio::spawn(async move { let _ = c.set_reverb(new_enabled, room_size).await; });
+                                }
+                                _ => {}
+                            },
+                            3 => match opt {
+                                0 => {
+                                    self.pickers.open(PickerId::ThemePicker);
+                                }
+                                1 => {
+                                    self.transparent_bg = !self.transparent_bg;
+                                    save_prefs(&self.current_prefs());
+                                }
+                                2 => {
+                                    spawn_sync_and_wait(self.client.clone(), gtm_core::ipc::SyncKind::Covers, "Covers", self.ipc_tx.clone());
+                                }
+                                3 => {
+                                    spawn_sync_and_wait(self.client.clone(), gtm_core::ipc::SyncKind::Lyrics, "Lyrics", self.ipc_tx.clone());
+                                }
+                                4 => {
+                                    spawn_sync_and_wait(self.client.clone(), gtm_core::ipc::SyncKind::Metadata, "Metadata", self.ipc_tx.clone());
+                                }
+                                5 => {
+                                    self.cycle_footer_preset();
+                                }
+                                6 => {
+                                    self.pickers.open(PickerId::VisualizerPreset);
+                                }
+                                _ => {}
+                            },
+                            4 => match opt {
+                                0 => {
+                                    let c = self.client.clone();
+                                    let ipc_tx = self.ipc_tx.clone();
+                                    tokio::spawn(async move {
+                                        match c.spotify_play_pause().await {
+                                            Ok(status) => { let _ = ipc_tx.send(IpcResult::SpotifyStatus(status)); }
+                                            Err(e) => { let _ = ipc_tx.send(IpcResult::Error(format!("Spotify play/pause: {e}"))); }
+                                        }
+                                    });
+                                }
+                                3 => {
+                                    self.spotify_token_input.clear();
+                                    self.pickers.open(PickerId::SpotifyLinkToken);
+                                }
+                                4 => {
+                                    let c = self.client.clone();
+                                    let ipc_tx = self.ipc_tx.clone();
+                                    tokio::spawn(async move {
+                                        match c.spotify_sync().await {
+                                            Ok(()) => { let _ = ipc_tx.send(IpcResult::Notification("Spotify".to_string(), "Spotify sync complete".to_string(), NotificationKind::Success)); }
+                                            Err(e) => { let _ = ipc_tx.send(IpcResult::Error(format!("Spotify sync: {e}"))); }
+                                        }
+                                    });
+                                }
+                                5 => {
+                                    let c = self.client.clone();
+                                    let ipc_tx = self.ipc_tx.clone();
+                                    tokio::spawn(async move {
+                                        match c.spotify_clear().await {
+                                            Ok(status) => { let _ = ipc_tx.send(IpcResult::SpotifyStatus(status)); let _ = ipc_tx.send(IpcResult::Notification("Spotify".to_string(), "Account unlinked".to_string(), NotificationKind::Info)); }
+                                            Err(e) => { let _ = ipc_tx.send(IpcResult::Error(format!("Spotify unlink: {e}"))); }
+                                        }
+                                    });
+                                }
+                                7 => {
+                                    self.spotify_token_input.clear();
+                                    self.pickers.open(PickerId::SpotifyLinkToken);
+                                }
+                                8 => {
+                                    let c = self.client.clone();
+                                    let ipc_tx = self.ipc_tx.clone();
+                                    tokio::spawn(async move {
+                                        match c.soloist_start().await {
+                                            Ok(_status) => { let _ = ipc_tx.send(IpcResult::Notification("Soloist".to_string(), "Soloist started".to_string(), NotificationKind::Success)); }
+                                            Err(e) => { let _ = ipc_tx.send(IpcResult::Error(format!("Soloist start: {e}"))); }
+                                        }
+                                    });
+                                }
+                                9 => {
+                                    let c = self.client.clone();
+                                    let ipc_tx = self.ipc_tx.clone();
+                                    tokio::spawn(async move {
+                                        match c.soloist_stop().await {
+                                            Ok(_status) => { let _ = ipc_tx.send(IpcResult::Notification("Soloist".to_string(), "Soloist stopped".to_string(), NotificationKind::Success)); }
+                                            Err(e) => { let _ = ipc_tx.send(IpcResult::Error(format!("Soloist stop: {e}"))); }
+                                        }
+                                    });
+                                }
+                                10 => {
+                                    let c = self.client.clone();
+                                    let ipc_tx = self.ipc_tx.clone();
+                                    tokio::spawn(async move {
+                                        match c.soloist_activate().await {
+                                            Ok(_status) => { let _ = ipc_tx.send(IpcResult::Notification("Soloist".to_string(), "Device activated".to_string(), NotificationKind::Success)); }
+                                            Err(e) => { let _ = ipc_tx.send(IpcResult::Error(format!("Soloist activate: {e}"))); }
+                                        }
+                                    });
+                                }
+                                12 => {
+                                    let new_val = !self.state.soloist_auto_start;
+                                    self.state.soloist_auto_start = new_val;
+                                    let c = self.client.clone();
+                                    let ipc_tx = self.ipc_tx.clone();
+                                    tokio::spawn(async move {
+                                        match c.soloist_set_config(new_val).await {
+                                            Ok(()) => { let _ = ipc_tx.send(IpcResult::Notification("Soloist".to_string(), format!("Soloist auto-start: {}", if new_val { "enabled" } else { "disabled" }), NotificationKind::Info)); }
+                                            Err(e) => { let _ = ipc_tx.send(IpcResult::Error(format!("Soloist auto-start: {e}"))); }
+                                        }
+                                    });
+                                }
+                                _ => {}
+                            },
+                            _ => {}
+                        }
+                    }
+                    return;
+                }
+                _ => {}
+            }
+            return;
+        }
+
         let top_id = self.pickers.top().map(|o| o.id);
         let is_help = top_id == Some(PickerId::Help);
         let ctrl_or_alt = key
@@ -4046,8 +4620,13 @@ impl App {
                     }
                     return;
                 }
+                let count = self.picker_item_count();
                 if let Some(top) = self.pickers.top_mut() {
-                    top.selected = top.selected.saturating_sub(1);
+                    if count > 0 && top.selected == 0 {
+                        top.selected = count - 1;
+                    } else {
+                        top.selected = top.selected.saturating_sub(1);
+                    }
                     let is_theme = top.id == PickerId::ThemePicker;
                     let selected = top.selected;
                     if is_theme {
@@ -4083,8 +4662,14 @@ impl App {
                     }
                     return;
                 }
+                let count = self.picker_item_count();
                 if let Some(top) = self.pickers.top_mut() {
-                    top.selected += 1;
+                    let max = count.saturating_sub(1);
+                    if count > 0 && top.selected >= max {
+                        top.selected = 0;
+                    } else {
+                        top.selected += 1;
+                    }
                     let is_theme = top.id == PickerId::ThemePicker;
                     let selected = top.selected;
                     if is_theme {
@@ -4329,6 +4914,7 @@ impl App {
                             } else {
                                 commands
                                     .iter()
+                                    .filter(|c| !(c.1.is_empty() && c.2.is_empty()))
                                     .filter(|c| {
                                         let lower = c.0.to_lowercase();
                                         let mut qi = 0usize;
@@ -4381,14 +4967,11 @@ impl App {
                                 } else if action == "quit" {
                                     self.pending_quit = true;
                                 } else if action == "tab cycle" {
-                                    self.current_tab = match self.current_tab {
-                                        Tab::Library => Tab::Settings,
-                                        Tab::Settings => Tab::Library,
-                                    };
+                                    self.pickers.open(PickerId::Settings);
                                 } else if action == "library" {
                                     self.current_tab = Tab::Library;
                                 } else if action == "settings" {
-                                    self.current_tab = Tab::Settings;
+                                    self.pickers.open(PickerId::Settings);
                                 } else if action == "queue" {
                                     self.pickers.open(PickerId::Queue);
                                 } else if action == "youtube" {
@@ -4469,10 +5052,7 @@ impl App {
                                         true,
                                     );
                                 } else if action == "prev tab" {
-                                    self.current_tab = match self.current_tab {
-                                        Tab::Library => Tab::Settings,
-                                        Tab::Settings => Tab::Library,
-                                    };
+                                    self.pickers.open(PickerId::Settings);
                                 } else if action == "multiselect" {
                                     if self.current_tab == Tab::Library && !self.library_pane_focus
                                     {
@@ -4871,6 +5451,13 @@ impl App {
                     if top.id == PickerId::SearchLibrary {
                         top.source = top.source.next();
                         top.selected = 0;
+                        top.viewport_offset = 0;
+                        self.picker_preview_cover = None;
+                        self.picker_preview_stateful = None;
+                        self.last_picker_preview_fetch_id = None;
+                        self.artist_cover = None;
+                        self.artist_cover_stateful = None;
+                        self.last_artist_cover_fetch = None;
                     } else if top.id == PickerId::EditMetadata {
                         self.metadata.field_idx = (self.metadata.field_idx + 1) % 7;
                     }

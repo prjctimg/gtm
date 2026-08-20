@@ -16,15 +16,14 @@
 Name: gtm
 Version: %{gtm_version}
 Release: 1
-Summary: gtm terminal music player - client and daemon
+Summary: gtm - feature rich and cross platform terminal audio player
 License: GPL-3.0-only
 URL: https://github.com/prjctimg/gtm.rs
 Requires: alsa-lib
 
 %description
-gtm bundles the gtm terminal music player client (TUI + CLI) and the
-gtmd background daemon, along with man pages, shell completions, a desktop
-entry, and a systemd user service.
+gtm is a feature rich and cross platform terminal audio player with
+background playback and YouTube/Spotify integration.
 
 %install
 cp -a %{gtm_staging}/. %{buildroot}/

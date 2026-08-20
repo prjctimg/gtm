@@ -1,6 +1,6 @@
 [Desktop Entry]
 Name=gtm Music Player
-Comment=Terminal-based music player daemon and client
+Comment=Feature rich and cross platform terminal audio player
 Exec=gtm
 Icon=gtm
 Terminal=true

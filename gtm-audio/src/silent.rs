@@ -164,4 +164,7 @@ impl Mixer for NullMixer {
     fn current_peak_level(&self) -> f32 {
         0.0
     }
+    fn current_spectrum(&self) -> Vec<f32> {
+        Vec::new()
+    }
 }

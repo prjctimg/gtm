@@ -545,7 +545,7 @@ fn render_queue(app: &App) -> Option<String> {
         return None;
     }
     let cursor = app.queue_cursor;
-    Some(format!("[{}/{}]", cursor + 1, len))
+    Some(format!("{}/{}", cursor + 1, len))
 }
 
 fn render_keyaction(app: &App) -> Option<String> {
