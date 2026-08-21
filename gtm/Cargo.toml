@@ -20,6 +20,7 @@ tokio = { version = "1", features = ["full"] }
 clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6"
 image = "0.25"
+color-thief = "0.2"
 ratatui-image = { version = "11", default-features = false, features = ["crossterm", "image-defaults"] }
 base64 = "0.22"
 serde = "1"

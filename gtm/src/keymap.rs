@@ -7,7 +7,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::picker::PickerId;
-use gtm_core::state::Tab;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyContext {
@@ -18,10 +17,9 @@ pub enum KeyContext {
 
 #[derive(Debug, Clone)]
 pub enum KeyboardAction {
-    // Tab switching
-    NextTab,
-    PrevTab,
-    SwitchTab(Tab),
+    // Pane cycling (Tab / Shift-Tab)
+    NextPane,
+    PrevPane,
 
     // Cursor
     MoveUp,
@@ -109,7 +107,24 @@ impl Keybindings {
 }
 
 fn key_matches(event: &KeyEvent, binding: &KeyEvent) -> bool {
-    event.code == binding.code && event.modifiers == binding.modifiers
+    if event.code != binding.code {
+        return false;
+    }
+    // Chord modifiers (Ctrl/Alt/Cmd) must match exactly when a binding
+    // specifies them, and a binding recorded without chords never fires for
+    // a chord-carrying press: some terminals drop CONTROL on punctuation,
+    // which used to let plain playback bindings (e.g. `,` seek) swallow
+    // shortcuts like Ctrl+, (Settings picker).
+    let chords = KeyModifiers::CONTROL
+        | KeyModifiers::ALT
+        | KeyModifiers::SUPER
+        | KeyModifiers::META
+        | KeyModifiers::HYPER;
+    if event.modifiers.intersects(chords) || binding.modifiers.intersects(chords) {
+        return event.modifiers == binding.modifiers;
+    }
+    // Shift alone is fuzzy: terminals report it inconsistently for letters.
+    true
 }
 
 /// Build the default set of key bindings.  Layered by context:
@@ -154,26 +169,18 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Tab switching: Tab / Shift-Tab
+            // Pane cycling: Tab / Shift-Tab
             (
                 KeyCode::Tab.into(),
                 BoundCommand {
-                    action: KeyboardAction::NextTab,
+                    action: KeyboardAction::NextPane,
                     contexts: vec![KeyContext::Normal],
                 },
             ),
             (
                 KeyCode::BackTab.into(),
                 BoundCommand {
-                    action: KeyboardAction::PrevTab,
-                    contexts: vec![KeyContext::Normal],
-                },
-            ),
-            // Numbered tab switching: 1 = Library
-            (
-                KeyCode::Char('1').into(),
-                BoundCommand {
-                    action: KeyboardAction::SwitchTab(Tab::Library),
+                    action: KeyboardAction::PrevPane,
                     contexts: vec![KeyContext::Normal],
                 },
             ),
@@ -632,17 +639,18 @@ mod tests {
     }
 
     #[test]
-    fn numbered_tabs_switch_views() {
-        assert!(matches!(
-            dispatch(KeyCode::Char('1').into(), KeyContext::Normal),
-            Some(KeyboardAction::SwitchTab(Tab::Library))
-        ));
+    fn settings_picker_shortcut_not_shadowed_by_chords() {
+        // Ctrl+, opens the Settings picker; plain `,` seeks backward.
         assert!(matches!(
             dispatch(
                 KeyEvent::new(KeyCode::Char(','), KeyModifiers::CONTROL),
                 KeyContext::Normal
             ),
             Some(KeyboardAction::OpenOverlay(PickerId::Settings))
+        ));
+        assert!(matches!(
+            dispatch(KeyCode::Char(',').into(), KeyContext::Normal),
+            Some(KeyboardAction::SeekBackward)
         ));
     }
 

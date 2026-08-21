@@ -12,7 +12,7 @@ use gtm_core::client::DaemonClient;
 use gtm_core::ipc::DaemonRes;
 use gtm_core::spotify::{SoloistStatus, SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use gtm_core::state::EqPreset;
-use gtm_core::state::{DaemonState, PlaybackStatus, RepeatMode, Tab};
+use gtm_core::state::{DaemonState, PlaybackStatus, RepeatMode};
 use gtm_core::track::{Playlist, TrackInfo, YTSearchResult};
 use ratatui::layout::Alignment;
 use ratatui::widgets::Paragraph;
@@ -81,6 +81,10 @@ pub struct Prefs {
     theme_name: String,
     #[serde(default)]
     transparent_bg: bool,
+    #[serde(default)]
+    transparent_pickers: bool,
+    #[serde(default)]
+    reactive_theme: bool,
     #[serde(default = "default_footer_preset_name")]
     footer_preset_name: String,
     #[serde(default)]
@@ -103,6 +107,8 @@ impl Default for Prefs {
         Self {
             theme_name: default_theme_name(),
             transparent_bg: false,
+            transparent_pickers: false,
+            reactive_theme: false,
             footer_preset_name: default_footer_preset_name(),
             progress_style: crate::progress::ProgressStyle::default(),
 
@@ -258,7 +264,6 @@ pub struct App {
     pub scanner_hold: i32,
     /// Cursor blink toggle for search pickers (alternates every ~8 frames).
     pub cursor_blink: bool,
-    pub current_tab: Tab,
     pub input_mode: InputMode,
     pub search_query: String,
     /// Per-category selection index, keyed by `library_category`, so every
@@ -308,6 +313,9 @@ pub struct App {
     pub list_scroll: usize,
     pub viewport_items: usize,
     pub transparent_bg: bool,
+    pub transparent_pickers: bool,
+    pub reactive_theme: bool,
+    reactive_palette: Option<crate::reactive::ReactivePalette>,
     pub last_action_name: Option<(String, std::time::Instant)>,
     pub footer_presets: Vec<footer::FooterPreset>,
     pub footer_preset: usize,
@@ -318,7 +326,6 @@ pub struct App {
     /// notification only appears on genuine auto-advance.
     pub manual_track_advance: bool,
     last_track_path_display: Option<String>,
-    prev_tab: Tab,
     prev_track_id: Option<i64>,
     prev_status: gtm_core::state::PlaybackStatus,
     prev_volume: u8,
@@ -403,6 +410,7 @@ enum IpcResult {
     SpotifyTracks(Vec<SpotifyTrack>),
     SpotifySearchWebResults(Vec<SpotifyTrack>),
     SoloistStatus(SoloistStatus),
+    ReactivePalette(Option<crate::reactive::ReactivePalette>),
 }
 
 fn spawn_sync_and_wait(
@@ -565,7 +573,6 @@ impl App {
             scanner_dir: 1,
             scanner_hold: 0,
             cursor_blink: true,
-            current_tab: Tab::Library,
             input_mode: InputMode::Normal,
             search_query: String::new(),
             scroll_offset: [0; LIBRARY_CATEGORIES.len()],
@@ -622,6 +629,9 @@ impl App {
             list_scroll: 0,
             viewport_items: 20,
             transparent_bg: prefs.transparent_bg,
+            transparent_pickers: prefs.transparent_pickers,
+            reactive_theme: prefs.reactive_theme,
+            reactive_palette: None,
             last_action_name: None,
             footer_presets,
             footer_preset,
@@ -630,7 +640,6 @@ impl App {
             last_queue_cursor: initial_cursor,
             manual_track_advance: false,
             last_track_path_display: None,
-            prev_tab: Tab::Library,
             prev_track_id: None,
             prev_status: gtm_core::state::PlaybackStatus::Stopped,
             prev_volume: 100,
@@ -714,11 +723,13 @@ impl App {
             .iter()
             .position(|t| t.name == prefs.theme_name)
             .unwrap_or(0);
-        self.theme = self.themes[theme_index].theme;
         self.theme_index = theme_index;
+        self.apply_reactive();
 
         // Transparent bg
         self.transparent_bg = prefs.transparent_bg;
+        self.transparent_pickers = prefs.transparent_pickers;
+        self.reactive_theme = prefs.reactive_theme;
 
         // Footer preset
         let footer_preset = self
@@ -755,6 +766,8 @@ impl App {
                 .map(|t| t.name.to_string())
                 .unwrap_or_else(default_theme_name),
             transparent_bg: self.transparent_bg,
+            transparent_pickers: self.transparent_pickers,
+            reactive_theme: self.reactive_theme,
             footer_preset_name: self
                 .footer_presets
                 .get(self.footer_preset)
@@ -779,9 +792,38 @@ impl App {
     /// the live `theme` field.
     fn apply_theme_index(&mut self, idx: usize) {
         let idx = idx.min(self.themes.len().saturating_sub(1));
-        self.theme = self.themes[idx].theme;
         self.theme_index = idx;
+        self.apply_reactive();
         save_prefs(&self.current_prefs());
+    }
+
+    /// Recompute the live theme: the base preset, re-tinted by the reactive
+    /// cover palette when reactive theming is enabled.
+    fn apply_reactive(&mut self) {
+        let Some(entry) = self.themes.get(self.theme_index) else {
+            return;
+        };
+        let light = entry.light;
+        let base = entry.theme;
+        self.theme = match (self.reactive_theme, self.reactive_palette) {
+            (true, Some(pal)) => crate::reactive::derive_theme(&base, &pal, light),
+            _ => base,
+        };
+    }
+
+    /// Kick off palette extraction for freshly received cover art.  Runs on
+    /// a blocking thread; the result comes back through
+    /// [`IpcResult::ReactivePalette`].
+    fn request_reactive_palette(
+        &self,
+        cover_bytes: &[u8],
+        ipc_tx: mpsc::UnboundedSender<IpcResult>,
+    ) {
+        let bytes = cover_bytes.to_vec();
+        tokio::task::spawn_blocking(move || {
+            let pal = crate::reactive::extract_palette(&bytes);
+            let _ = ipc_tx.send(IpcResult::ReactivePalette(pal));
+        });
     }
 
     /// Cycle to the next theme in the list, persist, and refresh.
@@ -1086,6 +1128,10 @@ impl App {
                             // every second.
                             if !no_image_protocol() {
                                 if let Some(c) = cover {
+                                    if self.reactive_theme {
+                                        let tx = self.ipc_tx.clone();
+                                        self.request_reactive_palette(&c, tx);
+                                    }
                                     self.np_cover.image = Some(c);
                                     self.np_cover.track_id = cover_tid;
                                     self.sync_cover_stateful();
@@ -1095,10 +1141,22 @@ impl App {
                     }
                     IpcResult::CoverArt(cover, cover_tid) => {
                         if !no_image_protocol() {
+                            if let Some(c) = cover.as_ref() {
+                                if self.reactive_theme {
+                                    let tx = self.ipc_tx.clone();
+                                    self.request_reactive_palette(c, tx);
+                                }
+                            }
                             self.np_cover.image = cover;
                             self.np_cover.track_id = cover_tid;
                             self.sync_cover_stateful();
                             self.cover_art_dirty = true;
+                        }
+                    }
+                    IpcResult::ReactivePalette(pal) => {
+                        if self.reactive_theme {
+                            self.reactive_palette = pal;
+                            self.apply_reactive();
                         }
                     }
                     IpcResult::LibraryTracks(tracks) => self.tracks_cache = tracks,
@@ -1267,9 +1325,6 @@ impl App {
             }
 
             // Detect state changes
-            if self.current_tab != self.prev_tab {
-                self.prev_tab = self.current_tab;
-            }
             let current_tid = self.state.current_track.as_ref().map(|t| t.id);
             if current_tid != self.prev_track_id {
                 self.prev_track_id = current_tid;
@@ -1465,31 +1520,21 @@ impl App {
         lyric_index_at(&lyrics.lines, self.raw_position)
     }
 
-    /// Cycle pane focus with Tab/Shift-Tab.  On the Library tab with lyrics
-    /// open this walks left pane → right pane → lyrics pane (or the reverse
-    /// for Shift-Tab); otherwise it toggles the left/right panes.  Leaving
-    /// the lyrics pane re-enables lyric auto-follow.
+    /// Cycle pane focus with Tab/Shift-Tab.  With lyrics open this walks
+    /// left pane → right pane → lyrics pane (or the reverse for Shift-Tab);
+    /// otherwise it toggles the left/right panes.  Leaving the lyrics pane
+    /// re-enables lyric auto-follow.
     fn cycle_pane_focus(&mut self, forward: bool) {
-        match self.current_tab {
-            Tab::Library => {
-                if self.show_lyrics {
-                    let (lib, lyr) = cycle_library_focus(
-                        self.library_pane_focus,
-                        self.lyrics_pane_focus,
-                        forward,
-                    );
-                    self.library_pane_focus = lib;
-                    self.lyrics_pane_focus = lyr;
-                    if !lyr {
-                        self.lyrics_manual_scroll = false;
-                    }
-                } else {
-                    self.library_pane_focus = !self.library_pane_focus;
-                }
+        if self.show_lyrics {
+            let (lib, lyr) =
+                cycle_library_focus(self.library_pane_focus, self.lyrics_pane_focus, forward);
+            self.library_pane_focus = lib;
+            self.lyrics_pane_focus = lyr;
+            if !lyr {
+                self.lyrics_manual_scroll = false;
             }
-            Tab::Settings => {
-                self.settings_pane_focus = !self.settings_pane_focus;
-            }
+        } else {
+            self.library_pane_focus = !self.library_pane_focus;
         }
     }
 
@@ -2189,7 +2234,7 @@ impl App {
             0 => 2,  // Audio: Master Volume, Mute
             1 => 4,  // YouTube: Cookie Source, Cookie File, JS Runtime, Auto Download
             2 => 6,  // Playback: Repeat, Shuffle, Crossfade, Easing, EQ Enabled, Reverb
-            3 => 7, // System: Theme, Transparent BG, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer
+            3 => 9, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme
             4 => 13, // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Soloist, Link Soloist, Start, Stop, Activate, Device, Auto-Start
             _ => 0,
         }
@@ -2367,6 +2412,10 @@ impl App {
                 );
                 let ipc = ipc_tx.clone();
                 let client2 = self.client.clone();
+                let cookie_file = self
+                    .cookie_file
+                    .clone()
+                    .filter(|p| std::path::Path::new(p).is_file());
                 tokio::spawn(async move {
                     let audio_dir = std::env::var("XDG_DATA_HOME")
                         .map(|d| std::path::PathBuf::from(d).join("gtm").join("audio"))
@@ -2376,16 +2425,20 @@ impl App {
                         });
                     std::fs::create_dir_all(&audio_dir).ok();
                     let template = audio_dir.join("%(title)s.%(ext)s");
-                    let output = tokio::process::Command::new("yt-dlp")
-                        .arg("--extract-audio")
+                    let mut cmd = tokio::process::Command::new("yt-dlp");
+                    cmd.arg("--extract-audio")
                         .arg("--audio-format")
                         .arg("mp3")
                         .arg("--restrict-filenames")
                         .arg("-o")
-                        .arg(template.to_string_lossy().as_ref())
-                        .arg(&url)
-                        .output()
-                        .await;
+                        .arg(template.to_string_lossy().as_ref());
+                    // YouTube blocks anonymous downloads with HTTP 403; the
+                    // cookie file configured in Settings → YouTube must ride
+                    // along with every download attempt.
+                    if let Some(cf) = cookie_file.as_ref() {
+                        cmd.arg("--cookies").arg(cf);
+                    }
+                    let output = cmd.arg(&url).output().await;
                     let msg = match output {
                         Ok(o) if o.status.success() => {
                             let _ = client2
@@ -2845,20 +2898,9 @@ impl App {
                     self.search_query.clear();
                 }
                 KeyCode::Enter => {
-                    let q = self.search_query.clone();
-                    self.input_mode = InputMode::Normal;
-                    match self.current_tab {
-                        Tab::Library => {
-                            // Commit the filter without clearing it and play
-                            // the highlighted row in the filtered list.
-                            self.play_filtered_highlighted();
-                        }
-                        _ => {
-                            let tx = self.cmd_tx();
-                            let _ = tx.send(TuiCommand::Search(q)).await;
-                            self.search_query.clear();
-                        }
-                    }
+                    // Commit the filter without clearing it and play
+                    // the highlighted row in the filtered list.
+                    self.play_filtered_highlighted();
                 }
                 KeyCode::Char(c) => {
                     self.search_query.push(c);
@@ -2891,10 +2933,7 @@ impl App {
                     return true;
                 }
                 // Handle gg (vim-style double-press) for jump to start
-                if key.code == KeyCode::Char('g')
-                    && self.current_tab == Tab::Library
-                    && !self.library_pane_focus
-                {
+                if key.code == KeyCode::Char('g') && !self.library_pane_focus {
                     if self.pending_motion == Some('g') {
                         // Second 'g': execute jump to start
                         self.pending_motion = None;
@@ -2908,11 +2947,7 @@ impl App {
                     }
                 }
                 // In multiselect mode, Tab toggles selection and advances
-                if key.code == KeyCode::Tab
-                    && self.multiselect_mode
-                    && self.current_tab == Tab::Library
-                    && !self.library_pane_focus
-                {
+                if key.code == KeyCode::Tab && self.multiselect_mode && !self.library_pane_focus {
                     let pos = self.list_pos();
                     if self.selected_indices.contains(&pos) {
                         self.selected_indices.remove(&pos);
@@ -2945,26 +2980,12 @@ impl App {
                         let _ = tokio::time::timeout(Duration::from_millis(1500), c.quit()).await;
                         return false;
                     }
-                    Some(KeyboardAction::NextTab) => {
+                    Some(KeyboardAction::NextPane) => {
                         self.cycle_pane_focus(true);
                         self.dismiss_track_popup();
                     }
-                    Some(KeyboardAction::PrevTab) => {
+                    Some(KeyboardAction::PrevPane) => {
                         self.cycle_pane_focus(false);
-                        self.dismiss_track_popup();
-                    }
-                    Some(KeyboardAction::SwitchTab(tab)) => {
-                        if tab == Tab::Settings {
-                            self.pickers.open(PickerId::Settings);
-                        } else if self.current_tab != tab {
-                            self.current_tab = tab;
-                            self.library_pane_focus = false;
-                            self.settings_pane_focus = false;
-                            self.lyrics_pane_focus = false;
-                            self.lyrics_manual_scroll = false;
-                            self.browse_detail = None;
-                            self.set_list_pos(0);
-                        }
                         self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::OpenOverlay(id)) => {
@@ -3063,37 +3084,6 @@ impl App {
                     }
                     Some(KeyboardAction::ToggleFavourite) => {
                         self.set_last_action("Toggle Favourite");
-                        if self.current_tab != Tab::Library {
-                            // Fall back to the current playing track outside the library.
-                            if let Some(ref track) = self.state.current_track {
-                                let track_id = track.id;
-                                let new_fav = !track.favourite;
-                                if let Some(ref mut ct) = self.state.current_track {
-                                    ct.favourite = new_fav;
-                                }
-                                for t in &mut self.tracks_cache {
-                                    if t.id == track_id {
-                                        t.favourite = new_fav;
-                                        break;
-                                    }
-                                }
-                                let tx = self.cmd_tx();
-                                let _ = tx
-                                    .send(if new_fav {
-                                        TuiCommand::AddFavourite(track_id)
-                                    } else {
-                                        TuiCommand::RemoveFavourite(track_id)
-                                    })
-                                    .await;
-                                self.notify_titled(
-                                    "Library",
-                                    "Favourite toggled",
-                                    NotificationKind::Info,
-                                    true,
-                                );
-                            }
-                            return true;
-                        }
                         if self.library_pane_focus {
                             return true;
                         }
@@ -3215,7 +3205,7 @@ impl App {
                         self.send_high(TuiCommand::CheckHealth);
                     }
                     Some(KeyboardAction::FocusLeft) => {
-                        if self.show_lyrics && self.current_tab == Tab::Library {
+                        if self.show_lyrics {
                             if self.lyrics_pane_focus {
                                 // lyrics → right (track) pane
                                 self.lyrics_pane_focus = false;
@@ -3225,14 +3215,11 @@ impl App {
                                 self.library_pane_focus = true;
                             }
                         } else {
-                            match self.current_tab {
-                                Tab::Library => self.library_pane_focus = true,
-                                Tab::Settings => self.settings_pane_focus = true,
-                            }
+                            self.library_pane_focus = true;
                         }
                     }
                     Some(KeyboardAction::FocusRight) => {
-                        if self.show_lyrics && self.current_tab == Tab::Library {
+                        if self.show_lyrics {
                             if self.library_pane_focus {
                                 // left → right (track) pane
                                 self.library_pane_focus = false;
@@ -3242,13 +3229,8 @@ impl App {
                                 self.lyrics_pane_focus = true;
                             }
                         } else {
-                            match self.current_tab {
-                                Tab::Library => {
-                                    self.library_pane_focus = false;
-                                    self.update_track_popup();
-                                }
-                                Tab::Settings => self.settings_pane_focus = false,
-                            }
+                            self.library_pane_focus = false;
+                            self.update_track_popup();
                         }
                     }
                     Some(KeyboardAction::Back) => {
@@ -3266,7 +3248,7 @@ impl App {
                                 if self.library_category == 5 {
                                     self.spotify_playlist_tracks_cache.clear();
                                 }
-                            } else if !self.library_pane_focus && self.current_tab == Tab::Library {
+                            } else if !self.library_pane_focus {
                                 self.library_pane_focus = true;
                             }
                         }
@@ -3291,29 +3273,16 @@ impl App {
                         if self.lyrics_pane_focus && self.show_lyrics {
                             self.lyrics_manual_scroll = true;
                             self.lyrics_scroll = self.lyrics_scroll.saturating_sub(1);
-                        } else {
-                            match self.current_tab {
-                                Tab::Library if self.library_pane_focus => {
-                                    let new_cat = self.library_category.saturating_sub(1);
-                                    if new_cat != self.library_category {
-                                        self.browse_detail = None;
-                                        self.library_category = new_cat;
-                                        self.set_list_pos(0);
-                                    }
-                                }
-                                Tab::Settings if self.settings_pane_focus => {
-                                    self.settings_category =
-                                        self.settings_category.saturating_sub(1);
-                                    self.settings_option = 0;
-                                }
-                                Tab::Settings => {
-                                    self.settings_option = self.settings_option.saturating_sub(1);
-                                }
-                                Tab::Library => {
-                                    self.set_list_pos(self.list_pos().saturating_sub(1));
-                                    self.update_track_popup();
-                                }
+                        } else if self.library_pane_focus {
+                            let new_cat = self.library_category.saturating_sub(1);
+                            if new_cat != self.library_category {
+                                self.browse_detail = None;
+                                self.library_category = new_cat;
+                                self.set_list_pos(0);
                             }
+                        } else {
+                            self.set_list_pos(self.list_pos().saturating_sub(1));
+                            self.update_track_popup();
                         }
                     }
                     Some(KeyboardAction::MoveDown) => {
@@ -3325,33 +3294,18 @@ impl App {
                                 .map(|l| l.lines.len().saturating_sub(1))
                                 .unwrap_or(0);
                             self.lyrics_scroll = (self.lyrics_scroll + 1).min(max);
-                        } else {
-                            match self.current_tab {
-                                Tab::Library if self.library_pane_focus => {
-                                    let new_cat = (self.library_category + 1)
-                                        .min(LIBRARY_CATEGORIES.len() - 1);
-                                    if new_cat != self.library_category {
-                                        self.browse_detail = None;
-                                        self.library_category = new_cat;
-                                        self.set_list_pos(0);
-                                    }
-                                }
-                                Tab::Settings if self.settings_pane_focus => {
-                                    self.settings_category = (self.settings_category + 1)
-                                        .min(NUM_SETTINGS_CATEGORIES.saturating_sub(1));
-                                    self.settings_option = 0;
-                                }
-                                Tab::Settings => {
-                                    let max =
-                                        self.settings_options_for_category().saturating_sub(1);
-                                    self.settings_option = (self.settings_option + 1).min(max);
-                                }
-                                Tab::Library => {
-                                    let max_list = self.library_list_len().saturating_sub(1);
-                                    self.set_list_pos((self.list_pos() + 1).min(max_list));
-                                    self.update_track_popup();
-                                }
+                        } else if self.library_pane_focus {
+                            let new_cat =
+                                (self.library_category + 1).min(LIBRARY_CATEGORIES.len() - 1);
+                            if new_cat != self.library_category {
+                                self.browse_detail = None;
+                                self.library_category = new_cat;
+                                self.set_list_pos(0);
                             }
+                        } else {
+                            let max_list = self.library_list_len().saturating_sub(1);
+                            self.set_list_pos((self.list_pos() + 1).min(max_list));
+                            self.update_track_popup();
                         }
                     }
                     Some(KeyboardAction::PageUp) => {
@@ -3359,7 +3313,7 @@ impl App {
                             self.lyrics_manual_scroll = true;
                             let page = self.viewport_items.max(1);
                             self.lyrics_scroll = self.lyrics_scroll.saturating_sub(page);
-                        } else if self.current_tab == Tab::Library && !self.library_pane_focus {
+                        } else if !self.library_pane_focus {
                             let page = self.viewport_items.max(1);
                             self.set_list_pos(self.list_pos().saturating_sub(page));
                             self.update_track_popup();
@@ -3375,7 +3329,7 @@ impl App {
                                 .map(|l| l.lines.len().saturating_sub(1))
                                 .unwrap_or(0);
                             self.lyrics_scroll = (self.lyrics_scroll + page).min(max);
-                        } else if self.current_tab == Tab::Library && !self.library_pane_focus {
+                        } else if !self.library_pane_focus {
                             let page = self.viewport_items.max(1);
                             let max_list = self.library_list_len().saturating_sub(1);
                             self.set_list_pos((self.list_pos() + page).min(max_list));
@@ -3386,7 +3340,7 @@ impl App {
                         if self.lyrics_pane_focus && self.show_lyrics {
                             self.lyrics_manual_scroll = true;
                             self.lyrics_scroll = 0;
-                        } else if self.current_tab == Tab::Library && !self.library_pane_focus {
+                        } else if !self.library_pane_focus {
                             self.set_list_pos(0);
                         }
                     }
@@ -3399,13 +3353,13 @@ impl App {
                                 .map(|l| l.lines.len().saturating_sub(1))
                                 .unwrap_or(0);
                             self.lyrics_scroll = max;
-                        } else if self.current_tab == Tab::Library && !self.library_pane_focus {
+                        } else if !self.library_pane_focus {
                             let max_list = self.library_list_len().saturating_sub(1);
                             self.set_list_pos(max_list);
                         }
                     }
                     Some(KeyboardAction::Select) => {
-                        if self.current_tab == Tab::Library {
+                        {
                             if self.library_pane_focus {
                                 self.library_pane_focus = false;
                             } else if self.browse_detail.is_some() {
@@ -3533,277 +3487,10 @@ impl App {
                                 // Default: play track from flat list (All Tracks / Liked)
                                 self.play_filtered_highlighted();
                             }
-                        } else if self.current_tab == Tab::Settings && !self.settings_pane_focus {
-                            let opt = self.settings_option;
-                            match self.settings_category {
-                                0 => match opt {
-                                    0 => {
-                                        // Master Volume: cycle in 10% increments
-                                        let current = self.state.master_volume;
-                                        let new_vol = if current >= 100 {
-                                            50
-                                        } else {
-                                            (current + 10).min(100)
-                                        };
-                                        self.send_high(TuiCommand::SetMasterVolume(new_vol));
-                                        self.notify(
-                                            format!("Master Volume: {}%", new_vol),
-                                            NotificationKind::Info,
-                                        );
-                                    }
-                                    1 => {
-                                        // Mute toggle
-                                        let muted = !self.state.mute;
-                                        self.send_high(TuiCommand::SetVolume(if muted {
-                                            0
-                                        } else {
-                                            self.state.volume
-                                        }));
-                                        self.state.mute = muted;
-                                    }
-                                    _ => {}
-                                },
-                                1 => {
-                                    if opt == 1 {
-                                        // Cookie File: set directory
-                                        let c = self.client.clone();
-                                        let current = self.cookie_file.clone();
-                                        let new_path = if current.is_some() {
-                                            None
-                                        } else {
-                                            // Default to common cookie path
-                                            let home = std::env::var("HOME").unwrap_or_default();
-                                            Some(format!("{home}/.cookies/youtube.txt"))
-                                        };
-                                        let display = new_path
-                                            .clone()
-                                            .unwrap_or_else(|| "(none)".to_string());
-                                        self.cookie_file = new_path.clone();
-                                        let cf = new_path.clone();
-                                        tokio::spawn(async move {
-                                            let _ =
-                                                c.yt_set_config(None, cf, None, None, None).await;
-                                        });
-                                        self.notify(
-                                            format!("Cookie file: {display}"),
-                                            crate::app::NotificationKind::Info,
-                                        );
-                                    }
-                                }
-                                2 => match opt {
-                                    0 => {
-                                        let next = match self.state.repeat {
-                                            gtm_core::state::RepeatMode::Off => {
-                                                gtm_core::state::RepeatMode::One
-                                            }
-                                            gtm_core::state::RepeatMode::One => {
-                                                gtm_core::state::RepeatMode::All
-                                            }
-                                            gtm_core::state::RepeatMode::All => {
-                                                gtm_core::state::RepeatMode::Off
-                                            }
-                                        };
-                                        let c = self.client.clone();
-                                        tokio::spawn(async move {
-                                            let _ = c.cycle_repeat(next).await;
-                                        });
-                                        self.state.repeat = next;
-                                    }
-                                    1 => {
-                                        let c = self.client.clone();
-                                        tokio::spawn(async move {
-                                            let _ = c.toggle_shuffle().await;
-                                        });
-                                        self.state.shuffle = !self.state.shuffle;
-                                    }
-                                    2 => {
-                                        self.pickers.open(PickerId::Crossfade);
-                                    }
-                                    3 => {
-                                        self.pickers.open(PickerId::Crossfade);
-                                    }
-                                    4 => {
-                                        let new_enabled = !self.state.eq_enabled;
-                                        self.state.eq_enabled = new_enabled;
-                                        let c = self.client.clone();
-                                        tokio::spawn(async move {
-                                            let _ = c.set_eq_enabled(new_enabled).await;
-                                        });
-                                    }
-                                    5 => {
-                                        let new_enabled = !self.state.reverb.enabled;
-                                        let room_size = self.state.reverb.room_size;
-                                        self.state.reverb.enabled = new_enabled;
-                                        let c = self.client.clone();
-                                        tokio::spawn(async move {
-                                            let _ = c.set_reverb(new_enabled, room_size).await;
-                                        });
-                                        self.notify(
-                                            if new_enabled {
-                                                "Reverb: On"
-                                            } else {
-                                                "Reverb: Off"
-                                            },
-                                            NotificationKind::Info,
-                                        );
-                                    }
-                                    _ => {}
-                                },
-                                3 => match opt {
-                                    0 => {
-                                        self.pickers.open(PickerId::ThemePicker);
-                                    }
-                                    1 => {
-                                        self.transparent_bg = !self.transparent_bg;
-                                        save_prefs(&self.current_prefs());
-                                    }
-                                    2 => {
-                                        spawn_sync_and_wait(
-                                            self.client.clone(),
-                                            gtm_core::ipc::SyncKind::Covers,
-                                            "Covers",
-                                            self.ipc_tx.clone(),
-                                        );
-                                    }
-                                    3 => {
-                                        spawn_sync_and_wait(
-                                            self.client.clone(),
-                                            gtm_core::ipc::SyncKind::Lyrics,
-                                            "Lyrics",
-                                            self.ipc_tx.clone(),
-                                        );
-                                    }
-                                    4 => {
-                                        spawn_sync_and_wait(
-                                            self.client.clone(),
-                                            gtm_core::ipc::SyncKind::Metadata,
-                                            "Metadata",
-                                            self.ipc_tx.clone(),
-                                        );
-                                    }
-                                    5 => {
-                                        self.cycle_footer_preset();
-                                        if let Some(p) = self.footer_presets.get(self.footer_preset)
-                                        {
-                                            self.notify(
-                                                format!("Footer: {}", p.name),
-                                                NotificationKind::Info,
-                                            );
-                                        }
-                                    }
-                                    6 => {
-                                        self.pickers.open(PickerId::VisualizerPreset);
-                                    }
-                                    _ => {}
-                                },
-                                4 => match opt {
-                                    0 => {
-                                        let c = self.client.clone();
-                                        let ipc_tx = self.ipc_tx.clone();
-                                        tokio::spawn(async move {
-                                            match c.spotify_play_pause().await {
-                                                Ok(status) => {
-                                                    let _ = ipc_tx
-                                                        .send(IpcResult::SpotifyStatus(status));
-                                                }
-                                                Err(e) => {
-                                                    let _ = ipc_tx.send(IpcResult::Error(format!(
-                                                        "Spotify play/pause: {e}"
-                                                    )));
-                                                }
-                                            }
-                                        });
-                                    }
-                                    3 => {
-                                        self.spotify_token_input.clear();
-                                        self.pickers.open(PickerId::SpotifyLinkToken);
-                                    }
-                                    4 => {
-                                        let c = self.client.clone();
-                                        let ipc_tx = self.ipc_tx.clone();
-                                        tokio::spawn(async move {
-                                            match c.spotify_sync().await {
-                                                Ok(()) => {
-                                                    let _ = ipc_tx.send(IpcResult::Notification(
-                                                        "Spotify".to_string(),
-                                                        "Spotify sync complete".to_string(),
-                                                        NotificationKind::Success,
-                                                    ));
-                                                }
-                                                Err(e) => {
-                                                    let _ = ipc_tx.send(IpcResult::Error(format!(
-                                                        "Spotify sync failed: {e}"
-                                                    )));
-                                                }
-                                            }
-                                            if let Ok(status) = c.spotify_status().await {
-                                                let _ =
-                                                    ipc_tx.send(IpcResult::SpotifyStatus(status));
-                                            }
-                                            if let Ok(playlists) = c.spotify_playlists().await {
-                                                let _ = ipc_tx
-                                                    .send(IpcResult::SpotifyPlaylists(playlists));
-                                            }
-                                        });
-                                    }
-                                    5 => {
-                                        let c = self.client.clone();
-                                        let ipc_tx = self.ipc_tx.clone();
-                                        tokio::spawn(async move {
-                                            match c.spotify_clear().await {
-                                                Ok(status) => {
-                                                    let _ = ipc_tx
-                                                        .send(IpcResult::SpotifyStatus(status));
-                                                    let _ = ipc_tx.send(IpcResult::Notification(
-                                                        "Spotify".to_string(),
-                                                        "Spotify account unlinked".to_string(),
-                                                        NotificationKind::Info,
-                                                    ));
-                                                }
-                                                Err(e) => {
-                                                    let _ = ipc_tx.send(IpcResult::Error(format!(
-                                                        "Spotify unlink failed: {e}"
-                                                    )));
-                                                }
-                                            }
-                                        });
-                                    }
-                                    12 => {
-                                        let new_val = !self.state.soloist_auto_start;
-                                        self.state.soloist_auto_start = new_val;
-                                        let c = self.client.clone();
-                                        let ipc_tx = self.ipc_tx.clone();
-                                        tokio::spawn(async move {
-                                            match c.soloist_set_config(new_val).await {
-                                                Ok(()) => {
-                                                    let _ = ipc_tx.send(IpcResult::Notification(
-                                                        "Soloist".to_string(),
-                                                        if new_val {
-                                                            "Soloist: auto-start enabled"
-                                                                .to_string()
-                                                        } else {
-                                                            "Soloist: auto-start disabled"
-                                                                .to_string()
-                                                        },
-                                                        NotificationKind::Info,
-                                                    ));
-                                                }
-                                                Err(e) => {
-                                                    let _ = ipc_tx.send(IpcResult::Error(format!(
-                                                        "Soloist auto-start failed: {e}"
-                                                    )));
-                                                }
-                                            }
-                                        });
-                                    }
-                                    _ => {}
-                                },
-                                _ => {}
-                            }
                         }
                     }
                     Some(KeyboardAction::Delete) => {
-                        if self.current_tab == Tab::Library && !self.library_pane_focus {
+                        if !self.library_pane_focus {
                             let track_data = self
                                 .filtered_tracks()
                                 .get(self.list_pos())
@@ -3820,7 +3507,7 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::ToggleMultiselect) => {
-                        if self.current_tab == Tab::Library && !self.library_pane_focus {
+                        if !self.library_pane_focus {
                             self.multiselect_mode = !self.multiselect_mode;
                             if !self.multiselect_mode {
                                 self.selected_indices.clear();
@@ -3834,7 +3521,7 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::AddToQueue) => {
-                        if self.current_tab == Tab::Library && !self.library_pane_focus {
+                        if !self.library_pane_focus {
                             let tracks = self.filtered_tracks();
                             let indices: Vec<usize> =
                                 if self.multiselect_mode && !self.selected_indices.is_empty() {
@@ -3861,7 +3548,7 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::AddToPlaylist) => {
-                        if self.current_tab == Tab::Library && !self.library_pane_focus {
+                        if !self.library_pane_focus {
                             let tracks = self.filtered_tracks();
                             let indices: Vec<i64> =
                                 if self.multiselect_mode && !self.selected_indices.is_empty() {
@@ -3883,7 +3570,7 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::DeleteFromList) => {
-                        if self.current_tab == Tab::Library && !self.library_pane_focus {
+                        if !self.library_pane_focus {
                             if self.library_category == 4 && self.browse_detail.is_some() {
                                 // In playlist view: remove selected track from playlist
                                 let filtered = self.filtered_tracks();
@@ -3917,13 +3604,13 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::JumpToEnd) => {
-                        if self.current_tab == Tab::Library && !self.library_pane_focus {
+                        if !self.library_pane_focus {
                             let max = self.library_list_len().saturating_sub(1);
                             self.set_list_pos(max);
                         }
                     }
                     Some(KeyboardAction::EditMetadata) => {
-                        if self.current_tab == Tab::Library && !self.library_pane_focus {
+                        if !self.library_pane_focus {
                             let track_data = {
                                 let tracks = self.filtered_tracks();
                                 tracks.get(self.list_pos()).map(|t| {
@@ -3972,47 +3659,6 @@ impl App {
                                     self.browse_detail = None;
                                     self.set_list_pos(0);
                                 }
-                            }
-                            KeyCode::Char('c') if self.current_tab == Tab::Settings => {
-                                // Toggle crossfade in Settings tab
-                                let enabled = !self
-                                    .state
-                                    .crossfade
-                                    .as_ref()
-                                    .map(|c| c.enabled)
-                                    .unwrap_or(false);
-                                let dur = self
-                                    .state
-                                    .crossfade
-                                    .as_ref()
-                                    .map(|c| c.duration_secs)
-                                    .unwrap_or(self.crossfade_duration);
-                                let tx = self.cmd_tx();
-                                let _ = tx.send(TuiCommand::Crossfade(enabled, dur)).await;
-                            }
-                            KeyCode::Char('C') if self.current_tab == Tab::Settings => {
-                                // Cycle crossfade duration (3, 5, 7, 10, 15, 30)
-                                let dur = self
-                                    .state
-                                    .crossfade
-                                    .as_ref()
-                                    .map(|c| c.duration_secs)
-                                    .unwrap_or(self.crossfade_duration);
-                                let new_dur = match dur {
-                                    0..=3 => 5,
-                                    4..=7 => 10,
-                                    8..=14 => 15,
-                                    15..=29 => 30,
-                                    _ => 3,
-                                };
-                                let enabled = self
-                                    .state
-                                    .crossfade
-                                    .as_ref()
-                                    .map(|c| c.enabled)
-                                    .unwrap_or(true);
-                                let tx = self.cmd_tx();
-                                let _ = tx.send(TuiCommand::Crossfade(enabled, new_dur)).await;
                             }
                             KeyCode::Char('S') => {
                                 // Sync covers for tracks missing cover art
@@ -4274,8 +3920,23 @@ impl App {
                                     self.transparent_bg = !self.transparent_bg;
                                     save_prefs(&self.current_prefs());
                                 }
-                                5 => {
+                                2 => {
+                                    self.transparent_pickers = !self.transparent_pickers;
+                                    save_prefs(&self.current_prefs());
+                                }
+                                6 => {
                                     self.cycle_footer_preset();
+                                }
+                                8 => {
+                                    self.reactive_theme = !self.reactive_theme;
+                                    if self.reactive_theme && self.reactive_palette.is_none() {
+                                        if let Some(c) = self.np_cover.image.as_ref() {
+                                            let tx = self.ipc_tx.clone();
+                                            self.request_reactive_palette(c, tx);
+                                        }
+                                    }
+                                    self.apply_reactive();
+                                    save_prefs(&self.current_prefs());
                                 }
                                 _ => {}
                             },
@@ -4369,8 +4030,23 @@ impl App {
                                     self.transparent_bg = !self.transparent_bg;
                                     save_prefs(&self.current_prefs());
                                 }
-                                5 => {
+                                2 => {
+                                    self.transparent_pickers = !self.transparent_pickers;
+                                    save_prefs(&self.current_prefs());
+                                }
+                                6 => {
                                     self.cycle_footer_preset();
+                                }
+                                8 => {
+                                    self.reactive_theme = !self.reactive_theme;
+                                    if self.reactive_theme && self.reactive_palette.is_none() {
+                                        if let Some(c) = self.np_cover.image.as_ref() {
+                                            let tx = self.ipc_tx.clone();
+                                            self.request_reactive_palette(c, tx);
+                                        }
+                                    }
+                                    self.apply_reactive();
+                                    save_prefs(&self.current_prefs());
                                 }
                                 _ => {}
                             },
@@ -4515,6 +4191,10 @@ impl App {
                                     save_prefs(&self.current_prefs());
                                 }
                                 2 => {
+                                    self.transparent_pickers = !self.transparent_pickers;
+                                    save_prefs(&self.current_prefs());
+                                }
+                                3 => {
                                     spawn_sync_and_wait(
                                         self.client.clone(),
                                         gtm_core::ipc::SyncKind::Covers,
@@ -4522,7 +4202,7 @@ impl App {
                                         self.ipc_tx.clone(),
                                     );
                                 }
-                                3 => {
+                                4 => {
                                     spawn_sync_and_wait(
                                         self.client.clone(),
                                         gtm_core::ipc::SyncKind::Lyrics,
@@ -4530,7 +4210,7 @@ impl App {
                                         self.ipc_tx.clone(),
                                     );
                                 }
-                                4 => {
+                                5 => {
                                     spawn_sync_and_wait(
                                         self.client.clone(),
                                         gtm_core::ipc::SyncKind::Metadata,
@@ -4538,11 +4218,22 @@ impl App {
                                         self.ipc_tx.clone(),
                                     );
                                 }
-                                5 => {
+                                6 => {
                                     self.cycle_footer_preset();
                                 }
-                                6 => {
+                                7 => {
                                     self.pickers.open(PickerId::VisualizerPreset);
+                                }
+                                8 => {
+                                    self.reactive_theme = !self.reactive_theme;
+                                    if self.reactive_theme && self.reactive_palette.is_none() {
+                                        if let Some(c) = self.np_cover.image.as_ref() {
+                                            let tx = self.ipc_tx.clone();
+                                            self.request_reactive_palette(c, tx);
+                                        }
+                                    }
+                                    self.apply_reactive();
+                                    save_prefs(&self.current_prefs());
                                 }
                                 _ => {}
                             },
@@ -5191,11 +4882,7 @@ impl App {
                                     self.pending_quit = true;
                                 } else if action == "quit" {
                                     self.pending_quit = true;
-                                } else if action == "tab cycle" {
-                                    self.pickers.open(PickerId::Settings);
-                                } else if action == "library" {
-                                    self.current_tab = Tab::Library;
-                                } else if action == "settings" {
+                                } else if action == "tab cycle" || action == "settings" {
                                     self.pickers.open(PickerId::Settings);
                                 } else if action == "queue" {
                                     self.pickers.open(PickerId::Queue);
@@ -5281,8 +4968,7 @@ impl App {
                                 } else if action == "prev tab" {
                                     self.pickers.open(PickerId::Settings);
                                 } else if action == "multiselect" {
-                                    if self.current_tab == Tab::Library && !self.library_pane_focus
-                                    {
+                                    if !self.library_pane_focus {
                                         self.multiselect_mode = !self.multiselect_mode;
                                         if !self.multiselect_mode {
                                             self.selected_indices.clear();
@@ -5295,8 +4981,7 @@ impl App {
                                         self.notify(msg, NotificationKind::Info);
                                     }
                                 } else if action == "add to queue" {
-                                    if self.current_tab == Tab::Library && !self.library_pane_focus
-                                    {
+                                    if !self.library_pane_focus {
                                         let tracks = self.filtered_tracks();
                                         let indices: Vec<usize> = if self.multiselect_mode
                                             && !self.selected_indices.is_empty()
@@ -5323,8 +5008,7 @@ impl App {
                                         );
                                     }
                                 } else if action == "add to playlist" {
-                                    if self.current_tab == Tab::Library && !self.library_pane_focus
-                                    {
+                                    if !self.library_pane_focus {
                                         let tracks = self.filtered_tracks();
                                         let indices: Vec<i64> = if self.multiselect_mode
                                             && !self.selected_indices.is_empty()
@@ -5346,8 +5030,7 @@ impl App {
                                         }
                                     }
                                 } else if action == "delete from list" {
-                                    if self.current_tab == Tab::Library && !self.library_pane_focus
-                                    {
+                                    if !self.library_pane_focus {
                                         if self.library_category == 4
                                             && self.browse_detail.is_some()
                                         {
@@ -5382,14 +5065,12 @@ impl App {
                                         }
                                     }
                                 } else if action == "jump to end" {
-                                    if self.current_tab == Tab::Library && !self.library_pane_focus
-                                    {
+                                    if !self.library_pane_focus {
                                         let max = self.library_list_len().saturating_sub(1);
                                         self.set_list_pos(max);
                                     }
                                 } else if action == "edit metadata" {
-                                    if self.current_tab == Tab::Library && !self.library_pane_focus
-                                    {
+                                    if !self.library_pane_focus {
                                         let track_data = {
                                             let tracks = self.filtered_tracks();
                                             tracks.get(self.list_pos()).map(|t| {
@@ -5566,20 +5247,17 @@ impl App {
                                         self.send_high(TuiCommand::Play(path));
                                     }
                                     LibraryPick::Artist(name) => {
-                                        self.current_tab = Tab::Library;
                                         self.library_category = 3;
                                         self.browse_detail = Some(name.clone());
                                         self.set_list_pos(0);
                                     }
                                     LibraryPick::Album(album) => {
-                                        self.current_tab = Tab::Library;
                                         self.library_category = 2;
                                         self.browse_detail = Some(album.clone());
                                         self.set_list_pos(0);
                                     }
                                     LibraryPick::Playlist(i) => {
                                         let playlist = self.playlist_cache[*i].clone();
-                                        self.current_tab = Tab::Library;
                                         self.library_category = 4;
                                         self.browse_detail = Some(playlist.name.clone());
                                         self.set_list_pos(0);

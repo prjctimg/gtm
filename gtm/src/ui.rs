@@ -20,7 +20,7 @@ use crossterm::event::{
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use gtm_core::state::{EqPreset, Tab};
+use gtm_core::state::EqPreset;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::Color;
@@ -202,25 +202,11 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
     );
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(area);
 
-    render_tabs(f, chunks[0], app);
-    let brand = Paragraph::new(Span::styled(
-        "  gtm  ",
-        Style::default()
-            .fg(crate::theme::readable_fg(app.theme.fg, app.theme.accent))
-            .bg(app.theme.accent)
-            .add_modifier(Modifier::BOLD),
-    ))
-    .alignment(Alignment::Right);
-    f.render_widget(brand, chunks[0]);
-    render_content(f, chunks[1], app);
-    render_footer(f, chunks[2], app);
+    render_content(f, chunks[0], app);
+    render_footer(f, chunks[1], app);
 
     if app.pickers.is_open() {
         dim_background(f, area);
@@ -234,26 +220,6 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
     }
 
     app.track_anim_trigger = false;
-}
-
-fn render_tabs(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let tabs: [(u16, Tab, &str); 1] = [(1, Tab::Library, "Library")];
-    let mut spans: Vec<Span> = Vec::new();
-    for (num, tab, label) in tabs {
-        let active = app.current_tab == tab;
-        let text = format!(" [{num}] {label} ");
-        let style = if active {
-            Style::default()
-                .fg(app.theme.selection_fg_readable())
-                .bg(app.theme.selection_bg)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(app.theme.fg_dim)
-        };
-        spans.push(Span::styled(text, style));
-    }
-    let para = Paragraph::new(Line::from(spans));
-    f.render_widget(para, area);
 }
 
 fn cubic_ease_out(t: f32) -> f32 {
@@ -648,14 +614,11 @@ fn render_content(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         render_loader(f, area, app, "Loading library\u{2026}");
         return;
     }
-    match app.current_tab {
-        Tab::Library => render_library(f, area, app),
-        Tab::Settings => render_library(f, area, app),
-    }
+    render_library(f, area, app);
 }
 
 fn render_footer_help(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    if app.current_tab != Tab::Library || app.pickers.is_open() || app.hide_help_bar {
+    if app.pickers.is_open() || app.hide_help_bar {
         return;
     }
     let text = " [?] Help  [:] Command palette  [q] Quit ";
@@ -937,7 +900,12 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Length(left_w), Constraint::Length(lyrics_w)])
             .split(area);
-        (h[0], Some(h[1]))
+        // The last content row is reserved for the library stats line.
+        let lyrics = Rect {
+            height: h[1].height.saturating_sub(1),
+            ..h[1]
+        };
+        (h[0], Some(lyrics))
     } else {
         (area, None)
     };
@@ -1669,7 +1637,12 @@ fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
     if let Some(lyrics_area) = lyrics_area {
         render_lyrics_pane(f, lyrics_area, app);
     } else if app.show_lyrics && panes.len() == 1 {
-        render_lyrics_pane(f, panes[0], app);
+        // Narrow mode: keep the stats-only bottom row clear.
+        let lyrics = Rect {
+            height: panes[0].height.saturating_sub(1),
+            ..panes[0]
+        };
+        render_lyrics_pane(f, lyrics, app);
     }
 }
 
@@ -2000,7 +1973,11 @@ impl Pickers {
                     .add_modifier(Modifier::BOLD),
             )))
             .padding(Padding::horizontal(1))
-            .style(Style::default().bg(app.float_bg()));
+            .style(Style::default().bg(if app.transparent_pickers {
+                ratatui::style::Color::Reset
+            } else {
+                app.float_bg()
+            }));
         match help {
             Some(h) => {
                 block = block.title_bottom(Line::from(Span::styled(
@@ -2657,11 +2634,19 @@ impl Pickers {
                         "Transparent BG {}",
                         if app.transparent_bg { "On" } else { "Off" }
                     ),
+                    format!(
+                        "Transparent Pickers {}",
+                        if app.transparent_pickers { "On" } else { "Off" }
+                    ),
                     "Sync Covers    Enter  ▶".to_string(),
                     "Sync Lyrics    Enter  ▶".to_string(),
                     "Sync Metadata  Enter  ▶".to_string(),
                     format!("Footer Preset  {}  ▶", preset_name),
                     format!("Visualizer     {}  ▶", app.visualizer.preset.name()),
+                    format!(
+                        "Reactive Theme {}",
+                        if app.reactive_theme { "On" } else { "Off" }
+                    ),
                 ]
             }
             4 => {
@@ -2976,38 +2961,30 @@ fn render_lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
 
     let total = lyrics.lines.len();
     let width = inner.width.max(1) as usize;
+    let anchor = app.lyrics_scroll.min(total - 1);
     let mut row_offsets = Vec::with_capacity(total);
     let mut text = Vec::with_capacity(total);
     let mut cumulative = 0usize;
     for (i, line) in lyrics.lines.iter().enumerate() {
-        let is_current = i == app.lyrics_scroll;
-        let marker_ch = if is_current { ">" } else { " " };
-        let marker_fg = if is_current {
-            app.theme.secondary_accent
-        } else {
-            app.theme.fg_dim
-        };
-        let text_style = if is_current {
+        // Proximity gradient around the active line: the sung line takes the
+        // accent color in bold, its two successors stay fully lit, everything
+        // else (and the past) recedes into dim foreground.
+        let d = i as isize - anchor as isize;
+        let text_style = if d == 0 {
             Style::default()
-                .fg(app.theme.fg_bright)
+                .fg(app.theme.accent)
                 .add_modifier(Modifier::BOLD)
+        } else if d > 0 && d <= 2 {
+            Style::default().fg(app.theme.fg)
         } else {
             Style::default().fg(app.theme.fg_dim)
         };
         row_offsets.push(cumulative);
-        let rendered = format!("{marker_ch} {}", line.text);
-        cumulative += (rendered.chars().count().max(1)).div_ceil(width);
-        text.push(Line::from(vec![
-            Span::styled(
-                marker_ch,
-                Style::default().fg(marker_fg).add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(format!(" {}", line.text), text_style),
-        ]));
+        cumulative += (line.text.chars().count().max(1)).div_ceil(width);
+        text.push(Line::from(Span::styled(line.text.clone(), text_style)));
     }
     let total_rows = cumulative;
     let visible = inner.height as usize;
-    let anchor = app.lyrics_scroll.min(total - 1);
     let bottom = total_rows.saturating_sub(visible);
     let scroll_display = if total_rows <= visible {
         0
@@ -3018,7 +2995,9 @@ fn render_lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
             row_offsets[anchor].saturating_sub(visible / 2).min(bottom)
         }
     } else {
-        row_offsets[anchor].min(bottom)
+        // Auto-follow keeps the active line about a third down the pane so
+        // the next lines are visible ahead of time.
+        row_offsets[anchor].saturating_sub(visible / 3).min(bottom)
     };
 
     let para = Paragraph::new(text)
@@ -3306,13 +3285,15 @@ fn render_track_info_in_pane(f: &mut ratatui::Frame, sep_area: Rect, area: Rect,
     );
 
     if can_cover {
+        // Cover sits flush at the top (no pad above); the trailing row keeps
+        // the text clear of the library-stats line above the footer.
         let split = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Length(1),
                 Constraint::Length(COVER_H),
                 Constraint::Length(1),
                 Constraint::Min(0),
+                Constraint::Length(1),
             ])
             .split(area);
 
@@ -3455,9 +3436,8 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   S           Shuffle Library"),
     ("", "   f           Toggle Favourite"),
     ("topic", "── Navigation ──"),
-    ("", "   1 / 2       Library / Settings"),
-    ("", "   Tab         Next Tab"),
-    ("", "   Shift+Tab   Previous Tab"),
+    ("", "   Tab         Switch Pane"),
+    ("", "   Shift+Tab   Switch Pane (back)"),
     ("", "   /           Search Track"),
     ("", "   Alt+Q       Queue"),
     ("", "   Alt+F       Search Library"),

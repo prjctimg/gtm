@@ -39,7 +39,37 @@ good through a real EQ instead of a flat toggle. gtm.rs is that.
 - **Cover art**: rendered inline via the kitty/terminal image protocol
 - **Zero configuration**: sane defaults, fully customizable via TOML, 16
   built-in themes in Classic and Modern designs, various widget styles
+- **Reactive theming**: accent colors extracted from the current track's
+  cover art, toggleable in Settings → System
 - **MPRIS**: media player controls via D-Bus
+
+## Spotify
+
+- Link your account with an access token from the TUI
+  (`Settings → Spotify → Link`); unlink anytime.
+- Sync saved playlists into the library and resolve individual Spotify
+  tracks: gtm finds a matching YouTube upload and downloads it as a local
+  file, so playback works even without the Spotify app running.
+- The optional **Soloist** bridge drives real Spotify playback through the
+  local `soloist` daemon (requires a Premium account).
+
+## YouTube
+
+- Search YouTube (`yt-dlp` under the hood) and download results straight
+  into the library as MP3 with automatic lyrics + metadata backfill.
+- **Cookies are required for downloads.** Set `Settings → YouTube → Cookie
+  File` to a Netscape-format cookie export (e.g. from a browser extension).
+  Without valid cookies YouTube answers extraction requests with HTTP 403;
+  every search, resolve, and download path passes the configured cookie
+  file to yt-dlp automatically.
+
+## Known gaps
+
+- The daemon-side `yt download/poll/cancel` IPC verbs are stubs; the TUI
+  shells out to `yt-dlp` directly for downloads.
+- Deezer integration is limited to cover art lookup.
+- Soloist is an external component; without it, "Spotify playback" means
+  resolving to local/YouTube audio rather than streaming from Spotify.
 
 ## Comparison
 
@@ -113,6 +143,22 @@ test). People who have contributed code are listed in
 [CONTRIBUTORS.md](CONTRIBUTORS.md).
 
 ---
+
+## Acknowledgements
+
+- [color-thief](https://crates.io/crates/color-thief) — median-cut palette
+  extraction behind reactive theming
+- [rustfft](https://crates.io/crates/rustfft) — FFT backend for the spectrum
+  visualizer
+- [ratatui](https://ratatui.rs) and
+  [ratatui-image](https://crates.io/crates/ratatui-image) — terminal UI and
+  inline cover art
+- [symphonia](https://crates.io/crates/symphonia),
+  [fundsp](https://crates.io/crates/fundsp), and
+  [rodio](https://crates.io/crates/rodio) — decoding, EQ/reverb DSP, and
+  audio output
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) — YouTube search and extraction
+- [LRCLIB](https://lrclib.net) — lyrics provider
 
 (c) 2026 - present, [prjctimg](https://prjctimg.me)
 

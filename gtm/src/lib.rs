@@ -12,6 +12,7 @@ pub mod footer;
 pub mod keymap;
 pub mod picker;
 pub mod progress;
+pub mod reactive;
 pub mod theme;
 pub mod ui;
 pub mod visualizer;

@@ -2962,8 +2962,13 @@ impl Daemon {
         };
 
         let prefix = format!("spotify-{playlist_id}-{track_index}");
-        let path = match Self::download_audio_to_cache(&inner.config.cache_dir, &prefix, &info.url)
-            .await
+        let path = match Self::download_audio_to_cache(
+            &inner.config.cache_dir,
+            &prefix,
+            &info.url,
+            yt.cookie_file(),
+        )
+        .await
         {
             Ok(path) => path,
             Err(e) => return Ok(DaemonRes::Error { message: e }),
@@ -3045,8 +3050,13 @@ impl Daemon {
             Err(e) => return Ok(DaemonRes::Error { message: e }),
         };
         let prefix = format!("spotify-web-{name}");
-        let path = match Self::download_audio_to_cache(&inner.config.cache_dir, &prefix, &info.url)
-            .await
+        let path = match Self::download_audio_to_cache(
+            &inner.config.cache_dir,
+            &prefix,
+            &info.url,
+            yt.cookie_file(),
+        )
+        .await
         {
             Ok(path) => path,
             Err(e) => return Ok(DaemonRes::Error { message: e }),
@@ -3086,11 +3096,14 @@ impl Daemon {
         cache_dir: &Path,
         prefix: &str,
         url: &str,
+        cookie_file: Option<String>,
     ) -> Result<String, String> {
         let max_retries = 3u32;
         let mut last_err = String::new();
         for attempt in 1..=max_retries {
-            match Self::try_download_audio_to_cache(cache_dir, prefix, url).await {
+            match Self::try_download_audio_to_cache(cache_dir, prefix, url, cookie_file.as_deref())
+                .await
+            {
                 Ok(path) => return Ok(path),
                 Err(e) => {
                     last_err = e;
@@ -3107,6 +3120,7 @@ impl Daemon {
         cache_dir: &Path,
         prefix: &str,
         url: &str,
+        cookie_file: Option<&str>,
     ) -> Result<String, String> {
         let dir = cache_dir.join("spotify");
         std::fs::create_dir_all(&dir).map_err(|e| format!("create spotify cache: {e}"))?;
@@ -3119,17 +3133,18 @@ impl Daemon {
             }
         }
         let template = dir.join(format!("{prefix}.%(ext)s"));
-        let output = tokio::time::timeout(
-            Duration::from_secs(120),
-            tokio::process::Command::new("yt-dlp")
-                .arg("-f")
+        let output = tokio::time::timeout(Duration::from_secs(120), async {
+            let mut cmd = tokio::process::Command::new("yt-dlp");
+            cmd.arg("-f")
                 .arg("bestaudio[ext=m4a]/bestaudio")
                 .arg("-o")
                 .arg(&template)
-                .arg("--no-warnings")
-                .arg(url)
-                .output(),
-        )
+                .arg("--no-warnings");
+            if let Some(cf) = cookie_file.filter(|p| Path::new(p).is_file()) {
+                cmd.arg("--cookies").arg(cf);
+            }
+            cmd.arg(url).output().await
+        })
         .await
         .map_err(|_| "spotify download timed out".to_string())?
         .map_err(|e| format!("yt-dlp download: {e}"))?;

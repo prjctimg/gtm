@@ -64,6 +64,25 @@ impl YoutubeManager {
         self.cookie_file = path.map(PathBuf::from);
     }
 
+    /// Active cookie file path, if configured.  Callers that shell out to
+    /// yt-dlp themselves (e.g. the Spotify cache downloader) reuse this so
+    /// credentials stay consistent across every extraction path.
+    pub fn cookie_file(&self) -> Option<String> {
+        self.cookie_file
+            .as_ref()
+            .map(|p| p.to_string_lossy().into_owned())
+    }
+
+    /// Active cookie file, if one is configured and exists on disk.
+    /// YouTube answers anonymous extraction with HTTP 403, so every
+    /// yt-dlp invocation should carry these credentials.
+    fn cookie_args(&self) -> Vec<std::ffi::OsString> {
+        match self.cookie_file.as_ref() {
+            Some(p) if p.is_file() => vec!["--cookies".into(), p.clone().into_os_string()],
+            _ => Vec::new(),
+        }
+    }
+
     fn start_impl(&mut self, query: &str, filter: Option<YTFilter>) -> Result<u64, String> {
         self.cancel_current();
         let gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -76,12 +95,13 @@ impl YoutubeManager {
         let semaphore = self.semaphore.clone();
         let res_tx = self.results_tx.clone();
         let q = query.to_string();
+        let cookie_args = self.cookie_args();
         let handle = tokio::spawn(async move {
             let permit = match semaphore.acquire_owned().await {
                 Ok(p) => p,
                 Err(_) => return,
             };
-            let results = run_search(&q, filter, cancel_rx, permit).await;
+            let results = run_search(&q, filter, cancel_rx, permit, &cookie_args).await;
             let _ = res_tx.send((gen, results));
         });
         self.active_task = Some(handle);
@@ -141,15 +161,17 @@ impl YoutubeManager {
             .await
             .map_err(|e| format!("semaphore: {e}"))?;
 
+        let cookie_args = self.cookie_args();
         let output = timeout(
             SEARCH_TIMEOUT,
             Command::new("yt-dlp")
                 .arg("-g")
                 .arg("-f")
                 .arg("bestaudio[ext=m4a]/bestaudio")
+                .args(&cookie_args)
                 .arg(url)
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::null())
+                .stderr(std::process::Stdio::piped())
                 .output(),
         )
         .await
@@ -157,7 +179,13 @@ impl YoutubeManager {
         .map_err(|e| format!("yt-dlp: {e}"))?;
 
         if !output.status.success() {
-            return Err("yt-dlp resolve failed".to_string());
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let detail = stderr
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("unknown error");
+            return Err(format!("yt-dlp resolve failed: {detail}"));
         }
 
         let direct = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -182,6 +210,7 @@ async fn run_search(
     _filter: Option<YTFilter>,
     mut cancel_rx: oneshot::Receiver<()>,
     _permit: OwnedSemaphorePermit,
+    cookie_args: &[std::ffi::OsString],
 ) -> Vec<YTSearchResult> {
     let search_arg = if query.starts_with("http://") || query.starts_with("https://") {
         query.to_string()
@@ -194,6 +223,7 @@ async fn run_search(
         .arg("--dump-json")
         .arg("--flat-playlist")
         .arg("--no-warnings")
+        .args(cookie_args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()

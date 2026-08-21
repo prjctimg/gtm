@@ -64,35 +64,98 @@ impl ReverbState {
 }
 
 // ---------------------------------------------------------------------------
-// Spectrum analysis: simple DFT for visualizer
+// Spectrum analysis: Hann-windowed FFT with log-spaced bands for visualizer
 // ---------------------------------------------------------------------------
 
-const SPECTRUM_BINS: usize = 32;
-const SPECTRUM_WINDOW: usize = 64;
+use rustfft::num_complex::Complex;
+use rustfft::FftPlanner;
 
-/// Compute DFT magnitudes for `SPECTRUM_BINS` frequency bins from `window` samples.
-/// Returns magnitudes normalized to [0.0, 1.0].
-fn compute_spectrum(window: &[f32]) -> [f32; SPECTRUM_BINS] {
-    let n = window.len();
-    let mut magnitudes = [0.0f32; SPECTRUM_BINS];
-    for k in 0..SPECTRUM_BINS {
-        let mut re = 0.0f64;
-        let mut im = 0.0f64;
-        for (i, &sample) in window.iter().enumerate() {
-            let angle = -2.0 * std::f64::consts::PI * (k as f64) * (i as f64) / (n as f64);
-            re += sample as f64 * angle.cos();
-            im += sample as f64 * angle.sin();
+/// Number of visualizer bands published to the UI.
+const SPECTRUM_BINS: usize = 64;
+/// FFT size: 2048 samples ≈ 46 ms at 44.1 kHz — enough resolution to
+/// separate low-frequency content without adding perceptible latency.
+const FFT_SIZE: usize = 2048;
+/// Analyzed frequency range; below ~30 Hz only rumble lives, above ~16 kHz
+/// there is rarely musical energy worth a bar.
+const MIN_FREQ: f32 = 30.0;
+const MAX_FREQ: f32 = 16_000.0;
+/// Full-scale sine reference and noise floor for dB normalization.
+const DB_RANGE: f32 = 70.0;
+
+/// Incremental FFT spectrum analyzer fed single mono samples from the decode
+/// thread.  Once per [`FFT_SIZE`] samples it publishes `SPECTRUM_BINS`
+/// log-spaced magnitudes normalized to `[0, 1]`.
+struct SpectrumAnalyzer {
+    fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
+    window: Vec<f32>,
+    hann: Vec<f32>,
+    scratch: Vec<Complex<f32>>,
+    /// Precomputed band edges as FFT bin indices (`band_edges[b]..=band_edges[b+1]`).
+    band_edges: [usize; SPECTRUM_BINS + 1],
+}
+
+impl SpectrumAnalyzer {
+    fn new(sample_rate: f32) -> Self {
+        let mut planner = FftPlanner::<f32>::new();
+        let fft = planner.plan_fft_forward(FFT_SIZE);
+        let hann: Vec<f32> = (0..FFT_SIZE)
+            .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / FFT_SIZE as f32).cos()))
+            .collect();
+        // Log-spaced band edges clamped to the valid Nyquist range.
+        let nyquist = sample_rate * 0.5;
+        let max_freq = MAX_FREQ.min(nyquist);
+        let mut band_edges = [0usize; SPECTRUM_BINS + 1];
+        for (b, edge) in band_edges.iter_mut().enumerate() {
+            let t = b as f32 / SPECTRUM_BINS as f32;
+            let freq = MIN_FREQ * (max_freq / MIN_FREQ).powf(t);
+            let bin = ((freq / sample_rate) * FFT_SIZE as f32) as usize;
+            *edge = std::cmp::Ord::min(bin, FFT_SIZE / 2);
         }
-        magnitudes[k] = ((re * re + im * im).sqrt() / (n as f64)) as f32;
-    }
-    // Normalize: find peak and scale to [0, 1]
-    let peak = magnitudes.iter().copied().fold(0.0f32, f32::max);
-    if peak > 0.001 {
-        for m in &mut magnitudes {
-            *m = (*m / peak).clamp(0.0, 1.0);
+        // Ensure strictly non-decreasing edges so every band covers ≥1 bin.
+        for b in 1..=SPECTRUM_BINS {
+            if band_edges[b] <= band_edges[b - 1] {
+                band_edges[b] = band_edges[b - 1] + 1;
+            }
+        }
+        Self {
+            fft,
+            window: Vec::with_capacity(FFT_SIZE),
+            hann,
+            scratch: vec![Complex::new(0.0, 0.0); FFT_SIZE],
+            band_edges,
         }
     }
-    magnitudes
+
+    /// Feed one sample; when the internal window fills, writes fresh band
+    /// magnitudes into `out` and returns true.
+    fn push(&mut self, sample: f32, out: &mut [f32]) -> bool {
+        self.window.push(sample);
+        if self.window.len() < FFT_SIZE {
+            return false;
+        }
+        for (i, s) in self.window.iter().enumerate() {
+            self.scratch[i] = Complex::new(s * self.hann[i], 0.0);
+        }
+        self.fft.process(&mut self.scratch);
+
+        // Coherent gain of the Hann window, used to scale bins back to
+        // amplitude units.
+        let gain_inv = 2.0 / self.hann.iter().sum::<f32>();
+        for (band, slot) in out.iter_mut().enumerate() {
+            let lo = self.band_edges[band];
+            let hi = std::cmp::Ord::min(self.band_edges[band + 1], FFT_SIZE / 2);
+            let peak = self.scratch[lo..std::cmp::Ord::max(hi, lo + 1)]
+                .iter()
+                .map(|c| c.norm())
+                .fold(0.0f32, f32::max)
+                * gain_inv;
+            // dB scale with floor: quiet but nonzero beats a dead bar grid.
+            let db = 20.0 * peak.max(1e-9).log10();
+            *slot = ((db + DB_RANGE) / DB_RANGE).clamp(0.0, 1.0);
+        }
+        self.window.clear();
+        true
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -189,7 +252,13 @@ impl DecodeThread {
 
             let mut sample_count: usize = 0;
             let mut prebuffered = false;
-            let mut spectrum_window = Vec::with_capacity(SPECTRUM_WINDOW);
+            // Downsample 4:1 before the FFT: musical content above ~5.5 kHz
+            // (at 44.1 kHz) is negligible for visualization and this keeps the
+            // analyzer cost tiny on the decode thread.
+            const SPECTRUM_DECIMATION: usize = 4;
+            let decimated_sr = (sr as f32 / SPECTRUM_DECIMATION as f32).max(1.0);
+            let mut spectrum_analyzer = SpectrumAnalyzer::new(decimated_sr);
+            let mut spectrum_frame = vec![0.0f32; SPECTRUM_BINS];
             let mut spectrum_count: usize = 0;
 
             // Decode loop: read from SymphoniaSource, process, write to ring buffer
@@ -332,19 +401,16 @@ impl DecodeThread {
                 self.shared.push_blocking(final_sample);
                 sample_count += 1;
 
-                // Accumulate samples for spectrum analysis (every Nth sample to downsample)
-                if spectrum_count % 2 == 0 && spectrum_window.len() < SPECTRUM_WINDOW {
-                    spectrum_window.push(final_sample.abs());
-                }
-                spectrum_count += 1;
-                if spectrum_window.len() >= SPECTRUM_WINDOW {
-                    let magnitudes = compute_spectrum(&spectrum_window);
+                // Accumulate (decimated) samples for spectrum analysis.
+                if spectrum_count.is_multiple_of(SPECTRUM_DECIMATION)
+                    && spectrum_analyzer.push(final_sample, &mut spectrum_frame)
+                {
                     if let Ok(mut spec) = self.spectrum.lock() {
                         spec.clear();
-                        spec.extend_from_slice(&magnitudes);
+                        spec.extend_from_slice(&spectrum_frame);
                     }
-                    spectrum_window.clear();
                 }
+                spectrum_count += 1;
 
                 prebuffer_check(&self.shared, &self.control, &mut prebuffered);
             }
@@ -362,5 +428,41 @@ fn prebuffer_check(shared: &SharedRingBuffer, control: &DecodeControl, prebuffer
             "decode thread: prebuffer ready ({} samples in buffer)",
             shared.available()
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn log_bands_are_monotonic_and_covered() {
+        let a = SpectrumAnalyzer::new(44_100.0);
+        for b in 0..SPECTRUM_BINS {
+            assert!(a.band_edges[b + 1] > a.band_edges[b]);
+        }
+    }
+
+    #[test]
+    fn sine_energy_lands_in_expected_band() {
+        let sr = 44_100.0;
+        let freq = 440.0f32;
+        let mut a = SpectrumAnalyzer::new(sr);
+        let mut out = vec![0.0f32; SPECTRUM_BINS];
+        for i in 0..FFT_SIZE {
+            let s = (2.0 * std::f32::consts::PI * freq * i as f32 / sr).sin();
+            a.push(s, &mut out);
+        }
+        let expected_bin = (freq / sr * FFT_SIZE as f32) as usize;
+        let peak_band = (0..SPECTRUM_BINS)
+            .max_by(|x, y| out[*x].total_cmp(&out[*y]))
+            .unwrap();
+        let lo = a.band_edges[peak_band];
+        let hi = a.band_edges[peak_band + 1];
+        assert!(
+            lo <= expected_bin && expected_bin < hi,
+            "440 Hz energy in bins {lo}..{hi}, expected {expected_bin}"
+        );
+        assert!(out[peak_band] > 0.5, "peak magnitude too small");
     }
 }

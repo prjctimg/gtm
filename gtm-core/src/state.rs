@@ -445,12 +445,6 @@ pub struct Image {
     pub height: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum Tab {
-    Library,
-    Settings,
-}
-
 /// Persistent daemon state saved to disk across restarts.
 ///
 /// Only contains user preferences and queue data: ephemeral session
