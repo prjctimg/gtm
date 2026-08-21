@@ -4,7 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -310,7 +310,9 @@ pub fn render(app: &App) -> Option<FooterRenderOutput> {
     }
     Some(FooterRenderOutput {
         groups: out_groups,
-        right_bg: if bg_luminance(app.theme.bg) > 180.0 {
+        right_bg: if app.transparent_bg {
+            Color::Reset
+        } else if bg_luminance(app.theme.bg) > 180.0 {
             darken(app.theme.bg, 0.85)
         } else {
             app.theme.border
@@ -319,39 +321,73 @@ pub fn render(app: &App) -> Option<FooterRenderOutput> {
 }
 
 /// Draw a previously-computed [`FooterRenderOutput`] into `area`.
+///
+/// Groups keep their preset order (left, middle, right): the first group hugs
+/// the left edge, the last hugs the right edge, and any middle groups sit
+/// centred in the remaining space.  The whole strip is painted with the
+/// trailing background first so gaps between groups stay transparent-aware.
 pub fn draw(f: &mut Frame, area: Rect, out: &FooterRenderOutput) {
-    let total: u16 = out.groups.iter().map(|g| g.width).sum();
+    if out.groups.is_empty() || area.width == 0 {
+        return;
+    }
+    let widths: Vec<u16> = out.groups.iter().map(|g| g.width).collect();
+    let total: u16 = widths.iter().sum();
     if total == 0 {
         return;
     }
-    let mut constraints: Vec<Constraint> = out
-        .groups
-        .iter()
-        .map(|g| Constraint::Length(g.width))
-        .collect();
-    constraints.push(Constraint::Min(0));
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints(constraints)
-        .split(area);
+
+    f.render_widget(
+        Paragraph::new("").style(Style::default().bg(out.right_bg)),
+        area,
+    );
+
+    if total > area.width {
+        let mut x = area.x;
+        for (group, &w) in out.groups.iter().zip(&widths) {
+            if x >= area.x + area.width {
+                break;
+            }
+            let avail = area.x + area.width - x;
+            f.render_widget(
+                Paragraph::new(group.line.clone()).style(Style::default().bg(group.bg)),
+                Rect {
+                    x,
+                    y: area.y,
+                    width: w.min(avail),
+                    height: area.height,
+                },
+            );
+            x += w;
+        }
+        return;
+    }
+
+    let n = out.groups.len();
+    let mut xs: Vec<u16> = Vec::with_capacity(n);
+    let mut used = 0u16;
+    for (i, group) in out.groups.iter().enumerate() {
+        let x = if i == 0 {
+            0
+        } else if i == n - 1 {
+            area.width - group.width
+        } else {
+            (area.width - group.width) / 2
+        };
+        let x = x.max(used);
+        xs.push(x);
+        used = x.saturating_add(group.width);
+    }
 
     for (i, group) in out.groups.iter().enumerate() {
-        if chunks[i].x >= area.x + area.width || chunks[i].width == 0 {
-            break;
-        }
         f.render_widget(
             Paragraph::new(group.line.clone()).style(Style::default().bg(group.bg)),
-            chunks[i],
+            Rect {
+                x: area.x + xs[i],
+                y: area.y,
+                width: group.width,
+                height: area.height,
+            },
         );
-    }
-    // Fill remaining space on the right edge with the trailing background.
-    if let Some(trail) = chunks.last() {
-        if trail.x < area.x + area.width && trail.width > 0 {
-            f.render_widget(
-                Paragraph::new("").style(Style::default().bg(out.right_bg)),
-                *trail,
-            );
-        }
     }
 }
 

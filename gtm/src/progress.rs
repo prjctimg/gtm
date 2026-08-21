@@ -7,7 +7,6 @@
 use ratatui::style::Color;
 use ratatui::text::Span;
 use serde::{Deserialize, Serialize};
-use std::cell::Cell;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ProgressStyle {
@@ -55,12 +54,60 @@ impl ProgressStyle {
         let idx = all.iter().position(|s| s == self).unwrap_or(0);
         all[(idx + 1) % all.len()]
     }
+
+    pub fn is_animated(&self) -> bool {
+        matches!(
+            self,
+            ProgressStyle::SeekHead | ProgressStyle::Gradient | ProgressStyle::TrueGradient
+        )
+    }
 }
 
-thread_local! {
-    static PREV_GRADIENT_FILL: Cell<f64> = const { Cell::new(0.0) };
-    static PREV_TRUEGRADIENT_FILL: Cell<f64> = const { Cell::new(0.0) };
-    static PREV_SEEKHEAD_FILL: Cell<f64> = const { Cell::new(0.0) };
+const SMOOTHING_TAU_SECS: f64 = 0.12;
+
+/// Frame-rate independent exponential smoother for animated progress styles.
+/// Owned by the app and advanced once per frame so every bar on screen moves
+/// in lockstep.
+#[derive(Debug, Clone)]
+pub struct ProgressSmoother {
+    value: f64,
+}
+
+impl Default for ProgressSmoother {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ProgressSmoother {
+    pub fn new() -> Self {
+        Self { value: 0.0 }
+    }
+
+    pub fn value(&self) -> f64 {
+        self.value
+    }
+
+    pub fn reset(&mut self, value: f64) {
+        self.value = value.clamp(0.0, 1.0);
+    }
+
+    pub fn smooth(&mut self, target: f64, dt_secs: f64) -> f64 {
+        let alpha = 1.0 - (-dt_secs.max(1e-4) / SMOOTHING_TAU_SECS).exp();
+        self.value += (target.clamp(0.0, 1.0) - self.value) * alpha;
+        self.value = self.value.clamp(0.0, 1.0);
+        self.value
+    }
+}
+
+/// Ratio a render call should draw: the smoothed value for animated styles,
+/// the raw position otherwise.
+pub fn render_ratio(style: ProgressStyle, raw: f64, smoothed: f64) -> f64 {
+    if style.is_animated() {
+        smoothed
+    } else {
+        raw
+    }
 }
 
 /// Interpolate between two RGB colors by factor `t` (0.0..=1.0).
@@ -94,12 +141,7 @@ pub fn render_progress_styled<'a>(
 
     match style {
         ProgressStyle::TrueGradient => {
-            let cell = PREV_TRUEGRADIENT_FILL.with(|c| c.clone());
-            let target = ratio.clamp(0.0, 1.0);
-            let prev_val = cell.get();
-            let smoothed = prev_val + (target - prev_val) * 0.35;
-            cell.set(smoothed);
-            let eased_filled = (smoothed * inner_w as f64).round() as usize;
+            let eased_filled = (ratio.clamp(0.0, 1.0) * inner_w as f64).round() as usize;
 
             let mut spans = Vec::with_capacity(inner_w + 2);
             spans.push(Span::raw(" "));
@@ -169,14 +211,10 @@ pub fn render_progress(ratio: f64, width: usize, style: ProgressStyle) -> String
             line.push('⠤');
         }
         ProgressStyle::SeekHead => {
-            let target = ratio.clamp(0.0, 1.0);
-            let prev_val = PREV_SEEKHEAD_FILL.with(|c| c.get());
-            let smoothed = prev_val + (target - prev_val) * 0.35;
-            PREV_SEEKHEAD_FILL.with(|c| c.set(smoothed));
-            let eased_filled = (smoothed * inner_w as f64).round() as usize;
+            let head = filled.min(inner_w.saturating_sub(1));
             line.push('─');
             for i in 0..inner_w {
-                if i == eased_filled {
+                if i == head {
                     line.push('●');
                 } else {
                     line.push('─');
@@ -223,15 +261,7 @@ pub fn render_progress(ratio: f64, width: usize, style: ProgressStyle) -> String
             line.push(' ');
         }
         ProgressStyle::Gradient | ProgressStyle::TrueGradient => {
-            let cell = match style {
-                ProgressStyle::TrueGradient => PREV_TRUEGRADIENT_FILL.with(|c| c.clone()),
-                _ => PREV_GRADIENT_FILL.with(|c| c.clone()),
-            };
-            let target = ratio.clamp(0.0, 1.0);
-            let prev_val = cell.get();
-            let smoothed = prev_val + (target - prev_val) * 0.35;
-            cell.set(smoothed);
-            let eased_filled = (smoothed * inner_w as f64).round() as usize;
+            let eased_filled = filled;
             line.push(' ');
             for i in 0..inner_w {
                 if i < eased_filled.saturating_sub(1) {
@@ -253,4 +283,35 @@ pub fn render_progress(ratio: f64, width: usize, style: ProgressStyle) -> String
         }
     }
     line
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seek_head_always_visible() {
+        for ratio in [0.0f64, 0.5, 1.0] {
+            let bar = render_progress(ratio, 22, ProgressStyle::SeekHead);
+            assert!(bar.contains('●'), "head missing at ratio {ratio}");
+        }
+    }
+
+    #[test]
+    fn smoother_converges() {
+        let mut s = ProgressSmoother::new();
+        let mut v = 0.0;
+        for _ in 0..200 {
+            v = s.smooth(1.0, 1.0 / 60.0);
+        }
+        assert!((v - 1.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn smoother_reset_snaps() {
+        let mut s = ProgressSmoother::new();
+        s.smooth(0.9, 1.0 / 60.0);
+        s.reset(0.1);
+        assert!((s.value() - 0.1).abs() < f64::EPSILON);
+    }
 }

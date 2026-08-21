@@ -163,7 +163,9 @@ impl CoverCache {
     }
 
     fn artist_disk_path(&self, key: &str) -> PathBuf {
-        self.cache_dir.join("artist_covers").join(format!("{key}.jpg"))
+        self.cache_dir
+            .join("artist_covers")
+            .join(format!("{key}.jpg"))
     }
 
     async fn fetch_from_deezer(&self, artist: &str, album: &str, key: &str) -> Option<CoverData> {

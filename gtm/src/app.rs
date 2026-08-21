@@ -98,7 +98,6 @@ fn default_footer_preset_name() -> String {
     "Default".into()
 }
 
-
 impl Default for Prefs {
     fn default() -> Self {
         Self {
@@ -188,6 +187,14 @@ pub struct Notification {
     pub trivial: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct NotificationRecord {
+    pub title: String,
+    pub message: String,
+    pub kind: NotificationKind,
+    pub at: std::time::Instant,
+}
+
 pub struct UpNextNotif {
     pub track: gtm_core::track::TrackInfo,
     pub cover: Option<Vec<u8>>,
@@ -240,6 +247,8 @@ pub struct App {
     /// time-synced lyric matching so the active verse updates without the
     /// EMA lag that smooths the progress bar.
     raw_position: f64,
+    pub progress_smoother: crate::progress::ProgressSmoother,
+    last_frame: std::time::Instant,
     pub frame_count: u64,
     /// Progress whip scanner position (Knight Rider style).
     pub scanner_pos: i32,
@@ -276,6 +285,7 @@ pub struct App {
     pub spotify_token_input: String,
     pub cookie_file: Option<String>,
     pub notifications: Vec<Notification>,
+    pub notification_history: Vec<NotificationRecord>,
     pub footer_notification: Option<(String, std::time::Instant)>,
     pub crossfade_duration: u8,
     pub yt_search_loading: bool,
@@ -322,6 +332,7 @@ pub struct App {
     pub selected_indices: std::collections::HashSet<usize>,
     pending_motion: Option<char>,
     pub pending_playlist_track_ids: Vec<i64>,
+    pub playlist_creating: bool,
     pub metadata: MetadataEditState,
     pub pending_quit: bool,
     pub np_title_scroll: usize,
@@ -479,6 +490,38 @@ pub enum TuiCommand {
 }
 
 impl App {
+    pub fn surface_bg(&self) -> ratatui::style::Color {
+        if self.transparent_bg {
+            ratatui::style::Color::Reset
+        } else {
+            self.theme.bg
+        }
+    }
+
+    pub fn pane_surface_bg(&self) -> ratatui::style::Color {
+        if self.transparent_bg {
+            ratatui::style::Color::Reset
+        } else {
+            self.theme.pane_bg
+        }
+    }
+
+    pub fn float_bg(&self) -> ratatui::style::Color {
+        if self.transparent_bg {
+            crate::theme::blend_colors(self.theme.elevated_bg, self.theme.bg, 0.5)
+        } else {
+            self.theme.elevated_bg
+        }
+    }
+
+    pub fn chrome_bg(&self) -> ratatui::style::Color {
+        if self.transparent_bg {
+            ratatui::style::Color::Reset
+        } else {
+            self.theme.border
+        }
+    }
+
     pub async fn new(socket_path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let client = DaemonClient::connect(socket_path).await?;
         let state = DaemonState::new();
@@ -515,6 +558,8 @@ impl App {
             display_position: 0.0,
             last_display_position: 0.0,
             raw_position: 0.0,
+            progress_smoother: crate::progress::ProgressSmoother::new(),
+            last_frame: std::time::Instant::now(),
             frame_count: 0,
             scanner_pos: 0,
             scanner_dir: 1,
@@ -544,6 +589,7 @@ impl App {
             spotify_token_input: String::new(),
             cookie_file: None,
             notifications: Vec::new(),
+            notification_history: Vec::new(),
             footer_notification: None,
             crossfade_duration: 6,
             pending_delete: None,
@@ -602,6 +648,7 @@ impl App {
             selected_indices: std::collections::HashSet::new(),
             pending_motion: None,
             pending_playlist_track_ids: Vec::new(),
+            playlist_creating: false,
             metadata: MetadataEditState {
                 edit_track_id: None,
                 fields: Default::default(),
@@ -639,7 +686,9 @@ impl App {
             hide_help_bar: false,
             pending_suspend: false,
             lyrics_manual_scroll: false,
-            last_config_mtime: std::fs::metadata(prefs_path()).ok().and_then(|m| m.modified().ok()),
+            last_config_mtime: std::fs::metadata(prefs_path())
+                .ok()
+                .and_then(|m| m.modified().ok()),
         })
     }
 
@@ -955,6 +1004,17 @@ impl App {
                 self.display_position = raw;
                 self.last_display_position = raw;
                 self.raw_position = raw;
+                let d = if self.state.duration > 0.0 {
+                    self.state.duration
+                } else {
+                    self.state
+                        .current_track
+                        .as_ref()
+                        .map(|t| t.duration)
+                        .unwrap_or(0.0)
+                };
+                self.progress_smoother
+                    .reset(if d > 0.0 { raw / d } else { 0.0 });
                 self.track_anim_trigger = true;
                 // Re-enable auto-sync for the new track; a manual lyric scroll
                 // on a previous track must not stick across track changes.
@@ -1124,7 +1184,9 @@ impl App {
                         }
                     }
                     IpcResult::ArtistCoverArt(cover, artist) => {
-                        if !no_image_protocol() && self.last_artist_cover_fetch.as_deref() == Some(&artist) {
+                        if !no_image_protocol()
+                            && self.last_artist_cover_fetch.as_deref() == Some(&artist)
+                        {
                             self.artist_cover = cover;
                             self.sync_artist_cover_stateful();
                         }
@@ -1149,8 +1211,11 @@ impl App {
                     IpcResult::SpotifyTracks(t) => self.spotify_playlist_tracks_cache = t,
                     IpcResult::SpotifySearchWebResults(tracks) => {
                         for track in tracks {
-                            self.spotify_search_results
-                                .push(("web".into(), "Spotify".into(), track));
+                            self.spotify_search_results.push((
+                                "web".into(),
+                                "Spotify".into(),
+                                track,
+                            ));
                         }
                     }
                     IpcResult::SoloistStatus(s) => self.soloist_status = Some(s),
@@ -1225,11 +1290,28 @@ impl App {
             // Allow at most 0.5s of regression to avoid visible stutter.
             let raw_pos = raw_pos.max(self.display_position - 0.5);
             // Lyric matching uses the raw (guard-only) position so the active
-            // verse switches at the right timestamp; the EMA below only
-            // smooths the progress bar.
+            // verse switches at the right timestamp; the smoothing below only
+            // glides the progress bar.
             self.raw_position = raw_pos;
-            // EMA smoothing
-            self.display_position = self.display_position * 0.85 + raw_pos * 0.15;
+            let now = std::time::Instant::now();
+            let dt = now.duration_since(self.last_frame).as_secs_f64().min(0.25);
+            self.last_frame = now;
+            self.display_position += (raw_pos - self.display_position) * (1.0 - (-dt / 0.08).exp());
+            let bar_dur = if self.state.duration > 0.0 {
+                self.state.duration
+            } else {
+                self.state
+                    .current_track
+                    .as_ref()
+                    .map(|t| t.duration)
+                    .unwrap_or(0.0)
+            };
+            let bar_target = if bar_dur > 0.0 {
+                self.display_position / bar_dur
+            } else {
+                0.0
+            };
+            self.progress_smoother.smooth(bar_target, dt);
 
             // Auto-resume lyric auto-follow: after a manual scroll, once
             // playback reaches the line the user scrolled to, re-enable
@@ -1281,14 +1363,16 @@ impl App {
                 self.check_config_reload();
             }
 
-            let pos_changed = (self.display_position - self.last_display_position).abs() >= 0.1;
+            let pos_changed = (self.display_position - self.last_display_position).abs() >= 0.05;
             // Advance title scroll animations (every 3rd frame)
             if frame_count.is_multiple_of(3) {
                 self.footer_title_scroll = self.footer_title_scroll.wrapping_add(1);
                 self.np_title_scroll = self.np_title_scroll.wrapping_add(1);
             }
 
+            let playing = self.state.status == PlaybackStatus::Playing;
             let force_render = pos_changed
+                || (playing && frame_count.is_multiple_of(2))
                 || !self.notifications.is_empty()
                 || frame_count.is_multiple_of(10)
                 || self.cover_art_dirty
@@ -1326,19 +1410,17 @@ impl App {
                     Ok(Event::Paste(text)) => {
                         self.handle_paste(&text).await;
                     }
-                    Ok(Event::Mouse(mouse)) => {
-                        match mouse.kind {
-                            MouseEventKind::ScrollUp => {
-                                let key = event::KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-                                self.handle_key(key).await;
-                            }
-                            MouseEventKind::ScrollDown => {
-                                let key = event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
-                                self.handle_key(key).await;
-                            }
-                            _ => {}
+                    Ok(Event::Mouse(mouse)) => match mouse.kind {
+                        MouseEventKind::ScrollUp => {
+                            let key = event::KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+                            self.handle_key(key).await;
                         }
-                    }
+                        MouseEventKind::ScrollDown => {
+                            let key = event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+                            self.handle_key(key).await;
+                        }
+                        _ => {}
+                    },
                     _ => {}
                 }
             }
@@ -1355,7 +1437,9 @@ impl App {
                     crossterm::event::DisableMouseCapture
                 );
                 // Suspend: this blocks until SIGCONT
-                unsafe { libc::raise(libc::SIGTSTP); }
+                unsafe {
+                    libc::raise(libc::SIGTSTP);
+                }
                 // Resumed: re-init terminal
                 crossterm::terminal::enable_raw_mode()?;
                 let mut stdout = std::io::stdout();
@@ -1425,10 +1509,21 @@ impl App {
         kind: NotificationKind,
         trivial: bool,
     ) {
+        let message = message.into();
+        self.notification_history.insert(
+            0,
+            NotificationRecord {
+                title: title.to_string(),
+                message: message.clone(),
+                kind: kind.clone(),
+                at: std::time::Instant::now(),
+            },
+        );
+        self.notification_history.truncate(50);
         let expires_at = std::time::Instant::now() + std::time::Duration::from_millis(1500);
         self.notifications.push(Notification {
             title: title.to_string(),
-            message: message.into(),
+            message,
             kind,
             expires_at,
             slide_direction: SlideDirection::Right,
@@ -1805,9 +1900,8 @@ impl App {
                     let _ = ipc_tx.send(IpcResult::SpotifySearchWebResults(tracks));
                 }
                 Err(e) => {
-                    let _ = ipc_tx.send(IpcResult::Error(format!(
-                        "Spotify Web search failed: {e}"
-                    )));
+                    let _ =
+                        ipc_tx.send(IpcResult::Error(format!("Spotify Web search failed: {e}")));
                 }
             }
         });
@@ -2562,7 +2656,7 @@ impl App {
             PickerId::YTSearch => self.yt_results_cache.len().saturating_sub(1),
             PickerId::SearchLibrary => self.search_library_picks().len().saturating_sub(1),
             PickerId::Equalizer => EQ_PRESETS.len().saturating_sub(1),
-            PickerId::SleepTimer => 4,
+            PickerId::SleepTimer => 6,
             PickerId::Crossfade => 13,
             PickerId::VisualizerPreset => crate::visualizer::VisualizerPreset::all()
                 .len()
@@ -2570,6 +2664,8 @@ impl App {
             PickerId::ProgressStyle => crate::progress::ProgressStyle::all()
                 .len()
                 .saturating_sub(1),
+            PickerId::Notifications => self.notification_history.len().saturating_sub(1),
+            PickerId::PlaylistSelect => self.playlist_cache.len(),
             PickerId::ThemePicker => {
                 let q = query.to_lowercase();
                 if q.is_empty() {
@@ -2635,6 +2731,8 @@ impl App {
             PickerId::Crossfade => 14,
             PickerId::VisualizerPreset => crate::visualizer::VisualizerPreset::all().len(),
             PickerId::ProgressStyle => crate::progress::ProgressStyle::all().len(),
+            PickerId::Notifications => self.notification_history.len(),
+            PickerId::PlaylistSelect => self.playlist_cache.len() + 1,
             PickerId::ThemePicker => {
                 let q = query.to_lowercase();
                 if q.is_empty() {
@@ -2681,52 +2779,7 @@ impl App {
     }
 
     fn help_picker_total(&self) -> usize {
-        let help_lines = [
-            ("topic", "── Playback ──"),
-            ("", "   Space       Play / Pause"),
-            ("", "   n           Next Track"),
-            ("", "   p           Previous Track"),
-            ("", "   s           Stop"),
-            ("", "   .           Seek Forward"),
-            ("", "   ,           Seek Backward"),
-            ("", "   + / -       Volume Up / Down"),
-            ("", "   m           Mute Toggle"),
-            ("", "   r           Repeat Mode"),
-            ("", "   S           Shuffle Library"),
-            ("", "   f           Toggle Favourite"),
-            ("topic", "── Navigation ──"),
-            ("", "   1 / 2       Library / Settings"),
-            ("", "   Tab         Next Tab"),
-            ("", "   Shift+Tab   Previous Tab"),
-            ("", "   /           Search Track"),
-            ("", "   Alt+Q       Queue"),
-            ("", "   Alt+F       Search Library"),
-            ("", "   Alt+Y       YouTube Search"),
-            ("", "   Alt+S       Spotify"),
-            ("topic", "── View ──"),
-            ("", "   ?           Toggle Help"),
-            ("", "   Ctrl+H      Hide Help Bar"),
-            ("", "   Ctrl+V      Visualizer Toggle"),
-            ("", "   Alt+V       Visualizer Preset"),
-            ("", "   Alt+P       Progress Style"),
-            ("", "   Alt+C       Theme Picker"),
-            ("", "   Alt+A       About"),
-            ("", "   Alt+E       Equalizer"),
-            ("", "   Alt+Z       Sleep Timer"),
-            ("", "   l           Fetch Lyrics"),
-            ("topic", "── Queue ──"),
-            ("", "   a           Add to Queue"),
-            ("", "   A           Add to Playlist"),
-            ("", "   x           Delete from List"),
-            ("", "   D           Clear Queue"),
-            ("", "   v           Multiselect"),
-            ("", "   e           Edit Metadata"),
-            ("topic", "── System ──"),
-            ("", "   q           Quit"),
-            ("", "   Q / Ctrl+Q  Quit Daemon"),
-            ("", "   :           Health Check"),
-            ("", "   \u{2014}          Footer Preset"),
-        ];
+        let help_lines = crate::ui::HELP_LINES;
         if let Some(top) = self.pickers.top() {
             if top.id == PickerId::Help {
                 let q = top.query.to_lowercase();
@@ -2748,9 +2801,7 @@ impl App {
 
     async fn handle_key(&mut self, key: event::KeyEvent) -> bool {
         // Ctrl+Z: suspend to background (pass-through SIGTSTP)
-        if key.modifiers.contains(KeyModifiers::CONTROL)
-            && key.code == KeyCode::Char('z')
-        {
+        if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('z') {
             self.pending_suspend = true;
             return false;
         }
@@ -2762,7 +2813,21 @@ impl App {
         if self.pickers.is_open() {
             return match key.code {
                 KeyCode::Esc => {
-                    self.pickers.close_top();
+                    if self
+                        .pickers
+                        .top()
+                        .is_some_and(|o| o.id == PickerId::PlaylistSelect)
+                        && self.playlist_creating
+                    {
+                        self.playlist_creating = false;
+                        if let Some(top) = self.pickers.top_mut() {
+                            top.query.clear();
+                            top.selected = 0;
+                            top.viewport_offset = 0;
+                        }
+                    } else {
+                        self.pickers.close_top();
+                    }
                     true
                 }
                 _ => {
@@ -3403,10 +3468,7 @@ impl App {
                                             }
                                         }
                                     }
-                                } else if matches!(
-                                    self.library_category,
-                                    0 | 1
-                                ) {
+                                } else if matches!(self.library_category, 0 | 1) {
                                     self.play_filtered_highlighted();
                                 }
                             } else if self.library_category == 2 {
@@ -3815,6 +3877,7 @@ impl App {
                                 };
                             if !indices.is_empty() {
                                 self.pending_playlist_track_ids = indices;
+                                self.playlist_creating = false;
                                 self.pickers.open(PickerId::PlaylistSelect);
                             }
                         }
@@ -4164,31 +4227,45 @@ impl App {
                             2 => match self.settings_option {
                                 0 => {
                                     let next = match self.state.repeat {
-                                        gtm_core::state::RepeatMode::Off => gtm_core::state::RepeatMode::One,
-                                        gtm_core::state::RepeatMode::One => gtm_core::state::RepeatMode::All,
-                                        gtm_core::state::RepeatMode::All => gtm_core::state::RepeatMode::Off,
+                                        gtm_core::state::RepeatMode::Off => {
+                                            gtm_core::state::RepeatMode::One
+                                        }
+                                        gtm_core::state::RepeatMode::One => {
+                                            gtm_core::state::RepeatMode::All
+                                        }
+                                        gtm_core::state::RepeatMode::All => {
+                                            gtm_core::state::RepeatMode::Off
+                                        }
                                     };
                                     let c = self.client.clone();
-                                    tokio::spawn(async move { let _ = c.cycle_repeat(next).await; });
+                                    tokio::spawn(async move {
+                                        let _ = c.cycle_repeat(next).await;
+                                    });
                                     self.state.repeat = next;
                                 }
                                 1 => {
                                     let c = self.client.clone();
-                                    tokio::spawn(async move { let _ = c.toggle_shuffle().await; });
+                                    tokio::spawn(async move {
+                                        let _ = c.toggle_shuffle().await;
+                                    });
                                     self.state.shuffle = !self.state.shuffle;
                                 }
                                 4 => {
                                     let new_enabled = !self.state.eq_enabled;
                                     self.state.eq_enabled = new_enabled;
                                     let c = self.client.clone();
-                                    tokio::spawn(async move { let _ = c.set_eq_enabled(new_enabled).await; });
+                                    tokio::spawn(async move {
+                                        let _ = c.set_eq_enabled(new_enabled).await;
+                                    });
                                 }
                                 5 => {
                                     let new_enabled = !self.state.reverb.enabled;
                                     let room_size = self.state.reverb.room_size;
                                     self.state.reverb.enabled = new_enabled;
                                     let c = self.client.clone();
-                                    tokio::spawn(async move { let _ = c.set_reverb(new_enabled, room_size).await; });
+                                    tokio::spawn(async move {
+                                        let _ = c.set_reverb(new_enabled, room_size).await;
+                                    });
                                 }
                                 _ => {}
                             },
@@ -4207,7 +4284,9 @@ impl App {
                                     let new_val = !self.state.soloist_auto_start;
                                     self.state.soloist_auto_start = new_val;
                                     let c = self.client.clone();
-                                    tokio::spawn(async move { let _ = c.soloist_set_config(new_val).await; });
+                                    tokio::spawn(async move {
+                                        let _ = c.soloist_set_config(new_val).await;
+                                    });
                                 }
                                 _ => {}
                             },
@@ -4222,12 +4301,20 @@ impl App {
                             0 => match self.settings_option {
                                 0 => {
                                     let current = self.state.master_volume;
-                                    let new_vol = if current >= 100 { 50 } else { (current + 10).min(100) };
+                                    let new_vol = if current >= 100 {
+                                        50
+                                    } else {
+                                        (current + 10).min(100)
+                                    };
                                     self.send_high(TuiCommand::SetMasterVolume(new_vol));
                                 }
                                 1 => {
                                     let muted = !self.state.mute;
-                                    self.send_high(TuiCommand::SetVolume(if muted { 0 } else { self.state.volume }));
+                                    self.send_high(TuiCommand::SetVolume(if muted {
+                                        0
+                                    } else {
+                                        self.state.volume
+                                    }));
                                     self.state.mute = muted;
                                 }
                                 _ => {}
@@ -4235,31 +4322,45 @@ impl App {
                             2 => match self.settings_option {
                                 0 => {
                                     let next = match self.state.repeat {
-                                        gtm_core::state::RepeatMode::Off => gtm_core::state::RepeatMode::One,
-                                        gtm_core::state::RepeatMode::One => gtm_core::state::RepeatMode::All,
-                                        gtm_core::state::RepeatMode::All => gtm_core::state::RepeatMode::Off,
+                                        gtm_core::state::RepeatMode::Off => {
+                                            gtm_core::state::RepeatMode::One
+                                        }
+                                        gtm_core::state::RepeatMode::One => {
+                                            gtm_core::state::RepeatMode::All
+                                        }
+                                        gtm_core::state::RepeatMode::All => {
+                                            gtm_core::state::RepeatMode::Off
+                                        }
                                     };
                                     let c = self.client.clone();
-                                    tokio::spawn(async move { let _ = c.cycle_repeat(next).await; });
+                                    tokio::spawn(async move {
+                                        let _ = c.cycle_repeat(next).await;
+                                    });
                                     self.state.repeat = next;
                                 }
                                 1 => {
                                     let c = self.client.clone();
-                                    tokio::spawn(async move { let _ = c.toggle_shuffle().await; });
+                                    tokio::spawn(async move {
+                                        let _ = c.toggle_shuffle().await;
+                                    });
                                     self.state.shuffle = !self.state.shuffle;
                                 }
                                 4 => {
                                     let new_enabled = !self.state.eq_enabled;
                                     self.state.eq_enabled = new_enabled;
                                     let c = self.client.clone();
-                                    tokio::spawn(async move { let _ = c.set_eq_enabled(new_enabled).await; });
+                                    tokio::spawn(async move {
+                                        let _ = c.set_eq_enabled(new_enabled).await;
+                                    });
                                 }
                                 5 => {
                                     let new_enabled = !self.state.reverb.enabled;
                                     let room_size = self.state.reverb.room_size;
                                     self.state.reverb.enabled = new_enabled;
                                     let c = self.client.clone();
-                                    tokio::spawn(async move { let _ = c.set_reverb(new_enabled, room_size).await; });
+                                    tokio::spawn(async move {
+                                        let _ = c.set_reverb(new_enabled, room_size).await;
+                                    });
                                 }
                                 _ => {}
                             },
@@ -4278,7 +4379,9 @@ impl App {
                                     let new_val = !self.state.soloist_auto_start;
                                     self.state.soloist_auto_start = new_val;
                                     let c = self.client.clone();
-                                    tokio::spawn(async move { let _ = c.soloist_set_config(new_val).await; });
+                                    tokio::spawn(async move {
+                                        let _ = c.soloist_set_config(new_val).await;
+                                    });
                                 }
                                 _ => {}
                             },
@@ -4298,7 +4401,8 @@ impl App {
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     if settings_focus {
-                        self.settings_category = (self.settings_category + 1).min(NUM_SETTINGS_CATEGORIES - 1);
+                        self.settings_category =
+                            (self.settings_category + 1).min(NUM_SETTINGS_CATEGORIES - 1);
                         self.settings_option = 0;
                     } else {
                         let max = self.settings_options_for_category().saturating_sub(1);
@@ -4313,12 +4417,20 @@ impl App {
                             0 => match opt {
                                 0 => {
                                     let current = self.state.master_volume;
-                                    let new_vol = if current >= 100 { 50 } else { (current + 10).min(100) };
+                                    let new_vol = if current >= 100 {
+                                        50
+                                    } else {
+                                        (current + 10).min(100)
+                                    };
                                     self.send_high(TuiCommand::SetMasterVolume(new_vol));
                                 }
                                 1 => {
                                     let muted = !self.state.mute;
-                                    self.send_high(TuiCommand::SetVolume(if muted { 0 } else { self.state.volume }));
+                                    self.send_high(TuiCommand::SetVolume(if muted {
+                                        0
+                                    } else {
+                                        self.state.volume
+                                    }));
                                     self.state.mute = muted;
                                 }
                                 _ => {}
@@ -4326,32 +4438,50 @@ impl App {
                             1 => {
                                 if opt == 1 {
                                     let current = self.cookie_file.clone();
-                                    let new_path = if current.is_some() { None } else {
+                                    let new_path = if current.is_some() {
+                                        None
+                                    } else {
                                         let home = std::env::var("HOME").unwrap_or_default();
                                         Some(format!("{home}/.cookies/youtube.txt"))
                                     };
-                                    let display = new_path.clone().unwrap_or_else(|| "(none)".to_string());
+                                    let display =
+                                        new_path.clone().unwrap_or_else(|| "(none)".to_string());
                                     self.cookie_file = new_path.clone();
                                     let c = self.client.clone();
                                     let cf = new_path;
-                                    tokio::spawn(async move { let _ = c.yt_set_config(None, cf, None, None, None).await; });
-                                    self.notify(format!("Cookie file: {display}"), NotificationKind::Info);
+                                    tokio::spawn(async move {
+                                        let _ = c.yt_set_config(None, cf, None, None, None).await;
+                                    });
+                                    self.notify(
+                                        format!("Cookie file: {display}"),
+                                        NotificationKind::Info,
+                                    );
                                 }
                             }
                             2 => match opt {
                                 0 => {
                                     let next = match self.state.repeat {
-                                        gtm_core::state::RepeatMode::Off => gtm_core::state::RepeatMode::One,
-                                        gtm_core::state::RepeatMode::One => gtm_core::state::RepeatMode::All,
-                                        gtm_core::state::RepeatMode::All => gtm_core::state::RepeatMode::Off,
+                                        gtm_core::state::RepeatMode::Off => {
+                                            gtm_core::state::RepeatMode::One
+                                        }
+                                        gtm_core::state::RepeatMode::One => {
+                                            gtm_core::state::RepeatMode::All
+                                        }
+                                        gtm_core::state::RepeatMode::All => {
+                                            gtm_core::state::RepeatMode::Off
+                                        }
                                     };
                                     let c = self.client.clone();
-                                    tokio::spawn(async move { let _ = c.cycle_repeat(next).await; });
+                                    tokio::spawn(async move {
+                                        let _ = c.cycle_repeat(next).await;
+                                    });
                                     self.state.repeat = next;
                                 }
                                 1 => {
                                     let c = self.client.clone();
-                                    tokio::spawn(async move { let _ = c.toggle_shuffle().await; });
+                                    tokio::spawn(async move {
+                                        let _ = c.toggle_shuffle().await;
+                                    });
                                     self.state.shuffle = !self.state.shuffle;
                                 }
                                 2 | 3 => {
@@ -4361,14 +4491,18 @@ impl App {
                                     let new_enabled = !self.state.eq_enabled;
                                     self.state.eq_enabled = new_enabled;
                                     let c = self.client.clone();
-                                    tokio::spawn(async move { let _ = c.set_eq_enabled(new_enabled).await; });
+                                    tokio::spawn(async move {
+                                        let _ = c.set_eq_enabled(new_enabled).await;
+                                    });
                                 }
                                 5 => {
                                     let new_enabled = !self.state.reverb.enabled;
                                     let room_size = self.state.reverb.room_size;
                                     self.state.reverb.enabled = new_enabled;
                                     let c = self.client.clone();
-                                    tokio::spawn(async move { let _ = c.set_reverb(new_enabled, room_size).await; });
+                                    tokio::spawn(async move {
+                                        let _ = c.set_reverb(new_enabled, room_size).await;
+                                    });
                                 }
                                 _ => {}
                             },
@@ -4381,13 +4515,28 @@ impl App {
                                     save_prefs(&self.current_prefs());
                                 }
                                 2 => {
-                                    spawn_sync_and_wait(self.client.clone(), gtm_core::ipc::SyncKind::Covers, "Covers", self.ipc_tx.clone());
+                                    spawn_sync_and_wait(
+                                        self.client.clone(),
+                                        gtm_core::ipc::SyncKind::Covers,
+                                        "Covers",
+                                        self.ipc_tx.clone(),
+                                    );
                                 }
                                 3 => {
-                                    spawn_sync_and_wait(self.client.clone(), gtm_core::ipc::SyncKind::Lyrics, "Lyrics", self.ipc_tx.clone());
+                                    spawn_sync_and_wait(
+                                        self.client.clone(),
+                                        gtm_core::ipc::SyncKind::Lyrics,
+                                        "Lyrics",
+                                        self.ipc_tx.clone(),
+                                    );
                                 }
                                 4 => {
-                                    spawn_sync_and_wait(self.client.clone(), gtm_core::ipc::SyncKind::Metadata, "Metadata", self.ipc_tx.clone());
+                                    spawn_sync_and_wait(
+                                        self.client.clone(),
+                                        gtm_core::ipc::SyncKind::Metadata,
+                                        "Metadata",
+                                        self.ipc_tx.clone(),
+                                    );
                                 }
                                 5 => {
                                     self.cycle_footer_preset();
@@ -4403,8 +4552,15 @@ impl App {
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
                                         match c.spotify_play_pause().await {
-                                            Ok(status) => { let _ = ipc_tx.send(IpcResult::SpotifyStatus(status)); }
-                                            Err(e) => { let _ = ipc_tx.send(IpcResult::Error(format!("Spotify play/pause: {e}"))); }
+                                            Ok(status) => {
+                                                let _ =
+                                                    ipc_tx.send(IpcResult::SpotifyStatus(status));
+                                            }
+                                            Err(e) => {
+                                                let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                    "Spotify play/pause: {e}"
+                                                )));
+                                            }
                                         }
                                     });
                                 }
@@ -4417,8 +4573,18 @@ impl App {
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
                                         match c.spotify_sync().await {
-                                            Ok(()) => { let _ = ipc_tx.send(IpcResult::Notification("Spotify".to_string(), "Spotify sync complete".to_string(), NotificationKind::Success)); }
-                                            Err(e) => { let _ = ipc_tx.send(IpcResult::Error(format!("Spotify sync: {e}"))); }
+                                            Ok(()) => {
+                                                let _ = ipc_tx.send(IpcResult::Notification(
+                                                    "Spotify".to_string(),
+                                                    "Spotify sync complete".to_string(),
+                                                    NotificationKind::Success,
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                    "Spotify sync: {e}"
+                                                )));
+                                            }
                                         }
                                     });
                                 }
@@ -4427,8 +4593,20 @@ impl App {
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
                                         match c.spotify_clear().await {
-                                            Ok(status) => { let _ = ipc_tx.send(IpcResult::SpotifyStatus(status)); let _ = ipc_tx.send(IpcResult::Notification("Spotify".to_string(), "Account unlinked".to_string(), NotificationKind::Info)); }
-                                            Err(e) => { let _ = ipc_tx.send(IpcResult::Error(format!("Spotify unlink: {e}"))); }
+                                            Ok(status) => {
+                                                let _ =
+                                                    ipc_tx.send(IpcResult::SpotifyStatus(status));
+                                                let _ = ipc_tx.send(IpcResult::Notification(
+                                                    "Spotify".to_string(),
+                                                    "Account unlinked".to_string(),
+                                                    NotificationKind::Info,
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                    "Spotify unlink: {e}"
+                                                )));
+                                            }
                                         }
                                     });
                                 }
@@ -4441,8 +4619,18 @@ impl App {
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
                                         match c.soloist_start().await {
-                                            Ok(_status) => { let _ = ipc_tx.send(IpcResult::Notification("Soloist".to_string(), "Soloist started".to_string(), NotificationKind::Success)); }
-                                            Err(e) => { let _ = ipc_tx.send(IpcResult::Error(format!("Soloist start: {e}"))); }
+                                            Ok(_status) => {
+                                                let _ = ipc_tx.send(IpcResult::Notification(
+                                                    "Soloist".to_string(),
+                                                    "Soloist started".to_string(),
+                                                    NotificationKind::Success,
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                    "Soloist start: {e}"
+                                                )));
+                                            }
                                         }
                                     });
                                 }
@@ -4451,8 +4639,18 @@ impl App {
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
                                         match c.soloist_stop().await {
-                                            Ok(_status) => { let _ = ipc_tx.send(IpcResult::Notification("Soloist".to_string(), "Soloist stopped".to_string(), NotificationKind::Success)); }
-                                            Err(e) => { let _ = ipc_tx.send(IpcResult::Error(format!("Soloist stop: {e}"))); }
+                                            Ok(_status) => {
+                                                let _ = ipc_tx.send(IpcResult::Notification(
+                                                    "Soloist".to_string(),
+                                                    "Soloist stopped".to_string(),
+                                                    NotificationKind::Success,
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                    "Soloist stop: {e}"
+                                                )));
+                                            }
                                         }
                                     });
                                 }
@@ -4461,8 +4659,18 @@ impl App {
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
                                         match c.soloist_activate().await {
-                                            Ok(_status) => { let _ = ipc_tx.send(IpcResult::Notification("Soloist".to_string(), "Device activated".to_string(), NotificationKind::Success)); }
-                                            Err(e) => { let _ = ipc_tx.send(IpcResult::Error(format!("Soloist activate: {e}"))); }
+                                            Ok(_status) => {
+                                                let _ = ipc_tx.send(IpcResult::Notification(
+                                                    "Soloist".to_string(),
+                                                    "Device activated".to_string(),
+                                                    NotificationKind::Success,
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                    "Soloist activate: {e}"
+                                                )));
+                                            }
                                         }
                                     });
                                 }
@@ -4473,8 +4681,25 @@ impl App {
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
                                         match c.soloist_set_config(new_val).await {
-                                            Ok(()) => { let _ = ipc_tx.send(IpcResult::Notification("Soloist".to_string(), format!("Soloist auto-start: {}", if new_val { "enabled" } else { "disabled" }), NotificationKind::Info)); }
-                                            Err(e) => { let _ = ipc_tx.send(IpcResult::Error(format!("Soloist auto-start: {e}"))); }
+                                            Ok(()) => {
+                                                let _ = ipc_tx.send(IpcResult::Notification(
+                                                    "Soloist".to_string(),
+                                                    format!(
+                                                        "Soloist auto-start: {}",
+                                                        if new_val {
+                                                            "enabled"
+                                                        } else {
+                                                            "disabled"
+                                                        }
+                                                    ),
+                                                    NotificationKind::Info,
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                    "Soloist auto-start: {e}"
+                                                )));
+                                            }
                                         }
                                     });
                                 }
@@ -4989,6 +5214,8 @@ impl App {
                                     );
                                 } else if action == "about" {
                                     self.pickers.open(PickerId::About);
+                                } else if action == "notifications" {
+                                    self.pickers.open(PickerId::Notifications);
                                 } else if action == "search" {
                                     self.pickers.open(PickerId::SearchLibrary);
                                 } else if action == "spotify" {
@@ -5114,6 +5341,7 @@ impl App {
                                         };
                                         if !indices.is_empty() {
                                             self.pending_playlist_track_ids = indices;
+                                            self.playlist_creating = false;
                                             self.pickers.open(PickerId::PlaylistSelect);
                                         }
                                     }
@@ -5225,6 +5453,74 @@ impl App {
                                 .is_some_and(|o| o.id == PickerId::CommandPalette)
                             {
                                 self.pickers.close_top();
+                            }
+                        }
+                        PickerId::PlaylistSelect => {
+                            if self.playlist_creating {
+                                let name = top.query.trim().to_string();
+                                if !name.is_empty() {
+                                    let client = self.client.clone();
+                                    let ipc_tx = self.ipc_tx.clone();
+                                    let track_ids = self.pending_playlist_track_ids.clone();
+                                    tokio::spawn(async move {
+                                        if client.library_create_playlist(&name).await.is_ok() {
+                                            let mut new_id: Option<i64> = None;
+                                            if let Ok(DaemonRes::Playlists { playlists, .. }) =
+                                                client.library_get_playlists().await
+                                            {
+                                                new_id = playlists
+                                                    .iter()
+                                                    .find(|p| p.name == name)
+                                                    .map(|p| p.id);
+                                                let _ =
+                                                    ipc_tx.send(IpcResult::Playlists(playlists));
+                                            }
+                                            if let Some(pid) = new_id {
+                                                if !track_ids.is_empty() {
+                                                    let _ = client
+                                                        .library_add_to_playlist(pid, track_ids)
+                                                        .await;
+                                                }
+                                                let _ = ipc_tx.send(IpcResult::Notification(
+                                                    "Playlist".to_string(),
+                                                    format!("Created {name}"),
+                                                    NotificationKind::Success,
+                                                ));
+                                            }
+                                        } else {
+                                            let _ = ipc_tx.send(IpcResult::Notification(
+                                                "Playlist".to_string(),
+                                                "Failed to create playlist".to_string(),
+                                                NotificationKind::Error,
+                                            ));
+                                        }
+                                    });
+                                    self.playlist_creating = false;
+                                    self.close_top_picker_with_cleanup();
+                                }
+                            } else if top.selected == 0 {
+                                self.playlist_creating = true;
+                            } else {
+                                let idx = top.selected.saturating_sub(1);
+                                let track_ids = self.pending_playlist_track_ids.clone();
+                                if let Some(pl) = self.playlist_cache.get(idx) {
+                                    let playlist_id = pl.id;
+                                    if !track_ids.is_empty() {
+                                        let client = self.client.clone();
+                                        tokio::spawn(async move {
+                                            let _ = client
+                                                .library_add_to_playlist(playlist_id, track_ids)
+                                                .await;
+                                        });
+                                        self.notify_titled(
+                                            "Playlist",
+                                            "Added to playlist",
+                                            NotificationKind::Success,
+                                            true,
+                                        );
+                                    }
+                                    self.close_top_picker_with_cleanup();
+                                }
                             }
                         }
                         PickerId::Equalizer => {
@@ -5442,6 +5738,13 @@ impl App {
                         PickerId::SpotifyLinkToken => {
                             self.spotify_token_input.push(c);
                         }
+                        PickerId::PlaylistSelect if self.playlist_creating => {
+                            top.query.push(c);
+                        }
+                        PickerId::PlaylistSelect if c == 'n' || c == 'N' => {
+                            top.query.clear();
+                            self.playlist_creating = true;
+                        }
                         _ => {}
                     }
                 }
@@ -5476,6 +5779,9 @@ impl App {
                         PickerId::SpotifyLinkToken => {
                             self.spotify_token_input.pop();
                         }
+                        PickerId::PlaylistSelect if self.playlist_creating => {
+                            top.query.pop();
+                        }
                         _ => {
                             top.query.pop();
                             if top.id == PickerId::YTSearch {
@@ -5504,6 +5810,9 @@ impl App {
                 }
                 PickerId::EditMetadata => {
                     self.metadata.fields[self.metadata.field_idx].push_str(text);
+                }
+                PickerId::PlaylistSelect if self.playlist_creating => {
+                    top.query.push_str(text);
                 }
                 PickerId::YTSearch
                 | PickerId::SearchLibrary

@@ -24,6 +24,7 @@ pub enum PickerId {
     VisualizerPreset,
     ProgressStyle,
     Settings,
+    Notifications,
 }
 
 /// Which list a fuzzy-finder picker searches. `Tab` cycles through these.

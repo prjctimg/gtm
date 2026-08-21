@@ -712,8 +712,7 @@ impl Daemon {
                 tokio::time::sleep(Duration::from_secs(2)).await;
                 let mut spotify = inner2.spotify.lock().await;
                 if spotify.has_token_file() {
-                    let _ =
-                        tokio::time::timeout(Duration::from_secs(60), spotify.sync()).await;
+                    let _ = tokio::time::timeout(Duration::from_secs(60), spotify.sync()).await;
                 }
             });
         }
@@ -2720,8 +2719,10 @@ impl Daemon {
                 discovered_artist = t.artist.clone();
                 discovered_album = t.album.clone();
             } else if let Some(ref t) = state.current_track {
-                discovered_artist = t.artist.clone();
-                discovered_album = t.album.clone();
+                if t.id == track_id {
+                    discovered_artist = t.artist.clone();
+                    discovered_album = t.album.clone();
+                }
             }
         }
 

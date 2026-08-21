@@ -120,6 +120,19 @@ pub fn readable_fg(fg: Color, bg: Color) -> Color {
     }
 }
 
+/// Linearly interpolate two RGB colors; `t = 0.0` yields `a`, `t = 1.0`
+/// yields `b`.  Non-RGB inputs fall back to `a`.
+pub fn blend_colors(a: Color, b: Color, t: f64) -> Color {
+    match (a, b) {
+        (Color::Rgb(r1, g1, b1), Color::Rgb(r2, g2, b2)) => {
+            let t = t.clamp(0.0, 1.0);
+            let mix = |x: u8, y: u8| (x as f64 + (y as f64 - x as f64) * t) as u8;
+            Color::Rgb(mix(r1, r2), mix(g1, g2), mix(b1, b2))
+        }
+        _ => a,
+    }
+}
+
 // ─── Built-in presets ─────────────────────────────────────────────────
 
 /// Chadrula: NvChad default

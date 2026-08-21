@@ -527,6 +527,13 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
+            (
+                KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::OpenOverlay(PickerId::Notifications),
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
             // Library motions: vim-style
             // v: toggle multiselect mode
             (
