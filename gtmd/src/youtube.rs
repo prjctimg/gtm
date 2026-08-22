@@ -101,8 +101,8 @@ impl YoutubeManager {
 
     fn start_impl(&mut self, query: &str, filter: Option<YTFilter>) -> Result<u64, String> {
         self.cancel_current();
-        let gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
-        self.current_gen = gen;
+        let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        self.current_gen = generation;
         self.last_query = query.to_string();
         while self.results_rx.try_recv().is_ok() {}
 
@@ -118,10 +118,10 @@ impl YoutubeManager {
                 Err(_) => return,
             };
             let results = run_search(&q, filter, cancel_rx, permit, &cookie_args).await;
-            let _ = res_tx.send((gen, results));
+            let _ = res_tx.send((generation, results));
         });
         self.active_task = Some(handle);
-        Ok(gen)
+        Ok(generation)
     }
 
     fn cancel_current(&mut self) {
@@ -158,7 +158,7 @@ impl YoutubeManager {
             latest = Some(entry);
         }
         match latest {
-            Some((gen, results)) if gen == self.current_gen => {
+            Some((generation, results)) if generation == self.current_gen => {
                 let query = self.last_query.clone();
                 Ok(Some((query, results)))
             }

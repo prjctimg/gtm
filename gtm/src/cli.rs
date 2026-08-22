@@ -369,7 +369,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     .map_err(|e| e.to_string())
             }
             CliCommand::Queue => {
-                let res = client.queue_list().await.map_err(|e| e.to_string())?;
+                let res = client.queue().list().await.map_err(|e| e.to_string())?;
                 if json {
                     serde_json::to_string_pretty(&res).map_err(|e| e.to_string())
                 } else {
@@ -377,38 +377,38 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 }
             }
             CliCommand::QueueAdd { paths, position } => client
-                .queue_add_many(paths.clone(), *position)
+                .queue().add_many(paths.clone(), *position)
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::QueueRemove { index } => client
-                .queue_rm(*index)
+                .queue().remove(*index)
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::QueueMove { from, to } => client
-                .queue_move(*from, *to)
+                .queue().reorder(*from, *to)
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::QueueClear => client
-                .queue_clear()
+                .queue().clear()
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::QueueSet { paths, start_idx } => client
-                .queue_set(paths.clone(), *start_idx)
+                .queue().set(paths.clone(), *start_idx)
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Scan { path } => client
-                .library_scan(path)
+                .library().scan(path)
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Tracks { filter, sort } => {
                 let res = client
-                    .library_get_tracks(filter.clone(), sort.clone())
+                    .library().get_tracks(filter.clone(), sort.clone())
                     .await
                     .map_err(|e| e.to_string())?;
                 if json {
@@ -419,7 +419,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
             }
             CliCommand::Playlists => {
                 let res = client
-                    .library_get_playlists()
+                    .library().get_playlists()
                     .await
                     .map_err(|e| e.to_string())?;
                 if json {
@@ -429,12 +429,12 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 }
             }
             CliCommand::CreatePlaylist { name } => client
-                .library_create_playlist(name)
+                .library().create_playlist(name)
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::DeletePlaylist { id } => client
-                .library_delete_playlist(*id)
+                .library().delete_playlist(*id)
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
@@ -442,23 +442,23 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 playlist_id,
                 track_ids,
             } => client
-                .library_add_to_playlist(*playlist_id, track_ids.clone())
+                .library().add_to_playlist(*playlist_id, track_ids.clone())
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::ImportM3u { path } => client
-                .library_import_m3u(path)
+                .library().import_m3u(path)
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::ExportM3u { playlist_id, path } => client
-                .library_export_m3u(*playlist_id, path)
+                .library().export_m3u(*playlist_id, path)
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Recent { count } => {
                 let res = client
-                    .library_get_recent(*count)
+                    .library().get_recent(*count)
                     .await
                     .map_err(|e| e.to_string())?;
                 if json {
@@ -469,14 +469,14 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
             }
             CliCommand::MetadataSync { path } => {
                 client
-                    .library_sync_metadata(path.clone())
+                    .library().sync_metadata(path.clone())
                     .await
                     .map_err(|e| e.to_string())?;
                 let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1800);
                 loop {
                     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
                     let st = client
-                        .library_sync_status()
+                        .library().sync_status()
                         .await
                         .map_err(|e| e.to_string())?;
                     if !st.running {
@@ -494,7 +494,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 }
             }
             CliCommand::Favourites => {
-                let res = client.get_favourites().await.map_err(|e| e.to_string())?;
+                let res = client.favourites().list().await.map_err(|e| e.to_string())?;
                 if json {
                     serde_json::to_string_pretty(&res).map_err(|e| e.to_string())
                 } else {
@@ -502,12 +502,12 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 }
             }
             CliCommand::FavouriteAdd { track_id } => client
-                .add_favourite(*track_id)
+                .favourites().add(*track_id)
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::FavouriteRemove { track_id } => client
-                .remove_favourite(*track_id)
+                .favourites().remove(*track_id)
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
@@ -525,7 +525,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     None => (String::new(), query.trim().to_string()),
                 };
                 let lyrics = client
-                    .lyrics_search(&artist, &title)
+                    .lyrics().search(&artist, &title)
                     .await
                     .map_err(|e| e.to_string())?;
                 if json {
@@ -744,7 +744,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     return Err("no field to update: pass a supported FIELD".to_string());
                 }
                 client
-                    .library_update_metadata(*track_id, patch)
+                    .library().update_metadata(*track_id, patch)
                     .await
                     .map(|()| "metadata updated".to_string())
                     .map_err(|e| e.to_string())
@@ -752,40 +752,40 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
             CliCommand::Spotify(action) => match action {
                 SpotifyAction::Connect { token } => {
                     let st = client
-                        .spotify_set_token(token)
+                        .spotify().set_token(token)
                         .await
                         .map_err(|e| e.to_string())?;
                     Ok(format_spotify_status(&st))
                 }
                 SpotifyAction::Disconnect => {
-                    let st = client.spotify_clear().await.map_err(|e| e.to_string())?;
+                    let st = client.spotify().clear().await.map_err(|e| e.to_string())?;
                     Ok(format_spotify_status(&st))
                 }
                 SpotifyAction::Status => {
-                    let st = client.spotify_status().await.map_err(|e| e.to_string())?;
+                    let st = client.spotify().status().await.map_err(|e| e.to_string())?;
                     Ok(format_spotify_status(&st))
                 }
                 SpotifyAction::Sync => client
-                    .spotify_sync()
+                    .spotify().sync()
                     .await
                     .map(|()| "spotify playlists synced".to_string())
                     .map_err(|e| e.to_string()),
             },
             CliCommand::Soloist(action) => match action {
                 SoloistAction::Start => {
-                    let st = client.soloist_start().await.map_err(|e| e.to_string())?;
+                    let st = client.soloist().start().await.map_err(|e| e.to_string())?;
                     Ok(format_soloist_status(&st))
                 }
                 SoloistAction::Stop => {
-                    let st = client.soloist_stop().await.map_err(|e| e.to_string())?;
+                    let st = client.soloist().stop().await.map_err(|e| e.to_string())?;
                     Ok(format_soloist_status(&st))
                 }
                 SoloistAction::Status => {
-                    let st = client.soloist_status().await.map_err(|e| e.to_string())?;
+                    let st = client.soloist().status().await.map_err(|e| e.to_string())?;
                     Ok(format_soloist_status(&st))
                 }
                 SoloistAction::AutoStart { enabled } => client
-                    .soloist_set_config(*enabled)
+                    .soloist().set_config(*enabled)
                     .await
                     .map(|()| format!("soloist auto-start: {enabled}"))
                     .map_err(|e| e.to_string()),

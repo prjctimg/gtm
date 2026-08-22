@@ -31,6 +31,1798 @@ use ratatui::Terminal;
 use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::StatefulImage;
 
+
+/// Grouped render helpers: previously free `render_*` functions.
+pub struct Render;
+
+impl Render {
+    fn upnext_card(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let (display_title, artist, album, has_album, has_cover, source_label) = {
+            let u = match app.upnext.as_ref() {
+                Some(u) => u,
+                None => return,
+            };
+            let display_title = if u.track.title.is_empty() {
+                std::path::Path::new(&u.track.path)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            } else {
+                u.track.title.clone()
+            };
+            let artist = if u.track.artist.is_empty() {
+                "Unknown".to_string()
+            } else {
+                u.track.artist.clone()
+            };
+            let album = u.track.album.clone();
+            let has_album = !album.is_empty();
+            let has_cover = u.cover.is_some();
+            let source = if u.track.path.contains("/audio/spotify")
+                || u.track.path.starts_with("spotify:")
+            {
+                "Spotify"
+            } else if u.track.path.contains("/audio/youtube") || u.track.path.starts_with("youtube:") {
+                "YouTube"
+            } else {
+                "Local"
+            };
+            let source_label = if use_nerd_fonts() {
+                match source {
+                    "Spotify" => " \u{f1bc} Spotify",
+                    "YouTube" => " \u{f167} YouTube",
+                    _ => " \u{f3b5} Local",
+                }
+            } else {
+                match source {
+                    "Spotify" => " ♫ Spotify",
+                    "YouTube" => " ▶ YouTube",
+                    _ => " ♪ Local",
+                }
+            };
+            (
+                display_title,
+                artist,
+                album,
+                has_album,
+                has_cover,
+                source_label.to_string(),
+            )
+        };
+
+        let bg = Block::default().style(Style::default().bg(app.float_bg()));
+        f.render_widget(bg, area);
+
+        let border_color = app.theme.notification_border;
+        f.render_widget(
+            Block::default().style(Style::default().bg(border_color)),
+            Rect {
+                x: area.x,
+                y: area.y,
+                width: 1,
+                height: area.height,
+            },
+        );
+
+        let inner = area.inner(Margin {
+            horizontal: 2,
+            vertical: 1,
+        });
+
+        let cover_w = COVER_W.min(inner.width.saturating_sub(2));
+        let cover_h = COVER_H.min(inner.height);
+        if has_cover && cover_w > 0 {
+            let cover_area = Rect {
+                x: inner.x,
+                y: inner.y,
+                width: cover_w,
+                height: cover_h,
+            };
+            if let Some(protocol) = app.upnext.as_mut().and_then(|u| u.cover_stateful.as_mut()) {
+                let image = StatefulImage::new();
+                f.render_stateful_widget(image, cover_area, protocol);
+            } else if let Some(bytes) = app.upnext.as_ref().and_then(|u| u.cover.as_ref()) {
+                Render::cover_block(f, cover_area, bytes);
+            }
+        }
+
+        let text_area = Rect {
+            x: inner.x + cover_w + 1,
+            y: inner.y,
+            width: inner.width.saturating_sub(cover_w + 1),
+            height: inner.height,
+        };
+        let text_w = text_area.width.saturating_sub(1) as usize;
+        let animated = scroll_text(&display_title, text_w.max(4), app.np_title_scroll, false);
+        let mut lines: Vec<Line> = vec![
+            Line::from(Span::styled(
+                "UP NEXT",
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                format!(" {}", animated),
+                Style::default()
+                    .fg(app.theme.fg_bright)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                format!(" {}", artist),
+                Style::default().fg(app.theme.fg),
+            )),
+        ];
+        if has_album {
+            lines.push(Line::from(Span::styled(
+                format!(" {}", album),
+                Style::default().fg(app.theme.fg),
+            )));
+        }
+        lines.push(Line::from(Span::styled(
+            format!(" {}", source_label.trim_start()),
+            Style::default().fg(app.theme.fg_dim),
+        )));
+        f.render_widget(Paragraph::new(lines), text_area);
+    }
+
+    fn notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let now = std::time::Instant::now();
+
+        let slide_duration_ms: f32 = 300.0;
+        for n in &mut app.notifications {
+            if n.animation_progress < 1.0 {
+                let elapsed = now
+                    .duration_since(n.expires_at - NOTIFICATION_LIFETIME)
+                    .as_millis() as f32;
+                n.animation_progress = (elapsed / slide_duration_ms).min(1.0);
+            }
+        }
+
+        app.notifications
+            .retain(|n| now < n.expires_at + NOTIFICATION_EXIT_DURATION);
+
+        let max_notif_width = 42u16;
+        let padding = 1u16;
+        let gap = 1u16;
+
+        let mut y_bottom = area.y + area.height - padding;
+
+        if app.upnext.is_some() {
+            let card_w = 42u16;
+            let card_h = 7u16;
+            let card_x = area.x + area.width.saturating_sub(card_w + padding);
+            let card_y = y_bottom.saturating_sub(card_h);
+            if card_y >= area.y {
+                let card_area = Rect {
+                    x: card_x,
+                    y: card_y,
+                    width: card_w,
+                    height: card_h,
+                };
+                Render::upnext_card(f, card_area, app);
+                y_bottom = card_y.saturating_sub(gap);
+            }
+        } else if app.upnext.is_some() {
+            app.upnext = None;
+        }
+
+        let mut regular: Vec<_> = app
+            .notifications
+            .iter()
+            .filter(|n| !n.is_volume && !n.trivial)
+            .collect();
+        let volume: Vec<_> = app.notifications.iter().filter(|n| n.is_volume).collect();
+
+        regular.truncate(5);
+
+        for n in regular.iter() {
+            let text_area_w = max_notif_width.saturating_sub(3 + padding * 2);
+            let wrapped = wrap_text(&n.message, text_area_w as usize);
+            let line_count = wrapped.len() as u16;
+            let has_title = !n.title.is_empty();
+            let title_rows = if has_title { 2 } else { 0 };
+            let card_h = line_count + padding * 2 + title_rows;
+
+            let card_y = y_bottom.saturating_sub(card_h);
+            if card_y < area.y {
+                break;
+            }
+
+            let final_x = area.x + area.width.saturating_sub(max_notif_width + padding);
+            let start_x = area.x + area.width;
+            let leaving = now.saturating_duration_since(n.expires_at);
+            let x = if leaving > std::time::Duration::ZERO {
+                let exit_progress = cubic_ease_in(
+                    (leaving.as_millis() as f32 / NOTIFICATION_EXIT_DURATION.as_millis() as f32)
+                        .min(1.0),
+                );
+                (final_x as f32 + (start_x as f32 - final_x as f32) * exit_progress) as u16
+            } else {
+                let progress = cubic_ease_out(n.animation_progress);
+                (start_x as f32 + (final_x as f32 - start_x as f32) * progress) as u16
+            };
+
+            let card_area = Rect {
+                x,
+                y: card_y,
+                width: max_notif_width,
+                height: card_h,
+            };
+
+            let bg = Block::default().style(Style::default().bg(app.float_bg()));
+            f.render_widget(bg, card_area);
+
+            let border_color = app.theme.notification_border;
+            f.render_widget(
+                Block::default().style(Style::default().bg(border_color)),
+                Rect {
+                    x: card_area.x,
+                    y: card_area.y,
+                    width: 1,
+                    height: card_area.height,
+                },
+            );
+
+            let inner = card_area.inner(Margin {
+                horizontal: padding + 1,
+                vertical: padding,
+            });
+            let inner = Rect {
+                x: inner.x + 1,
+                y: inner.y,
+                width: inner.width.saturating_sub(1),
+                height: inner.height,
+            };
+            let mut lines: Vec<Line> = Vec::with_capacity(1 + line_count as usize);
+            if has_title {
+                lines.push(Line::from(Span::styled(
+                    n.title.clone(),
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                lines.push(Line::raw(""));
+            }
+            for l in wrapped.iter() {
+                lines.push(Line::raw(l));
+            }
+            let para = Paragraph::new(lines).style(Style::default().fg(app.theme.fg_bright));
+            f.render_widget(para, inner);
+
+            y_bottom = card_y.saturating_sub(gap);
+        }
+
+        for n in volume.iter() {
+            let bar_h = 10u16;
+            let bar_w = 5u16;
+
+            let final_x = area.x + area.width.saturating_sub(bar_w + padding);
+            let start_x = area.x + area.width;
+            let leaving = now.saturating_duration_since(n.expires_at);
+            let x = if leaving > std::time::Duration::ZERO {
+                let exit_progress = cubic_ease_in(
+                    (leaving.as_millis() as f32 / NOTIFICATION_EXIT_DURATION.as_millis() as f32)
+                        .min(1.0),
+                );
+                (final_x as f32 + (start_x as f32 - final_x as f32) * exit_progress) as u16
+            } else {
+                let progress = cubic_ease_out(n.animation_progress);
+                (start_x as f32 + (final_x as f32 - start_x as f32) * progress) as u16
+            };
+
+            let bar_y = y_bottom.saturating_sub(bar_h + 2);
+            if bar_y < area.y {
+                break;
+            }
+            let bar_area = Rect {
+                x,
+                y: bar_y,
+                width: bar_w,
+                height: bar_h + 2,
+            };
+
+            f.render_widget(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(app.theme.border))
+                    .style(Style::default().bg(app.float_bg())),
+                bar_area,
+            );
+
+            let fill_h = ((n.volume_value as f64 / 100.0) * bar_h as f64) as u16;
+            if fill_h > 0 {
+                let fill_area = Rect {
+                    x: bar_area.x + 1,
+                    y: bar_area.y + 1 + (bar_h - fill_h),
+                    width: bar_w.saturating_sub(2),
+                    height: fill_h,
+                };
+                let vol_color = app.theme.volume_color(n.volume_value);
+                f.render_widget(
+                    Block::default().style(Style::default().bg(vol_color)),
+                    fill_area,
+                );
+            }
+
+            let label_area = Rect {
+                x: bar_area.x,
+                y: bar_area.y + bar_h + 1,
+                width: bar_w,
+                height: 1,
+            };
+            let label = Paragraph::new(format!("{:>3}%", n.volume_value))
+                .style(Style::default().fg(app.theme.fg_bright));
+            f.render_widget(label, label_area);
+
+            y_bottom = bar_y.saturating_sub(gap);
+        }
+    }
+
+    fn content(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        if !app.is_ready {
+            fill_pane(f, area, app);
+            Render::loader(f, area, app, "Loading library\u{2026}");
+            return;
+        }
+        Render::library(f, area, app);
+    }
+
+    fn footer_help(f: &mut ratatui::Frame, area: Rect, app: &App) {
+        if app.pickers.is_open() || app.hide_help_bar {
+            return;
+        }
+        let text = " [?] Help  [:] Command palette  [q] Quit ";
+        let para = Paragraph::new(text)
+            .alignment(Alignment::Right)
+            .style(Style::default().fg(app.theme.fg_dim).bg(app.chrome_bg()));
+        f.render_widget(para, area);
+    }
+
+    fn cover(
+        f: &mut ratatui::Frame,
+        area: Rect,
+        cover_stateful: Option<&mut StatefulProtocol>,
+        current_cover: Option<&[u8]>,
+        placeholder_fg: Color,
+    ) {
+        if std::env::var("NVIM").is_ok() || std::env::var("ZELLIJ").is_ok() {
+            let placeholder = Paragraph::new(Span::styled(
+                " \u{266b} Cover art unavailable in this terminal ",
+                Style::default().fg(placeholder_fg),
+            ));
+            f.render_widget(placeholder, area);
+            return;
+        }
+        if let Some(protocol) = cover_stateful {
+            let image = StatefulImage::new();
+            f.render_stateful_widget(image, area, protocol);
+        } else if let Some(cover_bytes) = current_cover {
+            Render::cover_block(f, area, cover_bytes);
+        } else {
+            let placeholder = Paragraph::new(Span::styled(
+                " \u{266b} ",
+                Style::default().fg(placeholder_fg),
+            ));
+            f.render_widget(placeholder, area);
+        }
+    }
+
+    fn cover_block(f: &mut ratatui::Frame, area: Rect, cover_bytes: &[u8]) {
+        let img = match image::load_from_memory(cover_bytes) {
+            Ok(img) => img.into_rgba8(),
+            Err(_) => return,
+        };
+        let disp_w = (area.width as u32).max(1);
+        let disp_h = (area.height as u32 * 2).max(1);
+
+        let src_w = img.width() as f64;
+        let src_h = img.height() as f64;
+        let target_ratio = disp_w as f64 / disp_h as f64;
+        let source_ratio = src_w / src_h;
+
+        let cropped = if (source_ratio - target_ratio).abs() < 0.01 {
+            img
+        } else if source_ratio > target_ratio {
+            let new_w = (src_h * target_ratio) as u32;
+            let offset = ((src_w as u32 - new_w) / 2).min(img.width() - 1);
+            image::imageops::crop_imm(&img, offset, 0, new_w, img.height()).to_image()
+        } else {
+            let new_h = (src_w / target_ratio) as u32;
+            let offset = ((img.height() - new_h) / 2).min(img.height() - 1);
+            image::imageops::crop_imm(&img, 0, offset, img.width(), new_h).to_image()
+        };
+
+        let thumb = image::imageops::resize(
+            &cropped,
+            disp_w,
+            disp_h,
+            image::imageops::FilterType::CatmullRom,
+        );
+        for y in 0..area.height as u32 {
+            let mut spans = Vec::with_capacity(disp_w as usize);
+            for x in 0..disp_w {
+                let top = thumb.get_pixel(x, y * 2);
+                let bot = if y * 2 + 1 < disp_h {
+                    *thumb.get_pixel(x, y * 2 + 1)
+                } else {
+                    image::Rgba([0, 0, 0, 255])
+                };
+                let fg = ratatui::style::Color::Rgb(top[0], top[1], top[2]);
+                let bg = ratatui::style::Color::Rgb(bot[0], bot[1], bot[2]);
+                spans.push(Span::styled("\u{2580}", Style::default().fg(fg).bg(bg)));
+            }
+            let row = Rect {
+                x: area.x,
+                y: area.y + y as u16,
+                width: area.width,
+                height: 1,
+            };
+            f.render_widget(Paragraph::new(Line::from(spans)), row);
+        }
+    }
+
+    fn evolving<W: ratatui::widgets::Widget>(
+        f: &mut ratatui::Frame,
+        area: Rect,
+        widget: W,
+        key: &'static str,
+        app: &mut App,
+        animate_on_track_change: bool,
+    ) {
+        let start = app.track_anim_trigger && (animate_on_track_change || app.frame_count == 0);
+        if !start && !app.anim_fx.is_running() {
+            f.render_widget(widget, area);
+            return;
+        }
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        widget.render(area, &mut buf);
+        if start {
+            app.anim_fx.add_unique_effect(
+                key,
+                tachyonfx::fx::evolve_into(
+                    tachyonfx::fx::EvolveSymbolSet::Circles,
+                    (350, tachyonfx::Interpolation::QuadInOut),
+                )
+                .with_area(area)
+                .with_filter(tachyonfx::CellFilter::All),
+            );
+        }
+        app.anim_fx
+            .process_effects(tachyonfx::Duration::from_millis(16), &mut buf, area);
+        f.buffer_mut().merge(&buf);
+    }
+
+    fn pane_header(
+        f: &mut ratatui::Frame,
+        area: Rect,
+        app: &App,
+        label: &str,
+        focused: bool,
+        sep: bool,
+        left_rule: bool,
+    ) -> Rect {
+        if left_rule {
+            let rule = Block::default()
+                .borders(Borders::LEFT)
+                .border_style(Style::default().fg(app.theme.muted_border));
+            f.render_widget(rule, area);
+        }
+        let inset: u16 = if left_rule { 1 } else { 0 };
+        let text_x = area.x + inset;
+        let text_w = area.width.saturating_sub(inset);
+        if focused {
+            let bar = Paragraph::new(Span::styled(
+                "\u{258e}",
+                Style::default().fg(app.theme.accent),
+            ));
+            f.render_widget(
+                bar,
+                Rect {
+                    x: area.x,
+                    y: area.y,
+                    width: 1,
+                    height: 1,
+                },
+            );
+        }
+        let label_style = if focused {
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(app.theme.fg_bright)
+                .add_modifier(Modifier::BOLD)
+        };
+        let header = Paragraph::new(Line::from(Span::styled(format!(" {label} "), label_style)));
+        f.render_widget(
+            header,
+            Rect {
+                x: text_x,
+                y: area.y,
+                width: text_w,
+                height: 1,
+            },
+        );
+        let mut content = Rect {
+            x: text_x + 1,
+            y: area.y.saturating_add(1),
+            width: text_w.saturating_sub(2),
+            height: area.height.saturating_sub(1),
+        };
+        if sep && content.height > 0 {
+            let rule = Line::from(Span::styled(
+                "\u{2500}".repeat(content.width as usize),
+                Style::default().fg(app.theme.muted_border),
+            ));
+            f.render_widget(
+                Paragraph::new(rule),
+                Rect {
+                    x: content.x,
+                    y: content.y,
+                    width: content.width,
+                    height: 1,
+                },
+            );
+            content = Rect {
+                x: content.x,
+                y: content.y.saturating_add(1),
+                width: content.width,
+                height: content.height.saturating_sub(1),
+            };
+        }
+        content
+    }
+
+    fn library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let is_narrow = app.terminal_cols < 60;
+        let show_vis = app.visualizer.is_enabled() && app.terminal_cols >= 80;
+        let np_height: u16 = if is_narrow {
+            5
+        } else {
+            (area.height / 3).clamp(8, 14)
+        };
+
+        let lib_width: u16 = if is_narrow {
+            (app.terminal_cols / 3)
+                .max(12)
+                .min(area.width.saturating_sub(2))
+        } else {
+            28u16.min(area.width.saturating_sub(2))
+        };
+
+        let lyrics_takes_full_height = app.show_lyrics && !is_narrow;
+
+        let (left_area, lyrics_area) = if lyrics_takes_full_height {
+            let lyrics_w = area.width / 3;
+            let left_w = area.width - lyrics_w;
+            let h = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(left_w), Constraint::Length(lyrics_w)])
+                .split(area);
+            // The last content row is reserved for the library stats line.
+            let lyrics = Rect {
+                height: h[1].height.saturating_sub(1),
+                ..h[1]
+            };
+            (h[0], Some(lyrics))
+        } else {
+            (area, None)
+        };
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(np_height), Constraint::Min(1)])
+            .split(left_area);
+
+        let (np_area, vis_area) = if show_vis {
+            let vis_w = app.terminal_cols / 3;
+            let h = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Min(0), Constraint::Length(vis_w)])
+                .split(chunks[0]);
+            (h[0], Some(h[1]))
+        } else {
+            (chunks[0], None)
+        };
+
+        let panes = if is_narrow {
+            if app.library_pane_focus {
+                Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Min(0), Constraint::Length(0)])
+                    .split(chunks[1])
+                    .to_vec()
+            } else {
+                Layout::default()
+                    .direction(Direction::Horizontal)
+                    .constraints([Constraint::Length(0), Constraint::Min(0)])
+                    .split(chunks[1])
+                    .to_vec()
+            }
+        } else {
+            Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(lib_width), Constraint::Min(0)])
+                .split(chunks[1])
+                .to_vec()
+        };
+
+        let left_focus = app.library_pane_focus;
+
+        {
+            let np_inner = Render::pane_header(f, np_area, app, "", false, true, false);
+            fill_pane(f, np_inner, app);
+
+            if let Some(track) = app.state.current_track.clone() {
+                let inner = np_inner;
+                let avail_h = inner.height.saturating_sub(2);
+                let cover_h = avail_h.min(12);
+                let cover_w = cover_h * 2;
+
+                if inner.width >= cover_w + 16 && avail_h >= 5 {
+                    let hchunks = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([
+                            Constraint::Length(cover_w),
+                            Constraint::Length(2),
+                            Constraint::Min(0),
+                        ])
+                        .split(inner);
+
+                    let cover_area = Rect {
+                        x: hchunks[0].x,
+                        y: hchunks[0].y + 1,
+                        width: cover_w.min(hchunks[0].width),
+                        height: cover_h.min(hchunks[0].height.saturating_sub(1)),
+                    };
+                    Render::cover(
+                        f,
+                        cover_area,
+                        app.np_cover.stateful.as_mut(),
+                        app.np_cover.image.as_deref(),
+                        app.theme.fg_dim,
+                    );
+
+                    let info_area = hchunks[2];
+
+                    let display_title = if track.title.is_empty() {
+                        std::path::Path::new(&track.path)
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default()
+                    } else {
+                        track.title.clone()
+                    };
+                    let display_artist = if track.artist.is_empty() {
+                        " "
+                    } else {
+                        &track.artist
+                    };
+
+                    let has_album = !track.album.is_empty();
+                    let content_h: u16 = 7;
+                    let offset = cover_h.saturating_sub(content_h) / 2;
+                    let vchunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([
+                            Constraint::Length(offset),
+                            Constraint::Length(content_h),
+                            Constraint::Min(0),
+                        ])
+                        .split(info_area);
+                    let content_area = vchunks[1];
+
+                    let info_chunks = Layout::default()
+                        .direction(Direction::Vertical)
+                        .constraints([
+                            Constraint::Length(1),
+                            Constraint::Length(1),
+                            Constraint::Length(1),
+                            Constraint::Length(1),
+                            Constraint::Length(1),
+                            Constraint::Length(1),
+                            Constraint::Length(1),
+                        ])
+                        .split(content_area);
+
+                    let fav_prefix = if track.favourite { "\u{2665} " } else { "" };
+                    let title_text = format!("{}{}", fav_prefix, display_title);
+                    let title_avail = info_chunks[0].width as usize;
+                    let animated_title =
+                        scroll_text(&title_text, title_avail, app.np_title_scroll, true);
+                    let title_para = Paragraph::new(Line::from(vec![Span::styled(
+                        &animated_title,
+                        Style::default()
+                            .fg(app.theme.fg_bright)
+                            .add_modifier(Modifier::BOLD),
+                    )]));
+                    Render::evolving(f, info_chunks[0], title_para, "np", app, true);
+
+                    let artist_para = Paragraph::new(Line::from(vec![
+                        Span::styled("\u{1f3a4} ", Style::default().fg(app.theme.fg)),
+                        Span::styled(display_artist, Style::default().fg(app.theme.fg_bright)),
+                    ]));
+                    f.render_widget(artist_para, info_chunks[1]);
+
+                    if has_album {
+                        let album_para = Paragraph::new(Line::from(vec![
+                            Span::styled("\u{1f4bf} ", Style::default().fg(app.theme.fg)),
+                            Span::styled(&track.album, Style::default().fg(app.theme.fg_bright)),
+                        ]));
+                        f.render_widget(album_para, info_chunks[2]);
+                    }
+
+                    let dur = if app.state.duration > 0.0 {
+                        app.state.duration
+                    } else {
+                        track.duration
+                    };
+                    let pos = app.display_position;
+                    let pos_str = format_duration(pos as u64);
+                    let dur_str = format_duration(dur as u64);
+                    let ratio = if dur > 0.0 { pos / dur } else { 0.0 };
+                    let ts_str = format!("{} / {}", pos_str, dur_str);
+                    let bar_row = info_chunks[4];
+                    let ts_row = info_chunks[6];
+                    let bar_width = (bar_row.width.saturating_sub(1) as usize).min(40);
+                    let bar_spans = Render::progress_variant_styled(ratio, bar_width, app);
+                    let bar_para = Paragraph::new(Line::from(bar_spans));
+                    f.render_widget(bar_para, bar_row);
+                    let ts_para = Paragraph::new(Line::from(vec![Span::styled(
+                        ts_str,
+                        Style::default().fg(app.theme.fg_dim),
+                    )]));
+                    f.render_widget(ts_para, ts_row);
+                } else {
+                    let display_title = if track.title.is_empty() {
+                        std::path::Path::new(&track.path)
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default()
+                    } else {
+                        track.title.clone()
+                    };
+                    let fav_prefix = if track.favourite { "\u{2665} " } else { "" };
+                    let title_text = format!("{}{}", fav_prefix, display_title);
+                    let title_avail = inner.width as usize;
+                    let animated_title =
+                        scroll_text(&title_text, title_avail, app.np_title_scroll, true);
+                    let title_para = Paragraph::new(Line::from(vec![Span::styled(
+                        &animated_title,
+                        Style::default()
+                            .fg(app.theme.fg_bright)
+                            .add_modifier(Modifier::BOLD),
+                    )]));
+                    let title_area = Rect {
+                        x: inner.x,
+                        y: inner.y,
+                        width: inner.width,
+                        height: 1,
+                    };
+                    Render::evolving(f, title_area, title_para, "np", app, true);
+
+                    let mut row_offset = 1u16;
+                    if !track.album.is_empty() {
+                        let album_para = Paragraph::new(Line::from(vec![
+                            Span::styled("\u{1f4bf} ", Style::default().fg(app.theme.fg)),
+                            Span::styled(&track.album, Style::default().fg(app.theme.fg_bright)),
+                        ]));
+                        let album_area = Rect {
+                            x: inner.x,
+                            y: inner.y + row_offset,
+                            width: inner.width,
+                            height: 1,
+                        };
+                        f.render_widget(album_para, album_area);
+                        row_offset += 1;
+                    }
+                    row_offset += 1;
+
+                    let dur = if app.state.duration > 0.0 {
+                        app.state.duration
+                    } else {
+                        track.duration
+                    };
+                    let pos = app.display_position;
+                    let pos_str = format_duration(pos as u64);
+                    let dur_str = format_duration(dur as u64);
+                    let ratio = if dur > 0.0 { pos / dur } else { 0.0 };
+                    let ts_str = format!("{} / {}", pos_str, dur_str);
+                    let bar_width = (inner.width.saturating_sub(1) as usize).min(40);
+                    let bar_spans = Render::progress_variant_styled(ratio, bar_width, app);
+                    let bar_para = Paragraph::new(Line::from(bar_spans));
+                    let bar_area = Rect {
+                        x: inner.x,
+                        y: inner.y + row_offset,
+                        width: inner.width,
+                        height: 1,
+                    };
+                    f.render_widget(bar_para, bar_area);
+                    let ts_area = Rect {
+                        x: inner.x,
+                        y: inner.y + row_offset + 2,
+                        width: inner.width,
+                        height: 1,
+                    };
+                    let ts_para = Paragraph::new(Line::from(vec![Span::styled(
+                        ts_str,
+                        Style::default().fg(app.theme.fg_dim),
+                    )]));
+                    f.render_widget(ts_para, ts_area);
+                }
+            } else {
+                let inner = np_inner;
+                let lines = vec![Line::from(Span::styled(
+                    "It's awfully quiet here…",
+                    Style::default()
+                        .fg(app.theme.fg_bright)
+                        .add_modifier(Modifier::BOLD),
+                ))];
+                let msg = Paragraph::new(lines);
+                Render::evolving(f, inner, msg, "idle", app, false);
+            }
+        }
+
+        if let Some(vis_a) = vis_area {
+            if vis_a.width >= 4 && vis_a.height >= 3 {
+                app.visualizer.tick(
+                    app.state.status == gtm_core::state::PlaybackStatus::Playing,
+                    vis_a.width,
+                    &app.state.audio_levels,
+                );
+                let vis_header = Paragraph::new(Line::from(Span::styled(
+                    " ",
+                    Style::default()
+                        .fg(app.theme.fg_dim)
+                        .add_modifier(Modifier::BOLD),
+                )));
+                f.render_widget(
+                    vis_header,
+                    Rect {
+                        x: vis_a.x,
+                        y: vis_a.y,
+                        width: vis_a.width,
+                        height: 1,
+                    },
+                );
+                let vis_inner = Rect {
+                    x: vis_a.x + 1,
+                    y: vis_a.y + 1,
+                    width: vis_a.width.saturating_sub(2),
+                    height: vis_a.height.saturating_sub(1),
+                };
+                if let Some(lines) = app.visualizer.render(vis_inner, &app.theme) {
+                    f.render_widget(lines, vis_inner);
+                }
+            }
+        }
+
+        let lib_icons = if use_nerd_fonts() {
+            LIBRARY_ICONS_NERD
+        } else {
+            LIBRARY_ICONS_ASCII
+        };
+        let left_items: Vec<ListItem> = LIBRARY_CATEGORIES
+            .iter()
+            .enumerate()
+            .map(|(i, cat)| {
+                let icon = lib_icons.get(i).unwrap_or(&" ");
+                let count = match *cat {
+                    "All Tracks" => app.tracks_cache.len(),
+                    "Liked" => app.tracks_cache.iter().filter(|t| t.favourite).count(),
+                    "Albums" => app.unique_albums().len(),
+                    "Artists" => app.unique_artists().len(),
+                    "Playlists" => app.playlist_cache.len(),
+                    "Spotify" => app.spotify_playlists.len(),
+                    _ => 0,
+                };
+                let label = if count > 0 {
+                    format!(" {icon}  {:<14} {:>4}", cat, count)
+                } else {
+                    format!(" {icon}  {}", cat)
+                };
+                let is_active = i == app.library_category;
+                let style = if is_active && left_focus {
+                    Style::default()
+                        .fg(app.theme.selection_fg_readable())
+                        .bg(app.theme.selection_bg)
+                } else if is_active {
+                    Style::default().fg(app.theme.accent)
+                } else {
+                    Style::default().fg(app.theme.fg)
+                };
+                ListItem::new(label).style(style)
+            })
+            .collect();
+
+        let left_inner = Render::pane_header(f, panes[0], app, " ", left_focus, false, false);
+        fill_pane(f, left_inner, app);
+
+        let track_info_h: u16 = if app.track_popup_visible {
+            let avail_h = left_inner.height.saturating_sub(1);
+            let need = track_info_block_height();
+            // Reserve at least 4 rows for the category list so "Spotify" never gets clipped (Task 1).
+            let max_card = avail_h.saturating_sub(4);
+            need.min(max_card.max(6))
+        } else {
+            0
+        };
+        let left_vchunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Min(4),
+                Constraint::Length(if app.track_popup_visible { 1 } else { 0 }),
+                Constraint::Length(track_info_h),
+            ])
+            .split(left_inner);
+        let left_list_area = left_vchunks[0];
+        let left_track_info_sep_area = left_vchunks[1];
+        let left_track_info_area = left_vchunks[2];
+
+        f.render_widget(List::new(left_items), left_list_area);
+
+        if app.library_category < LIBRARY_CATEGORIES.len() {
+            let indicator_y = left_list_area.y + app.library_category as u16;
+            if indicator_y < left_list_area.y + left_list_area.height {
+                let indicator_area = Rect {
+                    x: left_list_area.x + 1,
+                    y: indicator_y,
+                    width: 1,
+                    height: 1,
+                };
+                let indicator =
+                    Paragraph::new("▎").style(Style::default().fg(app.theme.sidebar_active_border));
+                f.render_widget(indicator, indicator_area);
+            }
+        }
+
+        let category_label = LIBRARY_CATEGORIES
+            .get(app.library_category)
+            .unwrap_or(&"All Tracks");
+
+        // Total rows in the active right-pane list, threaded out of the category
+        // branches so mouse hit zones only cover real rows (PROMPT #7).
+        let mut lib_total_rows: usize = 0;
+        let (right_lines, _stats_line) = if app.browse_detail.is_some() && app.library_category == 5 {
+            let tracks = &app.spotify_playlist_tracks_cache;
+            let total_len = tracks.len();
+            let st_line = format!(" {} {} ", total_len, plural(total_len, "track", "tracks"));
+            let reserve = 3usize;
+            let available = panes[1].height.saturating_sub(reserve as u16) as usize;
+            app.viewport_items = available;
+            let sel = app.list_pos().min(total_len.saturating_sub(1));
+            let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
+            app.list_scroll = list_scroll;
+
+            let pane_w = panes[1].width as usize;
+            let mut lines = vec![Line::from("")];
+            if tracks.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    " No tracks: run Settings > Spotify > Sync Now, then press Enter again",
+                    Style::default().fg(app.theme.fg_dim),
+                )));
+                lib_total_rows = total_len;
+                (lines, st_line)
+            } else {
+                for (i, tr) in tracks[app.list_scroll..end].iter().enumerate() {
+                    let real_i = app.list_scroll + i;
+                    let is_sel = real_i == sel && !left_focus;
+                    let label = tr.name.clone();
+                    let avail = pane_w.saturating_sub(2);
+                    let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
+                    let dur = tr
+                        .duration_ms
+                        .map(|d| format_duration_short(d / 1000))
+                        .unwrap_or_default();
+                    let prefix = if is_sel { " > " } else { "   " };
+                    let name_pad = avail.saturating_sub(10);
+                    let style = if is_sel {
+                        Style::default()
+                            .fg(app.theme.selection_fg_readable())
+                            .bg(app.theme.selection_bg)
+                    } else {
+                        Style::default().fg(app.theme.fg)
+                    };
+                    let dur_style = if is_sel {
+                        Style::default()
+                            .fg(app.theme.selection_fg_readable())
+                            .bg(app.theme.selection_bg)
+                    } else {
+                        Style::default().fg(app.theme.fg_dim)
+                    };
+                    let head = format!("{prefix}{:<width$}", display_label, width = name_pad);
+                    let tail = format!("  {:>6}", dur);
+                    let pad = row_pad(&format!("{head}{tail}"), panes[1].width);
+                    lines.push(Line::from(vec![
+                        Span::styled(head, style),
+                        Span::styled(format!("{tail}{}", " ".repeat(pad)), dur_style),
+                    ]));
+                }
+                lib_total_rows = total_len;
+                (lines, st_line)
+            }
+        } else if app.browse_detail.is_some() {
+            let (total_len, hours, mins) = {
+                let f = app.filtered_tracks();
+                let total_dur: u64 = f.iter().map(|t| t.duration as u64).sum();
+                (f.len(), total_dur / 3600, (total_dur % 3600) / 60)
+            };
+            let st_line = format!(
+                " {} {} | {}h {}m ",
+                total_len,
+                plural(total_len, "track", "tracks"),
+                hours,
+                mins
+            );
+
+            let reserve = 3usize;
+            let available = panes[1].height.saturating_sub(reserve as u16) as usize;
+            app.viewport_items = available;
+            let sel = app.list_pos().min(total_len.saturating_sub(1));
+            let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
+            app.list_scroll = list_scroll;
+
+            let filtered = app.filtered_tracks();
+
+            let pane_w = panes[1].width as usize;
+            let mut lines = vec![Line::from("")];
+            if filtered.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    " No tracks found for this selection",
+                    Style::default().fg(app.theme.fg_dim),
+                )));
+                (lines, " 0 tracks | 0h 0m ".to_string())
+            } else {
+                for (i, track) in filtered[app.list_scroll..end].iter().enumerate() {
+                    let real_i = app.list_scroll + i;
+                    let is_current = app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
+                    let is_sel = real_i == sel && !left_focus;
+                    let label = track.title.clone();
+                    let avail = pane_w.saturating_sub(2);
+                    let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
+                    let prefix = if is_current { "\u{25b6} " } else { "  " };
+                    let row = format!("{}{}", prefix, display_label);
+                    let style = if is_sel {
+                        Style::default()
+                            .fg(app.theme.selection_fg_readable())
+                            .bg(app.theme.selection_bg)
+                    } else if is_current {
+                        Style::default()
+                            .fg(app.theme.accent)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    };
+                    let row = if is_sel {
+                        let pad = row_pad(&row, panes[1].width);
+                        format!("{row}{}", " ".repeat(pad))
+                    } else {
+                        row
+                    };
+                    lines.push(Line::from(Span::styled(row, style)));
+                }
+                lib_total_rows = total_len;
+                (lines, st_line)
+            }
+        } else if app.library_category == 2 {
+            let albums = app.unique_albums();
+            let total_len = albums.len();
+            let sel = app.list_pos().min(total_len.saturating_sub(1));
+            let st_line = format!(" {} {} ", total_len, plural(total_len, "album", "albums"));
+            let reserve = 3usize;
+            let available = panes[1].height.saturating_sub(reserve as u16) as usize;
+            app.viewport_items = available;
+            let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
+            app.list_scroll = list_scroll;
+            let mut lines = vec![Line::from("")];
+            for (i, (name, _count)) in albums[app.list_scroll..end].iter().enumerate() {
+                let real_i = app.list_scroll + i;
+                let is_sel = real_i == sel && !left_focus;
+                let prefix = if is_sel { " > " } else { "   " };
+                let style = if is_sel {
+                    Style::default()
+                        .fg(app.theme.selection_fg_readable())
+                        .bg(app.theme.selection_bg)
+                } else {
+                    Style::default().fg(app.theme.fg)
+                };
+                let row = format!("{}{}", prefix, name);
+                let row = if is_sel {
+                    let pad = row_pad(&row, panes[1].width);
+                    format!("{row}{}", " ".repeat(pad))
+                } else {
+                    row
+                };
+                lines.push(Line::from(Span::styled(row, style)));
+            }
+            {
+                lib_total_rows = total_len;
+                (lines, st_line)
+            }
+        } else if app.library_category == 3 {
+            let artists = app.unique_artists();
+            let total_len = artists.len();
+            let sel = app.list_pos().min(total_len.saturating_sub(1));
+            let st_line = format!(" {} {} ", total_len, plural(total_len, "artist", "artists"));
+            let reserve = 3usize;
+            let available = panes[1].height.saturating_sub(reserve as u16) as usize;
+            app.viewport_items = available;
+            let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
+            app.list_scroll = list_scroll;
+            let mut lines = vec![Line::from("")];
+            for (i, (name, _count)) in artists[app.list_scroll..end].iter().enumerate() {
+                let real_i = app.list_scroll + i;
+                let is_sel = real_i == sel && !left_focus;
+                let prefix = if is_sel { " > " } else { "   " };
+                let style = if is_sel {
+                    Style::default()
+                        .fg(app.theme.selection_fg_readable())
+                        .bg(app.theme.selection_bg)
+                } else {
+                    Style::default().fg(app.theme.fg)
+                };
+                let row = format!("{}{}", prefix, name);
+                let row = if is_sel {
+                    let pad = row_pad(&row, panes[1].width);
+                    format!("{row}{}", " ".repeat(pad))
+                } else {
+                    row
+                };
+                lines.push(Line::from(Span::styled(row, style)));
+            }
+            {
+                lib_total_rows = total_len;
+                (lines, st_line)
+            }
+        } else if app.library_category == 4 {
+            let playlists = &app.playlist_cache;
+            let total_len = playlists.len();
+            let sel = app.list_pos().min(total_len.saturating_sub(1));
+            let st_line = format!(
+                " {} {} ",
+                total_len,
+                plural(total_len, "playlist", "playlists")
+            );
+            let reserve = 3usize;
+            let available = panes[1].height.saturating_sub(reserve as u16) as usize;
+            app.viewport_items = available;
+            let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
+            app.list_scroll = list_scroll;
+            let mut lines = vec![Line::from("")];
+            for (i, pl) in playlists[app.list_scroll..end].iter().enumerate() {
+                let real_i = app.list_scroll + i;
+                let is_sel = real_i == sel && !left_focus;
+                let prefix = if is_sel { " > " } else { "   " };
+                let style = if is_sel {
+                    Style::default()
+                        .fg(app.theme.selection_fg_readable())
+                        .bg(app.theme.selection_bg)
+                } else {
+                    Style::default().fg(app.theme.fg)
+                };
+                let row = format!("{}{}", prefix, pl.name);
+                let row = if is_sel {
+                    let pad = row_pad(&row, panes[1].width);
+                    format!("{row}{}", " ".repeat(pad))
+                } else {
+                    row
+                };
+                lines.push(Line::from(Span::styled(row, style)));
+            }
+            {
+                lib_total_rows = total_len;
+                (lines, st_line)
+            }
+        } else if app.library_category == 5 {
+            let playlists = &app.spotify_playlists;
+            let total_len = playlists.len();
+            let sel = app.list_pos().min(total_len.saturating_sub(1));
+            let st_line = format!(
+                " {} {} ",
+                total_len,
+                plural(total_len, "playlist", "playlists")
+            );
+            let reserve = 3usize;
+            let available = panes[1].height.saturating_sub(reserve as u16) as usize;
+            app.viewport_items = available;
+            let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
+            app.list_scroll = list_scroll;
+            let mut lines = vec![Line::from("")];
+            if playlists.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    " No synced playlists: link an account in Settings > Spotify",
+                    Style::default().fg(app.theme.fg_dim),
+                )));
+            } else {
+                for (i, pl) in playlists[app.list_scroll..end].iter().enumerate() {
+                    let real_i = app.list_scroll + i;
+                    let is_sel = real_i == sel && !left_focus;
+                    let prefix = if is_sel { " > " } else { "   " };
+                    let style = if is_sel {
+                        Style::default()
+                            .fg(app.theme.selection_fg_readable())
+                            .bg(app.theme.selection_bg)
+                    } else {
+                        Style::default().fg(app.theme.fg)
+                    };
+                    let row = format!("{}{}", prefix, pl.name);
+                    let row = if is_sel {
+                        let pad = row_pad(&row, panes[1].width);
+                        format!("{row}{}", " ".repeat(pad))
+                    } else {
+                        row
+                    };
+                    lines.push(Line::from(Span::styled(row, style)));
+                }
+            }
+            {
+                lib_total_rows = total_len;
+                (lines, st_line)
+            }
+        } else {
+            let (total_len, total_dur) = {
+                let f = app.filtered_tracks();
+                let dur: u64 = f.iter().map(|t| t.duration as u64).sum();
+                (f.len(), dur)
+            };
+            let hours = total_dur / 3600;
+            let mins = (total_dur % 3600) / 60;
+            let st_line = format!(
+                " {} {} | {}h {}m ",
+                total_len,
+                plural(total_len, "track", "tracks"),
+                hours,
+                mins
+            );
+
+            let reserve = 3usize;
+            let available = panes[1].height.saturating_sub(reserve as u16) as usize;
+            app.viewport_items = available;
+            let sel = app.list_pos().min(total_len.saturating_sub(1));
+            let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
+            app.list_scroll = list_scroll;
+
+            let filtered = app.filtered_tracks();
+            let pane_w = panes[1].width as usize;
+
+            let mut lines = vec![Line::from("")];
+            for (i, track) in filtered[app.list_scroll..end].iter().enumerate() {
+                let real_i = app.list_scroll + i;
+                let is_current = app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
+                let is_sel = real_i == sel && !left_focus;
+                let label = track.title.clone();
+                let avail = pane_w.saturating_sub(2);
+                let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
+                let prefix = if is_current { "\u{25b6} " } else { "  " };
+                let row = format!("{}{}", prefix, display_label);
+                let style = if is_sel {
+                    Style::default()
+                        .fg(app.theme.selection_fg_readable())
+                        .bg(app.theme.selection_bg)
+                } else if is_current {
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                let row = if is_sel {
+                    let pad = row_pad(&row, panes[1].width);
+                    format!("{row}{}", " ".repeat(pad))
+                } else {
+                    row
+                };
+                lines.push(Line::from(Span::styled(row, style)));
+            }
+            {
+                lib_total_rows = total_len;
+                (lines, st_line)
+            }
+        };
+
+        if app.track_popup_visible
+            && left_track_info_area.height >= track_info_block_height()
+            && (left_track_info_sep_area.height > 0 || left_track_info_area.height > 0)
+        {
+            Render::track_info_in_pane(f, left_track_info_sep_area, left_track_info_area, app);
+        }
+
+        let right_para = Paragraph::new(right_lines);
+        let header_label = if let Some(detail) = app.browse_detail.as_deref() {
+            format!("▶ {detail}")
+        } else {
+            category_label.to_string()
+        };
+        let right_inner = Render::pane_header(f, panes[1], app, &header_label, !left_focus, false, true);
+        fill_pane(f, right_inner, app);
+        Render::evolving(f, right_inner, right_para, "lib", app, false);
+
+        // Mouse hit zones for the visible library rows (PROMPT #7): rows start
+        // below one leading blank line.
+        if lib_total_rows > 0 {
+            let avail = right_inner.height.saturating_sub(2) as usize;
+            let visible_rows = lib_total_rows
+                .saturating_sub(app.list_scroll)
+                .min(app.viewport_items)
+                .min(avail);
+            for v in 0..visible_rows {
+                let rect = Rect {
+                    x: right_inner.x,
+                    y: right_inner.y + 1 + v as u16,
+                    width: right_inner.width,
+                    height: 1,
+                };
+                app.mouse_map
+                    .register(rect, crate::mouse::MouseZone::ListItem(app.list_scroll + v));
+            }
+        }
+
+        {
+            let stats_line = library_stats_line(app);
+            if !stats_line.trim().is_empty() {
+                let stats_area = Rect {
+                    x: area.x + area.width.saturating_sub(stats_line.len() as u16 + 1),
+                    y: area.y + area.height.saturating_sub(1),
+                    width: (stats_line.len() as u16 + 1).min(area.width),
+                    height: 1,
+                };
+                let stats_para = Paragraph::new(Span::styled(
+                    stats_line,
+                    Style::default().fg(app.theme.fg_dim),
+                ));
+                f.render_widget(stats_para, stats_area);
+            }
+        }
+
+        if let Some(lyrics_area) = lyrics_area {
+            Render::lyrics_pane(f, lyrics_area, app);
+        } else if app.show_lyrics && panes.len() == 1 {
+            // Narrow mode: keep the stats-only bottom row clear.
+            let lyrics = Rect {
+                height: panes[0].height.saturating_sub(1),
+                ..panes[0]
+            };
+            Render::lyrics_pane(f, lyrics, app);
+        }
+    }
+
+    fn footer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        match app.input_mode {
+            InputMode::Normal => {
+                if !app.search_query.is_empty() {
+                    f.render_widget(
+                        Paragraph::new(format!(" > {}  [Esc] clear filter", app.search_query))
+                            .style(Style::default().fg(app.theme.fg_bright).bg(app.chrome_bg())),
+                        area,
+                    );
+                    return;
+                }
+                if app.footer_cache.suppress_refresh {
+                    if let Some(ref cached) = app.footer_cache.last {
+                        crate::footer::draw(f, area, cached);
+                        Render::footer_help(f, area, app);
+                        return;
+                    }
+                }
+                let rendered = crate::footer::render(app);
+                if let Some(ref out) = rendered {
+                    crate::footer::draw(f, area, out);
+                } else {
+                    f.render_widget(
+                        Paragraph::new("").style(Style::default().bg(app.chrome_bg())),
+                        area,
+                    );
+                }
+                app.footer_cache.last = rendered;
+                Render::footer_help(f, area, app);
+            }
+            InputMode::Searching => {
+                f.render_widget(
+                    Paragraph::new(format!(" > {}_", app.search_query))
+                        .style(Style::default().fg(app.theme.fg_bright).bg(app.chrome_bg())),
+                    area,
+                );
+            }
+        }
+    }
+
+    pub fn progress_variant(ratio: f64, width: usize, app: &App) -> String {
+        let ratio =
+            crate::progress::render_ratio(app.progress_style, ratio, app.progress_smoother.value());
+        crate::progress::render_progress(ratio, width, app.progress_style)
+    }
+
+    pub fn progress_variant_styled<'a>(
+        ratio: f64,
+        width: usize,
+        app: &App,
+    ) -> Vec<ratatui::text::Span<'a>> {
+        let ratio =
+            crate::progress::render_ratio(app.progress_style, ratio, app.progress_smoother.value());
+        crate::progress::render_progress_styled(
+            ratio,
+            width,
+            app.progress_style,
+            app.theme.accent,
+            app.theme.secondary_accent,
+            app.theme.tertiary_accent,
+        )
+    }
+
+    fn lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let inner = Render::pane_header(f, area, app, "LYRICS", app.lyrics_pane_focus, false, true);
+        fill_pane(f, inner, app);
+
+        let Some(ref lyrics) = app.current_lyrics else {
+            if app.lyrics_fetching {
+                let mut spans = vec![Span::styled(
+                    "Fetching lyrics ",
+                    Style::default().fg(app.theme.accent),
+                )];
+                spans.extend(knight_rider_spans(app.frame_count as usize, 9, app));
+                let msg = Paragraph::new(Line::from(spans)).alignment(Alignment::Center);
+                f.render_widget(msg, inner);
+            } else {
+                let msg = Paragraph::new("Press [l] to search")
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(app.theme.fg_dim));
+                f.render_widget(msg, inner);
+            }
+            return;
+        };
+
+        if lyrics.lines.is_empty() {
+            let msg = Paragraph::new("No lyrics found")
+                .alignment(Alignment::Center)
+                .style(Style::default().fg(app.theme.fg_dim));
+            f.render_widget(msg, inner);
+            return;
+        }
+
+        // Myx parity: header with title / artist·album centered above lyrics (Task 4)
+        let header_area = if inner.height >= 4 {
+            let header_h = 1;
+            let title = lyrics.title.clone().unwrap_or_else(|| {
+                app.state
+                    .current_track
+                    .as_ref()
+                    .map(|t| t.title.clone())
+                    .unwrap_or_default()
+            });
+            let artist = lyrics.artist.clone().unwrap_or_else(|| {
+                app.state
+                    .current_track
+                    .as_ref()
+                    .map(|t| t.artist.clone())
+                    .unwrap_or_default()
+            });
+            let album = lyrics.album.clone().unwrap_or_else(|| {
+                app.state
+                    .current_track
+                    .as_ref()
+                    .map(|t| t.album.clone())
+                    .unwrap_or_default()
+            });
+            let header_text = if !album.is_empty() && !artist.is_empty() {
+                format!("{} — {} · {}", title, artist, album)
+            } else if !artist.is_empty() {
+                format!("{} — {}", title, artist)
+            } else {
+                title.clone()
+            };
+            if !header_text.is_empty() {
+                let header_para = Paragraph::new(Line::from(Span::styled(
+                    header_text,
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                )))
+                .alignment(Alignment::Center);
+                let hdr_rect = Rect {
+                    x: inner.x,
+                    y: inner.y,
+                    width: inner.width,
+                    height: header_h,
+                };
+                f.render_widget(header_para, hdr_rect);
+                Some(hdr_rect)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let lyrics_inner = if let Some(hdr) = header_area {
+            Rect {
+                x: inner.x,
+                y: hdr.y + hdr.height,
+                width: inner.width,
+                height: inner.height.saturating_sub(hdr.height + 1),
+            }
+        } else {
+            inner
+        };
+
+        let total = lyrics.lines.len();
+        let width = lyrics_inner.width.max(1) as usize;
+        let synced = crate::app::lyrics_are_synced(&lyrics.lines);
+        let anchor = app.lyrics_scroll.min(total - 1);
+        let mut row_offsets = Vec::with_capacity(total);
+        let mut text = Vec::with_capacity(total);
+        let mut cumulative = 0usize;
+        for (i, line) in lyrics.lines.iter().enumerate() {
+            // Myx parity: active=primary+BOLD, past=subtle dim, future=muted (Task 4)
+            let text_style = if !synced {
+                Style::default().fg(app.theme.fg)
+            } else {
+                let d = i as isize - anchor as isize;
+                if d == 0 {
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD)
+                } else if d < 0 {
+                    Style::default().fg(app.theme.fg_dim)
+                } else if d <= 2 {
+                    Style::default().fg(app.theme.fg)
+                } else {
+                    Style::default().fg(app.theme.fg_dim)
+                }
+            };
+            row_offsets.push(cumulative);
+            cumulative += (line.text.chars().count().max(1)).div_ceil(width);
+            text.push(Line::from(Span::styled(line.text.clone(), text_style)));
+        }
+        let total_rows = cumulative;
+        let visible = lyrics_inner.height as usize;
+        let bottom = total_rows.saturating_sub(visible);
+        let scroll_display = if total_rows <= visible {
+            0
+        } else if app.lyrics_manual_scroll {
+            if anchor == total - 1 {
+                bottom
+            } else {
+                // Myx centers active line: start = cur - h/2
+                row_offsets[anchor].saturating_sub(visible / 2).min(bottom)
+            }
+        } else {
+            // Myx parity: centered active line (Task 4), not 1/3 down
+            row_offsets[anchor].saturating_sub(visible / 2).min(bottom)
+        };
+
+        let para = Paragraph::new(text)
+            .wrap(Wrap { trim: false })
+            .scroll((scroll_display as u16, 0));
+        f.render_widget(para, lyrics_inner);
+    }
+
+    fn track_info_in_pane(f: &mut ratatui::Frame, sep_area: Rect, area: Rect, app: &mut App) {
+        let fields = match track_info_fields(app) {
+            Some(fields) => fields,
+            None => return,
+        };
+        let has_cover = fields.has_cover;
+        let can_cover = !no_image_protocol() && area.width > COVER_W + 1;
+
+        let sep_w = sep_area.width.saturating_sub(1) as usize;
+        let sep_label = format!(" Info{} ", fields.fav);
+        let sep_style = Style::default().fg(app.theme.fg_dim);
+        let sep_line = if sep_w >= sep_label.len() {
+            let side = (sep_w - sep_label.len()) / 2;
+            let extra = (sep_w - sep_label.len()) % 2;
+            format!(
+                "{}{}{}",
+                "─".repeat(side),
+                sep_label,
+                "─".repeat(side + extra)
+            )
+        } else {
+            sep_label
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(sep_line, sep_style))),
+            sep_area,
+        );
+
+        if can_cover {
+            // Adaptive cover: use as much of the card height for cover as
+            // fits while keeping at least 4 rows for the text block (Task 1).
+            let card_h = area.height;
+            let text_need: u16 = if fields.album.is_some() { 4 } else { 3 };
+            let cover_h_avail = card_h.saturating_sub(text_need).saturating_sub(2);
+            let cover_h_eff = COVER_H
+                .min(cover_h_avail.max(4))
+                .min(area.height.saturating_sub(text_need + 2));
+            let cover_w_eff = (cover_h_eff * 2).min(area.width.saturating_sub(2));
+            let split = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(cover_h_eff),
+                    Constraint::Length(1),
+                    Constraint::Min(0),
+                ])
+                .split(area);
+
+            let cover_hpad = area.width.saturating_sub(cover_w_eff) / 2;
+            let cover_area = Rect {
+                x: area.x + cover_hpad,
+                y: split[0].y,
+                width: cover_w_eff.min(area.width),
+                height: cover_h_eff,
+            };
+            if has_cover {
+                if let Some(ref mut protocol) = app.popup_cover_stateful {
+                    let image = StatefulImage::new();
+                    f.render_stateful_widget(image, cover_area, protocol);
+                } else if let Some(ref cover_bytes) = app.track_popup_cover {
+                    Render::cover_block(f, cover_area, cover_bytes);
+                }
+            }
+
+            let text_area = split[2];
+            let pad = "  ";
+            let title_avail = text_area.width.saturating_sub(pad.len() as u16) as usize;
+            let animated_title = scroll_text(&fields.title, title_avail, app.np_title_scroll, true);
+            let mut lines = vec![
+                Line::from(Span::styled(
+                    format!("{pad}{}", animated_title),
+                    Style::default()
+                        .fg(app.theme.fg_bright)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    format!("{pad}{}", fields.artist),
+                    Style::default().fg(app.theme.fg),
+                )),
+            ];
+            if let Some(album) = &fields.album {
+                lines.push(Line::from(Span::styled(
+                    format!("{pad}{}", album),
+                    Style::default().fg(app.theme.fg),
+                )));
+            }
+            lines.push(Line::from(Span::styled(
+                format!("{pad}{}", fields.meta.trim()),
+                Style::default().fg(app.theme.fg_dim),
+            )));
+            let para = Paragraph::new(lines);
+            f.render_widget(para, text_area);
+        } else {
+            let title_avail = area.width.saturating_sub(2) as usize;
+            let animated_title = scroll_text(&fields.title, title_avail, app.np_title_scroll, true);
+            let lines = vec![
+                Line::from(Span::styled(
+                    format!("  {}", animated_title),
+                    Style::default()
+                        .fg(app.theme.fg_bright)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(Span::styled(
+                    format!("  {}", fields.artist),
+                    Style::default().fg(app.theme.fg),
+                )),
+                Line::from(if let Some(album) = &fields.album {
+                    Span::styled(format!("  {}", album), Style::default().fg(app.theme.fg))
+                } else {
+                    Span::raw("")
+                }),
+                Line::from(""),
+                Line::from(Span::styled(
+                    fields.meta.clone(),
+                    Style::default().fg(app.theme.fg_dim),
+                )),
+            ];
+            let para = Paragraph::new(lines);
+            f.render_widget(para, area);
+        }
+    }
+
+    fn loader(f: &mut ratatui::Frame, area: Rect, app: &App, label: &str) {
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
+        let width = 21usize.min(area.width as usize);
+        let mut lines: Vec<Line> = Vec::new();
+        for _ in 0..(area.height as usize / 2).saturating_sub(1) {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(knight_rider_spans(
+            app.frame_count as usize,
+            width,
+            app,
+        )));
+        lines.push(Line::from(Span::styled(
+            label.to_string(),
+            Style::default().fg(app.theme.fg_dim),
+        )));
+        let para = Paragraph::new(lines).alignment(Alignment::Center);
+        f.render_widget(para, area);
+    }
+
+    fn health_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
+        let panel_width = area.width.min(60);
+        let panel_height = area.height.min(20);
+        let x = (area.width.saturating_sub(panel_width)) / 2;
+        let y = (area.height.saturating_sub(panel_height)) / 2;
+        let rect = Rect::new(area.x + x, area.y + y, panel_width, panel_height);
+
+        f.render_widget(Clear, rect);
+
+        let block = Block::default()
+            .title(Line::from(Span::styled(
+                " Health Check ",
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )))
+            .borders(Borders::ALL)
+            .style(Style::default().fg(app.theme.fg).bg(app.float_bg()));
+
+        let inner = block.inner(rect);
+        f.render_widget(block, rect);
+
+        if let Some(ref report) = app.health_report {
+            let mut lines = Vec::new();
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("Daemon v{}", report.version),
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(
+                        "  uptime {}",
+                        crate::footer::format_uptime(report.daemon_uptime_secs)
+                    ),
+                    Style::default().fg(app.theme.fg_dim),
+                ),
+            ]));
+            lines.push(Line::from(""));
+
+            for c in &report.components {
+                let (icon, color) = match c.status {
+                    gtm_core::ipc::HealthStatus::Ok => ("✓", app.theme.success),
+                    gtm_core::ipc::HealthStatus::Degraded => ("⚠", app.theme.warning),
+                    gtm_core::ipc::HealthStatus::Error => ("✗", app.theme.error),
+                };
+                let mut spans = vec![
+                    Span::styled(format!(" {icon} "), Style::default().fg(color)),
+                    Span::styled(
+                        c.name.clone(),
+                        Style::default()
+                            .fg(app.theme.fg_bright)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ];
+                if let Some(ref msg) = c.message {
+                    spans.push(Span::styled(
+                        format!(": {msg}"),
+                        Style::default().fg(app.theme.fg_dim),
+                    ));
+                }
+                lines.push(Line::from(spans));
+            }
+
+            let para = Paragraph::new(lines).scroll((0, 0));
+            f.render_widget(para, inner);
+        } else {
+            let loading = Paragraph::new(" Loading...").style(Style::default().fg(app.theme.fg_dim));
+            f.render_widget(loading, inner);
+        }
+
+        let help = Paragraph::new(" [Esc] Close").style(Style::default().fg(app.theme.fg_dim));
+        let help_area = Rect::new(
+            rect.x,
+            rect.y + rect.height.saturating_sub(1),
+            rect.width,
+            1,
+        );
+        f.render_widget(help, help_area);
+    }
+
+}
+
 pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = socket
         .map(PathBuf::from)
@@ -206,8 +1998,8 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
         .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(area);
 
-    render_content(f, chunks[0], app);
-    render_footer(f, chunks[1], app);
+    Render::content(f, chunks[0], app);
+    Render::footer(f, chunks[1], app);
 
     // "gtm" brand badge pinned to the top-right corner with the themed
     // accent background (restored from the pre-tabless UI).
@@ -234,10 +2026,10 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
         Pickers::render_picker(f, area, app);
     }
 
-    render_notification_overlay(f, area, app);
+    Render::notification_overlay(f, area, app);
 
     if app.show_health_panel {
-        render_health_panel(f, area, app);
+        Render::health_panel(f, area, app);
     }
 
     app.track_anim_trigger = false;
@@ -281,327 +2073,7 @@ const NOTIFICATION_LIFETIME: std::time::Duration = std::time::Duration::from_mil
 
 const NOTIFICATION_EXIT_DURATION: std::time::Duration = std::time::Duration::from_millis(300);
 
-fn render_upnext_card(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let (display_title, artist, album, has_album, has_cover, source_label) = {
-        let u = match app.upnext.as_ref() {
-            Some(u) => u,
-            None => return,
-        };
-        let display_title = if u.track.title.is_empty() {
-            std::path::Path::new(&u.track.path)
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default()
-        } else {
-            u.track.title.clone()
-        };
-        let artist = if u.track.artist.is_empty() {
-            "Unknown".to_string()
-        } else {
-            u.track.artist.clone()
-        };
-        let album = u.track.album.clone();
-        let has_album = !album.is_empty();
-        let has_cover = u.cover.is_some();
-        let source = if u.track.path.contains("/audio/spotify")
-            || u.track.path.starts_with("spotify:")
-        {
-            "Spotify"
-        } else if u.track.path.contains("/audio/youtube") || u.track.path.starts_with("youtube:") {
-            "YouTube"
-        } else {
-            "Local"
-        };
-        let source_label = if use_nerd_fonts() {
-            match source {
-                "Spotify" => " \u{f1bc} Spotify",
-                "YouTube" => " \u{f167} YouTube",
-                _ => " \u{f3b5} Local",
-            }
-        } else {
-            match source {
-                "Spotify" => " ♫ Spotify",
-                "YouTube" => " ▶ YouTube",
-                _ => " ♪ Local",
-            }
-        };
-        (
-            display_title,
-            artist,
-            album,
-            has_album,
-            has_cover,
-            source_label.to_string(),
-        )
-    };
 
-    let bg = Block::default().style(Style::default().bg(app.float_bg()));
-    f.render_widget(bg, area);
-
-    let border_color = app.theme.notification_border;
-    f.render_widget(
-        Block::default().style(Style::default().bg(border_color)),
-        Rect {
-            x: area.x,
-            y: area.y,
-            width: 1,
-            height: area.height,
-        },
-    );
-
-    let inner = area.inner(Margin {
-        horizontal: 2,
-        vertical: 1,
-    });
-
-    let cover_w = COVER_W.min(inner.width.saturating_sub(2));
-    let cover_h = COVER_H.min(inner.height);
-    if has_cover && cover_w > 0 {
-        let cover_area = Rect {
-            x: inner.x,
-            y: inner.y,
-            width: cover_w,
-            height: cover_h,
-        };
-        if let Some(protocol) = app.upnext.as_mut().and_then(|u| u.cover_stateful.as_mut()) {
-            let image = StatefulImage::new();
-            f.render_stateful_widget(image, cover_area, protocol);
-        } else if let Some(bytes) = app.upnext.as_ref().and_then(|u| u.cover.as_ref()) {
-            render_cover_block(f, cover_area, bytes);
-        }
-    }
-
-    let text_area = Rect {
-        x: inner.x + cover_w + 1,
-        y: inner.y,
-        width: inner.width.saturating_sub(cover_w + 1),
-        height: inner.height,
-    };
-    let text_w = text_area.width.saturating_sub(1) as usize;
-    let animated = scroll_text(&display_title, text_w.max(4), app.np_title_scroll, false);
-    let mut lines: Vec<Line> = vec![
-        Line::from(Span::styled(
-            "UP NEXT",
-            Style::default()
-                .fg(app.theme.accent)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-            format!(" {}", animated),
-            Style::default()
-                .fg(app.theme.fg_bright)
-                .add_modifier(Modifier::BOLD),
-        )),
-        Line::from(Span::styled(
-            format!(" {}", artist),
-            Style::default().fg(app.theme.fg),
-        )),
-    ];
-    if has_album {
-        lines.push(Line::from(Span::styled(
-            format!(" {}", album),
-            Style::default().fg(app.theme.fg),
-        )));
-    }
-    lines.push(Line::from(Span::styled(
-        format!(" {}", source_label.trim_start()),
-        Style::default().fg(app.theme.fg_dim),
-    )));
-    f.render_widget(Paragraph::new(lines), text_area);
-}
-
-fn render_notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let now = std::time::Instant::now();
-
-    let slide_duration_ms: f32 = 300.0;
-    for n in &mut app.notifications {
-        if n.animation_progress < 1.0 {
-            let elapsed = now
-                .duration_since(n.expires_at - NOTIFICATION_LIFETIME)
-                .as_millis() as f32;
-            n.animation_progress = (elapsed / slide_duration_ms).min(1.0);
-        }
-    }
-
-    app.notifications
-        .retain(|n| now < n.expires_at + NOTIFICATION_EXIT_DURATION);
-
-    let max_notif_width = 42u16;
-    let padding = 1u16;
-    let gap = 1u16;
-
-    let mut y_bottom = area.y + area.height - padding;
-
-    if app.upnext.is_some() {
-        let card_w = 42u16;
-        let card_h = 7u16;
-        let card_x = area.x + area.width.saturating_sub(card_w + padding);
-        let card_y = y_bottom.saturating_sub(card_h);
-        if card_y >= area.y {
-            let card_area = Rect {
-                x: card_x,
-                y: card_y,
-                width: card_w,
-                height: card_h,
-            };
-            render_upnext_card(f, card_area, app);
-            y_bottom = card_y.saturating_sub(gap);
-        }
-    } else if app.upnext.is_some() {
-        app.upnext = None;
-    }
-
-    let mut regular: Vec<_> = app
-        .notifications
-        .iter()
-        .filter(|n| !n.is_volume && !n.trivial)
-        .collect();
-    let volume: Vec<_> = app.notifications.iter().filter(|n| n.is_volume).collect();
-
-    regular.truncate(5);
-
-    for n in regular.iter() {
-        let text_area_w = max_notif_width.saturating_sub(3 + padding * 2);
-        let wrapped = wrap_text(&n.message, text_area_w as usize);
-        let line_count = wrapped.len() as u16;
-        let has_title = !n.title.is_empty();
-        let title_rows = if has_title { 2 } else { 0 };
-        let card_h = line_count + padding * 2 + title_rows;
-
-        let card_y = y_bottom.saturating_sub(card_h);
-        if card_y < area.y {
-            break;
-        }
-
-        let final_x = area.x + area.width.saturating_sub(max_notif_width + padding);
-        let start_x = area.x + area.width;
-        let leaving = now.saturating_duration_since(n.expires_at);
-        let x = if leaving > std::time::Duration::ZERO {
-            let exit_progress = cubic_ease_in(
-                (leaving.as_millis() as f32 / NOTIFICATION_EXIT_DURATION.as_millis() as f32)
-                    .min(1.0),
-            );
-            (final_x as f32 + (start_x as f32 - final_x as f32) * exit_progress) as u16
-        } else {
-            let progress = cubic_ease_out(n.animation_progress);
-            (start_x as f32 + (final_x as f32 - start_x as f32) * progress) as u16
-        };
-
-        let card_area = Rect {
-            x,
-            y: card_y,
-            width: max_notif_width,
-            height: card_h,
-        };
-
-        let bg = Block::default().style(Style::default().bg(app.float_bg()));
-        f.render_widget(bg, card_area);
-
-        let border_color = app.theme.notification_border;
-        f.render_widget(
-            Block::default().style(Style::default().bg(border_color)),
-            Rect {
-                x: card_area.x,
-                y: card_area.y,
-                width: 1,
-                height: card_area.height,
-            },
-        );
-
-        let inner = card_area.inner(Margin {
-            horizontal: padding + 1,
-            vertical: padding,
-        });
-        let inner = Rect {
-            x: inner.x + 1,
-            y: inner.y,
-            width: inner.width.saturating_sub(1),
-            height: inner.height,
-        };
-        let mut lines: Vec<Line> = Vec::with_capacity(1 + line_count as usize);
-        if has_title {
-            lines.push(Line::from(Span::styled(
-                n.title.clone(),
-                Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            lines.push(Line::raw(""));
-        }
-        for l in wrapped.iter() {
-            lines.push(Line::raw(l));
-        }
-        let para = Paragraph::new(lines).style(Style::default().fg(app.theme.fg_bright));
-        f.render_widget(para, inner);
-
-        y_bottom = card_y.saturating_sub(gap);
-    }
-
-    for n in volume.iter() {
-        let bar_h = 10u16;
-        let bar_w = 5u16;
-
-        let final_x = area.x + area.width.saturating_sub(bar_w + padding);
-        let start_x = area.x + area.width;
-        let leaving = now.saturating_duration_since(n.expires_at);
-        let x = if leaving > std::time::Duration::ZERO {
-            let exit_progress = cubic_ease_in(
-                (leaving.as_millis() as f32 / NOTIFICATION_EXIT_DURATION.as_millis() as f32)
-                    .min(1.0),
-            );
-            (final_x as f32 + (start_x as f32 - final_x as f32) * exit_progress) as u16
-        } else {
-            let progress = cubic_ease_out(n.animation_progress);
-            (start_x as f32 + (final_x as f32 - start_x as f32) * progress) as u16
-        };
-
-        let bar_y = y_bottom.saturating_sub(bar_h + 2);
-        if bar_y < area.y {
-            break;
-        }
-        let bar_area = Rect {
-            x,
-            y: bar_y,
-            width: bar_w,
-            height: bar_h + 2,
-        };
-
-        f.render_widget(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(app.theme.border))
-                .style(Style::default().bg(app.float_bg())),
-            bar_area,
-        );
-
-        let fill_h = ((n.volume_value as f64 / 100.0) * bar_h as f64) as u16;
-        if fill_h > 0 {
-            let fill_area = Rect {
-                x: bar_area.x + 1,
-                y: bar_area.y + 1 + (bar_h - fill_h),
-                width: bar_w.saturating_sub(2),
-                height: fill_h,
-            };
-            let vol_color = app.theme.volume_color(n.volume_value);
-            f.render_widget(
-                Block::default().style(Style::default().bg(vol_color)),
-                fill_area,
-            );
-        }
-
-        let label_area = Rect {
-            x: bar_area.x,
-            y: bar_area.y + bar_h + 1,
-            width: bar_w,
-            height: 1,
-        };
-        let label = Paragraph::new(format!("{:>3}%", n.volume_value))
-            .style(Style::default().fg(app.theme.fg_bright));
-        f.render_widget(label, label_area);
-
-        y_bottom = bar_y.saturating_sub(gap);
-    }
-}
 
 fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
     if max_chars == 0 {
@@ -629,108 +2101,9 @@ fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
 
 // ─── Content Area ───
 
-fn render_content(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    if !app.is_ready {
-        fill_pane(f, area, app);
-        render_loader(f, area, app, "Loading library\u{2026}");
-        return;
-    }
-    render_library(f, area, app);
-}
 
-fn render_footer_help(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    if app.pickers.is_open() || app.hide_help_bar {
-        return;
-    }
-    let text = " [?] Help  [:] Command palette  [q] Quit ";
-    let para = Paragraph::new(text)
-        .alignment(Alignment::Right)
-        .style(Style::default().fg(app.theme.fg_dim).bg(app.chrome_bg()));
-    f.render_widget(para, area);
-}
 
-fn render_cover(
-    f: &mut ratatui::Frame,
-    area: Rect,
-    cover_stateful: Option<&mut StatefulProtocol>,
-    current_cover: Option<&[u8]>,
-    placeholder_fg: Color,
-) {
-    if std::env::var("NVIM").is_ok() || std::env::var("ZELLIJ").is_ok() {
-        let placeholder = Paragraph::new(Span::styled(
-            " \u{266b} Cover art unavailable in this terminal ",
-            Style::default().fg(placeholder_fg),
-        ));
-        f.render_widget(placeholder, area);
-        return;
-    }
-    if let Some(protocol) = cover_stateful {
-        let image = StatefulImage::new();
-        f.render_stateful_widget(image, area, protocol);
-    } else if let Some(cover_bytes) = current_cover {
-        render_cover_block(f, area, cover_bytes);
-    } else {
-        let placeholder = Paragraph::new(Span::styled(
-            " \u{266b} ",
-            Style::default().fg(placeholder_fg),
-        ));
-        f.render_widget(placeholder, area);
-    }
-}
 
-fn render_cover_block(f: &mut ratatui::Frame, area: Rect, cover_bytes: &[u8]) {
-    let img = match image::load_from_memory(cover_bytes) {
-        Ok(img) => img.into_rgba8(),
-        Err(_) => return,
-    };
-    let disp_w = (area.width as u32).max(1);
-    let disp_h = (area.height as u32 * 2).max(1);
-
-    let src_w = img.width() as f64;
-    let src_h = img.height() as f64;
-    let target_ratio = disp_w as f64 / disp_h as f64;
-    let source_ratio = src_w / src_h;
-
-    let cropped = if (source_ratio - target_ratio).abs() < 0.01 {
-        img
-    } else if source_ratio > target_ratio {
-        let new_w = (src_h * target_ratio) as u32;
-        let offset = ((src_w as u32 - new_w) / 2).min(img.width() - 1);
-        image::imageops::crop_imm(&img, offset, 0, new_w, img.height()).to_image()
-    } else {
-        let new_h = (src_w / target_ratio) as u32;
-        let offset = ((img.height() - new_h) / 2).min(img.height() - 1);
-        image::imageops::crop_imm(&img, 0, offset, img.width(), new_h).to_image()
-    };
-
-    let thumb = image::imageops::resize(
-        &cropped,
-        disp_w,
-        disp_h,
-        image::imageops::FilterType::CatmullRom,
-    );
-    for y in 0..area.height as u32 {
-        let mut spans = Vec::with_capacity(disp_w as usize);
-        for x in 0..disp_w {
-            let top = thumb.get_pixel(x, y * 2);
-            let bot = if y * 2 + 1 < disp_h {
-                *thumb.get_pixel(x, y * 2 + 1)
-            } else {
-                image::Rgba([0, 0, 0, 255])
-            };
-            let fg = ratatui::style::Color::Rgb(top[0], top[1], top[2]);
-            let bg = ratatui::style::Color::Rgb(bot[0], bot[1], bot[2]);
-            spans.push(Span::styled("\u{2580}", Style::default().fg(fg).bg(bg)));
-        }
-        let row = Rect {
-            x: area.x,
-            y: area.y + y as u16,
-            width: area.width,
-            height: 1,
-        };
-        f.render_widget(Paragraph::new(Line::from(spans)), row);
-    }
-}
 
 const LIBRARY_ICONS_NERD: &[&str] = &[
     "\u{f001}", "\u{f004}", "\u{f025}", "\u{f007}", "\u{f03a}", "\u{f1bc}",
@@ -774,36 +2147,6 @@ fn step_viewport(offset: usize, sel: usize, visible: usize, total: usize) -> (us
     (o, (o + visible).min(total))
 }
 
-fn render_evolving<W: ratatui::widgets::Widget>(
-    f: &mut ratatui::Frame,
-    area: Rect,
-    widget: W,
-    key: &'static str,
-    app: &mut App,
-    animate_on_track_change: bool,
-) {
-    let start = app.track_anim_trigger && (animate_on_track_change || app.frame_count == 0);
-    if !start && !app.anim_fx.is_running() {
-        f.render_widget(widget, area);
-        return;
-    }
-    let mut buf = ratatui::buffer::Buffer::empty(area);
-    widget.render(area, &mut buf);
-    if start {
-        app.anim_fx.add_unique_effect(
-            key,
-            tachyonfx::fx::evolve_into(
-                tachyonfx::fx::EvolveSymbolSet::Circles,
-                (350, tachyonfx::Interpolation::QuadInOut),
-            )
-            .with_area(area)
-            .with_filter(tachyonfx::CellFilter::All),
-        );
-    }
-    app.anim_fx
-        .process_effects(tachyonfx::Duration::from_millis(16), &mut buf, area);
-    f.buffer_mut().merge(&buf);
-}
 
 fn fill_pane(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(
@@ -813,900 +2156,7 @@ fn fill_pane(f: &mut ratatui::Frame, area: Rect, app: &App) {
     );
 }
 
-fn render_pane_header(
-    f: &mut ratatui::Frame,
-    area: Rect,
-    app: &App,
-    label: &str,
-    focused: bool,
-    sep: bool,
-    left_rule: bool,
-) -> Rect {
-    if left_rule {
-        let rule = Block::default()
-            .borders(Borders::LEFT)
-            .border_style(Style::default().fg(app.theme.muted_border));
-        f.render_widget(rule, area);
-    }
-    let inset: u16 = if left_rule { 1 } else { 0 };
-    let text_x = area.x + inset;
-    let text_w = area.width.saturating_sub(inset);
-    if focused {
-        let bar = Paragraph::new(Span::styled(
-            "\u{258e}",
-            Style::default().fg(app.theme.accent),
-        ));
-        f.render_widget(
-            bar,
-            Rect {
-                x: area.x,
-                y: area.y,
-                width: 1,
-                height: 1,
-            },
-        );
-    }
-    let label_style = if focused {
-        Style::default()
-            .fg(app.theme.accent)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(app.theme.fg_bright)
-            .add_modifier(Modifier::BOLD)
-    };
-    let header = Paragraph::new(Line::from(Span::styled(format!(" {label} "), label_style)));
-    f.render_widget(
-        header,
-        Rect {
-            x: text_x,
-            y: area.y,
-            width: text_w,
-            height: 1,
-        },
-    );
-    let mut content = Rect {
-        x: text_x + 1,
-        y: area.y.saturating_add(1),
-        width: text_w.saturating_sub(2),
-        height: area.height.saturating_sub(1),
-    };
-    if sep && content.height > 0 {
-        let rule = Line::from(Span::styled(
-            "\u{2500}".repeat(content.width as usize),
-            Style::default().fg(app.theme.muted_border),
-        ));
-        f.render_widget(
-            Paragraph::new(rule),
-            Rect {
-                x: content.x,
-                y: content.y,
-                width: content.width,
-                height: 1,
-            },
-        );
-        content = Rect {
-            x: content.x,
-            y: content.y.saturating_add(1),
-            width: content.width,
-            height: content.height.saturating_sub(1),
-        };
-    }
-    content
-}
 
-fn render_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let is_narrow = app.terminal_cols < 60;
-    let show_vis = app.visualizer.is_enabled() && app.terminal_cols >= 80;
-    let np_height: u16 = if is_narrow {
-        5
-    } else {
-        (area.height / 3).clamp(8, 14)
-    };
-
-    let lib_width: u16 = if is_narrow {
-        (app.terminal_cols / 3)
-            .max(12)
-            .min(area.width.saturating_sub(2))
-    } else {
-        28u16.min(area.width.saturating_sub(2))
-    };
-
-    let lyrics_takes_full_height = app.show_lyrics && !is_narrow;
-
-    let (left_area, lyrics_area) = if lyrics_takes_full_height {
-        let lyrics_w = area.width / 3;
-        let left_w = area.width - lyrics_w;
-        let h = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(left_w), Constraint::Length(lyrics_w)])
-            .split(area);
-        // The last content row is reserved for the library stats line.
-        let lyrics = Rect {
-            height: h[1].height.saturating_sub(1),
-            ..h[1]
-        };
-        (h[0], Some(lyrics))
-    } else {
-        (area, None)
-    };
-
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(np_height), Constraint::Min(1)])
-        .split(left_area);
-
-    let (np_area, vis_area) = if show_vis {
-        let vis_w = app.terminal_cols / 3;
-        let h = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(0), Constraint::Length(vis_w)])
-            .split(chunks[0]);
-        (h[0], Some(h[1]))
-    } else {
-        (chunks[0], None)
-    };
-
-    let panes = if is_narrow {
-        if app.library_pane_focus {
-            Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Min(0), Constraint::Length(0)])
-                .split(chunks[1])
-                .to_vec()
-        } else {
-            Layout::default()
-                .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(0), Constraint::Min(0)])
-                .split(chunks[1])
-                .to_vec()
-        }
-    } else {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(lib_width), Constraint::Min(0)])
-            .split(chunks[1])
-            .to_vec()
-    };
-
-    let left_focus = app.library_pane_focus;
-
-    {
-        let np_inner = render_pane_header(f, np_area, app, "", false, true, false);
-        fill_pane(f, np_inner, app);
-
-        if let Some(track) = app.state.current_track.clone() {
-            let inner = np_inner;
-            let avail_h = inner.height.saturating_sub(2);
-            let cover_h = avail_h.min(12);
-            let cover_w = cover_h * 2;
-
-            if inner.width >= cover_w + 16 && avail_h >= 5 {
-                let hchunks = Layout::default()
-                    .direction(Direction::Horizontal)
-                    .constraints([
-                        Constraint::Length(cover_w),
-                        Constraint::Length(2),
-                        Constraint::Min(0),
-                    ])
-                    .split(inner);
-
-                let cover_area = Rect {
-                    x: hchunks[0].x,
-                    y: hchunks[0].y + 1,
-                    width: cover_w.min(hchunks[0].width),
-                    height: cover_h.min(hchunks[0].height.saturating_sub(1)),
-                };
-                render_cover(
-                    f,
-                    cover_area,
-                    app.np_cover.stateful.as_mut(),
-                    app.np_cover.image.as_deref(),
-                    app.theme.fg_dim,
-                );
-
-                let info_area = hchunks[2];
-
-                let display_title = if track.title.is_empty() {
-                    std::path::Path::new(&track.path)
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default()
-                } else {
-                    track.title.clone()
-                };
-                let display_artist = if track.artist.is_empty() {
-                    " "
-                } else {
-                    &track.artist
-                };
-
-                let has_album = !track.album.is_empty();
-                let content_h: u16 = 7;
-                let offset = cover_h.saturating_sub(content_h) / 2;
-                let vchunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(offset),
-                        Constraint::Length(content_h),
-                        Constraint::Min(0),
-                    ])
-                    .split(info_area);
-                let content_area = vchunks[1];
-
-                let info_chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(1),
-                        Constraint::Length(1),
-                        Constraint::Length(1),
-                        Constraint::Length(1),
-                        Constraint::Length(1),
-                        Constraint::Length(1),
-                        Constraint::Length(1),
-                    ])
-                    .split(content_area);
-
-                let fav_prefix = if track.favourite { "\u{2665} " } else { "" };
-                let title_text = format!("{}{}", fav_prefix, display_title);
-                let title_avail = info_chunks[0].width as usize;
-                let animated_title =
-                    scroll_text(&title_text, title_avail, app.np_title_scroll, true);
-                let title_para = Paragraph::new(Line::from(vec![Span::styled(
-                    &animated_title,
-                    Style::default()
-                        .fg(app.theme.fg_bright)
-                        .add_modifier(Modifier::BOLD),
-                )]));
-                render_evolving(f, info_chunks[0], title_para, "np", app, true);
-
-                let artist_para = Paragraph::new(Line::from(vec![
-                    Span::styled("\u{1f3a4} ", Style::default().fg(app.theme.fg)),
-                    Span::styled(display_artist, Style::default().fg(app.theme.fg_bright)),
-                ]));
-                f.render_widget(artist_para, info_chunks[1]);
-
-                if has_album {
-                    let album_para = Paragraph::new(Line::from(vec![
-                        Span::styled("\u{1f4bf} ", Style::default().fg(app.theme.fg)),
-                        Span::styled(&track.album, Style::default().fg(app.theme.fg_bright)),
-                    ]));
-                    f.render_widget(album_para, info_chunks[2]);
-                }
-
-                let dur = if app.state.duration > 0.0 {
-                    app.state.duration
-                } else {
-                    track.duration
-                };
-                let pos = app.display_position;
-                let pos_str = format_duration(pos as u64);
-                let dur_str = format_duration(dur as u64);
-                let ratio = if dur > 0.0 { pos / dur } else { 0.0 };
-                let ts_str = format!("{} / {}", pos_str, dur_str);
-                let bar_row = info_chunks[4];
-                let ts_row = info_chunks[6];
-                let bar_width = (bar_row.width.saturating_sub(1) as usize).min(40);
-                let bar_spans = render_progress_variant_styled(ratio, bar_width, app);
-                let bar_para = Paragraph::new(Line::from(bar_spans));
-                f.render_widget(bar_para, bar_row);
-                let ts_para = Paragraph::new(Line::from(vec![Span::styled(
-                    ts_str,
-                    Style::default().fg(app.theme.fg_dim),
-                )]));
-                f.render_widget(ts_para, ts_row);
-            } else {
-                let display_title = if track.title.is_empty() {
-                    std::path::Path::new(&track.path)
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default()
-                } else {
-                    track.title.clone()
-                };
-                let fav_prefix = if track.favourite { "\u{2665} " } else { "" };
-                let title_text = format!("{}{}", fav_prefix, display_title);
-                let title_avail = inner.width as usize;
-                let animated_title =
-                    scroll_text(&title_text, title_avail, app.np_title_scroll, true);
-                let title_para = Paragraph::new(Line::from(vec![Span::styled(
-                    &animated_title,
-                    Style::default()
-                        .fg(app.theme.fg_bright)
-                        .add_modifier(Modifier::BOLD),
-                )]));
-                let title_area = Rect {
-                    x: inner.x,
-                    y: inner.y,
-                    width: inner.width,
-                    height: 1,
-                };
-                render_evolving(f, title_area, title_para, "np", app, true);
-
-                let mut row_offset = 1u16;
-                if !track.album.is_empty() {
-                    let album_para = Paragraph::new(Line::from(vec![
-                        Span::styled("\u{1f4bf} ", Style::default().fg(app.theme.fg)),
-                        Span::styled(&track.album, Style::default().fg(app.theme.fg_bright)),
-                    ]));
-                    let album_area = Rect {
-                        x: inner.x,
-                        y: inner.y + row_offset,
-                        width: inner.width,
-                        height: 1,
-                    };
-                    f.render_widget(album_para, album_area);
-                    row_offset += 1;
-                }
-                row_offset += 1;
-
-                let dur = if app.state.duration > 0.0 {
-                    app.state.duration
-                } else {
-                    track.duration
-                };
-                let pos = app.display_position;
-                let pos_str = format_duration(pos as u64);
-                let dur_str = format_duration(dur as u64);
-                let ratio = if dur > 0.0 { pos / dur } else { 0.0 };
-                let ts_str = format!("{} / {}", pos_str, dur_str);
-                let bar_width = (inner.width.saturating_sub(1) as usize).min(40);
-                let bar_spans = render_progress_variant_styled(ratio, bar_width, app);
-                let bar_para = Paragraph::new(Line::from(bar_spans));
-                let bar_area = Rect {
-                    x: inner.x,
-                    y: inner.y + row_offset,
-                    width: inner.width,
-                    height: 1,
-                };
-                f.render_widget(bar_para, bar_area);
-                let ts_area = Rect {
-                    x: inner.x,
-                    y: inner.y + row_offset + 2,
-                    width: inner.width,
-                    height: 1,
-                };
-                let ts_para = Paragraph::new(Line::from(vec![Span::styled(
-                    ts_str,
-                    Style::default().fg(app.theme.fg_dim),
-                )]));
-                f.render_widget(ts_para, ts_area);
-            }
-        } else {
-            let inner = np_inner;
-            let lines = vec![Line::from(Span::styled(
-                "It's awfully quiet here…",
-                Style::default()
-                    .fg(app.theme.fg_bright)
-                    .add_modifier(Modifier::BOLD),
-            ))];
-            let msg = Paragraph::new(lines);
-            render_evolving(f, inner, msg, "idle", app, false);
-        }
-    }
-
-    if let Some(vis_a) = vis_area {
-        if vis_a.width >= 4 && vis_a.height >= 3 {
-            app.visualizer.tick(
-                app.state.status == gtm_core::state::PlaybackStatus::Playing,
-                vis_a.width,
-                &app.state.audio_levels,
-            );
-            let vis_header = Paragraph::new(Line::from(Span::styled(
-                " ",
-                Style::default()
-                    .fg(app.theme.fg_dim)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            f.render_widget(
-                vis_header,
-                Rect {
-                    x: vis_a.x,
-                    y: vis_a.y,
-                    width: vis_a.width,
-                    height: 1,
-                },
-            );
-            let vis_inner = Rect {
-                x: vis_a.x + 1,
-                y: vis_a.y + 1,
-                width: vis_a.width.saturating_sub(2),
-                height: vis_a.height.saturating_sub(1),
-            };
-            if let Some(lines) = app.visualizer.render(vis_inner, &app.theme) {
-                f.render_widget(lines, vis_inner);
-            }
-        }
-    }
-
-    let lib_icons = if use_nerd_fonts() {
-        LIBRARY_ICONS_NERD
-    } else {
-        LIBRARY_ICONS_ASCII
-    };
-    let left_items: Vec<ListItem> = LIBRARY_CATEGORIES
-        .iter()
-        .enumerate()
-        .map(|(i, cat)| {
-            let icon = lib_icons.get(i).unwrap_or(&" ");
-            let count = match *cat {
-                "All Tracks" => app.tracks_cache.len(),
-                "Liked" => app.tracks_cache.iter().filter(|t| t.favourite).count(),
-                "Albums" => app.unique_albums().len(),
-                "Artists" => app.unique_artists().len(),
-                "Playlists" => app.playlist_cache.len(),
-                "Spotify" => app.spotify_playlists.len(),
-                _ => 0,
-            };
-            let label = if count > 0 {
-                format!(" {icon}  {:<14} {:>4}", cat, count)
-            } else {
-                format!(" {icon}  {}", cat)
-            };
-            let is_active = i == app.library_category;
-            let style = if is_active && left_focus {
-                Style::default()
-                    .fg(app.theme.selection_fg_readable())
-                    .bg(app.theme.selection_bg)
-            } else if is_active {
-                Style::default().fg(app.theme.accent)
-            } else {
-                Style::default().fg(app.theme.fg)
-            };
-            ListItem::new(label).style(style)
-        })
-        .collect();
-
-    let left_inner = render_pane_header(f, panes[0], app, " ", left_focus, false, false);
-    fill_pane(f, left_inner, app);
-
-    let track_info_h: u16 = if app.track_popup_visible {
-        let avail_h = left_inner.height.saturating_sub(1);
-        let need = track_info_block_height();
-        // Reserve at least 4 rows for the category list so "Spotify" never gets clipped (Task 1).
-        let max_card = avail_h.saturating_sub(4);
-        need.min(max_card.max(6))
-    } else {
-        0
-    };
-    let left_vchunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(4),
-            Constraint::Length(if app.track_popup_visible { 1 } else { 0 }),
-            Constraint::Length(track_info_h),
-        ])
-        .split(left_inner);
-    let left_list_area = left_vchunks[0];
-    let left_track_info_sep_area = left_vchunks[1];
-    let left_track_info_area = left_vchunks[2];
-
-    f.render_widget(List::new(left_items), left_list_area);
-
-    if app.library_category < LIBRARY_CATEGORIES.len() {
-        let indicator_y = left_list_area.y + app.library_category as u16;
-        if indicator_y < left_list_area.y + left_list_area.height {
-            let indicator_area = Rect {
-                x: left_list_area.x + 1,
-                y: indicator_y,
-                width: 1,
-                height: 1,
-            };
-            let indicator =
-                Paragraph::new("▎").style(Style::default().fg(app.theme.sidebar_active_border));
-            f.render_widget(indicator, indicator_area);
-        }
-    }
-
-    let category_label = LIBRARY_CATEGORIES
-        .get(app.library_category)
-        .unwrap_or(&"All Tracks");
-
-    // Total rows in the active right-pane list, threaded out of the category
-    // branches so mouse hit zones only cover real rows (PROMPT #7).
-    let mut lib_total_rows: usize = 0;
-    let (right_lines, _stats_line) = if app.browse_detail.is_some() && app.library_category == 5 {
-        let tracks = &app.spotify_playlist_tracks_cache;
-        let total_len = tracks.len();
-        let st_line = format!(" {} {} ", total_len, plural(total_len, "track", "tracks"));
-        let reserve = 3usize;
-        let available = panes[1].height.saturating_sub(reserve as u16) as usize;
-        app.viewport_items = available;
-        let sel = app.list_pos().min(total_len.saturating_sub(1));
-        let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
-        app.list_scroll = list_scroll;
-
-        let pane_w = panes[1].width as usize;
-        let mut lines = vec![Line::from("")];
-        if tracks.is_empty() {
-            lines.push(Line::from(Span::styled(
-                " No tracks: run Settings > Spotify > Sync Now, then press Enter again",
-                Style::default().fg(app.theme.fg_dim),
-            )));
-            lib_total_rows = total_len;
-            (lines, st_line)
-        } else {
-            for (i, tr) in tracks[app.list_scroll..end].iter().enumerate() {
-                let real_i = app.list_scroll + i;
-                let is_sel = real_i == sel && !left_focus;
-                let label = tr.name.clone();
-                let avail = pane_w.saturating_sub(2);
-                let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
-                let dur = tr
-                    .duration_ms
-                    .map(|d| format_duration_short(d / 1000))
-                    .unwrap_or_default();
-                let prefix = if is_sel { " > " } else { "   " };
-                let name_pad = avail.saturating_sub(10);
-                let style = if is_sel {
-                    Style::default()
-                        .fg(app.theme.selection_fg_readable())
-                        .bg(app.theme.selection_bg)
-                } else {
-                    Style::default().fg(app.theme.fg)
-                };
-                let dur_style = if is_sel {
-                    Style::default()
-                        .fg(app.theme.selection_fg_readable())
-                        .bg(app.theme.selection_bg)
-                } else {
-                    Style::default().fg(app.theme.fg_dim)
-                };
-                let head = format!("{prefix}{:<width$}", display_label, width = name_pad);
-                let tail = format!("  {:>6}", dur);
-                let pad = row_pad(&format!("{head}{tail}"), panes[1].width);
-                lines.push(Line::from(vec![
-                    Span::styled(head, style),
-                    Span::styled(format!("{tail}{}", " ".repeat(pad)), dur_style),
-                ]));
-            }
-            lib_total_rows = total_len;
-            (lines, st_line)
-        }
-    } else if app.browse_detail.is_some() {
-        let (total_len, hours, mins) = {
-            let f = app.filtered_tracks();
-            let total_dur: u64 = f.iter().map(|t| t.duration as u64).sum();
-            (f.len(), total_dur / 3600, (total_dur % 3600) / 60)
-        };
-        let st_line = format!(
-            " {} {} | {}h {}m ",
-            total_len,
-            plural(total_len, "track", "tracks"),
-            hours,
-            mins
-        );
-
-        let reserve = 3usize;
-        let available = panes[1].height.saturating_sub(reserve as u16) as usize;
-        app.viewport_items = available;
-        let sel = app.list_pos().min(total_len.saturating_sub(1));
-        let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
-        app.list_scroll = list_scroll;
-
-        let filtered = app.filtered_tracks();
-
-        let pane_w = panes[1].width as usize;
-        let mut lines = vec![Line::from("")];
-        if filtered.is_empty() {
-            lines.push(Line::from(Span::styled(
-                " No tracks found for this selection",
-                Style::default().fg(app.theme.fg_dim),
-            )));
-            (lines, " 0 tracks | 0h 0m ".to_string())
-        } else {
-            for (i, track) in filtered[app.list_scroll..end].iter().enumerate() {
-                let real_i = app.list_scroll + i;
-                let is_current = app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
-                let is_sel = real_i == sel && !left_focus;
-                let label = track.title.clone();
-                let avail = pane_w.saturating_sub(2);
-                let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
-                let prefix = if is_current { "\u{25b6} " } else { "  " };
-                let row = format!("{}{}", prefix, display_label);
-                let style = if is_sel {
-                    Style::default()
-                        .fg(app.theme.selection_fg_readable())
-                        .bg(app.theme.selection_bg)
-                } else if is_current {
-                    Style::default()
-                        .fg(app.theme.accent)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
-                let row = if is_sel {
-                    let pad = row_pad(&row, panes[1].width);
-                    format!("{row}{}", " ".repeat(pad))
-                } else {
-                    row
-                };
-                lines.push(Line::from(Span::styled(row, style)));
-            }
-            lib_total_rows = total_len;
-            (lines, st_line)
-        }
-    } else if app.library_category == 2 {
-        let albums = app.unique_albums();
-        let total_len = albums.len();
-        let sel = app.list_pos().min(total_len.saturating_sub(1));
-        let st_line = format!(" {} {} ", total_len, plural(total_len, "album", "albums"));
-        let reserve = 3usize;
-        let available = panes[1].height.saturating_sub(reserve as u16) as usize;
-        app.viewport_items = available;
-        let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
-        app.list_scroll = list_scroll;
-        let mut lines = vec![Line::from("")];
-        for (i, (name, _count)) in albums[app.list_scroll..end].iter().enumerate() {
-            let real_i = app.list_scroll + i;
-            let is_sel = real_i == sel && !left_focus;
-            let prefix = if is_sel { " > " } else { "   " };
-            let style = if is_sel {
-                Style::default()
-                    .fg(app.theme.selection_fg_readable())
-                    .bg(app.theme.selection_bg)
-            } else {
-                Style::default().fg(app.theme.fg)
-            };
-            let row = format!("{}{}", prefix, name);
-            let row = if is_sel {
-                let pad = row_pad(&row, panes[1].width);
-                format!("{row}{}", " ".repeat(pad))
-            } else {
-                row
-            };
-            lines.push(Line::from(Span::styled(row, style)));
-        }
-        {
-            lib_total_rows = total_len;
-            (lines, st_line)
-        }
-    } else if app.library_category == 3 {
-        let artists = app.unique_artists();
-        let total_len = artists.len();
-        let sel = app.list_pos().min(total_len.saturating_sub(1));
-        let st_line = format!(" {} {} ", total_len, plural(total_len, "artist", "artists"));
-        let reserve = 3usize;
-        let available = panes[1].height.saturating_sub(reserve as u16) as usize;
-        app.viewport_items = available;
-        let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
-        app.list_scroll = list_scroll;
-        let mut lines = vec![Line::from("")];
-        for (i, (name, _count)) in artists[app.list_scroll..end].iter().enumerate() {
-            let real_i = app.list_scroll + i;
-            let is_sel = real_i == sel && !left_focus;
-            let prefix = if is_sel { " > " } else { "   " };
-            let style = if is_sel {
-                Style::default()
-                    .fg(app.theme.selection_fg_readable())
-                    .bg(app.theme.selection_bg)
-            } else {
-                Style::default().fg(app.theme.fg)
-            };
-            let row = format!("{}{}", prefix, name);
-            let row = if is_sel {
-                let pad = row_pad(&row, panes[1].width);
-                format!("{row}{}", " ".repeat(pad))
-            } else {
-                row
-            };
-            lines.push(Line::from(Span::styled(row, style)));
-        }
-        {
-            lib_total_rows = total_len;
-            (lines, st_line)
-        }
-    } else if app.library_category == 4 {
-        let playlists = &app.playlist_cache;
-        let total_len = playlists.len();
-        let sel = app.list_pos().min(total_len.saturating_sub(1));
-        let st_line = format!(
-            " {} {} ",
-            total_len,
-            plural(total_len, "playlist", "playlists")
-        );
-        let reserve = 3usize;
-        let available = panes[1].height.saturating_sub(reserve as u16) as usize;
-        app.viewport_items = available;
-        let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
-        app.list_scroll = list_scroll;
-        let mut lines = vec![Line::from("")];
-        for (i, pl) in playlists[app.list_scroll..end].iter().enumerate() {
-            let real_i = app.list_scroll + i;
-            let is_sel = real_i == sel && !left_focus;
-            let prefix = if is_sel { " > " } else { "   " };
-            let style = if is_sel {
-                Style::default()
-                    .fg(app.theme.selection_fg_readable())
-                    .bg(app.theme.selection_bg)
-            } else {
-                Style::default().fg(app.theme.fg)
-            };
-            let row = format!("{}{}", prefix, pl.name);
-            let row = if is_sel {
-                let pad = row_pad(&row, panes[1].width);
-                format!("{row}{}", " ".repeat(pad))
-            } else {
-                row
-            };
-            lines.push(Line::from(Span::styled(row, style)));
-        }
-        {
-            lib_total_rows = total_len;
-            (lines, st_line)
-        }
-    } else if app.library_category == 5 {
-        let playlists = &app.spotify_playlists;
-        let total_len = playlists.len();
-        let sel = app.list_pos().min(total_len.saturating_sub(1));
-        let st_line = format!(
-            " {} {} ",
-            total_len,
-            plural(total_len, "playlist", "playlists")
-        );
-        let reserve = 3usize;
-        let available = panes[1].height.saturating_sub(reserve as u16) as usize;
-        app.viewport_items = available;
-        let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
-        app.list_scroll = list_scroll;
-        let mut lines = vec![Line::from("")];
-        if playlists.is_empty() {
-            lines.push(Line::from(Span::styled(
-                " No synced playlists: link an account in Settings > Spotify",
-                Style::default().fg(app.theme.fg_dim),
-            )));
-        } else {
-            for (i, pl) in playlists[app.list_scroll..end].iter().enumerate() {
-                let real_i = app.list_scroll + i;
-                let is_sel = real_i == sel && !left_focus;
-                let prefix = if is_sel { " > " } else { "   " };
-                let style = if is_sel {
-                    Style::default()
-                        .fg(app.theme.selection_fg_readable())
-                        .bg(app.theme.selection_bg)
-                } else {
-                    Style::default().fg(app.theme.fg)
-                };
-                let row = format!("{}{}", prefix, pl.name);
-                let row = if is_sel {
-                    let pad = row_pad(&row, panes[1].width);
-                    format!("{row}{}", " ".repeat(pad))
-                } else {
-                    row
-                };
-                lines.push(Line::from(Span::styled(row, style)));
-            }
-        }
-        {
-            lib_total_rows = total_len;
-            (lines, st_line)
-        }
-    } else {
-        let (total_len, total_dur) = {
-            let f = app.filtered_tracks();
-            let dur: u64 = f.iter().map(|t| t.duration as u64).sum();
-            (f.len(), dur)
-        };
-        let hours = total_dur / 3600;
-        let mins = (total_dur % 3600) / 60;
-        let st_line = format!(
-            " {} {} | {}h {}m ",
-            total_len,
-            plural(total_len, "track", "tracks"),
-            hours,
-            mins
-        );
-
-        let reserve = 3usize;
-        let available = panes[1].height.saturating_sub(reserve as u16) as usize;
-        app.viewport_items = available;
-        let sel = app.list_pos().min(total_len.saturating_sub(1));
-        let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
-        app.list_scroll = list_scroll;
-
-        let filtered = app.filtered_tracks();
-        let pane_w = panes[1].width as usize;
-
-        let mut lines = vec![Line::from("")];
-        for (i, track) in filtered[app.list_scroll..end].iter().enumerate() {
-            let real_i = app.list_scroll + i;
-            let is_current = app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
-            let is_sel = real_i == sel && !left_focus;
-            let label = track.title.clone();
-            let avail = pane_w.saturating_sub(2);
-            let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
-            let prefix = if is_current { "\u{25b6} " } else { "  " };
-            let row = format!("{}{}", prefix, display_label);
-            let style = if is_sel {
-                Style::default()
-                    .fg(app.theme.selection_fg_readable())
-                    .bg(app.theme.selection_bg)
-            } else if is_current {
-                Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-            let row = if is_sel {
-                let pad = row_pad(&row, panes[1].width);
-                format!("{row}{}", " ".repeat(pad))
-            } else {
-                row
-            };
-            lines.push(Line::from(Span::styled(row, style)));
-        }
-        {
-            lib_total_rows = total_len;
-            (lines, st_line)
-        }
-    };
-
-    if app.track_popup_visible
-        && left_track_info_area.height >= track_info_block_height()
-        && (left_track_info_sep_area.height > 0 || left_track_info_area.height > 0)
-    {
-        render_track_info_in_pane(f, left_track_info_sep_area, left_track_info_area, app);
-    }
-
-    let right_para = Paragraph::new(right_lines);
-    let header_label = if let Some(detail) = app.browse_detail.as_deref() {
-        format!("▶ {detail}")
-    } else {
-        category_label.to_string()
-    };
-    let right_inner = render_pane_header(f, panes[1], app, &header_label, !left_focus, false, true);
-    fill_pane(f, right_inner, app);
-    render_evolving(f, right_inner, right_para, "lib", app, false);
-
-    // Mouse hit zones for the visible library rows (PROMPT #7): rows start
-    // below one leading blank line.
-    if lib_total_rows > 0 {
-        let avail = right_inner.height.saturating_sub(2) as usize;
-        let visible_rows = lib_total_rows
-            .saturating_sub(app.list_scroll)
-            .min(app.viewport_items)
-            .min(avail);
-        for v in 0..visible_rows {
-            let rect = Rect {
-                x: right_inner.x,
-                y: right_inner.y + 1 + v as u16,
-                width: right_inner.width,
-                height: 1,
-            };
-            app.mouse_map
-                .register(rect, crate::mouse::MouseZone::ListItem(app.list_scroll + v));
-        }
-    }
-
-    {
-        let stats_line = library_stats_line(app);
-        if !stats_line.trim().is_empty() {
-            let stats_area = Rect {
-                x: area.x + area.width.saturating_sub(stats_line.len() as u16 + 1),
-                y: area.y + area.height.saturating_sub(1),
-                width: (stats_line.len() as u16 + 1).min(area.width),
-                height: 1,
-            };
-            let stats_para = Paragraph::new(Span::styled(
-                stats_line,
-                Style::default().fg(app.theme.fg_dim),
-            ));
-            f.render_widget(stats_para, stats_area);
-        }
-    }
-
-    if let Some(lyrics_area) = lyrics_area {
-        render_lyrics_pane(f, lyrics_area, app);
-    } else if app.show_lyrics && panes.len() == 1 {
-        // Narrow mode: keep the stats-only bottom row clear.
-        let lyrics = Rect {
-            height: panes[0].height.saturating_sub(1),
-            ..panes[0]
-        };
-        render_lyrics_pane(f, lyrics, app);
-    }
-}
 
 const SETTINGS_ICONS_NERD: &[&str] = &["\u{f028}", "\u{f16a}", "\u{f04b}", "\u{f013}", "\u{f1bc}"];
 const SETTINGS_ICONS_ASCII: &[&str] = &["♪", "YT", "▶", "⚙", "★"];
@@ -2216,7 +2666,7 @@ impl Pickers {
                             let image = StatefulImage::new();
                             f.render_stateful_widget(image, cover_area, protocol);
                         } else if let Some(ref bytes) = app.queue_preview_cover {
-                            render_cover_block(f, cover_area, bytes);
+                            Render::cover_block(f, cover_area, bytes);
                         }
                     } else {
                         let glyph = Paragraph::new(Line::from(Span::styled(
@@ -2313,7 +2763,7 @@ impl Pickers {
                 width: inner.width,
                 height: inner.height.saturating_sub(1),
             };
-            render_loader(f, loader_area, app, "Searching YouTube\u{2026}");
+            Render::loader(f, loader_area, app, "Searching YouTube\u{2026}");
             return;
         }
         for i in scroll_start..scroll_end {
@@ -2515,7 +2965,7 @@ impl Pickers {
             let image = StatefulImage::new();
             f.render_stateful_widget(image, cover_area, protocol);
         } else if let Some(bytes) = app.picker_preview_cover.as_deref() {
-            render_cover_block(f, cover_area, bytes);
+            Render::cover_block(f, cover_area, bytes);
         } else {
             let placeholder = Paragraph::new(Line::from(Span::styled(
                 format!("{:^width$}", "\u{266b}", width = cover_w as usize),
@@ -2953,214 +3403,9 @@ impl Pickers {
 
 // ─── Footer ───
 
-fn render_footer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    match app.input_mode {
-        InputMode::Normal => {
-            if !app.search_query.is_empty() {
-                f.render_widget(
-                    Paragraph::new(format!(" > {}  [Esc] clear filter", app.search_query))
-                        .style(Style::default().fg(app.theme.fg_bright).bg(app.chrome_bg())),
-                    area,
-                );
-                return;
-            }
-            if app.footer_cache.suppress_refresh {
-                if let Some(ref cached) = app.footer_cache.last {
-                    crate::footer::draw(f, area, cached);
-                    render_footer_help(f, area, app);
-                    return;
-                }
-            }
-            let rendered = crate::footer::render(app);
-            if let Some(ref out) = rendered {
-                crate::footer::draw(f, area, out);
-            } else {
-                f.render_widget(
-                    Paragraph::new("").style(Style::default().bg(app.chrome_bg())),
-                    area,
-                );
-            }
-            app.footer_cache.last = rendered;
-            render_footer_help(f, area, app);
-        }
-        InputMode::Searching => {
-            f.render_widget(
-                Paragraph::new(format!(" > {}_", app.search_query))
-                    .style(Style::default().fg(app.theme.fg_bright).bg(app.chrome_bg())),
-                area,
-            );
-        }
-    }
-}
 
-pub fn render_progress_variant(ratio: f64, width: usize, app: &App) -> String {
-    let ratio =
-        crate::progress::render_ratio(app.progress_style, ratio, app.progress_smoother.value());
-    crate::progress::render_progress(ratio, width, app.progress_style)
-}
 
-pub fn render_progress_variant_styled<'a>(
-    ratio: f64,
-    width: usize,
-    app: &App,
-) -> Vec<ratatui::text::Span<'a>> {
-    let ratio =
-        crate::progress::render_ratio(app.progress_style, ratio, app.progress_smoother.value());
-    crate::progress::render_progress_styled(
-        ratio,
-        width,
-        app.progress_style,
-        app.theme.accent,
-        app.theme.secondary_accent,
-        app.theme.tertiary_accent,
-    )
-}
 
-fn render_lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-    let inner = render_pane_header(f, area, app, "LYRICS", app.lyrics_pane_focus, false, true);
-    fill_pane(f, inner, app);
-
-    let Some(ref lyrics) = app.current_lyrics else {
-        if app.lyrics_fetching {
-            let mut spans = vec![Span::styled(
-                "Fetching lyrics ",
-                Style::default().fg(app.theme.accent),
-            )];
-            spans.extend(knight_rider_spans(app.frame_count as usize, 9, app));
-            let msg = Paragraph::new(Line::from(spans)).alignment(Alignment::Center);
-            f.render_widget(msg, inner);
-        } else {
-            let msg = Paragraph::new("Press [l] to search")
-                .alignment(Alignment::Center)
-                .style(Style::default().fg(app.theme.fg_dim));
-            f.render_widget(msg, inner);
-        }
-        return;
-    };
-
-    if lyrics.lines.is_empty() {
-        let msg = Paragraph::new("No lyrics found")
-            .alignment(Alignment::Center)
-            .style(Style::default().fg(app.theme.fg_dim));
-        f.render_widget(msg, inner);
-        return;
-    }
-
-    // Myx parity: header with title / artist·album centered above lyrics (Task 4)
-    let header_area = if inner.height >= 4 {
-        let header_h = 1;
-        let title = lyrics.title.clone().unwrap_or_else(|| {
-            app.state
-                .current_track
-                .as_ref()
-                .map(|t| t.title.clone())
-                .unwrap_or_default()
-        });
-        let artist = lyrics.artist.clone().unwrap_or_else(|| {
-            app.state
-                .current_track
-                .as_ref()
-                .map(|t| t.artist.clone())
-                .unwrap_or_default()
-        });
-        let album = lyrics.album.clone().unwrap_or_else(|| {
-            app.state
-                .current_track
-                .as_ref()
-                .map(|t| t.album.clone())
-                .unwrap_or_default()
-        });
-        let header_text = if !album.is_empty() && !artist.is_empty() {
-            format!("{} — {} · {}", title, artist, album)
-        } else if !artist.is_empty() {
-            format!("{} — {}", title, artist)
-        } else {
-            title.clone()
-        };
-        if !header_text.is_empty() {
-            let header_para = Paragraph::new(Line::from(Span::styled(
-                header_text,
-                Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            )))
-            .alignment(Alignment::Center);
-            let hdr_rect = Rect {
-                x: inner.x,
-                y: inner.y,
-                width: inner.width,
-                height: header_h,
-            };
-            f.render_widget(header_para, hdr_rect);
-            Some(hdr_rect)
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    let lyrics_inner = if let Some(hdr) = header_area {
-        Rect {
-            x: inner.x,
-            y: hdr.y + hdr.height,
-            width: inner.width,
-            height: inner.height.saturating_sub(hdr.height + 1),
-        }
-    } else {
-        inner
-    };
-
-    let total = lyrics.lines.len();
-    let width = lyrics_inner.width.max(1) as usize;
-    let synced = crate::app::lyrics_are_synced(&lyrics.lines);
-    let anchor = app.lyrics_scroll.min(total - 1);
-    let mut row_offsets = Vec::with_capacity(total);
-    let mut text = Vec::with_capacity(total);
-    let mut cumulative = 0usize;
-    for (i, line) in lyrics.lines.iter().enumerate() {
-        // Myx parity: active=primary+BOLD, past=subtle dim, future=muted (Task 4)
-        let text_style = if !synced {
-            Style::default().fg(app.theme.fg)
-        } else {
-            let d = i as isize - anchor as isize;
-            if d == 0 {
-                Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD)
-            } else if d < 0 {
-                Style::default().fg(app.theme.fg_dim)
-            } else if d <= 2 {
-                Style::default().fg(app.theme.fg)
-            } else {
-                Style::default().fg(app.theme.fg_dim)
-            }
-        };
-        row_offsets.push(cumulative);
-        cumulative += (line.text.chars().count().max(1)).div_ceil(width);
-        text.push(Line::from(Span::styled(line.text.clone(), text_style)));
-    }
-    let total_rows = cumulative;
-    let visible = lyrics_inner.height as usize;
-    let bottom = total_rows.saturating_sub(visible);
-    let scroll_display = if total_rows <= visible {
-        0
-    } else if app.lyrics_manual_scroll {
-        if anchor == total - 1 {
-            bottom
-        } else {
-            // Myx centers active line: start = cur - h/2
-            row_offsets[anchor].saturating_sub(visible / 2).min(bottom)
-        }
-    } else {
-        // Myx parity: centered active line (Task 4), not 1/3 down
-        row_offsets[anchor].saturating_sub(visible / 2).min(bottom)
-    };
-
-    let para = Paragraph::new(text)
-        .wrap(Wrap { trim: false })
-        .scroll((scroll_display as u16, 0));
-    f.render_widget(para, lyrics_inner);
-}
 
 const TRACK_INFO_CARD_H: u16 = 16;
 
@@ -3412,126 +3657,6 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
     }
 }
 
-fn render_track_info_in_pane(f: &mut ratatui::Frame, sep_area: Rect, area: Rect, app: &mut App) {
-    let fields = match track_info_fields(app) {
-        Some(fields) => fields,
-        None => return,
-    };
-    let has_cover = fields.has_cover;
-    let can_cover = !no_image_protocol() && area.width > COVER_W + 1;
-
-    let sep_w = sep_area.width.saturating_sub(1) as usize;
-    let sep_label = format!(" Info{} ", fields.fav);
-    let sep_style = Style::default().fg(app.theme.fg_dim);
-    let sep_line = if sep_w >= sep_label.len() {
-        let side = (sep_w - sep_label.len()) / 2;
-        let extra = (sep_w - sep_label.len()) % 2;
-        format!(
-            "{}{}{}",
-            "─".repeat(side),
-            sep_label,
-            "─".repeat(side + extra)
-        )
-    } else {
-        sep_label
-    };
-    f.render_widget(
-        Paragraph::new(Line::from(Span::styled(sep_line, sep_style))),
-        sep_area,
-    );
-
-    if can_cover {
-        // Adaptive cover: use as much of the card height for cover as
-        // fits while keeping at least 4 rows for the text block (Task 1).
-        let card_h = area.height;
-        let text_need: u16 = if fields.album.is_some() { 4 } else { 3 };
-        let cover_h_avail = card_h.saturating_sub(text_need).saturating_sub(2);
-        let cover_h_eff = COVER_H
-            .min(cover_h_avail.max(4))
-            .min(area.height.saturating_sub(text_need + 2));
-        let cover_w_eff = (cover_h_eff * 2).min(area.width.saturating_sub(2));
-        let split = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(cover_h_eff),
-                Constraint::Length(1),
-                Constraint::Min(0),
-            ])
-            .split(area);
-
-        let cover_hpad = area.width.saturating_sub(cover_w_eff) / 2;
-        let cover_area = Rect {
-            x: area.x + cover_hpad,
-            y: split[0].y,
-            width: cover_w_eff.min(area.width),
-            height: cover_h_eff,
-        };
-        if has_cover {
-            if let Some(ref mut protocol) = app.popup_cover_stateful {
-                let image = StatefulImage::new();
-                f.render_stateful_widget(image, cover_area, protocol);
-            } else if let Some(ref cover_bytes) = app.track_popup_cover {
-                render_cover_block(f, cover_area, cover_bytes);
-            }
-        }
-
-        let text_area = split[2];
-        let pad = "  ";
-        let title_avail = text_area.width.saturating_sub(pad.len() as u16) as usize;
-        let animated_title = scroll_text(&fields.title, title_avail, app.np_title_scroll, true);
-        let mut lines = vec![
-            Line::from(Span::styled(
-                format!("{pad}{}", animated_title),
-                Style::default()
-                    .fg(app.theme.fg_bright)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                format!("{pad}{}", fields.artist),
-                Style::default().fg(app.theme.fg),
-            )),
-        ];
-        if let Some(album) = &fields.album {
-            lines.push(Line::from(Span::styled(
-                format!("{pad}{}", album),
-                Style::default().fg(app.theme.fg),
-            )));
-        }
-        lines.push(Line::from(Span::styled(
-            format!("{pad}{}", fields.meta.trim()),
-            Style::default().fg(app.theme.fg_dim),
-        )));
-        let para = Paragraph::new(lines);
-        f.render_widget(para, text_area);
-    } else {
-        let title_avail = area.width.saturating_sub(2) as usize;
-        let animated_title = scroll_text(&fields.title, title_avail, app.np_title_scroll, true);
-        let lines = vec![
-            Line::from(Span::styled(
-                format!("  {}", animated_title),
-                Style::default()
-                    .fg(app.theme.fg_bright)
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(Span::styled(
-                format!("  {}", fields.artist),
-                Style::default().fg(app.theme.fg),
-            )),
-            Line::from(if let Some(album) = &fields.album {
-                Span::styled(format!("  {}", album), Style::default().fg(app.theme.fg))
-            } else {
-                Span::raw("")
-            }),
-            Line::from(""),
-            Line::from(Span::styled(
-                fields.meta.clone(),
-                Style::default().fg(app.theme.fg_dim),
-            )),
-        ];
-        let para = Paragraph::new(lines);
-        f.render_widget(para, area);
-    }
-}
 
 pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str, &str)] = &[
     ("\u{25b6}\u{fe0f} Play/Pause", "Space", "play/pause"),
@@ -5107,27 +5232,6 @@ fn knight_rider_spans(frame: usize, width: usize, app: &App) -> Vec<Span<'static
         .collect()
 }
 
-fn render_loader(f: &mut ratatui::Frame, area: Rect, app: &App, label: &str) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    let width = 21usize.min(area.width as usize);
-    let mut lines: Vec<Line> = Vec::new();
-    for _ in 0..(area.height as usize / 2).saturating_sub(1) {
-        lines.push(Line::from(""));
-    }
-    lines.push(Line::from(knight_rider_spans(
-        app.frame_count as usize,
-        width,
-        app,
-    )));
-    lines.push(Line::from(Span::styled(
-        label.to_string(),
-        Style::default().fg(app.theme.fg_dim),
-    )));
-    let para = Paragraph::new(lines).alignment(Alignment::Center);
-    f.render_widget(para, area);
-}
 
 pub use crate::theme::readable_fg;
 
@@ -5305,7 +5409,7 @@ impl Pickers {
                 let image = StatefulImage::new();
                 f.render_stateful_widget(image, c_area, protocol);
             } else if let Some(ref cover_bytes) = app.metadata.cover {
-                render_cover_block(f, c_area, cover_bytes);
+                Render::cover_block(f, c_area, cover_bytes);
             } else {
                 let placeholder = Paragraph::new(Line::from(Span::styled(
                     " \u{266b} no cover ",
@@ -5318,87 +5422,6 @@ impl Pickers {
     }
 }
 
-fn render_health_panel(f: &mut ratatui::Frame, area: Rect, app: &App) {
-    let panel_width = area.width.min(60);
-    let panel_height = area.height.min(20);
-    let x = (area.width.saturating_sub(panel_width)) / 2;
-    let y = (area.height.saturating_sub(panel_height)) / 2;
-    let rect = Rect::new(area.x + x, area.y + y, panel_width, panel_height);
-
-    f.render_widget(Clear, rect);
-
-    let block = Block::default()
-        .title(Line::from(Span::styled(
-            " Health Check ",
-            Style::default()
-                .fg(app.theme.accent)
-                .add_modifier(Modifier::BOLD),
-        )))
-        .borders(Borders::ALL)
-        .style(Style::default().fg(app.theme.fg).bg(app.float_bg()));
-
-    let inner = block.inner(rect);
-    f.render_widget(block, rect);
-
-    if let Some(ref report) = app.health_report {
-        let mut lines = Vec::new();
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("Daemon v{}", report.version),
-                Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!(
-                    "  uptime {}",
-                    crate::footer::format_uptime(report.daemon_uptime_secs)
-                ),
-                Style::default().fg(app.theme.fg_dim),
-            ),
-        ]));
-        lines.push(Line::from(""));
-
-        for c in &report.components {
-            let (icon, color) = match c.status {
-                gtm_core::ipc::HealthStatus::Ok => ("✓", app.theme.success),
-                gtm_core::ipc::HealthStatus::Degraded => ("⚠", app.theme.warning),
-                gtm_core::ipc::HealthStatus::Error => ("✗", app.theme.error),
-            };
-            let mut spans = vec![
-                Span::styled(format!(" {icon} "), Style::default().fg(color)),
-                Span::styled(
-                    c.name.clone(),
-                    Style::default()
-                        .fg(app.theme.fg_bright)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ];
-            if let Some(ref msg) = c.message {
-                spans.push(Span::styled(
-                    format!(": {msg}"),
-                    Style::default().fg(app.theme.fg_dim),
-                ));
-            }
-            lines.push(Line::from(spans));
-        }
-
-        let para = Paragraph::new(lines).scroll((0, 0));
-        f.render_widget(para, inner);
-    } else {
-        let loading = Paragraph::new(" Loading...").style(Style::default().fg(app.theme.fg_dim));
-        f.render_widget(loading, inner);
-    }
-
-    let help = Paragraph::new(" [Esc] Close").style(Style::default().fg(app.theme.fg_dim));
-    let help_area = Rect::new(
-        rect.x,
-        rect.y + rect.height.saturating_sub(1),
-        rect.width,
-        1,
-    );
-    f.render_widget(help, help_area);
-}
 
 #[cfg(test)]
 mod tests {

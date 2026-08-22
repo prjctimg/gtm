@@ -426,9 +426,9 @@ fn spawn_sync_and_wait(
 ) {
     tokio::spawn(async move {
         let kick = match kind {
-            gtm_core::ipc::SyncKind::Covers => c.library_sync_covers().await,
-            gtm_core::ipc::SyncKind::Lyrics => c.library_sync_lyrics().await,
-            gtm_core::ipc::SyncKind::Metadata => c.library_sync_metadata(None).await,
+            gtm_core::ipc::SyncKind::Covers => c.library().sync_covers().await,
+            gtm_core::ipc::SyncKind::Lyrics => c.library().sync_lyrics().await,
+            gtm_core::ipc::SyncKind::Metadata => c.library().sync_metadata(None).await,
         };
         if let Err(e) = kick {
             let _ = ipc_tx.send(IpcResult::Error(format!("{label} sync failed: {e}")));
@@ -437,7 +437,7 @@ fn spawn_sync_and_wait(
         let deadline = std::time::Instant::now() + Duration::from_secs(1800);
         loop {
             tokio::time::sleep(Duration::from_millis(400)).await;
-            match c.library_sync_status().await {
+            match c.library().sync_status().await {
                 Ok(st) if !st.running => {
                     let msg = format!("{label} synced: {}/{} tracks", st.synced, st.total);
                     let _ = ipc_tx.send(IpcResult::Notification(
@@ -446,7 +446,7 @@ fn spawn_sync_and_wait(
                         NotificationKind::Info,
                     ));
                     if let Ok(DaemonRes::Tracks { tracks, .. }) =
-                        c.library_get_tracks(None, None).await
+                        c.library().get_tracks(None, None).await
                     {
                         let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
                     }
@@ -874,7 +874,7 @@ impl App {
                     queue: tracks,
                     cursor,
                     ..
-                }) = c.queue_list().await
+                }) = c.queue().list().await
                 {
                     let _ = ipc_tx.send(IpcResult::Queue(tracks, cursor as usize));
                 }
@@ -884,7 +884,7 @@ impl App {
             let c = self.client.clone();
             let ipc_tx = self.ipc_tx.clone();
             tokio::spawn(async move {
-                if let Ok(DaemonRes::Tracks { tracks, .. }) = c.library_get_tracks(None, None).await
+                if let Ok(DaemonRes::Tracks { tracks, .. }) = c.library().get_tracks(None, None).await
                 {
                     if !tracks.is_empty() {
                         let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
@@ -896,13 +896,13 @@ impl App {
             let c = self.client.clone();
             let ipc_tx = self.ipc_tx.clone();
             tokio::spawn(async move {
-                if let Ok(status) = c.spotify_status().await {
+                if let Ok(status) = c.spotify().status().await {
                     let _ = ipc_tx.send(IpcResult::SpotifyStatus(status));
                 }
-                if let Ok(playlists) = c.spotify_playlists().await {
+                if let Ok(playlists) = c.spotify().playlists().await {
                     let _ = ipc_tx.send(IpcResult::SpotifyPlaylists(playlists));
                 }
-                if let Ok(status) = c.soloist_status().await {
+                if let Ok(status) = c.soloist().status().await {
                     let _ = ipc_tx.send(IpcResult::SoloistStatus(status));
                 }
             });
@@ -1017,7 +1017,7 @@ impl App {
             }
             if had_sync_done {
                 if let Ok(gtm_core::ipc::DaemonRes::Tracks { tracks, .. }) =
-                    self.client.library_get_tracks(None, None).await
+                    self.client.library().get_tracks(None, None).await
                 {
                     self.tracks_cache = tracks;
                 }
@@ -1084,7 +1084,7 @@ impl App {
                             let client = self.client.clone();
                             let ipc_tx = self.ipc_tx.clone();
                             tokio::spawn(async move {
-                                if let Ok(Some(b64)) = client.get_cover_art(tid).await {
+                                if let Ok(Some(b64)) = client.art().cover(tid).await {
                                     if let Ok(bytes) =
                                         base64::engine::general_purpose::STANDARD.decode(&b64)
                                     {
@@ -1106,7 +1106,7 @@ impl App {
                     self.lyrics_scroll = 0;
                     tokio::spawn(async move {
                         let result = client
-                            .get_lyrics(current_tid.unwrap_or(0), tpath.as_deref())
+                            .lyrics().get(current_tid.unwrap_or(0), tpath.as_deref())
                             .await;
                         let _ = ipc_tx.send(IpcResult::Lyrics(result.unwrap_or(None)));
                     });
@@ -1142,7 +1142,7 @@ impl App {
                                 self.np_cover.image = Some(c);
                                 self.np_cover.track_id = cover_tid;
                                 if !no_image_protocol() {
-                                    self.sync_cover_stateful();
+                                    self.cover_sync();
                                 } else {
                                     self.cover_art_dirty = true;
                                 }
@@ -1159,7 +1159,7 @@ impl App {
                         self.np_cover.image = cover;
                         self.np_cover.track_id = cover_tid;
                         if !no_image_protocol() {
-                            self.sync_cover_stateful();
+                            self.cover_sync();
                         }
                         self.cover_art_dirty = true;
                     }
@@ -1213,7 +1213,7 @@ impl App {
                     IpcResult::PopupCoverArt(cover, track_id) => {
                         if !no_image_protocol() && self.track_popup_track_id == Some(track_id) {
                             self.track_popup_cover = cover;
-                            self.sync_popup_cover_stateful();
+                            self.popup_cover_sync();
                         }
                     }
                     IpcResult::UpNextCover(cover, track_id) => {
@@ -1224,7 +1224,7 @@ impl App {
                         {
                             if let Some(u) = self.upnext.as_mut() {
                                 u.cover = cover;
-                                self.sync_upnext_cover_stateful();
+                                self.upnext_cover_sync();
                             }
                         }
                     }
@@ -1233,7 +1233,7 @@ impl App {
                             && self.last_queue_preview_cover_fetch_id == Some(track_id)
                         {
                             self.queue_preview_cover = cover;
-                            self.sync_queue_preview_cover_stateful();
+                            self.queue_preview_cover_sync();
                         }
                     }
                     IpcResult::PickerPreviewCover(cover, track_id) => {
@@ -1241,13 +1241,13 @@ impl App {
                             && self.last_picker_preview_fetch_id == Some(track_id)
                         {
                             self.picker_preview_cover = cover;
-                            self.sync_picker_preview_stateful();
+                            self.picker_preview_sync();
                         }
                     }
                     IpcResult::MetadataCoverArt(cover, track_id) => {
                         if !no_image_protocol() && self.metadata.edit_track_id == Some(track_id) {
                             self.metadata.cover = cover;
-                            self.sync_metadata_cover_stateful();
+                            self.metadata_cover_sync();
                             self.metadata.cover_dirty = true;
                         }
                     }
@@ -1256,7 +1256,7 @@ impl App {
                             && self.last_artist_cover_fetch.as_deref() == Some(&artist)
                         {
                             self.artist_cover = cover;
-                            self.sync_artist_cover_stateful();
+                            self.artist_cover_sync();
                         }
                     }
                     IpcResult::CoverPicker(picker) => {
@@ -1647,7 +1647,7 @@ impl App {
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.get_cover_art(tid).await {
+            if let Ok(Some(b64)) = client.art().cover(tid).await {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
                     let _ = ipc_tx.send(IpcResult::UpNextCover(Some(bytes), tid));
                 }
@@ -1756,7 +1756,7 @@ impl App {
             .is_some_and(|t| t.path == path);
         if current_is_selected {
             self.track_popup_cover = self.np_cover.image.clone();
-            self.sync_popup_cover_stateful();
+            self.popup_cover_sync();
             self.last_popup_cover_fetch_id = None;
         } else if self.last_popup_cover_fetch_id != Some(tid) && !no_image_protocol() {
             self.last_popup_cover_fetch_id = Some(tid);
@@ -1765,7 +1765,7 @@ impl App {
             let client = self.client.clone();
             let ipc_tx = self.ipc_tx.clone();
             tokio::spawn(async move {
-                if let Ok(Some(b64)) = client.get_cover_art(tid).await {
+                if let Ok(Some(b64)) = client.art().cover(tid).await {
                     if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
                         let _ = ipc_tx.send(IpcResult::PopupCoverArt(Some(bytes), tid));
                     }
@@ -1817,7 +1817,7 @@ impl App {
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.get_cover_art(tid).await {
+            if let Ok(Some(b64)) = client.art().cover(tid).await {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
                     let _ = ipc_tx.send(IpcResult::PickerPreviewCover(Some(bytes), tid));
                 }
@@ -1857,7 +1857,7 @@ impl App {
         let ipc_tx = self.ipc_tx.clone();
         let artist = name.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.get_artist_cover_art(artist.clone()).await {
+            if let Ok(Some(b64)) = client.art().artist_cover(artist.clone()).await {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
                     let _ = ipc_tx.send(IpcResult::ArtistCoverArt(Some(bytes), artist));
                 }
@@ -1954,7 +1954,7 @@ impl App {
         let c = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            match c.spotify_search_web(&query).await {
+            match c.spotify().search_web(&query).await {
                 Ok(tracks) => {
                     let _ = ipc_tx.send(IpcResult::SpotifySearchWebResults(tracks));
                 }
@@ -2045,7 +2045,7 @@ impl App {
         let path = paths[idx].clone();
         let c = self.client.clone();
         tokio::spawn(async move {
-            let _ = c.queue_set(paths, idx as u64).await;
+            let _ = c.queue().set(paths, idx as u64).await;
             let _ = c.play(&path, 0.0).await;
         });
     }
@@ -2098,7 +2098,7 @@ impl App {
         artists.into_iter().collect()
     }
 
-    fn sync_cover_stateful(&mut self) {
+    fn cover_sync(&mut self) {
         match (&self.np_cover.image, &self.np_cover.picker) {
             (Some(bytes), Some(picker)) => {
                 if let Ok(img) = image::load_from_memory(bytes) {
@@ -2111,7 +2111,7 @@ impl App {
         }
     }
 
-    fn sync_popup_cover_stateful(&mut self) {
+    fn popup_cover_sync(&mut self) {
         match (&self.track_popup_cover, &self.np_cover.picker) {
             (Some(bytes), Some(picker)) => {
                 if let Ok(img) = image::load_from_memory(bytes) {
@@ -2124,7 +2124,7 @@ impl App {
         }
     }
 
-    fn sync_upnext_cover_stateful(&mut self) {
+    fn upnext_cover_sync(&mut self) {
         let Some(picker) = self.np_cover.picker.as_ref() else {
             return;
         };
@@ -2162,7 +2162,7 @@ impl App {
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.get_cover_art(tid).await {
+            if let Ok(Some(b64)) = client.art().cover(tid).await {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
                     let _ = ipc_tx.send(IpcResult::QueuePreviewCover(Some(bytes), tid));
                 }
@@ -2170,7 +2170,7 @@ impl App {
         });
     }
 
-    fn sync_queue_preview_cover_stateful(&mut self) {
+    fn queue_preview_cover_sync(&mut self) {
         match (&self.queue_preview_cover, &self.np_cover.picker) {
             (Some(bytes), Some(picker)) => {
                 if let Ok(img) = image::load_from_memory(bytes) {
@@ -2183,7 +2183,7 @@ impl App {
         }
     }
 
-    fn sync_picker_preview_stateful(&mut self) {
+    fn picker_preview_sync(&mut self) {
         match (&self.picker_preview_cover, &self.np_cover.picker) {
             (Some(bytes), Some(picker)) => {
                 if let Ok(img) = image::load_from_memory(bytes) {
@@ -2197,7 +2197,7 @@ impl App {
     }
 
     /// (Re)build the stateful cover protocol for the Edit Metadata preview.
-    fn sync_metadata_cover_stateful(&mut self) {
+    fn metadata_cover_sync(&mut self) {
         match (&self.metadata.cover, &self.np_cover.picker) {
             (Some(bytes), Some(picker)) => {
                 if let Ok(img) = image::load_from_memory(bytes) {
@@ -2210,7 +2210,7 @@ impl App {
         }
     }
 
-    fn sync_artist_cover_stateful(&mut self) {
+    fn artist_cover_sync(&mut self) {
         match (&self.artist_cover, &self.np_cover.picker) {
             (Some(bytes), Some(picker)) => {
                 if let Ok(img) = image::load_from_memory(bytes) {
@@ -2235,7 +2235,7 @@ impl App {
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.get_cover_art(track_id).await {
+            if let Ok(Some(b64)) = client.art().cover(track_id).await {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
                     let _ = ipc_tx.send(IpcResult::MetadataCoverArt(Some(bytes), track_id));
                 }
@@ -2259,7 +2259,7 @@ impl App {
             queue: tracks,
             cursor,
             ..
-        }) = self.client.queue_list().await
+        }) = self.client.queue().list().await
         {
             self.queue_cache = tracks;
             self.queue_cursor = cursor as usize;
@@ -2388,21 +2388,21 @@ impl App {
             }
             TuiCommand::QueueAdd(p) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.queue_add(&p, None).await {
+                    if let Err(e) = client.queue().add(&p, None).await {
                         error_handler2(e);
                     }
                 });
             }
             TuiCommand::QueueMove(from, to) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.queue_move(from, to).await {
+                    if let Err(e) = client.queue().reorder(from, to).await {
                         error_handler(e);
                     }
                 });
             }
             TuiCommand::QueueClear => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.queue_clear().await {
+                    if let Err(e) = client.queue().clear().await {
                         error_handler(e);
                     }
                 });
@@ -2412,7 +2412,7 @@ impl App {
                 self.yt_results_cache.clear();
                 let c = client.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = c.yt_search(&q, None).await {
+                    if let Err(e) = c.yt().search(&q, None).await {
                         error_handler2(e);
                     }
                 });
@@ -2458,11 +2458,11 @@ impl App {
                     let msg = match output {
                         Ok(o) if o.status.success() => {
                             let _ = client2
-                                .library_scan(audio_dir.to_string_lossy().as_ref())
+                                .library().scan(audio_dir.to_string_lossy().as_ref())
                                 .await;
                             // Also refresh the track cache
                             if let Ok(DaemonRes::Tracks { tracks, .. }) =
-                                client2.library_get_tracks(None, None).await
+                                client2.library().get_tracks(None, None).await
                             {
                                 let _ = ipc.send(IpcResult::LibraryTracks(tracks));
                             }
@@ -2471,7 +2471,7 @@ impl App {
                             let filename = stdout_text.lines().next().unwrap_or(&url).to_string();
                             // Find the track by filename substring match in library
                             if let Ok(DaemonRes::Tracks { tracks, .. }) =
-                                client2.library_get_tracks(None, None).await
+                                client2.library().get_tracks(None, None).await
                             {
                                 if let Some(track) = tracks
                                     .iter()
@@ -2482,7 +2482,7 @@ impl App {
                                     .or_else(|| tracks.last())
                                 {
                                     if let Ok(Some(lyrics_data)) =
-                                        client2.get_lyrics(track.id, Some(&track.path)).await
+                                        client2.lyrics().get(track.id, Some(&track.path)).await
                                     {
                                         if !lyrics_data.lines.is_empty() {
                                             // Write .lrc sidecar next to the audio file
@@ -2520,7 +2520,7 @@ impl App {
                                     // its cover art (runs per-path in the
                                     // background).
                                     let _ = client2
-                                        .library_sync_metadata(Some(track.path.clone()))
+                                        .library().sync_metadata(Some(track.path.clone()))
                                         .await;
                                 }
                             }
@@ -2545,7 +2545,7 @@ impl App {
             }
             TuiCommand::YtResolve(u) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.yt_resolve_stream(&u).await {
+                    if let Err(e) = client.yt().resolve_stream(&u).await {
                         error_handler2(e);
                     }
                 });
@@ -2566,14 +2566,14 @@ impl App {
             }
             TuiCommand::AddFavourite(id) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.add_favourite(id).await {
+                    if let Err(e) = client.favourites().add(id).await {
                         error_handler(e);
                     }
                 });
             }
             TuiCommand::RemoveFavourite(id) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.remove_favourite(id).await {
+                    if let Err(e) = client.favourites().remove(id).await {
                         error_handler(e);
                     }
                 });
@@ -2593,7 +2593,7 @@ impl App {
                         queue: tracks,
                         cursor,
                         ..
-                    }) = client2.queue_list().await
+                    }) = client2.queue().list().await
                     {
                         let _ = ipc_tx2.send(IpcResult::Queue(tracks, cursor as usize));
                     }
@@ -2602,7 +2602,7 @@ impl App {
             TuiCommand::RefreshLibrary => {
                 tokio::spawn(async move {
                     if let Ok(DaemonRes::Tracks { tracks, .. }) =
-                        client.library_get_tracks(None, None).await
+                        client.library().get_tracks(None, None).await
                     {
                         let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
                     }
@@ -2611,7 +2611,7 @@ impl App {
             TuiCommand::RefreshYt => {
                 tokio::spawn(async move {
                     if let Ok(DaemonRes::YtSearchResults { query, results }) =
-                        client.yt_search_poll().await
+                        client.yt().poll().await
                     {
                         let _ = ipc_tx.send(IpcResult::YtResults(query, results));
                     }
@@ -2619,7 +2619,7 @@ impl App {
             }
             TuiCommand::RemoveTrack(track_id) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.library_remove_track(track_id).await {
+                    if let Err(e) = client.library().remove_track(track_id).await {
                         error_handler(e);
                     } else {
                         let _ = ipc_tx.send(IpcResult::Notification(
@@ -2628,7 +2628,7 @@ impl App {
                             NotificationKind::Success,
                         ));
                         if let Ok(DaemonRes::Tracks { tracks, .. }) =
-                            client.library_get_tracks(None, None).await
+                            client.library().get_tracks(None, None).await
                         {
                             let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
                         }
@@ -2638,7 +2638,7 @@ impl App {
             TuiCommand::RemoveFromPlaylist(playlist_id, track_id) => {
                 tokio::spawn(async move {
                     if let Err(e) = client
-                        .library_remove_from_playlist(playlist_id, track_id)
+                        .library().remove_from_playlist(playlist_id, track_id)
                         .await
                     {
                         error_handler(e);
@@ -2649,7 +2649,7 @@ impl App {
                             NotificationKind::Success,
                         ));
                         if let Ok(DaemonRes::Playlists { playlists, .. }) =
-                            client.library_get_playlists().await
+                            client.library().get_playlists().await
                         {
                             let _ = ipc_tx.send(IpcResult::Playlists(playlists));
                         }
@@ -2664,7 +2664,7 @@ impl App {
                 tokio::spawn(async move {
                     let result = tokio::time::timeout(
                         Duration::from_secs(5),
-                        client2.get_lyrics(track_id, track_path.as_deref()),
+                        client2.lyrics().get(track_id, track_path.as_deref()),
                     )
                     .await;
                     let _ = ipc_tx2.send(IpcResult::Lyrics(match result {
@@ -3442,7 +3442,7 @@ impl App {
                                                 let c = self.client.clone();
                                                 let uri_clone = uri.clone();
                                                 tokio::spawn(async move {
-                                                    let _ = c.soloist_play(&uri_clone).await;
+                                                    let _ = c.soloist().play(&uri_clone).await;
                                                 });
                                                 self.notify(
                                                     format!("Soloist: playing {}", track.name),
@@ -3462,7 +3462,7 @@ impl App {
                                             let ipc_tx2 = self.ipc_tx.clone();
                                             tokio::spawn(async move {
                                                 match c
-                                                    .spotify_resolve(&playlist_id, track_index)
+                                                    .spotify().resolve(&playlist_id, track_index)
                                                     .await
                                                 {
                                                     Ok(()) => {
@@ -3517,7 +3517,7 @@ impl App {
                                     let pid = playlist.id;
                                     tokio::spawn(async move {
                                         if let Ok(DaemonRes::Tracks { tracks }) =
-                                            c.library_get_playlist_tracks(pid).await
+                                            c.library().get_playlist_tracks(pid).await
                                         {
                                             let _ = ipc_tx2.send(IpcResult::PlaylistTracks(tracks));
                                         }
@@ -3534,7 +3534,7 @@ impl App {
                                     let ipc_tx2 = self.ipc_tx.clone();
                                     let pid = playlist.id;
                                     tokio::spawn(async move {
-                                        match c.spotify_playlist_tracks(&pid).await {
+                                        match c.spotify().playlist_tracks(&pid).await {
                                             Ok(tracks) => {
                                                 let _ =
                                                     ipc_tx2.send(IpcResult::SpotifyTracks(tracks));
@@ -3599,7 +3599,7 @@ impl App {
                                     let c = self.client.clone();
                                     let path = track.path.clone();
                                     tokio::spawn(async move {
-                                        let _ = c.queue_add(&path, None).await;
+                                        let _ = c.queue().add(&path, None).await;
                                     });
                                     added += 1;
                                 }
@@ -3789,7 +3789,7 @@ impl App {
                 let ipc_tx = self.ipc_tx.clone();
                 self.pickers.close_top();
                 tokio::spawn(async move {
-                    match c.spotify_resolve(&playlist_id, track_index).await {
+                    match c.spotify().resolve(&playlist_id, track_index).await {
                         Ok(()) => {
                             let _ = ipc_tx.send(IpcResult::Notification(
                                 "Spotify".to_string(),
@@ -4004,7 +4004,7 @@ impl App {
                                             let ipc_tx = self.ipc_tx.clone();
                                             tokio::spawn(async move {
                                                 if let Ok(Some(b64)) =
-                                                    client.get_cover_art(tid).await
+                                                    client.art().cover(tid).await
                                                 {
                                                     if let Ok(bytes) =
                                                         base64::engine::general_purpose::STANDARD
@@ -4030,7 +4030,7 @@ impl App {
                                     self.state.soloist_auto_start = new_val;
                                     let c = self.client.clone();
                                     tokio::spawn(async move {
-                                        let _ = c.soloist_set_config(new_val).await;
+                                        let _ = c.soloist().set_config(new_val).await;
                                     });
                                 }
                                 _ => {}
@@ -4134,7 +4134,7 @@ impl App {
                                             let ipc_tx = self.ipc_tx.clone();
                                             tokio::spawn(async move {
                                                 if let Ok(Some(b64)) =
-                                                    client.get_cover_art(tid).await
+                                                    client.art().cover(tid).await
                                                 {
                                                     if let Ok(bytes) =
                                                         base64::engine::general_purpose::STANDARD
@@ -4160,7 +4160,7 @@ impl App {
                                     self.state.soloist_auto_start = new_val;
                                     let c = self.client.clone();
                                     tokio::spawn(async move {
-                                        let _ = c.soloist_set_config(new_val).await;
+                                        let _ = c.soloist().set_config(new_val).await;
                                     });
                                 }
                                 _ => {}
@@ -4230,7 +4230,7 @@ impl App {
                                     let c = self.client.clone();
                                     let cf = new_path;
                                     tokio::spawn(async move {
-                                        let _ = c.yt_set_config(None, cf, None, None, None).await;
+                                        let _ = c.yt().set_config(None, cf, None, None, None).await;
                                     });
                                     self.notify(
                                         format!("Cookie file: {display}"),
@@ -4341,7 +4341,7 @@ impl App {
                                             let ipc_tx = self.ipc_tx.clone();
                                             tokio::spawn(async move {
                                                 if let Ok(Some(b64)) =
-                                                    client.get_cover_art(tid).await
+                                                    client.art().cover(tid).await
                                                 {
                                                     if let Ok(bytes) =
                                                         base64::engine::general_purpose::STANDARD
@@ -4366,7 +4366,7 @@ impl App {
                                     let c = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
-                                        match c.spotify_play_pause().await {
+                                        match c.spotify().play_pause().await {
                                             Ok(status) => {
                                                 let _ =
                                                     ipc_tx.send(IpcResult::SpotifyStatus(status));
@@ -4387,7 +4387,7 @@ impl App {
                                     let c = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
-                                        match c.spotify_sync().await {
+                                        match c.spotify().sync().await {
                                             Ok(()) => {
                                                 let _ = ipc_tx.send(IpcResult::Notification(
                                                     "Spotify".to_string(),
@@ -4407,7 +4407,7 @@ impl App {
                                     let c = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
-                                        match c.spotify_clear().await {
+                                        match c.spotify().clear().await {
                                             Ok(status) => {
                                                 let _ =
                                                     ipc_tx.send(IpcResult::SpotifyStatus(status));
@@ -4433,7 +4433,7 @@ impl App {
                                     let c = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
-                                        match c.soloist_start().await {
+                                        match c.soloist().start().await {
                                             Ok(_status) => {
                                                 let _ = ipc_tx.send(IpcResult::Notification(
                                                     "Soloist".to_string(),
@@ -4453,7 +4453,7 @@ impl App {
                                     let c = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
-                                        match c.soloist_stop().await {
+                                        match c.soloist().stop().await {
                                             Ok(_status) => {
                                                 let _ = ipc_tx.send(IpcResult::Notification(
                                                     "Soloist".to_string(),
@@ -4473,7 +4473,7 @@ impl App {
                                     let c = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
-                                        match c.soloist_activate().await {
+                                        match c.soloist().activate().await {
                                             Ok(_status) => {
                                                 let _ = ipc_tx.send(IpcResult::Notification(
                                                     "Soloist".to_string(),
@@ -4495,7 +4495,7 @@ impl App {
                                     let c = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
-                                        match c.soloist_set_config(new_val).await {
+                                        match c.soloist().set_config(new_val).await {
                                             Ok(()) => {
                                                 let _ = ipc_tx.send(IpcResult::Notification(
                                                     "Soloist".to_string(),
@@ -4743,7 +4743,7 @@ impl App {
                                 year,
                                 track_number,
                             };
-                            let _ = client.library_update_metadata(track_id, patch).await;
+                            let _ = client.library().update_metadata(track_id, patch).await;
                             let _ = ipc_tx.send(IpcResult::Notification(
                                 "Library".to_string(),
                                 "Metadata saved".to_string(),
@@ -4781,7 +4781,7 @@ impl App {
                                     let track_clone = track.clone();
                                     tokio::spawn(async move {
                                         match c2
-                                            .spotify_resolve_track(
+                                            .spotify().resolve_track(
                                                 &track_clone.name,
                                                 &track_clone.artists,
                                                 track_clone.album.as_deref().unwrap_or(""),
@@ -4807,7 +4807,7 @@ impl App {
                                     });
                                 } else {
                                     tokio::spawn(async move {
-                                        match c.spotify_resolve(&playlist_id, track_index).await {
+                                        match c.spotify().resolve(&playlist_id, track_index).await {
                                             Ok(()) => {
                                                 let _ = ipc_tx.send(IpcResult::Notification(
                                                     "Spotify".to_string(),
@@ -4840,7 +4840,7 @@ impl App {
                                 let ipc_tx = self.ipc_tx.clone();
                                 self.pickers.close_top();
                                 tokio::spawn(async move {
-                                    match c.spotify_set_token(&token).await {
+                                    match c.spotify().set_token(&token).await {
                                         Ok(status) => {
                                             let _ = ipc_tx.send(IpcResult::SpotifyStatus(status));
                                             let _ = ipc_tx.send(IpcResult::Notification(
@@ -5120,7 +5120,7 @@ impl App {
                                                 let c = self.client.clone();
                                                 let path = track.path.clone();
                                                 tokio::spawn(async move {
-                                                    let _ = c.queue_add(&path, None).await;
+                                                    let _ = c.queue().add(&path, None).await;
                                                 });
                                                 added += 1;
                                             }
@@ -5268,10 +5268,10 @@ impl App {
                                     let ipc_tx = self.ipc_tx.clone();
                                     let track_ids = self.pending_playlist_track_ids.clone();
                                     tokio::spawn(async move {
-                                        if client.library_create_playlist(&name).await.is_ok() {
+                                        if client.library().create_playlist(&name).await.is_ok() {
                                             let mut new_id: Option<i64> = None;
                                             if let Ok(DaemonRes::Playlists { playlists, .. }) =
-                                                client.library_get_playlists().await
+                                                client.library().get_playlists().await
                                             {
                                                 new_id = playlists
                                                     .iter()
@@ -5283,7 +5283,7 @@ impl App {
                                             if let Some(pid) = new_id {
                                                 if !track_ids.is_empty() {
                                                     let _ = client
-                                                        .library_add_to_playlist(pid, track_ids)
+                                                        .library().add_to_playlist(pid, track_ids)
                                                         .await;
                                                 }
                                                 let _ = ipc_tx.send(IpcResult::Notification(
@@ -5314,7 +5314,7 @@ impl App {
                                         let client = self.client.clone();
                                         tokio::spawn(async move {
                                             let _ = client
-                                                .library_add_to_playlist(playlist_id, track_ids)
+                                                .library().add_to_playlist(playlist_id, track_ids)
                                                 .await;
                                         });
                                         self.notify_titled(
@@ -5391,7 +5391,7 @@ impl App {
                                         let pid = playlist.id;
                                         tokio::spawn(async move {
                                             if let Ok(DaemonRes::Tracks { tracks }) =
-                                                c.library_get_playlist_tracks(pid).await
+                                                c.library().get_playlist_tracks(pid).await
                                             {
                                                 let _ =
                                                     ipc_tx2.send(IpcResult::PlaylistTracks(tracks));
@@ -5425,7 +5425,7 @@ impl App {
                                             track_number,
                                         };
                                         let _ =
-                                            client.library_update_metadata(track_id, patch).await;
+                                            client.library().update_metadata(track_id, patch).await;
                                         let _ = ipc_tx.send(IpcResult::Notification(
                                             "Library".to_string(),
                                             "Metadata saved".to_string(),
@@ -5492,8 +5492,8 @@ impl App {
                             };
                             // Persist edited metadata first so the cover lookup
                             // uses the updated artist/album/title.
-                            let _ = client.library_update_metadata(track_id, patch).await;
-                            if let Ok(Some(b64)) = client.get_cover_art(track_id).await {
+                            let _ = client.library().update_metadata(track_id, patch).await;
+                            if let Ok(Some(b64)) = client.art().cover(track_id).await {
                                 if let Ok(bytes) =
                                     base64::engine::general_purpose::STANDARD.decode(&b64)
                                 {

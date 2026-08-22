@@ -397,227 +397,7 @@ impl DaemonClient {
         self.send_ok(DaemonReq::CancelSleepTimer).await
     }
 
-    // ─── Queue ───
-
-    pub async fn queue_list(&self) -> Result<DaemonRes> {
-        self.send_raw(DaemonReq::Queue {
-            action: QueueAction::List,
-        })
-        .await
-    }
-
-    pub async fn queue_add(&self, path: &str, position: Option<u64>) -> Result<()> {
-        self.send_ok(DaemonReq::Queue {
-            action: QueueAction::Add {
-                paths: vec![path.into()],
-                position,
-            },
-        })
-        .await
-    }
-
-    /// Add one or more paths (files or directories, auto-detected by the
-    /// daemon) to the queue, optionally at a merged-view position.
-    pub async fn queue_add_many(&self, paths: Vec<String>, position: Option<u64>) -> Result<()> {
-        self.send_ok(DaemonReq::Queue {
-            action: QueueAction::Add { paths, position },
-        })
-        .await
-    }
-
-    pub async fn queue_clear(&self) -> Result<()> {
-        self.send_ok(DaemonReq::Queue {
-            action: QueueAction::Clear,
-        })
-        .await
-    }
-
-    pub async fn queue_rm(&self, index: u64) -> Result<()> {
-        self.send_ok(DaemonReq::Queue {
-            action: QueueAction::Remove { index },
-        })
-        .await
-    }
-
-    pub async fn queue_move(&self, from: u64, to: u64) -> Result<()> {
-        self.send_ok(DaemonReq::Queue {
-            action: QueueAction::Move { from, to },
-        })
-        .await
-    }
-
-    pub async fn queue_set(&self, paths: Vec<String>, start_idx: u64) -> Result<()> {
-        self.send_ok(DaemonReq::Queue {
-            action: QueueAction::Set { paths, start_idx },
-        })
-        .await
-    }
-
-    // ─── Library ───
-
-    pub async fn library_scan(&self, path: &str) -> Result<()> {
-        self.send_ok(DaemonReq::Library {
-            action: LibraryAction::Scan { path: path.into() },
-        })
-        .await
-    }
-
-    pub async fn library_get_tracks(
-        &self,
-        filter: Option<String>,
-        sort: Option<String>,
-    ) -> Result<DaemonRes> {
-        self.send_raw(DaemonReq::Library {
-            action: LibraryAction::GetTracks { filter, sort },
-        })
-        .await
-    }
-
-    pub async fn library_get_playlists(&self) -> Result<DaemonRes> {
-        self.send_raw(DaemonReq::Library {
-            action: LibraryAction::GetPlaylists,
-        })
-        .await
-    }
-
-    pub async fn library_get_playlist_tracks(&self, playlist_id: i64) -> Result<DaemonRes> {
-        self.send_raw(DaemonReq::Library {
-            action: LibraryAction::GetPlaylistTracks { id: playlist_id },
-        })
-        .await
-    }
-
-    pub async fn library_create_playlist(&self, name: &str) -> Result<()> {
-        self.send_ok(DaemonReq::Library {
-            action: LibraryAction::CreatePlaylist { name: name.into() },
-        })
-        .await
-    }
-
-    pub async fn library_delete_playlist(&self, id: i64) -> Result<()> {
-        self.send_ok(DaemonReq::Library {
-            action: LibraryAction::DeletePlaylist { id },
-        })
-        .await
-    }
-
-    pub async fn library_add_to_playlist(
-        &self,
-        playlist_id: i64,
-        track_ids: Vec<i64>,
-    ) -> Result<()> {
-        self.send_ok(DaemonReq::Library {
-            action: LibraryAction::AddToPlaylist {
-                playlist_id,
-                track_ids,
-            },
-        })
-        .await
-    }
-
-    pub async fn library_import_m3u(&self, path: &str) -> Result<()> {
-        self.send_ok(DaemonReq::Library {
-            action: LibraryAction::ImportM3u { path: path.into() },
-        })
-        .await
-    }
-
-    pub async fn library_export_m3u(&self, playlist_id: i64, path: &str) -> Result<()> {
-        self.send_ok(DaemonReq::Library {
-            action: LibraryAction::ExportM3u {
-                playlist_id,
-                path: path.into(),
-            },
-        })
-        .await
-    }
-
-    pub async fn library_get_recent(&self, count: u64) -> Result<DaemonRes> {
-        self.send_raw(DaemonReq::Library {
-            action: LibraryAction::GetRecent { count },
-        })
-        .await
-    }
-
-    pub async fn library_sync_covers(&self) -> Result<()> {
-        self.send_ok(DaemonReq::Library {
-            action: LibraryAction::SyncCovers,
-        })
-        .await
-    }
-
-    pub async fn library_sync_lyrics(&self) -> Result<()> {
-        self.send_ok(DaemonReq::Library {
-            action: LibraryAction::SyncLyrics,
-        })
-        .await
-    }
-
-    /// Enrich unreliable track metadata via Deezer and embed tags into the
-    /// files. With `path` given, only that track is processed. The daemon
-    /// acknowledges immediately and runs the sync in the background; use
-    /// [`Self::library_sync_status`] to poll for completion.
-    pub async fn library_sync_metadata(&self, path: Option<String>) -> Result<()> {
-        self.send_ok(DaemonReq::Library {
-            action: LibraryAction::SyncMetadata { path },
-        })
-        .await
-    }
-
-    /// Poll the progress of a background library sync (covers/lyrics/metadata).
-    pub async fn library_sync_status(&self) -> Result<LibrarySyncStatus> {
-        let res = self
-            .send_raw(DaemonReq::Library {
-                action: LibraryAction::SyncStatus,
-            })
-            .await?;
-        match res {
-            DaemonRes::SyncStatus {
-                running,
-                kind,
-                synced,
-                total,
-            } => Ok(LibrarySyncStatus {
-                running,
-                kind,
-                synced,
-                total,
-            }),
-            other => Err(CoreError::Daemon(format!(
-                "unexpected response to library sync status: {other:?}"
-            ))),
-        }
-    }
-
-    pub async fn library_remove_from_playlist(
-        &self,
-        playlist_id: i64,
-        track_id: i64,
-    ) -> Result<()> {
-        self.send_ok(DaemonReq::Library {
-            action: LibraryAction::RemoveFromPlaylist {
-                playlist_id,
-                track_id,
-            },
-        })
-        .await
-    }
-
-    pub async fn library_remove_track(&self, id: i64) -> Result<()> {
-        self.send_ok(DaemonReq::Library {
-            action: LibraryAction::RemoveTrack { id },
-        })
-        .await
-    }
-
-    pub async fn library_update_metadata(&self, track_id: i64, patch: MetadataPatch) -> Result<()> {
-        self.send_ok(DaemonReq::Library {
-            action: LibraryAction::UpdateMetadata { track_id, patch },
-        })
-        .await
-    }
-
-    // ─── Search / Favourites ───
+    // ─── Search ───
 
     pub async fn search(&self, query: &str) -> Result<DaemonRes> {
         self.send_raw(DaemonReq::Search {
@@ -626,57 +406,38 @@ impl DaemonClient {
         .await
     }
 
-    pub async fn get_favourites(&self) -> Result<DaemonRes> {
-        self.send_raw(DaemonReq::GetFavourites).await
+    // ─── Namespaced accessors ───
+
+    pub fn queue(&self) -> Queue<'_> {
+        Queue { client: self }
     }
 
-    pub async fn add_favourite(&self, track_id: i64) -> Result<()> {
-        self.send_ok(DaemonReq::AddFavourite { track_id }).await
+    pub fn library(&self) -> Library<'_> {
+        Library { client: self }
     }
 
-    pub async fn remove_favourite(&self, track_id: i64) -> Result<()> {
-        self.send_ok(DaemonReq::RemoveFavourite { track_id }).await
+    pub fn yt(&self) -> Yt<'_> {
+        Yt { client: self }
     }
 
-    // ─── YouTube ───
-
-    pub async fn yt_search(&self, query: &str, filter: Option<YTFilter>) -> Result<DaemonRes> {
-        self.send_raw(DaemonReq::YtSearch {
-            query: query.into(),
-            filter,
-        })
-        .await
+    pub fn spotify(&self) -> Spotify<'_> {
+        Spotify { client: self }
     }
 
-    pub async fn yt_search_poll(&self) -> Result<DaemonRes> {
-        self.send_raw(DaemonReq::YtSearchPoll).await
+    pub fn soloist(&self) -> Soloist<'_> {
+        Soloist { client: self }
     }
 
-    pub async fn yt_search_cancel(&self) -> Result<()> {
-        self.send_ok(DaemonReq::YtSearchCancel).await
+    pub fn favourites(&self) -> Favourites<'_> {
+        Favourites { client: self }
     }
 
-    pub async fn yt_resolve_stream(&self, url: &str) -> Result<DaemonRes> {
-        self.send_raw(DaemonReq::YtResolveStream { url: url.into() })
-            .await
+    pub fn art(&self) -> Art<'_> {
+        Art { client: self }
     }
 
-    pub async fn yt_set_config(
-        &self,
-        cookie_source: Option<String>,
-        cookie_file: Option<String>,
-        js_runtime: Option<String>,
-        download_dir: Option<String>,
-        max_concurrent: Option<u32>,
-    ) -> Result<()> {
-        self.send_ok(DaemonReq::YtSetConfig {
-            cookie_source,
-            cookie_file,
-            js_runtime,
-            download_dir,
-            max_concurrent,
-        })
-        .await
+    pub fn lyrics(&self) -> Lyrics<'_> {
+        Lyrics { client: self }
     }
 
     // ─── System ───
@@ -703,98 +464,355 @@ impl DaemonClient {
         self.send_ok(DaemonReq::Quit).await
     }
 
-    pub async fn get_cover_art(&self, track_id: i64) -> Result<Option<String>> {
-        let res = self.send_raw(DaemonReq::GetCoverArt { track_id }).await?;
+
+
+    pub async fn check_health(&self) -> Result<crate::ipc::HealthReport> {
+        let res = self.send_raw(DaemonReq::CheckHealth).await?;
         match res {
-            DaemonRes::CoverArt { data, .. } => Ok(data),
+            DaemonRes::HealthReport { report, .. } => Ok(*report),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
             _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
         }
     }
+}
 
-    pub async fn get_artist_cover_art(&self, artist: String) -> Result<Option<String>> {
-        let res = self
-            .send_raw(DaemonReq::GetArtistCoverArt { artist })
-            .await?;
-        match res {
-            DaemonRes::CoverArt { data, .. } => Ok(data),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
-        }
+// ─── Handle structs: grouped IPC namespaces ───
+
+pub struct Queue<'a> {
+    client: &'a DaemonClient,
+}
+
+impl<'a> Queue<'a> {
+    pub async fn list(&self) -> Result<DaemonRes> {
+        self.client
+            .send_raw(DaemonReq::Queue {
+                action: QueueAction::List,
+            })
+            .await
     }
 
-    pub async fn get_lyrics(
+    pub async fn add(&self, path: &str, position: Option<u64>) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Queue {
+                action: QueueAction::Add {
+                    paths: vec![path.into()],
+                    position,
+                },
+            })
+            .await
+    }
+
+    /// Add one or more paths (files or directories, auto-detected by the
+    /// daemon) to the queue, optionally at a merged-view position.
+    pub async fn add_many(&self, paths: Vec<String>, position: Option<u64>) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Queue {
+                action: QueueAction::Add { paths, position },
+            })
+            .await
+    }
+
+    pub async fn clear(&self) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Queue {
+                action: QueueAction::Clear,
+            })
+            .await
+    }
+
+    pub async fn remove(&self, index: u64) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Queue {
+                action: QueueAction::Remove { index },
+            })
+            .await
+    }
+
+    pub async fn reorder(&self, from: u64, to: u64) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Queue {
+                action: QueueAction::Move { from, to },
+            })
+            .await
+    }
+
+    pub async fn set(&self, paths: Vec<String>, start_idx: u64) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Queue {
+                action: QueueAction::Set { paths, start_idx },
+            })
+            .await
+    }
+}
+
+pub struct Library<'a> {
+    client: &'a DaemonClient,
+}
+
+impl<'a> Library<'a> {
+    pub async fn scan(&self, path: &str) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Library {
+                action: LibraryAction::Scan { path: path.into() },
+            })
+            .await
+    }
+
+    pub async fn get_tracks(
         &self,
-        track_id: i64,
-        path: Option<&str>,
-    ) -> Result<Option<track::LrcData>> {
+        filter: Option<String>,
+        sort: Option<String>,
+    ) -> Result<DaemonRes> {
+        self.client
+            .send_raw(DaemonReq::Library {
+                action: LibraryAction::GetTracks { filter, sort },
+            })
+            .await
+    }
+
+    pub async fn get_playlists(&self) -> Result<DaemonRes> {
+        self.client
+            .send_raw(DaemonReq::Library {
+                action: LibraryAction::GetPlaylists,
+            })
+            .await
+    }
+
+    pub async fn get_playlist_tracks(&self, playlist_id: i64) -> Result<DaemonRes> {
+        self.client
+            .send_raw(DaemonReq::Library {
+                action: LibraryAction::GetPlaylistTracks { id: playlist_id },
+            })
+            .await
+    }
+
+    pub async fn create_playlist(&self, name: &str) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Library {
+                action: LibraryAction::CreatePlaylist { name: name.into() },
+            })
+            .await
+    }
+
+    pub async fn delete_playlist(&self, id: i64) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Library {
+                action: LibraryAction::DeletePlaylist { id },
+            })
+            .await
+    }
+
+    pub async fn add_to_playlist(&self, playlist_id: i64, track_ids: Vec<i64>) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Library {
+                action: LibraryAction::AddToPlaylist {
+                    playlist_id,
+                    track_ids,
+                },
+            })
+            .await
+    }
+
+    pub async fn import_m3u(&self, path: &str) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Library {
+                action: LibraryAction::ImportM3u { path: path.into() },
+            })
+            .await
+    }
+
+    pub async fn export_m3u(&self, playlist_id: i64, path: &str) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Library {
+                action: LibraryAction::ExportM3u {
+                    playlist_id,
+                    path: path.into(),
+                },
+            })
+            .await
+    }
+
+    pub async fn get_recent(&self, count: u64) -> Result<DaemonRes> {
+        self.client
+            .send_raw(DaemonReq::Library {
+                action: LibraryAction::GetRecent { count },
+            })
+            .await
+    }
+
+    pub async fn sync_covers(&self) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Library {
+                action: LibraryAction::SyncCovers,
+            })
+            .await
+    }
+
+    pub async fn sync_lyrics(&self) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Library {
+                action: LibraryAction::SyncLyrics,
+            })
+            .await
+    }
+
+    /// Enrich unreliable track metadata via Deezer and embed tags into the
+    /// files. With `path` given, only that track is processed. The daemon
+    /// acknowledges immediately and runs the sync in the background; use
+    /// [`Self::sync_status`] to poll for completion.
+    pub async fn sync_metadata(&self, path: Option<String>) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Library {
+                action: LibraryAction::SyncMetadata { path },
+            })
+            .await
+    }
+
+    /// Poll the progress of a background library sync (covers/lyrics/metadata).
+    pub async fn sync_status(&self) -> Result<LibrarySyncStatus> {
         let res = self
-            .send_raw(DaemonReq::GetLyrics {
-                track_id,
-                path: path.map(str::to_string),
+            .client
+            .send_raw(DaemonReq::Library {
+                action: LibraryAction::SyncStatus,
             })
             .await?;
         match res {
-            DaemonRes::Lyrics { lyrics, .. } => Ok(lyrics),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+            DaemonRes::SyncStatus {
+                running,
+                kind,
+                synced,
+                total,
+            } => Ok(LibrarySyncStatus {
+                running,
+                kind,
+                synced,
+                total,
+            }),
+            other => Err(CoreError::Daemon(format!(
+                "unexpected response to library sync status: {other:?}"
+            ))),
         }
     }
 
-    /// Fetch lyrics for a free-form artist/title pair (no track id or path).
-    pub async fn lyrics_search(&self, artist: &str, title: &str) -> Result<Option<track::LrcData>> {
-        let res = self
-            .send_raw(DaemonReq::LyricsSearch {
-                artist: artist.into(),
-                title: title.into(),
+    pub async fn remove_from_playlist(&self, playlist_id: i64, track_id: i64) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Library {
+                action: LibraryAction::RemoveFromPlaylist {
+                    playlist_id,
+                    track_id,
+                },
             })
-            .await?;
-        match res {
-            DaemonRes::Lyrics { lyrics, .. } => Ok(lyrics),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
-        }
+            .await
     }
 
-    // ─── Spotify ───
+    pub async fn remove_track(&self, id: i64) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Library {
+                action: LibraryAction::RemoveTrack { id },
+            })
+            .await
+    }
 
+    pub async fn update_metadata(&self, track_id: i64, patch: MetadataPatch) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Library {
+                action: LibraryAction::UpdateMetadata { track_id, patch },
+            })
+            .await
+    }
+}
+
+pub struct Yt<'a> {
+    client: &'a DaemonClient,
+}
+
+impl<'a> Yt<'a> {
+    pub async fn search(&self, query: &str, filter: Option<YTFilter>) -> Result<DaemonRes> {
+        self.client
+            .send_raw(DaemonReq::YtSearch {
+                query: query.into(),
+                filter,
+            })
+            .await
+    }
+
+    pub async fn poll(&self) -> Result<DaemonRes> {
+        self.client.send_raw(DaemonReq::YtSearchPoll).await
+    }
+
+    pub async fn cancel(&self) -> Result<()> {
+        self.client.send_ok(DaemonReq::YtSearchCancel).await
+    }
+
+    pub async fn resolve_stream(&self, url: &str) -> Result<DaemonRes> {
+        self.client
+            .send_raw(DaemonReq::YtResolveStream { url: url.into() })
+            .await
+    }
+
+    pub async fn set_config(
+        &self,
+        cookie_source: Option<String>,
+        cookie_file: Option<String>,
+        js_runtime: Option<String>,
+        download_dir: Option<String>,
+        max_concurrent: Option<u32>,
+    ) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::YtSetConfig {
+                cookie_source,
+                cookie_file,
+                js_runtime,
+                download_dir,
+                max_concurrent,
+            })
+            .await
+    }
+}
+
+pub struct Spotify<'a> {
+    client: &'a DaemonClient,
+}
+
+impl<'a> Spotify<'a> {
     /// Link a Spotify account from a token (plain access token or full JSON)
     /// and refresh the playlist cache.
-    pub async fn spotify_set_token(&self, token: &str) -> Result<SpotifyStatus> {
+    pub async fn set_token(&self, token: &str) -> Result<SpotifyStatus> {
         let res = self
+            .client
             .send_raw(DaemonReq::SpotifySetToken {
                 token: token.into(),
             })
             .await?;
-        Self::spotify_status_from(res)
+        Self::status_from(res)
     }
 
     /// Unlink the Spotify account and delete the token file.
-    pub async fn spotify_clear(&self) -> Result<SpotifyStatus> {
-        let res = self.send_raw(DaemonReq::SpotifyClear).await?;
-        Self::spotify_status_from(res)
+    pub async fn clear(&self) -> Result<SpotifyStatus> {
+        let res = self.client.send_raw(DaemonReq::SpotifyClear).await?;
+        Self::status_from(res)
     }
 
     /// Current link status (linked user, playlist/track counts, last error).
-    pub async fn spotify_status(&self) -> Result<SpotifyStatus> {
-        let res = self.send_raw(DaemonReq::SpotifyStatus).await?;
-        Self::spotify_status_from(res)
+    pub async fn status(&self) -> Result<SpotifyStatus> {
+        let res = self.client.send_raw(DaemonReq::SpotifyStatus).await?;
+        Self::status_from(res)
     }
 
     /// Toggle play/pause on the active Spotify device (Premium required).
-    pub async fn spotify_play_pause(&self) -> Result<SpotifyStatus> {
-        let res = self.send_raw(DaemonReq::SpotifyPlayPause).await?;
-        Self::spotify_status_from(res)
+    pub async fn play_pause(&self) -> Result<SpotifyStatus> {
+        let res = self.client.send_raw(DaemonReq::SpotifyPlayPause).await?;
+        Self::status_from(res)
     }
 
     /// Re-sync all playlists from the Spotify Web API.
-    pub async fn spotify_sync(&self) -> Result<()> {
-        self.send_ok(DaemonReq::SpotifySync).await
+    pub async fn sync(&self) -> Result<()> {
+        self.client.send_ok(DaemonReq::SpotifySync).await
     }
 
     /// The cached playlist list (with tracks embedded).
-    pub async fn spotify_playlists(&self) -> Result<Vec<SpotifyPlaylist>> {
-        let res = self.send_raw(DaemonReq::SpotifyPlaylists).await?;
+    pub async fn playlists(&self) -> Result<Vec<SpotifyPlaylist>> {
+        let res = self.client.send_raw(DaemonReq::SpotifyPlaylists).await?;
         match res {
             DaemonRes::SpotifyPlaylistsRes { playlists, .. } => Ok(playlists),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
@@ -803,8 +821,9 @@ impl DaemonClient {
     }
 
     /// Cached tracks of a single playlist.
-    pub async fn spotify_playlist_tracks(&self, id: &str) -> Result<Vec<SpotifyTrack>> {
+    pub async fn playlist_tracks(&self, id: &str) -> Result<Vec<SpotifyTrack>> {
         let res = self
+            .client
             .send_raw(DaemonReq::SpotifyPlaylistTracks { id: id.into() })
             .await?;
         match res {
@@ -816,17 +835,19 @@ impl DaemonClient {
 
     /// Resolve a Spotify playlist track to a playable local stream and append
     /// it to the user queue.
-    pub async fn spotify_resolve(&self, playlist_id: &str, track_index: usize) -> Result<()> {
-        self.send_ok(DaemonReq::SpotifyResolve {
-            playlist_id: playlist_id.into(),
-            track_index,
-        })
-        .await
+    pub async fn resolve(&self, playlist_id: &str, track_index: usize) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::SpotifyResolve {
+                playlist_id: playlist_id.into(),
+                track_index,
+            })
+            .await
     }
 
     /// Search the Spotify Web API for tracks matching a query.
-    pub async fn spotify_search_web(&self, query: &str) -> Result<Vec<SpotifyTrack>> {
+    pub async fn search_web(&self, query: &str) -> Result<Vec<SpotifyTrack>> {
         let res = self
+            .client
             .send_raw(DaemonReq::SpotifySearchWeb {
                 query: query.into(),
             })
@@ -840,89 +861,178 @@ impl DaemonClient {
 
     /// Resolve a Spotify track (by metadata) to a playable local stream via
     /// YouTube search and append it to the user queue.
-    pub async fn spotify_resolve_track(
-        &self,
-        name: &str,
-        artists: &str,
-        album: &str,
-    ) -> Result<()> {
-        self.send_ok(DaemonReq::SpotifyResolveTrack {
-            name: name.into(),
-            artists: artists.into(),
-            album: album.into(),
-        })
-        .await
+    pub async fn resolve_track(&self, name: &str, artists: &str, album: &str) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::SpotifyResolveTrack {
+                name: name.into(),
+                artists: artists.into(),
+                album: album.into(),
+            })
+            .await
     }
 
-    fn spotify_status_from(res: DaemonRes) -> Result<SpotifyStatus> {
+    fn status_from(res: DaemonRes) -> Result<SpotifyStatus> {
         match res {
             DaemonRes::SpotifyStatusRes { status, .. } => Ok(status),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
             _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
         }
     }
+}
 
-    fn soloist_status_from(res: DaemonRes) -> Result<SoloistStatus> {
+pub struct Soloist<'a> {
+    client: &'a DaemonClient,
+}
+
+impl<'a> Soloist<'a> {
+    /// Set the Soloist API key and start the bridge.
+    pub async fn set_api_key(&self, key: &str) -> Result<SoloistStatus> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::SoloistSetApiKey { key: key.into() })
+            .await?;
+        Self::status_from(res)
+    }
+
+    /// Clear the Soloist API key and stop the bridge.
+    pub async fn clear(&self) -> Result<SoloistStatus> {
+        let res = self.client.send_raw(DaemonReq::SoloistClear).await?;
+        Self::status_from(res)
+    }
+
+    /// Set the Soloist auto-start flag (persisted in daemon state).
+    pub async fn set_config(&self, auto_start: bool) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::SoloistSetConfig { auto_start })
+            .await
+    }
+
+    /// Start the Soloist bridge using the persisted key.
+    pub async fn start(&self) -> Result<SoloistStatus> {
+        let res = self.client.send_raw(DaemonReq::SoloistStart).await?;
+        Self::status_from(res)
+    }
+
+    /// Stop the Soloist bridge (does not clear the key).
+    pub async fn stop(&self) -> Result<SoloistStatus> {
+        let res = self.client.send_raw(DaemonReq::SoloistStop).await?;
+        Self::status_from(res)
+    }
+
+    /// Query the current Soloist bridge status.
+    pub async fn status(&self) -> Result<SoloistStatus> {
+        let res = self.client.send_raw(DaemonReq::SoloistStatus).await?;
+        Self::status_from(res)
+    }
+
+    /// Send a `play` command to Soloist with a Spotify URI.
+    pub async fn play(&self, uri: &str) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::SoloistPlay { uri: uri.into() })
+            .await
+    }
+
+    /// Ask Soloist to become the active Spotify Connect device.
+    pub async fn activate(&self) -> Result<()> {
+        self.client.send_ok(DaemonReq::SoloistActivate).await
+    }
+
+    fn status_from(res: DaemonRes) -> Result<SoloistStatus> {
         match res {
             DaemonRes::SoloistStatusRes { status, .. } => Ok(status),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
             _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
         }
     }
+}
 
-    /// Set the Soloist API key and start the bridge.
-    pub async fn soloist_set_api_key(&self, key: &str) -> Result<SoloistStatus> {
+pub struct Favourites<'a> {
+    client: &'a DaemonClient,
+}
+
+impl<'a> Favourites<'a> {
+    pub async fn list(&self) -> Result<DaemonRes> {
+        self.client.send_raw(DaemonReq::GetFavourites).await
+    }
+
+    pub async fn add(&self, track_id: i64) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::AddFavourite { track_id })
+            .await
+    }
+
+    pub async fn remove(&self, track_id: i64) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::RemoveFavourite { track_id })
+            .await
+    }
+}
+
+pub struct Art<'a> {
+    client: &'a DaemonClient,
+}
+
+impl<'a> Art<'a> {
+    pub async fn cover(&self, track_id: i64) -> Result<Option<String>> {
         let res = self
-            .send_raw(DaemonReq::SoloistSetApiKey { key: key.into() })
+            .client
+            .send_raw(DaemonReq::GetCoverArt { track_id })
             .await?;
-        Self::soloist_status_from(res)
-    }
-
-    /// Clear the Soloist API key and stop the bridge.
-    pub async fn soloist_clear(&self) -> Result<SoloistStatus> {
-        let res = self.send_raw(DaemonReq::SoloistClear).await?;
-        Self::soloist_status_from(res)
-    }
-
-    /// Set the Soloist auto-start flag (persisted in daemon state).
-    pub async fn soloist_set_config(&self, auto_start: bool) -> Result<()> {
-        self.send_ok(DaemonReq::SoloistSetConfig { auto_start })
-            .await
-    }
-
-    /// Start the Soloist bridge using the persisted key.
-    pub async fn soloist_start(&self) -> Result<SoloistStatus> {
-        let res = self.send_raw(DaemonReq::SoloistStart).await?;
-        Self::soloist_status_from(res)
-    }
-
-    /// Stop the Soloist bridge (does not clear the key).
-    pub async fn soloist_stop(&self) -> Result<SoloistStatus> {
-        let res = self.send_raw(DaemonReq::SoloistStop).await?;
-        Self::soloist_status_from(res)
-    }
-
-    /// Query the current Soloist bridge status.
-    pub async fn soloist_status(&self) -> Result<SoloistStatus> {
-        let res = self.send_raw(DaemonReq::SoloistStatus).await?;
-        Self::soloist_status_from(res)
-    }
-
-    /// Send a `play` command to Soloist with a Spotify URI.
-    pub async fn soloist_play(&self, uri: &str) -> Result<()> {
-        self.send_ok(DaemonReq::SoloistPlay { uri: uri.into() })
-            .await
-    }
-
-    /// Ask Soloist to become the active Spotify Connect device.
-    pub async fn soloist_activate(&self) -> Result<()> {
-        self.send_ok(DaemonReq::SoloistActivate).await
-    }
-
-    pub async fn check_health(&self) -> Result<crate::ipc::HealthReport> {
-        let res = self.send_raw(DaemonReq::CheckHealth).await?;
         match res {
-            DaemonRes::HealthReport { report, .. } => Ok(*report),
+            DaemonRes::CoverArt { data, .. } => Ok(data),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+        }
+    }
+
+    pub async fn artist_cover(&self, artist: String) -> Result<Option<String>> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::GetArtistCoverArt { artist })
+            .await?;
+        match res {
+            DaemonRes::CoverArt { data, .. } => Ok(data),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+        }
+    }
+}
+
+pub struct Lyrics<'a> {
+    client: &'a DaemonClient,
+}
+
+impl<'a> Lyrics<'a> {
+    pub async fn get(
+        &self,
+        track_id: i64,
+        path: Option<&str>,
+    ) -> Result<Option<track::LrcData>> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::GetLyrics {
+                track_id,
+                path: path.map(str::to_string),
+            })
+            .await?;
+        match res {
+            DaemonRes::Lyrics { lyrics, .. } => Ok(lyrics),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+        }
+    }
+
+    /// Fetch lyrics for a free-form artist/title pair (no track id or path).
+    pub async fn search(&self, artist: &str, title: &str) -> Result<Option<track::LrcData>> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::LyricsSearch {
+                artist: artist.into(),
+                title: title.into(),
+            })
+            .await?;
+        match res {
+            DaemonRes::Lyrics { lyrics, .. } => Ok(lyrics),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
             _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
         }

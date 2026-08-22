@@ -754,7 +754,7 @@ impl Mixer for PulseAudioMixer {
         if !self.playing.load(Ordering::SeqCst) {
             return 0.0;
         }
-        let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
+        let vol = self.user_volume.load(Ordering::SeqCst) as f32 / 100.0;
         let master = self.master_volume.load(Ordering::SeqCst) as f32 / 100.0;
         vol * master
     }

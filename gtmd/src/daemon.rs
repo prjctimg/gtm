@@ -52,17 +52,27 @@ const RESTART_THRESHOLD_SECS: f64 = 3.0;
 
 use std::time::Instant;
 
+struct Counter {
+    count: AtomicUsize,
+    errors: AtomicUsize,
+}
+
+impl Counter {
+    fn new() -> Self {
+        Self {
+            count: AtomicUsize::new(0),
+            errors: AtomicUsize::new(0),
+        }
+    }
+}
+
 struct HealthTracker {
     start_time: Instant,
     audio_backend: String,
-    scan_count: AtomicUsize,
-    scan_errors: AtomicUsize,
-    yt_search_count: AtomicUsize,
-    yt_search_errors: AtomicUsize,
-    cover_fetch_count: AtomicUsize,
-    cover_fetch_errors: AtomicUsize,
-    lyrics_fetch_count: AtomicUsize,
-    lyrics_fetch_errors: AtomicUsize,
+    scan: Counter,
+    yt: Counter,
+    cover: Counter,
+    lyrics: Counter,
 }
 
 impl HealthTracker {
@@ -70,14 +80,10 @@ impl HealthTracker {
         Self {
             start_time: Instant::now(),
             audio_backend: audio_backend.to_string(),
-            scan_count: AtomicUsize::new(0),
-            scan_errors: AtomicUsize::new(0),
-            yt_search_count: AtomicUsize::new(0),
-            yt_search_errors: AtomicUsize::new(0),
-            cover_fetch_count: AtomicUsize::new(0),
-            cover_fetch_errors: AtomicUsize::new(0),
-            lyrics_fetch_count: AtomicUsize::new(0),
-            lyrics_fetch_errors: AtomicUsize::new(0),
+            scan: Counter::new(),
+            yt: Counter::new(),
+            cover: Counter::new(),
+            lyrics: Counter::new(),
         }
     }
 
@@ -107,6 +113,1812 @@ impl Default for SyncProgress {
             total: AtomicUsize::new(0),
         }
     }
+}
+
+
+struct Cmd;
+
+impl Cmd {
+    pub async fn play(
+        inner: &DaemonInner,
+        path: &str,
+        start_pos: f64,
+        auto_advanced: bool,
+    ) -> Result<DaemonRes, CoreError> {
+        {
+            let mut mixer = inner.mixer.lock().await;
+            mixer.stop()?;
+        }
+        *inner.crossfade_loaded_for.lock().await = None;
+        {
+            let mut state = inner.state.write().await;
+            if state.status != PlaybackStatus::Stopped {
+                state.stop()?;
+            }
+        }
+
+        let path_owned = path.to_string();
+        let path_for_blocking = path_owned.clone();
+        let source =
+            tokio::task::spawn_blocking(move || AudioMixer::decode_file(&path_for_blocking))
+                .await
+                .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
+                .map_err(|e| CoreError::Daemon(format!("decode: {e}")))?;
+
+        let dur = {
+            let mut mixer = inner.mixer.lock().await;
+            mixer.load_active_decoded(source, start_pos)?;
+            mixer.play()?;
+            mixer.duration()
+        };
+        let mut state = inner.state.write().await;
+
+        let track = Daemon::resolve_track_meta(inner, std::path::Path::new(&path_owned), dur);
+        if let Some(pos) = state.queue.iter().position(|t| t.path == track.path) {
+            if pos > 0 {
+                state.queue.rotate_left(pos);
+            }
+        }
+        state.play(track.clone())?;
+        state.time_pos = start_pos;
+        state.duration = dur;
+        drop(state);
+        Daemon::push_event(
+            inner,
+            DaemonEvent::PlaybackStarted {
+                track,
+                auto_advanced,
+                time_pos: start_pos,
+                duration: dur,
+            },
+        );
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn play_pause(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        if Daemon::soloist_ready(inner).await {
+            let state = inner.state.read().await;
+            let is_playing = state.soloist.playing;
+            drop(state);
+            if is_playing {
+                return Daemon::soloist_control(inner, "pause", vec![])
+                    .await
+                    .map(|_| DaemonRes::Ok)
+                    .map_err(CoreError::Daemon);
+            } else {
+                return Daemon::soloist_control(inner, "play", vec![])
+                    .await
+                    .map(|_| DaemonRes::Ok)
+                    .map_err(CoreError::Daemon);
+            }
+        }
+
+        let is_playing = inner.mixer.lock().await.is_playing();
+        if is_playing {
+            Cmd::pause(inner).await
+        } else {
+            let state = inner.state.read().await;
+            let is_paused = state.status == PlaybackStatus::Paused;
+            let path = state
+                .current_track
+                .as_ref()
+                .map(|t| t.path.clone())
+                .unwrap_or_default();
+            drop(state);
+
+            if is_paused && !path.is_empty() {
+                inner.mixer.lock().await.play()?;
+                let mut state = inner.state.write().await;
+                let track = match state.current_track.clone() {
+                    Some(t) => t,
+                    None => {
+                        warn!("resume: current_track is None despite paused status");
+                        drop(state);
+                        return Ok(DaemonRes::Error {
+                            message: "no current track".into(),
+                        });
+                    }
+                };
+                state.play(track.clone())?;
+                let time_pos = state.time_pos;
+                let duration = state.duration;
+                drop(state);
+                Daemon::push_event(
+                    inner,
+                    DaemonEvent::PlaybackStarted {
+                        track,
+                        auto_advanced: false,
+                        time_pos,
+                        duration,
+                    },
+                );
+                Ok(DaemonRes::Ok)
+            } else if !path.is_empty() {
+                Cmd::play(inner, &path, 0.0, false).await
+            } else {
+                let state = inner.state.read().await;
+                let (queue, cursor) = queue::visible_queue(&state);
+                drop(state);
+                if !queue.is_empty() {
+                    let idx = (cursor as usize).min(queue.len() - 1);
+                    Cmd::play(inner, &queue[idx].path, 0.0, false).await
+                } else {
+                    Ok(DaemonRes::Ok)
+                }
+            }
+        }
+    }
+
+    pub async fn pause(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        if Daemon::soloist_ready(inner).await {
+            return Daemon::soloist_control(inner, "pause", vec![])
+                .await
+                .map(|_| DaemonRes::Ok)
+                .map_err(CoreError::Daemon);
+        }
+
+        let pos = {
+            let mut mixer = inner.mixer.lock().await;
+            mixer.pause()?;
+            mixer.current_position()
+        };
+        let mut state = inner.state.write().await;
+        state.pause()?;
+        state.time_pos = pos;
+        let time_pos = state.time_pos;
+        drop(state);
+        Daemon::push_event(inner, DaemonEvent::PlaybackPaused { time_pos });
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn stop(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        {
+            let mut mixer = inner.mixer.lock().await;
+            mixer.stop()?;
+        }
+        *inner.crossfade_loaded_for.lock().await = None;
+        let mut state = inner.state.write().await;
+        if state.status != PlaybackStatus::Stopped {
+            state.stop()?;
+        }
+        drop(state);
+        Daemon::push_event(inner, DaemonEvent::PlaybackStopped);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn next(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        if Daemon::soloist_ready(inner).await {
+            return Daemon::soloist_control(inner, "skip_next", vec![])
+                .await
+                .map(|_| DaemonRes::Ok)
+                .map_err(CoreError::Daemon);
+        }
+
+        if let Some(path) = Daemon::promote_crossfade(inner).await {
+            let _ = Daemon::step_next(inner).await;
+            Daemon::report_promoted(inner, &path).await;
+            return Ok(DaemonRes::Ok);
+        }
+        *inner.crossfade_loaded_for.lock().await = None;
+        let standby = {
+            let state = inner.state.read().await;
+            Daemon::next_track(&state)
+        };
+        if let Some(track) = standby {
+            if Daemon::try_start_crossfade(inner, &track).await {
+                return Ok(DaemonRes::Ok);
+            }
+        }
+        let next = match Daemon::step_next(inner).await {
+            Ok(Some(t)) => t,
+            Ok(None) => {
+                let was_playing = inner.state.read().await.status != PlaybackStatus::Stopped;
+                if was_playing {
+                    Daemon::stop_playback(inner).await;
+                } else {
+                    Daemon::push_queue_state(inner).await;
+                }
+                return Ok(DaemonRes::Ok);
+            }
+            Err(e) => return Err(e),
+        };
+        let _ = Cmd::play(inner, &next.path, 0.0, true).await?;
+        Daemon::push_queue_state(inner).await;
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn prev(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        if Daemon::soloist_ready(inner).await {
+            return Daemon::soloist_control(inner, "skip_prev", vec![])
+                .await
+                .map(|_| DaemonRes::Ok)
+                .map_err(CoreError::Daemon);
+        }
+
+        if let Some(path) = Daemon::promote_crossfade(inner).await {
+            Daemon::report_promoted(inner, &path).await;
+        }
+        let pos = inner.mixer.lock().await.current_position();
+        if pos > RESTART_THRESHOLD_SECS {
+            return Cmd::seek(inner, 0.0).await;
+        }
+        let has_current = inner.state.read().await.current_track.is_some();
+
+        let prev = inner.play_history.lock().await.pop();
+        match prev {
+            Some(HistoryEntry::User(track)) => {
+                {
+                    let mut state = inner.state.write().await;
+                    state.queue.insert(0, track.clone());
+                }
+                let res = Cmd::play(inner, &track.path, 0.0, true).await?;
+                Daemon::push_queue_state(inner).await;
+                Ok(res)
+            }
+            Some(HistoryEntry::Default { index, track }) => {
+                {
+                    let mut state = inner.state.write().await;
+                    if index < state.default_list.len() {
+                        state.default_cursor = index;
+                    }
+                }
+                let res = Cmd::play(inner, &track.path, 0.0, true).await?;
+                Daemon::push_queue_state(inner).await;
+                Ok(res)
+            }
+            None => {
+                if has_current {
+                    Cmd::seek(inner, 0.0).await
+                } else {
+                    Ok(DaemonRes::Ok)
+                }
+            }
+        }
+    }
+
+    pub async fn seek(inner: &DaemonInner, pos: f64) -> Result<DaemonRes, CoreError> {
+        if Daemon::soloist_ready(inner).await {
+            let pos_ms = (pos * 1000.0).round() as u64;
+            return Daemon::soloist_control(
+                inner,
+                "seek",
+                vec![("position_ms", Value::from(pos_ms))],
+            )
+            .await
+            .map(|_| DaemonRes::Ok)
+            .map_err(CoreError::Daemon);
+        }
+
+        let state = inner.state.read().await;
+        if state.status == PlaybackStatus::Stopped {
+            return Ok(DaemonRes::Ok);
+        }
+        let was_paused = state.status == PlaybackStatus::Paused;
+        let path = state.current_track.as_ref().map(|t| t.path.clone());
+        let duration = state.duration;
+        drop(state);
+        let Some(path) = path else {
+            return Ok(DaemonRes::Ok);
+        };
+        let pos = pos.clamp(0.0, duration.max(0.0));
+        tracing::debug!("cmd_seek: requested position={}", pos);
+        let path_owned = path.clone();
+        let source =
+            tokio::task::spawn_blocking(move || AudioMixer::decode_file_at(&path_owned, pos))
+                .await
+                .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
+                .map_err(|e| CoreError::Daemon(format!("decode: {e}")))?;
+        {
+            let mut mixer = inner.mixer.lock().await;
+            mixer.load_active_decoded(source, pos)?;
+            mixer.play()?;
+            if was_paused {
+                mixer.pause()?;
+            }
+        }
+        let mut state = inner.state.write().await;
+        state.seek(pos)?;
+        drop(state);
+        Daemon::push_event(inner, DaemonEvent::PositionChanged { time_pos: pos });
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn set_volume(inner: &DaemonInner, volume: u8) -> Result<DaemonRes, CoreError> {
+        if Daemon::soloist_ready(inner).await {
+            return Daemon::soloist_control(
+                inner,
+                "set_volume",
+                vec![("volume", Value::from(volume))],
+            )
+            .await
+            .map(|_| DaemonRes::Ok)
+            .map_err(CoreError::Daemon);
+        }
+
+        inner.mixer.lock().await.set_volume(volume)?;
+        let mut state = inner.state.write().await;
+        state.set_volume(volume)?;
+        drop(state);
+        Daemon::push_event(inner, DaemonEvent::VolumeChanged { volume });
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn set_master_volume(
+        inner: &DaemonInner,
+        volume: u8,
+    ) -> Result<DaemonRes, CoreError> {
+        let vol = volume.min(100);
+        inner.mixer.lock().await.set_master_volume(vol)?;
+        let mut state = inner.state.write().await;
+        state.master_volume = vol;
+        drop(state);
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn get_volume(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let state = inner.state.read().await;
+        let volume = state.volume;
+        drop(state);
+        Ok(DaemonRes::Value {
+            value: serde_json::json!({ "volume": volume }),
+        })
+    }
+
+    pub async fn list_eq_presets(_inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let presets = gtm_core::state::EQ_PRESETS
+            .iter()
+            .map(|p| p.to_string())
+            .collect::<Vec<String>>();
+        Ok(DaemonRes::EqPresets { presets })
+    }
+
+    pub async fn toggle_shuffle(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        if Daemon::soloist_ready(inner).await {
+            let state = inner.state.read().await;
+            let enabled = !state.shuffle;
+            drop(state);
+            return Daemon::soloist_control(
+                inner,
+                "set_shuffle",
+                vec![("enabled", Value::Bool(enabled))],
+            )
+            .await
+            .map(|_| DaemonRes::Ok)
+            .map_err(CoreError::Daemon);
+        }
+
+        let mut state = inner.state.write().await;
+        state.toggle_shuffle()?;
+        let enabled = state.shuffle;
+        drop(state);
+        Daemon::push_event(inner, DaemonEvent::ShuffleChanged { enabled });
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn cycle_repeat(
+        inner: &DaemonInner,
+        mode: gtm_core::state::RepeatMode,
+    ) -> Result<DaemonRes, CoreError> {
+        if Daemon::soloist_ready(inner).await {
+            let (ctx_enabled, track_enabled) = match mode {
+                RepeatMode::Off => (false, false),
+                RepeatMode::All => (true, false),
+                RepeatMode::One => (false, true),
+            };
+            let ctx_json = SoloistManager::cmd(
+                "set_repeat_context",
+                vec![("enabled", Value::Bool(ctx_enabled))],
+            );
+            let track_json = SoloistManager::cmd(
+                "set_repeat_track",
+                vec![("enabled", Value::Bool(track_enabled))],
+            );
+            inner.soloist.lock().await.send(ctx_json).await;
+            inner.soloist.lock().await.send(track_json).await;
+            return Ok(DaemonRes::Ok);
+        }
+
+        let mut state = inner.state.write().await;
+        state.cycle_repeat(mode)?;
+        let m = state.repeat;
+        drop(state);
+        Daemon::push_event(inner, DaemonEvent::RepeatModeChanged { mode: m });
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn toggle_mute(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.toggle_mute()?;
+        let muted = state.mute;
+        drop(state);
+        let vol = if muted {
+            0
+        } else {
+            inner.state.read().await.volume
+        };
+        inner.mixer.lock().await.set_volume(vol)?;
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn crossfade(
+        inner: &DaemonInner,
+        enabled: bool,
+        duration_secs: u8,
+        easing: Option<gtm_core::state::Easing>,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.set_crossfade(enabled, duration_secs, easing)?;
+        drop(state);
+        Daemon::push_event(
+            inner,
+            DaemonEvent::CrossfadeChanged {
+                enabled,
+                duration_secs,
+                easing,
+            },
+        );
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn set_loudness_mode(
+        inner: &DaemonInner,
+        mode: gtm_core::state::LoudnessMode,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.set_loudness_mode(mode)?;
+        drop(state);
+        Daemon::push_event(inner, DaemonEvent::LoudnessModeChanged { mode });
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn scan_loudness(
+        inner: &DaemonInner,
+        track_ids: Option<Vec<i64>>,
+        _force: Option<bool>,
+    ) -> Result<DaemonRes, CoreError> {
+        let total = track_ids.as_ref().map(|v| v.len() as u32).unwrap_or(0);
+        for i in 0..total {
+            let remaining = total - i;
+            Daemon::push_event(
+                inner,
+                DaemonEvent::LoudnessScanProgress {
+                    tracks_remaining: remaining,
+                    tracks_total: total,
+                    current_track: None,
+                },
+            );
+        }
+        Daemon::push_event(
+            inner,
+            DaemonEvent::LoudnessScanDone {
+                scanned: total,
+                failed: 0,
+            },
+        );
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn set_pre_gain(
+        inner: &DaemonInner,
+        pre_gain_db: f32,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.set_pre_gain(pre_gain_db)?;
+        drop(state);
+        Daemon::push_event(inner, DaemonEvent::PreGainChanged { pre_gain_db });
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn set_gapless(inner: &DaemonInner, enabled: bool) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.set_gapless(enabled)?;
+        drop(state);
+        Daemon::push_event(inner, DaemonEvent::GaplessChanged { enabled });
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn set_dynamic_mode(
+        inner: &DaemonInner,
+        enabled: bool,
+        min_queue_remaining: Option<u32>,
+        max_history: Option<u32>,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.set_dynamic_mode(enabled, min_queue_remaining, max_history)?;
+        let effective_min = min_queue_remaining.unwrap_or(state.dynamic_mode.min_queue_remaining);
+        let effective_max = max_history.unwrap_or(state.dynamic_mode.max_history);
+        drop(state);
+        Daemon::push_event(
+            inner,
+            DaemonEvent::DynamicModeChanged {
+                enabled,
+                min_queue_remaining: effective_min,
+                max_history: effective_max,
+            },
+        );
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn set_scrobble(
+        inner: &DaemonInner,
+        enabled: bool,
+        api_key: Option<String>,
+        session_token: Option<String>,
+        min_play_secs: Option<u32>,
+        min_play_pct: Option<f32>,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.set_scrobble(enabled, api_key, session_token, min_play_secs, min_play_pct)?;
+        drop(state);
+        Daemon::push_event(inner, DaemonEvent::ScrobbleConfigChanged { enabled });
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn set_eq_preset(
+        inner: &DaemonInner,
+        preset: EqPreset,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.eq_preset = preset;
+        state.version += 1;
+        drop(state);
+        inner.mixer.lock().await.set_eq_preset(&preset);
+        Daemon::push_event(inner, DaemonEvent::EqPresetChanged { preset });
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn set_eq_enabled(
+        inner: &DaemonInner,
+        enabled: bool,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.eq_enabled = enabled;
+        state.version += 1;
+        drop(state);
+        inner.mixer.lock().await.set_eq_enabled(enabled);
+        Daemon::push_event(inner, DaemonEvent::EqEnabledChanged { enabled });
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn set_reverb(
+        inner: &DaemonInner,
+        enabled: bool,
+        room_size: f32,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.reverb = ReverbConfig { enabled, room_size };
+        state.version += 1;
+        drop(state);
+        inner
+            .mixer
+            .lock()
+            .await
+            .set_reverb(&ReverbConfig { enabled, room_size });
+        Daemon::push_event(inner, DaemonEvent::ReverbChanged { enabled, room_size });
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn set_sleep_timer(
+        inner: &DaemonInner,
+        minutes: u32,
+    ) -> Result<DaemonRes, CoreError> {
+        let total_secs = minutes * 60;
+        let event_tx = inner.event_tx.clone();
+        let state = inner.state.clone();
+
+        inner.sleep_cancel.store(true, Ordering::SeqCst);
+        inner.sleep_cancel.store(false, Ordering::SeqCst);
+        let cancel_flag = inner.sleep_cancel.clone();
+
+        let mut s = state.write().await;
+        s.sleep_timer = Some(total_secs);
+        s.version += 1;
+        drop(s);
+
+        tokio::spawn(async move {
+            for remaining in (1..=total_secs).rev() {
+                if cancel_flag.load(Ordering::SeqCst) {
+                    return;
+                }
+                {
+                    let mut s = state.write().await;
+                    s.sleep_timer = Some(remaining);
+                }
+                let _ = event_tx.send(DaemonEvent::SleepTimerTick {
+                    remaining_secs: remaining,
+                });
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+            {
+                let mut s = state.write().await;
+                s.status = PlaybackStatus::Stopped;
+                s.sleep_timer = None;
+                s.version += 1;
+            }
+            let _ = event_tx.send(DaemonEvent::PlaybackStopped);
+            let _ = event_tx.send(DaemonEvent::SleepTimerExpired);
+        });
+
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn cancel_sleep_timer(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        inner.sleep_cancel.store(true, Ordering::SeqCst);
+        let mut state = inner.state.write().await;
+        state.sleep_timer = None;
+        state.version += 1;
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn get_status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let state = inner.state.read().await;
+        let mut state_clone = state.clone();
+        let (queue, cursor) = queue::visible_queue(&state);
+        state_clone.queue = queue;
+        state_clone.queue_cursor = cursor;
+        drop(state);
+        Ok(DaemonRes::Status {
+            state: Box::new(state_clone),
+        })
+    }
+
+    pub async fn check_health(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let h = &inner.health;
+        let mut components = Vec::new();
+
+        components.push(ComponentHealth {
+            name: "audio_backend".into(),
+            status: HealthStatus::Ok,
+            message: Some(h.audio_backend.clone()),
+            uptime_secs: Some(h.uptime_secs()),
+        });
+
+        let scans = h.scan.count.load(Ordering::Relaxed);
+        let scan_errs = h.scan.errors.load(Ordering::Relaxed);
+        components.push(ComponentHealth {
+            name: "library_scan".into(),
+            status: if scan_errs > 0 && scans > 0 {
+                HealthStatus::Degraded
+            } else {
+                HealthStatus::Ok
+            },
+            message: Some(format!("{scans} scans, {scan_errs} errors")),
+            uptime_secs: None,
+        });
+
+        let yt = h.yt.count.load(Ordering::Relaxed);
+        let yt_errs = h.yt.errors.load(Ordering::Relaxed);
+        components.push(ComponentHealth {
+            name: "youtube_search".into(),
+            status: if yt_errs > 0 && yt > 0 {
+                HealthStatus::Degraded
+            } else {
+                HealthStatus::Ok
+            },
+            message: Some(format!("{yt} searches, {yt_errs} errors")),
+            uptime_secs: None,
+        });
+
+        let covers = h.cover.count.load(Ordering::Relaxed);
+        let cover_errs = h.cover.errors.load(Ordering::Relaxed);
+        components.push(ComponentHealth {
+            name: "cover_art".into(),
+            status: if cover_errs > 0 && covers > 0 {
+                HealthStatus::Degraded
+            } else {
+                HealthStatus::Ok
+            },
+            message: Some(format!("{covers} fetches, {cover_errs} errors")),
+            uptime_secs: None,
+        });
+
+        let lyrics = h.lyrics.count.load(Ordering::Relaxed);
+        let lyrics_errs = h.lyrics.errors.load(Ordering::Relaxed);
+        components.push(ComponentHealth {
+            name: "lyrics".into(),
+            status: if lyrics_errs > 0 && lyrics > 0 {
+                HealthStatus::Degraded
+            } else {
+                HealthStatus::Ok
+            },
+            message: Some(format!("{lyrics} fetches, {lyrics_errs} errors")),
+            uptime_secs: None,
+        });
+
+        components.push(ComponentHealth {
+            name: "event_channel".into(),
+            status: HealthStatus::Ok,
+            message: Some("capacity 1024".to_string()),
+            uptime_secs: None,
+        });
+
+        Ok(DaemonRes::HealthReport {
+            report: Box::new(HealthReport {
+                daemon_uptime_secs: h.uptime_secs(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                components,
+            }),
+        })
+    }
+
+}
+
+struct Yt;
+
+impl Yt {
+    pub async fn search(
+        inner: &DaemonInner,
+        query: &str,
+        filter: Option<gtm_core::state::YTFilter>,
+    ) -> Result<DaemonRes, CoreError> {
+        inner.health.yt.count.fetch_add(1, Ordering::Relaxed);
+        inner.youtube.lock().await.start_search(query, filter);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn poll(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        match inner.youtube.lock().await.poll_results().await {
+            Ok(Some((query, results))) => Ok(DaemonRes::YtSearchResults { query, results }),
+            Ok(None) => Ok(DaemonRes::Ok),
+            Err(e) => {
+                inner
+                    .health
+                    .yt.errors
+                    .fetch_add(1, Ordering::Relaxed);
+                Ok(DaemonRes::Error { message: e })
+            }
+        }
+    }
+
+    pub async fn cancel(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        inner.youtube.lock().await.cancel().await;
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn resolve_stream(inner: &DaemonInner, url: &str) -> Result<DaemonRes, CoreError> {
+        match inner.youtube.lock().await.resolve_stream(url).await {
+            Ok(info) => Ok(DaemonRes::StreamInfo {
+                info: Box::new(info),
+            }),
+            Err(e) => Ok(DaemonRes::Error { message: e }),
+        }
+    }
+
+}
+
+struct Spotify;
+
+impl Spotify {
+    pub async fn set_token(
+        inner: &DaemonInner,
+        token: &str,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut spotify = inner.spotify.lock().await;
+        let _ = tokio::time::timeout(Duration::from_secs(60), spotify.set_token(token)).await;
+        Ok(DaemonRes::SpotifyStatusRes {
+            status: spotify.status(),
+        })
+    }
+
+    pub async fn clear(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let mut spotify = inner.spotify.lock().await;
+        spotify.clear();
+        Ok(DaemonRes::SpotifyStatusRes {
+            status: spotify.status(),
+        })
+    }
+
+    pub async fn status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let mut spotify = inner.spotify.lock().await;
+        let _ = tokio::time::timeout(Duration::from_secs(5), spotify.refresh_playback()).await;
+        Ok(DaemonRes::SpotifyStatusRes {
+            status: spotify.status(),
+        })
+    }
+
+    pub async fn play_pause(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let mut spotify = inner.spotify.lock().await;
+        match spotify.play_pause().await {
+            Ok(()) => Ok(DaemonRes::SpotifyStatusRes {
+                status: spotify.status(),
+            }),
+            Err(e) => Ok(DaemonRes::Error { message: e }),
+        }
+    }
+
+    pub async fn sync(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let mut spotify = inner.spotify.lock().await;
+        match tokio::time::timeout(Duration::from_secs(60), spotify.sync()).await {
+            Ok(Ok(())) => Ok(DaemonRes::Ok),
+            Ok(Err(e)) => Ok(DaemonRes::Error { message: e }),
+            Err(_) => Ok(DaemonRes::Error {
+                message: "spotify sync timed out".into(),
+            }),
+        }
+    }
+
+    pub async fn playlists(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let spotify = inner.spotify.lock().await;
+        if !spotify.linked() {
+            return Ok(DaemonRes::Error {
+                message: "spotify not linked".into(),
+            });
+        }
+        Ok(DaemonRes::SpotifyPlaylistsRes {
+            playlists: spotify.playlists(),
+        })
+    }
+
+    pub async fn playlist_tracks(
+        inner: &DaemonInner,
+        id: &str,
+    ) -> Result<DaemonRes, CoreError> {
+        let spotify = inner.spotify.lock().await;
+        if !spotify.linked() {
+            return Ok(DaemonRes::Error {
+                message: "spotify not linked".into(),
+            });
+        }
+        match spotify.playlist_tracks(id) {
+            Some(tracks) => Ok(DaemonRes::SpotifyTracksRes { tracks }),
+            None => Ok(DaemonRes::Error {
+                message: "unknown spotify playlist".into(),
+            }),
+        }
+    }
+
+    pub async fn resolve(
+        inner: &DaemonInner,
+        playlist_id: &str,
+        track_index: usize,
+    ) -> Result<DaemonRes, CoreError> {
+        let track = {
+            let spotify = inner.spotify.lock().await;
+            spotify
+                .playlist_tracks(playlist_id)
+                .and_then(|tracks| tracks.into_iter().find(|t| t.index == track_index))
+        };
+        let Some(track) = track else {
+            return Ok(DaemonRes::Error {
+                message: "track not found in spotify cache".into(),
+            });
+        };
+        let query = if track.artists.is_empty() {
+            track.name.clone()
+        } else {
+            format!("{} - {}", track.artists, track.name)
+        };
+
+        let mut yt = inner.youtube.lock().await;
+        if let Err(e) = yt.search(&query, None).await {
+            return Ok(DaemonRes::Error { message: e });
+        }
+        let top = match yt.poll_results().await {
+            Ok(Some((_, mut results))) if !results.is_empty() => results.remove(0),
+            _ => {
+                return Ok(DaemonRes::Error {
+                    message: "no youtube results for track".into(),
+                })
+            }
+        };
+        let info = match yt.resolve_stream(&top.url).await {
+            Ok(info) => info,
+            Err(e) => return Ok(DaemonRes::Error { message: e }),
+        };
+
+        let prefix = format!("spotify-{playlist_id}-{track_index}");
+        let path = match Daemon::download_audio_to_cache(
+            &inner.config.cache_dir,
+            &prefix,
+            &info.url,
+            yt.cookie_file(),
+        )
+        .await
+        {
+            Ok(path) => path,
+            Err(e) => return Ok(DaemonRes::Error { message: e }),
+        };
+        drop(yt);
+
+        let spotify_title = track.name.clone();
+        let spotify_artist = track.artists.clone();
+        let spotify_album = track.album.unwrap_or_default();
+        let was_empty = {
+            let mut state = inner.state.write().await;
+            state.fallback_disabled = false;
+            let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
+            let added = queue::queue_add(&mut state, &path, None);
+            if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == added.path) {
+                entry.title = spotify_title.clone();
+                entry.artist = spotify_artist.clone();
+                entry.album = spotify_album.clone();
+            }
+            drop(state);
+            w
+        };
+        if was_empty {
+            let _ = Cmd::play(inner, &path, 0.0, false).await;
+        }
+
+        {
+            let mut guard = inner.cover_cache.lock().await;
+            if let Some(ref mut cc) = *guard {
+                let _ = cc.get_cover(&spotify_artist, &spotify_album).await;
+            }
+        }
+
+        Daemon::push_queue_state(inner).await;
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn search_web(
+        inner: &DaemonInner,
+        query: &str,
+    ) -> Result<DaemonRes, CoreError> {
+        let tracks = {
+            let spotify = inner.spotify.lock().await;
+            spotify.search(query, 20).await
+        };
+        Ok(DaemonRes::SpotifyTracksRes { tracks })
+    }
+
+    pub async fn resolve_track(
+        inner: &DaemonInner,
+        name: &str,
+        artists: &str,
+        album: &str,
+    ) -> Result<DaemonRes, CoreError> {
+        let query = if artists.is_empty() {
+            name.to_string()
+        } else {
+            format!("{artists} - {name}")
+        };
+        let spotify_title = name.to_string();
+        let spotify_artist = artists.to_string();
+        let spotify_album = album.to_string();
+
+        let mut yt = inner.youtube.lock().await;
+        if let Err(e) = yt.search(&query, None).await {
+            return Ok(DaemonRes::Error { message: e });
+        }
+        let top = match yt.poll_results().await {
+            Ok(Some((_, mut results))) if !results.is_empty() => results.remove(0),
+            _ => {
+                return Ok(DaemonRes::Error {
+                    message: "no youtube results for track".into(),
+                })
+            }
+        };
+        let info = match yt.resolve_stream(&top.url).await {
+            Ok(info) => info,
+            Err(e) => return Ok(DaemonRes::Error { message: e }),
+        };
+        let prefix = format!("spotify-web-{name}");
+        let path = match Daemon::download_audio_to_cache(
+            &inner.config.cache_dir,
+            &prefix,
+            &info.url,
+            yt.cookie_file(),
+        )
+        .await
+        {
+            Ok(path) => path,
+            Err(e) => return Ok(DaemonRes::Error { message: e }),
+        };
+        drop(yt);
+
+        let was_empty = {
+            let mut state = inner.state.write().await;
+            state.fallback_disabled = false;
+            let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
+            let added = queue::queue_add(&mut state, &path, None);
+            if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == added.path) {
+                entry.title = spotify_title.clone();
+                entry.artist = spotify_artist.clone();
+                entry.album = spotify_album.clone();
+            }
+            drop(state);
+            w
+        };
+        if was_empty {
+            let _ = Cmd::play(inner, &path, 0.0, false).await;
+        }
+
+        {
+            let mut guard = inner.cover_cache.lock().await;
+            if let Some(ref mut cc) = *guard {
+                let _ = cc.get_cover(&spotify_artist, &spotify_album).await;
+            }
+        }
+
+        Daemon::push_queue_state(inner).await;
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+}
+
+struct Soloist;
+
+impl Soloist {
+    pub async fn set_api_key(
+        inner: &DaemonInner,
+        key: &str,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut soloist = inner.soloist.lock().await;
+        soloist.save_key(key).map_err(CoreError::Daemon)?;
+        soloist.start(inner.soloist_tx.clone()).await;
+        let res = Soloist::status(inner).await?;
+        let status = match res {
+            DaemonRes::SoloistStatusRes { status } => status,
+            _ => SoloistStatus::default(),
+        };
+        Ok(DaemonRes::SoloistStatusRes { status })
+    }
+
+    pub async fn clear(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let mut soloist = inner.soloist.lock().await;
+        soloist.clear_key();
+        soloist.stop().await;
+        {
+            let mut state = inner.state.write().await;
+            state.soloist = SoloistStatus::default();
+            state.version += 1;
+        }
+        Daemon::push_event(
+            inner,
+            DaemonEvent::SoloistStatusChanged {
+                status: SoloistStatus::default(),
+            },
+        );
+        Ok(DaemonRes::SoloistStatusRes {
+            status: SoloistStatus::default(),
+        })
+    }
+
+    pub async fn set_config(
+        inner: &DaemonInner,
+        auto_start: bool,
+    ) -> Result<DaemonRes, CoreError> {
+        {
+            let mut state = inner.state.write().await;
+            state.soloist_auto_start = auto_start;
+            state.version += 1;
+        }
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn start(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        inner.soloist_manual_override.store(true, Ordering::SeqCst);
+        let mut soloist = inner.soloist.lock().await;
+        soloist.start(inner.soloist_tx.clone()).await;
+        let res = Soloist::status(inner).await?;
+        let status = match res {
+            DaemonRes::SoloistStatusRes { status } => status,
+            _ => SoloistStatus::default(),
+        };
+        Ok(DaemonRes::SoloistStatusRes { status })
+    }
+
+    pub async fn stop(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        inner.soloist_manual_override.store(true, Ordering::SeqCst);
+        let mut soloist = inner.soloist.lock().await;
+        soloist.stop().await;
+        {
+            let mut state = inner.state.write().await;
+            state.soloist.running = false;
+            state.soloist.connected = false;
+            state.soloist.logged_in = false;
+            state.soloist.track = None;
+            state.soloist.playing = false;
+            state.version += 1;
+        }
+        let res = Soloist::status(inner).await?;
+        let status = match res {
+            DaemonRes::SoloistStatusRes { status } => status,
+            _ => SoloistStatus::default(),
+        };
+        Daemon::push_event(
+            inner,
+            DaemonEvent::SoloistStatusChanged {
+                status: status.clone(),
+            },
+        );
+        Ok(DaemonRes::SoloistStatusRes { status })
+    }
+
+    pub async fn status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let state = inner.state.read().await;
+        Ok(DaemonRes::SoloistStatusRes {
+            status: state.soloist.clone(),
+        })
+    }
+
+    pub async fn play(inner: &DaemonInner, uri: &str) -> Result<DaemonRes, CoreError> {
+        let json = SoloistManager::cmd("play", vec![("uri", Value::String(uri.into()))]);
+        if inner.soloist.lock().await.send(json).await {
+            Ok(DaemonRes::Ok)
+        } else {
+            Ok(DaemonRes::Error {
+                message: "soloist not connected".into(),
+            })
+        }
+    }
+
+    pub async fn activate(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let json = SoloistManager::cmd("activate", vec![]);
+        if inner.soloist.lock().await.send(json).await {
+            Ok(DaemonRes::Ok)
+        } else {
+            Ok(DaemonRes::Error {
+                message: "soloist not connected".into(),
+            })
+        }
+    }
+
+}
+
+struct Queue;
+
+impl Queue {
+    pub async fn handle(inner: &DaemonInner, action: &QueueAction) -> Result<DaemonRes, CoreError> {
+        match action {
+            QueueAction::List => {
+                let state = inner.state.read().await;
+                let (queue, cursor) = queue::visible_queue(&state);
+                drop(state);
+                Ok(DaemonRes::QueueState { queue, cursor })
+            }
+            QueueAction::Clear => {
+                Daemon::clear_history(inner).await;
+                {
+                    let mut state = inner.state.write().await;
+                    queue::queue_clear(&mut state);
+                }
+                Daemon::push_queue_state(inner).await;
+                Daemon::save_state(inner);
+                Ok(DaemonRes::Ok)
+            }
+            QueueAction::Remove { index } => {
+                {
+                    let mut state = inner.state.write().await;
+                    queue::queue_remove(&mut state, *index);
+                }
+                Daemon::push_queue_state(inner).await;
+                Daemon::save_state(inner);
+                Ok(DaemonRes::Ok)
+            }
+            QueueAction::Move { from, to } => {
+                {
+                    let mut state = inner.state.write().await;
+                    queue::queue_move(&mut state, *from, *to);
+                }
+                Daemon::push_queue_state(inner).await;
+                Daemon::save_state(inner);
+                Ok(DaemonRes::Ok)
+            }
+            QueueAction::Add { paths, position } => {
+                let expanded = match queue::expand_paths(paths) {
+                    Ok(files) => files,
+                    Err(e) => return Ok(DaemonRes::Error { message: e }),
+                };
+                if expanded.is_empty() {
+                    return Ok(DaemonRes::Error {
+                        message: "no audio files found".into(),
+                    });
+                }
+                let first_path = expanded[0].clone();
+                let was_empty = {
+                    let mut state = inner.state.write().await;
+                    state.fallback_disabled = false;
+                    let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
+                    queue::queue_add_many(&mut state, &expanded, *position);
+                    drop(state);
+                    w
+                };
+                if was_empty {
+                    let _ = Cmd::play(inner, &first_path, 0.0, false).await;
+                }
+                Daemon::push_queue_state(inner).await;
+                Daemon::save_state(inner);
+                Ok(DaemonRes::Ok)
+            }
+            QueueAction::Set { paths, start_idx } => {
+                Daemon::clear_history(inner).await;
+                {
+                    let mut state = inner.state.write().await;
+                    queue::queue_set(&mut state, paths, *start_idx);
+                }
+                Daemon::push_queue_state(inner).await;
+                Daemon::save_state(inner);
+                Ok(DaemonRes::Ok)
+            }
+        }
+    }
+
+}
+
+struct LibraryHandler;
+
+impl LibraryHandler {
+    pub async fn handle(
+        inner: &DaemonInner,
+        action: &gtm_core::ipc::LibraryAction,
+    ) -> Result<DaemonRes, CoreError> {
+        let res = match action {
+            gtm_core::ipc::LibraryAction::Scan { path } => {
+                let audio_dir = path.clone();
+                let data_dir = inner.config.data_dir.clone();
+                let cache_dir = inner.config.cache_dir.to_string_lossy().to_string();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.scan_directory(&audio_dir, true, Some(&cache_dir))
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(tracks) => DaemonRes::Tracks { tracks },
+                    Err(e) => DaemonRes::Error { message: e },
+                }
+            }
+            gtm_core::ipc::LibraryAction::GetTracks { filter: _, sort: _ } => {
+                let data_dir = inner.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.list_tracks()
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(tracks) => DaemonRes::Tracks { tracks },
+                    Err(e) => DaemonRes::Error { message: e },
+                }
+            }
+            gtm_core::ipc::LibraryAction::GetPlaylists => {
+                let data_dir = inner.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.get_playlists()
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(playlists) => DaemonRes::Playlists { playlists },
+                    Err(e) => DaemonRes::Error { message: e },
+                }
+            }
+            gtm_core::ipc::LibraryAction::GetPlaylistTracks { id } => {
+                let data_dir = inner.config.data_dir.clone();
+                let pid = *id;
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.get_playlist_tracks(pid)
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(tracks) => DaemonRes::Tracks { tracks },
+                    Err(e) => DaemonRes::Error { message: e },
+                }
+            }
+            gtm_core::ipc::LibraryAction::CreatePlaylist { name } => {
+                let name = name.clone();
+                let data_dir = inner.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.create_playlist(&name)
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(playlist) => {
+                        let playlists = vec![playlist];
+                        DaemonRes::Playlists { playlists }
+                    }
+                    Err(e) => DaemonRes::Error { message: e },
+                }
+            }
+            gtm_core::ipc::LibraryAction::DeletePlaylist { id } => {
+                let id = *id;
+                let data_dir = inner.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.delete_playlist(id)
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(_) => DaemonRes::Ok,
+                    Err(e) => DaemonRes::Error { message: e },
+                }
+            }
+            gtm_core::ipc::LibraryAction::AddToPlaylist {
+                playlist_id,
+                track_ids,
+            } => {
+                let playlist_id = *playlist_id;
+                let track_ids = track_ids.clone();
+                let data_dir = inner.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    for tid in &track_ids {
+                        lib.add_to_playlist(playlist_id, *tid)?;
+                    }
+                    Ok::<_, String>(())
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(_) => DaemonRes::Ok,
+                    Err(e) => DaemonRes::Error { message: e },
+                }
+            }
+            gtm_core::ipc::LibraryAction::ImportM3u { path } => {
+                let path = path.clone();
+                let data_dir = inner.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.import_m3u(&path)
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(playlist) => {
+                        let playlists = vec![playlist];
+                        DaemonRes::Playlists { playlists }
+                    }
+                    Err(e) => DaemonRes::Error { message: e },
+                }
+            }
+            gtm_core::ipc::LibraryAction::GetRecent { count } => {
+                let count = *count;
+                let data_dir = inner.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.get_recent(count)
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(tracks) => DaemonRes::Tracks { tracks },
+                    Err(e) => DaemonRes::Error { message: e },
+                }
+            }
+            gtm_core::ipc::LibraryAction::SyncCovers => {
+                LibraryHandler::sync_start(inner, SyncKind::Covers, None).await?
+            }
+            gtm_core::ipc::LibraryAction::SyncLyrics => {
+                LibraryHandler::sync_start(inner, SyncKind::Lyrics, None).await?
+            }
+            gtm_core::ipc::LibraryAction::SyncMetadata { path } => {
+                LibraryHandler::sync_start(inner, SyncKind::Metadata, path.clone()).await?
+            }
+            gtm_core::ipc::LibraryAction::SyncStatus => LibraryHandler::sync_status(inner).await?,
+            gtm_core::ipc::LibraryAction::ExportM3u { playlist_id, path } => {
+                let playlist_id = *playlist_id;
+                let export_path = path.clone();
+                let data_dir = inner.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.export_m3u(playlist_id, &export_path)
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(_) => DaemonRes::Ok,
+                    Err(e) => DaemonRes::Error { message: e },
+                }
+            }
+            gtm_core::ipc::LibraryAction::RemoveFromPlaylist {
+                playlist_id,
+                track_id,
+            } => {
+                let playlist_id = *playlist_id;
+                let track_id = *track_id;
+                let data_dir = inner.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.remove_from_playlist(playlist_id, track_id)
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(()) => DaemonRes::Ok,
+                    Err(e) => DaemonRes::Error { message: e },
+                }
+            }
+            gtm_core::ipc::LibraryAction::RemoveTrack { id } => {
+                let id = *id;
+                let data_dir = inner.config.data_dir.clone();
+                let library_dirs = inner.config.library_paths.clone();
+                let allow_delete_files = inner.config.allow_delete_files;
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.remove_track_full(id, &library_dirs, allow_delete_files)
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(Some(removed_path)) => {
+                        let mut state = inner.state.write().await;
+                        state.queue.retain(|t| t.path != removed_path);
+                        let was_current = state
+                            .current_track
+                            .as_ref()
+                            .is_some_and(|t| t.path == removed_path);
+                        drop(state);
+                        if was_current {
+                            Daemon::stop_playback(inner).await;
+                        } else {
+                            Daemon::push_queue_state(inner).await;
+                        }
+                        Daemon::push_event(
+                            inner,
+                            DaemonEvent::Custom {
+                                name: "library_changed".into(),
+                                data: Default::default(),
+                            },
+                        );
+                        DaemonRes::Ok
+                    }
+                    Ok(None) => DaemonRes::Error {
+                        message: "track not found".to_string(),
+                    },
+                    Err(e) => DaemonRes::Error { message: e },
+                }
+            }
+            gtm_core::ipc::LibraryAction::UpdateMetadata { track_id, patch } => {
+                let track_id = *track_id;
+                let patch = patch.clone();
+                let data_dir = inner.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.update_metadata(track_id, &patch)
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(_) => DaemonRes::Ok,
+                    Err(e) => DaemonRes::Error { message: e },
+                }
+            }
+        };
+        Ok(res)
+    }
+
+    pub async fn sync_start(
+        inner: &DaemonInner,
+        kind: SyncKind,
+        only_path: Option<String>,
+    ) -> Result<DaemonRes, CoreError> {
+        if inner.sync_progress.running.load(Ordering::Acquire) {
+            return Ok(DaemonRes::Error {
+                message: "a library sync is already running".into(),
+            });
+        }
+        *inner.sync_progress.kind.lock().unwrap() = kind;
+        inner.sync_progress.synced.store(0, Ordering::Relaxed);
+        inner.sync_progress.total.store(0, Ordering::Relaxed);
+        inner.sync_progress.running.store(true, Ordering::Release);
+
+        let data_dir = inner.config.data_dir.clone();
+        let cache_dir = inner.config.cache_dir.clone();
+        let lyrics_manager = inner.lyrics_manager.clone();
+        let progress = inner.sync_progress.clone();
+        let event_tx = inner.event_tx.clone();
+        tokio::spawn(async move {
+            let progress_inner = progress.clone();
+            let result = tokio::task::spawn_blocking(move || match kind {
+                SyncKind::Covers => run_covers_sync(data_dir, cache_dir, &progress_inner),
+                SyncKind::Lyrics => run_lyrics_sync(data_dir, lyrics_manager, &progress_inner),
+                SyncKind::Metadata => {
+                    run_metadata_sync(data_dir, cache_dir, only_path, &progress_inner)
+                }
+            })
+            .await;
+            let (synced, total, error) = match result {
+                Ok(Ok((s, t))) => (s, t, None),
+                Ok(Err(e)) => (0, 0, Some(e)),
+                Err(e) => (0, 0, Some(e.to_string())),
+            };
+            progress.synced.store(synced, Ordering::Relaxed);
+            progress.total.store(total, Ordering::Relaxed);
+            progress.running.store(false, Ordering::Release);
+            let mut data = std::collections::HashMap::new();
+            data.insert("kind".to_string(), format!("{kind:?}").to_lowercase());
+            data.insert("synced".to_string(), synced.to_string());
+            data.insert("total".to_string(), total.to_string());
+            if let Some(e) = error {
+                data.insert("error".to_string(), e);
+            }
+            let _ = event_tx.send(DaemonEvent::Custom {
+                name: "sync_done".into(),
+                data,
+            });
+        });
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn sync_status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let progress = &inner.sync_progress;
+        Ok(DaemonRes::SyncStatus {
+            running: progress.running.load(Ordering::Acquire),
+            kind: *progress.kind.lock().unwrap(),
+            synced: progress.synced.load(Ordering::Relaxed),
+            total: progress.total.load(Ordering::Relaxed),
+        })
+    }
+
+}
+
+struct Search;
+
+impl Search {
+    pub async fn handle(inner: &DaemonInner, query: &str) -> Result<DaemonRes, CoreError> {
+        let query = query.to_string();
+        let data_dir = inner.config.data_dir.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+            lib.search_tracks(&query)
+        })
+        .await
+        .map_err(|e| CoreError::Daemon(e.to_string()))?;
+        match result {
+            Ok(tracks) => Ok(DaemonRes::Tracks { tracks }),
+            Err(e) => Ok(DaemonRes::Error { message: e }),
+        }
+    }
+
+}
+
+struct Favourites;
+
+impl Favourites {
+    pub async fn list(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let data_dir = inner.config.data_dir.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+            lib.get_favourites()
+        })
+        .await
+        .map_err(|e| CoreError::Daemon(e.to_string()))?;
+        match result {
+            Ok(tracks) => Ok(DaemonRes::Tracks { tracks }),
+            Err(e) => Ok(DaemonRes::Error { message: e }),
+        }
+    }
+
+    pub async fn add(inner: &DaemonInner, track_id: i64) -> Result<DaemonRes, CoreError> {
+        let data_dir = inner.config.data_dir.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+            lib.toggle_favourite(track_id)
+        })
+        .await
+        .map_err(|e| CoreError::Daemon(e.to_string()))?;
+        match result {
+            Ok(_) => Ok(DaemonRes::Ok),
+            Err(e) => Ok(DaemonRes::Error { message: e }),
+        }
+    }
+
+    pub async fn remove(
+        inner: &DaemonInner,
+        track_id: i64,
+    ) -> Result<DaemonRes, CoreError> {
+        let data_dir = inner.config.data_dir.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+            lib.toggle_favourite(track_id)
+        })
+        .await
+        .map_err(|e| CoreError::Daemon(e.to_string()))?;
+        match result {
+            Ok(_) => Ok(DaemonRes::Ok),
+            Err(e) => Ok(DaemonRes::Error { message: e }),
+        }
+    }
+
+}
+
+struct Cover;
+
+impl Cover {
+    pub async fn get(inner: &DaemonInner, track_id: i64) -> Result<DaemonRes, CoreError> {
+        inner
+            .health
+            .cover.count
+            .fetch_add(1, Ordering::Relaxed);
+        let mut discovered_artist = String::new();
+        let mut discovered_album = String::new();
+
+        let lib = if !inner.config.test_mode {
+            Library::new(inner.config.data_dir.to_str().unwrap_or("")).ok()
+        } else {
+            None
+        };
+        if let Some(ref library) = lib {
+            if let Ok(Some(track)) = library.get_track(track_id) {
+                if let Some(ref path) = track.cover_path {
+                    if let Ok(data) = tokio::fs::read(path).await {
+                        if !crate::cover::CoverCache::cover_too_small(&data) {
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                            return Ok(DaemonRes::CoverArt { data: Some(b64) });
+                        }
+                    }
+                }
+                let audio_path = std::path::Path::new(&track.path);
+                let parent = audio_path.parent().unwrap_or(std::path::Path::new(""));
+                let stem = audio_path.file_stem().unwrap_or_default();
+                for ext in ["jpg", "jpeg", "png", "webp"] {
+                    let sidecar = parent.join(format!("{}.{}", stem.to_string_lossy(), ext));
+                    if let Ok(data) = tokio::fs::read(&sidecar).await {
+                        if !crate::cover::CoverCache::cover_too_small(&data) {
+                            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                            return Ok(DaemonRes::CoverArt { data: Some(b64) });
+                        }
+                    }
+                }
+                discovered_artist = track.artist;
+                discovered_album = track.album;
+            }
+        }
+
+        if discovered_artist.is_empty() {
+            let state = inner.state.read().await;
+            let in_merged = state
+                .queue
+                .iter()
+                .chain(state.default_list.iter())
+                .find(|t| t.id == track_id);
+            if let Some(t) = in_merged {
+                discovered_artist = t.artist.clone();
+                discovered_album = t.album.clone();
+            } else if let Some(ref t) = state.current_track {
+                if t.id == track_id {
+                    discovered_artist = t.artist.clone();
+                    discovered_album = t.album.clone();
+                }
+            }
+        }
+
+        if !discovered_artist.is_empty() && !discovered_album.is_empty() {
+            let mut guard = inner.cover_cache.lock().await;
+            if let Some(ref mut cache) = *guard {
+                let artist = discovered_artist.clone();
+                let album = discovered_album.clone();
+                let cover =
+                    tokio::time::timeout(Duration::from_secs(5), cache.get_cover(&artist, &album))
+                        .await
+                        .ok()
+                        .flatten();
+                if let Some(cover) = cover {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&cover.data);
+                    return Ok(DaemonRes::CoverArt { data: Some(b64) });
+                }
+            }
+        }
+
+        Ok(DaemonRes::CoverArt { data: None })
+    }
+
+    pub async fn artist(
+        inner: &DaemonInner,
+        artist: &str,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut guard = inner.cover_cache.lock().await;
+        if let Some(ref mut cache) = *guard {
+            let cover =
+                tokio::time::timeout(Duration::from_secs(8), cache.get_artist_image(artist))
+                    .await
+                    .ok()
+                    .flatten();
+            if let Some(cover) = cover {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&cover.data);
+                return Ok(DaemonRes::CoverArt { data: Some(b64) });
+            }
+        }
+        Ok(DaemonRes::CoverArt { data: None })
+    }
+
+}
+
+struct Lyrics;
+
+impl Lyrics {
+    pub async fn get(
+        inner: &DaemonInner,
+        track_id: i64,
+        path: Option<String>,
+    ) -> Result<DaemonRes, CoreError> {
+        inner
+            .health
+            .lyrics.count
+            .fetch_add(1, Ordering::Relaxed);
+        let current = {
+            let state = inner.state.read().await;
+            state.current_track.as_ref().and_then(|t| {
+                let id_matches = t.id == track_id;
+                let path_matches = path.as_deref().is_some_and(|p| t.path == p);
+                if id_matches || path_matches {
+                    Some(t.clone())
+                } else {
+                    None
+                }
+            })
+        };
+        let track = match current {
+            Some(t) => t,
+            None => {
+                let resolved = if !inner.config.test_mode {
+                    Library::new(inner.config.data_dir.to_str().unwrap_or(""))
+                        .ok()
+                        .and_then(|lib| lib.get_track(track_id).ok().flatten())
+                } else {
+                    None
+                };
+                match resolved.or_else(|| path.map(|p| crate::queue::resolve_track(&p))) {
+                    Some(t) => t,
+                    None => return Ok(DaemonRes::Lyrics { lyrics: None }),
+                }
+            }
+        };
+
+        let mut track = track;
+        if track.artist.is_empty() || track.title.is_empty() {
+            let (artist, title) = crate::lyrics::meta_from_filename(&track.path);
+            if track.artist.is_empty() {
+                track.artist = artist;
+            }
+            if track.title.is_empty() {
+                track.title = title;
+            }
+        }
+
+        if let Some(ref manager) = inner.lyrics_manager {
+            let lyrics = tokio::time::timeout(Duration::from_secs(4), manager.get_lyrics(&track))
+                .await
+                .ok()
+                .flatten();
+            Ok(DaemonRes::Lyrics { lyrics })
+        } else {
+            Ok(DaemonRes::Lyrics { lyrics: None })
+        }
+    }
+
+    pub async fn search(
+        inner: &DaemonInner,
+        artist: &str,
+        title: &str,
+    ) -> Result<DaemonRes, CoreError> {
+        if let Some(ref manager) = inner.lyrics_manager {
+            let lyrics =
+                tokio::time::timeout(Duration::from_secs(4), manager.search(artist, title))
+                    .await
+                    .ok()
+                    .flatten();
+            Ok(DaemonRes::Lyrics { lyrics })
+        } else {
+            Ok(DaemonRes::Lyrics { lyrics: None })
+        }
+    }
+
 }
 
 struct DaemonInner {
@@ -472,16 +2284,16 @@ impl Daemon {
             .await;
             let tracks = match result {
                 Ok(Ok(t)) => {
-                    health.scan_count.fetch_add(1, Ordering::Relaxed);
+                    health.scan.count.fetch_add(1, Ordering::Relaxed);
                     t
                 }
                 Ok(Err(e)) => {
-                    health.scan_errors.fetch_add(1, Ordering::Relaxed);
+                    health.scan.errors.fetch_add(1, Ordering::Relaxed);
                     warn!("auto-scan {:?} failed: {e}", audio_dir);
                     continue;
                 }
                 Err(e) => {
-                    health.scan_errors.fetch_add(1, Ordering::Relaxed);
+                    health.scan.errors.fetch_add(1, Ordering::Relaxed);
                     warn!("auto-scan task panicked for {:?}: {e}", audio_dir);
                     continue;
                 }
@@ -762,41 +2574,41 @@ impl Daemon {
             DaemonReq::Play { path, start_pos } => {
                 Self::clear_history(inner).await;
                 Self::enable_fallback(inner).await;
-                Self::cmd_play(inner, path, *start_pos, false).await
+                Cmd::play(inner, path, *start_pos, false).await
             }
-            DaemonReq::PlayPause => Self::cmd_playpause(inner).await,
-            DaemonReq::Pause => Self::cmd_pause(inner).await,
-            DaemonReq::Stop => Self::cmd_stop(inner).await,
-            DaemonReq::Next => Self::cmd_next(inner).await,
-            DaemonReq::Prev => Self::cmd_prev(inner).await,
-            DaemonReq::Seek { position_secs } => Self::cmd_seek(inner, *position_secs).await,
-            DaemonReq::SetVolume { volume } => Self::cmd_set_volume(inner, *volume).await,
+            DaemonReq::PlayPause => Cmd::play_pause(inner).await,
+            DaemonReq::Pause => Cmd::pause(inner).await,
+            DaemonReq::Stop => Cmd::stop(inner).await,
+            DaemonReq::Next => Cmd::next(inner).await,
+            DaemonReq::Prev => Cmd::prev(inner).await,
+            DaemonReq::Seek { position_secs } => Cmd::seek(inner, *position_secs).await,
+            DaemonReq::SetVolume { volume } => Cmd::set_volume(inner, *volume).await,
             DaemonReq::SetMasterVolume { volume } => {
-                Self::cmd_set_master_volume(inner, *volume).await
+                Cmd::set_master_volume(inner, *volume).await
             }
-            DaemonReq::GetVolume => Self::cmd_get_volume(inner).await,
-            DaemonReq::ToggleShuffle => Self::cmd_toggle_shuffle(inner).await,
-            DaemonReq::CycleRepeat { mode } => Self::cmd_cycle_repeat(inner, *mode).await,
-            DaemonReq::ToggleMute => Self::cmd_toggle_mute(inner).await,
+            DaemonReq::GetVolume => Cmd::get_volume(inner).await,
+            DaemonReq::ToggleShuffle => Cmd::toggle_shuffle(inner).await,
+            DaemonReq::CycleRepeat { mode } => Cmd::cycle_repeat(inner, *mode).await,
+            DaemonReq::ToggleMute => Cmd::toggle_mute(inner).await,
             DaemonReq::Crossfade {
                 enabled,
                 duration_secs,
                 easing,
-            } => Self::cmd_crossfade(inner, *enabled, *duration_secs, *easing).await,
-            DaemonReq::SetLoudnessMode { mode } => Self::cmd_set_loudness_mode(inner, *mode).await,
+            } => Cmd::crossfade(inner, *enabled, *duration_secs, *easing).await,
+            DaemonReq::SetLoudnessMode { mode } => Cmd::set_loudness_mode(inner, *mode).await,
             DaemonReq::ScanLoudness { track_ids, force } => {
-                Self::cmd_scan_loudness(inner, track_ids.clone(), *force).await
+                Cmd::scan_loudness(inner, track_ids.clone(), *force).await
             }
             DaemonReq::SetPreGain { pre_gain_db } => {
-                Self::cmd_set_pre_gain(inner, *pre_gain_db).await
+                Cmd::set_pre_gain(inner, *pre_gain_db).await
             }
-            DaemonReq::SetGapless { enabled } => Self::cmd_set_gapless(inner, *enabled).await,
+            DaemonReq::SetGapless { enabled } => Cmd::set_gapless(inner, *enabled).await,
             DaemonReq::SetDynamicMode {
                 enabled,
                 min_queue_remaining,
                 max_history,
             } => {
-                Self::cmd_set_dynamic_mode(inner, *enabled, *min_queue_remaining, *max_history)
+                Cmd::set_dynamic_mode(inner, *enabled, *min_queue_remaining, *max_history)
                     .await
             }
             DaemonReq::SetScrobble {
@@ -806,7 +2618,7 @@ impl Daemon {
                 min_play_secs,
                 min_play_pct,
             } => {
-                Self::cmd_set_scrobble(
+                Cmd::set_scrobble(
                     inner,
                     *enabled,
                     api_key.clone(),
@@ -816,19 +2628,19 @@ impl Daemon {
                 )
                 .await
             }
-            DaemonReq::Library { action } => Self::cmd_library(inner, action).await,
-            DaemonReq::Search { query } => Self::cmd_search(inner, query).await,
-            DaemonReq::GetFavourites => Self::cmd_get_favourites(inner).await,
-            DaemonReq::AddFavourite { track_id } => Self::cmd_add_favourite(inner, *track_id).await,
+            DaemonReq::Library { action } => LibraryHandler::handle(inner, action).await,
+            DaemonReq::Search { query } => Search::handle(inner, query).await,
+            DaemonReq::GetFavourites => Favourites::list(inner).await,
+            DaemonReq::AddFavourite { track_id } => Favourites::add(inner, *track_id).await,
             DaemonReq::RemoveFavourite { track_id } => {
-                Self::cmd_remove_favourite(inner, *track_id).await
+                Favourites::remove(inner, *track_id).await
             }
             DaemonReq::YtSearch { query, filter } => {
-                Self::cmd_yt_search(inner, query, *filter).await
+                Yt::search(inner, query, *filter).await
             }
-            DaemonReq::YtSearchPoll => Self::cmd_yt_search_poll(inner).await,
-            DaemonReq::YtSearchCancel => Self::cmd_yt_search_cancel(inner).await,
-            DaemonReq::YtResolveStream { url } => Self::cmd_yt_resolve_stream(inner, url).await,
+            DaemonReq::YtSearchPoll => Yt::poll(inner).await,
+            DaemonReq::YtSearchCancel => Yt::cancel(inner).await,
+            DaemonReq::YtResolveStream { url } => Yt::resolve_stream(inner, url).await,
             DaemonReq::YtDownload { .. } => {
                 Err(CoreError::Daemon("yt_download not yet implemented".into()))
             }
@@ -869,64 +2681,64 @@ impl Daemon {
                 Self::save_state(inner);
                 Ok(DaemonRes::Ok)
             }
-            DaemonReq::GetCoverArt { track_id } => Self::cmd_get_cover_art(inner, *track_id).await,
+            DaemonReq::GetCoverArt { track_id } => Cover::get(inner, *track_id).await,
             DaemonReq::GetArtistCoverArt { artist } => {
-                Self::cmd_get_artist_cover_art(inner, artist).await
+                Cover::artist(inner, artist).await
             }
             DaemonReq::GetLyrics { track_id, path } => {
-                Self::cmd_get_lyrics(inner, *track_id, path.clone()).await
+                Lyrics::get(inner, *track_id, path.clone()).await
             }
             DaemonReq::LyricsSearch { artist, title } => {
-                Self::cmd_lyrics_search(inner, artist, title).await
+                Lyrics::search(inner, artist, title).await
             }
-            DaemonReq::SpotifySetToken { token } => Self::cmd_spotify_set_token(inner, token).await,
-            DaemonReq::SpotifyClear => Self::cmd_spotify_clear(inner).await,
-            DaemonReq::SpotifyStatus => Self::cmd_spotify_status(inner).await,
-            DaemonReq::SpotifyPlayPause => Self::cmd_spotify_play_pause(inner).await,
-            DaemonReq::SpotifySync => Self::cmd_spotify_sync(inner).await,
-            DaemonReq::SpotifyPlaylists => Self::cmd_spotify_playlists(inner).await,
+            DaemonReq::SpotifySetToken { token } => Spotify::set_token(inner, token).await,
+            DaemonReq::SpotifyClear => Spotify::clear(inner).await,
+            DaemonReq::SpotifyStatus => Spotify::status(inner).await,
+            DaemonReq::SpotifyPlayPause => Spotify::play_pause(inner).await,
+            DaemonReq::SpotifySync => Spotify::sync(inner).await,
+            DaemonReq::SpotifyPlaylists => Spotify::playlists(inner).await,
             DaemonReq::SpotifyPlaylistTracks { id } => {
-                Self::cmd_spotify_playlist_tracks(inner, id).await
+                Spotify::playlist_tracks(inner, id).await
             }
             DaemonReq::SpotifyResolve {
                 playlist_id,
                 track_index,
-            } => Self::cmd_spotify_resolve(inner, playlist_id, *track_index).await,
+            } => Spotify::resolve(inner, playlist_id, *track_index).await,
             DaemonReq::SpotifySearchWeb { query } => {
-                Self::cmd_spotify_search_web(inner, query).await
+                Spotify::search_web(inner, query).await
             }
             DaemonReq::SpotifyResolveTrack {
                 name,
                 artists,
                 album,
-            } => Self::cmd_spotify_resolve_track(inner, name, artists, album).await,
-            DaemonReq::SoloistSetApiKey { key } => Self::cmd_soloist_set_api_key(inner, key).await,
+            } => Spotify::resolve_track(inner, name, artists, album).await,
+            DaemonReq::SoloistSetApiKey { key } => Soloist::set_api_key(inner, key).await,
             DaemonReq::SoloistSetConfig { auto_start } => {
-                Self::cmd_soloist_set_config(inner, *auto_start).await
+                Soloist::set_config(inner, *auto_start).await
             }
-            DaemonReq::SoloistClear => Self::cmd_soloist_clear(inner).await,
-            DaemonReq::SoloistStart => Self::cmd_soloist_start(inner).await,
-            DaemonReq::SoloistStop => Self::cmd_soloist_stop(inner).await,
-            DaemonReq::SoloistStatus => Self::cmd_soloist_status(inner).await,
-            DaemonReq::SoloistPlay { uri } => Self::cmd_soloist_play(inner, uri).await,
-            DaemonReq::SoloistActivate => Self::cmd_soloist_activate(inner).await,
+            DaemonReq::SoloistClear => Soloist::clear(inner).await,
+            DaemonReq::SoloistStart => Soloist::start(inner).await,
+            DaemonReq::SoloistStop => Soloist::stop(inner).await,
+            DaemonReq::SoloistStatus => Soloist::status(inner).await,
+            DaemonReq::SoloistPlay { uri } => Soloist::play(inner, uri).await,
+            DaemonReq::SoloistActivate => Soloist::activate(inner).await,
             DaemonReq::SetSleepTimer { minutes } => {
-                Self::cmd_set_sleep_timer(inner, *minutes).await
+                Cmd::set_sleep_timer(inner, *minutes).await
             }
-            DaemonReq::CancelSleepTimer => Self::cmd_cancel_sleep_timer(inner).await,
-            DaemonReq::GetStatus => Self::cmd_get_status(inner).await,
-            DaemonReq::CheckHealth => Self::cmd_check_health(inner).await,
+            DaemonReq::CancelSleepTimer => Cmd::cancel_sleep_timer(inner).await,
+            DaemonReq::GetStatus => Cmd::get_status(inner).await,
+            DaemonReq::CheckHealth => Cmd::check_health(inner).await,
             DaemonReq::Ping => Ok(DaemonRes::Pong),
-            DaemonReq::Queue { action } => Self::cmd_queue(inner, action).await,
-            DaemonReq::SetEqPreset { preset } => Self::cmd_set_eq_preset(inner, *preset).await,
-            DaemonReq::SetEqEnabled { enabled } => Self::cmd_set_eq_enabled(inner, *enabled).await,
+            DaemonReq::Queue { action } => Queue::handle(inner, action).await,
+            DaemonReq::SetEqPreset { preset } => Cmd::set_eq_preset(inner, *preset).await,
+            DaemonReq::SetEqEnabled { enabled } => Cmd::set_eq_enabled(inner, *enabled).await,
             DaemonReq::SetReverb { enabled, room_size } => {
-                Self::cmd_set_reverb(inner, *enabled, *room_size).await
+                Cmd::set_reverb(inner, *enabled, *room_size).await
             }
-            DaemonReq::ListEqPresets => Self::cmd_list_eq_presets(inner).await,
+            DaemonReq::ListEqPresets => Cmd::list_eq_presets(inner).await,
             DaemonReq::Quit => {
                 info!("quit requested");
-                let _ = Self::cmd_stop(inner).await;
+                let _ = Cmd::stop(inner).await;
                 if !inner.config.test_mode {
                     let s = inner.state.read().await;
                     let saved = SavedState::from_state(&s);
@@ -1405,7 +3217,7 @@ impl Daemon {
                 if was_crossfading {
                     let _lock = inner.cmd_lock.lock().await;
                     Self::finish_crossfade(inner).await;
-                    let _ = Self::cmd_next(inner).await;
+                    let _ = Cmd::next(inner).await;
                 } else {
                     let _ = inner.internal_req_tx.send(DaemonReq::Next);
                 }
@@ -1459,1646 +3271,61 @@ impl Daemon {
         Self::push_queue_state(inner).await;
     }
 
-    async fn cmd_play(
-        inner: &DaemonInner,
-        path: &str,
-        start_pos: f64,
-        auto_advanced: bool,
-    ) -> Result<DaemonRes, CoreError> {
-        {
-            let mut mixer = inner.mixer.lock().await;
-            mixer.stop()?;
-        }
-        *inner.crossfade_loaded_for.lock().await = None;
-        {
-            let mut state = inner.state.write().await;
-            if state.status != PlaybackStatus::Stopped {
-                state.stop()?;
-            }
-        }
-
-        let path_owned = path.to_string();
-        let path_for_blocking = path_owned.clone();
-        let source =
-            tokio::task::spawn_blocking(move || AudioMixer::decode_file(&path_for_blocking))
-                .await
-                .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
-                .map_err(|e| CoreError::Daemon(format!("decode: {e}")))?;
-
-        let dur = {
-            let mut mixer = inner.mixer.lock().await;
-            mixer.load_active_decoded(source, start_pos)?;
-            mixer.play()?;
-            mixer.duration()
-        };
-        let mut state = inner.state.write().await;
-
-        let track = Self::resolve_track_meta(inner, std::path::Path::new(&path_owned), dur);
-        if let Some(pos) = state.queue.iter().position(|t| t.path == track.path) {
-            if pos > 0 {
-                state.queue.rotate_left(pos);
-            }
-        }
-        state.play(track.clone())?;
-        state.time_pos = start_pos;
-        state.duration = dur;
-        drop(state);
-        Self::push_event(
-            inner,
-            DaemonEvent::PlaybackStarted {
-                track,
-                auto_advanced,
-                time_pos: start_pos,
-                duration: dur,
-            },
-        );
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_playpause(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        if Self::soloist_ready(inner).await {
-            let state = inner.state.read().await;
-            let is_playing = state.soloist.playing;
-            drop(state);
-            if is_playing {
-                return Self::soloist_control(inner, "pause", vec![])
-                    .await
-                    .map(|_| DaemonRes::Ok)
-                    .map_err(CoreError::Daemon);
-            } else {
-                return Self::soloist_control(inner, "play", vec![])
-                    .await
-                    .map(|_| DaemonRes::Ok)
-                    .map_err(CoreError::Daemon);
-            }
-        }
-
-        let is_playing = inner.mixer.lock().await.is_playing();
-        if is_playing {
-            Self::cmd_pause(inner).await
-        } else {
-            let state = inner.state.read().await;
-            let is_paused = state.status == PlaybackStatus::Paused;
-            let path = state
-                .current_track
-                .as_ref()
-                .map(|t| t.path.clone())
-                .unwrap_or_default();
-            drop(state);
-
-            if is_paused && !path.is_empty() {
-                inner.mixer.lock().await.play()?;
-                let mut state = inner.state.write().await;
-                let track = match state.current_track.clone() {
-                    Some(t) => t,
-                    None => {
-                        warn!("resume: current_track is None despite paused status");
-                        drop(state);
-                        return Ok(DaemonRes::Error {
-                            message: "no current track".into(),
-                        });
-                    }
-                };
-                state.play(track.clone())?;
-                let time_pos = state.time_pos;
-                let duration = state.duration;
-                drop(state);
-                Self::push_event(
-                    inner,
-                    DaemonEvent::PlaybackStarted {
-                        track,
-                        auto_advanced: false,
-                        time_pos,
-                        duration,
-                    },
-                );
-                Ok(DaemonRes::Ok)
-            } else if !path.is_empty() {
-                Self::cmd_play(inner, &path, 0.0, false).await
-            } else {
-                let state = inner.state.read().await;
-                let (queue, cursor) = queue::visible_queue(&state);
-                drop(state);
-                if !queue.is_empty() {
-                    let idx = (cursor as usize).min(queue.len() - 1);
-                    Self::cmd_play(inner, &queue[idx].path, 0.0, false).await
-                } else {
-                    Ok(DaemonRes::Ok)
-                }
-            }
-        }
-    }
-
-    async fn cmd_pause(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        if Self::soloist_ready(inner).await {
-            return Self::soloist_control(inner, "pause", vec![])
-                .await
-                .map(|_| DaemonRes::Ok)
-                .map_err(CoreError::Daemon);
-        }
-
-        let pos = {
-            let mut mixer = inner.mixer.lock().await;
-            mixer.pause()?;
-            mixer.current_position()
-        };
-        let mut state = inner.state.write().await;
-        state.pause()?;
-        state.time_pos = pos;
-        let time_pos = state.time_pos;
-        drop(state);
-        Self::push_event(inner, DaemonEvent::PlaybackPaused { time_pos });
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_stop(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        {
-            let mut mixer = inner.mixer.lock().await;
-            mixer.stop()?;
-        }
-        *inner.crossfade_loaded_for.lock().await = None;
-        let mut state = inner.state.write().await;
-        if state.status != PlaybackStatus::Stopped {
-            state.stop()?;
-        }
-        drop(state);
-        Self::push_event(inner, DaemonEvent::PlaybackStopped);
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_next(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        if Self::soloist_ready(inner).await {
-            return Self::soloist_control(inner, "skip_next", vec![])
-                .await
-                .map(|_| DaemonRes::Ok)
-                .map_err(CoreError::Daemon);
-        }
-
-        if let Some(path) = Self::promote_crossfade(inner).await {
-            let _ = Self::step_next(inner).await;
-            Self::report_promoted(inner, &path).await;
-            return Ok(DaemonRes::Ok);
-        }
-        *inner.crossfade_loaded_for.lock().await = None;
-        let standby = {
-            let state = inner.state.read().await;
-            Self::next_track(&state)
-        };
-        if let Some(track) = standby {
-            if Self::try_start_crossfade(inner, &track).await {
-                return Ok(DaemonRes::Ok);
-            }
-        }
-        let next = match Self::step_next(inner).await {
-            Ok(Some(t)) => t,
-            Ok(None) => {
-                let was_playing = inner.state.read().await.status != PlaybackStatus::Stopped;
-                if was_playing {
-                    Self::stop_playback(inner).await;
-                } else {
-                    Self::push_queue_state(inner).await;
-                }
-                return Ok(DaemonRes::Ok);
-            }
-            Err(e) => return Err(e),
-        };
-        let _ = Self::cmd_play(inner, &next.path, 0.0, true).await?;
-        Self::push_queue_state(inner).await;
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_prev(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        if Self::soloist_ready(inner).await {
-            return Self::soloist_control(inner, "skip_prev", vec![])
-                .await
-                .map(|_| DaemonRes::Ok)
-                .map_err(CoreError::Daemon);
-        }
-
-        if let Some(path) = Self::promote_crossfade(inner).await {
-            Self::report_promoted(inner, &path).await;
-        }
-        let pos = inner.mixer.lock().await.current_position();
-        if pos > RESTART_THRESHOLD_SECS {
-            return Self::cmd_seek(inner, 0.0).await;
-        }
-        let has_current = inner.state.read().await.current_track.is_some();
-
-        let prev = inner.play_history.lock().await.pop();
-        match prev {
-            Some(HistoryEntry::User(track)) => {
-                {
-                    let mut state = inner.state.write().await;
-                    state.queue.insert(0, track.clone());
-                }
-                let res = Self::cmd_play(inner, &track.path, 0.0, true).await?;
-                Self::push_queue_state(inner).await;
-                Ok(res)
-            }
-            Some(HistoryEntry::Default { index, track }) => {
-                {
-                    let mut state = inner.state.write().await;
-                    if index < state.default_list.len() {
-                        state.default_cursor = index;
-                    }
-                }
-                let res = Self::cmd_play(inner, &track.path, 0.0, true).await?;
-                Self::push_queue_state(inner).await;
-                Ok(res)
-            }
-            None => {
-                if has_current {
-                    Self::cmd_seek(inner, 0.0).await
-                } else {
-                    Ok(DaemonRes::Ok)
-                }
-            }
-        }
-    }
-
-    async fn cmd_seek(inner: &DaemonInner, pos: f64) -> Result<DaemonRes, CoreError> {
-        if Self::soloist_ready(inner).await {
-            let pos_ms = (pos * 1000.0).round() as u64;
-            return Self::soloist_control(
-                inner,
-                "seek",
-                vec![("position_ms", Value::from(pos_ms))],
-            )
-            .await
-            .map(|_| DaemonRes::Ok)
-            .map_err(CoreError::Daemon);
-        }
-
-        let state = inner.state.read().await;
-        if state.status == PlaybackStatus::Stopped {
-            return Ok(DaemonRes::Ok);
-        }
-        let was_paused = state.status == PlaybackStatus::Paused;
-        let path = state.current_track.as_ref().map(|t| t.path.clone());
-        let duration = state.duration;
-        drop(state);
-        let Some(path) = path else {
-            return Ok(DaemonRes::Ok);
-        };
-        let pos = pos.clamp(0.0, duration.max(0.0));
-        tracing::debug!("cmd_seek: requested position={}", pos);
-        let path_owned = path.clone();
-        let source =
-            tokio::task::spawn_blocking(move || AudioMixer::decode_file_at(&path_owned, pos))
-                .await
-                .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
-                .map_err(|e| CoreError::Daemon(format!("decode: {e}")))?;
-        {
-            let mut mixer = inner.mixer.lock().await;
-            mixer.load_active_decoded(source, pos)?;
-            mixer.play()?;
-            if was_paused {
-                mixer.pause()?;
-            }
-        }
-        let mut state = inner.state.write().await;
-        state.seek(pos)?;
-        drop(state);
-        Self::push_event(inner, DaemonEvent::PositionChanged { time_pos: pos });
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_set_volume(inner: &DaemonInner, volume: u8) -> Result<DaemonRes, CoreError> {
-        if Self::soloist_ready(inner).await {
-            return Self::soloist_control(
-                inner,
-                "set_volume",
-                vec![("volume", Value::from(volume))],
-            )
-            .await
-            .map(|_| DaemonRes::Ok)
-            .map_err(CoreError::Daemon);
-        }
-
-        inner.mixer.lock().await.set_volume(volume)?;
-        let mut state = inner.state.write().await;
-        state.set_volume(volume)?;
-        drop(state);
-        Self::push_event(inner, DaemonEvent::VolumeChanged { volume });
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_set_master_volume(
-        inner: &DaemonInner,
-        volume: u8,
-    ) -> Result<DaemonRes, CoreError> {
-        let vol = volume.min(100);
-        inner.mixer.lock().await.set_master_volume(vol)?;
-        let mut state = inner.state.write().await;
-        state.master_volume = vol;
-        drop(state);
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_get_volume(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let state = inner.state.read().await;
-        let volume = state.volume;
-        drop(state);
-        Ok(DaemonRes::Value {
-            value: serde_json::json!({ "volume": volume }),
-        })
-    }
-
-    async fn cmd_list_eq_presets(_inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let presets = gtm_core::state::EQ_PRESETS
-            .iter()
-            .map(|p| p.to_string())
-            .collect::<Vec<String>>();
-        Ok(DaemonRes::EqPresets { presets })
-    }
-
-    async fn cmd_toggle_shuffle(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        if Self::soloist_ready(inner).await {
-            let state = inner.state.read().await;
-            let enabled = !state.shuffle;
-            drop(state);
-            return Self::soloist_control(
-                inner,
-                "set_shuffle",
-                vec![("enabled", Value::Bool(enabled))],
-            )
-            .await
-            .map(|_| DaemonRes::Ok)
-            .map_err(CoreError::Daemon);
-        }
-
-        let mut state = inner.state.write().await;
-        state.toggle_shuffle()?;
-        let enabled = state.shuffle;
-        drop(state);
-        Self::push_event(inner, DaemonEvent::ShuffleChanged { enabled });
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_cycle_repeat(
-        inner: &DaemonInner,
-        mode: gtm_core::state::RepeatMode,
-    ) -> Result<DaemonRes, CoreError> {
-        if Self::soloist_ready(inner).await {
-            let (ctx_enabled, track_enabled) = match mode {
-                RepeatMode::Off => (false, false),
-                RepeatMode::All => (true, false),
-                RepeatMode::One => (false, true),
-            };
-            let ctx_json = SoloistManager::cmd(
-                "set_repeat_context",
-                vec![("enabled", Value::Bool(ctx_enabled))],
-            );
-            let track_json = SoloistManager::cmd(
-                "set_repeat_track",
-                vec![("enabled", Value::Bool(track_enabled))],
-            );
-            inner.soloist.lock().await.send(ctx_json).await;
-            inner.soloist.lock().await.send(track_json).await;
-            return Ok(DaemonRes::Ok);
-        }
-
-        let mut state = inner.state.write().await;
-        state.cycle_repeat(mode)?;
-        let m = state.repeat;
-        drop(state);
-        Self::push_event(inner, DaemonEvent::RepeatModeChanged { mode: m });
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_toggle_mute(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.toggle_mute()?;
-        let muted = state.mute;
-        drop(state);
-        let vol = if muted {
-            0
-        } else {
-            inner.state.read().await.volume
-        };
-        inner.mixer.lock().await.set_volume(vol)?;
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_crossfade(
-        inner: &DaemonInner,
-        enabled: bool,
-        duration_secs: u8,
-        easing: Option<gtm_core::state::Easing>,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.set_crossfade(enabled, duration_secs, easing)?;
-        drop(state);
-        Self::push_event(
-            inner,
-            DaemonEvent::CrossfadeChanged {
-                enabled,
-                duration_secs,
-                easing,
-            },
-        );
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_set_loudness_mode(
-        inner: &DaemonInner,
-        mode: gtm_core::state::LoudnessMode,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.set_loudness_mode(mode)?;
-        drop(state);
-        Self::push_event(inner, DaemonEvent::LoudnessModeChanged { mode });
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_scan_loudness(
-        inner: &DaemonInner,
-        track_ids: Option<Vec<i64>>,
-        _force: Option<bool>,
-    ) -> Result<DaemonRes, CoreError> {
-        let total = track_ids.as_ref().map(|v| v.len() as u32).unwrap_or(0);
-        for i in 0..total {
-            let remaining = total - i;
-            Self::push_event(
-                inner,
-                DaemonEvent::LoudnessScanProgress {
-                    tracks_remaining: remaining,
-                    tracks_total: total,
-                    current_track: None,
-                },
-            );
-        }
-        Self::push_event(
-            inner,
-            DaemonEvent::LoudnessScanDone {
-                scanned: total,
-                failed: 0,
-            },
-        );
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_set_pre_gain(
-        inner: &DaemonInner,
-        pre_gain_db: f32,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.set_pre_gain(pre_gain_db)?;
-        drop(state);
-        Self::push_event(inner, DaemonEvent::PreGainChanged { pre_gain_db });
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_set_gapless(inner: &DaemonInner, enabled: bool) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.set_gapless(enabled)?;
-        drop(state);
-        Self::push_event(inner, DaemonEvent::GaplessChanged { enabled });
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_set_dynamic_mode(
-        inner: &DaemonInner,
-        enabled: bool,
-        min_queue_remaining: Option<u32>,
-        max_history: Option<u32>,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.set_dynamic_mode(enabled, min_queue_remaining, max_history)?;
-        let effective_min = min_queue_remaining.unwrap_or(state.dynamic_mode.min_queue_remaining);
-        let effective_max = max_history.unwrap_or(state.dynamic_mode.max_history);
-        drop(state);
-        Self::push_event(
-            inner,
-            DaemonEvent::DynamicModeChanged {
-                enabled,
-                min_queue_remaining: effective_min,
-                max_history: effective_max,
-            },
-        );
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_set_scrobble(
-        inner: &DaemonInner,
-        enabled: bool,
-        api_key: Option<String>,
-        session_token: Option<String>,
-        min_play_secs: Option<u32>,
-        min_play_pct: Option<f32>,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.set_scrobble(enabled, api_key, session_token, min_play_secs, min_play_pct)?;
-        drop(state);
-        Self::push_event(inner, DaemonEvent::ScrobbleConfigChanged { enabled });
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_set_eq_preset(
-        inner: &DaemonInner,
-        preset: EqPreset,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.eq_preset = preset;
-        state.version += 1;
-        drop(state);
-        inner.mixer.lock().await.set_eq_preset(&preset);
-        Self::push_event(inner, DaemonEvent::EqPresetChanged { preset });
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_set_eq_enabled(
-        inner: &DaemonInner,
-        enabled: bool,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.eq_enabled = enabled;
-        state.version += 1;
-        drop(state);
-        inner.mixer.lock().await.set_eq_enabled(enabled);
-        Self::push_event(inner, DaemonEvent::EqEnabledChanged { enabled });
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_set_reverb(
-        inner: &DaemonInner,
-        enabled: bool,
-        room_size: f32,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.reverb = ReverbConfig { enabled, room_size };
-        state.version += 1;
-        drop(state);
-        inner
-            .mixer
-            .lock()
-            .await
-            .set_reverb(&ReverbConfig { enabled, room_size });
-        Self::push_event(inner, DaemonEvent::ReverbChanged { enabled, room_size });
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_set_sleep_timer(
-        inner: &DaemonInner,
-        minutes: u32,
-    ) -> Result<DaemonRes, CoreError> {
-        let total_secs = minutes * 60;
-        let event_tx = inner.event_tx.clone();
-        let state = inner.state.clone();
-
-        inner.sleep_cancel.store(true, Ordering::SeqCst);
-        inner.sleep_cancel.store(false, Ordering::SeqCst);
-        let cancel_flag = inner.sleep_cancel.clone();
-
-        let mut s = state.write().await;
-        s.sleep_timer = Some(total_secs);
-        s.version += 1;
-        drop(s);
-
-        tokio::spawn(async move {
-            for remaining in (1..=total_secs).rev() {
-                if cancel_flag.load(Ordering::SeqCst) {
-                    return;
-                }
-                {
-                    let mut s = state.write().await;
-                    s.sleep_timer = Some(remaining);
-                }
-                let _ = event_tx.send(DaemonEvent::SleepTimerTick {
-                    remaining_secs: remaining,
-                });
-                tokio::time::sleep(Duration::from_secs(1)).await;
-            }
-            {
-                let mut s = state.write().await;
-                s.status = PlaybackStatus::Stopped;
-                s.sleep_timer = None;
-                s.version += 1;
-            }
-            let _ = event_tx.send(DaemonEvent::PlaybackStopped);
-            let _ = event_tx.send(DaemonEvent::SleepTimerExpired);
-        });
-
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_cancel_sleep_timer(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        inner.sleep_cancel.store(true, Ordering::SeqCst);
-        let mut state = inner.state.write().await;
-        state.sleep_timer = None;
-        state.version += 1;
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_queue(inner: &DaemonInner, action: &QueueAction) -> Result<DaemonRes, CoreError> {
-        match action {
-            QueueAction::List => {
-                let state = inner.state.read().await;
-                let (queue, cursor) = queue::visible_queue(&state);
-                drop(state);
-                Ok(DaemonRes::QueueState { queue, cursor })
-            }
-            QueueAction::Clear => {
-                Self::clear_history(inner).await;
-                {
-                    let mut state = inner.state.write().await;
-                    queue::queue_clear(&mut state);
-                }
-                Self::push_queue_state(inner).await;
-                Self::save_state(inner);
-                Ok(DaemonRes::Ok)
-            }
-            QueueAction::Remove { index } => {
-                {
-                    let mut state = inner.state.write().await;
-                    queue::queue_remove(&mut state, *index);
-                }
-                Self::push_queue_state(inner).await;
-                Self::save_state(inner);
-                Ok(DaemonRes::Ok)
-            }
-            QueueAction::Move { from, to } => {
-                {
-                    let mut state = inner.state.write().await;
-                    queue::queue_move(&mut state, *from, *to);
-                }
-                Self::push_queue_state(inner).await;
-                Self::save_state(inner);
-                Ok(DaemonRes::Ok)
-            }
-            QueueAction::Add { paths, position } => {
-                let expanded = match queue::expand_paths(paths) {
-                    Ok(files) => files,
-                    Err(e) => return Ok(DaemonRes::Error { message: e }),
-                };
-                if expanded.is_empty() {
-                    return Ok(DaemonRes::Error {
-                        message: "no audio files found".into(),
-                    });
-                }
-                let first_path = expanded[0].clone();
-                let was_empty = {
-                    let mut state = inner.state.write().await;
-                    state.fallback_disabled = false;
-                    let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
-                    queue::queue_add_many(&mut state, &expanded, *position);
-                    drop(state);
-                    w
-                };
-                if was_empty {
-                    let _ = Self::cmd_play(inner, &first_path, 0.0, false).await;
-                }
-                Self::push_queue_state(inner).await;
-                Self::save_state(inner);
-                Ok(DaemonRes::Ok)
-            }
-            QueueAction::Set { paths, start_idx } => {
-                Self::clear_history(inner).await;
-                {
-                    let mut state = inner.state.write().await;
-                    queue::queue_set(&mut state, paths, *start_idx);
-                }
-                Self::push_queue_state(inner).await;
-                Self::save_state(inner);
-                Ok(DaemonRes::Ok)
-            }
-        }
-    }
-
-    async fn cmd_library(
-        inner: &DaemonInner,
-        action: &gtm_core::ipc::LibraryAction,
-    ) -> Result<DaemonRes, CoreError> {
-        let res = match action {
-            gtm_core::ipc::LibraryAction::Scan { path } => {
-                let audio_dir = path.clone();
-                let data_dir = inner.config.data_dir.clone();
-                let cache_dir = inner.config.cache_dir.to_string_lossy().to_string();
-                let result = tokio::task::spawn_blocking(move || {
-                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    lib.scan_directory(&audio_dir, true, Some(&cache_dir))
-                })
-                .await
-                .map_err(|e| CoreError::Daemon(e.to_string()))?;
-                match result {
-                    Ok(tracks) => DaemonRes::Tracks { tracks },
-                    Err(e) => DaemonRes::Error { message: e },
-                }
-            }
-            gtm_core::ipc::LibraryAction::GetTracks { filter: _, sort: _ } => {
-                let data_dir = inner.config.data_dir.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    lib.list_tracks()
-                })
-                .await
-                .map_err(|e| CoreError::Daemon(e.to_string()))?;
-                match result {
-                    Ok(tracks) => DaemonRes::Tracks { tracks },
-                    Err(e) => DaemonRes::Error { message: e },
-                }
-            }
-            gtm_core::ipc::LibraryAction::GetPlaylists => {
-                let data_dir = inner.config.data_dir.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    lib.get_playlists()
-                })
-                .await
-                .map_err(|e| CoreError::Daemon(e.to_string()))?;
-                match result {
-                    Ok(playlists) => DaemonRes::Playlists { playlists },
-                    Err(e) => DaemonRes::Error { message: e },
-                }
-            }
-            gtm_core::ipc::LibraryAction::GetPlaylistTracks { id } => {
-                let data_dir = inner.config.data_dir.clone();
-                let pid = *id;
-                let result = tokio::task::spawn_blocking(move || {
-                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    lib.get_playlist_tracks(pid)
-                })
-                .await
-                .map_err(|e| CoreError::Daemon(e.to_string()))?;
-                match result {
-                    Ok(tracks) => DaemonRes::Tracks { tracks },
-                    Err(e) => DaemonRes::Error { message: e },
-                }
-            }
-            gtm_core::ipc::LibraryAction::CreatePlaylist { name } => {
-                let name = name.clone();
-                let data_dir = inner.config.data_dir.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    lib.create_playlist(&name)
-                })
-                .await
-                .map_err(|e| CoreError::Daemon(e.to_string()))?;
-                match result {
-                    Ok(playlist) => {
-                        let playlists = vec![playlist];
-                        DaemonRes::Playlists { playlists }
-                    }
-                    Err(e) => DaemonRes::Error { message: e },
-                }
-            }
-            gtm_core::ipc::LibraryAction::DeletePlaylist { id } => {
-                let id = *id;
-                let data_dir = inner.config.data_dir.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    lib.delete_playlist(id)
-                })
-                .await
-                .map_err(|e| CoreError::Daemon(e.to_string()))?;
-                match result {
-                    Ok(_) => DaemonRes::Ok,
-                    Err(e) => DaemonRes::Error { message: e },
-                }
-            }
-            gtm_core::ipc::LibraryAction::AddToPlaylist {
-                playlist_id,
-                track_ids,
-            } => {
-                let playlist_id = *playlist_id;
-                let track_ids = track_ids.clone();
-                let data_dir = inner.config.data_dir.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    for tid in &track_ids {
-                        lib.add_to_playlist(playlist_id, *tid)?;
-                    }
-                    Ok::<_, String>(())
-                })
-                .await
-                .map_err(|e| CoreError::Daemon(e.to_string()))?;
-                match result {
-                    Ok(_) => DaemonRes::Ok,
-                    Err(e) => DaemonRes::Error { message: e },
-                }
-            }
-            gtm_core::ipc::LibraryAction::ImportM3u { path } => {
-                let path = path.clone();
-                let data_dir = inner.config.data_dir.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    lib.import_m3u(&path)
-                })
-                .await
-                .map_err(|e| CoreError::Daemon(e.to_string()))?;
-                match result {
-                    Ok(playlist) => {
-                        let playlists = vec![playlist];
-                        DaemonRes::Playlists { playlists }
-                    }
-                    Err(e) => DaemonRes::Error { message: e },
-                }
-            }
-            gtm_core::ipc::LibraryAction::GetRecent { count } => {
-                let count = *count;
-                let data_dir = inner.config.data_dir.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    lib.get_recent(count)
-                })
-                .await
-                .map_err(|e| CoreError::Daemon(e.to_string()))?;
-                match result {
-                    Ok(tracks) => DaemonRes::Tracks { tracks },
-                    Err(e) => DaemonRes::Error { message: e },
-                }
-            }
-            gtm_core::ipc::LibraryAction::SyncCovers => {
-                Self::cmd_sync_start(inner, SyncKind::Covers, None).await?
-            }
-            gtm_core::ipc::LibraryAction::SyncLyrics => {
-                Self::cmd_sync_start(inner, SyncKind::Lyrics, None).await?
-            }
-            gtm_core::ipc::LibraryAction::SyncMetadata { path } => {
-                Self::cmd_sync_start(inner, SyncKind::Metadata, path.clone()).await?
-            }
-            gtm_core::ipc::LibraryAction::SyncStatus => Self::cmd_sync_status(inner).await?,
-            gtm_core::ipc::LibraryAction::ExportM3u { playlist_id, path } => {
-                let playlist_id = *playlist_id;
-                let export_path = path.clone();
-                let data_dir = inner.config.data_dir.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    lib.export_m3u(playlist_id, &export_path)
-                })
-                .await
-                .map_err(|e| CoreError::Daemon(e.to_string()))?;
-                match result {
-                    Ok(_) => DaemonRes::Ok,
-                    Err(e) => DaemonRes::Error { message: e },
-                }
-            }
-            gtm_core::ipc::LibraryAction::RemoveFromPlaylist {
-                playlist_id,
-                track_id,
-            } => {
-                let playlist_id = *playlist_id;
-                let track_id = *track_id;
-                let data_dir = inner.config.data_dir.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    lib.remove_from_playlist(playlist_id, track_id)
-                })
-                .await
-                .map_err(|e| CoreError::Daemon(e.to_string()))?;
-                match result {
-                    Ok(()) => DaemonRes::Ok,
-                    Err(e) => DaemonRes::Error { message: e },
-                }
-            }
-            gtm_core::ipc::LibraryAction::RemoveTrack { id } => {
-                let id = *id;
-                let data_dir = inner.config.data_dir.clone();
-                let library_dirs = inner.config.library_paths.clone();
-                let allow_delete_files = inner.config.allow_delete_files;
-                let result = tokio::task::spawn_blocking(move || {
-                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    lib.remove_track_full(id, &library_dirs, allow_delete_files)
-                })
-                .await
-                .map_err(|e| CoreError::Daemon(e.to_string()))?;
-                match result {
-                    Ok(Some(removed_path)) => {
-                        let mut state = inner.state.write().await;
-                        state.queue.retain(|t| t.path != removed_path);
-                        let was_current = state
-                            .current_track
-                            .as_ref()
-                            .is_some_and(|t| t.path == removed_path);
-                        drop(state);
-                        if was_current {
-                            Self::stop_playback(inner).await;
-                        } else {
-                            Self::push_queue_state(inner).await;
-                        }
-                        Self::push_event(
-                            inner,
-                            DaemonEvent::Custom {
-                                name: "library_changed".into(),
-                                data: Default::default(),
-                            },
-                        );
-                        DaemonRes::Ok
-                    }
-                    Ok(None) => DaemonRes::Error {
-                        message: "track not found".to_string(),
-                    },
-                    Err(e) => DaemonRes::Error { message: e },
-                }
-            }
-            gtm_core::ipc::LibraryAction::UpdateMetadata { track_id, patch } => {
-                let track_id = *track_id;
-                let patch = patch.clone();
-                let data_dir = inner.config.data_dir.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    lib.update_metadata(track_id, &patch)
-                })
-                .await
-                .map_err(|e| CoreError::Daemon(e.to_string()))?;
-                match result {
-                    Ok(_) => DaemonRes::Ok,
-                    Err(e) => DaemonRes::Error { message: e },
-                }
-            }
-        };
-        Ok(res)
-    }
-
-    async fn cmd_sync_start(
-        inner: &DaemonInner,
-        kind: SyncKind,
-        only_path: Option<String>,
-    ) -> Result<DaemonRes, CoreError> {
-        if inner.sync_progress.running.load(Ordering::Acquire) {
-            return Ok(DaemonRes::Error {
-                message: "a library sync is already running".into(),
-            });
-        }
-        *inner.sync_progress.kind.lock().unwrap() = kind;
-        inner.sync_progress.synced.store(0, Ordering::Relaxed);
-        inner.sync_progress.total.store(0, Ordering::Relaxed);
-        inner.sync_progress.running.store(true, Ordering::Release);
-
-        let data_dir = inner.config.data_dir.clone();
-        let cache_dir = inner.config.cache_dir.clone();
-        let lyrics_manager = inner.lyrics_manager.clone();
-        let progress = inner.sync_progress.clone();
-        let event_tx = inner.event_tx.clone();
-        tokio::spawn(async move {
-            let progress_inner = progress.clone();
-            let result = tokio::task::spawn_blocking(move || match kind {
-                SyncKind::Covers => run_covers_sync(data_dir, cache_dir, &progress_inner),
-                SyncKind::Lyrics => run_lyrics_sync(data_dir, lyrics_manager, &progress_inner),
-                SyncKind::Metadata => {
-                    run_metadata_sync(data_dir, cache_dir, only_path, &progress_inner)
-                }
-            })
-            .await;
-            let (synced, total, error) = match result {
-                Ok(Ok((s, t))) => (s, t, None),
-                Ok(Err(e)) => (0, 0, Some(e)),
-                Err(e) => (0, 0, Some(e.to_string())),
-            };
-            progress.synced.store(synced, Ordering::Relaxed);
-            progress.total.store(total, Ordering::Relaxed);
-            progress.running.store(false, Ordering::Release);
-            let mut data = std::collections::HashMap::new();
-            data.insert("kind".to_string(), format!("{kind:?}").to_lowercase());
-            data.insert("synced".to_string(), synced.to_string());
-            data.insert("total".to_string(), total.to_string());
-            if let Some(e) = error {
-                data.insert("error".to_string(), e);
-            }
-            let _ = event_tx.send(DaemonEvent::Custom {
-                name: "sync_done".into(),
-                data,
-            });
-        });
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_sync_status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let progress = &inner.sync_progress;
-        Ok(DaemonRes::SyncStatus {
-            running: progress.running.load(Ordering::Acquire),
-            kind: *progress.kind.lock().unwrap(),
-            synced: progress.synced.load(Ordering::Relaxed),
-            total: progress.total.load(Ordering::Relaxed),
-        })
-    }
-
-    async fn cmd_search(inner: &DaemonInner, query: &str) -> Result<DaemonRes, CoreError> {
-        let query = query.to_string();
-        let data_dir = inner.config.data_dir.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-            lib.search_tracks(&query)
-        })
-        .await
-        .map_err(|e| CoreError::Daemon(e.to_string()))?;
-        match result {
-            Ok(tracks) => Ok(DaemonRes::Tracks { tracks }),
-            Err(e) => Ok(DaemonRes::Error { message: e }),
-        }
-    }
-
-    async fn cmd_get_favourites(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let data_dir = inner.config.data_dir.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-            lib.get_favourites()
-        })
-        .await
-        .map_err(|e| CoreError::Daemon(e.to_string()))?;
-        match result {
-            Ok(tracks) => Ok(DaemonRes::Tracks { tracks }),
-            Err(e) => Ok(DaemonRes::Error { message: e }),
-        }
-    }
-
-    async fn cmd_add_favourite(inner: &DaemonInner, track_id: i64) -> Result<DaemonRes, CoreError> {
-        let data_dir = inner.config.data_dir.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-            lib.toggle_favourite(track_id)
-        })
-        .await
-        .map_err(|e| CoreError::Daemon(e.to_string()))?;
-        match result {
-            Ok(_) => Ok(DaemonRes::Ok),
-            Err(e) => Ok(DaemonRes::Error { message: e }),
-        }
-    }
-
-    async fn cmd_remove_favourite(
-        inner: &DaemonInner,
-        track_id: i64,
-    ) -> Result<DaemonRes, CoreError> {
-        let data_dir = inner.config.data_dir.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-            lib.toggle_favourite(track_id)
-        })
-        .await
-        .map_err(|e| CoreError::Daemon(e.to_string()))?;
-        match result {
-            Ok(_) => Ok(DaemonRes::Ok),
-            Err(e) => Ok(DaemonRes::Error { message: e }),
-        }
-    }
-
-    async fn cmd_yt_search(
-        inner: &DaemonInner,
-        query: &str,
-        filter: Option<gtm_core::state::YTFilter>,
-    ) -> Result<DaemonRes, CoreError> {
-        inner.health.yt_search_count.fetch_add(1, Ordering::Relaxed);
-        inner.youtube.lock().await.start_search(query, filter);
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_yt_search_poll(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        match inner.youtube.lock().await.poll_results().await {
-            Ok(Some((query, results))) => Ok(DaemonRes::YtSearchResults { query, results }),
-            Ok(None) => Ok(DaemonRes::Ok),
-            Err(e) => {
-                inner
-                    .health
-                    .yt_search_errors
-                    .fetch_add(1, Ordering::Relaxed);
-                Ok(DaemonRes::Error { message: e })
-            }
-        }
-    }
-
-    async fn cmd_yt_search_cancel(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        inner.youtube.lock().await.cancel().await;
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_yt_resolve_stream(inner: &DaemonInner, url: &str) -> Result<DaemonRes, CoreError> {
-        match inner.youtube.lock().await.resolve_stream(url).await {
-            Ok(info) => Ok(DaemonRes::StreamInfo {
-                info: Box::new(info),
-            }),
-            Err(e) => Ok(DaemonRes::Error { message: e }),
-        }
-    }
-
-    async fn cmd_get_status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let state = inner.state.read().await;
-        let mut state_clone = state.clone();
-        let (queue, cursor) = queue::visible_queue(&state);
-        state_clone.queue = queue;
-        state_clone.queue_cursor = cursor;
-        drop(state);
-        Ok(DaemonRes::Status {
-            state: Box::new(state_clone),
-        })
-    }
-
-    async fn cmd_check_health(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let h = &inner.health;
-        let mut components = Vec::new();
-
-        components.push(ComponentHealth {
-            name: "audio_backend".into(),
-            status: HealthStatus::Ok,
-            message: Some(h.audio_backend.clone()),
-            uptime_secs: Some(h.uptime_secs()),
-        });
-
-        let scans = h.scan_count.load(Ordering::Relaxed);
-        let scan_errs = h.scan_errors.load(Ordering::Relaxed);
-        components.push(ComponentHealth {
-            name: "library_scan".into(),
-            status: if scan_errs > 0 && scans > 0 {
-                HealthStatus::Degraded
-            } else {
-                HealthStatus::Ok
-            },
-            message: Some(format!("{scans} scans, {scan_errs} errors")),
-            uptime_secs: None,
-        });
-
-        let yt = h.yt_search_count.load(Ordering::Relaxed);
-        let yt_errs = h.yt_search_errors.load(Ordering::Relaxed);
-        components.push(ComponentHealth {
-            name: "youtube_search".into(),
-            status: if yt_errs > 0 && yt > 0 {
-                HealthStatus::Degraded
-            } else {
-                HealthStatus::Ok
-            },
-            message: Some(format!("{yt} searches, {yt_errs} errors")),
-            uptime_secs: None,
-        });
-
-        let covers = h.cover_fetch_count.load(Ordering::Relaxed);
-        let cover_errs = h.cover_fetch_errors.load(Ordering::Relaxed);
-        components.push(ComponentHealth {
-            name: "cover_art".into(),
-            status: if cover_errs > 0 && covers > 0 {
-                HealthStatus::Degraded
-            } else {
-                HealthStatus::Ok
-            },
-            message: Some(format!("{covers} fetches, {cover_errs} errors")),
-            uptime_secs: None,
-        });
-
-        let lyrics = h.lyrics_fetch_count.load(Ordering::Relaxed);
-        let lyrics_errs = h.lyrics_fetch_errors.load(Ordering::Relaxed);
-        components.push(ComponentHealth {
-            name: "lyrics".into(),
-            status: if lyrics_errs > 0 && lyrics > 0 {
-                HealthStatus::Degraded
-            } else {
-                HealthStatus::Ok
-            },
-            message: Some(format!("{lyrics} fetches, {lyrics_errs} errors")),
-            uptime_secs: None,
-        });
-
-        components.push(ComponentHealth {
-            name: "event_channel".into(),
-            status: HealthStatus::Ok,
-            message: Some("capacity 1024".to_string()),
-            uptime_secs: None,
-        });
-
-        Ok(DaemonRes::HealthReport {
-            report: Box::new(HealthReport {
-                daemon_uptime_secs: h.uptime_secs(),
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                components,
-            }),
-        })
-    }
-
-    async fn cmd_get_cover_art(inner: &DaemonInner, track_id: i64) -> Result<DaemonRes, CoreError> {
-        inner
-            .health
-            .cover_fetch_count
-            .fetch_add(1, Ordering::Relaxed);
-        let mut discovered_artist = String::new();
-        let mut discovered_album = String::new();
-
-        let lib = if !inner.config.test_mode {
-            Library::new(inner.config.data_dir.to_str().unwrap_or("")).ok()
-        } else {
-            None
-        };
-        if let Some(ref library) = lib {
-            if let Ok(Some(track)) = library.get_track(track_id) {
-                if let Some(ref path) = track.cover_path {
-                    if let Ok(data) = tokio::fs::read(path).await {
-                        if !crate::cover::CoverCache::cover_too_small(&data) {
-                            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                            return Ok(DaemonRes::CoverArt { data: Some(b64) });
-                        }
-                    }
-                }
-                let audio_path = std::path::Path::new(&track.path);
-                let parent = audio_path.parent().unwrap_or(std::path::Path::new(""));
-                let stem = audio_path.file_stem().unwrap_or_default();
-                for ext in ["jpg", "jpeg", "png", "webp"] {
-                    let sidecar = parent.join(format!("{}.{}", stem.to_string_lossy(), ext));
-                    if let Ok(data) = tokio::fs::read(&sidecar).await {
-                        if !crate::cover::CoverCache::cover_too_small(&data) {
-                            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                            return Ok(DaemonRes::CoverArt { data: Some(b64) });
-                        }
-                    }
-                }
-                discovered_artist = track.artist;
-                discovered_album = track.album;
-            }
-        }
-
-        if discovered_artist.is_empty() {
-            let state = inner.state.read().await;
-            let in_merged = state
-                .queue
-                .iter()
-                .chain(state.default_list.iter())
-                .find(|t| t.id == track_id);
-            if let Some(t) = in_merged {
-                discovered_artist = t.artist.clone();
-                discovered_album = t.album.clone();
-            } else if let Some(ref t) = state.current_track {
-                if t.id == track_id {
-                    discovered_artist = t.artist.clone();
-                    discovered_album = t.album.clone();
-                }
-            }
-        }
-
-        if !discovered_artist.is_empty() && !discovered_album.is_empty() {
-            let mut guard = inner.cover_cache.lock().await;
-            if let Some(ref mut cache) = *guard {
-                let artist = discovered_artist.clone();
-                let album = discovered_album.clone();
-                let cover =
-                    tokio::time::timeout(Duration::from_secs(5), cache.get_cover(&artist, &album))
-                        .await
-                        .ok()
-                        .flatten();
-                if let Some(cover) = cover {
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(&cover.data);
-                    return Ok(DaemonRes::CoverArt { data: Some(b64) });
-                }
-            }
-        }
-
-        Ok(DaemonRes::CoverArt { data: None })
-    }
-
-    async fn cmd_get_artist_cover_art(
-        inner: &DaemonInner,
-        artist: &str,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut guard = inner.cover_cache.lock().await;
-        if let Some(ref mut cache) = *guard {
-            let cover =
-                tokio::time::timeout(Duration::from_secs(8), cache.get_artist_image(artist))
-                    .await
-                    .ok()
-                    .flatten();
-            if let Some(cover) = cover {
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&cover.data);
-                return Ok(DaemonRes::CoverArt { data: Some(b64) });
-            }
-        }
-        Ok(DaemonRes::CoverArt { data: None })
-    }
-
-    async fn cmd_get_lyrics(
-        inner: &DaemonInner,
-        track_id: i64,
-        path: Option<String>,
-    ) -> Result<DaemonRes, CoreError> {
-        inner
-            .health
-            .lyrics_fetch_count
-            .fetch_add(1, Ordering::Relaxed);
-        let current = {
-            let state = inner.state.read().await;
-            state.current_track.as_ref().and_then(|t| {
-                let id_matches = t.id == track_id;
-                let path_matches = path.as_deref().is_some_and(|p| t.path == p);
-                if id_matches || path_matches {
-                    Some(t.clone())
-                } else {
-                    None
-                }
-            })
-        };
-        let track = match current {
-            Some(t) => t,
-            None => {
-                let resolved = if !inner.config.test_mode {
-                    Library::new(inner.config.data_dir.to_str().unwrap_or(""))
-                        .ok()
-                        .and_then(|lib| lib.get_track(track_id).ok().flatten())
-                } else {
-                    None
-                };
-                match resolved.or_else(|| path.map(|p| crate::queue::resolve_track(&p))) {
-                    Some(t) => t,
-                    None => return Ok(DaemonRes::Lyrics { lyrics: None }),
-                }
-            }
-        };
-
-        let mut track = track;
-        if track.artist.is_empty() || track.title.is_empty() {
-            let (artist, title) = crate::lyrics::meta_from_filename(&track.path);
-            if track.artist.is_empty() {
-                track.artist = artist;
-            }
-            if track.title.is_empty() {
-                track.title = title;
-            }
-        }
-
-        if let Some(ref manager) = inner.lyrics_manager {
-            let lyrics = tokio::time::timeout(Duration::from_secs(4), manager.get_lyrics(&track))
-                .await
-                .ok()
-                .flatten();
-            Ok(DaemonRes::Lyrics { lyrics })
-        } else {
-            Ok(DaemonRes::Lyrics { lyrics: None })
-        }
-    }
-
-    async fn cmd_lyrics_search(
-        inner: &DaemonInner,
-        artist: &str,
-        title: &str,
-    ) -> Result<DaemonRes, CoreError> {
-        if let Some(ref manager) = inner.lyrics_manager {
-            let lyrics =
-                tokio::time::timeout(Duration::from_secs(4), manager.search(artist, title))
-                    .await
-                    .ok()
-                    .flatten();
-            Ok(DaemonRes::Lyrics { lyrics })
-        } else {
-            Ok(DaemonRes::Lyrics { lyrics: None })
-        }
-    }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
     // ─── Spotify ───
 
-    async fn cmd_spotify_set_token(
-        inner: &DaemonInner,
-        token: &str,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut spotify = inner.spotify.lock().await;
-        let _ = tokio::time::timeout(Duration::from_secs(60), spotify.set_token(token)).await;
-        Ok(DaemonRes::SpotifyStatusRes {
-            status: spotify.status(),
-        })
-    }
 
-    async fn cmd_spotify_clear(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let mut spotify = inner.spotify.lock().await;
-        spotify.clear();
-        Ok(DaemonRes::SpotifyStatusRes {
-            status: spotify.status(),
-        })
-    }
 
-    async fn cmd_spotify_status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let mut spotify = inner.spotify.lock().await;
-        let _ = tokio::time::timeout(Duration::from_secs(5), spotify.refresh_playback()).await;
-        Ok(DaemonRes::SpotifyStatusRes {
-            status: spotify.status(),
-        })
-    }
 
-    async fn cmd_spotify_play_pause(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let mut spotify = inner.spotify.lock().await;
-        match spotify.play_pause().await {
-            Ok(()) => Ok(DaemonRes::SpotifyStatusRes {
-                status: spotify.status(),
-            }),
-            Err(e) => Ok(DaemonRes::Error { message: e }),
-        }
-    }
 
-    async fn cmd_spotify_sync(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let mut spotify = inner.spotify.lock().await;
-        match tokio::time::timeout(Duration::from_secs(60), spotify.sync()).await {
-            Ok(Ok(())) => Ok(DaemonRes::Ok),
-            Ok(Err(e)) => Ok(DaemonRes::Error { message: e }),
-            Err(_) => Ok(DaemonRes::Error {
-                message: "spotify sync timed out".into(),
-            }),
-        }
-    }
 
-    async fn cmd_spotify_playlists(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let spotify = inner.spotify.lock().await;
-        if !spotify.linked() {
-            return Ok(DaemonRes::Error {
-                message: "spotify not linked".into(),
-            });
-        }
-        Ok(DaemonRes::SpotifyPlaylistsRes {
-            playlists: spotify.playlists(),
-        })
-    }
 
-    async fn cmd_spotify_playlist_tracks(
-        inner: &DaemonInner,
-        id: &str,
-    ) -> Result<DaemonRes, CoreError> {
-        let spotify = inner.spotify.lock().await;
-        if !spotify.linked() {
-            return Ok(DaemonRes::Error {
-                message: "spotify not linked".into(),
-            });
-        }
-        match spotify.playlist_tracks(id) {
-            Some(tracks) => Ok(DaemonRes::SpotifyTracksRes { tracks }),
-            None => Ok(DaemonRes::Error {
-                message: "unknown spotify playlist".into(),
-            }),
-        }
-    }
 
-    async fn cmd_spotify_resolve(
-        inner: &DaemonInner,
-        playlist_id: &str,
-        track_index: usize,
-    ) -> Result<DaemonRes, CoreError> {
-        let track = {
-            let spotify = inner.spotify.lock().await;
-            spotify
-                .playlist_tracks(playlist_id)
-                .and_then(|tracks| tracks.into_iter().find(|t| t.index == track_index))
-        };
-        let Some(track) = track else {
-            return Ok(DaemonRes::Error {
-                message: "track not found in spotify cache".into(),
-            });
-        };
-        let query = if track.artists.is_empty() {
-            track.name.clone()
-        } else {
-            format!("{} - {}", track.artists, track.name)
-        };
 
-        let mut yt = inner.youtube.lock().await;
-        if let Err(e) = yt.search(&query, None).await {
-            return Ok(DaemonRes::Error { message: e });
-        }
-        let top = match yt.poll_results().await {
-            Ok(Some((_, mut results))) if !results.is_empty() => results.remove(0),
-            _ => {
-                return Ok(DaemonRes::Error {
-                    message: "no youtube results for track".into(),
-                })
-            }
-        };
-        let info = match yt.resolve_stream(&top.url).await {
-            Ok(info) => info,
-            Err(e) => return Ok(DaemonRes::Error { message: e }),
-        };
 
-        let prefix = format!("spotify-{playlist_id}-{track_index}");
-        let path = match Self::download_audio_to_cache(
-            &inner.config.cache_dir,
-            &prefix,
-            &info.url,
-            yt.cookie_file(),
-        )
-        .await
-        {
-            Ok(path) => path,
-            Err(e) => return Ok(DaemonRes::Error { message: e }),
-        };
-        drop(yt);
-
-        let spotify_title = track.name.clone();
-        let spotify_artist = track.artists.clone();
-        let spotify_album = track.album.unwrap_or_default();
-        let was_empty = {
-            let mut state = inner.state.write().await;
-            state.fallback_disabled = false;
-            let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
-            let added = queue::queue_add(&mut state, &path, None);
-            if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == added.path) {
-                entry.title = spotify_title.clone();
-                entry.artist = spotify_artist.clone();
-                entry.album = spotify_album.clone();
-            }
-            drop(state);
-            w
-        };
-        if was_empty {
-            let _ = Self::cmd_play(inner, &path, 0.0, false).await;
-        }
-
-        {
-            let mut guard = inner.cover_cache.lock().await;
-            if let Some(ref mut cc) = *guard {
-                let _ = cc.get_cover(&spotify_artist, &spotify_album).await;
-            }
-        }
-
-        Self::push_queue_state(inner).await;
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    async fn cmd_spotify_search_web(
-        inner: &DaemonInner,
-        query: &str,
-    ) -> Result<DaemonRes, CoreError> {
-        let tracks = {
-            let spotify = inner.spotify.lock().await;
-            spotify.search(query, 20).await
-        };
-        Ok(DaemonRes::SpotifyTracksRes { tracks })
-    }
-
-    async fn cmd_spotify_resolve_track(
-        inner: &DaemonInner,
-        name: &str,
-        artists: &str,
-        album: &str,
-    ) -> Result<DaemonRes, CoreError> {
-        let query = if artists.is_empty() {
-            name.to_string()
-        } else {
-            format!("{artists} - {name}")
-        };
-        let spotify_title = name.to_string();
-        let spotify_artist = artists.to_string();
-        let spotify_album = album.to_string();
-
-        let mut yt = inner.youtube.lock().await;
-        if let Err(e) = yt.search(&query, None).await {
-            return Ok(DaemonRes::Error { message: e });
-        }
-        let top = match yt.poll_results().await {
-            Ok(Some((_, mut results))) if !results.is_empty() => results.remove(0),
-            _ => {
-                return Ok(DaemonRes::Error {
-                    message: "no youtube results for track".into(),
-                })
-            }
-        };
-        let info = match yt.resolve_stream(&top.url).await {
-            Ok(info) => info,
-            Err(e) => return Ok(DaemonRes::Error { message: e }),
-        };
-        let prefix = format!("spotify-web-{name}");
-        let path = match Self::download_audio_to_cache(
-            &inner.config.cache_dir,
-            &prefix,
-            &info.url,
-            yt.cookie_file(),
-        )
-        .await
-        {
-            Ok(path) => path,
-            Err(e) => return Ok(DaemonRes::Error { message: e }),
-        };
-        drop(yt);
-
-        let was_empty = {
-            let mut state = inner.state.write().await;
-            state.fallback_disabled = false;
-            let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
-            let added = queue::queue_add(&mut state, &path, None);
-            if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == added.path) {
-                entry.title = spotify_title.clone();
-                entry.artist = spotify_artist.clone();
-                entry.album = spotify_album.clone();
-            }
-            drop(state);
-            w
-        };
-        if was_empty {
-            let _ = Self::cmd_play(inner, &path, 0.0, false).await;
-        }
-
-        {
-            let mut guard = inner.cover_cache.lock().await;
-            if let Some(ref mut cc) = *guard {
-                let _ = cc.get_cover(&spotify_artist, &spotify_album).await;
-            }
-        }
-
-        Self::push_queue_state(inner).await;
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
 
     async fn download_audio_to_cache(
         cache_dir: &Path,
@@ -3184,121 +3411,13 @@ impl Daemon {
 
     // ─── Soloist playback bridge ───
 
-    async fn cmd_soloist_set_api_key(
-        inner: &DaemonInner,
-        key: &str,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut soloist = inner.soloist.lock().await;
-        soloist.save_key(key).map_err(CoreError::Daemon)?;
-        soloist.start(inner.soloist_tx.clone()).await;
-        let res = Self::cmd_soloist_status(inner).await?;
-        let status = match res {
-            DaemonRes::SoloistStatusRes { status } => status,
-            _ => SoloistStatus::default(),
-        };
-        Ok(DaemonRes::SoloistStatusRes { status })
-    }
 
-    async fn cmd_soloist_clear(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let mut soloist = inner.soloist.lock().await;
-        soloist.clear_key();
-        soloist.stop().await;
-        {
-            let mut state = inner.state.write().await;
-            state.soloist = SoloistStatus::default();
-            state.version += 1;
-        }
-        Self::push_event(
-            inner,
-            DaemonEvent::SoloistStatusChanged {
-                status: SoloistStatus::default(),
-            },
-        );
-        Ok(DaemonRes::SoloistStatusRes {
-            status: SoloistStatus::default(),
-        })
-    }
 
-    async fn cmd_soloist_set_config(
-        inner: &DaemonInner,
-        auto_start: bool,
-    ) -> Result<DaemonRes, CoreError> {
-        {
-            let mut state = inner.state.write().await;
-            state.soloist_auto_start = auto_start;
-            state.version += 1;
-        }
-        Self::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
 
-    async fn cmd_soloist_start(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        inner.soloist_manual_override.store(true, Ordering::SeqCst);
-        let mut soloist = inner.soloist.lock().await;
-        soloist.start(inner.soloist_tx.clone()).await;
-        let res = Self::cmd_soloist_status(inner).await?;
-        let status = match res {
-            DaemonRes::SoloistStatusRes { status } => status,
-            _ => SoloistStatus::default(),
-        };
-        Ok(DaemonRes::SoloistStatusRes { status })
-    }
 
-    async fn cmd_soloist_stop(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        inner.soloist_manual_override.store(true, Ordering::SeqCst);
-        let mut soloist = inner.soloist.lock().await;
-        soloist.stop().await;
-        {
-            let mut state = inner.state.write().await;
-            state.soloist.running = false;
-            state.soloist.connected = false;
-            state.soloist.logged_in = false;
-            state.soloist.track = None;
-            state.soloist.playing = false;
-            state.version += 1;
-        }
-        let res = Self::cmd_soloist_status(inner).await?;
-        let status = match res {
-            DaemonRes::SoloistStatusRes { status } => status,
-            _ => SoloistStatus::default(),
-        };
-        Self::push_event(
-            inner,
-            DaemonEvent::SoloistStatusChanged {
-                status: status.clone(),
-            },
-        );
-        Ok(DaemonRes::SoloistStatusRes { status })
-    }
 
-    async fn cmd_soloist_status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let state = inner.state.read().await;
-        Ok(DaemonRes::SoloistStatusRes {
-            status: state.soloist.clone(),
-        })
-    }
 
-    async fn cmd_soloist_play(inner: &DaemonInner, uri: &str) -> Result<DaemonRes, CoreError> {
-        let json = SoloistManager::cmd("play", vec![("uri", Value::String(uri.into()))]);
-        if inner.soloist.lock().await.send(json).await {
-            Ok(DaemonRes::Ok)
-        } else {
-            Ok(DaemonRes::Error {
-                message: "soloist not connected".into(),
-            })
-        }
-    }
 
-    async fn cmd_soloist_activate(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let json = SoloistManager::cmd("activate", vec![]);
-        if inner.soloist.lock().await.send(json).await {
-            Ok(DaemonRes::Ok)
-        } else {
-            Ok(DaemonRes::Error {
-                message: "soloist not connected".into(),
-            })
-        }
-    }
 
     async fn soloist_control(
         inner: &DaemonInner,
