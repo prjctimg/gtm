@@ -48,10 +48,10 @@ impl LyricsManager {
         let mut title = None;
         let mut artist = None;
         let mut album = None;
-        let mut lines = Vec::new();
+        let mut lines: Vec<LrcLine> = Vec::new();
 
-        for line in content.lines() {
-            let line = line.trim();
+        for raw in content.lines() {
+            let line = raw.trim();
             if line.is_empty() {
                 continue;
             }
@@ -69,19 +69,54 @@ impl LyricsManager {
                 continue;
             }
 
-            if let Some((ts_str, text)) = parse_timestamp_line(line) {
-                if let Some(ts) = parse_lrc_timestamp(ts_str) {
-                    lines.push(LrcLine {
-                        timestamp: ts,
-                        text: text.to_string(),
-                    });
+            // Try to extract one or more timestamps like [00:01.00][00:05.00]text
+            // (Myx parity: multi-timestamp expansion, Task 4).
+            if line.starts_with('[') {
+                let mut rest = line;
+                let mut timestamps: Vec<f64> = Vec::new();
+                loop {
+                    if !rest.starts_with('[') {
+                        break;
+                    }
+                    let Some(close) = rest.find(']') else {
+                        break;
+                    };
+                    let ts_str = &rest[1..close];
+                    if let Some(ts) = parse_lrc_timestamp(ts_str) {
+                        timestamps.push(ts);
+                        rest = rest[close + 1..].trim_start();
+                        // Continue if next char is '[' (multi-timestamp)
+                        if rest.starts_with('[') {
+                            continue;
+                        }
+                        break;
+                    } else {
+                        // Malformed timestamp: stop trying to parse more
+                        break;
+                    }
+                }
+                if !timestamps.is_empty() {
+                    let text = rest.trim().to_string();
+                    for ts in timestamps {
+                        lines.push(LrcLine {
+                            timestamp: ts,
+                            text: text.clone(),
+                        });
+                    }
+                    continue;
+                }
+                // If it looked like a timestamp block but parsing failed,
+                // treat tag lines like [length:...] as skippable.
+                if line.starts_with("[length:")
+                    || line.starts_with("[by:")
+                    || line.starts_with("[offset:")
+                {
                     continue;
                 }
             }
 
             // Untimed line (plain lyrics): keep it with a sentinel timestamp
             // so non-synced lyrics still display instead of being dropped.
-            // Tag lines like "[length:...]" are skipped.
             if !line.starts_with('[') {
                 lines.push(LrcLine {
                     timestamp: -1.0,
@@ -90,11 +125,31 @@ impl LyricsManager {
             }
         }
 
+        // Myx parity: sort timed lines by timestamp so multi-timestamp expansion
+        // and out-of-order input both render chronologically. Plain lines
+        // (timestamp < 0) stay at the end in original order.
+        let mut timed: Vec<LrcLine> = lines
+            .iter()
+            .filter(|l| l.timestamp >= 0.0)
+            .cloned()
+            .collect();
+        let plain: Vec<LrcLine> = lines
+            .iter()
+            .filter(|l| l.timestamp < 0.0)
+            .cloned()
+            .collect();
+        timed.sort_by(|a, b| {
+            a.timestamp
+                .partial_cmp(&b.timestamp)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        timed.extend(plain);
+
         LrcData {
             title,
             artist,
             album,
-            lines,
+            lines: timed,
         }
     }
 
@@ -337,25 +392,58 @@ fn parse_lrclib_response(json: &serde_json::Value) -> Option<LrcData> {
     None
 }
 
-fn parse_timestamp_line(line: &str) -> Option<(&str, &str)> {
-    let line = line.trim_start_matches('[');
-    let (ts, rest) = line.split_once(']')?;
-    Some((ts, rest.trim()))
-}
-
 fn parse_lrc_timestamp(ts: &str) -> Option<f64> {
+    // Hardened: reject non-ASCII/malformed fractions that previously caused
+    // panics or incorrect large values (Myx parity).
+    if ts.is_empty() || ts.len() > 16 {
+        return None;
+    }
+    // Fractions must be ascii digits with optional '.'; reject others early.
+    let has_fraction = ts.contains('.');
+    if has_fraction {
+        let dot = ts.find('.')?;
+        let frac = &ts[dot + 1..];
+        if frac.is_empty() || frac.len() > 3 || !frac.chars().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+    }
     let parts: Vec<&str> = ts.split(':').collect();
+    let parse_part = |s: &str| -> Option<f64> {
+        // Allow decimal in final part only (ss or ss.frac)
+        if s.contains('.') && s.matches('.').count() > 1 {
+            return None;
+        }
+        s.parse::<f64>()
+            .ok()
+            .filter(|v| v.is_finite() && *v >= 0.0 && *v < 10000.0)
+    };
     match parts.len() {
         2 => {
-            let mm: f64 = parts[0].parse().ok()?;
-            let ss: f64 = parts[1].parse().ok()?;
-            Some(mm * 60.0 + ss)
+            let mm = parse_part(parts[0])?;
+            let ss = parse_part(parts[1])?;
+            if mm >= 1000.0 || ss >= 100.0 {
+                return None;
+            }
+            let total = mm * 60.0 + ss;
+            if total.is_finite() && total < 100000.0 {
+                Some(total)
+            } else {
+                None
+            }
         }
         3 => {
-            let hh: f64 = parts[0].parse().ok()?;
-            let mm: f64 = parts[1].parse().ok()?;
-            let ss: f64 = parts[2].parse().ok()?;
-            Some(hh * 3600.0 + mm * 60.0 + ss)
+            let hh = parse_part(parts[0])?;
+            let mm = parse_part(parts[1])?;
+            let ss = parse_part(parts[2])?;
+            if mm >= 60.0 || ss >= 100.0 {
+                return None;
+            }
+            let total = hh * 3600.0 + mm * 60.0 + ss;
+            if total.is_finite() && total < 200000.0 {
+                Some(total)
+            } else {
+                None
+            }
         }
         _ => None,
     }

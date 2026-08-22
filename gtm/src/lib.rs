@@ -10,6 +10,7 @@ pub mod app;
 pub mod cli;
 pub mod footer;
 pub mod keymap;
+pub mod mouse;
 pub mod picker;
 pub mod progress;
 pub mod reactive;

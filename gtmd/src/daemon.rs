@@ -370,17 +370,25 @@ impl Daemon {
 
         let mut poll_interval = tokio::time::interval(Duration::from_millis(16));
         let mut save_interval = tokio::time::interval(Duration::from_secs(60));
+        let mut last_spectrum_tx = tokio::time::Instant::now();
         loop {
             tokio::select! {
                 _ = poll_interval.tick() => {
                     let result = { self.inner.mixer.lock().await.poll() };
                     Self::handle_audio_event(&self.inner, result).await;
                     let spectrum = self.inner.mixer.lock().await.current_spectrum();
-                    let mut state = self.inner.state.write().await;
-                    if spectrum.is_empty() {
-                        state.audio_levels.clear();
-                    } else {
-                        state.audio_levels = spectrum;
+                    {
+                        let mut state = self.inner.state.write().await;
+                        if spectrum.is_empty() {
+                            state.audio_levels.clear();
+                        } else {
+                            state.audio_levels = spectrum.clone();
+                        }
+                    }
+                    // Throttle visualizer spectrum broadcast to ~30 Hz (Task 2).
+                    if !spectrum.is_empty() && last_spectrum_tx.elapsed() >= Duration::from_millis(33) {
+                        last_spectrum_tx = tokio::time::Instant::now();
+                        Self::push_event(&self.inner, DaemonEvent::SpectrumChanged { levels: spectrum });
                     }
                 }
                 _ = save_interval.tick() => {
@@ -3139,7 +3147,8 @@ impl Daemon {
                 .arg("bestaudio[ext=m4a]/bestaudio")
                 .arg("-o")
                 .arg(&template)
-                .arg("--no-warnings");
+                .arg("--no-warnings")
+                .args(YoutubeManager::extractor_args());
             if let Some(cf) = cookie_file.filter(|p| Path::new(p).is_file()) {
                 cmd.arg("--cookies").arg(cf);
             }
@@ -3150,13 +3159,18 @@ impl Daemon {
         .map_err(|e| format!("yt-dlp download: {e}"))?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            let msg = stderr
+            let raw = stderr
                 .lines()
                 .last()
                 .unwrap_or("yt-dlp download failed")
                 .trim()
                 .to_string();
-            return Err(msg);
+            let hint = if raw.contains("403") || raw.contains("Forbidden") {
+                " (HTTP 403 — set cookie file in Settings → YouTube or update yt-dlp)"
+            } else {
+                ""
+            };
+            return Err(format!("{raw}{hint}"));
         }
         for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;

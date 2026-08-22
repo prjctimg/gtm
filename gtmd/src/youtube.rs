@@ -83,6 +83,22 @@ impl YoutubeManager {
         }
     }
 
+    /// Extractor-args fallback chain that fixes anonymous 403 / PO-token
+    /// enforcement on YouTube (Task 5). Rotates player_client variants so
+    /// anonymous extraction can succeed even without cookies.
+    pub fn extractor_args() -> Vec<std::ffi::OsString> {
+        vec![
+            "--extractor-args".into(),
+            "youtube:player_client=android,web,tv_embedded;player_skip=webpage".into(),
+        ]
+    }
+
+    pub fn common_args(&self) -> Vec<std::ffi::OsString> {
+        let mut args = Self::extractor_args();
+        args.extend(self.cookie_args());
+        args
+    }
+
     fn start_impl(&mut self, query: &str, filter: Option<YTFilter>) -> Result<u64, String> {
         self.cancel_current();
         let gen = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -161,14 +177,14 @@ impl YoutubeManager {
             .await
             .map_err(|e| format!("semaphore: {e}"))?;
 
-        let cookie_args = self.cookie_args();
+        let common_args = self.common_args();
         let output = timeout(
             SEARCH_TIMEOUT,
             Command::new("yt-dlp")
                 .arg("-g")
                 .arg("-f")
                 .arg("bestaudio[ext=m4a]/bestaudio")
-                .args(&cookie_args)
+                .args(&common_args)
                 .arg(url)
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
@@ -185,7 +201,12 @@ impl YoutubeManager {
                 .rev()
                 .find(|l| !l.trim().is_empty())
                 .unwrap_or("unknown error");
-            return Err(format!("yt-dlp resolve failed: {detail}"));
+            let hint = if detail.contains("403") || detail.contains("Forbidden") {
+                " (try setting a cookie file in Settings → YouTube)"
+            } else {
+                ""
+            };
+            return Err(format!("yt-dlp resolve failed: {detail}{hint}"));
         }
 
         let direct = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -223,6 +244,7 @@ async fn run_search(
         .arg("--dump-json")
         .arg("--flat-playlist")
         .arg("--no-warnings")
+        .args(YoutubeManager::extractor_args())
         .args(cookie_args)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())

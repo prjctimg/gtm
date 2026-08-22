@@ -964,6 +964,8 @@ pub enum DaemonEvent {
     /// Soloist playback bridge status changed (running/connected/auth/track).
     #[serde(rename = "soloist_status_changed")]
     SoloistStatusChanged { status: SoloistStatus },
+    #[serde(rename = "spectrum_changed")]
+    SpectrumChanged { levels: Vec<f32> },
     #[serde(rename = "heartbeat")]
     Heartbeat,
 }

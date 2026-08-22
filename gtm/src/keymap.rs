@@ -184,9 +184,9 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Ctrl+,: open settings picker
+            // Alt+,: open settings picker (Task 8)
             (
-                KeyEvent::new(KeyCode::Char(','), KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Char(','), KeyModifiers::ALT),
                 BoundCommand {
                     action: KeyboardAction::OpenOverlay(PickerId::Settings),
                     contexts: vec![KeyContext::Normal],
@@ -479,7 +479,7 @@ pub fn default_keybindings() -> Keybindings {
                 },
             ),
             (
-                KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
+                KeyEvent::new(KeyCode::Char('/'), KeyModifiers::ALT),
                 BoundCommand {
                     action: KeyboardAction::OpenOverlay(PickerId::SearchLibrary),
                     contexts: vec![KeyContext::Normal],
@@ -640,10 +640,10 @@ mod tests {
 
     #[test]
     fn settings_picker_shortcut_not_shadowed_by_chords() {
-        // Ctrl+, opens the Settings picker; plain `,` seeks backward.
+        // Alt+, opens the Settings picker; plain `,` seeks backward.
         assert!(matches!(
             dispatch(
-                KeyEvent::new(KeyCode::Char(','), KeyModifiers::CONTROL),
+                KeyEvent::new(KeyCode::Char(','), KeyModifiers::ALT),
                 KeyContext::Normal
             ),
             Some(KeyboardAction::OpenOverlay(PickerId::Settings))

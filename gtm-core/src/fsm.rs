@@ -382,6 +382,10 @@ impl DaemonState {
             }
             DaemonEvent::LoudnessScanProgress { .. } => {}
             DaemonEvent::LoudnessScanDone { .. } => {}
+            DaemonEvent::SpectrumChanged { levels } => {
+                self.audio_levels = levels.clone();
+                return; // don't bump version for high-frequency spectrum
+            }
             _ => {} // MetadataChanged, Custom: no state mirror field
         }
         self.version += 1;

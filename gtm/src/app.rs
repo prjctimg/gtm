@@ -7,7 +7,9 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseEventKind};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+};
 use gtm_core::client::DaemonClient;
 use gtm_core::ipc::DaemonRes;
 use gtm_core::spotify::{SoloistStatus, SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
@@ -342,6 +344,9 @@ pub struct App {
     pub playlist_creating: bool,
     pub metadata: MetadataEditState,
     pub pending_quit: bool,
+    /// Clickable row rectangles rebuilt every frame by `ui::render`
+    /// (PROMPT #7 mouse support).
+    pub mouse_map: crate::mouse::MouseMap,
     pub np_title_scroll: usize,
     /// Set on the first frame and on each track change; the render layer
     /// (re)starts the library/Now-Playing evolve animation once per trigger.
@@ -667,6 +672,7 @@ impl App {
                 cover_dirty: false,
             },
             pending_quit: false,
+            mouse_map: crate::mouse::MouseMap::default(),
             np_title_scroll: 0,
             track_anim_trigger: false,
             anim_fx: EffectManager::default(),
@@ -1068,8 +1074,10 @@ impl App {
             if track_changed {
                 self.np_cover.image = None;
                 self.np_cover.stateful = None;
-                // Skip cover art in Neovim terminal (no image protocol passthrough)
-                if !no_image_protocol() {
+                // Fetch cover art when needed: for display (no_image_protocol
+                // check) OR for reactive-theming palette extraction (Task 3).
+                let needs_cover = self.reactive_theme || !no_image_protocol();
+                if needs_cover {
                     if let Some(tid) = current_tid {
                         if Some(tid) != self.np_cover.track_id {
                             self.np_cover.track_id = Some(tid);
@@ -1126,32 +1134,34 @@ impl App {
                             // RefreshDone carries no cover, or the track-change
                             // guard would re-download art (and re-fetch lyrics)
                             // every second.
-                            if !no_image_protocol() {
-                                if let Some(c) = cover {
-                                    if self.reactive_theme {
-                                        let tx = self.ipc_tx.clone();
-                                        self.request_reactive_palette(&c, tx);
-                                    }
-                                    self.np_cover.image = Some(c);
-                                    self.np_cover.track_id = cover_tid;
+                            if let Some(c) = cover {
+                                if self.reactive_theme {
+                                    let tx = self.ipc_tx.clone();
+                                    self.request_reactive_palette(&c, tx);
+                                }
+                                self.np_cover.image = Some(c);
+                                self.np_cover.track_id = cover_tid;
+                                if !no_image_protocol() {
                                     self.sync_cover_stateful();
+                                } else {
+                                    self.cover_art_dirty = true;
                                 }
                             }
                         }
                     }
                     IpcResult::CoverArt(cover, cover_tid) => {
-                        if !no_image_protocol() {
-                            if let Some(c) = cover.as_ref() {
-                                if self.reactive_theme {
-                                    let tx = self.ipc_tx.clone();
-                                    self.request_reactive_palette(c, tx);
-                                }
+                        if let Some(c) = cover.as_ref() {
+                            if self.reactive_theme {
+                                let tx = self.ipc_tx.clone();
+                                self.request_reactive_palette(c, tx);
                             }
-                            self.np_cover.image = cover;
-                            self.np_cover.track_id = cover_tid;
-                            self.sync_cover_stateful();
-                            self.cover_art_dirty = true;
                         }
+                        self.np_cover.image = cover;
+                        self.np_cover.track_id = cover_tid;
+                        if !no_image_protocol() {
+                            self.sync_cover_stateful();
+                        }
+                        self.cover_art_dirty = true;
                     }
                     IpcResult::ReactivePalette(pal) => {
                         if self.reactive_theme {
@@ -1428,6 +1438,7 @@ impl App {
             let playing = self.state.status == PlaybackStatus::Playing;
             let force_render = pos_changed
                 || (playing && frame_count.is_multiple_of(2))
+                || (self.visualizer.is_enabled() && playing && !self.state.audio_levels.is_empty())
                 || !self.notifications.is_empty()
                 || frame_count.is_multiple_of(10)
                 || self.cover_art_dirty
@@ -1473,6 +1484,9 @@ impl App {
                         MouseEventKind::ScrollDown => {
                             let key = event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
                             self.handle_key(key).await;
+                        }
+                        MouseEventKind::Down(MouseButton::Left) => {
+                            self.handle_click(mouse.column, mouse.row).await;
                         }
                         _ => {}
                     },
@@ -2431,7 +2445,9 @@ impl App {
                         .arg("mp3")
                         .arg("--restrict-filenames")
                         .arg("-o")
-                        .arg(template.to_string_lossy().as_ref());
+                        .arg(template.to_string_lossy().as_ref())
+                        .arg("--extractor-args")
+                        .arg("youtube:player_client=android,web,tv_embedded;player_skip=webpage");
                     // YouTube blocks anonymous downloads with HTTP 403; the
                     // cookie file configured in Settings → YouTube must ride
                     // along with every download attempt.
@@ -2849,6 +2865,47 @@ impl App {
             }
         } else {
             0
+        }
+    }
+
+    /// Resolve a left-click against the zones registered by `ui::render`
+    /// (PROMPT #7).  A single click moves the selection; a double-click on
+    /// the same row activates it exactly as Enter would.  Clicks outside an
+    /// open picker panel close it.
+    async fn handle_click(&mut self, x: u16, y: u16) {
+        let Some(zone) = self.mouse_map.hit_test(x, y) else {
+            // No interactive row under the cursor.
+            if self.pickers.is_open() {
+                let inside = self
+                    .mouse_map
+                    .picker_area
+                    .is_some_and(|r| x >= r.x && x < r.right() && y >= r.y && y < r.bottom());
+                if !inside {
+                    self.pickers.close_top();
+                }
+            }
+            return;
+        };
+
+        match zone {
+            crate::mouse::MouseZone::PickerItem(i) => {
+                if self.mouse_map.is_double_click(zone) {
+                    let key = event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+                    self.handle_key(key).await;
+                } else if let Some(top) = self.pickers.top_mut() {
+                    top.selected = i;
+                    top.viewport_offset = top.viewport_offset.min(i);
+                }
+            }
+            crate::mouse::MouseZone::ListItem(i) => {
+                let double = self.mouse_map.is_double_click(zone);
+                self.library_pane_focus = false;
+                self.set_list_pos(i);
+                if double {
+                    let key = event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+                    self.handle_key(key).await;
+                }
+            }
         }
     }
 
@@ -3363,7 +3420,8 @@ impl App {
                             if self.library_pane_focus {
                                 self.library_pane_focus = false;
                             } else if self.browse_detail.is_some() {
-                                // In detail view: play the selected track
+                                // In detail view: play the selected track of
+                                // the rendered right-pane list.
                                 if self.library_category == 5 {
                                     // Spotify playlist: resolve track to a playable
                                     // local stream (via YouTube) and enqueue it.
@@ -3371,58 +3429,64 @@ impl App {
                                         let track = self.spotify_playlist_tracks_cache
                                             [self.list_pos()]
                                         .clone();
-                                        // If Soloist is connected and logged in, play via Soloist instead of resolving
-                                        if let Some(soloist) = &self.soloist_status {
-                                            if soloist.connected && soloist.logged_in {
-                                                if let Some(uri) = &track.uri {
-                                                    let c = self.client.clone();
-                                                    let uri_clone = uri.clone();
-                                                    tokio::spawn(async move {
-                                                        let _ = c.soloist_play(&uri_clone).await;
-                                                    });
-                                                    self.notify(
-                                                        format!("Soloist: playing {}", track.name),
-                                                        NotificationKind::Info,
-                                                    );
-                                                } else {
-                                                    self.notify(
-                                                        "Track has no URI for Soloist playback",
-                                                        NotificationKind::Warning,
-                                                    );
-                                                }
-                                            } else {
-                                                let playlist_id =
-                                                    self.browse_detail.clone().unwrap_or_default();
-                                                let track_index = track.index;
+                                        // Soloist playback only when connected AND
+                                        // logged in; otherwise (including no
+                                        // Soloist status at all) fall back to the
+                                        // daemon's YouTube resolver.
+                                        let via_soloist = self
+                                            .soloist_status
+                                            .as_ref()
+                                            .is_some_and(|s| s.connected && s.logged_in);
+                                        if via_soloist {
+                                            if let Some(uri) = &track.uri {
                                                 let c = self.client.clone();
-                                                let ipc_tx2 = self.ipc_tx.clone();
+                                                let uri_clone = uri.clone();
                                                 tokio::spawn(async move {
-                                                    match c
-                                                        .spotify_resolve(&playlist_id, track_index)
-                                                        .await
-                                                    {
-                                                        Ok(()) => {
-                                                            let _ = ipc_tx2
-                                                                .send(IpcResult::Notification(
+                                                    let _ = c.soloist_play(&uri_clone).await;
+                                                });
+                                                self.notify(
+                                                    format!("Soloist: playing {}", track.name),
+                                                    NotificationKind::Info,
+                                                );
+                                            } else {
+                                                self.notify(
+                                                    "Track has no URI for Soloist playback",
+                                                    NotificationKind::Warning,
+                                                );
+                                            }
+                                        } else {
+                                            let playlist_id =
+                                                self.browse_detail.clone().unwrap_or_default();
+                                            let track_index = track.index;
+                                            let c = self.client.clone();
+                                            let ipc_tx2 = self.ipc_tx.clone();
+                                            tokio::spawn(async move {
+                                                match c
+                                                    .spotify_resolve(&playlist_id, track_index)
+                                                    .await
+                                                {
+                                                    Ok(()) => {
+                                                        let _ =
+                                                            ipc_tx2.send(IpcResult::Notification(
                                                                 "Spotify".to_string(),
                                                                 "Spotify track resolved & queued"
                                                                     .to_string(),
                                                                 NotificationKind::Success,
                                                             ));
-                                                        }
-                                                        Err(e) => {
-                                                            let _ = ipc_tx2.send(IpcResult::Error(
-                                                                format!(
-                                                                    "Spotify resolve failed: {e}"
-                                                                ),
-                                                            ));
-                                                        }
                                                     }
-                                                });
-                                            }
+                                                    Err(e) => {
+                                                        let _ = ipc_tx2.send(IpcResult::Error(
+                                                            format!("Spotify resolve failed: {e}"),
+                                                        ));
+                                                    }
+                                                }
+                                            });
                                         }
                                     }
-                                } else if matches!(self.library_category, 0 | 1) {
+                                } else {
+                                    // Local categories (All/Liked/Album/Artist/
+                                    // Playlist): the rendered rows are exactly
+                                    // filtered_tracks(), so play that row.
                                     self.play_filtered_highlighted();
                                 }
                             } else if self.library_category == 2 {
@@ -3930,9 +3994,29 @@ impl App {
                                 8 => {
                                     self.reactive_theme = !self.reactive_theme;
                                     if self.reactive_theme && self.reactive_palette.is_none() {
-                                        if let Some(c) = self.np_cover.image.as_ref() {
+                                        if let Some(c) = self.np_cover.image.clone() {
                                             let tx = self.ipc_tx.clone();
-                                            self.request_reactive_palette(c, tx);
+                                            self.request_reactive_palette(&c, tx);
+                                        } else if let Some(tid) =
+                                            self.state.current_track.as_ref().map(|t| t.id)
+                                        {
+                                            let client = self.client.clone();
+                                            let ipc_tx = self.ipc_tx.clone();
+                                            tokio::spawn(async move {
+                                                if let Ok(Some(b64)) =
+                                                    client.get_cover_art(tid).await
+                                                {
+                                                    if let Ok(bytes) =
+                                                        base64::engine::general_purpose::STANDARD
+                                                            .decode(&b64)
+                                                    {
+                                                        let _ = ipc_tx.send(IpcResult::CoverArt(
+                                                            Some(bytes),
+                                                            Some(tid),
+                                                        ));
+                                                    }
+                                                }
+                                            });
                                         }
                                     }
                                     self.apply_reactive();
@@ -4040,9 +4124,29 @@ impl App {
                                 8 => {
                                     self.reactive_theme = !self.reactive_theme;
                                     if self.reactive_theme && self.reactive_palette.is_none() {
-                                        if let Some(c) = self.np_cover.image.as_ref() {
+                                        if let Some(c) = self.np_cover.image.clone() {
                                             let tx = self.ipc_tx.clone();
-                                            self.request_reactive_palette(c, tx);
+                                            self.request_reactive_palette(&c, tx);
+                                        } else if let Some(tid) =
+                                            self.state.current_track.as_ref().map(|t| t.id)
+                                        {
+                                            let client = self.client.clone();
+                                            let ipc_tx = self.ipc_tx.clone();
+                                            tokio::spawn(async move {
+                                                if let Ok(Some(b64)) =
+                                                    client.get_cover_art(tid).await
+                                                {
+                                                    if let Ok(bytes) =
+                                                        base64::engine::general_purpose::STANDARD
+                                                            .decode(&b64)
+                                                    {
+                                                        let _ = ipc_tx.send(IpcResult::CoverArt(
+                                                            Some(bytes),
+                                                            Some(tid),
+                                                        ));
+                                                    }
+                                                }
+                                            });
                                         }
                                     }
                                     self.apply_reactive();
@@ -4227,9 +4331,29 @@ impl App {
                                 8 => {
                                     self.reactive_theme = !self.reactive_theme;
                                     if self.reactive_theme && self.reactive_palette.is_none() {
-                                        if let Some(c) = self.np_cover.image.as_ref() {
+                                        if let Some(c) = self.np_cover.image.clone() {
                                             let tx = self.ipc_tx.clone();
-                                            self.request_reactive_palette(c, tx);
+                                            self.request_reactive_palette(&c, tx);
+                                        } else if let Some(tid) =
+                                            self.state.current_track.as_ref().map(|t| t.id)
+                                        {
+                                            let client = self.client.clone();
+                                            let ipc_tx = self.ipc_tx.clone();
+                                            tokio::spawn(async move {
+                                                if let Ok(Some(b64)) =
+                                                    client.get_cover_art(tid).await
+                                                {
+                                                    if let Ok(bytes) =
+                                                        base64::engine::general_purpose::STANDARD
+                                                            .decode(&b64)
+                                                    {
+                                                        let _ = ipc_tx.send(IpcResult::CoverArt(
+                                                            Some(bytes),
+                                                            Some(tid),
+                                                        ));
+                                                    }
+                                                }
+                                            });
                                         }
                                     }
                                     self.apply_reactive();
@@ -5564,23 +5688,28 @@ impl App {
 
 /// Index of the active time-synced lyric line for a playback position.
 /// Untimed lines (timestamp < 0) are skipped for matching but keep their
-/// index so the highlight tracks timed lines correctly.
+/// index so the highlight tracks timed lines correctly. Uses Myx-style
+/// rposition semantics over sorted timed entries (Task 4).
 fn lyric_index_at(lines: &[gtm_core::track::LrcLine], position: f64) -> usize {
     if lines.is_empty() {
         return 0;
     }
-    let mut current_idx = 0;
-    for (i, line) in lines.iter().enumerate() {
-        if line.timestamp < 0.0 {
-            continue;
-        }
-        if line.timestamp <= position {
-            current_idx = i;
-        } else {
-            break;
-        }
-    }
-    current_idx
+    // Last timed line with timestamp <= position (Myx parity).  Untimed
+    // lines keep their index but never match; before the first timestamp
+    // (and for plain lyrics) the highlight rests on line 0.
+    lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.timestamp >= 0.0 && l.timestamp <= position)
+        .map(|(i, _)| i)
+        .last()
+        .unwrap_or(0)
+}
+
+/// Whether the current lyrics have any time-synced lines. Plain lyrics
+/// (`timestamp < 0` for all lines) should not highlight an active line (Task 4, Myx parity).
+pub fn lyrics_are_synced(lines: &[gtm_core::track::LrcLine]) -> bool {
+    lines.iter().any(|l| l.timestamp >= 0.0)
 }
 
 /// Pure focus-state transition for Tab/Shift-Tab pane cycling on the Library
