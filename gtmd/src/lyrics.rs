@@ -48,6 +48,9 @@ impl LyricsManager {
         let mut title = None;
         let mut artist = None;
         let mut album = None;
+        // Global timing shift in milliseconds ([offset:+ms] shifts lines
+        // earlier, negative later).
+        let mut offset_ms: f64 = 0.0;
         let mut lines: Vec<LrcLine> = Vec::new();
 
         for raw in content.lines() {
@@ -66,6 +69,19 @@ impl LyricsManager {
             }
             if let Some(meta) = line.strip_prefix("[al:") {
                 album = Some(meta.trim_end_matches(']').trim().to_string());
+                continue;
+            }
+            if let Some(meta) = line.strip_prefix("[offset:") {
+                let cleaned = meta
+                    .trim_end_matches(']')
+                    .trim()
+                    .trim_end_matches("ms")
+                    .trim();
+                if let Ok(v) = cleaned.parse::<f64>() {
+                    if v.is_finite() && v.abs() < 3_600_000.0 {
+                        offset_ms = v;
+                    }
+                }
                 continue;
             }
 
@@ -107,10 +123,7 @@ impl LyricsManager {
                 }
                 // If it looked like a timestamp block but parsing failed,
                 // treat tag lines like [length:...] as skippable.
-                if line.starts_with("[length:")
-                    || line.starts_with("[by:")
-                    || line.starts_with("[offset:")
-                {
+                if line.starts_with("[length:") || line.starts_with("[by:") {
                     continue;
                 }
             }
@@ -143,6 +156,12 @@ impl LyricsManager {
                 .partial_cmp(&b.timestamp)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        if offset_ms != 0.0 {
+            let shift = offset_ms / 1000.0;
+            for l in &mut timed {
+                l.timestamp = (l.timestamp - shift).max(0.0);
+            }
+        }
         timed.extend(plain);
 
         LrcData {
@@ -481,6 +500,17 @@ mod tests {
         assert_eq!(lrc.lines[1].text, "Line two");
         assert_eq!(lrc.lines[2].text, "timed line");
         assert_eq!(lrc.lines[2].timestamp, 1.0);
+    }
+
+    #[test]
+    fn parse_lrc_applies_offset_tag() {
+        let lrc = LyricsManager::parse_lrc("[offset:+500]\n[00:10.00]shifted earlier");
+        assert!((lrc.lines[0].timestamp - 9.5).abs() < 1e-6);
+        let lrc = LyricsManager::parse_lrc("[offset:-1000ms]\n[00:10.00]shifted later");
+        assert!((lrc.lines[0].timestamp - 11.0).abs() < 1e-6);
+        // Shift never produces negative timestamps.
+        let lrc = LyricsManager::parse_lrc("[offset:9999]\n[00:01.00]clamped");
+        assert_eq!(lrc.lines[0].timestamp, 0.0);
     }
 
     #[test]

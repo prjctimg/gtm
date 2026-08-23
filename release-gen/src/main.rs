@@ -183,9 +183,6 @@ enum Command {
     /// Spotify account and playback control
     #[command(subcommand)]
     Spotify(SpotifyAction),
-    /// Soloist playback bridge control
-    #[command(subcommand)]
-    Soloist(SoloistAction),
 }
 
 #[derive(Subcommand)]
@@ -201,24 +198,6 @@ enum SpotifyAction {
     Status,
     /// Re-sync all playlists from the Web API
     Sync,
-}
-
-#[derive(Subcommand)]
-enum SoloistAction {
-    /// Start the bridge using the persisted API key
-    Start,
-    /// Stop the bridge (key is kept)
-    Stop,
-    /// Show the bridge status
-    Status,
-    /// Toggle auto-start at daemon startup (persisted in daemon state)
-    AutoStart {
-        #[arg(
-            value_name = "BOOL",
-            value_parser = clap::builder::BoolishValueParser::new()
-        )]
-        enabled: bool,
-    },
 }
 
 /// gtm background audio daemon
@@ -242,7 +221,9 @@ struct DaemonArgs {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: release-gen <completions|completions-gtm <shell>|completions-gtmd <shell>> [outdir]");
+        eprintln!(
+            "Usage: release-gen <completions|completions-gtm <shell>|completions-gtmd <shell>> [outdir]"
+        );
         std::process::exit(1);
     }
 

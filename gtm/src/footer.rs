@@ -4,12 +4,11 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
-use std::borrow::Cow;
 
 use gtm_core::state::PlaybackStatus;
 
@@ -73,154 +72,6 @@ impl FooterModule {
             FooterModule::Notification => "Notification",
         }
     }
-
-    /// Parse a module name from a TOML footer preset file. Unknown names are
-    /// dropped by the caller so typos don't break the whole preset.
-    pub fn from_str_lossy(s: &str) -> Option<Self> {
-        Some(match s.trim() {
-            "Playback" => FooterModule::Playback,
-            "Title" => FooterModule::Title,
-            "Volume" => FooterModule::Volume,
-            "Repeat" => FooterModule::Repeat,
-            "Shuffle" => FooterModule::Shuffle,
-            "Progress" => FooterModule::Progress,
-            "Queue" => FooterModule::Queue,
-            "KeyAction" => FooterModule::KeyAction,
-            "Backend" => FooterModule::Backend,
-            "System" => FooterModule::System,
-            "Device" => FooterModule::Device,
-            "EqPreset" => FooterModule::EqPreset,
-            "SleepTimer" => FooterModule::SleepTimer,
-            "Notification" => FooterModule::Notification,
-            _ => return None,
-        })
-    }
-}
-
-/// A footer layout preset. Unlike the previous a/b/c/x/y/z slots (which were
-/// silently re-flattened into 3 groups), `left`/`middle`/`right` map directly
-/// to the on-screen groups.
-#[derive(Debug, Clone)]
-pub struct FooterPreset {
-    pub name: Cow<'static, str>,
-    pub left: Vec<FooterModule>,
-    pub middle: Vec<FooterModule>,
-    pub right: Vec<FooterModule>,
-}
-
-/// Built-in presets inspired by lualine.nvim groups.
-pub fn presets() -> Vec<FooterPreset> {
-    vec![
-        FooterPreset {
-            name: Cow::Borrowed("Default"),
-            left: vec![
-                FooterModule::Playback,
-                FooterModule::Queue,
-                FooterModule::Repeat,
-                FooterModule::Shuffle,
-                FooterModule::Volume,
-                FooterModule::EqPreset,
-            ],
-            middle: vec![
-                FooterModule::KeyAction,
-                FooterModule::Notification,
-                FooterModule::SleepTimer,
-            ],
-            right: vec![],
-        },
-        // Bare minimum for termux or very small viewports.
-        FooterPreset {
-            name: Cow::Borrowed("Minimal"),
-            left: vec![FooterModule::Playback, FooterModule::EqPreset],
-            middle: vec![FooterModule::KeyAction, FooterModule::SleepTimer],
-            right: vec![],
-        },
-        FooterPreset {
-            name: Cow::Borrowed("Full"),
-            left: vec![
-                FooterModule::Playback,
-                FooterModule::Title,
-                FooterModule::Volume,
-                FooterModule::Repeat,
-                FooterModule::Shuffle,
-                FooterModule::EqPreset,
-                FooterModule::Progress,
-            ],
-            middle: vec![FooterModule::KeyAction, FooterModule::SleepTimer],
-            right: vec![],
-        },
-    ]
-}
-
-// ─── User presets (TOML) ──────────────────────────────────────────────
-
-pub fn user_presets_path() -> std::path::PathBuf {
-    let config = std::env::var("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-            std::path::PathBuf::from(home).join(".config")
-        });
-    config.join("gtm").join("footer.toml")
-}
-
-#[derive(serde::Deserialize, Default)]
-struct UserPresetsFile {
-    #[serde(default)]
-    preset: Vec<UserPreset>,
-}
-
-#[derive(serde::Deserialize, Default)]
-struct UserPreset {
-    name: String,
-    #[serde(default)]
-    left: Vec<String>,
-    #[serde(default)]
-    middle: Vec<String>,
-    #[serde(default)]
-    right: Vec<String>,
-}
-
-fn parse_module_list(names: &[String]) -> Vec<FooterModule> {
-    names
-        .iter()
-        .filter_map(|s| FooterModule::from_str_lossy(s))
-        .collect()
-}
-
-/// Load user-defined presets from `~/.config/gtm/footer.toml`. Unparseable
-/// files are skipped so a malformed file never breaks the TUI.
-pub fn load_user_presets() -> Vec<FooterPreset> {
-    let Ok(text) = std::fs::read_to_string(user_presets_path()) else {
-        return Vec::new();
-    };
-    let Ok(parsed) = toml::from_str::<UserPresetsFile>(&text) else {
-        return Vec::new();
-    };
-    parsed
-        .preset
-        .into_iter()
-        .map(|p| FooterPreset {
-            name: Cow::Owned(p.name),
-            left: parse_module_list(&p.left),
-            middle: parse_module_list(&p.middle),
-            right: parse_module_list(&p.right),
-        })
-        .collect()
-}
-
-/// Built-in presets followed by user presets; user presets replace built-ins
-/// on name collision.
-pub fn merged_presets() -> Vec<FooterPreset> {
-    let mut v = presets();
-    for up in load_user_presets() {
-        if let Some(existing) = v.iter_mut().find(|p| p.name == up.name) {
-            *existing = up;
-        } else {
-            v.push(up);
-        }
-    }
-    v
 }
 
 // ─── Rendering ────────────────────────────────────────────────────────
@@ -253,10 +104,10 @@ pub struct FooterCache {
 /// trailing-area background. Returns `None` when every group would be empty
 /// (e.g. no track loaded and no key action pending).
 pub fn render(app: &App) -> Option<FooterRenderOutput> {
-    let preset = app
-        .footer_presets
-        .get(app.footer_preset)
-        .or_else(|| app.footer_presets.first())?;
+    // Fixed layout: track progress on the left, basic help on the right.
+    // The old configurable module presets are deprecated.
+    let left: &[FooterModule] = &[FooterModule::Progress];
+    let right: &[FooterModule] = &[FooterModule::KeyAction];
 
     let is_playing = app.state.status == PlaybackStatus::Playing;
 
@@ -271,11 +122,8 @@ pub fn render(app: &App) -> Option<FooterRenderOutput> {
     let middle_bg = darken(app.theme.secondary_accent, 0.20);
     let right_bg = darken(app.theme.accent, 0.20);
 
-    let slots: [(&[FooterModule], Color); 3] = [
-        (&preset.left, left_bg),
-        (&preset.middle, middle_bg),
-        (&preset.right, right_bg),
-    ];
+    let slots: [(&[FooterModule], Color); 3] =
+        [(left, left_bg), (&[], middle_bg), (right, right_bg)];
 
     let mut out_groups: Vec<FooterGroup> = Vec::new();
     for (modules, bg) in &slots {
@@ -433,7 +281,9 @@ fn module_text(m: FooterModule, app: &App) -> Option<String> {
         FooterModule::Shuffle => render_shuffle(app),
         FooterModule::Progress => render_progress(app),
         FooterModule::Queue => render_queue(app),
-        FooterModule::KeyAction => render_keyaction(app),
+        FooterModule::KeyAction => {
+            render_keyaction(app).or_else(|| Some("\u{3f}:help \u{b7} q:quit".into()))
+        }
         FooterModule::Backend => Some(render_backend()),
         FooterModule::System => Some(render_system()),
         FooterModule::Device => render_device(app),
@@ -542,7 +392,7 @@ fn render_progress(app: &App) -> Option<String> {
     }
     let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
     let time_str = format!("{} / {}", format_duration(pos), format_duration(dur));
-    let bar_w = 14usize;
+    let bar_w = ((app.terminal_cols as usize) / 4).clamp(10, 30);
     let progress = crate::ui::Render::progress_variant(ratio, bar_w, app);
     Some(format!("{} {}", progress, time_str))
 }
@@ -651,64 +501,6 @@ fn render_device(app: &App) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn module_round_trip() {
-        for m in [
-            FooterModule::Playback,
-            FooterModule::Title,
-            FooterModule::Volume,
-            FooterModule::Repeat,
-            FooterModule::Shuffle,
-            FooterModule::Progress,
-            FooterModule::Queue,
-            FooterModule::KeyAction,
-            FooterModule::Backend,
-            FooterModule::System,
-            FooterModule::Device,
-            FooterModule::EqPreset,
-            FooterModule::SleepTimer,
-        ] {
-            let s = m.as_str();
-            assert_eq!(FooterModule::from_str_lossy(s), Some(m));
-        }
-        assert!(FooterModule::from_str_lossy("NoSuchModule").is_none());
-    }
-
-    #[test]
-    fn presets_have_unique_names() {
-        let all = presets();
-        let names: Vec<&str> = all.iter().map(|p| p.name.as_ref()).collect();
-        let mut sorted = names.clone();
-        sorted.sort();
-        sorted.dedup();
-        assert_eq!(sorted.len(), names.len());
-    }
-
-    #[test]
-    fn parse_module_list_drops_unknowns() {
-        let names = vec!["Playback".into(), "Bogus".into(), "Volume".into()];
-        let parsed = parse_module_list(&names);
-        assert_eq!(parsed, vec![FooterModule::Playback, FooterModule::Volume]);
-    }
-
-    #[test]
-    fn user_presets_round_trip() {
-        let toml_text = r#"
-            [[preset]]
-            name = "Custom"
-            left = ["Playback", "Queue"]
-            middle = ["KeyAction"]
-            right = ["Volume"]
-        "#;
-        let parsed: UserPresetsFile = toml::from_str(toml_text).unwrap();
-        assert_eq!(parsed.preset.len(), 1);
-        let preset = &parsed.preset[0];
-        assert_eq!(preset.name, "Custom");
-        assert_eq!(preset.left, vec!["Playback", "Queue"]);
-        let built = parse_module_list(&preset.left);
-        assert_eq!(built, vec![FooterModule::Playback, FooterModule::Queue]);
-    }
 
     #[test]
     fn render_title_handles_multibyte_without_panic() {

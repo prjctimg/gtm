@@ -10,41 +10,29 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ProgressStyle {
-    #[default]
-    Braille,
     SeekHead,
     Classic,
     Dots,
-    Arrows,
-    Blocks,
-    Gradient,
     /// True color gradient using theme accent colors.
+    #[default]
     TrueGradient,
 }
 
 impl ProgressStyle {
     pub fn all() -> &'static [ProgressStyle] {
         &[
-            ProgressStyle::Braille,
             ProgressStyle::SeekHead,
             ProgressStyle::Classic,
             ProgressStyle::Dots,
-            ProgressStyle::Arrows,
-            ProgressStyle::Blocks,
-            ProgressStyle::Gradient,
             ProgressStyle::TrueGradient,
         ]
     }
 
     pub fn name(&self) -> &'static str {
         match self {
-            ProgressStyle::Braille => "Braille",
             ProgressStyle::SeekHead => "Seek Head",
             ProgressStyle::Classic => "Classic",
             ProgressStyle::Dots => "Dots",
-            ProgressStyle::Arrows => "Arrows",
-            ProgressStyle::Blocks => "Blocks",
-            ProgressStyle::Gradient => "Gradient",
             ProgressStyle::TrueGradient => "True Gradient",
         }
     }
@@ -56,10 +44,7 @@ impl ProgressStyle {
     }
 
     pub fn is_animated(&self) -> bool {
-        matches!(
-            self,
-            ProgressStyle::SeekHead | ProgressStyle::Gradient | ProgressStyle::TrueGradient
-        )
+        matches!(self, ProgressStyle::SeekHead | ProgressStyle::TrueGradient)
     }
 }
 
@@ -103,11 +88,7 @@ impl ProgressSmoother {
 /// Ratio a render call should draw: the smoothed value for animated styles,
 /// the raw position otherwise.
 pub fn render_ratio(style: ProgressStyle, raw: f64, smoothed: f64) -> f64 {
-    if style.is_animated() {
-        smoothed
-    } else {
-        raw
-    }
+    if style.is_animated() { smoothed } else { raw }
 }
 
 /// Interpolate between two RGB colors by factor `t` (0.0..=1.0).
@@ -199,17 +180,6 @@ pub fn render_progress(ratio: f64, width: usize, style: ProgressStyle) -> String
     let filled = (ratio.clamp(0.0, 1.0) * inner_w as f64).round() as usize;
     let mut line = String::with_capacity(width);
     match style {
-        ProgressStyle::Braille => {
-            line.push('⡀');
-            for i in 0..inner_w {
-                if i < filled {
-                    line.push('⣿');
-                } else {
-                    line.push('⣀');
-                }
-            }
-            line.push('⠤');
-        }
         ProgressStyle::SeekHead => {
             let head = filled.min(inner_w.saturating_sub(1));
             line.push('─');
@@ -238,29 +208,7 @@ pub fn render_progress(ratio: f64, width: usize, style: ProgressStyle) -> String
             }
             line.push(' ');
         }
-        ProgressStyle::Arrows => {
-            for i in 0..inner_w {
-                if i < filled {
-                    line.push('━');
-                } else if i == filled {
-                    line.push('▶');
-                } else {
-                    line.push('─');
-                }
-            }
-        }
-        ProgressStyle::Blocks => {
-            line.push(' ');
-            for i in 0..inner_w {
-                if i < filled {
-                    line.push('█');
-                } else {
-                    line.push('░');
-                }
-            }
-            line.push(' ');
-        }
-        ProgressStyle::Gradient | ProgressStyle::TrueGradient => {
+        ProgressStyle::TrueGradient => {
             let eased_filled = filled;
             line.push(' ');
             for i in 0..inner_w {

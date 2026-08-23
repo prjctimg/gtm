@@ -9,15 +9,15 @@
 // restarting the stream.
 
 use std::num::{NonZeroU16, NonZeroU32};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Duration;
 
 use fundsp::audiounit::AudioUnit;
 use fundsp::prelude32::*;
 use rodio::Source;
 
-use gtm_core::state::{EqPreset, EQ_DEFAULT_Q, EQ_FREQUENCIES};
+use gtm_core::state::{EQ_DEFAULT_Q, EQ_FREQUENCIES, EqPreset};
 
 // ---------------------------------------------------------------------------
 // AtomicF32 (stable API wrapper)

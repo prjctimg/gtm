@@ -10,9 +10,9 @@ use std::path::PathBuf;
 
 use chrono::Duration;
 use futures::StreamExt;
+use rspotify::AuthCodeSpotify;
 use rspotify::clients::{BaseClient, OAuthClient};
 use rspotify::model::{AdditionalType, PlayableItem, SearchType, Token};
-use rspotify::AuthCodeSpotify;
 use tracing::{debug, info, warn};
 
 use gtm_core::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
@@ -114,6 +114,29 @@ impl SpotifyManager {
             tracks,
             error: self.error.clone(),
         }
+    }
+
+    /// Record a link error for the Settings UI (e.g. a failed OAuth flow).
+    pub fn set_error(&mut self, err: String) {
+        if !self.linked() {
+            self.error = Some(err);
+        }
+    }
+
+    /// Current OAuth access token, if a client is linked.
+    pub async fn access_token(&self) -> Option<String> {
+        use rspotify::clients::BaseClient;
+        let client = self.client.as_ref()?;
+        let arc = client.get_token();
+        let guard = arc.lock().await.ok()?;
+        let token: &rspotify::Token = (*guard).as_ref()?;
+        Some(token.access_token.clone())
+    }
+
+    /// Whether native librespot streaming is possible: linked account with
+    /// an access token and a Premium subscription.
+    pub async fn can_stream(&self) -> bool {
+        self.access_token().await.is_some() && self.premium
     }
 
     /// The cached playlist list (playlists keep their tracks embedded).
@@ -365,7 +388,7 @@ fn parse_token(raw: &str) -> Result<Token, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_token, TOKEN_ACCESS_PERMS};
+    use super::{TOKEN_ACCESS_PERMS, parse_token};
 
     #[test]
     fn parse_token_plain_access_token() {

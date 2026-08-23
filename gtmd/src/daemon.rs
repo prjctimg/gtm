@@ -6,13 +6,13 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
-use tokio::sync::{broadcast, mpsc, RwLock};
+use tokio::sync::{RwLock, broadcast, mpsc};
 use tracing::{error, info, warn};
 
 use gtm_core::paths::resolve_pid_file;
@@ -23,26 +23,24 @@ use base64::Engine;
 #[cfg(feature = "pulseaudio")]
 use gtm_audio::PulseAudioMixer;
 use gtm_audio::{AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
+use gtm_core::CoreError;
 use gtm_core::ipc::{
-    ComponentHealth, DaemonEvent, DaemonReq, DaemonRes, HealthReport, HealthStatus, QueueAction,
-    SyncKind, WireReq, PROTOCOL_VERSION,
+    ComponentHealth, DaemonEvent, DaemonReq, DaemonRes, HealthReport, HealthStatus,
+    PROTOCOL_VERSION, QueueAction, SyncKind, WireReq,
 };
-use gtm_core::spotify::{SoloistStatus, SpotifyTrack};
 use gtm_core::state::{
     DaemonState, EqPreset, PlaybackStatus, RepeatMode, ReverbConfig, SavedState,
 };
 use gtm_core::track::TrackInfo;
 use gtm_core::wire;
-use gtm_core::CoreError;
-use serde_json::Value;
 
 use crate::config::DaemonConfig;
 use crate::cover::CoverCache;
 use crate::library::Library;
 use crate::lyrics::LyricsManager;
 use crate::queue;
-use crate::soloist::{SoloistManager, SoloistMsg};
 use crate::spotify::SpotifyManager;
+use crate::spotify_stream::StreamManager;
 use crate::youtube::YoutubeManager;
 
 type ClientId = u64;
@@ -115,7 +113,6 @@ impl Default for SyncProgress {
     }
 }
 
-
 struct Cmd;
 
 impl Cmd {
@@ -125,6 +122,11 @@ impl Cmd {
         start_pos: f64,
         auto_advanced: bool,
     ) -> Result<DaemonRes, CoreError> {
+        if path.starts_with("spotify:") {
+            return Cmd::play_stream(inner, path, start_pos, auto_advanced).await;
+        }
+        // Local file: halt any active librespot stream so it stops decoding.
+        inner.stream.lock().await.reset();
         {
             let mut mixer = inner.mixer.lock().await;
             mixer.stop()?;
@@ -175,24 +177,124 @@ impl Cmd {
         Ok(DaemonRes::Ok)
     }
 
-    pub async fn play_pause(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        if Daemon::soloist_ready(inner).await {
+    /// Play a `spotify:track:<id>` URI through the librespot streaming
+    /// bridge. Requires a linked Premium account; the queue entry (created
+    /// at resolve time) already carries title/artist/album metadata.
+    async fn play_stream(
+        inner: &DaemonInner,
+        uri_path: &str,
+        start_pos: f64,
+        auto_advanced: bool,
+    ) -> Result<DaemonRes, CoreError> {
+        let (token, config_dir, duration_hint) = {
+            let spotify = inner.spotify.lock().await;
+            if !spotify.can_stream().await {
+                return Ok(DaemonRes::Error {
+                    message: "spotify streaming requires a linked Premium account".into(),
+                });
+            }
+            let token = spotify.access_token().await.unwrap_or_default();
             let state = inner.state.read().await;
-            let is_playing = state.soloist.playing;
+            let hint = state
+                .queue
+                .iter()
+                .find(|t| t.path == uri_path)
+                .map(|t| t.duration)
+                .filter(|d| *d > 0.0);
             drop(state);
-            if is_playing {
-                return Daemon::soloist_control(inner, "pause", vec![])
-                    .await
-                    .map(|_| DaemonRes::Ok)
-                    .map_err(CoreError::Daemon);
-            } else {
-                return Daemon::soloist_control(inner, "play", vec![])
-                    .await
-                    .map(|_| DaemonRes::Ok)
-                    .map_err(CoreError::Daemon);
+            (token, inner.config.config_dir.clone(), hint)
+        };
+
+        {
+            let mut mixer = inner.mixer.lock().await;
+            mixer.stop()?;
+        }
+        *inner.crossfade_loaded_for.lock().await = None;
+        {
+            let mut state = inner.state.write().await;
+            if state.status != PlaybackStatus::Stopped {
+                state.stop()?;
             }
         }
 
+        let source = {
+            let mut stream = inner.stream.lock().await;
+            match stream
+                .load(
+                    uri_path,
+                    (start_pos.max(0.0) * 1000.0) as u32,
+                    duration_hint.unwrap_or(0.0),
+                    &token,
+                    &config_dir,
+                )
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    return Ok(DaemonRes::Error {
+                        message: format!("spotify stream: {e}"),
+                    });
+                }
+            }
+        };
+        let dur = {
+            let mut mixer = inner.mixer.lock().await;
+            mixer.load_active_decoded(Box::new(source), start_pos)?;
+            mixer.play()?;
+            mixer.duration()
+        };
+
+        let mut state = inner.state.write().await;
+        let mut track = state.queue.iter().find(|t| t.path == uri_path).cloned();
+        let track = match track.as_mut() {
+            Some(t) => {
+                t.duration = dur;
+                t.clone()
+            }
+            None => TrackInfo {
+                id: 0,
+                path: uri_path.to_string(),
+                title: "Spotify Track".to_string(),
+                artist: String::new(),
+                album: String::new(),
+                duration: dur,
+                actual_duration: None,
+                track_number: None,
+                genre: String::new(),
+                year: None,
+                bitrate: None,
+                samplerate: None,
+                hash: String::new(),
+                cover_path: None,
+                favourite: false,
+                loudness_lufs: None,
+                loudness_peak_db: None,
+                loudness_range: None,
+                artist_image: None,
+            },
+        };
+        if let Some(pos) = state.queue.iter().position(|t| t.path == uri_path) {
+            if pos > 0 {
+                state.queue.rotate_left(pos);
+            }
+        }
+        state.play(track.clone())?;
+        state.time_pos = start_pos;
+        state.duration = dur;
+        drop(state);
+        Daemon::push_event(
+            inner,
+            DaemonEvent::PlaybackStarted {
+                track,
+                auto_advanced,
+                time_pos: start_pos,
+                duration: dur,
+            },
+        );
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn play_pause(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let is_playing = inner.mixer.lock().await.is_playing();
         if is_playing {
             Cmd::pause(inner).await
@@ -250,13 +352,6 @@ impl Cmd {
     }
 
     pub async fn pause(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        if Daemon::soloist_ready(inner).await {
-            return Daemon::soloist_control(inner, "pause", vec![])
-                .await
-                .map(|_| DaemonRes::Ok)
-                .map_err(CoreError::Daemon);
-        }
-
         let pos = {
             let mut mixer = inner.mixer.lock().await;
             mixer.pause()?;
@@ -272,6 +367,7 @@ impl Cmd {
     }
 
     pub async fn stop(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        inner.stream.lock().await.reset();
         {
             let mut mixer = inner.mixer.lock().await;
             mixer.stop()?;
@@ -287,13 +383,6 @@ impl Cmd {
     }
 
     pub async fn next(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        if Daemon::soloist_ready(inner).await {
-            return Daemon::soloist_control(inner, "skip_next", vec![])
-                .await
-                .map(|_| DaemonRes::Ok)
-                .map_err(CoreError::Daemon);
-        }
-
         if let Some(path) = Daemon::promote_crossfade(inner).await {
             let _ = Daemon::step_next(inner).await;
             Daemon::report_promoted(inner, &path).await;
@@ -328,13 +417,6 @@ impl Cmd {
     }
 
     pub async fn prev(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        if Daemon::soloist_ready(inner).await {
-            return Daemon::soloist_control(inner, "skip_prev", vec![])
-                .await
-                .map(|_| DaemonRes::Ok)
-                .map_err(CoreError::Daemon);
-        }
-
         if let Some(path) = Daemon::promote_crossfade(inner).await {
             Daemon::report_promoted(inner, &path).await;
         }
@@ -377,18 +459,6 @@ impl Cmd {
     }
 
     pub async fn seek(inner: &DaemonInner, pos: f64) -> Result<DaemonRes, CoreError> {
-        if Daemon::soloist_ready(inner).await {
-            let pos_ms = (pos * 1000.0).round() as u64;
-            return Daemon::soloist_control(
-                inner,
-                "seek",
-                vec![("position_ms", Value::from(pos_ms))],
-            )
-            .await
-            .map(|_| DaemonRes::Ok)
-            .map_err(CoreError::Daemon);
-        }
-
         let state = inner.state.read().await;
         if state.status == PlaybackStatus::Stopped {
             return Ok(DaemonRes::Ok);
@@ -402,6 +472,9 @@ impl Cmd {
         };
         let pos = pos.clamp(0.0, duration.max(0.0));
         tracing::debug!("cmd_seek: requested position={}", pos);
+        if path.starts_with("spotify:") {
+            return Cmd::seek_stream(inner, &path, pos, duration, was_paused).await;
+        }
         let path_owned = path.clone();
         let source =
             tokio::task::spawn_blocking(move || AudioMixer::decode_file_at(&path_owned, pos))
@@ -423,18 +496,58 @@ impl Cmd {
         Ok(DaemonRes::Ok)
     }
 
-    pub async fn set_volume(inner: &DaemonInner, volume: u8) -> Result<DaemonRes, CoreError> {
-        if Daemon::soloist_ready(inner).await {
-            return Daemon::soloist_control(
-                inner,
-                "set_volume",
-                vec![("volume", Value::from(volume))],
+    /// Seek within a streamed Spotify track: reload the stream at the new
+    /// position (librespot re-decodes from the nearest chunk boundary).
+    async fn seek_stream(
+        inner: &DaemonInner,
+        uri_path: &str,
+        pos: f64,
+        total_duration: f64,
+        was_paused: bool,
+    ) -> Result<DaemonRes, CoreError> {
+        let (token, config_dir) = {
+            let spotify = inner.spotify.lock().await;
+            (
+                spotify.access_token().await.unwrap_or_default(),
+                inner.config.config_dir.clone(),
             )
-            .await
-            .map(|_| DaemonRes::Ok)
-            .map_err(CoreError::Daemon);
+        };
+        let source = {
+            let mut stream = inner.stream.lock().await;
+            match stream
+                .load(
+                    uri_path,
+                    (pos.max(0.0) * 1000.0) as u32,
+                    total_duration.max(0.0),
+                    &token,
+                    &config_dir,
+                )
+                .await
+            {
+                Ok(s) => s,
+                Err(e) => {
+                    return Ok(DaemonRes::Error {
+                        message: format!("spotify stream: {e}"),
+                    });
+                }
+            }
+        };
+        {
+            let mut mixer = inner.mixer.lock().await;
+            mixer.load_active_decoded(Box::new(source), pos)?;
+            mixer.play()?;
+            if was_paused {
+                mixer.pause()?;
+            }
         }
+        let mut state = inner.state.write().await;
+        state.seek(pos)?;
+        drop(state);
+        Daemon::push_event(inner, DaemonEvent::PositionChanged { time_pos: pos });
+        Ok(DaemonRes::Ok)
+    }
 
+    pub async fn set_volume(inner: &DaemonInner, volume: u8) -> Result<DaemonRes, CoreError> {
         inner.mixer.lock().await.set_volume(volume)?;
         let mut state = inner.state.write().await;
         state.set_volume(volume)?;
@@ -475,20 +588,6 @@ impl Cmd {
     }
 
     pub async fn toggle_shuffle(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        if Daemon::soloist_ready(inner).await {
-            let state = inner.state.read().await;
-            let enabled = !state.shuffle;
-            drop(state);
-            return Daemon::soloist_control(
-                inner,
-                "set_shuffle",
-                vec![("enabled", Value::Bool(enabled))],
-            )
-            .await
-            .map(|_| DaemonRes::Ok)
-            .map_err(CoreError::Daemon);
-        }
-
         let mut state = inner.state.write().await;
         state.toggle_shuffle()?;
         let enabled = state.shuffle;
@@ -502,25 +601,6 @@ impl Cmd {
         inner: &DaemonInner,
         mode: gtm_core::state::RepeatMode,
     ) -> Result<DaemonRes, CoreError> {
-        if Daemon::soloist_ready(inner).await {
-            let (ctx_enabled, track_enabled) = match mode {
-                RepeatMode::Off => (false, false),
-                RepeatMode::All => (true, false),
-                RepeatMode::One => (false, true),
-            };
-            let ctx_json = SoloistManager::cmd(
-                "set_repeat_context",
-                vec![("enabled", Value::Bool(ctx_enabled))],
-            );
-            let track_json = SoloistManager::cmd(
-                "set_repeat_track",
-                vec![("enabled", Value::Bool(track_enabled))],
-            );
-            inner.soloist.lock().await.send(ctx_json).await;
-            inner.soloist.lock().await.send(track_json).await;
-            return Ok(DaemonRes::Ok);
-        }
-
         let mut state = inner.state.write().await;
         state.cycle_repeat(mode)?;
         let m = state.repeat;
@@ -854,7 +934,6 @@ impl Cmd {
             }),
         })
     }
-
 }
 
 struct Yt;
@@ -875,10 +954,7 @@ impl Yt {
             Ok(Some((query, results))) => Ok(DaemonRes::YtSearchResults { query, results }),
             Ok(None) => Ok(DaemonRes::Ok),
             Err(e) => {
-                inner
-                    .health
-                    .yt.errors
-                    .fetch_add(1, Ordering::Relaxed);
+                inner.health.yt.errors.fetch_add(1, Ordering::Relaxed);
                 Ok(DaemonRes::Error { message: e })
             }
         }
@@ -897,21 +973,73 @@ impl Yt {
             Err(e) => Ok(DaemonRes::Error { message: e }),
         }
     }
-
 }
 
 struct Spotify;
 
 impl Spotify {
-    pub async fn set_token(
-        inner: &DaemonInner,
-        token: &str,
-    ) -> Result<DaemonRes, CoreError> {
+    pub async fn set_token(inner: &DaemonInner, token: &str) -> Result<DaemonRes, CoreError> {
         let mut spotify = inner.spotify.lock().await;
         let _ = tokio::time::timeout(Duration::from_secs(60), spotify.set_token(token)).await;
         Ok(DaemonRes::SpotifyStatusRes {
             status: spotify.status(),
         })
+    }
+
+    /// Kick off an OAuth PKCE link flow: build the authorize URL, serve the
+    /// redirect on 127.0.0.1:8990 in a background task, and exchange +
+    /// persist the token when the browser round-trip completes.
+    pub async fn oauth_start(
+        inner: &Arc<DaemonInner>,
+        client_id: &str,
+    ) -> Result<DaemonRes, CoreError> {
+        // Abort any previous pending flow so its listener socket is freed.
+        if let Some(handle) = inner.oauth_task.lock().await.take() {
+            handle.abort();
+        }
+
+        let cid = client_id.trim();
+        if cid.is_empty() {
+            return Err(CoreError::Daemon("empty spotify client id".into()));
+        }
+        let flow = crate::oauth::OauthFlow::new(cid);
+        let url = flow.authorize_url();
+
+        let inner2 = Arc::clone(inner);
+        let handle = tokio::spawn(async move {
+            match flow.wait_for_access_token().await {
+                Ok(token) => {
+                    let mut spotify = inner2.spotify.lock().await;
+                    let _ =
+                        tokio::time::timeout(Duration::from_secs(60), spotify.set_token(&token))
+                            .await;
+                    info!(
+                        "spotify oauth link complete ({:?} playlists)",
+                        spotify.status().playlists
+                    );
+                    drop(spotify);
+                    let _ = inner2.event_tx.send(DaemonEvent::SpotifyStatusChanged);
+                }
+                Err(e) => {
+                    warn!("spotify oauth link failed: {e}");
+                    let mut spotify = inner2.spotify.lock().await;
+                    spotify.set_error(format!("OAuth link failed: {e}"));
+                    drop(spotify);
+                    let _ = inner2.event_tx.send(DaemonEvent::SpotifyStatusChanged);
+                }
+            }
+        });
+        *inner.oauth_task.lock().await = Some(handle);
+
+        Ok(DaemonRes::SpotifyOauthStarted { url })
+    }
+
+    pub async fn oauth_cancel(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        if let Some(handle) = inner.oauth_task.lock().await.take() {
+            handle.abort();
+            info!("spotify oauth link flow cancelled");
+        }
+        Ok(DaemonRes::Ok)
     }
 
     pub async fn clear(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
@@ -963,10 +1091,7 @@ impl Spotify {
         })
     }
 
-    pub async fn playlist_tracks(
-        inner: &DaemonInner,
-        id: &str,
-    ) -> Result<DaemonRes, CoreError> {
+    pub async fn playlist_tracks(inner: &DaemonInner, id: &str) -> Result<DaemonRes, CoreError> {
         let spotify = inner.spotify.lock().await;
         if !spotify.linked() {
             return Ok(DaemonRes::Error {
@@ -997,6 +1122,54 @@ impl Spotify {
                 message: "track not found in spotify cache".into(),
             });
         };
+        let spotify_title = track.name.clone();
+        let spotify_artist = track.artists.clone();
+        let spotify_album = track.album.clone().unwrap_or_default();
+
+        // Premium accounts stream natively via librespot; the queue entry
+        // carries the `spotify:track:` URI and Cmd::play routes it to the
+        // streaming bridge. Everyone else falls back to the YT match.
+        let stream_uri = {
+            let spotify = inner.spotify.lock().await;
+            if spotify.can_stream().await {
+                track.uri.clone()
+            } else {
+                None
+            }
+        };
+        if let Some(uri) = stream_uri {
+            let was_empty = {
+                let mut state = inner.state.write().await;
+                let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
+                let added = queue::queue_add(&mut state, &uri, None);
+                if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == added.path) {
+                    entry.title = spotify_title.clone();
+                    entry.artist = spotify_artist.clone();
+                    entry.album = spotify_album.clone();
+                    entry.duration = track
+                        .duration_ms
+                        .map(|ms| ms as f64 / 1000.0)
+                        .unwrap_or(0.0);
+                }
+                drop(state);
+                w
+            };
+            if was_empty {
+                let _ = Cmd::play(inner, &uri, 0.0, false).await;
+            }
+
+            {
+                let mut guard = inner.cover_cache.lock().await;
+                if let Some(ref mut cc) = *guard {
+                    let _ = cc.get_cover(&spotify_artist, &spotify_album).await;
+                }
+            }
+
+            Daemon::push_queue_state(inner).await;
+            Daemon::save_state(inner);
+            return Ok(DaemonRes::Ok);
+        }
+
         let query = if track.artists.is_empty() {
             track.name.clone()
         } else {
@@ -1012,7 +1185,7 @@ impl Spotify {
             _ => {
                 return Ok(DaemonRes::Error {
                     message: "no youtube results for track".into(),
-                })
+                });
             }
         };
         let info = match yt.resolve_stream(&top.url).await {
@@ -1066,10 +1239,7 @@ impl Spotify {
         Ok(DaemonRes::Ok)
     }
 
-    pub async fn search_web(
-        inner: &DaemonInner,
-        query: &str,
-    ) -> Result<DaemonRes, CoreError> {
+    pub async fn search_web(inner: &DaemonInner, query: &str) -> Result<DaemonRes, CoreError> {
         let tracks = {
             let spotify = inner.spotify.lock().await;
             spotify.search(query, 20).await
@@ -1101,7 +1271,7 @@ impl Spotify {
             _ => {
                 return Ok(DaemonRes::Error {
                     message: "no youtube results for track".into(),
-                })
+                });
             }
         };
         let info = match yt.resolve_stream(&top.url).await {
@@ -1150,128 +1320,6 @@ impl Spotify {
         Daemon::save_state(inner);
         Ok(DaemonRes::Ok)
     }
-
-}
-
-struct Soloist;
-
-impl Soloist {
-    pub async fn set_api_key(
-        inner: &DaemonInner,
-        key: &str,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut soloist = inner.soloist.lock().await;
-        soloist.save_key(key).map_err(CoreError::Daemon)?;
-        soloist.start(inner.soloist_tx.clone()).await;
-        let res = Soloist::status(inner).await?;
-        let status = match res {
-            DaemonRes::SoloistStatusRes { status } => status,
-            _ => SoloistStatus::default(),
-        };
-        Ok(DaemonRes::SoloistStatusRes { status })
-    }
-
-    pub async fn clear(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let mut soloist = inner.soloist.lock().await;
-        soloist.clear_key();
-        soloist.stop().await;
-        {
-            let mut state = inner.state.write().await;
-            state.soloist = SoloistStatus::default();
-            state.version += 1;
-        }
-        Daemon::push_event(
-            inner,
-            DaemonEvent::SoloistStatusChanged {
-                status: SoloistStatus::default(),
-            },
-        );
-        Ok(DaemonRes::SoloistStatusRes {
-            status: SoloistStatus::default(),
-        })
-    }
-
-    pub async fn set_config(
-        inner: &DaemonInner,
-        auto_start: bool,
-    ) -> Result<DaemonRes, CoreError> {
-        {
-            let mut state = inner.state.write().await;
-            state.soloist_auto_start = auto_start;
-            state.version += 1;
-        }
-        Daemon::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    pub async fn start(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        inner.soloist_manual_override.store(true, Ordering::SeqCst);
-        let mut soloist = inner.soloist.lock().await;
-        soloist.start(inner.soloist_tx.clone()).await;
-        let res = Soloist::status(inner).await?;
-        let status = match res {
-            DaemonRes::SoloistStatusRes { status } => status,
-            _ => SoloistStatus::default(),
-        };
-        Ok(DaemonRes::SoloistStatusRes { status })
-    }
-
-    pub async fn stop(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        inner.soloist_manual_override.store(true, Ordering::SeqCst);
-        let mut soloist = inner.soloist.lock().await;
-        soloist.stop().await;
-        {
-            let mut state = inner.state.write().await;
-            state.soloist.running = false;
-            state.soloist.connected = false;
-            state.soloist.logged_in = false;
-            state.soloist.track = None;
-            state.soloist.playing = false;
-            state.version += 1;
-        }
-        let res = Soloist::status(inner).await?;
-        let status = match res {
-            DaemonRes::SoloistStatusRes { status } => status,
-            _ => SoloistStatus::default(),
-        };
-        Daemon::push_event(
-            inner,
-            DaemonEvent::SoloistStatusChanged {
-                status: status.clone(),
-            },
-        );
-        Ok(DaemonRes::SoloistStatusRes { status })
-    }
-
-    pub async fn status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let state = inner.state.read().await;
-        Ok(DaemonRes::SoloistStatusRes {
-            status: state.soloist.clone(),
-        })
-    }
-
-    pub async fn play(inner: &DaemonInner, uri: &str) -> Result<DaemonRes, CoreError> {
-        let json = SoloistManager::cmd("play", vec![("uri", Value::String(uri.into()))]);
-        if inner.soloist.lock().await.send(json).await {
-            Ok(DaemonRes::Ok)
-        } else {
-            Ok(DaemonRes::Error {
-                message: "soloist not connected".into(),
-            })
-        }
-    }
-
-    pub async fn activate(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let json = SoloistManager::cmd("activate", vec![]);
-        if inner.soloist.lock().await.send(json).await {
-            Ok(DaemonRes::Ok)
-        } else {
-            Ok(DaemonRes::Error {
-                message: "soloist not connected".into(),
-            })
-        }
-    }
-
 }
 
 struct Queue;
@@ -1351,7 +1399,6 @@ impl Queue {
             }
         }
     }
-
 }
 
 struct LibraryHandler;
@@ -1664,7 +1711,6 @@ impl LibraryHandler {
             total: progress.total.load(Ordering::Relaxed),
         })
     }
-
 }
 
 struct Search;
@@ -1684,7 +1730,6 @@ impl Search {
             Err(e) => Ok(DaemonRes::Error { message: e }),
         }
     }
-
 }
 
 struct Favourites;
@@ -1718,10 +1763,7 @@ impl Favourites {
         }
     }
 
-    pub async fn remove(
-        inner: &DaemonInner,
-        track_id: i64,
-    ) -> Result<DaemonRes, CoreError> {
+    pub async fn remove(inner: &DaemonInner, track_id: i64) -> Result<DaemonRes, CoreError> {
         let data_dir = inner.config.data_dir.clone();
         let result = tokio::task::spawn_blocking(move || {
             let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
@@ -1734,17 +1776,13 @@ impl Favourites {
             Err(e) => Ok(DaemonRes::Error { message: e }),
         }
     }
-
 }
 
 struct Cover;
 
 impl Cover {
     pub async fn get(inner: &DaemonInner, track_id: i64) -> Result<DaemonRes, CoreError> {
-        inner
-            .health
-            .cover.count
-            .fetch_add(1, Ordering::Relaxed);
+        inner.health.cover.count.fetch_add(1, Ordering::Relaxed);
         let mut discovered_artist = String::new();
         let mut discovered_album = String::new();
 
@@ -1818,10 +1856,7 @@ impl Cover {
         Ok(DaemonRes::CoverArt { data: None })
     }
 
-    pub async fn artist(
-        inner: &DaemonInner,
-        artist: &str,
-    ) -> Result<DaemonRes, CoreError> {
+    pub async fn artist(inner: &DaemonInner, artist: &str) -> Result<DaemonRes, CoreError> {
         let mut guard = inner.cover_cache.lock().await;
         if let Some(ref mut cache) = *guard {
             let cover =
@@ -1836,7 +1871,6 @@ impl Cover {
         }
         Ok(DaemonRes::CoverArt { data: None })
     }
-
 }
 
 struct Lyrics;
@@ -1847,10 +1881,7 @@ impl Lyrics {
         track_id: i64,
         path: Option<String>,
     ) -> Result<DaemonRes, CoreError> {
-        inner
-            .health
-            .lyrics.count
-            .fetch_add(1, Ordering::Relaxed);
+        inner.health.lyrics.count.fetch_add(1, Ordering::Relaxed);
         let current = {
             let state = inner.state.read().await;
             state.current_track.as_ref().and_then(|t| {
@@ -1918,7 +1949,6 @@ impl Lyrics {
             Ok(DaemonRes::Lyrics { lyrics: None })
         }
     }
-
 }
 
 struct DaemonInner {
@@ -1930,13 +1960,15 @@ struct DaemonInner {
     lyrics_manager: Option<LyricsManager>,
     youtube: Arc<tokio::sync::Mutex<YoutubeManager>>,
     spotify: tokio::sync::Mutex<SpotifyManager>,
-    soloist: tokio::sync::Mutex<SoloistManager>,
+    /// librespot streaming bridge for Premium Spotify playback.
+    stream: tokio::sync::Mutex<StreamManager>,
+    /// Pending OAuth link flow task; aborted when a new flow starts or the
+    /// user cancels.
+    oauth_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     crossfade_loaded_for: tokio::sync::Mutex<Option<String>>,
     countdown_notified_for: tokio::sync::Mutex<Option<String>>,
     sleep_cancel: Arc<AtomicBool>,
-    soloist_manual_override: Arc<AtomicBool>,
     health: Arc<HealthTracker>,
-    soloist_tx: mpsc::UnboundedSender<SoloistMsg>,
     client_auth: tokio::sync::Mutex<HashMap<ClientId, bool>>,
     internal_req_tx: mpsc::UnboundedSender<DaemonReq>,
     cmd_lock: tokio::sync::Mutex<()>,
@@ -1951,7 +1983,6 @@ pub struct Daemon {
     req_tx: mpsc::UnboundedSender<(ClientId, u64, DaemonReq, ReplyTx)>,
     req_rx: mpsc::UnboundedReceiver<(ClientId, u64, DaemonReq, ReplyTx)>,
     internal_req_rx: mpsc::UnboundedReceiver<DaemonReq>,
-    soloist_msg_rx: Option<mpsc::UnboundedReceiver<SoloistMsg>>,
     next_client_id: ClientId,
 }
 
@@ -2016,7 +2047,6 @@ impl Daemon {
         let (event_tx, _) = broadcast::channel::<DaemonEvent>(1024);
         let (req_tx, req_rx) = mpsc::unbounded_channel();
         let (internal_req_tx, internal_req_rx) = mpsc::unbounded_channel();
-        let (soloist_tx, soloist_msg_rx) = mpsc::unbounded_channel::<SoloistMsg>();
 
         let cache_dir = config.cache_dir.clone();
         let config_dir = config.config_dir.clone();
@@ -2035,15 +2065,14 @@ impl Daemon {
             lyrics_manager: Some(LyricsManager::with_cache_dir(cache_dir.join("lyrics"))),
             youtube: Arc::new(tokio::sync::Mutex::new(YoutubeManager::new())),
             spotify: tokio::sync::Mutex::new(SpotifyManager::new(config_dir.clone())),
-            soloist: tokio::sync::Mutex::new(SoloistManager::new(config_dir)),
+            stream: tokio::sync::Mutex::new(StreamManager::new()),
+            oauth_task: tokio::sync::Mutex::new(None),
             crossfade_loaded_for: tokio::sync::Mutex::new(None),
             countdown_notified_for: tokio::sync::Mutex::new(None),
             sleep_cancel: Arc::new(AtomicBool::new(false)),
-            soloist_manual_override: Arc::new(AtomicBool::new(false)),
             health: Arc::new(HealthTracker::new(audio_backend_name)),
             client_auth: tokio::sync::Mutex::new(HashMap::new()),
             internal_req_tx,
-            soloist_tx,
             cmd_lock: tokio::sync::Mutex::new(()),
             play_history: tokio::sync::Mutex::new(Vec::new()),
             sync_progress: Arc::new(SyncProgress::default()),
@@ -2056,7 +2085,6 @@ impl Daemon {
             req_tx,
             req_rx,
             internal_req_rx,
-            soloist_msg_rx: Some(soloist_msg_rx),
             next_client_id: 0,
         })
     }
@@ -2141,45 +2169,6 @@ impl Daemon {
             }
         });
 
-        {
-            let inner = Arc::clone(&self.inner);
-            let mut state = inner.state.write().await;
-            state.soloist.key_set = inner.soloist.lock().await.has_key();
-            let auto_start = state.soloist_auto_start;
-            drop(state);
-            if auto_start && inner.soloist.lock().await.has_key() {
-                let tx = inner.soloist_tx.clone();
-                let inner2 = Arc::clone(&inner);
-                tokio::spawn(async move {
-                    let mut delay = Duration::from_secs(3);
-                    loop {
-                        let should_retry = {
-                            let state = inner2.state.read().await;
-                            state.soloist_auto_start
-                                && !inner2.soloist_manual_override.load(Ordering::SeqCst)
-                                && !state.soloist.running
-                        };
-                        if !should_retry {
-                            break;
-                        }
-                        let mut soloist = inner2.soloist.lock().await;
-                        soloist.start(tx.clone()).await;
-                        drop(soloist);
-                        tokio::time::sleep(delay).await;
-                        delay = (delay * 2).min(Duration::from_secs(30));
-                    }
-                });
-            }
-        }
-
-        let mut soloist_msg_rx = std::mem::take(&mut self.soloist_msg_rx).unwrap();
-        let soloist_inner = Arc::clone(&self.inner);
-        tokio::spawn(async move {
-            while let Some(msg) = soloist_msg_rx.recv().await {
-                Self::handle_soloist_msg(&soloist_inner, msg).await;
-            }
-        });
-
         let mut poll_interval = tokio::time::interval(Duration::from_millis(16));
         let mut save_interval = tokio::time::interval(Duration::from_secs(60));
         let mut last_spectrum_tx = tokio::time::Instant::now();
@@ -2188,6 +2177,15 @@ impl Daemon {
                 _ = poll_interval.tick() => {
                     let result = { self.inner.mixer.lock().await.poll() };
                     Self::handle_audio_event(&self.inner, result).await;
+                    // Publish streamed-source spectrum (local files feed the
+                    // analyzer from the decode thread; streams from the
+                    // rodio source itself).
+                    {
+                        let levels = self.inner.stream.lock().await.spectrum_snapshot();
+                        if !levels.is_empty() {
+                            self.inner.mixer.lock().await.publish_spectrum(levels);
+                        }
+                    }
                     let spectrum = self.inner.mixer.lock().await.current_spectrum();
                     {
                         let mut state = self.inner.state.write().await;
@@ -2526,21 +2524,11 @@ impl Daemon {
                 }
             }
         };
-        if matches!(&req, DaemonReq::SoloistSetApiKey { .. }) {
-            let inner2 = Arc::clone(&inner);
-            tokio::spawn(async move {
-                tokio::time::sleep(Duration::from_secs(2)).await;
-                let mut spotify = inner2.spotify.lock().await;
-                if spotify.has_token_file() {
-                    let _ = tokio::time::timeout(Duration::from_secs(60), spotify.sync()).await;
-                }
-            });
-        }
         let _ = reply_tx.send((request_id, res));
     }
 
     async fn handle_request(
-        inner: &DaemonInner,
+        inner: &Arc<DaemonInner>,
         req: &DaemonReq,
         client_id: ClientId,
         _authenticated: bool,
@@ -2583,9 +2571,7 @@ impl Daemon {
             DaemonReq::Prev => Cmd::prev(inner).await,
             DaemonReq::Seek { position_secs } => Cmd::seek(inner, *position_secs).await,
             DaemonReq::SetVolume { volume } => Cmd::set_volume(inner, *volume).await,
-            DaemonReq::SetMasterVolume { volume } => {
-                Cmd::set_master_volume(inner, *volume).await
-            }
+            DaemonReq::SetMasterVolume { volume } => Cmd::set_master_volume(inner, *volume).await,
             DaemonReq::GetVolume => Cmd::get_volume(inner).await,
             DaemonReq::ToggleShuffle => Cmd::toggle_shuffle(inner).await,
             DaemonReq::CycleRepeat { mode } => Cmd::cycle_repeat(inner, *mode).await,
@@ -2599,18 +2585,13 @@ impl Daemon {
             DaemonReq::ScanLoudness { track_ids, force } => {
                 Cmd::scan_loudness(inner, track_ids.clone(), *force).await
             }
-            DaemonReq::SetPreGain { pre_gain_db } => {
-                Cmd::set_pre_gain(inner, *pre_gain_db).await
-            }
+            DaemonReq::SetPreGain { pre_gain_db } => Cmd::set_pre_gain(inner, *pre_gain_db).await,
             DaemonReq::SetGapless { enabled } => Cmd::set_gapless(inner, *enabled).await,
             DaemonReq::SetDynamicMode {
                 enabled,
                 min_queue_remaining,
                 max_history,
-            } => {
-                Cmd::set_dynamic_mode(inner, *enabled, *min_queue_remaining, *max_history)
-                    .await
-            }
+            } => Cmd::set_dynamic_mode(inner, *enabled, *min_queue_remaining, *max_history).await,
             DaemonReq::SetScrobble {
                 enabled,
                 api_key,
@@ -2632,12 +2613,8 @@ impl Daemon {
             DaemonReq::Search { query } => Search::handle(inner, query).await,
             DaemonReq::GetFavourites => Favourites::list(inner).await,
             DaemonReq::AddFavourite { track_id } => Favourites::add(inner, *track_id).await,
-            DaemonReq::RemoveFavourite { track_id } => {
-                Favourites::remove(inner, *track_id).await
-            }
-            DaemonReq::YtSearch { query, filter } => {
-                Yt::search(inner, query, *filter).await
-            }
+            DaemonReq::RemoveFavourite { track_id } => Favourites::remove(inner, *track_id).await,
+            DaemonReq::YtSearch { query, filter } => Yt::search(inner, query, *filter).await,
             DaemonReq::YtSearchPoll => Yt::poll(inner).await,
             DaemonReq::YtSearchCancel => Yt::cancel(inner).await,
             DaemonReq::YtResolveStream { url } => Yt::resolve_stream(inner, url).await,
@@ -2682,49 +2659,33 @@ impl Daemon {
                 Ok(DaemonRes::Ok)
             }
             DaemonReq::GetCoverArt { track_id } => Cover::get(inner, *track_id).await,
-            DaemonReq::GetArtistCoverArt { artist } => {
-                Cover::artist(inner, artist).await
-            }
+            DaemonReq::GetArtistCoverArt { artist } => Cover::artist(inner, artist).await,
             DaemonReq::GetLyrics { track_id, path } => {
                 Lyrics::get(inner, *track_id, path.clone()).await
             }
-            DaemonReq::LyricsSearch { artist, title } => {
-                Lyrics::search(inner, artist, title).await
-            }
+            DaemonReq::LyricsSearch { artist, title } => Lyrics::search(inner, artist, title).await,
             DaemonReq::SpotifySetToken { token } => Spotify::set_token(inner, token).await,
+            DaemonReq::SpotifyOauthStart { client_id } => {
+                Spotify::oauth_start(inner, client_id).await
+            }
+            DaemonReq::SpotifyCancelOauth => Spotify::oauth_cancel(inner).await,
             DaemonReq::SpotifyClear => Spotify::clear(inner).await,
             DaemonReq::SpotifyStatus => Spotify::status(inner).await,
             DaemonReq::SpotifyPlayPause => Spotify::play_pause(inner).await,
             DaemonReq::SpotifySync => Spotify::sync(inner).await,
             DaemonReq::SpotifyPlaylists => Spotify::playlists(inner).await,
-            DaemonReq::SpotifyPlaylistTracks { id } => {
-                Spotify::playlist_tracks(inner, id).await
-            }
+            DaemonReq::SpotifyPlaylistTracks { id } => Spotify::playlist_tracks(inner, id).await,
             DaemonReq::SpotifyResolve {
                 playlist_id,
                 track_index,
             } => Spotify::resolve(inner, playlist_id, *track_index).await,
-            DaemonReq::SpotifySearchWeb { query } => {
-                Spotify::search_web(inner, query).await
-            }
+            DaemonReq::SpotifySearchWeb { query } => Spotify::search_web(inner, query).await,
             DaemonReq::SpotifyResolveTrack {
                 name,
                 artists,
                 album,
             } => Spotify::resolve_track(inner, name, artists, album).await,
-            DaemonReq::SoloistSetApiKey { key } => Soloist::set_api_key(inner, key).await,
-            DaemonReq::SoloistSetConfig { auto_start } => {
-                Soloist::set_config(inner, *auto_start).await
-            }
-            DaemonReq::SoloistClear => Soloist::clear(inner).await,
-            DaemonReq::SoloistStart => Soloist::start(inner).await,
-            DaemonReq::SoloistStop => Soloist::stop(inner).await,
-            DaemonReq::SoloistStatus => Soloist::status(inner).await,
-            DaemonReq::SoloistPlay { uri } => Soloist::play(inner, uri).await,
-            DaemonReq::SoloistActivate => Soloist::activate(inner).await,
-            DaemonReq::SetSleepTimer { minutes } => {
-                Cmd::set_sleep_timer(inner, *minutes).await
-            }
+            DaemonReq::SetSleepTimer { minutes } => Cmd::set_sleep_timer(inner, *minutes).await,
             DaemonReq::CancelSleepTimer => Cmd::cancel_sleep_timer(inner).await,
             DaemonReq::GetStatus => Cmd::get_status(inner).await,
             DaemonReq::CheckHealth => Cmd::check_health(inner).await,
@@ -3271,61 +3232,7 @@ impl Daemon {
         Self::push_queue_state(inner).await;
     }
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
     // ─── Spotify ───
-
-
-
-
-
-
-
-
-
-
 
     async fn download_audio_to_cache(
         cache_dir: &Path,
@@ -3407,377 +3314,6 @@ impl Daemon {
             }
         }
         Err("download produced no file".into())
-    }
-
-    // ─── Soloist playback bridge ───
-
-
-
-
-
-
-
-
-
-    async fn soloist_control(
-        inner: &DaemonInner,
-        command: &str,
-        fields: Vec<(&str, Value)>,
-    ) -> Result<(), String> {
-        let json = SoloistManager::cmd(command, fields);
-        if inner.soloist.lock().await.send(json).await {
-            Ok(())
-        } else {
-            Err("soloist not connected".into())
-        }
-    }
-
-    async fn soloist_ready(inner: &DaemonInner) -> bool {
-        let state = inner.state.read().await;
-        state.soloist.connected && state.soloist.logged_in
-    }
-
-    async fn apply_soloist_event(inner: &DaemonInner, name: &str, data: &Value) {
-        match name {
-            "auth_state" => {
-                let logged_in = data
-                    .get("logged_in")
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                let device_name = data
-                    .get("device_name")
-                    .and_then(Value::as_str)
-                    .map(|s| s.to_string());
-                let mut state = inner.state.write().await;
-                state.soloist.logged_in = logged_in;
-                if let Some(d) = device_name {
-                    state.soloist.device = Some(d);
-                }
-                let st = state.soloist.clone();
-                drop(state);
-                Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
-                if logged_in {
-                    let _ = Self::soloist_send(inner, "get_state").await;
-                }
-            }
-            "playback_state" => {
-                let status = data.get("status").and_then(Value::as_str).unwrap_or("idle");
-                let volume = data.get("volume").and_then(Value::as_u64).unwrap_or(100) as u8;
-                let options = data.get("options");
-                let shuffle = options
-                    .and_then(|o| o.get("shuffle"))
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                let repeat = options
-                    .and_then(|o| o.get("repeat"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("off");
-                let pos_ms = data
-                    .get("position")
-                    .and_then(|p| p.get("position_ms"))
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                let item = data.get("item");
-
-                let mut state = inner.state.write().await;
-                let was_playing = state.soloist.playing;
-                state.soloist.playing = status == "playing" || status == "buffering";
-                state.volume = volume;
-                state.shuffle = shuffle;
-                state.repeat = match repeat {
-                    "context" => RepeatMode::All,
-                    "track" => RepeatMode::One,
-                    _ => RepeatMode::Off,
-                };
-                state.time_pos = pos_ms as f64 / 1000.0;
-                state.version += 1;
-                let track_opt = item.and_then(Self::soloist_track_info);
-                if let Some(st_track) = track_opt {
-                    let track = Self::soloist_to_track_info(&st_track);
-                    state.soloist.track = Some(st_track.clone());
-                    state.current_track = Some(track);
-                    state.duration = st_track
-                        .duration_ms
-                        .map(|d| d as f64 / 1000.0)
-                        .unwrap_or(0.0);
-                }
-                let st = state.soloist.clone();
-                drop(state);
-                Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
-                if (status == "playing" || status == "buffering") && !was_playing {
-                    let _ = inner.mixer.lock().await.stop();
-                }
-                if status == "playing" {
-                    let s = inner.state.read().await;
-                    Self::push_event(
-                        inner,
-                        DaemonEvent::PlaybackStarted {
-                            track: s.current_track.clone().unwrap(),
-                            auto_advanced: false,
-                            time_pos: s.time_pos,
-                            duration: s.duration,
-                        },
-                    );
-                } else if status == "paused" {
-                    let s = inner.state.read().await;
-                    Self::push_event(
-                        inner,
-                        DaemonEvent::PlaybackPaused {
-                            time_pos: s.time_pos,
-                        },
-                    );
-                }
-            }
-            "track_changed" => {
-                let item = data.get("item");
-                if let Some(st_track) = item.and_then(Self::soloist_track_info) {
-                    let track = Self::soloist_to_track_info(&st_track);
-                    let mut state = inner.state.write().await;
-                    state.soloist.track = Some(st_track.clone());
-                    state.current_track = Some(track.clone());
-                    state.duration = st_track
-                        .duration_ms
-                        .map(|d| d as f64 / 1000.0)
-                        .unwrap_or(0.0);
-                    state.time_pos = 0.0;
-                    state.soloist.playing = true;
-                    state.version += 1;
-                    let st = state.soloist.clone();
-                    drop(state);
-                    Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
-                    Self::push_event(
-                        inner,
-                        DaemonEvent::PlaybackStarted {
-                            track,
-                            auto_advanced: false,
-                            time_pos: 0.0,
-                            duration: st_track
-                                .duration_ms
-                                .map(|d| d as f64 / 1000.0)
-                                .unwrap_or(0.0),
-                        },
-                    );
-                }
-            }
-            "playback_changed" => {
-                let status = data.get("status").and_then(Value::as_str).unwrap_or("idle");
-                let mut state = inner.state.write().await;
-                if status == "playing" || status == "buffering" {
-                    state.soloist.playing = true;
-                    state.version += 1;
-                    let st = state.soloist.clone();
-                    drop(state);
-                    let _ = inner.mixer.lock().await.stop();
-                    Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
-                } else if status == "paused" {
-                    state.soloist.playing = false;
-                    state.version += 1;
-                    let st = state.soloist.clone();
-                    drop(state);
-                    Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
-                    let s = inner.state.read().await;
-                    Self::push_event(
-                        inner,
-                        DaemonEvent::PlaybackPaused {
-                            time_pos: s.time_pos,
-                        },
-                    );
-                }
-            }
-            "position_sync" => {
-                let pos = data.get("position");
-                let pos_ms = pos
-                    .and_then(|p| p.get("position_ms"))
-                    .and_then(Value::as_u64)
-                    .unwrap_or(0);
-                let mut state = inner.state.write().await;
-                state.time_pos = pos_ms as f64 / 1000.0;
-                state.version += 1;
-                drop(state);
-                Self::push_event(
-                    inner,
-                    DaemonEvent::PositionChanged {
-                        time_pos: pos_ms as f64 / 1000.0,
-                    },
-                );
-            }
-            "volume_changed" => {
-                let volume = data.get("volume").and_then(Value::as_u64).unwrap_or(100) as u8;
-                let mut state = inner.state.write().await;
-                state.volume = volume;
-                state.version += 1;
-                drop(state);
-                Self::push_event(inner, DaemonEvent::VolumeChanged { volume });
-            }
-            "device_changed" => {
-                let device_name = data
-                    .get("device_name")
-                    .and_then(Value::as_str)
-                    .map(|s| s.to_string());
-                let mut state = inner.state.write().await;
-                state.soloist.device = device_name;
-                let st = state.soloist.clone();
-                drop(state);
-                Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
-            }
-            "options_changed" => {
-                let options = data.get("options");
-                let shuffle = options
-                    .and_then(|o| o.get("shuffle"))
-                    .and_then(Value::as_bool)
-                    .unwrap_or(false);
-                let repeat = options
-                    .and_then(|o| o.get("repeat"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("off");
-                let new_repeat = match repeat {
-                    "context" => RepeatMode::All,
-                    "track" => RepeatMode::One,
-                    _ => RepeatMode::Off,
-                };
-                let mut state = inner.state.write().await;
-                state.shuffle = shuffle;
-                state.repeat = new_repeat;
-                state.version += 1;
-                let st = state.soloist.clone();
-                drop(state);
-                Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
-                Self::push_event(inner, DaemonEvent::ShuffleChanged { enabled: shuffle });
-                Self::push_event(inner, DaemonEvent::RepeatModeChanged { mode: new_repeat });
-            }
-            "error" => {
-                let msg = data
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("soloist error");
-                let mut state = inner.state.write().await;
-                state.soloist.error = Some(msg.into());
-                let st = state.soloist.clone();
-                drop(state);
-                Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
-            }
-            _ => {}
-        }
-    }
-
-    async fn soloist_send(inner: &DaemonInner, command: &str) -> bool {
-        let json = SoloistManager::cmd(command, vec![]);
-        inner.soloist.lock().await.send(json).await
-    }
-
-    fn soloist_track_info(entity: &Value) -> Option<SpotifyTrack> {
-        let uri = entity.get("uri").and_then(Value::as_str)?.to_string();
-        if uri.is_empty() || !uri.starts_with("spotify:") {
-            return None;
-        }
-        let name = entity
-            .get("decorations")
-            .and_then(|d| d.get("identity"))
-            .and_then(|i| i.get("name"))
-            .and_then(Value::as_str)?
-            .to_string();
-        let artists = entity
-            .get("decorations")
-            .and_then(|d| d.get("creators"))
-            .and_then(|c| c.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|a| {
-                        a.get("entity")
-                            .and_then(|e| e.get("decorations"))
-                            .and_then(|d| d.get("identity"))
-                            .and_then(|i| i.get("name"))
-                            .and_then(Value::as_str)
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            })
-            .unwrap_or_default();
-        let album = entity
-            .get("decorations")
-            .and_then(|d| d.get("parent"))
-            .and_then(|p| p.get("entity"))
-            .and_then(|e| e.get("decorations"))
-            .and_then(|d| d.get("identity"))
-            .and_then(|i| i.get("name"))
-            .and_then(Value::as_str)
-            .map(|s| s.to_string());
-        let duration_ms = entity
-            .get("decorations")
-            .and_then(|d| d.get("playback"))
-            .and_then(|p| p.get("duration_ms"))
-            .and_then(Value::as_u64);
-        Some(SpotifyTrack {
-            index: 0,
-            name,
-            artists,
-            album,
-            duration_ms,
-            uri: Some(uri),
-        })
-    }
-
-    fn soloist_to_track_info(st: &SpotifyTrack) -> TrackInfo {
-        TrackInfo {
-            id: 0,
-            path: st.uri.clone().unwrap_or_default(),
-            title: st.name.clone(),
-            artist: st.artists.clone(),
-            album: st.album.clone().unwrap_or_default(),
-            duration: st.duration_ms.map(|d| d as f64 / 1000.0).unwrap_or(0.0),
-            hash: st.uri.clone().unwrap_or_default(),
-            ..Default::default()
-        }
-    }
-
-    async fn handle_soloist_msg(inner: &DaemonInner, msg: SoloistMsg) {
-        match msg {
-            SoloistMsg::Connected {
-                logged_in,
-                device_name,
-            } => {
-                let mut state = inner.state.write().await;
-                state.soloist.running = true;
-                state.soloist.connected = true;
-                state.soloist.logged_in = logged_in;
-                state.soloist.device = device_name;
-                state.version += 1;
-                let st = state.soloist.clone();
-                drop(state);
-                Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
-                if logged_in {
-                    let _ = Self::soloist_send(inner, "get_state").await;
-                }
-            }
-            SoloistMsg::Disconnected(reason) => {
-                let mut state = inner.state.write().await;
-                state.soloist.connected = false;
-                state.soloist.running = false;
-                state.soloist.logged_in = false;
-                state.soloist.track = None;
-                state.soloist.playing = false;
-                if state.soloist.error.is_none() {
-                    state.soloist.error = Some(reason);
-                }
-                state.version += 1;
-                let st = state.soloist.clone();
-                drop(state);
-                Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
-            }
-            SoloistMsg::Event { name, data } => {
-                Self::apply_soloist_event(inner, &name, &data).await;
-            }
-            SoloistMsg::Failed(err) => {
-                let mut state = inner.state.write().await;
-                state.soloist.error = Some(err);
-                state.soloist.running = false;
-                state.soloist.connected = false;
-                state.version += 1;
-                let st = state.soloist.clone();
-                drop(state);
-                Self::push_event(inner, DaemonEvent::SoloistStatusChanged { status: st });
-            }
-        }
     }
 }
 

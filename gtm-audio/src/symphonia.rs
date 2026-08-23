@@ -8,11 +8,11 @@ use std::fs::File;
 use std::num::{NonZeroU16, NonZeroU32};
 use std::time::Duration;
 
-use rodio::source::SeekError;
 use rodio::Source;
+use rodio::source::SeekError;
+use symphonia::core::codecs::CodecParameters;
 use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::codecs::registry::CodecRegistry;
-use symphonia::core::codecs::CodecParameters;
 use symphonia::core::formats::probe::{Hint, Probe};
 use symphonia::core::formats::{FormatOptions, FormatReader, TrackType};
 use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
@@ -304,7 +304,7 @@ impl Source for SymphoniaSource {
             _ => {
                 return Err(SeekError::NotSupported {
                     underlying_source: std::any::type_name::<Self>(),
-                })
+                });
             }
         };
         let track_id = track.id;

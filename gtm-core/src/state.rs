@@ -6,7 +6,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::spotify::SoloistStatus;
 use crate::track::TrackInfo;
 
 #[derive(Debug, thiserror::Error)]
@@ -160,14 +159,6 @@ pub struct DaemonState {
     pub gapless: bool,
     pub dynamic_mode: DynamicModeConfig,
     pub scrobble: ScrobbleConfig,
-    /// Soloist playback bridge status (Spotify via the local `soloist` daemon).
-    #[serde(default)]
-    pub soloist: SoloistStatus,
-    /// Start the Soloist playback bridge automatically at daemon startup when
-    /// a key is persisted. Settable via `soloist/set_config` and the Settings
-    /// TUI row.
-    #[serde(default)]
-    pub soloist_auto_start: bool,
     /// Active lyrics provider. `lrclib` is the default and the only provider
     /// implemented; other options are documented in the README/wiki but not
     /// wired up.

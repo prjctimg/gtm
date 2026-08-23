@@ -22,7 +22,7 @@ pub use paths::{
 };
 pub use spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 pub use state::{
-    CoreError, CrossfadeConfig, DaemonState, Easing, EqBand, ReverbConfig, EQ_FREQUENCIES,
+    CoreError, CrossfadeConfig, DaemonState, EQ_FREQUENCIES, Easing, EqBand, ReverbConfig,
 };
 pub use track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
 

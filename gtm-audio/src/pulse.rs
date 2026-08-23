@@ -15,7 +15,7 @@ use pulseaudio::protocol;
 use pulseaudio::{Client, PlaybackSource};
 
 use crate::backend::{AudioError, AudioEvent, AudioResult};
-use crate::buffer::{DecodeControl, RingBufferInner, SharedRingBuffer, PREBUFFER_SAMPLES};
+use crate::buffer::{DecodeControl, PREBUFFER_SAMPLES, RingBufferInner, SharedRingBuffer};
 use crate::decoder::DecodeThread;
 use crate::eq::{EqGains, EqSource, ReverbSource};
 use crate::mixer::Mixer;

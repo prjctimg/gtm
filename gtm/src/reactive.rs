@@ -7,7 +7,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use crate::theme::{blend_colors, AppTheme};
+use crate::theme::{AppTheme, blend_colors};
 use ratatui::style::Color;
 
 /// Colors extracted from cover art, ready to be blended into an [`AppTheme`].
@@ -161,11 +161,7 @@ fn rgb_to_hsv(c: [u8; 3]) -> [f32; 3] {
 /// Circular hue distance in degrees, range `[0, 180]`.
 fn hue_distance(a: f32, b: f32) -> f32 {
     let d = (a - b).abs() % 360.0;
-    if d > 180.0 {
-        360.0 - d
-    } else {
-        d
-    }
+    if d > 180.0 { 360.0 - d } else { d }
 }
 
 fn hue_shift(c: [u8; 3], turns: f32) -> [u8; 3] {

@@ -20,6 +20,9 @@ tokio-util = "0.7"
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls-native-roots"] }
 rspotify = { version = "0.16.1", default-features = false, features = ["client-reqwest", "reqwest-rustls-tls"] }
+librespot-core = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-playback = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
+rodio = { version = "0.22", default-features = false, features = ["playback"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4", features = ["derive"] }

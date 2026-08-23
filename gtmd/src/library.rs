@@ -10,18 +10,18 @@ use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Mutex;
 
-use rusqlite::{params, Connection};
+use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
-use symphonia::core::formats::probe::Hint;
 use symphonia::core::formats::FormatOptions;
+use symphonia::core::formats::probe::Hint;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::StandardVisualKey;
 use symphonia::core::meta::{MetadataOptions, StandardTag};
 use symphonia::core::units::Timestamp;
 use tracing::warn;
 
-use gtm_core::track::{Playlist, TrackInfo};
 use gtm_core::MetadataPatch;
+use gtm_core::track::{Playlist, TrackInfo};
 
 const DB_NAME: &str = "library.db";
 

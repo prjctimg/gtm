@@ -13,7 +13,7 @@ use std::time::{Duration, Instant};
 use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
 
 use crate::backend::{AudioError, AudioEvent, AudioResult};
-use crate::buffer::{DecodeControl, RingBufferInner, RingBufferSource, BUFFER_CAPACITY_SAMPLES};
+use crate::buffer::{BUFFER_CAPACITY_SAMPLES, DecodeControl, RingBufferInner, RingBufferSource};
 use crate::decoder::DecodeThread;
 use crate::eq::{EqGains, EqSource, ReverbSource};
 use crate::symphonia::SymphoniaSource;
@@ -52,6 +52,9 @@ pub trait Mixer: Send + Sync {
     fn poll(&mut self) -> AudioResult<Option<AudioEvent>>;
     fn current_peak_level(&self) -> f32;
     fn current_spectrum(&self) -> Vec<f32>;
+    /// Publish externally produced spectrum levels (e.g. from streamed
+    /// sources that bypass the decode thread). No-op by default.
+    fn publish_spectrum(&self, _levels: Vec<f32>) {}
 
     // ─── EQ / Reverb ───
     fn set_eq_preset(&self, preset: &EqPreset);
@@ -204,6 +207,12 @@ impl Mixer for AudioMixer {
 }
 
 impl AudioMixer {
+    /// Publish externally produced spectrum levels (e.g. from streamed
+    /// sources that bypass the decode thread).
+    pub fn publish_spectrum(&self, levels: Vec<f32>) {
+        *self.spectrum.lock().unwrap() = levels;
+    }
+
     pub fn new() -> AudioResult<Self> {
         let mut sink = DeviceSinkBuilder::open_default_sink()
             .map_err(|e| AudioError::OutputError(e.to_string()))?;

@@ -5,13 +5,13 @@
 // This is free software released under the GPL-3.0 license.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::io::AsyncBufReadExt;
 use tokio::process::Command;
-use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tracing::{debug, warn};

@@ -17,6 +17,7 @@ pub mod pulse;
 
 pub use backend::{AudioError, AudioEvent, AudioResult};
 pub use buffer::{DecodeControl, RingBufferSource};
+pub use decoder::{SPECTRUM_BINS, SpectrumAnalyzer};
 pub use eq::{EqGains, EqSource, ReverbSource};
 pub use mixer::{AudioMixer, Mixer};
 pub use silent::NullMixer;

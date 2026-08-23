@@ -15,7 +15,7 @@ use rodio::Source;
 
 use gtm_core::state::{EQ_DEFAULT_Q, EQ_FREQUENCIES};
 
-use crate::buffer::{DecodeControl, SharedRingBuffer, PREBUFFER_SAMPLES};
+use crate::buffer::{DecodeControl, PREBUFFER_SAMPLES, SharedRingBuffer};
 use crate::eq::EqGains;
 use crate::symphonia::SymphoniaSource;
 
@@ -67,11 +67,11 @@ impl ReverbState {
 // Spectrum analysis: Hann-windowed FFT with log-spaced bands for visualizer
 // ---------------------------------------------------------------------------
 
-use rustfft::num_complex::Complex;
 use rustfft::FftPlanner;
+use rustfft::num_complex::Complex;
 
 /// Number of visualizer bands published to the UI.
-const SPECTRUM_BINS: usize = 64;
+pub const SPECTRUM_BINS: usize = 64;
 /// FFT size: 2048 samples ≈ 46 ms at 44.1 kHz — enough resolution to
 /// separate low-frequency content without adding perceptible latency.
 const FFT_SIZE: usize = 2048;
@@ -82,10 +82,10 @@ const MAX_FREQ: f32 = 16_000.0;
 /// Full-scale sine reference and noise floor for dB normalization.
 const DB_RANGE: f32 = 70.0;
 
-/// Incremental FFT spectrum analyzer fed single mono samples from the decode
-/// thread.  Once per [`FFT_SIZE`] samples it publishes `SPECTRUM_BINS`
-/// log-spaced magnitudes normalized to `[0, 1]`.
-struct SpectrumAnalyzer {
+/// Incremental FFT spectrum analyzer fed single mono samples from a decode
+/// or streaming source.  Once per [`FFT_SIZE`] samples it publishes
+/// `SPECTRUM_BINS` log-spaced magnitudes normalized to `[0, 1]`.
+pub struct SpectrumAnalyzer {
     fft: std::sync::Arc<dyn rustfft::Fft<f32>>,
     window: Vec<f32>,
     hann: Vec<f32>,
@@ -95,7 +95,7 @@ struct SpectrumAnalyzer {
 }
 
 impl SpectrumAnalyzer {
-    fn new(sample_rate: f32) -> Self {
+    pub fn new(sample_rate: f32) -> Self {
         let mut planner = FftPlanner::<f32>::new();
         let fft = planner.plan_fft_forward(FFT_SIZE);
         let hann: Vec<f32> = (0..FFT_SIZE)
@@ -128,7 +128,7 @@ impl SpectrumAnalyzer {
 
     /// Feed one sample; when the internal window fills, writes fresh band
     /// magnitudes into `out` and returns true.
-    fn push(&mut self, sample: f32, out: &mut [f32]) -> bool {
+    pub fn push(&mut self, sample: f32, out: &mut [f32]) -> bool {
         self.window.push(sample);
         if self.window.len() < FFT_SIZE {
             return false;

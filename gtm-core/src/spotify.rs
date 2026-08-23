@@ -6,6 +6,10 @@
 
 use serde::{Deserialize, Serialize};
 
+/// librespot's public desktop client id. Works for the OAuth PKCE flow
+/// (playlist sync + playback scopes) without creating a dashboard app.
+pub const LIBRESPOT_CLIENT_ID: &str = "65b708073fc0480ea92a077233ca87bd";
+
 /// Connection state of the Spotify integration, surfaced in Settings.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SpotifyStatus {
@@ -55,32 +59,8 @@ pub struct SpotifyTrack {
     pub artists: String,
     pub album: Option<String>,
     pub duration_ms: Option<u64>,
-    /// Spotify track URI (`spotify:track:<id>`), used to play this exact
-    /// track through Soloist. `None` for entries without a resolvable ID.
+    /// Spotify track URI (`spotify:track:<id>`), used to resolve and stream
+    /// this exact track. `None` for entries without a resolvable ID.
     #[serde(default)]
     pub uri: Option<String>,
-}
-
-/// Connection state of the Soloist playback bridge, surfaced in Settings.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct SoloistStatus {
-    /// Whether a Soloist API key is configured (persisted on disk).
-    pub key_set: bool,
-    /// Whether the `soloist` daemon process has been spawned.
-    pub running: bool,
-    /// Whether the WebSocket connection to Soloist is live.
-    pub connected: bool,
-    /// Whether Soloist reports an authenticated Spotify Connect session.
-    pub logged_in: bool,
-    /// Spotify display name of the connected user, if known.
-    pub user: Option<String>,
-    /// Active output device name reported by Soloist.
-    pub device: Option<String>,
-    /// Currently playing track mirrored from Soloist events.
-    pub track: Option<SpotifyTrack>,
-    /// Whether playback is active (status `playing`/`buffering`).
-    pub playing: bool,
-    /// Most recent error, if Soloist failed to start/connect or an event
-    /// reported an error.
-    pub error: Option<String>,
 }

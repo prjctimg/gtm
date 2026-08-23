@@ -6,24 +6,24 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
-use tokio::sync::{mpsc, oneshot, Mutex};
+use tokio::sync::{Mutex, mpsc, oneshot};
 
+use crate::CoreError;
+use crate::Result;
 use crate::ipc::{
-    DaemonEvent, DaemonReq, DaemonRes, LibraryAction, MetadataPatch, QueueAction, SyncKind,
-    WireEvent, WireReq, WireRes, PROTOCOL_VERSION,
+    DaemonEvent, DaemonReq, DaemonRes, LibraryAction, MetadataPatch, PROTOCOL_VERSION, QueueAction,
+    SyncKind, WireEvent, WireReq, WireRes,
 };
-use crate::spotify::{SoloistStatus, SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
+use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::state::{self, DaemonState, EqPreset, PlaybackStatus, RepeatMode, YTFilter};
 use crate::track;
 use crate::wire;
-use crate::CoreError;
-use crate::Result;
 
 /// Snapshot of a background library sync operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
@@ -424,10 +424,6 @@ impl DaemonClient {
         Spotify { client: self }
     }
 
-    pub fn soloist(&self) -> Soloist<'_> {
-        Soloist { client: self }
-    }
-
     pub fn favourites(&self) -> Favourites<'_> {
         Favourites { client: self }
     }
@@ -463,8 +459,6 @@ impl DaemonClient {
     pub async fn quit(&self) -> Result<()> {
         self.send_ok(DaemonReq::Quit).await
     }
-
-
 
     pub async fn check_health(&self) -> Result<crate::ipc::HealthReport> {
         let res = self.send_raw(DaemonReq::CheckHealth).await?;
@@ -787,6 +781,28 @@ impl<'a> Spotify<'a> {
         Self::status_from(res)
     }
 
+    /// Start the OAuth PKCE link flow. Returns the authorize URL the user
+    /// must open in a browser; completion is signalled via the
+    /// `spotify_status_changed` daemon event.
+    pub async fn oauth_start(&self, client_id: &str) -> Result<String> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::SpotifyOauthStart {
+                client_id: client_id.into(),
+            })
+            .await?;
+        match res {
+            DaemonRes::SpotifyOauthStarted { url } => Ok(url),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+        }
+    }
+
+    /// Abort a pending OAuth link flow (shuts down the callback server).
+    pub async fn oauth_cancel(&self) -> Result<()> {
+        self.client.send_ok(DaemonReq::SpotifyCancelOauth).await
+    }
+
     /// Unlink the Spotify account and delete the token file.
     pub async fn clear(&self) -> Result<SpotifyStatus> {
         let res = self.client.send_raw(DaemonReq::SpotifyClear).await?;
@@ -880,72 +896,6 @@ impl<'a> Spotify<'a> {
     }
 }
 
-pub struct Soloist<'a> {
-    client: &'a DaemonClient,
-}
-
-impl<'a> Soloist<'a> {
-    /// Set the Soloist API key and start the bridge.
-    pub async fn set_api_key(&self, key: &str) -> Result<SoloistStatus> {
-        let res = self
-            .client
-            .send_raw(DaemonReq::SoloistSetApiKey { key: key.into() })
-            .await?;
-        Self::status_from(res)
-    }
-
-    /// Clear the Soloist API key and stop the bridge.
-    pub async fn clear(&self) -> Result<SoloistStatus> {
-        let res = self.client.send_raw(DaemonReq::SoloistClear).await?;
-        Self::status_from(res)
-    }
-
-    /// Set the Soloist auto-start flag (persisted in daemon state).
-    pub async fn set_config(&self, auto_start: bool) -> Result<()> {
-        self.client
-            .send_ok(DaemonReq::SoloistSetConfig { auto_start })
-            .await
-    }
-
-    /// Start the Soloist bridge using the persisted key.
-    pub async fn start(&self) -> Result<SoloistStatus> {
-        let res = self.client.send_raw(DaemonReq::SoloistStart).await?;
-        Self::status_from(res)
-    }
-
-    /// Stop the Soloist bridge (does not clear the key).
-    pub async fn stop(&self) -> Result<SoloistStatus> {
-        let res = self.client.send_raw(DaemonReq::SoloistStop).await?;
-        Self::status_from(res)
-    }
-
-    /// Query the current Soloist bridge status.
-    pub async fn status(&self) -> Result<SoloistStatus> {
-        let res = self.client.send_raw(DaemonReq::SoloistStatus).await?;
-        Self::status_from(res)
-    }
-
-    /// Send a `play` command to Soloist with a Spotify URI.
-    pub async fn play(&self, uri: &str) -> Result<()> {
-        self.client
-            .send_ok(DaemonReq::SoloistPlay { uri: uri.into() })
-            .await
-    }
-
-    /// Ask Soloist to become the active Spotify Connect device.
-    pub async fn activate(&self) -> Result<()> {
-        self.client.send_ok(DaemonReq::SoloistActivate).await
-    }
-
-    fn status_from(res: DaemonRes) -> Result<SoloistStatus> {
-        match res {
-            DaemonRes::SoloistStatusRes { status, .. } => Ok(status),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
-        }
-    }
-}
-
 pub struct Favourites<'a> {
     client: &'a DaemonClient,
 }
@@ -1003,11 +953,7 @@ pub struct Lyrics<'a> {
 }
 
 impl<'a> Lyrics<'a> {
-    pub async fn get(
-        &self,
-        track_id: i64,
-        path: Option<&str>,
-    ) -> Result<Option<track::LrcData>> {
+    pub async fn get(&self, track_id: i64, path: Option<&str>) -> Result<Option<track::LrcData>> {
         let res = self
             .client
             .send_raw(DaemonReq::GetLyrics {

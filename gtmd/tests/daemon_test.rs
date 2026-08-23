@@ -5,7 +5,7 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
-use gtm_core::ipc::{DaemonReq, DaemonRes, QueueAction, WireReq, WireRes, PROTOCOL_VERSION};
+use gtm_core::ipc::{DaemonReq, DaemonRes, PROTOCOL_VERSION, QueueAction, WireReq, WireRes};
 
 use gtmd::config::{DaemonArgs, DaemonConfig};
 use gtmd::daemon::Daemon;

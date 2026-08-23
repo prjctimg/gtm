@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::app::{
-    no_image_protocol, App, InputMode, LibraryPick, NotificationKind, TrackInfoKind,
-    LIBRARY_CATEGORIES,
+    App, InputMode, LIBRARY_CATEGORIES, LibraryPick, NotificationKind, TrackInfoKind,
+    no_image_protocol,
 };
 use crate::footer::format_duration;
 use crate::picker::{Picker, PickerId, PickerSource};
@@ -18,19 +18,18 @@ use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
 };
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use gtm_core::state::EqPreset;
+use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::Color;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap};
-use ratatui::Terminal;
-use ratatui_image::protocol::StatefulProtocol;
 use ratatui_image::StatefulImage;
-
+use ratatui_image::protocol::StatefulProtocol;
 
 /// Grouped render helpers: previously free `render_*` functions.
 pub struct Render;
@@ -62,7 +61,9 @@ impl Render {
                 || u.track.path.starts_with("spotify:")
             {
                 "Spotify"
-            } else if u.track.path.contains("/audio/youtube") || u.track.path.starts_with("youtube:") {
+            } else if u.track.path.contains("/audio/youtube")
+                || u.track.path.starts_with("youtube:")
+            {
                 "YouTube"
             } else {
                 "Local"
@@ -701,7 +702,7 @@ impl Render {
                     };
 
                     let has_album = !track.album.is_empty();
-                    let content_h: u16 = 7;
+                    let content_h: u16 = 3;
                     let offset = cover_h.saturating_sub(content_h) / 2;
                     let vchunks = Layout::default()
                         .direction(Direction::Vertical)
@@ -716,10 +717,6 @@ impl Render {
                     let info_chunks = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([
-                            Constraint::Length(1),
-                            Constraint::Length(1),
-                            Constraint::Length(1),
-                            Constraint::Length(1),
                             Constraint::Length(1),
                             Constraint::Length(1),
                             Constraint::Length(1),
@@ -752,28 +749,6 @@ impl Render {
                         ]));
                         f.render_widget(album_para, info_chunks[2]);
                     }
-
-                    let dur = if app.state.duration > 0.0 {
-                        app.state.duration
-                    } else {
-                        track.duration
-                    };
-                    let pos = app.display_position;
-                    let pos_str = format_duration(pos as u64);
-                    let dur_str = format_duration(dur as u64);
-                    let ratio = if dur > 0.0 { pos / dur } else { 0.0 };
-                    let ts_str = format!("{} / {}", pos_str, dur_str);
-                    let bar_row = info_chunks[4];
-                    let ts_row = info_chunks[6];
-                    let bar_width = (bar_row.width.saturating_sub(1) as usize).min(40);
-                    let bar_spans = Render::progress_variant_styled(ratio, bar_width, app);
-                    let bar_para = Paragraph::new(Line::from(bar_spans));
-                    f.render_widget(bar_para, bar_row);
-                    let ts_para = Paragraph::new(Line::from(vec![Span::styled(
-                        ts_str,
-                        Style::default().fg(app.theme.fg_dim),
-                    )]));
-                    f.render_widget(ts_para, ts_row);
                 } else {
                     let display_title = if track.title.is_empty() {
                         std::path::Path::new(&track.path)
@@ -802,7 +777,7 @@ impl Render {
                     };
                     Render::evolving(f, title_area, title_para, "np", app, true);
 
-                    let mut row_offset = 1u16;
+                    let row_offset = 1u16;
                     if !track.album.is_empty() {
                         let album_para = Paragraph::new(Line::from(vec![
                             Span::styled("\u{1f4bf} ", Style::default().fg(app.theme.fg)),
@@ -815,41 +790,7 @@ impl Render {
                             height: 1,
                         };
                         f.render_widget(album_para, album_area);
-                        row_offset += 1;
                     }
-                    row_offset += 1;
-
-                    let dur = if app.state.duration > 0.0 {
-                        app.state.duration
-                    } else {
-                        track.duration
-                    };
-                    let pos = app.display_position;
-                    let pos_str = format_duration(pos as u64);
-                    let dur_str = format_duration(dur as u64);
-                    let ratio = if dur > 0.0 { pos / dur } else { 0.0 };
-                    let ts_str = format!("{} / {}", pos_str, dur_str);
-                    let bar_width = (inner.width.saturating_sub(1) as usize).min(40);
-                    let bar_spans = Render::progress_variant_styled(ratio, bar_width, app);
-                    let bar_para = Paragraph::new(Line::from(bar_spans));
-                    let bar_area = Rect {
-                        x: inner.x,
-                        y: inner.y + row_offset,
-                        width: inner.width,
-                        height: 1,
-                    };
-                    f.render_widget(bar_para, bar_area);
-                    let ts_area = Rect {
-                        x: inner.x,
-                        y: inner.y + row_offset + 2,
-                        width: inner.width,
-                        height: 1,
-                    };
-                    let ts_para = Paragraph::new(Line::from(vec![Span::styled(
-                        ts_str,
-                        Style::default().fg(app.theme.fg_dim),
-                    )]));
-                    f.render_widget(ts_para, ts_area);
                 }
             } else {
                 let inner = np_inner;
@@ -984,7 +925,8 @@ impl Render {
         // Total rows in the active right-pane list, threaded out of the category
         // branches so mouse hit zones only cover real rows (PROMPT #7).
         let mut lib_total_rows: usize = 0;
-        let (right_lines, _stats_line) = if app.browse_detail.is_some() && app.library_category == 5 {
+        let (right_lines, _stats_line) = if app.browse_detail.is_some() && app.library_category == 5
+        {
             let tracks = &app.spotify_playlist_tracks_cache;
             let total_len = tracks.len();
             let st_line = format!(" {} {} ", total_len, plural(total_len, "track", "tracks"));
@@ -1076,7 +1018,8 @@ impl Render {
             } else {
                 for (i, track) in filtered[app.list_scroll..end].iter().enumerate() {
                     let real_i = app.list_scroll + i;
-                    let is_current = app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
+                    let is_current =
+                        app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
                     let is_sel = real_i == sel && !left_focus;
                     let label = track.title.clone();
                     let avail = pane_w.saturating_sub(2);
@@ -1334,7 +1277,8 @@ impl Render {
         } else {
             category_label.to_string()
         };
-        let right_inner = Render::pane_header(f, panes[1], app, &header_label, !left_focus, false, true);
+        let right_inner =
+            Render::pane_header(f, panes[1], app, &header_label, !left_focus, false, true);
         fill_pane(f, right_inner, app);
         Render::evolving(f, right_inner, right_para, "lib", app, false);
 
@@ -1377,11 +1321,17 @@ impl Render {
 
         if let Some(lyrics_area) = lyrics_area {
             Render::lyrics_pane(f, lyrics_area, app);
-        } else if app.show_lyrics && panes.len() == 1 {
-            // Narrow mode: keep the stats-only bottom row clear.
+        } else if app.show_lyrics && is_narrow {
+            // Narrow screens: lyrics act as a tab replacing the list/queue
+            // area entirely ('l' toggles, Esc/Back returns to the list).
+            let base = panes
+                .iter()
+                .copied()
+                .find(|p| p.width > 1)
+                .unwrap_or(chunks[1]);
             let lyrics = Rect {
-                height: panes[0].height.saturating_sub(1),
-                ..panes[0]
+                height: base.height.saturating_sub(1),
+                ..base
             };
             Render::lyrics_pane(f, lyrics, app);
         }
@@ -1807,7 +1757,8 @@ impl Render {
             let para = Paragraph::new(lines).scroll((0, 0));
             f.render_widget(para, inner);
         } else {
-            let loading = Paragraph::new(" Loading...").style(Style::default().fg(app.theme.fg_dim));
+            let loading =
+                Paragraph::new(" Loading...").style(Style::default().fg(app.theme.fg_dim));
             f.render_widget(loading, inner);
         }
 
@@ -1820,7 +1771,6 @@ impl Render {
         );
         f.render_widget(help, help_area);
     }
-
 }
 
 pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
@@ -2073,8 +2023,6 @@ const NOTIFICATION_LIFETIME: std::time::Duration = std::time::Duration::from_mil
 
 const NOTIFICATION_EXIT_DURATION: std::time::Duration = std::time::Duration::from_millis(300);
 
-
-
 fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
     if max_chars == 0 {
         return vec![text.to_string()];
@@ -2100,10 +2048,6 @@ fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
 }
 
 // ─── Content Area ───
-
-
-
-
 
 const LIBRARY_ICONS_NERD: &[&str] = &[
     "\u{f001}", "\u{f004}", "\u{f025}", "\u{f007}", "\u{f03a}", "\u{f1bc}",
@@ -2147,7 +2091,6 @@ fn step_viewport(offset: usize, sel: usize, visible: usize, total: usize) -> (us
     (o, (o + visible).min(total))
 }
 
-
 fn fill_pane(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(
         ratatui::widgets::Block::default()
@@ -2155,8 +2098,6 @@ fn fill_pane(f: &mut ratatui::Frame, area: Rect, app: &App) {
         area,
     );
 }
-
-
 
 const SETTINGS_ICONS_NERD: &[&str] = &["\u{f028}", "\u{f16a}", "\u{f04b}", "\u{f013}", "\u{f1bc}"];
 const SETTINGS_ICONS_ASCII: &[&str] = &["♪", "YT", "▶", "⚙", "★"];
@@ -2207,7 +2148,7 @@ impl Pickers {
             PickerId::CommandPalette => (46, 18),
             PickerId::PlaylistSelect => (48, 20),
             PickerId::SpotifySearch => (60, 28),
-            PickerId::SpotifyLinkToken => (60, 12),
+            PickerId::SpotifyLink => (60, 12),
             PickerId::Crossfade => (58, 20),
             PickerId::VisualizerPreset => (48, 14),
             PickerId::ProgressStyle => (48, 18),
@@ -2282,44 +2223,47 @@ impl Pickers {
             PickerId::ProgressStyle => Self::render_progress_style_picker(f, picker_area, app),
             PickerId::Settings => Self::render_settings_picker(f, picker_area, app),
             PickerId::Notifications => Self::render_notifications_picker(f, picker_area, app),
-            PickerId::SpotifyLinkToken => {
+            PickerId::SpotifyLink => {
                 let block = Self::picker_panel(
                     app,
-                    " Spotify Link Token ",
-                    Some(" Enter: link account   Esc: cancel"),
+                    " Spotify Link ",
+                    Some(" Enter: authorize   Esc: cancel"),
                 );
                 let inner = block.inner(picker_area);
                 f.render_widget(block, picker_area);
 
                 let mut lines = Vec::new();
                 lines.push(Line::from(Span::styled(
-                    "Paste a Spotify access token below, then press Enter.",
+                    "Enter your Spotify app Client ID, then press Enter.",
                     Style::default().fg(app.theme.fg),
                 )));
                 lines.push(Line::from(Span::styled(
-                    "Get one from the Spotify developer dashboard (OAuth access token).",
+                    "A browser window opens to authorize gtm; playlists load",
+                    Style::default().fg(app.theme.fg_dim),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "automatically afterwards. Create an app for free at",
+                    Style::default().fg(app.theme.fg_dim),
+                )));
+                lines.push(Line::from(Span::styled(
+                    "developer.spotify.com/dashboard (no secret needed).",
                     Style::default().fg(app.theme.fg_dim),
                 )));
                 lines.push(Line::from(""));
-                let masked: String = "*".repeat(app.spotify_token_input.chars().count());
-                let token_cursor = cursor_span_style(app);
-                if app.spotify_token_input.is_empty() {
+                let input_cursor = cursor_span_style(app);
+                if app.spotify_link_input.is_empty() {
                     lines.push(Line::from(vec![
-                        Span::styled(" [ token ]", Style::default().fg(app.theme.fg_dim)),
-                        Span::styled(" ", token_cursor.unwrap_or_default()),
+                        Span::styled(" [ client id ]", Style::default().fg(app.theme.fg_dim)),
+                        Span::styled(" ", input_cursor.unwrap_or_default()),
                     ]));
                 } else {
                     lines.push(Line::from(vec![
-                        Span::styled(format!("  {masked}"), Style::default().fg(app.theme.accent)),
-                        Span::styled(" ", token_cursor.unwrap_or_default()),
-                    ]));
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "  ({} chars entered)",
-                            app.spotify_token_input.chars().count()
+                        Span::styled(
+                            format!("  {}", app.spotify_link_input),
+                            Style::default().fg(app.theme.accent),
                         ),
-                        Style::default().fg(app.theme.fg_dim),
-                    )));
+                        Span::styled(" ", input_cursor.unwrap_or_default()),
+                    ]));
                 }
                 let p = Paragraph::new(lines);
                 f.render_widget(p, inner);
@@ -3155,11 +3099,6 @@ impl Pickers {
                 ]
             }
             3 => {
-                let preset_name = app
-                    .footer_presets
-                    .get(app.footer_preset)
-                    .map(|p| p.name.as_ref())
-                    .unwrap_or("Default");
                 let theme_name = app
                     .themes
                     .get(app.theme_index)
@@ -3178,7 +3117,6 @@ impl Pickers {
                     "Sync Covers    Enter  ▶".to_string(),
                     "Sync Lyrics    Enter  ▶".to_string(),
                     "Sync Metadata  Enter  ▶".to_string(),
-                    format!("Footer Preset  {}  ▶", preset_name),
                     format!("Visualizer     {}  ▶", app.visualizer.preset.name()),
                     format!(
                         "Reactive Theme {}",
@@ -3216,21 +3154,6 @@ impl Pickers {
                     .clone()
                     .filter(|d| !d.is_empty())
                     .unwrap_or_else(|| "(none)".to_string());
-                let soloist = app.soloist_status.clone().unwrap_or_default();
-                let soloist_state = if soloist.running {
-                    if soloist.connected {
-                        if soloist.logged_in {
-                            "Running ✓"
-                        } else {
-                            "Auth needed"
-                        }
-                    } else {
-                        "Starting…"
-                    }
-                } else {
-                    "Stopped"
-                };
-                let auto_start = app.state.soloist_auto_start;
                 vec![
                     format!("Status         {status_label}"),
                     format!("Account        {user:<10}"),
@@ -3238,13 +3161,7 @@ impl Pickers {
                     "Link Account   Enter".to_string(),
                     "Sync Now       Enter".to_string(),
                     "Unlink         Enter".to_string(),
-                    format!("Soloist        {soloist_state}"),
-                    "Link Soloist   Enter".to_string(),
-                    "Start Soloist  Enter".to_string(),
-                    "Stop Soloist   Enter".to_string(),
-                    "Activate Dev   Enter".to_string(),
                     format!("Device         {device_label}"),
-                    format!("Auto-Start     {}", if auto_start { "On" } else { "Off" }),
                 ]
             }
             _ => vec![],
@@ -3349,10 +3266,6 @@ impl Pickers {
                 " Resolve and embed clean tags into files.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (3, 5) => lines.push(Line::from(Span::styled(
-                " Press Enter to cycle footer preset.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
             (3, 6) => lines.push(Line::from(Span::styled(
                 " Press Enter to open visualizer picker.",
                 Style::default().fg(app.theme.fg_dim),
@@ -3373,26 +3286,6 @@ impl Pickers {
                 " Remove token and disconnect.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (4, 7) => lines.push(Line::from(Span::styled(
-                " Press Enter to paste Soloist API key.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (4, 8) => lines.push(Line::from(Span::styled(
-                " Launch soloist daemon.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (4, 9) => lines.push(Line::from(Span::styled(
-                " Terminate soloist daemon.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (4, 10) => lines.push(Line::from(Span::styled(
-                " Become active Spotify Connect device.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (4, 12) => lines.push(Line::from(Span::styled(
-                " Press Enter to toggle auto-start.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
             _ => {}
         }
 
@@ -3402,10 +3295,6 @@ impl Pickers {
 }
 
 // ─── Footer ───
-
-
-
-
 
 const TRACK_INFO_CARD_H: u16 = 16;
 
@@ -3657,7 +3546,6 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
     }
 }
 
-
 pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str, &str)] = &[
     ("\u{25b6}\u{fe0f} Play/Pause", "Space", "play/pause"),
     ("\u{23ed}\u{fe0f} Next Track", "n", "next track"),
@@ -3863,10 +3751,12 @@ impl Pickers {
         let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
 
         let block = Self::picker_panel(
-        app,
-        " Keybindings ",
-        Some("Esc: close   ?: toggle   /: search   gg/G: top/bottom   0/$: first/last   n/N: next/prev"),
-    );
+            app,
+            " Keybindings ",
+            Some(
+                "Esc: close   ?: toggle   /: search   gg/G: top/bottom   0/$: first/last   n/N: next/prev",
+            ),
+        );
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -4236,11 +4126,7 @@ impl Pickers {
                             qi += 1;
                         }
                     }
-                    if qi == q.len() {
-                        Some(i)
-                    } else {
-                        None
-                    }
+                    if qi == q.len() { Some(i) } else { None }
                 })
                 .collect()
         };
@@ -4810,10 +4696,12 @@ impl Pickers {
 
     fn render_crossfade_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let block = Self::picker_panel(
-        app,
-        " Crossfade Options ",
-        Some("\u{2191}/\u{2193}: navigate   \u{2190}/\u{2192}: section   Enter: apply   Esc: close"),
-    );
+            app,
+            " Crossfade Options ",
+            Some(
+                "\u{2191}/\u{2193}: navigate   \u{2190}/\u{2192}: section   Enter: apply   Esc: close",
+            ),
+        );
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -5183,11 +5071,7 @@ fn format_duration_short(secs: u64) -> String {
 // ─── Aesthetic Helpers ───
 
 fn plural(count: usize, singular: &'static str, plural: &'static str) -> &'static str {
-    if count == 1 {
-        singular
-    } else {
-        plural
-    }
+    if count == 1 { singular } else { plural }
 }
 
 const LOADER_HEADS: [&str; 4] = ["\u{2b25}", "\u{25c6}", "\u{2b29}", "\u{2b2a}"];
@@ -5203,11 +5087,7 @@ fn scanner_position(frame: usize, width: usize) -> usize {
     let forward = t < half;
     let t = if forward { t } else { t - half };
     if forward {
-        if t >= span {
-            span
-        } else {
-            t
-        }
+        if t >= span { span } else { t }
     } else {
         span.saturating_sub(t)
     }
@@ -5231,7 +5111,6 @@ fn knight_rider_spans(frame: usize, width: usize, app: &App) -> Vec<Span<'static
         })
         .collect()
 }
-
 
 pub use crate::theme::readable_fg;
 
@@ -5334,10 +5213,12 @@ impl Pickers {
 
     fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let block = Self::picker_panel(
-        app,
-        " Edit Metadata ",
-        Some("Tab/\u{2191}/\u{2193}: field   Enter: next/save   Ctrl+S: sync cover   Esc: cancel"),
-    );
+            app,
+            " Edit Metadata ",
+            Some(
+                "Tab/\u{2191}/\u{2193}: field   Enter: next/save   Ctrl+S: sync cover   Esc: cancel",
+            ),
+        );
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -5421,7 +5302,6 @@ impl Pickers {
         }
     }
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -12,13 +12,13 @@ use crossterm::event::{
 };
 use gtm_core::client::DaemonClient;
 use gtm_core::ipc::DaemonRes;
-use gtm_core::spotify::{SoloistStatus, SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
+use gtm_core::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use gtm_core::state::EqPreset;
 use gtm_core::state::{DaemonState, PlaybackStatus, RepeatMode};
 use gtm_core::track::{Playlist, TrackInfo, YTSearchResult};
+use ratatui::Terminal;
 use ratatui::layout::Alignment;
 use ratatui::widgets::Paragraph;
-use ratatui::Terminal;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
 use tachyonfx::EffectManager;
@@ -26,8 +26,7 @@ use tokio::sync::mpsc;
 
 use base64::Engine;
 
-use crate::footer;
-use crate::keymap::{default_keybindings, KeyContext, KeyboardAction};
+use crate::keymap::{KeyContext, KeyboardAction, default_keybindings};
 use crate::picker::{PickerId, PickerManager, PickerSource};
 use crate::theme::{AppTheme, ThemeEntry};
 use crate::ui;
@@ -87,8 +86,6 @@ pub struct Prefs {
     transparent_pickers: bool,
     #[serde(default)]
     reactive_theme: bool,
-    #[serde(default = "default_footer_preset_name")]
-    footer_preset_name: String,
     #[serde(default)]
     progress_style: crate::progress::ProgressStyle,
 
@@ -100,10 +97,6 @@ fn default_theme_name() -> String {
     "Chadrula".into()
 }
 
-fn default_footer_preset_name() -> String {
-    "Default".into()
-}
-
 impl Default for Prefs {
     fn default() -> Self {
         Self {
@@ -111,7 +104,6 @@ impl Default for Prefs {
             transparent_bg: false,
             transparent_pickers: false,
             reactive_theme: false,
-            footer_preset_name: default_footer_preset_name(),
             progress_style: crate::progress::ProgressStyle::default(),
 
             visualizer_preset: crate::visualizer::VisualizerPreset::default(),
@@ -285,11 +277,10 @@ pub struct App {
     pub playlist_cache: Vec<gtm_core::track::Playlist>,
     pub playlist_tracks_cache: Vec<TrackInfo>,
     pub spotify_status: Option<SpotifyStatus>,
-    pub soloist_status: Option<SoloistStatus>,
     pub spotify_playlists: Vec<SpotifyPlaylist>,
     pub spotify_playlist_tracks_cache: Vec<SpotifyTrack>,
     pub spotify_search_results: Vec<(String, String, SpotifyTrack)>,
-    pub spotify_token_input: String,
+    pub spotify_link_input: String,
     pub cookie_file: Option<String>,
     pub notifications: Vec<Notification>,
     pub notification_history: Vec<NotificationRecord>,
@@ -319,8 +310,6 @@ pub struct App {
     pub reactive_theme: bool,
     reactive_palette: Option<crate::reactive::ReactivePalette>,
     pub last_action_name: Option<(String, std::time::Instant)>,
-    pub footer_presets: Vec<footer::FooterPreset>,
-    pub footer_preset: usize,
     pub footer_title_scroll: usize,
     pub is_ready: bool,
     last_queue_cursor: u64,
@@ -414,8 +403,28 @@ enum IpcResult {
     SpotifyPlaylists(Vec<SpotifyPlaylist>),
     SpotifyTracks(Vec<SpotifyTrack>),
     SpotifySearchWebResults(Vec<SpotifyTrack>),
-    SoloistStatus(SoloistStatus),
     ReactivePalette(Option<crate::reactive::ReactivePalette>),
+}
+
+/// Best-effort browser open for the OAuth authorize URL. Tries common
+/// openers until one succeeds; silently gives up if none exist (the URL is
+/// also shown as a notification so it can be copied).
+fn try_open_browser(url: &str) {
+    let url = url.to_string();
+    tokio::spawn(async move {
+        for prog in ["xdg-open", "open"] {
+            match tokio::process::Command::new(prog)
+                .arg(&url)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .await
+            {
+                Ok(st) if st.success() => return,
+                _ => continue,
+            }
+        }
+    });
 }
 
 fn spawn_sync_and_wait(
@@ -557,12 +566,6 @@ impl App {
             .position(|t| t.name == prefs.theme_name)
             .unwrap_or(0);
         let theme = themes[theme_index].theme;
-        let footer_presets = footer::merged_presets();
-        let footer_preset = footer_presets
-            .iter()
-            .position(|p| p.name == prefs.footer_preset_name)
-            .unwrap_or(0);
-
         Ok(Self {
             theme,
             themes,
@@ -594,11 +597,10 @@ impl App {
             playlist_cache: Vec::new(),
             playlist_tracks_cache: Vec::new(),
             spotify_status: None,
-            soloist_status: None,
             spotify_playlists: Vec::new(),
             spotify_playlist_tracks_cache: Vec::new(),
             spotify_search_results: Vec::new(),
-            spotify_token_input: String::new(),
+            spotify_link_input: String::new(),
             cookie_file: None,
             notifications: Vec::new(),
             notification_history: Vec::new(),
@@ -638,8 +640,6 @@ impl App {
             reactive_theme: prefs.reactive_theme,
             reactive_palette: None,
             last_action_name: None,
-            footer_presets,
-            footer_preset,
             footer_title_scroll: 0,
             is_ready: false,
             last_queue_cursor: initial_cursor,
@@ -737,13 +737,6 @@ impl App {
         self.transparent_pickers = prefs.transparent_pickers;
         self.reactive_theme = prefs.reactive_theme;
 
-        // Footer preset
-        let footer_preset = self
-            .footer_presets
-            .iter()
-            .position(|p| p.name == prefs.footer_preset_name)
-            .unwrap_or(0);
-        self.footer_preset = footer_preset;
         self.footer_cache.suppress_refresh = true;
 
         // Progress style
@@ -774,24 +767,9 @@ impl App {
             transparent_bg: self.transparent_bg,
             transparent_pickers: self.transparent_pickers,
             reactive_theme: self.reactive_theme,
-            footer_preset_name: self
-                .footer_presets
-                .get(self.footer_preset)
-                .map(|p| p.name.to_string())
-                .unwrap_or_else(default_footer_preset_name),
             progress_style: self.progress_style,
             visualizer_preset: self.visualizer.preset,
         }
-    }
-
-    /// Cycle footer preset, persist, and announce the new name.
-    fn cycle_footer_preset(&mut self) {
-        let n = self.footer_presets.len().max(1);
-        self.footer_preset = (self.footer_preset + 1) % n;
-        if let Some(p) = self.footer_presets.get(self.footer_preset) {
-            self.set_last_action(&format!("Footer: {}", p.name));
-        }
-        save_prefs(&self.current_prefs());
     }
 
     /// Apply a theme picker selection by index, persist by name, and refresh
@@ -884,7 +862,8 @@ impl App {
             let c = self.client.clone();
             let ipc_tx = self.ipc_tx.clone();
             tokio::spawn(async move {
-                if let Ok(DaemonRes::Tracks { tracks, .. }) = c.library().get_tracks(None, None).await
+                if let Ok(DaemonRes::Tracks { tracks, .. }) =
+                    c.library().get_tracks(None, None).await
                 {
                     if !tracks.is_empty() {
                         let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
@@ -901,9 +880,6 @@ impl App {
                 }
                 if let Ok(playlists) = c.spotify().playlists().await {
                     let _ = ipc_tx.send(IpcResult::SpotifyPlaylists(playlists));
-                }
-                if let Ok(status) = c.soloist().status().await {
-                    let _ = ipc_tx.send(IpcResult::SoloistStatus(status));
                 }
             });
         }
@@ -946,6 +922,7 @@ impl App {
             let mut had_track_change = false;
             let mut had_sleep_expired = false;
             let mut had_sync_done = false;
+            let mut had_spotify_change = false;
             for ev in self.client.drain().await {
                 if let gtm_core::ipc::DaemonEvent::PlaybackStarted { .. } = &ev {
                     // The crossfade has begun: drop the Up Next countdown.
@@ -964,6 +941,11 @@ impl App {
                 }
                 if let gtm_core::ipc::DaemonEvent::CrossfadeCountdown { track } = &ev {
                     self.start_upnext(track.clone());
+                }
+                // The daemon finished an OAuth link flow: pull the fresh
+                // status + playlists so they appear without a restart.
+                if matches!(ev, gtm_core::ipc::DaemonEvent::SpotifyStatusChanged) {
+                    had_spotify_change = true;
                 }
                 // After a background metadata sync finishes, re-pull the
                 // library so scrubbed tags / fetched covers show up live.
@@ -1020,6 +1002,25 @@ impl App {
                     self.client.library().get_tracks(None, None).await
                 {
                     self.tracks_cache = tracks;
+                }
+            }
+
+            if had_spotify_change {
+                if let Ok(status) = self.client.spotify().status().await {
+                    let was_linked = self.spotify_status.as_ref().is_some_and(|s| s.linked);
+                    if status.linked && !was_linked {
+                        let user = status.user.clone().unwrap_or_else(|| "account".into());
+                        self.notify_titled(
+                            "Spotify",
+                            format!("Linked as {user} — playlists synced"),
+                            NotificationKind::Success,
+                            false,
+                        );
+                    }
+                    self.spotify_status = Some(status);
+                }
+                if let Ok(playlists) = self.client.spotify().playlists().await {
+                    self.spotify_playlists = playlists;
                 }
             }
 
@@ -1106,7 +1107,8 @@ impl App {
                     self.lyrics_scroll = 0;
                     tokio::spawn(async move {
                         let result = client
-                            .lyrics().get(current_tid.unwrap_or(0), tpath.as_deref())
+                            .lyrics()
+                            .get(current_tid.unwrap_or(0), tpath.as_deref())
                             .await;
                         let _ = ipc_tx.send(IpcResult::Lyrics(result.unwrap_or(None)));
                     });
@@ -1286,7 +1288,6 @@ impl App {
                             ));
                         }
                     }
-                    IpcResult::SoloistStatus(s) => self.soloist_status = Some(s),
                 }
             }
 
@@ -1438,7 +1439,8 @@ impl App {
             let playing = self.state.status == PlaybackStatus::Playing;
             let force_render = pos_changed
                 || (playing && frame_count.is_multiple_of(2))
-                || (self.visualizer.is_enabled() && playing && !self.state.audio_levels.is_empty())
+                // Visualizer animates continuously (idle wave included).
+                || self.visualizer.is_enabled()
                 || !self.notifications.is_empty()
                 || frame_count.is_multiple_of(10)
                 || self.cover_art_dirty
@@ -2245,11 +2247,11 @@ impl App {
 
     fn settings_options_for_category(&self) -> usize {
         match self.settings_category {
-            0 => 2,  // Audio: Master Volume, Mute
-            1 => 4,  // YouTube: Cookie Source, Cookie File, JS Runtime, Auto Download
-            2 => 6,  // Playback: Repeat, Shuffle, Crossfade, Easing, EQ Enabled, Reverb
+            0 => 2, // Audio: Master Volume, Mute
+            1 => 4, // YouTube: Cookie Source, Cookie File, JS Runtime, Auto Download
+            2 => 6, // Playback: Repeat, Shuffle, Crossfade, Easing, EQ Enabled, Reverb
             3 => 9, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme
-            4 => 13, // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Soloist, Link Soloist, Start, Stop, Activate, Device, Auto-Start
+            4 => 7, // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Device
             _ => 0,
         }
     }
@@ -2458,7 +2460,8 @@ impl App {
                     let msg = match output {
                         Ok(o) if o.status.success() => {
                             let _ = client2
-                                .library().scan(audio_dir.to_string_lossy().as_ref())
+                                .library()
+                                .scan(audio_dir.to_string_lossy().as_ref())
                                 .await;
                             // Also refresh the track cache
                             if let Ok(DaemonRes::Tracks { tracks, .. }) =
@@ -2520,7 +2523,8 @@ impl App {
                                     // its cover art (runs per-path in the
                                     // background).
                                     let _ = client2
-                                        .library().sync_metadata(Some(track.path.clone()))
+                                        .library()
+                                        .sync_metadata(Some(track.path.clone()))
                                         .await;
                                 }
                             }
@@ -2638,7 +2642,8 @@ impl App {
             TuiCommand::RemoveFromPlaylist(playlist_id, track_id) => {
                 tokio::spawn(async move {
                     if let Err(e) = client
-                        .library().remove_from_playlist(playlist_id, track_id)
+                        .library()
+                        .remove_from_playlist(playlist_id, track_id)
                         .await
                     {
                         error_handler(e);
@@ -3429,59 +3434,34 @@ impl App {
                                         let track = self.spotify_playlist_tracks_cache
                                             [self.list_pos()]
                                         .clone();
-                                        // Soloist playback only when connected AND
-                                        // logged in; otherwise (including no
-                                        // Soloist status at all) fall back to the
-                                        // daemon's YouTube resolver.
-                                        let via_soloist = self
-                                            .soloist_status
-                                            .as_ref()
-                                            .is_some_and(|s| s.connected && s.logged_in);
-                                        if via_soloist {
-                                            if let Some(uri) = &track.uri {
-                                                let c = self.client.clone();
-                                                let uri_clone = uri.clone();
-                                                tokio::spawn(async move {
-                                                    let _ = c.soloist().play(&uri_clone).await;
-                                                });
-                                                self.notify(
-                                                    format!("Soloist: playing {}", track.name),
-                                                    NotificationKind::Info,
-                                                );
-                                            } else {
-                                                self.notify(
-                                                    "Track has no URI for Soloist playback",
-                                                    NotificationKind::Warning,
-                                                );
-                                            }
-                                        } else {
-                                            let playlist_id =
-                                                self.browse_detail.clone().unwrap_or_default();
-                                            let track_index = track.index;
-                                            let c = self.client.clone();
-                                            let ipc_tx2 = self.ipc_tx.clone();
-                                            tokio::spawn(async move {
-                                                match c
-                                                    .spotify().resolve(&playlist_id, track_index)
-                                                    .await
-                                                {
-                                                    Ok(()) => {
-                                                        let _ =
-                                                            ipc_tx2.send(IpcResult::Notification(
-                                                                "Spotify".to_string(),
-                                                                "Spotify track resolved & queued"
-                                                                    .to_string(),
-                                                                NotificationKind::Success,
-                                                            ));
-                                                    }
-                                                    Err(e) => {
-                                                        let _ = ipc_tx2.send(IpcResult::Error(
-                                                            format!("Spotify resolve failed: {e}"),
-                                                        ));
-                                                    }
+                                        // Resolve the track to a playable local
+                                        // stream and enqueue it.
+                                        let playlist_id =
+                                            self.browse_detail.clone().unwrap_or_default();
+                                        let track_index = track.index;
+                                        let c = self.client.clone();
+                                        let ipc_tx2 = self.ipc_tx.clone();
+                                        tokio::spawn(async move {
+                                            match c
+                                                .spotify()
+                                                .resolve(&playlist_id, track_index)
+                                                .await
+                                            {
+                                                Ok(()) => {
+                                                    let _ = ipc_tx2.send(IpcResult::Notification(
+                                                        "Spotify".to_string(),
+                                                        "Spotify track resolved & queued"
+                                                            .to_string(),
+                                                        NotificationKind::Success,
+                                                    ));
                                                 }
-                                            });
-                                        }
+                                                Err(e) => {
+                                                    let _ = ipc_tx2.send(IpcResult::Error(
+                                                        format!("Spotify resolve failed: {e}"),
+                                                    ));
+                                                }
+                                            }
+                                        });
                                     }
                                 } else {
                                     // Local categories (All/Liked/Album/Artist/
@@ -3988,10 +3968,7 @@ impl App {
                                     self.transparent_pickers = !self.transparent_pickers;
                                     save_prefs(&self.current_prefs());
                                 }
-                                6 => {
-                                    self.cycle_footer_preset();
-                                }
-                                8 => {
+                                7 => {
                                     self.reactive_theme = !self.reactive_theme;
                                     if self.reactive_theme && self.reactive_palette.is_none() {
                                         if let Some(c) = self.np_cover.image.clone() {
@@ -4003,8 +3980,7 @@ impl App {
                                             let client = self.client.clone();
                                             let ipc_tx = self.ipc_tx.clone();
                                             tokio::spawn(async move {
-                                                if let Ok(Some(b64)) =
-                                                    client.art().cover(tid).await
+                                                if let Ok(Some(b64)) = client.art().cover(tid).await
                                                 {
                                                     if let Ok(bytes) =
                                                         base64::engine::general_purpose::STANDARD
@@ -4025,14 +4001,6 @@ impl App {
                                 _ => {}
                             },
                             4 => match self.settings_option {
-                                12 => {
-                                    let new_val = !self.state.soloist_auto_start;
-                                    self.state.soloist_auto_start = new_val;
-                                    let c = self.client.clone();
-                                    tokio::spawn(async move {
-                                        let _ = c.soloist().set_config(new_val).await;
-                                    });
-                                }
                                 _ => {}
                             },
                             _ => {}
@@ -4118,10 +4086,7 @@ impl App {
                                     self.transparent_pickers = !self.transparent_pickers;
                                     save_prefs(&self.current_prefs());
                                 }
-                                6 => {
-                                    self.cycle_footer_preset();
-                                }
-                                8 => {
+                                7 => {
                                     self.reactive_theme = !self.reactive_theme;
                                     if self.reactive_theme && self.reactive_palette.is_none() {
                                         if let Some(c) = self.np_cover.image.clone() {
@@ -4133,8 +4098,7 @@ impl App {
                                             let client = self.client.clone();
                                             let ipc_tx = self.ipc_tx.clone();
                                             tokio::spawn(async move {
-                                                if let Ok(Some(b64)) =
-                                                    client.art().cover(tid).await
+                                                if let Ok(Some(b64)) = client.art().cover(tid).await
                                                 {
                                                     if let Ok(bytes) =
                                                         base64::engine::general_purpose::STANDARD
@@ -4155,14 +4119,6 @@ impl App {
                                 _ => {}
                             },
                             4 => match self.settings_option {
-                                12 => {
-                                    let new_val = !self.state.soloist_auto_start;
-                                    self.state.soloist_auto_start = new_val;
-                                    let c = self.client.clone();
-                                    tokio::spawn(async move {
-                                        let _ = c.soloist().set_config(new_val).await;
-                                    });
-                                }
                                 _ => {}
                             },
                             _ => {}
@@ -4323,12 +4279,9 @@ impl App {
                                     );
                                 }
                                 6 => {
-                                    self.cycle_footer_preset();
-                                }
-                                7 => {
                                     self.pickers.open(PickerId::VisualizerPreset);
                                 }
-                                8 => {
+                                7 => {
                                     self.reactive_theme = !self.reactive_theme;
                                     if self.reactive_theme && self.reactive_palette.is_none() {
                                         if let Some(c) = self.np_cover.image.clone() {
@@ -4340,8 +4293,7 @@ impl App {
                                             let client = self.client.clone();
                                             let ipc_tx = self.ipc_tx.clone();
                                             tokio::spawn(async move {
-                                                if let Ok(Some(b64)) =
-                                                    client.art().cover(tid).await
+                                                if let Ok(Some(b64)) = client.art().cover(tid).await
                                                 {
                                                     if let Ok(bytes) =
                                                         base64::engine::general_purpose::STANDARD
@@ -4380,8 +4332,8 @@ impl App {
                                     });
                                 }
                                 3 => {
-                                    self.spotify_token_input.clear();
-                                    self.pickers.open(PickerId::SpotifyLinkToken);
+                                    self.spotify_link_input.clear();
+                                    self.pickers.open(PickerId::SpotifyLink);
                                 }
                                 4 => {
                                     let c = self.client.clone();
@@ -4426,97 +4378,8 @@ impl App {
                                     });
                                 }
                                 7 => {
-                                    self.spotify_token_input.clear();
-                                    self.pickers.open(PickerId::SpotifyLinkToken);
-                                }
-                                8 => {
-                                    let c = self.client.clone();
-                                    let ipc_tx = self.ipc_tx.clone();
-                                    tokio::spawn(async move {
-                                        match c.soloist().start().await {
-                                            Ok(_status) => {
-                                                let _ = ipc_tx.send(IpcResult::Notification(
-                                                    "Soloist".to_string(),
-                                                    "Soloist started".to_string(),
-                                                    NotificationKind::Success,
-                                                ));
-                                            }
-                                            Err(e) => {
-                                                let _ = ipc_tx.send(IpcResult::Error(format!(
-                                                    "Soloist start: {e}"
-                                                )));
-                                            }
-                                        }
-                                    });
-                                }
-                                9 => {
-                                    let c = self.client.clone();
-                                    let ipc_tx = self.ipc_tx.clone();
-                                    tokio::spawn(async move {
-                                        match c.soloist().stop().await {
-                                            Ok(_status) => {
-                                                let _ = ipc_tx.send(IpcResult::Notification(
-                                                    "Soloist".to_string(),
-                                                    "Soloist stopped".to_string(),
-                                                    NotificationKind::Success,
-                                                ));
-                                            }
-                                            Err(e) => {
-                                                let _ = ipc_tx.send(IpcResult::Error(format!(
-                                                    "Soloist stop: {e}"
-                                                )));
-                                            }
-                                        }
-                                    });
-                                }
-                                10 => {
-                                    let c = self.client.clone();
-                                    let ipc_tx = self.ipc_tx.clone();
-                                    tokio::spawn(async move {
-                                        match c.soloist().activate().await {
-                                            Ok(_status) => {
-                                                let _ = ipc_tx.send(IpcResult::Notification(
-                                                    "Soloist".to_string(),
-                                                    "Device activated".to_string(),
-                                                    NotificationKind::Success,
-                                                ));
-                                            }
-                                            Err(e) => {
-                                                let _ = ipc_tx.send(IpcResult::Error(format!(
-                                                    "Soloist activate: {e}"
-                                                )));
-                                            }
-                                        }
-                                    });
-                                }
-                                12 => {
-                                    let new_val = !self.state.soloist_auto_start;
-                                    self.state.soloist_auto_start = new_val;
-                                    let c = self.client.clone();
-                                    let ipc_tx = self.ipc_tx.clone();
-                                    tokio::spawn(async move {
-                                        match c.soloist().set_config(new_val).await {
-                                            Ok(()) => {
-                                                let _ = ipc_tx.send(IpcResult::Notification(
-                                                    "Soloist".to_string(),
-                                                    format!(
-                                                        "Soloist auto-start: {}",
-                                                        if new_val {
-                                                            "enabled"
-                                                        } else {
-                                                            "disabled"
-                                                        }
-                                                    ),
-                                                    NotificationKind::Info,
-                                                ));
-                                            }
-                                            Err(e) => {
-                                                let _ = ipc_tx.send(IpcResult::Error(format!(
-                                                    "Soloist auto-start: {e}"
-                                                )));
-                                            }
-                                        }
-                                    });
+                                    self.spotify_link_input.clear();
+                                    self.pickers.open(PickerId::SpotifyLink);
                                 }
                                 _ => {}
                             },
@@ -4781,7 +4644,8 @@ impl App {
                                     let track_clone = track.clone();
                                     tokio::spawn(async move {
                                         match c2
-                                            .spotify().resolve_track(
+                                            .spotify()
+                                            .resolve_track(
                                                 &track_clone.name,
                                                 &track_clone.artists,
                                                 track_clone.album.as_deref().unwrap_or(""),
@@ -4828,36 +4692,37 @@ impl App {
                                 }
                             }
                         }
-                        PickerId::SpotifyLinkToken => {
-                            let token = self.spotify_token_input.trim().to_string();
-                            if token.is_empty() {
-                                self.notify(
-                                    "Paste a Spotify access token first",
-                                    NotificationKind::Warning,
-                                );
+                        PickerId::SpotifyLink => {
+                            // An empty entry falls back to librespot's public
+                            // desktop client id so no dashboard app is needed.
+                            let client_id = self.spotify_link_input.trim().to_string();
+                            let client_id = if client_id.is_empty() {
+                                gtm_core::spotify::LIBRESPOT_CLIENT_ID.to_string()
                             } else {
-                                let c = self.client.clone();
-                                let ipc_tx = self.ipc_tx.clone();
-                                self.pickers.close_top();
-                                tokio::spawn(async move {
-                                    match c.spotify().set_token(&token).await {
-                                        Ok(status) => {
-                                            let _ = ipc_tx.send(IpcResult::SpotifyStatus(status));
-                                            let _ = ipc_tx.send(IpcResult::Notification(
-                                                "Spotify".to_string(),
-                                                "Spotify account linked!".to_string(),
-                                                NotificationKind::Success,
-                                            ));
-                                        }
-                                        Err(e) => {
-                                            let _ = ipc_tx.send(IpcResult::Error(format!(
-                                                "Spotify link failed: {e}"
-                                            )));
-                                        }
+                                client_id
+                            };
+                            let c = self.client.clone();
+                            let ipc_tx = self.ipc_tx.clone();
+                            let notify_tx = self.ipc_tx.clone();
+                            self.pickers.close_top();
+                            tokio::spawn(async move {
+                                match c.spotify().oauth_start(&client_id).await {
+                                    Ok(url) => {
+                                        let _ = ipc_tx.send(IpcResult::Notification(
+                                            "Spotify".to_string(),
+                                            format!("Authorize gtm in your browser: {url}"),
+                                            NotificationKind::Info,
+                                        ));
+                                        try_open_browser(&url);
                                     }
-                                });
-                                self.spotify_token_input.clear();
-                            }
+                                    Err(e) => {
+                                        let _ = notify_tx.send(IpcResult::Error(format!(
+                                            "Spotify link failed: {e}"
+                                        )));
+                                    }
+                                }
+                            });
+                            self.spotify_link_input.clear();
                         }
                         PickerId::Queue => {
                             if !self.queue_cache.is_empty() {
@@ -5242,8 +5107,6 @@ impl App {
                                     }
                                 } else if action == "hide help bar" {
                                     self.hide_help_bar = !self.hide_help_bar;
-                                } else if action == "footer preset" {
-                                    self.cycle_footer_preset();
                                 } else if action == "health check" {
                                     self.send_high(TuiCommand::CheckHealth);
                                 }
@@ -5283,7 +5146,8 @@ impl App {
                                             if let Some(pid) = new_id {
                                                 if !track_ids.is_empty() {
                                                     let _ = client
-                                                        .library().add_to_playlist(pid, track_ids)
+                                                        .library()
+                                                        .add_to_playlist(pid, track_ids)
                                                         .await;
                                                 }
                                                 let _ = ipc_tx.send(IpcResult::Notification(
@@ -5314,7 +5178,8 @@ impl App {
                                         let client = self.client.clone();
                                         tokio::spawn(async move {
                                             let _ = client
-                                                .library().add_to_playlist(playlist_id, track_ids)
+                                                .library()
+                                                .add_to_playlist(playlist_id, track_ids)
                                                 .await;
                                         });
                                         self.notify_titled(
@@ -5537,8 +5402,8 @@ impl App {
                             top.query.push(c);
                             self.search_spotify();
                         }
-                        PickerId::SpotifyLinkToken => {
-                            self.spotify_token_input.push(c);
+                        PickerId::SpotifyLink => {
+                            self.spotify_link_input.push(c);
                         }
                         PickerId::PlaylistSelect if self.playlist_creating => {
                             top.query.push(c);
@@ -5578,8 +5443,8 @@ impl App {
                             top.query.pop();
                             self.search_spotify();
                         }
-                        PickerId::SpotifyLinkToken => {
-                            self.spotify_token_input.pop();
+                        PickerId::SpotifyLink => {
+                            self.spotify_link_input.pop();
                         }
                         PickerId::PlaylistSelect if self.playlist_creating => {
                             top.query.pop();
@@ -5607,8 +5472,8 @@ impl App {
                     top.query.push_str(text);
                     self.search_spotify();
                 }
-                PickerId::SpotifyLinkToken => {
-                    self.spotify_token_input.push_str(text);
+                PickerId::SpotifyLink => {
+                    self.spotify_link_input.push_str(text);
                 }
                 PickerId::EditMetadata => {
                     self.metadata.fields[self.metadata.field_idx].push_str(text);

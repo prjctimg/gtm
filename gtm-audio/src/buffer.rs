@@ -5,8 +5,8 @@
 // This is free software released under the GPL-3.0 license.
 
 use std::num::{NonZeroU16, NonZeroU32};
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use rodio::Source;

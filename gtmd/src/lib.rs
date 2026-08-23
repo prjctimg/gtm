@@ -11,9 +11,10 @@ pub mod daemon;
 pub mod deezer;
 pub mod library;
 pub mod lyrics;
+pub mod oauth;
 pub mod queue;
-pub mod soloist;
 pub mod spotify;
+pub mod spotify_stream;
 pub mod tags;
 pub mod youtube;
 

@@ -99,6 +99,9 @@ impl AudioVisualizer {
             self.target_bars.resize(num_bars, 0.0);
         }
 
+        // Advance the animation phase; drives idle motion and Spectrum scroll.
+        self.spectrum_offset += dt * 1.2;
+
         if is_playing && !audio_levels.is_empty() {
             let bins = audio_levels.len();
             for (i, target) in self.target_bars.iter_mut().enumerate() {
@@ -110,8 +113,14 @@ impl AudioVisualizer {
                 *target = level.clamp(0.0, 1.0);
             }
         } else {
-            for target in self.target_bars.iter_mut() {
-                *target = 0.0;
+            // Idle: a slow traveling wave keeps the visualizer alive when
+            // nothing plays instead of collapsing to a frozen flat line.
+            let denom = (num_bars - 1).max(1) as f64;
+            for (i, target) in self.target_bars.iter_mut().enumerate() {
+                let phase = self.spectrum_offset + i as f64 * 0.45;
+                let wave = 0.5 + 0.5 * phase.sin();
+                let edge = (i as f64 / denom * std::f64::consts::PI).sin().max(0.15);
+                *target = ((0.10 + 0.12 * wave) * edge) as f32;
             }
         }
 

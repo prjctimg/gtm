@@ -4,8 +4,8 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use rodio::Source;
 

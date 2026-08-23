@@ -32,8 +32,6 @@ good through a real EQ instead of a flat toggle. gtm.rs is that.
   files from the TUI or the CLI
 - **Equalizer**: 16 presets plus per-band gain, headroom stage, and a spectrum
   visualizer
-- **Soloist**: Spotify playback bridge via the local `soloist` daemon, with
-  optional auto-start
 - **Export M3U**: dump the current library or queue to an m3u playlist
 - **Sleep timer**: timed shutdown with cancel, settable from the TUI or CLI
 - **Cover art**: rendered inline via the kitty/terminal image protocol
@@ -50,8 +48,6 @@ good through a real EQ instead of a flat toggle. gtm.rs is that.
 - Sync saved playlists into the library and resolve individual Spotify
   tracks: gtm finds a matching YouTube upload and downloads it as a local
   file, so playback works even without the Spotify app running.
-- The optional **Soloist** bridge drives real Spotify playback through the
-  local `soloist` daemon (requires a Premium account).
 
 ## YouTube
 
@@ -68,8 +64,6 @@ good through a real EQ instead of a flat toggle. gtm.rs is that.
 - The daemon-side `yt download/poll/cancel` IPC verbs are stubs; the TUI
   shells out to `yt-dlp` directly for downloads.
 - Deezer integration is limited to cover art lookup.
-- Soloist is an external component; without it, "Spotify playback" means
-  resolving to local/YouTube audio rather than streaming from Spotify.
 
 ## Comparison
 

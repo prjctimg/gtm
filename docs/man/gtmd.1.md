@@ -67,11 +67,10 @@ The daemon is built around an event-driven core running on a tokio runtime:
 ## Thread Model
 
 Main thread
-:   Sets up the tokio runtime, initializes components, and enters the IPC
+:       Sets up the tokio runtime, initializes components, and enters the IPC
     accept loop. Each client connection is handled on a separate tokio task.
     A 16 ms mixer poll loop drives crossfade and playback state. A 60 s
-    interval saves persistent state. A dedicated soloist WebSocket reader task
-    runs when Spotify playback is active.
+    interval saves persistent state.
 
 Audio thread
 :   Rodio's internal audio renderer runs on a dedicated thread, pulling

@@ -201,20 +201,6 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 **spotify** *sync*
 :   Re-sync all playlists from the Web API.
 
-## Soloist
-
-**soloist** *start*
-:   Start the bridge using the persisted API key.
-
-**soloist** *stop*
-:   Stop the bridge (key is kept).
-
-**soloist** *status*
-:   Show the bridge status.
-
-**soloist** *auto-start* {true|false}
-:   Toggle auto-start at daemon startup (persisted in daemon state).
-
 ## Daemon
 
 **status** [**\--stream**]

@@ -4,10 +4,10 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use crate::spotify::{SoloistStatus, SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
+use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::state::{self, DaemonState, EqPreset, RepeatMode, YTFilter};
 use crate::track::{LrcData, Playlist, StreamInfo, TrackInfo, YTSearchResult};
-use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::collections::HashMap;
 
@@ -267,6 +267,10 @@ pub enum DaemonReq {
     SpotifySetToken {
         token: String,
     },
+    SpotifyOauthStart {
+        client_id: String,
+    },
+    SpotifyCancelOauth,
     SpotifyClear,
     SpotifyStatus,
     SpotifyPlayPause,
@@ -287,20 +291,6 @@ pub enum DaemonReq {
         artists: String,
         album: String,
     },
-    SoloistSetApiKey {
-        key: String,
-    },
-    SoloistSetConfig {
-        auto_start: bool,
-    },
-    SoloistClear,
-    SoloistStart,
-    SoloistStop,
-    SoloistStatus,
-    SoloistPlay {
-        uri: String,
-    },
-    SoloistActivate,
     SetSleepTimer {
         minutes: u32,
     },
@@ -361,6 +351,8 @@ impl DaemonReq {
             DaemonReq::GetLyrics { .. } => "get_lyrics",
             DaemonReq::LyricsSearch { .. } => "lyrics_search",
             DaemonReq::SpotifySetToken { .. } => "spotify_set_token",
+            DaemonReq::SpotifyOauthStart { .. } => "spotify_oauth_start",
+            DaemonReq::SpotifyCancelOauth => "spotify_cancel_oauth",
             DaemonReq::SpotifyClear => "spotify_clear",
             DaemonReq::SpotifyStatus => "spotify_status",
             DaemonReq::SpotifyPlayPause => "spotify_play_pause",
@@ -370,14 +362,6 @@ impl DaemonReq {
             DaemonReq::SpotifyResolve { .. } => "spotify_resolve",
             DaemonReq::SpotifySearchWeb { .. } => "spotify_search_web",
             DaemonReq::SpotifyResolveTrack { .. } => "spotify_resolve_track",
-            DaemonReq::SoloistSetApiKey { .. } => "soloist_set_api_key",
-            DaemonReq::SoloistSetConfig { .. } => "soloist_set_config",
-            DaemonReq::SoloistClear => "soloist_clear",
-            DaemonReq::SoloistStart => "soloist_start",
-            DaemonReq::SoloistStop => "soloist_stop",
-            DaemonReq::SoloistStatus => "soloist_status",
-            DaemonReq::SoloistPlay { .. } => "soloist_play",
-            DaemonReq::SoloistActivate => "soloist_activate",
             DaemonReq::SetSleepTimer { .. } => "set_sleep_timer",
             DaemonReq::CancelSleepTimer => "cancel_sleep_timer",
             DaemonReq::GetStatus => "get_status",
@@ -652,6 +636,17 @@ impl DaemonReq {
                 let x: Params = p(params)?;
                 DaemonReq::SpotifySetToken { token: x.token }
             }
+            "spotify_oauth_start" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    client_id: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SpotifyOauthStart {
+                    client_id: x.client_id,
+                }
+            }
+            "spotify_cancel_oauth" => DaemonReq::SpotifyCancelOauth,
             "spotify_clear" => DaemonReq::SpotifyClear,
             "spotify_status" => DaemonReq::SpotifyStatus,
             "spotify_play_pause" => DaemonReq::SpotifyPlayPause,
@@ -699,37 +694,6 @@ impl DaemonReq {
                     album: x.album,
                 }
             }
-            "soloist_set_api_key" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    key: String,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SoloistSetApiKey { key: x.key }
-            }
-            "soloist_set_config" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    auto_start: bool,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SoloistSetConfig {
-                    auto_start: x.auto_start,
-                }
-            }
-            "soloist_clear" => DaemonReq::SoloistClear,
-            "soloist_start" => DaemonReq::SoloistStart,
-            "soloist_stop" => DaemonReq::SoloistStop,
-            "soloist_status" => DaemonReq::SoloistStatus,
-            "soloist_play" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    uri: String,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SoloistPlay { uri: x.uri }
-            }
-            "soloist_activate" => DaemonReq::SoloistActivate,
             "set_sleep_timer" => {
                 #[derive(Deserialize)]
                 struct Params {
@@ -961,9 +925,9 @@ pub enum DaemonEvent {
         name: String,
         data: HashMap<String, String>,
     },
-    /// Soloist playback bridge status changed (running/connected/auth/track).
-    #[serde(rename = "soloist_status_changed")]
-    SoloistStatusChanged { status: SoloistStatus },
+    /// Spotify link state changed (e.g. an OAuth link flow completed).
+    #[serde(rename = "spotify_status_changed")]
+    SpotifyStatusChanged,
     #[serde(rename = "spectrum_changed")]
     SpectrumChanged { levels: Vec<f32> },
     #[serde(rename = "heartbeat")]
@@ -1002,14 +966,15 @@ pub enum DaemonRes {
     SpotifyStatusRes {
         status: SpotifyStatus,
     },
+    /// OAuth link flow started; the user must open this URL in a browser.
+    SpotifyOauthStarted {
+        url: String,
+    },
     SpotifyPlaylistsRes {
         playlists: Vec<SpotifyPlaylist>,
     },
     SpotifyTracksRes {
         tracks: Vec<SpotifyTrack>,
-    },
-    SoloistStatusRes {
-        status: SoloistStatus,
     },
     CoverArt {
         data: Option<String>,
@@ -1060,8 +1025,8 @@ impl DaemonRes {
             DaemonRes::SpotifyPlaylistsRes { playlists } => {
                 Some(serde_json::json!({ "playlists": playlists }))
             }
+            DaemonRes::SpotifyOauthStarted { url } => Some(serde_json::json!({ "url": url })),
             DaemonRes::SpotifyTracksRes { tracks } => Some(serde_json::json!({ "tracks": tracks })),
-            DaemonRes::SoloistStatusRes { status } => Some(serde_json::json!({ "status": status })),
             DaemonRes::CoverArt { data } => Some(serde_json::json!({ "data": data })),
             DaemonRes::SyncStatus {
                 running,

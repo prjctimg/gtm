@@ -19,11 +19,11 @@
 //  `check_invariants()` (debug-only) asserts safety properties.
 // ```
 
+use crate::Result;
 use crate::ipc::DaemonEvent;
 use crate::state::{CoreError, CrossfadeConfig, DaemonState, PlaybackStatus};
 use crate::track::TrackInfo;
 use crate::tripwire::{self, FailPoint};
-use crate::Result;
 
 impl DaemonState {
     /// Transition to Playing with the given track.
