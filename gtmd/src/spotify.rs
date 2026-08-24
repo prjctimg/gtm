@@ -1,4 +1,4 @@
-// Copyright (c) 2026 - present
+// Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
 // Spotify Web API: token persistence, account link, and playlist sync
 //

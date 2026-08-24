@@ -1,4 +1,4 @@
-// Copyright (c) 2026 - present
+// Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
 // TUI rendering: layout, widgets, and theme application
 //
@@ -883,7 +883,7 @@ impl Render {
         let track_info_h: u16 = if app.track_popup_visible {
             let avail_h = left_inner.height.saturating_sub(1);
             let need = track_info_block_height();
-            // Reserve at least 4 rows for the category list so "Spotify" never gets clipped (Task 1).
+            // Reserve at least 4 rows for the category list so "Spotify" never gets clipped.
             let max_card = avail_h.saturating_sub(4);
             need.min(max_card.max(6))
         } else {
@@ -923,7 +923,7 @@ impl Render {
             .unwrap_or(&"All Tracks");
 
         // Total rows in the active right-pane list, threaded out of the category
-        // branches so mouse hit zones only cover real rows (PROMPT #7).
+        // branches so mouse hit zones only cover real rows.
         let mut lib_total_rows: usize = 0;
         let (right_lines, _stats_line) = if app.browse_detail.is_some() && app.library_category == 5
         {
@@ -1282,7 +1282,7 @@ impl Render {
         fill_pane(f, right_inner, app);
         Render::evolving(f, right_inner, right_para, "lib", app, false);
 
-        // Mouse hit zones for the visible library rows (PROMPT #7): rows start
+        // Mouse hit zones for the visible library rows: rows start
         // below one leading blank line.
         if lib_total_rows > 0 {
             let avail = right_inner.height.saturating_sub(2) as usize;
@@ -1430,7 +1430,6 @@ impl Render {
             return;
         }
 
-        // Myx parity: header with title / artist·album centered above lyrics (Task 4)
         let header_area = if inner.height >= 4 {
             let header_h = 1;
             let title = lyrics.title.clone().unwrap_or_else(|| {
@@ -1502,7 +1501,6 @@ impl Render {
         let mut text = Vec::with_capacity(total);
         let mut cumulative = 0usize;
         for (i, line) in lyrics.lines.iter().enumerate() {
-            // Myx parity: active=primary+BOLD, past=subtle dim, future=muted (Task 4)
             let text_style = if !synced {
                 Style::default().fg(app.theme.fg)
             } else {
@@ -1532,11 +1530,10 @@ impl Render {
             if anchor == total - 1 {
                 bottom
             } else {
-                // Myx centers active line: start = cur - h/2
+                // Center active line: start = cur - h/2
                 row_offsets[anchor].saturating_sub(visible / 2).min(bottom)
             }
         } else {
-            // Myx parity: centered active line (Task 4), not 1/3 down
             row_offsets[anchor].saturating_sub(visible / 2).min(bottom)
         };
 
@@ -1576,7 +1573,7 @@ impl Render {
 
         if can_cover {
             // Adaptive cover: use as much of the card height for cover as
-            // fits while keeping at least 4 rows for the text block (Task 1).
+            // fits while keeping at least 4 rows for the text block.
             let card_h = area.height;
             let text_need: u16 = if fields.album.is_some() { 4 } else { 3 };
             let cover_h_avail = card_h.saturating_sub(text_need).saturating_sub(2);
@@ -3677,7 +3674,7 @@ impl Pickers {
             )),
             Line::from(""),
             Line::from(Span::styled(
-                " Copyright (C) 2026 - present, prjctimg",
+                " Copyright (C) 2026, prjctimg",
                 Style::default().fg(app.theme.fg_dim),
             )),
             Line::from(Span::styled(
@@ -3926,7 +3923,7 @@ impl Pickers {
         let para = Paragraph::new(lines);
         f.render_widget(para, list_area);
 
-        // Preview pane below list: wrapped full message of the highlighted notification (Task 6).
+        // Preview pane below list: wrapped full message of the highlighted notification.
         if preview_area.height >= 2 {
             // Divider
             let rule = Paragraph::new(Line::from(Span::styled(

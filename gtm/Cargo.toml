@@ -33,7 +33,7 @@ libc = "0.2"
 [package.metadata.deb]
 name = "gtm"
 maintainer = "prjctimg <prjctimg@outlook.com>"
-copyright = "2026 - present prjctimg"
+copyright = "2026 prjctimg"
 license-file = ["../LICENSE"]
 extended-description = "Feature rich and cross platform terminal audio player with background playback and YouTube/Spotify integration."
 section = "sound"

@@ -1,4 +1,4 @@
-// Copyright (c) 2026 - present
+// Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
 // No-op mixer for headless/daemon mode without audio output
 //

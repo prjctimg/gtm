@@ -1,4 +1,4 @@
-// Copyright (c) 2026 - present
+// Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
 // Keybinding dispatch with context-aware matching
 //
@@ -184,7 +184,7 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Alt+,: open settings picker (Task 8)
+            // Alt+,: open settings picker
             (
                 KeyEvent::new(KeyCode::Char(','), KeyModifiers::ALT),
                 BoundCommand {
@@ -669,7 +669,7 @@ mod tests {
     #[test]
     fn colon_opens_command_palette_only() {
         // `:` is the command palette; the removed duplicate (health check)
-        // binding must not shadow it (T14).
+        // binding must not shadow it.
         assert!(matches!(
             dispatch(KeyCode::Char(':').into(), KeyContext::Normal),
             Some(KeyboardAction::OpenOverlay(PickerId::CommandPalette))

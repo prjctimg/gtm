@@ -1,4 +1,4 @@
-// Copyright (c) 2026 - present
+// Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
 // Floating picker panels for settings and search
 //
@@ -65,8 +65,8 @@ pub struct Picker {
     pub id: PickerId,
     pub query: String,
     pub selected: usize,
-    /// Top row of the visible window (1-row-at-a-time scroll model, PROMPT
-    /// #10).  Only advances when the selection leaves the viewport, so the
+    /// Top row of the visible window (1-row-at-a-time scroll model).
+    /// Only advances when the selection leaves the viewport, so the
     /// list never recenters or jumps.
     pub viewport_offset: usize,
     /// List the fuzzy finder filters over (`Tab` cycles it).

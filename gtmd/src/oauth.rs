@@ -1,9 +1,9 @@
-// Copyright (c) 2026 - present
+// Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
 // Spotify OAuth 2.0 PKCE link flow
 //
 // Auth helpers adapted from aome510/spotify-player (`auth.rs`, MIT,
-// (c) 2021 Thang Pham) via the Myx reference implementation. We build an
+// (c) 2021 Thang Pham). We build an
 // authorize URL with a PKCE S256 challenge, serve the redirect on a local
 // port, and exchange the returned code for an access token.
 //

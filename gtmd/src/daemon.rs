@@ -1,4 +1,4 @@
-// Copyright (c) 2026 - present
+// Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
 // Daemon event loop and IPC command handlers
 //
@@ -2195,7 +2195,7 @@ impl Daemon {
                             state.audio_levels = spectrum.clone();
                         }
                     }
-                    // Throttle visualizer spectrum broadcast to ~30 Hz (Task 2).
+                    // Throttle visualizer spectrum broadcast to ~30 Hz.
                     if !spectrum.is_empty() && last_spectrum_tx.elapsed() >= Duration::from_millis(33) {
                         last_spectrum_tx = tokio::time::Instant::now();
                         Self::push_event(&self.inner, DaemonEvent::SpectrumChanged { levels: spectrum });

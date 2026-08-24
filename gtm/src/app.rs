@@ -1,4 +1,4 @@
-// Copyright (c) 2026 - present
+// Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
 // Application state machine: input handling, IPC dispatch, crossfade
 //
@@ -141,7 +141,7 @@ pub fn no_image_protocol() -> bool {
 }
 
 /// Kind of item the library track-info block is currently describing.  The
-/// widget is context aware of the active list type (PROMPT #20): tracks show
+/// widget is context aware of the active list type: tracks show
 /// title / artist / album / duration, albums show album + artist + count,
 /// artists show the artist + count, and playlist rows show the playlist.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,7 +266,7 @@ pub struct App {
     pub search_query: String,
     /// Per-category selection index, keyed by `library_category`, so every
     /// list (All Tracks / Liked / Albums / Artists / Playlists / Spotify)
-    /// keeps its own highlighted row (PROMPT #19).
+    /// keeps its own highlighted row.
     scroll_offset: [usize; LIBRARY_CATEGORIES.len()],
     pub library_category: usize,
     pub library_pane_focus: bool,
@@ -338,7 +338,7 @@ pub struct App {
     pub metadata: MetadataEditState,
     pub pending_quit: bool,
     /// Clickable row rectangles rebuilt every frame by `ui::render`
-    /// (PROMPT #7 mouse support).
+    ///.
     pub mouse_map: crate::mouse::MouseMap,
     pub np_title_scroll: usize,
     /// Set on the first frame and on each track change; the render layer
@@ -363,11 +363,11 @@ pub struct App {
     pub artist_cover_stateful: Option<StatefulProtocol>,
     last_artist_cover_fetch: Option<String>,
     last_artist_cover_fetch_gen: Option<u64>,
-    /// Active "Up Next" crossfade-countdown notification (T10).
+    /// Active "Up Next" crossfade-countdown notification.
     pub upnext: Option<UpNextNotif>,
-    /// Cover art for the queue picker "Up Next" strip (T11): fetched for the
+    /// Cover art for the queue picker "Up Next" strip: fetched for the
     /// track after the current one, including locally-inserted (`id == 0`)
-    /// entries (PROMPT #4).
+    /// entries.
     pub queue_preview_cover: Option<Vec<u8>>,
     pub queue_preview_cover_stateful: Option<StatefulProtocol>,
     last_queue_preview_cover_fetch_id: Option<i64>,
@@ -379,7 +379,7 @@ pub struct App {
     pub lyrics_scroll: usize,
     pub lyrics_fetching: bool,
     pub show_lyrics: bool,
-    /// Whether the lyrics pane holds focus (B7).  While true, MoveUp/Down,
+    /// Whether the lyrics pane holds focus. While true, MoveUp/Down,
     /// PageUp/Down, Top/Bottom scroll the lyrics and take over from the
     /// time-sync driver until focus is released.
     pub lyrics_pane_focus: bool,
@@ -1127,14 +1127,14 @@ impl App {
                 self.np_cover.image = None;
                 self.np_cover.stateful = None;
                 // Invalidate pending fetch so stale responses cannot overwrite
-                // the new track (B1). Path is used alongside id to disambiguate
+                // the new track. Path is used alongside id to disambiguate
                 // `id == 0` locally-inserted tracks.
                 let cur_path = self.state.current_track.as_ref().map(|t| t.path.clone());
                 self.np_cover.track_id = current_tid;
                 self.np_cover.track_path = cur_path.clone();
                 self.np_cover.pending_gen = None;
                 // Fetch cover art when needed: for display (no_image_protocol
-                // check) OR for reactive-theming palette extraction (Task 3).
+                // check) OR for reactive-theming palette extraction.
                 let needs_cover = self.reactive_theme || !no_image_protocol();
                 if needs_cover {
                     if let Some(tid) = current_tid {
@@ -1194,7 +1194,7 @@ impl App {
                             // re-download art (and re-fetch lyrics) every second.
                             // Robustness: verify cover_tid still matches current
                             // track (id+path) to avoid stale periodic cover
-                            // overwriting a newer track's art (B1).
+                            // overwriting a newer track's art.
                             if let Some(c) = cover {
                                 let cur_tid = self.state.current_track.as_ref().map(|t| t.id);
                                 let cur_path =
@@ -1381,7 +1381,7 @@ impl App {
                         // picker geometry. Previously they retained the old
                         // picker's resize state, causing cropped / stale sizes
                         // after terminal resize or image-protocol renegotiation
-                        // (B2).
+                        //.
                         self.cover_sync();
                         self.popup_cover_sync();
                         self.upnext_cover_sync();
@@ -1790,7 +1790,7 @@ impl App {
     }
 
     /// Kind of item the library track-info block is currently describing,
-    /// derived from the active list and drill-down state (PROMPT #20).
+    /// derived from the active list and drill-down state.
     pub fn track_info_kind(&self) -> TrackInfoKind {
         if self.browse_detail.is_some() {
             if self.library_category == 5 {
@@ -1808,7 +1808,7 @@ impl App {
     }
 
     /// Update the track popup to describe the currently selected row in the
-    /// library list, context aware of the active list type (PROMPT #20).
+    /// library list, context aware of the active list type.
     /// Tracks, albums and artists resolve a representative track so cover art
     /// can be fetched; playlist and Spotify rows show meta only.
     pub fn update_track_popup(&mut self) {
@@ -1889,7 +1889,7 @@ impl App {
         if current_is_selected {
             // Robust fallback: if current track's art is still pending (cleared
             // on track change), fall through to fetch rather than showing blank
-            // (B7). Only reuse when we actually have bytes.
+            //. Only reuse when we actually have bytes.
             if let Some(cover) = self.np_cover.image.clone() {
                 self.track_popup_cover = Some(cover);
                 self.popup_cover_sync();
@@ -1899,7 +1899,7 @@ impl App {
             }
             // else fall through to fetch below
         }
-        // Generation-guarded fetch: `id == 0` reuse is safe via fetch_gen (B3).
+        // Generation-guarded fetch: `id == 0` reuse is safe via fetch_gen.
         let already_pending = self.last_popup_cover_fetch_id == Some(tid)
             && self.last_popup_cover_fetch_gen.is_some()
             && !no_image_protocol();
@@ -1935,7 +1935,7 @@ impl App {
     /// preview window can render the actual album art as ASCII.
     pub fn update_picker_preview(&mut self) {
         let Some(top) = self.pickers.top() else {
-            // Robust: invalidate pending fetch_gen so close/reopen does not retain stale key (B4)
+            // Robust: invalidate pending fetch_gen so close/reopen does not retain stale key
             self.picker_preview_cover = None;
             self.picker_preview_stateful = None;
             self.last_picker_preview_fetch_id = None;
@@ -2321,9 +2321,9 @@ impl App {
         }
     }
 
-    /// Fetch cover art for the queue picker "Up Next" strip (T11), once per
+    /// Fetch cover art for the queue picker "Up Next" strip, once per
     /// track.  Locally-inserted tracks (`id == 0`) are fetched too; if the
-    /// daemon has no art the renderer falls back to a glyph (PROMPT #4).
+    /// daemon has no art the renderer falls back to a glyph.
     pub fn update_queue_preview_cover(&mut self) {
         if no_image_protocol() {
             return;
@@ -2338,7 +2338,7 @@ impl App {
         };
         let tid = track.id;
         // Generation-guarded dedup: allows `id == 0` tracks to refetch
-        // distinctly (B3). Only skip when pending fetch_gen exists.
+        // distinctly. Only skip when pending fetch_gen exists.
         if self.last_queue_preview_cover_fetch_id == Some(tid)
             && self.last_queue_preview_cover_fetch_gen.is_some()
         {
@@ -3068,7 +3068,7 @@ impl App {
     }
 
     /// Resolve a left-click against the zones registered by `ui::render`
-    /// (PROMPT #7).  A single click moves the selection; a double-click on
+    ///. A single click moves the selection; a double-click on
     /// the same row activates it exactly as Enter would.  Clicks outside an
     /// open picker panel close it.
     async fn handle_click(&mut self, x: u16, y: u16) {
@@ -3923,7 +3923,7 @@ impl App {
     }
 
     /// Close the top picker, clearing per-picker state that Esc must reset
-    /// (same cleanup for arrow-key closes, PROMPT #7).
+    /// (same cleanup for arrow-key closes, ).
     fn close_top_picker_with_cleanup(&mut self) {
         if let Some(top) = self.pickers.top() {
             match top.id {
@@ -3937,7 +3937,7 @@ impl App {
                 }
                 PickerId::SearchLibrary => {
                     // Robust: clear preview dedup state so reopen does not retain
-                    // stale fetch ids/gens and show blank until selection moves (B4/B5).
+                    // stale fetch ids/gens and show blank until selection moves.
                     self.clear_search_previews();
                     self.clear_queue_preview();
                     self.clear_popup_cover();
@@ -4028,7 +4028,7 @@ impl App {
                     return;
                 }
                 // Arrows are navigation only: Left/Right leave the picker like
-                // Esc (PROMPT #7).  Minute stepping stays on h/l and +/-.
+                // Esc. Minute stepping stays on h/l and +/-.
                 KeyCode::Left | KeyCode::Right => {
                     self.sleep_timer.remaining = None;
                     self.sleep_timer.minutes = 30;
@@ -4617,7 +4617,7 @@ impl App {
             KeyCode::Esc => {
                 self.close_top_picker_with_cleanup();
             }
-            // Uniform picker navigation (PROMPT #7): Left/Right leave
+            // Uniform picker navigation: Left/Right leave
             // single-section pickers like Esc.  Multi-section pickers (e.g.
             // Crossfade duration/easing) jump between sections instead.
             KeyCode::Left | KeyCode::Right => {
@@ -5327,8 +5327,7 @@ impl App {
                             }
                             // If the action opened a sub-picker it was stacked on
                             // top of the palette; leave it open.  Otherwise the
-                            // palette closes (T14: `open` + `close_top` used to
-                            // cancel sub-pickers immediately).
+                            // palette closes.
                             if self
                                 .pickers
                                 .top()
@@ -5769,13 +5768,13 @@ impl App {
 
 /// Index of the active time-synced lyric line for a playback position.
 /// Untimed lines (timestamp < 0) are skipped for matching but keep their
-/// index so the highlight tracks timed lines correctly. Uses Myx-style
-/// rposition semantics over sorted timed entries (Task 4).
+/// index so the highlight tracks timed lines correctly. Uses
+/// rposition semantics over sorted timed entries.
 fn lyric_index_at(lines: &[gtm_core::track::LrcLine], position: f64) -> usize {
     if lines.is_empty() {
         return 0;
     }
-    // Last timed line with timestamp <= position (Myx parity).  Untimed
+    // Last timed line with timestamp <= position. Untimed
     // lines keep their index but never match; before the first timestamp
     // (and for plain lyrics) the highlight rests on line 0.
     lines
@@ -5788,7 +5787,7 @@ fn lyric_index_at(lines: &[gtm_core::track::LrcLine], position: f64) -> usize {
 }
 
 /// Whether the current lyrics have any time-synced lines. Plain lyrics
-/// (`timestamp < 0` for all lines) should not highlight an active line (Task 4, Myx parity).
+/// (`timestamp < 0` for all lines) should not highlight an active line.
 pub fn lyrics_are_synced(lines: &[gtm_core::track::LrcLine]) -> bool {
     lines.iter().any(|l| l.timestamp >= 0.0)
 }

@@ -11,9 +11,7 @@
 A terminal music player with background playback and YouTube/Spotify
 integration. Rust implementation of the [gtm spec](https://github.com/prjctimg/gtm.spec).
 
-<img src="assets/screenshots/library.png" alt="gtm library view" width="640">
-
-## Why I built this
+## Why another (terminal) audio player ?
 
 I wanted a player that keeps playing in the background while I work in the
 terminal, handles local files *and* YouTube/Spotify in one place, and sounds
@@ -22,90 +20,36 @@ good through a real EQ instead of a flat toggle. gtm.rs is that.
 ## Features
 
 - **Background playback**: reattach to the client from anywhere in the terminal
-- **YouTube, Spotify, Deezer**: search, download, and resolve tracks, sync
-  Spotify playlists, and fetch missing metadata/lyrics/cover art
-- **Crossfade**: gapless-ish transitions with duration and easing options,
-  picked interactively in the settings UI
-- **Lyrics**: automatic fetch from LRCLIB (default provider), syncable
-  on-demand via `gtm lyrics` / `gtm metadata sync`
+- **YouTube, Spotify, Deezer**: search & download from YouTube, sync
+  Spotify playlists, and fetch missing metadata/lyrics/cover art via Deezer.
+- **Crossfade**: gapless-ish transitions with duration and easing options.
+- **Lyrics**: automatic fetch from LRCLIB (default provider)
 - **Metadata sync**: backfill missing tags, cover art, and lyrics for local
-  files from the TUI or the CLI
+  files from the TUI or the CLI (via `gtm lyrics` / `gtm metadata sync`)
 - **Equalizer**: 16 presets plus per-band gain, headroom stage, and a spectrum
   visualizer
-- **Export M3U**: dump the current library or queue to an m3u playlist
-- **Sleep timer**: timed shutdown with cancel, settable from the TUI or CLI
+- **Playlist management**: Import/export `m3u8` playlists
+- **Sleep timer**
 - **Cover art**: rendered inline via the kitty/terminal image protocol
-- **Zero configuration**: sane defaults, fully customizable via TOML, 16
-  built-in themes in Classic and Modern designs, various widget styles
-- **Reactive theming**: accent colors extracted from the current track's
-  cover art, toggleable in Settings → System
-- **MPRIS**: media player controls via D-Bus
-
-## Spotify
-
-- Link your account with an access token from the TUI
-  (`Settings → Spotify → Link`); unlink anytime.
-- Sync saved playlists into the library and resolve individual Spotify
-  tracks: gtm finds a matching YouTube upload and downloads it as a local
-  file, so playback works even without the Spotify app running.
-
-## YouTube
-
-- Search YouTube (`yt-dlp` under the hood) and download results straight
-  into the library as MP3 with automatic lyrics + metadata backfill.
-- **Cookies are required for downloads.** Set `Settings → YouTube → Cookie
-  File` to a Netscape-format cookie export (e.g. from a browser extension).
-  Without valid cookies YouTube answers extraction requests with HTTP 403;
-  every search, resolve, and download path passes the configured cookie
-  file to yt-dlp automatically.
-
-## Known gaps
-
-- The daemon-side `yt download/poll/cancel` IPC verbs are stubs; the TUI
-  shells out to `yt-dlp` directly for downloads.
-- Deezer integration is limited to cover art lookup.
-
-## Comparison
-
-| | gtm.rs | cmus | mpd + ncmpcpp | spotify-tui | mopidy |
-|---|---|---|---|---|---|
-| Background daemon | yes | no | yes | no | yes |
-| Local files + YouTube/Spotify in one player | yes | no | no | spotify only | addons |
-| Equalizer | 16 presets, 15 bands | no | via mpd | no | via addons |
-| Terminal UI | TUI + CLI | TUI | TUI | TUI | client needed |
-| Inline cover art | yes | no | no | no | no |
+- **Zero configuration**: sane defaults, fully customizable via TOML,
+- **16 built-in themes** : and various widget styles for the visualizer and progress indicator. Supports transparent mode.
+- **Reactive theming**: accent colors extracted from the current track
+- **MPRIS**: media player controls via D-Bus (planned)
 
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.spec/main/install.sh | bash -s -- --impl rust
+# stable (latest)
+curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash
+# nightly
+curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash -s -- --nightly
 ```
+
+The installer auto-detects your platform (Linux x86_64 / aarch64, macOS, Android/Termux, or Alpine musl) and on Debian 12 picks the matching `glibc 2.36` build. On Debian/Ubuntu it installs the `.deb` non-interactively (`apt-get install -y`); otherwise it extracts the `gtm-{platform}.tar.gz` to `$HOME/.local` (override with `--prefix`).
 
 ### GitHub Release
 
-Each `gtm-{platform}.tar.gz` bundles both binaries (`bin/gtm`, `bin/gtmd`),
-man pages, shell completions, and the `systemd` user service. Substitute
-`x86_64-linux` for `aarch64-linux`, `aarch64-linux-musl`, `aarch64-darwin` or
-`aarch64-android` as needed.
-
 Grab one from the [releases page](https://github.com/prjctimg/gtm.rs/releases/latest).
-
-```bash
-curl -fsSLO https://github.com/prjctimg/gtm.rs/releases/latest/download/gtm-x86_64-linux.tar.gz
-tar xzf gtm-x86_64-linux.tar.gz
-cd gtm-x86_64-linux
-
-sudo install -Dm755 bin/gtm  /usr/local/bin/gtm
-sudo install -Dm755 bin/gtmd /usr/local/bin/gtmd
-sudo install -Dm644 man/man1/gtm.1 man/man1/gtmd.1 man/man1/gtmd-ipc.1 /usr/local/share/man/man1/
-sudo install -Dm644 systemd/gtmd.service /usr/local/lib/systemd/user/gtmd.service
-sudo install -Dm644 completions/gtm.bash completions/gtmd.bash /usr/local/share/bash-completion/completions/
-sudo install -Dm644 completions/_gtm completions/_gtmd /usr/local/share/zsh/vendor-completions/
-sudo install -Dm644 completions/gtm.fish completions/gtmd.fish /usr/local/share/fish/vendor_completions.d/
-
-systemctl --user daemon-reload
-systemctl --user enable --now gtmd
-```
 
 ### Build from Source
 
@@ -127,9 +71,27 @@ No NDK is required on-device. For cross-compiling from Linux, use `make termux`
 (requires `cargo-ndk` + Android NDK r27b); it injects the `aarch64-linux-android27-clang`
 linker automatically. See `CONTRIBUTING.md` for details.
 
-## Screenshots
+## Spotify
 
-<img src="assets/screenshots/command-palette.png" alt="gtm command palette" width="640">
+Requires **Spotify Premium** for playback control. gtm.rs uses an OAuth PKCE flow that listens on `http://127.0.0.1:8990/login`.
+
+1. Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) → **Create app**
+2. Add **Redirect URI**: `http://127.0.0.1:8990/login` (must match exactly, including `/login`)
+3. Copy the **Client ID** → in the TUI go to `Settings → Spotify → Link` and paste it, or run `gtm --cli spotify connect <token>`. Verify with `gtm --cli spotify status` and `gtm --cli spotify sync` to pull playlists.
+
+First launch opens your browser for authorization (no client secret needed) and the daemon exchanges the code on port `8990` (5 min timeout).
+
+## Comparison
+
+| | gtm.rs | cmus | mpd + ncmpcpp | spotify-tui | mopidy |
+|---|---|---|---|---|---|
+| Background daemon | yes | no | yes | no | yes |
+| Local files + YouTube/Spotify in one player | yes | no | no | spotify only | addons |
+| Equalizer | 16 presets, 15 bands | no | via mpd | no | via addons |
+| Terminal UI | TUI + CLI | TUI | TUI | TUI | client needed |
+| Inline cover art | yes | no | no | no | no |
+
+## Screenshots
 
 ## Documentation
 
@@ -141,11 +103,9 @@ linker automatically. See `CONTRIBUTING.md` for details.
 
 ## Contributing
 
-This is a hobby project. It is feature complete and stable enough to use as a
-daily driver, though still largely a WIP. See [CONTRIBUTING.md](CONTRIBUTING.md)
-for build instructions, the crate layout, and the green gates (fmt / clippy /
-test). People who have contributed code are listed in
-[CONTRIBUTORS.md](CONTRIBUTORS.md).
+This is a hobby project. It is feature complete and stable enough to use as a daily driver, though still largely a WIP.
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions & the crate layout.
 
 ---
 
@@ -164,7 +124,15 @@ test). People who have contributed code are listed in
   audio output
 - [yt-dlp](https://github.com/yt-dlp/yt-dlp) — YouTube search and extraction
 - [LRCLIB](https://lrclib.net) — lyrics provider
+- [Myx](https://github.com/HaseebKhalid1507/Myx) — lean Rust TUI Spotify player
+- [spotify-player](https://github.com/aome510/spotify-player)  (OAuth PKCE flow)
 
-(c) 2026 - present, [prjctimg](https://prjctimg.me)
+<!-- CONTRIBUTORS -->
+<p align="left">
+  <a href="https://github.com/iseeheaven"><img src="https://github.com/iseeheaven.png?size=80" width="50" height="50" style="border-radius:50%;margin:4px;" alt="iseeheaven"/></a> <a href="https://github.com/prjctimg"><img src="https://github.com/prjctimg.png?size=80" width="50" height="50" style="border-radius:50%;margin:4px;" alt="prjctimg"/></a> <a href="https://github.com/skchr"><img src="https://github.com/skchr.png?size=80" width="50" height="50" style="border-radius:50%;margin:4px;" alt="skchr"/></a>
+</p>
+<!-- /CONTRIBUTORS -->
+
+(c) 2026, [prjctimg](https://prjctimg.me)
 
 Released under the GPL-3.0 license.

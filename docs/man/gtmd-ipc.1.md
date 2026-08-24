@@ -728,7 +728,7 @@ Report bugs to <https://github.com/prjctimg/gtm.rs/issues> or by email to
 
 # COPYRIGHT
 
-Copyright (c) 2026 - present prjctimg.
+Copyright (c) 2026 prjctimg.
 
 This is free software released under the GPL-3.0 license. See the LICENSE
 file for the full license text.

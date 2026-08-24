@@ -1,4 +1,4 @@
-// Copyright (c) 2026 - present
+// Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
 // IPC protocol: wire format with explicit cmd/event fields per gtm protocol v2
 //

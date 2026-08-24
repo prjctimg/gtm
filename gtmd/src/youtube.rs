@@ -1,4 +1,4 @@
-// Copyright (c) 2026 - present
+// Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
 // YouTube search via yt-dlp with rate limiting and timeout
 //
@@ -84,7 +84,7 @@ impl YoutubeManager {
     }
 
     /// Extractor-args fallback chain that fixes anonymous 403 / PO-token
-    /// enforcement on YouTube (Task 5). Rotates player_client variants so
+    /// enforcement on YouTube. Rotates player_client variants so
     /// anonymous extraction can succeed even without cookies.
     pub fn extractor_args() -> Vec<std::ffi::OsString> {
         vec![

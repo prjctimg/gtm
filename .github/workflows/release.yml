@@ -42,7 +42,7 @@
 #                   versions are skipped so re-running a release after a
 #                   partial publish resumes cleanly.
 #
-# The gtm.spec install.sh consumes the per-target tar.gz archives; keep its
+# The install.sh at the repo root consumes the per-target tar.gz archives; keep its
 # layout expectations in sync when changing the archive structure here.
 name: Release
 
@@ -369,12 +369,22 @@ jobs:
           cp dist/gtmd.service gtm/deb-assets/
           cp dist/gtm.desktop gtm/deb-assets/
           cp assets/gtm.svg gtm/deb-assets/
+          # cargo-deb already produces gtm_${version}-1_${arch}.deb (arch from host dpkg).
+          # Build and move without re-adding revision to avoid duplicate -1 suffix.
           cargo deb --package gtm
-          arch="$(dpkg --print-architecture)"
+          deb_arch="$(dpkg --print-architecture)"
+          # Validate arch matches platform (x86_64-linux ↔ amd64, aarch64-linux ↔ arm64)
+          case "${{ matrix.platform }}" in
+            x86_64-linux) [ "$deb_arch" = "amd64" ] || { echo "::error::expected amd64 for ${{ matrix.platform }}, got $deb_arch" >&2; exit 1; } ;;
+            aarch64-linux) [ "$deb_arch" = "arm64" ] || { echo "::error::expected arm64 for ${{ matrix.platform }}, got $deb_arch" >&2; exit 1; } ;;
+          esac
           for deb in target/debian/gtm_*.deb; do
-            mv "$deb" "release-assets/gtm_${version}-1_${arch}.deb"
+            # Keep cargo-deb's native name (already contains -1 and arch); just move.
+            echo "Built deb: $(basename "$deb") (arch $deb_arch) for ${{ matrix.platform }}"
+            mv "$deb" "release-assets/"
           done
           rm -rf gtm/deb-assets
+          ls -lh release-assets/*.deb
 
       - name: Stage rootfs tree (RPM + Arch)
         if: matrix.family == 'debian'

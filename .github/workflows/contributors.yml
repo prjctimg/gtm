@@ -5,8 +5,6 @@ on:
 permissions:
   contents: write
 env:
-  # Never fall back to the deprecated Node 20 runtime: force every action
-  # onto the current Node (24+).
   ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'false'
 jobs:
   update-contributors:
@@ -15,14 +13,19 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Regenerate CONTRIBUTORS.md
+      - name: Regenerate contributors in README
         run: bash scripts/build/contributors.sh
       - name: Commit if changed
         run: |
-          if ! git diff --quiet CONTRIBUTORS.md; then
+          if ! git diff --quiet README.md; then
             git config user.name "prjctimg"
             git config user.email "prjctimg@outlook.com"
-            git add CONTRIBUTORS.md
-            git commit -m "docs: update CONTRIBUTORS"
+            git add README.md
+            # Remove deprecated file if it was auto-generated before
+            if [ -f CONTRIBUTORS.md ]; then
+              git rm -f CONTRIBUTORS.md || rm -f CONTRIBUTORS.md
+              git add -A || true
+            fi
+            git commit -m "docs: update contributors"
             git push
           fi

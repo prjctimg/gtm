@@ -1,7 +1,7 @@
-// Copyright (c) 2026 - present
+// Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
 // Mouse hit-testing: the UI layer registers clickable row rectangles each
-// frame and the event loop resolves clicks against them (PROMPT #7).
+// frame and the event loop resolves clicks against them.
 //
 // This is free software released under the GPL-3.0 license.
 

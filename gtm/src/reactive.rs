@@ -1,4 +1,4 @@
-// Copyright (c) 2026 - present
+// Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
 // Reactive theming: derive UI accent colors from the current track's cover
 // art.  Palette extraction uses median-cut (color-thief) over a downscaled

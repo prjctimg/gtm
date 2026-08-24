@@ -1,4 +1,4 @@
-// Copyright (c) 2026 - present
+// Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
 // Dedicated decode thread that reads audio files, applies EQ/reverb,
 // and writes decoded samples into a lock-free SPSC ring buffer.

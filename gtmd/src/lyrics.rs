@@ -1,4 +1,4 @@
-// Copyright (c) 2026 - present
+// Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
 // LRC lyrics fetching from lrclib.net
 //
@@ -86,7 +86,6 @@ impl LyricsManager {
             }
 
             // Try to extract one or more timestamps like [00:01.00][00:05.00]text
-            // (Myx parity: multi-timestamp expansion, Task 4).
             if line.starts_with('[') {
                 let mut rest = line;
                 let mut timestamps: Vec<f64> = Vec::new();
@@ -138,7 +137,7 @@ impl LyricsManager {
             }
         }
 
-        // Myx parity: sort timed lines by timestamp so multi-timestamp expansion
+        // Sort timed lines by timestamp so multi-timestamp expansion
         // and out-of-order input both render chronologically. Plain lines
         // (timestamp < 0) stay at the end in original order.
         let mut timed: Vec<LrcLine> = lines
@@ -413,7 +412,7 @@ fn parse_lrclib_response(json: &serde_json::Value) -> Option<LrcData> {
 
 fn parse_lrc_timestamp(ts: &str) -> Option<f64> {
     // Hardened: reject non-ASCII/malformed fractions that previously caused
-    // panics or incorrect large values (Myx parity).
+    // panics or incorrect large values.
     if ts.is_empty() || ts.len() > 16 {
         return None;
     }

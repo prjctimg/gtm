@@ -1,4 +1,4 @@
-// Copyright (c) 2026 - present
+// Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
 // gtm library crate: TUI + CLI modules exposed so integration tests under
 // `gtm/tests/` can exercise them directly. The `gtm` binary is a thin
