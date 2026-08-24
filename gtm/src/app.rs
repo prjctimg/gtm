@@ -202,6 +202,7 @@ pub struct UpNextNotif {
     pub started_at: std::time::Instant,
     pub total_secs: f64,
     pub cover_fetch_id: Option<i64>,
+    pub cover_fetch_gen: Option<u64>,
 }
 
 /// One row in the SearchLibrary fuzzy-finder, resolved from a `PickerSource`.
@@ -227,13 +228,16 @@ pub struct MetadataEditState {
     pub cover: Option<Vec<u8>>,
     pub cover_stateful: Option<StatefulProtocol>,
     pub cover_dirty: bool,
+    pub cover_fetch_gen: Option<u64>,
 }
 
 pub struct NowPlayingCoverState {
     pub image: Option<Vec<u8>>,
     pub track_id: Option<i64>,
+    pub track_path: Option<String>,
     pub picker: Option<Picker>,
     pub stateful: Option<StatefulProtocol>,
+    pub pending_gen: Option<u64>,
 }
 
 pub struct App {
@@ -348,14 +352,17 @@ pub struct App {
     pub track_popup_cover: Option<Vec<u8>>,
     pub popup_cover_stateful: Option<StatefulProtocol>,
     last_popup_cover_fetch_id: Option<i64>,
+    last_popup_cover_fetch_gen: Option<u64>,
     /// Cover art for the SearchLibrary picker preview window.
     pub picker_preview_cover: Option<Vec<u8>>,
     pub picker_preview_stateful: Option<StatefulProtocol>,
     last_picker_preview_fetch_id: Option<i64>,
+    last_picker_preview_fetch_gen: Option<u64>,
     /// Cover art for artist selections in the search picker preview.
     pub artist_cover: Option<Vec<u8>>,
     pub artist_cover_stateful: Option<StatefulProtocol>,
     last_artist_cover_fetch: Option<String>,
+    last_artist_cover_fetch_gen: Option<u64>,
     /// Active "Up Next" crossfade-countdown notification (T10).
     pub upnext: Option<UpNextNotif>,
     /// Cover art for the queue picker "Up Next" strip (T11): fetched for the
@@ -364,6 +371,10 @@ pub struct App {
     pub queue_preview_cover: Option<Vec<u8>>,
     pub queue_preview_cover_stateful: Option<StatefulProtocol>,
     last_queue_preview_cover_fetch_id: Option<i64>,
+    last_queue_preview_cover_fetch_gen: Option<u64>,
+    // Monotonic generation counter for all cover fetches — disambiguates
+    // stale responses and `id == 0` reuse across different tracks.
+    next_cover_gen: u64,
     pub current_lyrics: Option<gtm_core::track::LrcData>,
     pub lyrics_scroll: usize,
     pub lyrics_fetching: bool,
@@ -382,13 +393,13 @@ pub struct App {
 
 enum IpcResult {
     RefreshDone(Box<DaemonState>, Option<Vec<u8>>, Option<i64>),
-    CoverArt(Option<Vec<u8>>, Option<i64>),
-    PopupCoverArt(Option<Vec<u8>>, i64),
-    UpNextCover(Option<Vec<u8>>, i64),
-    QueuePreviewCover(Option<Vec<u8>>, i64),
-    PickerPreviewCover(Option<Vec<u8>>, i64),
-    MetadataCoverArt(Option<Vec<u8>>, i64),
-    ArtistCoverArt(Option<Vec<u8>>, String),
+    CoverArt(Option<Vec<u8>>, Option<i64>, u64),
+    PopupCoverArt(Option<Vec<u8>>, i64, u64),
+    UpNextCover(Option<Vec<u8>>, i64, u64),
+    QueuePreviewCover(Option<Vec<u8>>, i64, u64),
+    PickerPreviewCover(Option<Vec<u8>>, i64, u64),
+    MetadataCoverArt(Option<Vec<u8>>, i64, u64),
+    ArtistCoverArt(Option<Vec<u8>>, String, u64),
     CoverPicker(Option<Picker>),
     Lyrics(Option<gtm_core::track::LrcData>),
     LibraryTracks(Vec<TrackInfo>),
@@ -544,6 +555,38 @@ impl App {
         }
     }
 
+    fn next_cover_gen(&mut self) -> u64 {
+        let g = self.next_cover_gen;
+        self.next_cover_gen = self.next_cover_gen.wrapping_add(1).max(1);
+        g
+    }
+
+    fn clear_search_previews(&mut self) {
+        self.picker_preview_cover = None;
+        self.picker_preview_stateful = None;
+        self.last_picker_preview_fetch_id = None;
+        self.last_picker_preview_fetch_gen = None;
+        self.artist_cover = None;
+        self.artist_cover_stateful = None;
+        self.last_artist_cover_fetch = None;
+        self.last_artist_cover_fetch_gen = None;
+    }
+
+    fn clear_queue_preview(&mut self) {
+        self.queue_preview_cover = None;
+        self.queue_preview_cover_stateful = None;
+        self.last_queue_preview_cover_fetch_id = None;
+        self.last_queue_preview_cover_fetch_gen = None;
+    }
+
+    fn clear_popup_cover(&mut self) {
+        self.track_popup_track_id = None;
+        self.track_popup_cover = None;
+        self.popup_cover_stateful = None;
+        self.last_popup_cover_fetch_id = None;
+        self.last_popup_cover_fetch_gen = None;
+    }
+
     pub async fn new(socket_path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
         let client = DaemonClient::connect(socket_path).await?;
         let state = DaemonState::new();
@@ -620,8 +663,10 @@ impl App {
             np_cover: NowPlayingCoverState {
                 image: None,
                 track_id: None,
+                track_path: None,
                 picker: None,
                 stateful: None,
+                pending_gen: None,
             },
             terminal_cols: 80,
             terminal_rows: 24,
@@ -670,6 +715,7 @@ impl App {
                 cover: None,
                 cover_stateful: None,
                 cover_dirty: false,
+                cover_fetch_gen: None,
             },
             pending_quit: false,
             mouse_map: crate::mouse::MouseMap::default(),
@@ -681,16 +727,21 @@ impl App {
             track_popup_cover: None,
             popup_cover_stateful: None,
             last_popup_cover_fetch_id: None,
+            last_popup_cover_fetch_gen: None,
             picker_preview_cover: None,
             picker_preview_stateful: None,
             last_picker_preview_fetch_id: None,
+            last_picker_preview_fetch_gen: None,
             artist_cover: None,
             artist_cover_stateful: None,
             last_artist_cover_fetch: None,
+            last_artist_cover_fetch_gen: None,
             upnext: None,
             queue_preview_cover: None,
             queue_preview_cover_stateful: None,
             last_queue_preview_cover_fetch_id: None,
+            last_queue_preview_cover_fetch_gen: None,
+            next_cover_gen: 1,
             current_lyrics: None,
             lyrics_scroll: 0,
             lyrics_fetching: false,
@@ -1075,26 +1126,32 @@ impl App {
             if track_changed {
                 self.np_cover.image = None;
                 self.np_cover.stateful = None;
+                // Invalidate pending fetch so stale responses cannot overwrite
+                // the new track (B1). Path is used alongside id to disambiguate
+                // `id == 0` locally-inserted tracks.
+                let cur_path = self.state.current_track.as_ref().map(|t| t.path.clone());
+                self.np_cover.track_id = current_tid;
+                self.np_cover.track_path = cur_path.clone();
+                self.np_cover.pending_gen = None;
                 // Fetch cover art when needed: for display (no_image_protocol
                 // check) OR for reactive-theming palette extraction (Task 3).
                 let needs_cover = self.reactive_theme || !no_image_protocol();
                 if needs_cover {
                     if let Some(tid) = current_tid {
-                        if Some(tid) != self.np_cover.track_id {
-                            self.np_cover.track_id = Some(tid);
-                            let client = self.client.clone();
-                            let ipc_tx = self.ipc_tx.clone();
-                            tokio::spawn(async move {
-                                if let Ok(Some(b64)) = client.art().cover(tid).await {
-                                    if let Ok(bytes) =
-                                        base64::engine::general_purpose::STANDARD.decode(&b64)
-                                    {
-                                        let _ = ipc_tx
-                                            .send(IpcResult::CoverArt(Some(bytes), Some(tid)));
-                                    }
+                        let fetch_gen = self.next_cover_gen();
+                        self.np_cover.pending_gen = Some(fetch_gen);
+                        let client = self.client.clone();
+                        let ipc_tx = self.ipc_tx.clone();
+                        tokio::spawn(async move {
+                            if let Ok(Some(b64)) = client.art().cover(tid).await {
+                                if let Ok(bytes) =
+                                    base64::engine::general_purpose::STANDARD.decode(&b64)
+                                {
+                                    let _ = ipc_tx
+                                        .send(IpcResult::CoverArt(Some(bytes), Some(tid), fetch_gen));
                                 }
-                            });
-                        }
+                            }
+                        });
                     }
                 }
                 // Auto-fetch lyrics if lyrics pane is visible
@@ -1132,32 +1189,78 @@ impl App {
                             self.state = *state;
                             self.client.seed_clock_from_state(&self.state).await;
                             // Cover art is fetched on track-change events only.
-                            // Do not clear last_cover_track_id when a periodic
-                            // RefreshDone carries no cover, or the track-change
-                            // guard would re-download art (and re-fetch lyrics)
-                            // every second.
+                            // Do not clear track_id when a periodic RefreshDone
+                            // carries no cover, or the track-change guard would
+                            // re-download art (and re-fetch lyrics) every second.
+                            // Robustness: verify cover_tid still matches current
+                            // track (id+path) to avoid stale periodic cover
+                            // overwriting a newer track's art (B1).
                             if let Some(c) = cover {
-                                if self.reactive_theme {
-                                    let tx = self.ipc_tx.clone();
-                                    self.request_reactive_palette(&c, tx);
-                                }
-                                self.np_cover.image = Some(c);
-                                self.np_cover.track_id = cover_tid;
-                                if !no_image_protocol() {
-                                    self.cover_sync();
-                                } else {
-                                    self.cover_art_dirty = true;
+                                let cur_tid = self.state.current_track.as_ref().map(|t| t.id);
+                                let cur_path =
+                                    self.state.current_track.as_ref().map(|t| t.path.clone());
+                                let tid_matches = cover_tid == cur_tid;
+                                let path_matches = match (&cover_tid, &cur_path) {
+                                    (Some(_), Some(cp)) => {
+                                        // If daemon supplied a tid, ensure path
+                                        // consistency for `id == 0` disambiguation
+                                        self.np_cover.track_path.as_deref() == Some(cp.as_str())
+                                            || self.np_cover.track_path.is_none()
+                                    }
+                                    (None, None) => true,
+                                    _ => tid_matches,
+                                };
+                                if tid_matches && path_matches {
+                                    if self.reactive_theme {
+                                        let tx = self.ipc_tx.clone();
+                                        self.request_reactive_palette(&c, tx);
+                                    }
+                                    self.np_cover.image = Some(c);
+                                    self.np_cover.track_id = cover_tid;
+                                    if !no_image_protocol() {
+                                        self.cover_sync();
+                                    } else {
+                                        self.cover_art_dirty = true;
+                                    }
                                 }
                             }
                         }
                     }
-                    IpcResult::CoverArt(cover, cover_tid) => {
+                    IpcResult::CoverArt(cover, cover_tid, fetch_gen) => {
+                        // Generation + id+path guard: stale Covers for fast
+                        // skips (A->B->C) are dropped if fetch_gen mismatches or tid
+                        // no longer equals current track. Covers `id == 0`
+                        // reuse (queued Spotify/YouTube) via generation.
+                        let Some(pending) = self.np_cover.pending_gen else {
+                            // No pending fetch — likely track changed and cleared,
+                            // drop stale.
+                            continue;
+                        };
+                        if fetch_gen != pending {
+                            continue;
+                        }
+                        let cur_tid = self.state.current_track.as_ref().map(|t| t.id);
+                        if cover_tid != cur_tid {
+                            continue;
+                        }
+                        // Path check for `id == 0` disambiguation
+                        if let (Some(_), Some(cur_path)) = (
+                            &cover_tid,
+                            self.state.current_track.as_ref().map(|t| &t.path),
+                        ) {
+                            if let Some(pending_path) = self.np_cover.track_path.as_ref() {
+                                if pending_path != cur_path {
+                                    continue;
+                                }
+                            }
+                        }
                         if let Some(c) = cover.as_ref() {
                             if self.reactive_theme {
                                 let tx = self.ipc_tx.clone();
                                 self.request_reactive_palette(c, tx);
                             }
                         }
+                        self.np_cover.pending_gen = None;
                         self.np_cover.image = cover;
                         self.np_cover.track_id = cover_tid;
                         if !no_image_protocol() {
@@ -1212,16 +1315,21 @@ impl App {
                     IpcResult::Error(e) => {
                         self.notify(e, NotificationKind::Error);
                     }
-                    IpcResult::PopupCoverArt(cover, track_id) => {
-                        if !no_image_protocol() && self.track_popup_track_id == Some(track_id) {
+                    IpcResult::PopupCoverArt(cover, track_id, fetch_gen) => {
+                        if !no_image_protocol()
+                            && self.track_popup_track_id == Some(track_id)
+                            && self.last_popup_cover_fetch_gen == Some(fetch_gen)
+                        {
                             self.track_popup_cover = cover;
                             self.popup_cover_sync();
                         }
                     }
-                    IpcResult::UpNextCover(cover, track_id) => {
+                    IpcResult::UpNextCover(cover, track_id, fetch_gen) => {
                         if !no_image_protocol()
                             && self.upnext.as_ref().is_some_and(|u| {
-                                u.cover_fetch_id == Some(track_id) && u.track.id == track_id
+                                u.cover_fetch_id == Some(track_id)
+                                    && u.track.id == track_id
+                                    && u.cover_fetch_gen == Some(fetch_gen)
                             })
                         {
                             if let Some(u) = self.upnext.as_mut() {
@@ -1230,32 +1338,38 @@ impl App {
                             }
                         }
                     }
-                    IpcResult::QueuePreviewCover(cover, track_id) => {
+                    IpcResult::QueuePreviewCover(cover, track_id, fetch_gen) => {
                         if !no_image_protocol()
                             && self.last_queue_preview_cover_fetch_id == Some(track_id)
+                            && self.last_queue_preview_cover_fetch_gen == Some(fetch_gen)
                         {
                             self.queue_preview_cover = cover;
                             self.queue_preview_cover_sync();
                         }
                     }
-                    IpcResult::PickerPreviewCover(cover, track_id) => {
+                    IpcResult::PickerPreviewCover(cover, track_id, fetch_gen) => {
                         if !no_image_protocol()
                             && self.last_picker_preview_fetch_id == Some(track_id)
+                            && self.last_picker_preview_fetch_gen == Some(fetch_gen)
                         {
                             self.picker_preview_cover = cover;
                             self.picker_preview_sync();
                         }
                     }
-                    IpcResult::MetadataCoverArt(cover, track_id) => {
-                        if !no_image_protocol() && self.metadata.edit_track_id == Some(track_id) {
+                    IpcResult::MetadataCoverArt(cover, track_id, fetch_gen) => {
+                        if !no_image_protocol()
+                            && self.metadata.edit_track_id == Some(track_id)
+                            && self.metadata.cover_fetch_gen == Some(fetch_gen)
+                        {
                             self.metadata.cover = cover;
                             self.metadata_cover_sync();
                             self.metadata.cover_dirty = true;
                         }
                     }
-                    IpcResult::ArtistCoverArt(cover, artist) => {
+                    IpcResult::ArtistCoverArt(cover, artist, fetch_gen) => {
                         if !no_image_protocol()
                             && self.last_artist_cover_fetch.as_deref() == Some(&artist)
+                            && self.last_artist_cover_fetch_gen == Some(fetch_gen)
                         {
                             self.artist_cover = cover;
                             self.artist_cover_sync();
@@ -1263,6 +1377,18 @@ impl App {
                     }
                     IpcResult::CoverPicker(picker) => {
                         self.np_cover.picker = picker;
+                        // Rebuild all active StatefulProtocols with the new
+                        // picker geometry. Previously they retained the old
+                        // picker's resize state, causing cropped / stale sizes
+                        // after terminal resize or image-protocol renegotiation
+                        // (B2).
+                        self.cover_sync();
+                        self.popup_cover_sync();
+                        self.upnext_cover_sync();
+                        self.queue_preview_cover_sync();
+                        self.picker_preview_sync();
+                        self.artist_cover_sync();
+                        self.metadata_cover_sync();
                     }
                     IpcResult::Lyrics(lyrics) => {
                         self.current_lyrics = lyrics;
@@ -1629,10 +1755,15 @@ impl App {
 
     pub fn start_upnext(&mut self, track: gtm_core::track::TrackInfo) {
         let total_secs = self.crossfade_duration as f64 + 3.0;
-        let fetch_id = if no_image_protocol() {
+        let fetch_gen = if no_image_protocol() {
             None
         } else {
+            Some(self.next_cover_gen())
+        };
+        let fetch_id = if fetch_gen.is_some() {
             Some(track.id)
+        } else {
+            None
         };
         self.upnext = Some(UpNextNotif {
             track: track.clone(),
@@ -1641,17 +1772,18 @@ impl App {
             started_at: std::time::Instant::now(),
             total_secs,
             cover_fetch_id: fetch_id,
+            cover_fetch_gen: fetch_gen,
         });
-        if no_image_protocol() {
+        let Some(fetch_gen) = fetch_gen else {
             return;
-        }
+        };
         let tid = track.id;
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
             if let Ok(Some(b64)) = client.art().cover(tid).await {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                    let _ = ipc_tx.send(IpcResult::UpNextCover(Some(bytes), tid));
+                    let _ = ipc_tx.send(IpcResult::UpNextCover(Some(bytes), tid, fetch_gen));
                 }
             }
         });
@@ -1739,14 +1871,12 @@ impl App {
 
         self.track_popup_visible = valid;
         if !valid {
-            self.track_popup_track_id = None;
-            self.track_popup_cover = None;
-            self.popup_cover_stateful = None;
-            self.last_popup_cover_fetch_id = None;
+            self.clear_popup_cover();
             return;
         }
 
         let Some((tid, path)) = maybe_track else {
+            self.clear_popup_cover();
             return;
         };
         self.track_popup_track_id = Some(tid);
@@ -1757,60 +1887,95 @@ impl App {
             .as_ref()
             .is_some_and(|t| t.path == path);
         if current_is_selected {
-            self.track_popup_cover = self.np_cover.image.clone();
-            self.popup_cover_sync();
-            self.last_popup_cover_fetch_id = None;
-        } else if self.last_popup_cover_fetch_id != Some(tid) && !no_image_protocol() {
-            self.last_popup_cover_fetch_id = Some(tid);
-            self.track_popup_cover = None;
-            self.popup_cover_stateful = None;
-            let client = self.client.clone();
-            let ipc_tx = self.ipc_tx.clone();
-            tokio::spawn(async move {
-                if let Ok(Some(b64)) = client.art().cover(tid).await {
-                    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                        let _ = ipc_tx.send(IpcResult::PopupCoverArt(Some(bytes), tid));
-                    }
-                }
-            });
+            // Robust fallback: if current track's art is still pending (cleared
+            // on track change), fall through to fetch rather than showing blank
+            // (B7). Only reuse when we actually have bytes.
+            if let Some(cover) = self.np_cover.image.clone() {
+                self.track_popup_cover = Some(cover);
+                self.popup_cover_sync();
+                self.last_popup_cover_fetch_id = None;
+                self.last_popup_cover_fetch_gen = None;
+                return;
+            }
+            // else fall through to fetch below
         }
+        // Generation-guarded fetch: `id == 0` reuse is safe via fetch_gen (B3).
+        let already_pending = self.last_popup_cover_fetch_id == Some(tid)
+            && self.last_popup_cover_fetch_gen.is_some()
+            && !no_image_protocol();
+        if already_pending {
+            return;
+        }
+        if no_image_protocol() {
+            return;
+        }
+        let fetch_gen = self.next_cover_gen();
+        self.last_popup_cover_fetch_id = Some(tid);
+        self.last_popup_cover_fetch_gen = Some(fetch_gen);
+        self.track_popup_cover = None;
+        self.popup_cover_stateful = None;
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            if let Ok(Some(b64)) = client.art().cover(tid).await {
+                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
+                    let _ = ipc_tx.send(IpcResult::PopupCoverArt(Some(bytes), tid, fetch_gen));
+                }
+            }
+        });
     }
 
     /// Dismiss the track popup.
     pub fn dismiss_track_popup(&mut self) {
         self.track_popup_visible = false;
-        self.track_popup_track_id = None;
-        self.track_popup_cover = None;
-        self.popup_cover_stateful = None;
-        self.last_popup_cover_fetch_id = None;
+        self.clear_popup_cover();
     }
 
     /// Fetch cover art for the highlighted SearchLibrary picker row so the
     /// preview window can render the actual album art as ASCII.
     pub fn update_picker_preview(&mut self) {
         let Some(top) = self.pickers.top() else {
+            // Robust: invalidate pending fetch_gen so close/reopen does not retain stale key (B4)
             self.picker_preview_cover = None;
+            self.picker_preview_stateful = None;
+            self.last_picker_preview_fetch_id = None;
+            self.last_picker_preview_fetch_gen = None;
             return;
         };
         if top.id != PickerId::SearchLibrary {
             self.picker_preview_cover = None;
+            self.picker_preview_stateful = None;
+            self.last_picker_preview_fetch_id = None;
+            self.last_picker_preview_fetch_gen = None;
             return;
         }
         let picks = self.search_library_picks();
         if picks.is_empty() {
             self.picker_preview_cover = None;
+            self.picker_preview_stateful = None;
+            self.last_picker_preview_fetch_id = None;
+            self.last_picker_preview_fetch_gen = None;
             return;
         }
         let sel = top.selected.min(picks.len() - 1);
         let LibraryPick::Track(i) = &picks[sel] else {
             self.picker_preview_cover = None;
+            self.picker_preview_stateful = None;
+            self.last_picker_preview_fetch_id = None;
+            self.last_picker_preview_fetch_gen = None;
             return;
         };
         let tid = self.tracks_cache[*i].id;
-        if self.last_picker_preview_fetch_id == Some(tid) {
+        // Generation-guarded dedup: id reuse (id==0) cannot block new fetches.
+        // Only skip when both id and generation match current pending.
+        if self.last_picker_preview_fetch_id == Some(tid)
+            && self.last_picker_preview_fetch_gen.is_some()
+        {
             return;
         }
+        let fetch_gen = self.next_cover_gen();
         self.last_picker_preview_fetch_id = Some(tid);
+        self.last_picker_preview_fetch_gen = Some(fetch_gen);
         self.picker_preview_cover = None;
         self.picker_preview_stateful = None;
         if no_image_protocol() {
@@ -1821,7 +1986,7 @@ impl App {
         tokio::spawn(async move {
             if let Ok(Some(b64)) = client.art().cover(tid).await {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                    let _ = ipc_tx.send(IpcResult::PickerPreviewCover(Some(bytes), tid));
+                    let _ = ipc_tx.send(IpcResult::PickerPreviewCover(Some(bytes), tid, fetch_gen));
                 }
             }
         });
@@ -1830,26 +1995,42 @@ impl App {
     pub fn update_artist_cover(&mut self) {
         let Some(top) = self.pickers.top() else {
             self.artist_cover = None;
+            self.artist_cover_stateful = None;
+            self.last_artist_cover_fetch = None;
+            self.last_artist_cover_fetch_gen = None;
             return;
         };
         if top.id != PickerId::SearchLibrary {
             self.artist_cover = None;
+            self.artist_cover_stateful = None;
+            self.last_artist_cover_fetch = None;
+            self.last_artist_cover_fetch_gen = None;
             return;
         }
         let picks = self.search_library_picks();
         if picks.is_empty() {
             self.artist_cover = None;
+            self.artist_cover_stateful = None;
+            self.last_artist_cover_fetch = None;
+            self.last_artist_cover_fetch_gen = None;
             return;
         }
         let sel = top.selected.min(picks.len() - 1);
         let LibraryPick::Artist(name) = &picks[sel] else {
             self.artist_cover = None;
+            self.artist_cover_stateful = None;
+            self.last_artist_cover_fetch = None;
+            self.last_artist_cover_fetch_gen = None;
             return;
         };
-        if self.last_artist_cover_fetch.as_deref() == Some(name.as_str()) {
+        if self.last_artist_cover_fetch.as_deref() == Some(name.as_str())
+            && self.last_artist_cover_fetch_gen.is_some()
+        {
             return;
         }
+        let fetch_gen = self.next_cover_gen();
         self.last_artist_cover_fetch = Some(name.clone());
+        self.last_artist_cover_fetch_gen = Some(fetch_gen);
         self.artist_cover = None;
         self.artist_cover_stateful = None;
         if no_image_protocol() {
@@ -1861,7 +2042,7 @@ impl App {
         tokio::spawn(async move {
             if let Ok(Some(b64)) = client.art().artist_cover(artist.clone()).await {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                    let _ = ipc_tx.send(IpcResult::ArtistCoverArt(Some(bytes), artist));
+                    let _ = ipc_tx.send(IpcResult::ArtistCoverArt(Some(bytes), artist, fetch_gen));
                 }
             }
         });
@@ -2150,15 +2331,22 @@ impl App {
         let next_idx = self.queue_cursor + 1;
         let Some(track) = self.queue_cache.get(next_idx) else {
             self.last_queue_preview_cover_fetch_id = None;
+            self.last_queue_preview_cover_fetch_gen = None;
             self.queue_preview_cover = None;
             self.queue_preview_cover_stateful = None;
             return;
         };
         let tid = track.id;
-        if self.last_queue_preview_cover_fetch_id == Some(tid) {
+        // Generation-guarded dedup: allows `id == 0` tracks to refetch
+        // distinctly (B3). Only skip when pending fetch_gen exists.
+        if self.last_queue_preview_cover_fetch_id == Some(tid)
+            && self.last_queue_preview_cover_fetch_gen.is_some()
+        {
             return;
         }
+        let fetch_gen = self.next_cover_gen();
         self.last_queue_preview_cover_fetch_id = Some(tid);
+        self.last_queue_preview_cover_fetch_gen = Some(fetch_gen);
         self.queue_preview_cover = None;
         self.queue_preview_cover_stateful = None;
         let client = self.client.clone();
@@ -2166,7 +2354,7 @@ impl App {
         tokio::spawn(async move {
             if let Ok(Some(b64)) = client.art().cover(tid).await {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                    let _ = ipc_tx.send(IpcResult::QueuePreviewCover(Some(bytes), tid));
+                    let _ = ipc_tx.send(IpcResult::QueuePreviewCover(Some(bytes), tid, fetch_gen));
                 }
             }
         });
@@ -2227,19 +2415,25 @@ impl App {
 
     /// Fetch the cover art for the track currently being edited and stream it
     /// to the `MetadataCoverArt` IPC channel so the preview can refresh.
-    fn fetch_metadata_cover(&self) {
+    /// Generation-guarded to prevent stale picker-reuse overwrites.
+    fn fetch_metadata_cover(&mut self) {
         let Some(track_id) = self.metadata.edit_track_id else {
             return;
         };
         if no_image_protocol() {
             return;
         }
+        let fetch_gen = self.next_cover_gen();
+        self.metadata.cover_fetch_gen = Some(fetch_gen);
+        // Clear stale cover while new fetch is in flight; handler will repopulate.
+        self.metadata.cover = None;
+        self.metadata.cover_stateful = None;
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
             if let Ok(Some(b64)) = client.art().cover(track_id).await {
                 if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                    let _ = ipc_tx.send(IpcResult::MetadataCoverArt(Some(bytes), track_id));
+                    let _ = ipc_tx.send(IpcResult::MetadataCoverArt(Some(bytes), track_id, fetch_gen));
                 }
             }
         });
@@ -2886,7 +3080,7 @@ impl App {
                     .picker_area
                     .is_some_and(|r| x >= r.x && x < r.right() && y >= r.y && y < r.bottom());
                 if !inside {
-                    self.pickers.close_top();
+                    self.close_top_picker_with_cleanup();
                 }
             }
             return;
@@ -2941,7 +3135,7 @@ impl App {
                             top.viewport_offset = 0;
                         }
                     } else {
-                        self.pickers.close_top();
+                        self.close_top_picker_with_cleanup();
                     }
                     true
                 }
@@ -3739,6 +3933,17 @@ impl App {
                     self.metadata.cover = None;
                     self.metadata.cover_stateful = None;
                     self.metadata.edit_track_id = None;
+                    self.metadata.cover_fetch_gen = None;
+                }
+                PickerId::SearchLibrary => {
+                    // Robust: clear preview dedup state so reopen does not retain
+                    // stale fetch ids/gens and show blank until selection moves (B4/B5).
+                    self.clear_search_previews();
+                    self.clear_queue_preview();
+                    self.clear_popup_cover();
+                }
+                PickerId::Queue => {
+                    self.clear_queue_preview();
                 }
                 _ => {}
             }
@@ -3977,6 +4182,8 @@ impl App {
                                         } else if let Some(tid) =
                                             self.state.current_track.as_ref().map(|t| t.id)
                                         {
+                                            let fetch_gen = self.next_cover_gen();
+                                            self.np_cover.pending_gen = Some(fetch_gen);
                                             let client = self.client.clone();
                                             let ipc_tx = self.ipc_tx.clone();
                                             tokio::spawn(async move {
@@ -3989,6 +4196,7 @@ impl App {
                                                         let _ = ipc_tx.send(IpcResult::CoverArt(
                                                             Some(bytes),
                                                             Some(tid),
+                                                            fetch_gen,
                                                         ));
                                                     }
                                                 }
@@ -4095,6 +4303,8 @@ impl App {
                                         } else if let Some(tid) =
                                             self.state.current_track.as_ref().map(|t| t.id)
                                         {
+                                            let fetch_gen = self.next_cover_gen();
+                                            self.np_cover.pending_gen = Some(fetch_gen);
                                             let client = self.client.clone();
                                             let ipc_tx = self.ipc_tx.clone();
                                             tokio::spawn(async move {
@@ -4107,6 +4317,7 @@ impl App {
                                                         let _ = ipc_tx.send(IpcResult::CoverArt(
                                                             Some(bytes),
                                                             Some(tid),
+                                                            fetch_gen,
                                                         ));
                                                     }
                                                 }
@@ -4290,6 +4501,8 @@ impl App {
                                         } else if let Some(tid) =
                                             self.state.current_track.as_ref().map(|t| t.id)
                                         {
+                                            let fetch_gen = self.next_cover_gen();
+                                            self.np_cover.pending_gen = Some(fetch_gen);
                                             let client = self.client.clone();
                                             let ipc_tx = self.ipc_tx.clone();
                                             tokio::spawn(async move {
@@ -4302,6 +4515,7 @@ impl App {
                                                         let _ = ipc_tx.send(IpcResult::CoverArt(
                                                             Some(bytes),
                                                             Some(tid),
+                                                            fetch_gen,
                                                         ));
                                                     }
                                                 }
@@ -5344,6 +5558,8 @@ impl App {
                         let genre = self.metadata.fields[4].clone();
                         let year = self.metadata.fields[5].parse::<i32>().ok();
                         let track_number = self.metadata.fields[6].parse::<i32>().ok();
+                        let fetch_gen = self.next_cover_gen();
+                        self.metadata.cover_fetch_gen = Some(fetch_gen);
                         let client = self.client.clone();
                         let ipc_tx = self.ipc_tx.clone();
                         tokio::spawn(async move {
@@ -5363,7 +5579,7 @@ impl App {
                                     base64::engine::general_purpose::STANDARD.decode(&b64)
                                 {
                                     let _ = ipc_tx
-                                        .send(IpcResult::MetadataCoverArt(Some(bytes), track_id));
+                                        .send(IpcResult::MetadataCoverArt(Some(bytes), track_id, fetch_gen));
                                 }
                             }
                         });
