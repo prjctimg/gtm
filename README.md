@@ -127,11 +127,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions & the crate layout
 - [Myx](https://github.com/HaseebKhalid1507/Myx) — lean Rust TUI Spotify player
 - [spotify-player](https://github.com/aome510/spotify-player)  (OAuth PKCE flow)
 
+
+
 <!-- CONTRIBUTORS -->
 <p align="left">
   <a href="https://github.com/iseeheaven"><img src="https://github.com/iseeheaven.png?size=80" width="50" height="50" style="border-radius:50%;margin:4px;" alt="iseeheaven"/></a> <a href="https://github.com/prjctimg"><img src="https://github.com/prjctimg.png?size=80" width="50" height="50" style="border-radius:50%;margin:4px;" alt="prjctimg"/></a> <a href="https://github.com/skchr"><img src="https://github.com/skchr.png?size=80" width="50" height="50" style="border-radius:50%;margin:4px;" alt="skchr"/></a>
 </p>
 <!-- /CONTRIBUTORS -->
+
 
 (c) 2026, [prjctimg](https://prjctimg.me)
 
