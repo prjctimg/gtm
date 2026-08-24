@@ -70,76 +70,42 @@ avatars=$(echo "$avatars" | sed 's/ $//')
 
 block="<!-- CONTRIBUTORS -->"
 end="<!-- /CONTRIBUTORS -->"
-section="
-
-${block}
-<p align=\"left\">
-  ${avatars}
-</p>
-${end}
-"
 
 # ── Inject into README.md ───────────────────────────────────────────────
-if grep -q "$block" "$readme"; then
-  # Replace existing block
-  # Use perl for multiline replace
-  perl -0777 -i -pe "BEGIN{\$block=shift; \$end=shift; \$section=shift} s/\\Q\$block\\E.*?\\Q\$end\\E/\$section/s" "$block" "$end" "$section" "$readme" 2>/dev/null || {
-    # fallback via ed-like
-    # Recreate manually: remove old block lines, append new
-    tmp=$(mktemp)
-    awk -v blk="$block" -v end="$end" '
-      $0==blk {p=1; print; next}
-      $0==end {p=0; print; next}
-      p==1 {next}
-      {print}
-    ' "$readme" > "$tmp" || true
-    # If still contains block markers, replace content between them
-    if grep -q "$block" "$tmp"; then
-      # Use python for reliable multiline
-      python3 - "$tmp" "$section" "$block" "$end" <<'PY'
-import sys, pathlib
-tmp, section, blk, end = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
-text = pathlib.Path(tmp).read_text()
-import re
-pattern = re.compile(re.escape(blk) + ".*?" + re.escape(end), re.DOTALL)
-new = re.sub(pattern, section.strip(), text)
-pathlib.Path(tmp).write_text(new)
+# Single deterministic Python pass: replaces any existing block (and a
+# previously generated heading) or inserts below Acknowledgements, keeping
+# "## Contributors" above the avatars and clean spacing around it.
+python3 - "$readme" "$avatars" <<'PY'
+import pathlib, re, sys
+
+readme, avatars = pathlib.Path(sys.argv[1]), sys.argv[2]
+text = readme.read_text()
+blk, end = "<!-- CONTRIBUTORS -->", "<!-- /CONTRIBUTORS -->"
+section = (
+    "## Contributors\n\n"
+    + blk + '\n<p align="left">\n  ' + avatars + "\n</p>\n" + end
+)
+pat = re.compile(
+    r"\n*(?:## Contributors\n+)?"
+    + re.escape(blk) + r".*?" + re.escape(end) + r"\n*",
+    re.DOTALL,
+)
+if pat.search(text):
+    text = pat.sub(lambda _m: "\n\n" + section + "\n\n", text, count=1)
+else:
+    m = re.search(r"^(\(c\) .*)$", text, re.MULTILINE)
+    if m:
+        text = text[: m.start()] + section + "\n\n" + text[m.start():]
+    else:
+        text = text.rstrip("\n") + "\n\n" + section + "\n"
+text = re.sub(r"\n{3,}", "\n\n", text)
+if not text.endswith("\n"):
+    text += "\n"
+readme.write_text(text)
 PY
-    fi
-    cat "$tmp" > "$readme"
-    rm -f "$tmp"
-  }
-  # Ensure section is correctly placed if perl failed to fully replace
-  if ! grep -q "github.com/${usernames[0]}.png" "$readme"; then
-    # fallback append
-    printf "%s\n" "$section" >> "$readme"
-  fi
-else
-  # No existing block — append below Acknowledgements (or at end before copyright)
-  # Find Acknowledgements section and append after it, else append at end
-  if grep -q "## Acknowledgements" "$readme"; then
-    # Insert after acknowledgements list, before the (c) line
-    # Use awk to insert after last acknowledgements bullet
-    tmp=$(mktemp)
-    awk -v sec="$section" '
-      BEGIN { inserted=0 }
-      /^\(c\) 2026/ && !inserted { print sec; print ""; inserted=1 }
-      { print }
-      END { if (!inserted) print sec }
-    ' "$readme" > "$tmp" && mv "$tmp" "$readme"
-    # If (c) pattern not found, just append
-    if ! grep -q "$block" "$readme"; then
-      printf "%s\n" "$section" >> "$readme"
-    fi
-  else
-    printf "%s\n" "$section" >> "$readme"
-  fi
-fi
 
 # Also ensure old CONTRIBUTORS.md is removed or left deprecated note
 if [[ -f "$repo_root/CONTRIBUTORS.md" ]]; then
-  # Keep file but mark deprecated, or remove if workflow will stop using it
-  # We leave removal to workflow; just note
   echo "Note: CONTRIBUTORS.md is deprecated — contributors now in README.md" >&2
 fi
 

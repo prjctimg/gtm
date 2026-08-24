@@ -4,12 +4,12 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash
 #   curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash -s -- --nightly
-#   curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash -s -- --stable --version v0.2.4
+#   curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash -s -- --stable --version v0.2.5
 #
 # Options:
 #   --stable   Install latest stable release (default)
 #   --nightly  Install nightly pre-release
-#   --version  Pin to specific tag (e.g. v0.2.4 or 0.2.4)
+#   --version  Pin to specific tag (e.g. v0.2.5 or 0.2.5)
 #   --prefix   Prefix for tarball installs (default: $HOME/.local, ignored for .deb)
 #   --yes      Non-interactive (passed to apt for .deb)
 #
@@ -241,20 +241,27 @@ if [ "$USE_DEB" = 1 ]; then
 fi
 
 # ── Tarball installation ────────────────────────────────────────────
-# Ensure URLs match release assets: gtm-{platform}.tar.gz inside gtm-{platform}/ tree
-TARBALL_URL="https://github.com/${REPO}/releases/download/${TAG}/gtm-${PLATFORM}.tar.gz"
-TARBALL="${TMPDIR}/gtm-${PLATFORM}.tar.gz"
+# Asset names per release workflow: macOS/Android/Alpine use
+# gtm-{platform}.tar.gz; Debian 12 glibc builds are labelled explicitly as
+# gtm-debian-12-{x86_64,aarch64}.tar.gz (works on any glibc >= 2.36 distro).
+ASSET_PLATFORM="$PLATFORM"
+if [ "$OS" = "linux" ] && [ "$DEB_ID" != "alpine" ]; then
+  ASSET_PLATFORM="debian-12-${ARCH}"
+fi
+
+TARBALL_URL="https://github.com/${REPO}/releases/download/${TAG}/gtm-${ASSET_PLATFORM}.tar.gz"
+TARBALL="${TMPDIR}/gtm-${ASSET_PLATFORM}.tar.gz"
 
 info "Downloading: ${TARBALL_URL}"
 if ! curl -#fL "$TARBALL_URL" -o "$TARBALL"; then
-  die "Failed to download ${TARBALL_URL} (platform ${PLATFORM} may not have a release for ${TAG})"
+  die "Failed to download ${TARBALL_URL} (platform ${ASSET_PLATFORM} may not have a release for ${TAG})"
 fi
 
 info "Extracting..."
 tar xzf "$TARBALL" -C "$TMPDIR"
 
-# Layout differs for desktop vs android: both have gtm-{platform}/ with bin/man/completions
-SRC="${TMPDIR}/gtm-${PLATFORM}"
+# Layout differs for desktop vs android: both have gtm-{asset}/ with bin/man/completions
+SRC="${TMPDIR}/gtm-${ASSET_PLATFORM}"
 if [ ! -d "$SRC" ]; then
   # Fallback: maybe archive extracts without wrapper dir
   SRC="$TMPDIR"

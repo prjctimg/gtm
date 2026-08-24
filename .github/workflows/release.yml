@@ -4,8 +4,8 @@
 #
 # Targets:
 #
-#   x86_64-linux          Debian 12 container (glibc 2.36) → tar.gz + deb + rpm + Arch pkg
-#   aarch64-linux         Debian 12 container (glibc 2.36) → tar.gz + deb + rpm + Arch pkg
+#   x86_64-linux          Debian 12 container (glibc 2.36) → gtm-debian-12-x86_64.tar.gz + deb + rpm + Arch pkg
+#   aarch64-linux         Debian 12 container (glibc 2.36) → gtm-debian-12-aarch64.tar.gz + deb + rpm + Arch pkg
 #   aarch64-darwin        macOS runner                     → tar.gz
 #   aarch64-android       Ubuntu runner + cargo-ndk        → tar.gz + Termux deb
 #   x86_64-linux-musl     Alpine 3.22 container (musl)      → tar.gz + apk
@@ -24,8 +24,10 @@
 #     │         1. cargo build --release (cargo-ndk for Android; native musl for Alpine)
 #     │         2. Generate manpages (pandoc) + completions (release-gen)
 #     │         3. Assemble a complete per-target archive:
-#     │            gtm-{platform}.tar.gz  (bin/ man/ completions/ systemd/
-#     │                                    desktop/ icons/ LICENSE)
+#     │            gtm-{platform}.tar.gz for macOS/Alpine/Android,
+#     │            gtm-debian-12-{x86_64,aarch64}.tar.gz for the Debian 12
+#     │            glibc builds (bin/ man/ completions/ systemd/
+#     │            desktop/ icons/ LICENSE)
 #     │         4. Build native packages from the staged tree:
 #     │            .deb (cargo-deb, Linux), .rpm (rpmbuild, Linux),
 #     │            .pkg.tar.zst (Arch, Linux), .apk (Alpine)
@@ -301,13 +303,21 @@ jobs:
         run: cargo run --release --bin release-gen completions artifacts
 
       # ── Complete per-target archive (bin + man + completions + service) ──
+      # Debian 12 glibc builds are labelled explicitly in release assets
+      # (gtm-debian-12-x86_64 / gtm-debian-12-aarch64) so they are never
+      # confused with the musl or Android builds of the same architecture.
       - name: Package complete archive (desktop)
         if: matrix.family == 'debian' || matrix.family == 'macos'
         shell: bash
         run: |
           set -euo pipefail
           platform="${{ matrix.platform }}"
-          root="gtm-${platform}"
+          if [[ "${{ matrix.family }}" == "debian" ]]; then
+            arch="${platform%-linux}"
+            root="gtm-debian-12-${arch}"
+          else
+            root="gtm-${platform}"
+          fi
           mkdir -p release-assets \
             "$root/bin" "$root/man/man1" "$root/completions" \
             "$root/systemd" "$root/desktop" "$root/icons"
@@ -319,7 +329,7 @@ jobs:
           cp dist/gtm.desktop   "$root/desktop/"
           cp assets/gtm.svg     "$root/icons/"
           cp LICENSE            "$root/"
-          tar czf "release-assets/gtm-${platform}.tar.gz" "$root"
+          tar czf "release-assets/${root}.tar.gz" "$root"
 
       - name: Package complete archive (Alpine musl)
         if: matrix.family == 'alpine'

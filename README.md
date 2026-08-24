@@ -45,11 +45,7 @@ curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | b
 curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash -s -- --nightly
 ```
 
-The installer auto-detects your platform (Linux x86_64 / aarch64, macOS, Android/Termux, or Alpine musl) and on Debian 12 picks the matching `glibc 2.36` build. On Debian/Ubuntu it installs the `.deb` non-interactively (`apt-get install -y`); otherwise it extracts the `gtm-{platform}.tar.gz` to `$HOME/.local` (override with `--prefix`).
-
-### GitHub Release
-
-Grab one from the [releases page](https://github.com/prjctimg/gtm.rs/releases/latest).
+Or grab a binary/archive [releases page](https://github.com/prjctimg/gtm.rs/releases/latest).
 
 ### Build from Source
 
@@ -67,29 +63,21 @@ pkg install rust clang pkg-config pulseaudio
 cargo build --release --no-default-features --features pulseaudio
 ```
 
-No NDK is required on-device. For cross-compiling from Linux, use `make termux`
-(requires `cargo-ndk` + Android NDK r27b); it injects the `aarch64-linux-android27-clang`
-linker automatically. See `CONTRIBUTING.md` for details.
-
 ## Spotify
 
-Requires **Spotify Premium** for playback control. gtm.rs uses an OAuth PKCE flow that listens on `http://127.0.0.1:8990/login`.
+> [!note]
+>
+> Requires **Spotify Premium** for playback control. gtm.rs uses an OAuth PKCE flow that listens on `http://127.0.0.1:8990/login`.
+>
 
-1. Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) → **Create app**
+1. Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) → **Create app** (if you don't have one already).
 2. Add **Redirect URI**: `http://127.0.0.1:8990/login` (must match exactly, including `/login`)
 3. Copy the **Client ID** → in the TUI go to `Settings → Spotify → Link` and paste it, or run `gtm --cli spotify connect <token>`. Verify with `gtm --cli spotify status` and `gtm --cli spotify sync` to pull playlists.
 
 First launch opens your browser for authorization (no client secret needed) and the daemon exchanges the code on port `8990` (5 min timeout).
 
-## Comparison
-
-| | gtm.rs | cmus | mpd + ncmpcpp | spotify-tui | mopidy |
-|---|---|---|---|---|---|
-| Background daemon | yes | no | yes | no | yes |
-| Local files + YouTube/Spotify in one player | yes | no | no | spotify only | addons |
-| Equalizer | 16 presets, 15 bands | no | via mpd | no | via addons |
-| Terminal UI | TUI + CLI | TUI | TUI | TUI | client needed |
-| Inline cover art | yes | no | no | no | no |
+> [!note]
+> Running Spotify search for the first time from the TUI also triggers an input field to paste the token.
 
 ## Screenshots
 
@@ -127,14 +115,13 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions & the crate layout
 - [Myx](https://github.com/HaseebKhalid1507/Myx) — lean Rust TUI Spotify player
 - [spotify-player](https://github.com/aome510/spotify-player)  (OAuth PKCE flow)
 
-
+## Contributors
 
 <!-- CONTRIBUTORS -->
 <p align="left">
   <a href="https://github.com/iseeheaven"><img src="https://github.com/iseeheaven.png?size=80" width="50" height="50" style="border-radius:50%;margin:4px;" alt="iseeheaven"/></a> <a href="https://github.com/prjctimg"><img src="https://github.com/prjctimg.png?size=80" width="50" height="50" style="border-radius:50%;margin:4px;" alt="prjctimg"/></a> <a href="https://github.com/skchr"><img src="https://github.com/skchr.png?size=80" width="50" height="50" style="border-radius:50%;margin:4px;" alt="skchr"/></a>
 </p>
 <!-- /CONTRIBUTORS -->
-
 
 (c) 2026, [prjctimg](https://prjctimg.me)
 

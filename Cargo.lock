@@ -1890,7 +1890,7 @@ dependencies = [
 
 [[package]]
 name = "gtm"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "base64",
  "clap",
@@ -1914,7 +1914,7 @@ dependencies = [
 
 [[package]]
 name = "gtm-audio"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "fundsp",
  "gtm-core",
@@ -1931,7 +1931,7 @@ dependencies = [
 
 [[package]]
 name = "gtm-core"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "bincode",
  "chrono",
@@ -1948,7 +1948,7 @@ dependencies = [
 
 [[package]]
 name = "gtm-mpris"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "gtm-core",
  "serde",
@@ -1959,7 +1959,7 @@ dependencies = [
 
 [[package]]
 name = "gtmd"
-version = "0.2.4"
+version = "0.2.5"
 dependencies = [
  "base64",
  "bincode",
