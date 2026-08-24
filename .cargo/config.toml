@@ -1,12 +1,13 @@
-# Android NDK linker configuration for cross-compilation.
-# These are used by cargo-ndk and for non-NDK-aware tooling.
+# Android cross-compilation: `cargo-ndk` injects the correct NDK linker
+# (e.g. aarch64-linux-android27-clang) via CARGO_TARGET_*_LINKER, so no
+# explicit `linker` entry is needed here. Keeping these entries would break
+# native Termux builds where the host triple is aarch64-linux-android and
+# build scripts would try to invoke the NDK wrapper (see
+# https://github.com/prjctimg/gtm.rs/issues).
+# For non-cargo-ndk cross builds, export manually:
+#   export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=aarch64-linux-android27-clang
+#   export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=armv7a-linux-androideabi27-clang
 # API level 27 = Android 8.1 (minimum for AAudio support).
-
-[target.aarch64-linux-android]
-linker = "aarch64-linux-android27-clang"
-
-[target.armv7-linux-androideabi]
-linker = "armv7a-linux-androideabi27-clang"
 
 # Native Linux builds: use mold via gcc (no clang required).
 [target.aarch64-unknown-linux-gnu]

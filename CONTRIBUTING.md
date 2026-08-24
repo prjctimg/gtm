@@ -17,6 +17,37 @@ cargo build --release
 sudo make install
 ```
 
+### Termux (native build on-device)
+
+On Termux the host triple is `aarch64-linux-android`. Prior to this fix
+`.cargo/config.toml` forced the NDK wrapper `aarch64-linux-android27-clang`,
+which breaks build scripts (`num-traits`, `proc-macro2`, etc.). The config now
+relies on `cargo-ndk` for cross builds; native builds use Termux's `clang`
+directly. No NDK is required on-device.
+
+```bash
+pkg install rust clang pkg-config pulseaudio
+# optional: termux-setup-storage for /sdcard/Music access
+cargo build --release --no-default-features --features pulseaudio
+# or cargo build --release for the default (no PulseAudio) build
+```
+
+Cross-compiling from Linux still uses `cargo-ndk` (see `make termux`):
+
+```bash
+cargo install cargo-ndk
+# NDK r27b via nttld/setup-ndk@v1 or $ANDROID_NDK_HOME
+make termux          # CARGO_TARGET_*_LINKER is injected by cargo-ndk
+make termux-elf
+```
+
+For plain `cargo build --target aarch64-linux-android` without `cargo-ndk`,
+export the linker manually:
+
+```bash
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=aarch64-linux-android27-clang
+```
+
 To install only the client (for example from a git checkout), the TUI can be
 installed directly:
 

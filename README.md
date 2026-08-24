@@ -116,6 +116,17 @@ cargo build --release
 sudo make install
 ```
 
+#### Termux (native, on-device)
+
+```bash
+pkg install rust clang pkg-config pulseaudio
+cargo build --release --no-default-features --features pulseaudio
+```
+
+No NDK is required on-device. For cross-compiling from Linux, use `make termux`
+(requires `cargo-ndk` + Android NDK r27b); it injects the `aarch64-linux-android27-clang`
+linker automatically. See `CONTRIBUTING.md` for details.
+
 ## Screenshots
 
 <img src="assets/screenshots/command-palette.png" alt="gtm command palette" width="640">
