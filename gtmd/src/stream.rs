@@ -21,14 +21,14 @@ use librespot_playback::mixer::VolumeGetter;
 use librespot_playback::player::{Player, PlayerEvent};
 use tracing::info;
 
-//! A single librespot [`Session`] + [`Player`] pair is created lazily on the
-//! first streamed track and reused afterwards. Decoded audio is pushed by a
-//! custom librespot `Sink` through a bounded std channel; on the rodio side a
-//! [`PcmStreamSource`] pulls from that channel, feeds the spectrum analyzer
-//! used for visualizer levels, and implements `rodio::Source` so it can be
-//! handed to the existing gtm-audio mixer chain (`load_active_decoded`) —
-//! EQ, reverb, volume, and output routing all behave exactly like local
-//! files.
+// A single librespot [`Session`] + [`Player`] pair is created lazily on the
+// first streamed track and reused afterwards. Decoded audio is pushed by a
+// custom librespot `Sink` through a bounded std channel; on the rodio side a
+// [`PcmStreamSource`] pulls from that channel, feeds the spectrum analyzer
+// used for visualizer levels, and implements `rodio::Source` so it can be
+// handed to the existing gtm-audio mixer chain (`load_active_decoded`) —
+// EQ, reverb, volume, and output routing all behave exactly like local
+// files.
 
 
 

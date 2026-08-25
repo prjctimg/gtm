@@ -90,7 +90,7 @@ impl AudioVisualizer {
             return;
         }
         let now = Instant::now();
-        let dt = now.duration_since(self.last_tick).as_secs_f64();
+        let dt = now.duration_since(self.last_tick).as_secs_f64().min(0.1);
         self.last_tick = now;
 
         let num_bars = width.max(4) as usize;
@@ -113,20 +113,18 @@ impl AudioVisualizer {
                 *target = level.clamp(0.0, 1.0);
             }
         } else {
-            // Idle: a slow traveling wave keeps the visualizer alive when
-            // nothing plays instead of collapsing to a frozen flat line.
             let denom = (num_bars - 1).max(1) as f64;
             for (i, target) in self.target_bars.iter_mut().enumerate() {
                 let phase = self.spectrum_offset + i as f64 * 0.45;
                 let wave = 0.5 + 0.5 * phase.sin();
+                let jitter = (self.spectrum_offset * 3.7 + i as f64 * 1.3).sin() * 0.02;
                 let edge = (i as f64 / denom * std::f64::consts::PI).sin().max(0.15);
-                *target = ((0.10 + 0.12 * wave) * edge) as f32;
+                *target = ((0.10 + 0.12 * wave + jitter) * edge) as f32;
             }
         }
 
-        // Exponential smoothing: faster attack, slower decay for natural feel
-        let attack = 0.4;
-        let decay = if is_playing { 0.15 } else { 0.8 };
+        let attack = 0.65;
+        let decay = if is_playing { 0.25 } else { 0.8 };
         for (bar, target) in self.bars.iter_mut().zip(self.target_bars.iter()) {
             let diff = target - *bar;
             let rate = if diff > 0.0 { attack } else { decay };

@@ -661,21 +661,65 @@ impl Render {
                 let cover_h = avail_h.min(12);
                 let cover_w = cover_h * 2;
 
-                if inner.width >= cover_w + 16 && avail_h >= 5 {
-                    let hchunks = Layout::default()
-                        .direction(Direction::Horizontal)
-                        .constraints([
-                            Constraint::Length(cover_w),
-                            Constraint::Length(2),
-                            Constraint::Min(0),
-                        ])
-                        .split(inner);
+                let display_title = if track.title.is_empty() {
+                    std::path::Path::new(&track.path)
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                } else {
+                    track.title.clone()
+                };
+                let display_artist = if track.artist.is_empty() {
+                    " "
+                } else {
+                    &track.artist
+                };
+                let has_album = !track.album.is_empty();
 
+                // Progress: 1 row (available when dur > 0)
+                let dur = if app.state.duration > 0.0 {
+                    app.state.duration as u64
+                } else {
+                    track.duration as u64
+                };
+                let has_progress = dur > 0;
+
+                // Cover (centered), then below: title, artist, [album], progress
+                let mut vconstraints = vec![];
+
+                if inner.width >= cover_w && avail_h >= cover_h + 2 {
+                    let top_pad = (avail_h.saturating_sub(cover_h).saturating_sub(1)) / 2;
+                    vconstraints.push(Constraint::Length(top_pad));
+                    vconstraints.push(Constraint::Length(cover_h));
+                } else {
+                    vconstraints.push(Constraint::Length(0));
+                    vconstraints.push(Constraint::Length(0));
+                }
+                vconstraints.push(Constraint::Length(1)); // title
+                vconstraints.push(Constraint::Length(1)); // artist
+                if has_album {
+                    vconstraints.push(Constraint::Length(1)); // album
+                }
+                if has_progress {
+                    vconstraints.push(Constraint::Length(1)); // progress
+                }
+                vconstraints.push(Constraint::Min(0));
+
+                let vchunks = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints(vconstraints)
+                    .split(inner);
+
+                let mut row = 0;
+
+                // Cover (centered horizontally)
+                let cover_row_h = vchunks[row].height;
+                if cover_row_h > 0 {
                     let cover_area = Rect {
-                        x: hchunks[0].x,
-                        y: hchunks[0].y + 1,
-                        width: cover_w.min(hchunks[0].width),
-                        height: cover_h.min(hchunks[0].height.saturating_sub(1)),
+                        x: vchunks[row].x + (vchunks[row].width.saturating_sub(cover_w)) / 2,
+                        y: vchunks[row].y,
+                        width: cover_w.min(vchunks[row].width),
+                        height: cover_h.min(cover_row_h),
                     };
                     Render::cover(
                         f,
@@ -684,113 +728,116 @@ impl Render {
                         app.np_cover.image.as_deref(),
                         app.theme.fg_dim,
                     );
-
-                    let info_area = hchunks[2];
-
-                    let display_title = if track.title.is_empty() {
-                        std::path::Path::new(&track.path)
-                            .file_stem()
-                            .map(|s| s.to_string_lossy().to_string())
-                            .unwrap_or_default()
-                    } else {
-                        track.title.clone()
-                    };
-                    let display_artist = if track.artist.is_empty() {
-                        " "
-                    } else {
-                        &track.artist
-                    };
-
-                    let has_album = !track.album.is_empty();
-                    let content_h: u16 = 3;
-                    let offset = cover_h.saturating_sub(content_h) / 2;
-                    let vchunks = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([
-                            Constraint::Length(offset),
-                            Constraint::Length(content_h),
-                            Constraint::Min(0),
-                        ])
-                        .split(info_area);
-                    let content_area = vchunks[1];
-
-                    let info_chunks = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([
-                            Constraint::Length(1),
-                            Constraint::Length(1),
-                            Constraint::Length(1),
-                        ])
-                        .split(content_area);
-
-                    let fav_prefix = if track.favourite { "\u{2665} " } else { "" };
-                    let title_text = format!("{}{}", fav_prefix, display_title);
-                    let title_avail = info_chunks[0].width as usize;
-                    let animated_title =
-                        scroll_text(&title_text, title_avail, app.np_title_scroll, true);
-                    let title_para = Paragraph::new(Line::from(vec![Span::styled(
-                        &animated_title,
-                        Style::default()
-                            .fg(app.theme.fg_bright)
-                            .add_modifier(Modifier::BOLD),
-                    )]));
-                    Render::evolving(f, info_chunks[0], title_para, "np", app, true);
-
-                    let artist_para = Paragraph::new(Line::from(vec![
-                        Span::styled("\u{1f3a4} ", Style::default().fg(app.theme.fg)),
-                        Span::styled(display_artist, Style::default().fg(app.theme.fg_bright)),
-                    ]));
-                    f.render_widget(artist_para, info_chunks[1]);
-
-                    if has_album {
-                        let album_para = Paragraph::new(Line::from(vec![
-                            Span::styled("\u{1f4bf} ", Style::default().fg(app.theme.fg)),
-                            Span::styled(&track.album, Style::default().fg(app.theme.fg_bright)),
-                        ]));
-                        f.render_widget(album_para, info_chunks[2]);
-                    }
+                }
+                row += 1;
+                let _cover_row = row - 1; // already counted
+                // skip cover placeholder row
+                if vchunks[row].height == 0 {
+                    row += 1;
                 } else {
-                    let display_title = if track.title.is_empty() {
-                        std::path::Path::new(&track.path)
-                            .file_stem()
-                            .map(|s| s.to_string_lossy().to_string())
-                            .unwrap_or_default()
-                    } else {
-                        track.title.clone()
-                    };
-                    let fav_prefix = if track.favourite { "\u{2665} " } else { "" };
-                    let title_text = format!("{}{}", fav_prefix, display_title);
-                    let title_avail = inner.width as usize;
-                    let animated_title =
-                        scroll_text(&title_text, title_avail, app.np_title_scroll, true);
-                    let title_para = Paragraph::new(Line::from(vec![Span::styled(
+                    row += 1;
+                }
+
+                // Title
+                let fav_prefix = if track.favourite { "\u{2665} " } else { "" };
+                let title_text = format!("{}{}", fav_prefix, display_title);
+                let title_avail = vchunks[row].width.saturating_sub(2) as usize;
+                let animated_title =
+                    scroll_text(&title_text, title_avail, app.np_title_scroll, true);
+                let title_para = Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        " ",
+                        Style::default(),
+                    ),
+                    Span::styled(
                         &animated_title,
                         Style::default()
                             .fg(app.theme.fg_bright)
                             .add_modifier(Modifier::BOLD),
-                    )]));
-                    let title_area = Rect {
-                        x: inner.x,
-                        y: inner.y,
-                        width: inner.width,
+                    ),
+                ]));
+                let title_area = Rect {
+                    x: vchunks[row].x + 1,
+                    y: vchunks[row].y,
+                    width: vchunks[row].width.saturating_sub(2),
+                    height: 1,
+                };
+                Render::evolving(f, title_area, title_para, "np", app, true);
+                row += 1;
+
+                // Artist
+                let artist_para = Paragraph::new(Line::from(vec![
+                    Span::styled(" ", Style::default()),
+                    Span::styled(
+                        "\u{1f3a4} ",
+                        Style::default().fg(app.theme.fg),
+                    ),
+                    Span::styled(
+                        display_artist,
+                        Style::default().fg(app.theme.fg_bright),
+                    ),
+                ]));
+                let artist_area = Rect {
+                    x: vchunks[row].x + 1,
+                    y: vchunks[row].y,
+                    width: vchunks[row].width.saturating_sub(2),
+                    height: 1,
+                };
+                f.render_widget(artist_para, artist_area);
+                row += 1;
+
+                // Album
+                if has_album {
+                    let album_para = Paragraph::new(Line::from(vec![
+                        Span::styled(" ", Style::default()),
+                        Span::styled(
+                            "\u{1f4bf} ",
+                            Style::default().fg(app.theme.fg),
+                        ),
+                        Span::styled(
+                            &track.album,
+                            Style::default().fg(app.theme.fg_bright),
+                        ),
+                    ]));
+                    let album_area = Rect {
+                        x: vchunks[row].x + 1,
+                        y: vchunks[row].y,
+                        width: vchunks[row].width.saturating_sub(2),
                         height: 1,
                     };
-                    Render::evolving(f, title_area, title_para, "np", app, true);
+                    f.render_widget(album_para, album_area);
+                    row += 1;
+                }
 
-                    let row_offset = 1u16;
-                    if !track.album.is_empty() {
-                        let album_para = Paragraph::new(Line::from(vec![
-                            Span::styled("\u{1f4bf} ", Style::default().fg(app.theme.fg)),
-                            Span::styled(&track.album, Style::default().fg(app.theme.fg_bright)),
-                        ]));
-                        let album_area = Rect {
-                            x: inner.x,
-                            y: inner.y + row_offset,
-                            width: inner.width,
-                            height: 1,
-                        };
-                        f.render_widget(album_para, album_area);
-                    }
+                // Progress bar + time
+                if has_progress {
+                    let pos = app.display_position as u64;
+                    let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
+                    let prog_area = Rect {
+                        x: vchunks[row].x + 1,
+                        y: vchunks[row].y,
+                        width: vchunks[row].width.saturating_sub(2),
+                        height: 1,
+                    };
+                    let bar_w = (prog_area.width as usize).saturating_sub(12).max(4);
+                    let progress_str =
+                        crate::ui::Render::progress_variant(ratio, bar_w, app);
+                    let time_str = format!(
+                        " {} / {}",
+                        crate::footer::format_duration(pos),
+                        crate::footer::format_duration(dur)
+                    );
+                    let prog_para = Paragraph::new(Line::from(vec![
+                        Span::styled(
+                            progress_str,
+                            Style::default().fg(app.theme.secondary_accent),
+                        ),
+                        Span::styled(
+                            time_str,
+                            Style::default().fg(app.theme.fg_dim),
+                        ),
+                    ]));
+                    f.render_widget(prog_para, prog_area);
                 }
             } else {
                 let inner = np_inner;
@@ -2278,17 +2325,25 @@ impl Pickers {
                 let cursor_style = cursor_span_style(app);
 
                 if app.spotify_status.as_ref().is_none_or(|s| !s.linked) {
+                    let token_input = app.spotify_token_input.clone();
+                    let cursor_style = cursor_span_style(app);
                     let lines = vec![
                         Line::from(Span::styled(
-                            "No Spotify account linked.",
+                            "Paste your Spotify access token and press Enter:",
                             Style::default().fg(app.theme.fg),
                         )),
+                        Line::from(""),
+                        Line::from(vec![
+                            Span::styled(" > ", Style::default().fg(app.theme.fg_dim)),
+                            Span::styled(
+                                token_input.as_str(),
+                                Style::default().fg(app.theme.fg),
+                            ),
+                            Span::styled(" ", cursor_style.unwrap_or_default()),
+                        ]),
+                        Line::from(""),
                         Line::from(Span::styled(
-                            "Link one in Settings > Spotify > Link Account,",
-                            Style::default().fg(app.theme.fg_dim),
-                        )),
-                        Line::from(Span::styled(
-                            "then sync playlists to enable search.",
+                            "Get a token from https://developer.spotify.com/dashboard",
                             Style::default().fg(app.theme.fg_dim),
                         )),
                     ];

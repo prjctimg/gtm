@@ -26,7 +26,7 @@ use tokio::sync::mpsc;
 
 use base64::Engine;
 
-use crate::keymap::{KeyContext, KeyboardAction, default_keybindings};
+use crate::keymap::{KeyContext, KeyboardAction};
 use crate::picker::{PickerId, PickerManager, PickerSource};
 use crate::theme::{AppTheme, ThemeEntry};
 use crate::ui;
@@ -88,9 +88,10 @@ pub struct Prefs {
     reactive_theme: bool,
     #[serde(default)]
     progress_style: crate::progress::ProgressStyle,
-
     #[serde(default)]
     visualizer_preset: crate::visualizer::VisualizerPreset,
+    #[serde(default)]
+    keybindings: std::collections::HashMap<String, String>,
 }
 
 fn default_theme_name() -> String {
@@ -105,8 +106,8 @@ impl Default for Prefs {
             transparent_pickers: false,
             reactive_theme: false,
             progress_style: crate::progress::ProgressStyle::default(),
-
             visualizer_preset: crate::visualizer::VisualizerPreset::default(),
+            keybindings: std::collections::HashMap::new(),
         }
     }
 }
@@ -123,6 +124,57 @@ fn save_prefs(prefs: &Prefs) {
     if let Ok(s) = toml::to_string(prefs) {
         let _ = std::fs::write(prefs_path(), s);
     }
+}
+
+fn build_keybindings(
+    overrides: &std::collections::HashMap<String, String>,
+) -> crate::keymap::Keybindings {
+    use crate::keymap::{BoundCommand, KeyboardAction, KeyContext};
+
+    let mut defaults = crate::keymap::default_keybindings();
+
+    if overrides.is_empty() {
+        return defaults;
+    }
+
+    // Parse user overrides into (KeyEvent, action_name, contexts) triples.
+    let mut user_bindings: Vec<(crossterm::event::KeyEvent, String, Vec<KeyContext>)> = Vec::new();
+    for (key_str, action_str) in overrides {
+        let key = match crate::keymap::parse_key_event(key_str) {
+            Some(k) => k,
+            None => {
+                eprintln!("gtm: unknown key \"{}\" in config keybindings", key_str);
+                continue;
+            }
+        };
+        let action = match KeyboardAction::from_name(action_str) {
+            Some(a) => a,
+            None => {
+                eprintln!(
+                    "gtm: unknown action \"{}\" in config keybindings",
+                    action_str
+                );
+                continue;
+            }
+        };
+        // Bind in Normal + List context by default for most actions.
+        let contexts = vec![KeyContext::Normal, KeyContext::List];
+        user_bindings.push((key, action_str.clone(), contexts));
+        defaults.bindings.push((
+            key,
+            BoundCommand {
+                action,
+                contexts: vec![KeyContext::Normal, KeyContext::List],
+            },
+        ));
+    }
+
+    let warnings = crate::keymap::detect_clashes(&user_bindings);
+    for w in &warnings {
+        eprintln!("gtm: keybinding clash: {}", w);
+    }
+
+    defaults
 }
 
 pub const NUM_SETTINGS_CATEGORIES: usize = 5;
@@ -285,6 +337,7 @@ pub struct App {
     pub spotify_playlist_tracks_cache: Vec<SpotifyTrack>,
     pub spotify_search_results: Vec<(String, String, SpotifyTrack)>,
     pub spotify_link_input: String,
+    pub spotify_token_input: String,
     pub cookie_file: Option<String>,
     pub notifications: Vec<Notification>,
     pub notification_history: Vec<NotificationRecord>,
@@ -306,6 +359,7 @@ pub struct App {
     ipc_rx: mpsc::UnboundedReceiver<IpcResult>,
     ipc_tx: mpsc::UnboundedSender<IpcResult>,
     keybindings: crate::keymap::Keybindings,
+    prefs_keybindings: std::collections::HashMap<String, String>,
     pub theme_index: usize,
     pub list_scroll: usize,
     pub viewport_items: usize,
@@ -505,7 +559,11 @@ pub enum TuiCommand {
     QueueMove(u64, u64),
     QueueClear,
     YtSearch(String),
-    YtDownload(String),
+    YtDownload {
+        url: String,
+        title: Option<String>,
+        artist: Option<String>,
+    },
     YtResolve(String),
     SetEqPreset(EqPreset),
     Search(String),
@@ -593,10 +651,10 @@ impl App {
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
         let (high_pri_cmd_tx, high_pri_cmd_rx) = mpsc::unbounded_channel();
         let (ipc_tx, ipc_rx) = mpsc::unbounded_channel();
-        let keybindings = default_keybindings();
         let prefs = tokio::task::spawn_blocking(load_prefs)
             .await
             .unwrap_or_else(|_| Prefs::default());
+        let keybindings = build_keybindings(&prefs.keybindings);
         let initial_cursor = state.queue_cursor;
 
         // Build the merged theme + footer preset tables (built-ins overridden
@@ -644,6 +702,7 @@ impl App {
             spotify_playlist_tracks_cache: Vec::new(),
             spotify_search_results: Vec::new(),
             spotify_link_input: String::new(),
+            spotify_token_input: String::new(),
             cookie_file: None,
             notifications: Vec::new(),
             notification_history: Vec::new(),
@@ -677,6 +736,7 @@ impl App {
             ipc_rx,
             ipc_tx,
             keybindings,
+            prefs_keybindings: prefs.keybindings.clone(),
             theme_index,
             list_scroll: 0,
             viewport_items: 20,
@@ -759,9 +819,8 @@ impl App {
     }
 
     /// Check if config.toml was modified since last load; if so, re-parse
-    /// and apply hot-reloadable settings (theme, footer preset, transparent_bg,
-    /// progress_style, visualizer_preset). Non-hot settings (like keybindings)
-    /// are left for the next full restart.
+    /// and apply hot-reloadable settings (theme, transparent_bg,
+    /// progress_style, visualizer_preset, keybindings).
     fn check_config_reload(&mut self) {
         let path = prefs_path();
         let mtime = match std::fs::metadata(&path).and_then(|m| m.modified()) {
@@ -795,6 +854,10 @@ impl App {
 
         // Visualizer preset
         self.visualizer.preset = prefs.visualizer_preset;
+
+        // Keybindings
+        self.prefs_keybindings = prefs.keybindings.clone();
+        self.keybindings = build_keybindings(&prefs.keybindings);
     }
 
     pub fn cmd_tx(&self) -> mpsc::Sender<TuiCommand> {
@@ -820,6 +883,7 @@ impl App {
             reactive_theme: self.reactive_theme,
             progress_style: self.progress_style,
             visualizer_preset: self.visualizer.preset,
+            keybindings: self.prefs_keybindings.clone(),
         }
     }
 
@@ -1167,7 +1231,14 @@ impl App {
                             .lyrics()
                             .get(current_tid.unwrap_or(0), tpath.as_deref())
                             .await;
-                        let _ = ipc_tx.send(IpcResult::Lyrics(result.unwrap_or(None)));
+                        match result {
+                            Ok(lyrics) => {
+                                let _ = ipc_tx.send(IpcResult::Lyrics(lyrics));
+                            }
+                            Err(_) => {
+                                let _ = ipc_tx.send(IpcResult::Lyrics(None));
+                            }
+                        }
                     });
                 }
             }
@@ -1278,8 +1349,13 @@ impl App {
                     IpcResult::Playlists(playlists) => self.playlist_cache = playlists,
                     IpcResult::PlaylistTracks(tracks) => self.playlist_tracks_cache = tracks,
                     IpcResult::Queue(tracks, cursor) => {
+                        let cursor_changed = self.queue_cursor != cursor;
                         self.queue_cache = tracks.clone();
                         self.queue_cursor = cursor;
+                        if cursor_changed {
+                            self.queue_preview_cover = None;
+                            self.queue_preview_cover_stateful = None;
+                        }
                         if self.queue_cache.is_empty() && self.state.current_track.is_none() {
                             self.browse_detail = None;
                         }
@@ -2613,7 +2689,7 @@ impl App {
                     }
                 });
             }
-            TuiCommand::YtDownload(url) => {
+            TuiCommand::YtDownload { url, title, artist } => {
                 self.notify_titled(
                     "YouTube",
                     "Download started…",
@@ -2722,7 +2798,11 @@ impl App {
                                         .await;
                                 }
                             }
-                            format!("Downloaded: {}", filename)
+                            match (&title, &artist) {
+                                (Some(t), Some(a)) => format!("Downloaded: {} - {}", a, t),
+                                (Some(t), _) => format!("Downloaded: {}", t),
+                                _ => format!("Downloaded: {}", filename),
+                            }
                         }
                         Ok(o) => format!(
                             "Download failed: {}",
@@ -2866,10 +2946,21 @@ impl App {
                         client2.lyrics().get(track_id, track_path.as_deref()),
                     )
                     .await;
-                    let _ = ipc_tx2.send(IpcResult::Lyrics(match result {
-                        Ok(r) => r.unwrap_or(None),
-                        Err(_) => None,
-                    }));
+                    match result {
+                        Ok(Ok(lyrics)) => {
+                            let _ = ipc_tx2.send(IpcResult::Lyrics(lyrics));
+                        }
+                        Ok(Err(e)) => {
+                            let _ = ipc_tx2.send(IpcResult::Lyrics(None));
+                            let _ = ipc_tx2.send(IpcResult::Error(format!("Lyrics: {e}")));
+                        }
+                        Err(_) => {
+                            let _ = ipc_tx2.send(IpcResult::Lyrics(None));
+                            let _ = ipc_tx2.send(IpcResult::Error(
+                                "Lyrics fetch timed out".to_string(),
+                            ));
+                        }
+                    }
                 });
             }
             TuiCommand::SetSleepTimer(minutes) => {
@@ -4839,7 +4930,46 @@ impl App {
                 if let Some(top) = self.pickers.top() {
                     match top.id {
                         PickerId::SpotifySearch => {
-                            if self.spotify_search_results.is_empty() {
+                            let not_linked = self
+                                .spotify_status
+                                .as_ref()
+                                .is_none_or(|s| !s.linked);
+                            if not_linked {
+                                let token = self.spotify_token_input.trim().to_string();
+                                if token.is_empty() {
+                                    self.notify(
+                                        "Paste a Spotify access token first",
+                                        NotificationKind::Error,
+                                    );
+                                } else {
+                                    let c = self.client.clone();
+                                    let ipc_tx = self.ipc_tx.clone();
+                                    tokio::spawn(async move {
+                                        if let Err(e) = c.spotify().set_token(&token).await {
+                                            let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                "Spotify token failed: {e}"
+                                            )));
+                                            return;
+                                        }
+                                        let _ = ipc_tx.send(IpcResult::Notification(
+                                            "Spotify".to_string(),
+                                            "Token set. Syncing playlists…".to_string(),
+                                            NotificationKind::Info,
+                                        ));
+                                        let _ = c.spotify().sync().await;
+                                        let status = c.spotify().status().await;
+                                        let _ = ipc_tx.send(IpcResult::Notification(
+                                            "Spotify".to_string(),
+                                            "Sync complete".to_string(),
+                                            NotificationKind::Success,
+                                        ));
+                                        if let Ok(s) = status {
+                                            let _ = ipc_tx.send(IpcResult::SpotifyStatus(s));
+                                        }
+                                    });
+                                    self.spotify_token_input.clear();
+                                }
+                            } else if self.spotify_search_results.is_empty() {
                                 self.notify(
                                     "Type to search your synced Spotify playlists",
                                     NotificationKind::Info,
@@ -5528,8 +5658,13 @@ impl App {
                         .min(self.yt_results_cache.len().saturating_sub(1))
                 });
                 if !self.yt_results_cache.is_empty() {
-                    let url = self.yt_results_cache[idx].url.clone();
-                    let _ = tx.send(TuiCommand::YtDownload(url)).await;
+                    let result = &self.yt_results_cache[idx];
+                    let url = result.url.clone();
+                    let title = Some(result.title.clone());
+                    let artist = Some(result.channel.clone());
+                    let _ = tx
+                        .send(TuiCommand::YtDownload { url, title, artist })
+                        .await;
                 }
             }
             KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
@@ -5614,8 +5749,16 @@ impl App {
                             self.metadata.fields[self.metadata.field_idx].push(c);
                         }
                         PickerId::SpotifySearch => {
-                            top.query.push(c);
-                            self.search_spotify();
+                            if self
+                                .spotify_status
+                                .as_ref()
+                                .is_none_or(|s| !s.linked)
+                            {
+                                self.spotify_token_input.push(c);
+                            } else {
+                                top.query.push(c);
+                                self.search_spotify();
+                            }
                         }
                         PickerId::SpotifyLink => {
                             self.spotify_link_input.push(c);
@@ -5655,8 +5798,16 @@ impl App {
                             self.metadata.fields[self.metadata.field_idx].pop();
                         }
                         PickerId::SpotifySearch => {
-                            top.query.pop();
-                            self.search_spotify();
+                            if self
+                                .spotify_status
+                                .as_ref()
+                                .is_none_or(|s| !s.linked)
+                            {
+                                self.spotify_token_input.pop();
+                            } else {
+                                top.query.pop();
+                                self.search_spotify();
+                            }
                         }
                         PickerId::SpotifyLink => {
                             self.spotify_link_input.pop();
@@ -5684,8 +5835,16 @@ impl App {
         if let Some(top) = self.pickers.top_mut() {
             match top.id {
                 PickerId::SpotifySearch => {
-                    top.query.push_str(text);
-                    self.search_spotify();
+                    if self
+                        .spotify_status
+                        .as_ref()
+                        .is_none_or(|s| !s.linked)
+                    {
+                        self.spotify_token_input.push_str(text);
+                    } else {
+                        top.query.push_str(text);
+                        self.search_spotify();
+                    }
                 }
                 PickerId::SpotifyLink => {
                     self.spotify_link_input.push_str(text);

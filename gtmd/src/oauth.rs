@@ -236,7 +236,7 @@ mod tests {
         assert!(url.contains("client_id=test-client-id"));
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("response_type=code"));
-        assert!(url.contains(REDIRECT_URI));
+        assert!(url.contains(&urlencode(REDIRECT_URI)));
     }
 
     #[test]

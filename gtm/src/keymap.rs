@@ -612,6 +612,157 @@ pub fn default_keybindings() -> Keybindings {
     }
 }
 
+/// Parse a key string like `"Ctrl+q"`, `"Space"`, `"Alt+s"`, `"Enter"` into a
+/// `KeyEvent`.  Returns `None` on unrecognised tokens.
+pub fn parse_key_event(s: &str) -> Option<KeyEvent> {
+    let mut modifiers = KeyModifiers::NONE;
+    let mut code = None;
+    for part in s.split('+') {
+        let p = part.trim();
+        match p.to_lowercase().as_str() {
+            "ctrl" | "control" => modifiers |= KeyModifiers::CONTROL,
+            "alt" | "opt" | "option" => modifiers |= KeyModifiers::ALT,
+            "shift" => modifiers |= KeyModifiers::SHIFT,
+            "super" | "meta" | "cmd" | "command" => modifiers |= KeyModifiers::SUPER,
+            _ => {
+                let c = match p {
+                    "space" => KeyCode::Char(' '),
+                    "enter" | "return" => KeyCode::Enter,
+                    "tab" => KeyCode::Tab,
+                    "backtab" | "back-tab" | "shift+tab" => KeyCode::BackTab,
+                    "backspace" | "bs" => KeyCode::Backspace,
+                    "delete" | "del" => KeyCode::Delete,
+                    "esc" | "escape" => KeyCode::Esc,
+                    "home" => KeyCode::Home,
+                    "end" => KeyCode::End,
+                    "pageup" | "page_up" | "pgup" => KeyCode::PageUp,
+                    "pagedown" | "page_down" | "pgdn" => KeyCode::PageDown,
+                    "up" => KeyCode::Up,
+                    "down" => KeyCode::Down,
+                    "left" => KeyCode::Left,
+                    "right" => KeyCode::Right,
+                    "ins" | "insert" => KeyCode::Insert,
+                    "f1" => KeyCode::F(1),
+                    "f2" => KeyCode::F(2),
+                    "f3" => KeyCode::F(3),
+                    "f4" => KeyCode::F(4),
+                    "f5" => KeyCode::F(5),
+                    "f6" => KeyCode::F(6),
+                    "f7" => KeyCode::F(7),
+                    "f8" => KeyCode::F(8),
+                    "f9" => KeyCode::F(9),
+                    "f10" => KeyCode::F(10),
+                    "f11" => KeyCode::F(11),
+                    "f12" => KeyCode::F(12),
+                    _ if p.len() == 1 => KeyCode::Char(p.chars().next()?),
+                    _ => return None,
+                };
+                code = Some(c);
+            }
+        }
+    }
+    Some(KeyEvent::new(code?, modifiers))
+}
+
+impl KeyboardAction {
+    /// Map an action name (from config) to a `KeyboardAction`.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Some(match name {
+            "next_pane" => KeyboardAction::NextPane,
+            "prev_pane" => KeyboardAction::PrevPane,
+            "move_up" | "up" => KeyboardAction::MoveUp,
+            "move_down" | "down" => KeyboardAction::MoveDown,
+            "page_up" => KeyboardAction::PageUp,
+            "page_down" => KeyboardAction::PageDown,
+            "top" | "home" => KeyboardAction::Top,
+            "bottom" | "end" => KeyboardAction::Bottom,
+            "select" | "enter" => KeyboardAction::Select,
+            "delete" | "del" => KeyboardAction::Delete,
+            "enter_filter" | "filter" => KeyboardAction::EnterFilter,
+            "play_pause" | "toggle_playback" => KeyboardAction::PlayPause,
+            "next" => KeyboardAction::Next,
+            "prev" | "previous" => KeyboardAction::Prev,
+            "stop" => KeyboardAction::Stop,
+            "volume_up" | "vol_up" => KeyboardAction::VolumeUp,
+            "volume_down" | "vol_down" => KeyboardAction::VolumeDown,
+            "seek_forward" | "seek_fwd" => KeyboardAction::SeekForward,
+            "seek_backward" | "seek_back" => KeyboardAction::SeekBackward,
+            "toggle_shuffle" | "shuffle" => KeyboardAction::ToggleShuffle,
+            "cycle_repeat" | "repeat" => KeyboardAction::CycleRepeat,
+            "toggle_mute" | "mute" => KeyboardAction::ToggleMute,
+            "toggle_favourite" | "favourite" | "fav" => KeyboardAction::ToggleFavourite,
+            "clear_queue" => KeyboardAction::ClearQueue,
+            "back" => KeyboardAction::Back,
+            "focus_left" => KeyboardAction::FocusLeft,
+            "focus_right" => KeyboardAction::FocusRight,
+            "fetch_lyrics" | "lyrics" => KeyboardAction::FetchLyrics,
+            "toggle_multiselect" | "multiselect" => KeyboardAction::ToggleMultiselect,
+            "add_to_queue" | "enqueue" => KeyboardAction::AddToQueue,
+            "add_to_playlist" => KeyboardAction::AddToPlaylist,
+            "delete_from_list" => KeyboardAction::DeleteFromList,
+            "jump_to_end" | "jump_end" | "G" => KeyboardAction::JumpToEnd,
+            "edit_metadata" | "edit" => KeyboardAction::EditMetadata,
+            "quit" => KeyboardAction::Quit,
+            "quit_daemon" | "quit_all" => KeyboardAction::QuitDaemon,
+            "toggle_help" | "help" => KeyboardAction::ToggleHelp,
+            "hide_help_bar" => KeyboardAction::HideHelpBar,
+            "toggle_visualizer" | "visualizer" | "vis" => KeyboardAction::ToggleVisualizer,
+            "toggle_theme" | "theme" => KeyboardAction::ToggleTheme,
+            "check_health" | "health" => KeyboardAction::CheckHealth,
+            // Overlay openers
+            "open_queue" => KeyboardAction::OpenOverlay(PickerId::Queue),
+            "open_yt_search" | "open_youtube" => KeyboardAction::OpenOverlay(PickerId::YTSearch),
+            "open_search" | "open_library_search" => {
+                KeyboardAction::OpenOverlay(PickerId::SearchLibrary)
+            }
+            "open_settings" | "settings" => KeyboardAction::OpenOverlay(PickerId::Settings),
+            "open_spotify_search" | "open_spotify" => {
+                KeyboardAction::OpenOverlay(PickerId::SpotifySearch)
+            }
+            "open_notifications" | "notifications" => {
+                KeyboardAction::OpenOverlay(PickerId::Notifications)
+            }
+            "open_theme_picker" | "themes" => KeyboardAction::OpenOverlay(PickerId::ThemePicker),
+            "open_eq" | "open_equalizer" | "equalizer" => {
+                KeyboardAction::OpenOverlay(PickerId::Equalizer)
+            }
+            "open_progress_style" => KeyboardAction::OpenOverlay(PickerId::ProgressStyle),
+            "open_visualizer_preset" => KeyboardAction::OpenOverlay(PickerId::VisualizerPreset),
+            "open_about" | "about" => KeyboardAction::OpenOverlay(PickerId::About),
+            "open_sleep_timer" | "sleep_timer" => KeyboardAction::OpenOverlay(PickerId::SleepTimer),
+            "open_command_palette" | "commands" => {
+                KeyboardAction::OpenOverlay(PickerId::CommandPalette)
+            }
+            _ => return None,
+        })
+    }
+}
+
+/// Detect clashes in a set of user-defined bindings.
+///
+/// Returns a list of warning strings for each pair of bindings that share the
+/// same `KeyEvent` and have at least one overlapping `KeyContext`.
+pub fn detect_clashes(
+    bindings: &[(KeyEvent, String, Vec<KeyContext>)],
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for (i, (ki, action_i, ctx_i)) in bindings.iter().enumerate() {
+        for (kj, action_j, ctx_j) in &bindings[i + 1..] {
+            if key_matches(ki, kj) {
+                let overlap: Vec<_> = ctx_i.iter().filter(|c| ctx_j.contains(c)).collect();
+                if !overlap.is_empty() {
+                    let ctx_names: Vec<_> = overlap.iter().map(|c| format!("{:?}", c)).collect();
+                    warnings.push(format!(
+                        "\"{}\" and \"{}\" share key {:?} in [{}]",
+                        action_i, action_j, ki.code, ctx_names.join(", ")
+                    ));
+                }
+            }
+        }
+    }
+    warnings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
