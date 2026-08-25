@@ -1,13 +1,6 @@
-//! librespot-backed Spotify streaming.
-//!
-//! A single librespot [`Session`] + [`Player`] pair is created lazily on the
-//! first streamed track and reused afterwards. Decoded audio is pushed by a
-//! custom librespot `Sink` through a bounded std channel; on the rodio side a
-//! [`PcmStreamSource`] pulls from that channel, feeds the spectrum analyzer
-//! used for visualizer levels, and implements `rodio::Source` so it can be
-//! handed to the existing gtm-audio mixer chain (`load_active_decoded`) —
-//! EQ, reverb, volume, and output routing all behave exactly like local
-//! files.
+// Copyright (c) 2026
+// Author: prjctimg <prjctimg@outlook.com>
+// librespot-backed Spotify streaming.
 
 use std::collections::VecDeque;
 use std::path::Path;
@@ -27,6 +20,18 @@ use librespot_playback::decoder::AudioPacket;
 use librespot_playback::mixer::VolumeGetter;
 use librespot_playback::player::{Player, PlayerEvent};
 use tracing::info;
+
+//! A single librespot [`Session`] + [`Player`] pair is created lazily on the
+//! first streamed track and reused afterwards. Decoded audio is pushed by a
+//! custom librespot `Sink` through a bounded std channel; on the rodio side a
+//! [`PcmStreamSource`] pulls from that channel, feeds the spectrum analyzer
+//! used for visualizer levels, and implements `rodio::Source` so it can be
+//! handed to the existing gtm-audio mixer chain (`load_active_decoded`) —
+//! EQ, reverb, volume, and output routing all behave exactly like local
+//! files.
+
+
+
 
 /// Bounded channel capacity: each packet is ~23 ms of stereo audio, so this
 /// buffers roughly 1.5 s — enough to ride out network jitter without

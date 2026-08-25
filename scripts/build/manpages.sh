@@ -7,9 +7,6 @@ mkdir -p "$outdir/man"
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repo_root="$script_dir/../.."
 
-# Prefer gtm.spec/man/ when cloned alongside (CI or local dev),
-# falling back to local docs/man/ for offline builds. Spec pages win;
-# any manpage missing from the spec tree is filled in from docs/man/.
 spec_dir=""
 if [[ -d "$repo_root/../gtm.spec/man" ]]; then
   spec_dir="$repo_root/../gtm.spec/man"

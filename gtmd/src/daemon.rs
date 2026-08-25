@@ -40,7 +40,7 @@ use crate::library::Library;
 use crate::lyrics::LyricsManager;
 use crate::queue;
 use crate::spotify::SpotifyManager;
-use crate::spotify_stream::StreamManager;
+use crate::stream::StreamManager;
 use crate::youtube::YoutubeManager;
 
 type ClientId = u64;

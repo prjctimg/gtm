@@ -1,5 +1,3 @@
-# gtm build convenience targets
-#
 # Usage:
 #   make          – build all binaries (debug)
 #   make release  – build all binaries (release)
@@ -77,29 +75,22 @@ rpm: release
 		.
 	rpmbuild -tb /tmp/gtmd-0.2.3.tar.gz
 
-# ── Android / Termux targets ──────────────────────────────────────────
-
-# Cross-compile for Android aarch64 (requires cargo-ndk + Android NDK)
 termux:
 	@command -v cargo-ndk >/dev/null 2>&1 || { echo "cargo-ndk not found. Install with: cargo install cargo-ndk"; exit 1; }
 	CARGO_INCREMENTAL=0 cargo ndk -t arm64-v8a -p $(ANDROID_API) \
 		build --release --no-default-features --features pulseaudio
 
-# Strip unsupported ELF sections for Android
 termux-elf:
 	@command -v termux-elf-cleaner >/dev/null 2>&1 || \
 		{ echo "Install termux-elf-cleaner: pip install termux-elf-cleaner"; exit 1; }
 	termux-elf-cleaner target/aarch64-linux-android/release/gtmd
 	termux-elf-cleaner target/aarch64-linux-android/release/gtm
 
-# Full cross-compile + ELF clean pipeline
 termux-release: termux termux-elf
 
-# Clean Android build artifacts
 termux-clean:
 	rm -rf target/aarch64-linux-android/ target/armv7-linux-androideabi/
 
-# Build Termux .deb package (requires termux-create-package)
 deb-termux: termux termux-elf
 	@command -v termux-create-package >/dev/null 2>&1 || \
 		{ echo "termux-create-package not found. Install with: pip install termux-create-package"; exit 1; }

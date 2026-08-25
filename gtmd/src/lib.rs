@@ -14,7 +14,7 @@ pub mod lyrics;
 pub mod oauth;
 pub mod queue;
 pub mod spotify;
-pub mod spotify_stream;
+pub mod stream;
 pub mod tags;
 pub mod youtube;
 
