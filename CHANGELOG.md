@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.6] - 2026-08-27
+
+### Added
+
+### Changed
+
+### Fixed
+- crates.io publish now runs as part of the release pipeline, only after every build target succeeds.
+
+### Removed
+
 ## [0.1.6] – 2026-08-12
 
 ### Added
