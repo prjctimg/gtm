@@ -593,4 +593,53 @@ jobs:
             *.apk
             checksums.txt
 
+  # Publishes the workspace crates to crates.io in dependency order
+  # (gtm-core → gtm-audio → gtm-mpris → gtmd → gtm). Runs only after every
+  # target in the build matrix succeeded, and only for stable releases
+  # (nightly shares the manifest version and would hit duplicate-version
+  # errors). Already-published versions are skipped so re-running a release
+  # after a partial publish resumes cleanly.
+  crates-io:
+    needs: [tag, build]
+    if: needs.tag.outputs.skip != 'true' && needs.tag.outputs.nightly == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install build dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev
+
+      - name: Publish crates
+        run: |
+          set -euo pipefail
+          version="${{ needs.tag.outputs.version }}"
+
+          publish_crate() {
+            local crate="$1"
+            local attempt
+            for attempt in 1 2 3 4; do
+              local out
+              if out="$(cargo publish --locked -p "${crate}" 2>&1)"; then
+                echo "${crate} v${version} published"
+                return 0
+              fi
+              if grep -q "already exists" <<<"${out}"; then
+                echo "${crate} v${version}: already published, skipping"
+                return 0
+              fi
+              echo "${out}"
+              echo "Retrying ${crate} after index propagation delay (attempt ${attempt}/4)..."
+              sleep 20
+            done
+            return 1
+          }
+          for crate in gtm-core gtm-audio gtm-mpris gtmd gtm; do
+            echo "Publishing ${crate} v${version}..."
+            publish_crate "${crate}"
+          done
+
 
