@@ -987,11 +987,13 @@ impl Spotify {
     }
 
     /// Kick off an OAuth PKCE link flow: build the authorize URL, serve the
-    /// redirect on 127.0.0.1:8990 in a background task, and exchange +
-    /// persist the token when the browser round-trip completes.
+    /// redirect on the supplied local port in a background task, and exchange +
+    /// persist the token when the browser round-trip completes. `port` lets the
+    /// user reuse a redirect URI already registered in their Spotify dashboard.
     pub async fn oauth_start(
         inner: &Arc<DaemonInner>,
         client_id: &str,
+        port: u16,
     ) -> Result<DaemonRes, CoreError> {
         // Abort any previous pending flow so its listener socket is freed.
         if let Some(handle) = inner.oauth_task.lock().await.take() {
@@ -1002,7 +1004,10 @@ impl Spotify {
         if cid.is_empty() {
             return Err(CoreError::Daemon("empty spotify client id".into()));
         }
-        let flow = crate::oauth::OauthFlow::new(cid);
+        // Persist the client id in the OS keychain so future links can reuse it
+        // without the user pasting it again.
+        gtm_core::secret::set_secret(gtm_core::secret::SPOTIFY_CLIENT_ID_KEY, cid);
+        let flow = crate::oauth::OauthFlow::new(cid, port);
         let url = flow.authorize_url();
 
         let inner2 = Arc::clone(inner);
@@ -2677,8 +2682,8 @@ impl Daemon {
             }
             DaemonReq::LyricsSearch { artist, title } => Lyrics::search(inner, artist, title).await,
             DaemonReq::SpotifySetToken { token } => Spotify::set_token(inner, token).await,
-            DaemonReq::SpotifyOauthStart { client_id } => {
-                Spotify::oauth_start(inner, client_id).await
+            DaemonReq::SpotifyOauthStart { client_id, port } => {
+                Spotify::oauth_start(inner, client_id, *port).await
             }
             DaemonReq::SpotifyCancelOauth => Spotify::oauth_cancel(inner).await,
             DaemonReq::SpotifyClear => Spotify::clear(inner).await,
@@ -3452,11 +3457,13 @@ fn run_metadata_sync(
             if track.path != *only {
                 continue;
             }
-        } else if !crate::cleaner::title_is_unreliable(
+        } else if !crate::cleaner::tags_need_enrichment(
             stem,
             &track.title,
             &track.artist,
             &track.album,
+            &track.genre,
+            track.track_number.unwrap_or(0),
         ) {
             continue;
         }

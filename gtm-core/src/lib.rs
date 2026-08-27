@@ -10,6 +10,7 @@ pub mod global;
 pub mod ipc;
 pub mod log;
 pub mod paths;
+pub mod secret;
 pub mod spotify;
 pub mod state;
 pub mod track;

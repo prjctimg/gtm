@@ -18,6 +18,10 @@ DESTDIR ?=
 BINDIR ?= $(PREFIX)/bin
 MANDIR ?= $(PREFIX)/share/man
 COMPLETIONSDIR ?= $(PREFIX)/share/bash-completion/completions
+ZSH_COMPLETIONSDIR ?= $(PREFIX)/share/zsh/site-functions
+FISH_COMPLETIONSDIR ?= $(PREFIX)/share/fish/vendor_completions.d
+ELVISH_COMPLETIONSDIR ?= $(PREFIX)/share/elvish/completions
+POWERSHELL_COMPLETIONSDIR ?= $(PREFIX)/share/powershell/completions
 ANDROID_API ?= 27
 
 VERSION := $(shell cargo metadata --format-version=1 2>/dev/null | jq -r '.packages[] | select(.name=="gtmd") | .version' 2>/dev/null || echo "0.0.0")
@@ -55,6 +59,14 @@ install: release man completions
 	install -Dm 0644 artifacts/man/gtm.1      $(DESTDIR)$(MANDIR)/man1/gtm.1
 	install -Dm 0644 artifacts/completions/gtm.bash   $(DESTDIR)$(COMPLETIONSDIR)/gtm
 	install -Dm 0644 artifacts/completions/gtmd.bash  $(DESTDIR)$(COMPLETIONSDIR)/gtmd
+	install -Dm 0644 artifacts/completions/_gtm        $(DESTDIR)$(ZSH_COMPLETIONSDIR)/_gtm
+	install -Dm 0644 artifacts/completions/_gtmd       $(DESTDIR)$(ZSH_COMPLETIONSDIR)/_gtmd
+	install -Dm 0644 artifacts/completions/gtm.fish    $(DESTDIR)$(FISH_COMPLETIONSDIR)/gtm.fish
+	install -Dm 0644 artifacts/completions/gtmd.fish   $(DESTDIR)$(FISH_COMPLETIONSDIR)/gtmd.fish
+	install -Dm 0644 artifacts/completions/gtm.elv     $(DESTDIR)$(ELVISH_COMPLETIONSDIR)/gtm.elv
+	install -Dm 0644 artifacts/completions/gtmd.elv    $(DESTDIR)$(ELVISH_COMPLETIONSDIR)/gtmd.elv
+	install -Dm 0644 artifacts/completions/gtm.ps1     $(DESTDIR)$(POWERSHELL_COMPLETIONSDIR)/gtm.ps1
+	install -Dm 0644 artifacts/completions/gtmd.ps1    $(DESTDIR)$(POWERSHELL_COMPLETIONSDIR)/gtmd.ps1
 	install -Dm 0644 dist/gtmd.service $(DESTDIR)$(PREFIX)/lib/systemd/user/gtmd.service
 
 deb: release man completions

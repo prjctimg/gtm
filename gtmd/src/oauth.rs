@@ -17,9 +17,10 @@ use sha2::{Digest as _, Sha256};
 const SPOTIFY_AUTHORIZE_URL: &str = "https://accounts.spotify.com/authorize";
 const SPOTIFY_TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 
-/// Local redirect served by [`OauthFlow::wait_for_access_token`].
-pub const REDIRECT_URI: &str = "http://127.0.0.1:8990/login";
-const REDIRECT_ADDR: &str = "127.0.0.1:8990";
+/// Default local redirect port served by [`OauthFlow::wait_for_access_token`].
+pub const DEFAULT_OAUTH_PORT: u16 = 8990;
+/// Default redirect URI used when no port override is supplied.
+pub const DEFAULT_REDIRECT_URI: &str = "http://127.0.0.1:8990/login";
 
 /// Scopes required for playlist sync plus playback control.
 const OAUTH_SCOPES: &[&str] = &[
@@ -32,17 +33,28 @@ const OAUTH_SCOPES: &[&str] = &[
 ];
 
 /// One pending OAuth link flow. Create it, hand [`Self::authorize_url`] to
-/// the user, then await [`Self::wait_for_access_token`].
+/// the user, then await [`Self::wait_for_access_token`]. `port` selects the
+/// local callback port so users can reuse a redirect URI already registered
+/// in their Spotify dashboard.
 pub struct OauthFlow {
     client_id: String,
     pkce: Pkce,
+    redirect_uri: String,
+    redirect_addr: SocketAddr,
 }
 
 impl OauthFlow {
-    pub fn new(client_id: impl Into<String>) -> Self {
+    pub fn new(client_id: impl Into<String>, port: u16) -> Self {
+        let host = "127.0.0.1";
+        let redirect_uri = format!("http://{host}:{port}/login");
+        let redirect_addr = format!("{host}:{port}")
+            .parse()
+            .expect("valid loopback redirect address");
         Self {
             client_id: client_id.into(),
             pkce: Pkce::new_random(),
+            redirect_uri,
+            redirect_addr,
         }
     }
 
@@ -52,7 +64,7 @@ impl OauthFlow {
         let params = [
             ("response_type", "code"),
             ("client_id", self.client_id.as_str()),
-            ("redirect_uri", REDIRECT_URI),
+            ("redirect_uri", self.redirect_uri.as_str()),
             ("scope", scope.as_str()),
             ("code_challenge_method", "S256"),
             ("code_challenge", self.pkce.challenge.as_str()),
@@ -69,11 +81,14 @@ impl OauthFlow {
     /// Serve one redirect on the local callback port, exchange the code for
     /// an access token, and return it. Cancels itself after 5 minutes.
     pub async fn wait_for_access_token(&self) -> Result<String, String> {
-        let addr: SocketAddr = REDIRECT_ADDR
-            .parse()
-            .map_err(|e| format!("parse addr: {e}"))?;
-        let code = listen_for_auth_code(addr).await?;
-        exchange_code_for_token(&code, &self.client_id, &self.pkce.verifier).await
+        let code = listen_for_auth_code(self.redirect_addr).await?;
+        exchange_code_for_token(
+            &code,
+            &self.client_id,
+            &self.pkce.verifier,
+            &self.redirect_uri,
+        )
+        .await
     }
 }
 
@@ -182,6 +197,7 @@ async fn exchange_code_for_token(
     code: &str,
     client_id: &str,
     verifier: &str,
+    redirect_uri: &str,
 ) -> Result<String, String> {
     #[derive(serde::Deserialize)]
     struct TokenResponse {
@@ -191,7 +207,7 @@ async fn exchange_code_for_token(
     let params = [
         ("grant_type", "authorization_code"),
         ("code", code),
-        ("redirect_uri", REDIRECT_URI),
+        ("redirect_uri", redirect_uri),
         ("client_id", client_id),
         ("code_verifier", verifier),
     ];
@@ -225,18 +241,19 @@ mod tests {
 
     #[test]
     fn redirect_uri_uses_gtm_port() {
-        assert_eq!(REDIRECT_URI, "http://127.0.0.1:8990/login");
+        let flow = OauthFlow::new("test-client-id", DEFAULT_OAUTH_PORT);
+        assert_eq!(flow.redirect_uri, DEFAULT_REDIRECT_URI);
     }
 
     #[test]
     fn authorize_url_contains_pkce_params() {
-        let flow = OauthFlow::new("test-client-id");
+        let flow = OauthFlow::new("test-client-id", DEFAULT_OAUTH_PORT);
         let url = flow.authorize_url();
         assert!(url.starts_with(SPOTIFY_AUTHORIZE_URL));
         assert!(url.contains("client_id=test-client-id"));
         assert!(url.contains("code_challenge_method=S256"));
         assert!(url.contains("response_type=code"));
-        assert!(url.contains(&urlencode(REDIRECT_URI)));
+        assert!(url.contains(&urlencode(&flow.redirect_uri)));
     }
 
     #[test]
@@ -259,7 +276,7 @@ mod tests {
     async fn flow_serves_callback_and_exchanges() {
         // End-to-end against a stub token endpoint is out of scope here; just
         // verify the callback listener returns the code sent to the port.
-        let flow = OauthFlow::new("cid");
+        let flow = OauthFlow::new("cid", DEFAULT_OAUTH_PORT);
         let f = flow.wait_for_access_token();
         // Don't bind the real flow; only exercise URL/code helpers above.
         drop(f);

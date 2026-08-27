@@ -189,6 +189,13 @@ pub enum CliCommand {
 pub enum SpotifyAction {
     /// Link a Spotify account with an access token
     Connect { token: String },
+    /// Start the OAuth browser flow and wait for you to finish login
+    Login {
+        client_id: Option<String>,
+        /// Local redirect port (defaults to 8990 or $GTM_SPOTIFY_PORT)
+        #[clap(long)]
+        port: Option<u16>,
+    },
     /// Unlink the Spotify account
     Disconnect,
     /// Show Spotify connection status
@@ -795,6 +802,61 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         .await
                         .map_err(|e| e.to_string())?;
                     Ok(format_spotify_status(&st))
+                }
+                SpotifyAction::Login { client_id, port } => {
+                    let port = port
+                        .or_else(|| {
+                            std::env::var("GTM_SPOTIFY_PORT")
+                                .ok()
+                                .and_then(|v| v.parse().ok())
+                        })
+                        .unwrap_or(8990);
+                    // Resolve the client id: explicit arg > keychain > masked prompt
+                    // (so a locked keychain still lets the user log in).
+                    let client_id = match client_id.clone() {
+                        Some(c) => c,
+                        None => match gtm_core::secret::get_secret(
+                            gtm_core::secret::SPOTIFY_CLIENT_ID_KEY,
+                        ) {
+                            Some(c) => c,
+                            None => {
+                                use std::io::Write;
+                                print!("Spotify Client ID: ");
+                                let _ = std::io::stdout().flush();
+                                match rpassword::read_password() {
+                                    Ok(s) => s.trim().to_string(),
+                                    Err(_) => {
+                                        return Err("could not read client id from terminal".into());
+                                    }
+                                }
+                            }
+                        },
+                    };
+                    if client_id.trim().is_empty() {
+                        return Err("no Spotify client id provided".into());
+                    }
+                    gtm_core::secret::set_secret(
+                        gtm_core::secret::SPOTIFY_CLIENT_ID_KEY,
+                        &client_id,
+                    );
+                    let url = client
+                        .spotify()
+                        .oauth_start(&client_id, port)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    println!("Open this URL in your browser to authorize gtm:\n{url}\n");
+                    let _ = webbrowser::open(&url);
+                    println!("Waiting for you to finish login in your browser…");
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        match client.spotify().status().await {
+                            Ok(st) if st.linked => return Ok(format_spotify_status(&st)),
+                            Ok(_) if std::time::Instant::now() < deadline => continue,
+                            Ok(_) => return Err("timed out waiting for Spotify login".to_string()),
+                            Err(e) => return Err(e.to_string()),
+                        }
+                    }
                 }
                 SpotifyAction::Disconnect => {
                     let st = client.spotify().clear().await.map_err(|e| e.to_string())?;

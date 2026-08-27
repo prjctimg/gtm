@@ -8,8 +8,11 @@
 pub fn clean_youtube_title(title: &str) -> (Option<String>, String) {
     let mut result = title.to_string();
 
-    // Strip official media tags: (Official Audio), [Official Video], etc.
-    let official_tags = [
+    // Data-driven literal strips. Each pass removes every occurrence of the
+    // substring. Grouped by category; compound labels are listed before their
+    // shorter components so nothing is left half-stripped.
+    const LITERAL_TAGS: &[&str] = &[
+        // Official media tags
         "(Official Audio)",
         "(Official Music Video)",
         "(Official Video)",
@@ -25,48 +28,50 @@ pub fn clean_youtube_title(title: &str) -> (Option<String>, String) {
         "(Audio)",
         "(Video)",
         "(Music Video)",
+        // Quality tags
+        "[HD]",
+        "[4K]",
+        "[8K]",
+        "[1080p]",
+        "[720p]",
+        "[480p]",
+        "(HD)",
+        "(4K)",
+        "(8K)",
+        "(1080p)",
+        "(720p)",
+        "(480p)",
+        // Explicit / clean
+        "(Explicit)",
+        "(Clean)",
+        "[Explicit]",
+        "[Clean]",
     ];
-    for tag in &official_tags {
+    for tag in LITERAL_TAGS {
         result = result.replace(tag, "");
     }
 
-    // Strip quality tags
-    let quality_tags = [
-        "[HD]", "[4K]", "[8K]", "[1080p]", "[720p]", "[480p]", "(HD)", "(4K)", "(8K)", "(1080p)",
-        "(720p)", "(480p)",
+    // Generic filler words, longest-first so "Official Lyric Video" is removed
+    // before its "Official" component.
+    const FILLERS: &[&str] = &[
+        "Official Lyric Video",
+        "Official Music Video",
+        "Official Video",
+        "Official Audio",
+        "Lyric Video",
+        "Audio Only",
+        "With Lyrics",
+        "Official",
+        "Music",
     ];
-    for tag in &quality_tags {
-        result = result.replace(tag, "");
+    for filler in FILLERS {
+        result = result.replace(filler, "");
     }
-
-    // Strip explicit/clean tags
-    result = result.replace("(Explicit)", "");
-    result = result.replace("(Clean)", "");
-    result = result.replace("[Explicit]", "");
-    result = result.replace("[Clean]", "");
 
     // Strip year: (2024), [2024]
     result = strip_bracket_content_matching(&result, |s| {
         s.chars().all(|c| c.is_ascii_digit()) && s.len() == 4
     });
-
-    // Strip generic fillers (longest first so "Official Audio" wins over
-    // "Official").
-    let mut fillers = [
-        "Official",
-        "Music",
-        "Lyric Video",
-        "Audio Only",
-        "With Lyrics",
-        "Official Lyric Video",
-        "Official Music Video",
-        "Official Video",
-        "Official Audio",
-    ];
-    fillers.sort_by_key(|f| std::cmp::Reverse(f.len()));
-    for filler in &fillers {
-        result = result.replace(filler, "");
-    }
 
     // Strip topic channel prefix: "Artist - Topic - Title" → "Title"
     if let Some(pos) = result.find(" - Topic - ") {
@@ -265,6 +270,24 @@ pub fn title_is_unreliable(stem: &str, title: &str, artist: &str, album: &str) -
     title == stem || title == normalized.as_str() || title.eq_ignore_ascii_case(normalized.as_str())
 }
 
+/// True when a track should be sent through Deezer enrichment. Extends
+/// [`title_is_unreliable`] with the genre and track-number fields Deezer can
+/// backfill, so a track with a good title but missing genre / track number still
+/// gets enriched.
+pub fn tags_need_enrichment(
+    stem: &str,
+    title: &str,
+    artist: &str,
+    album: &str,
+    genre: &str,
+    track_number: i32,
+) -> bool {
+    if title_is_unreliable(stem, title, artist, album) {
+        return true;
+    }
+    genre.trim().is_empty() || track_number <= 0
+}
+
 /// True when a stored title still looks like a raw filename rather than
 /// parsed metadata: it keeps underscores, or matches the raw/normalized stem.
 /// Used to decide whether to re-derive the Deezer query from the filename.
@@ -365,6 +388,41 @@ mod tests {
     fn test_sanitize_text() {
         assert_eq!(sanitize_text("Line1\nLine2\r\n"), "Line1Line2");
         assert_eq!(sanitize_text("  padded  "), "padded");
+    }
+
+    #[test]
+    fn test_tags_need_enrichment() {
+        // Good title/artist/album but missing genre -> enrich.
+        assert!(tags_need_enrichment(
+            "Song",
+            "Clean Song",
+            "Artist",
+            "Album",
+            "",
+            0
+        ));
+        // Good title/artist/album and genre but missing track number -> enrich.
+        assert!(tags_need_enrichment(
+            "Song",
+            "Clean Song",
+            "Artist",
+            "Album",
+            "Pop",
+            0
+        ));
+        // Fully populated -> skip.
+        assert!(!tags_need_enrichment(
+            "Song",
+            "Clean Song",
+            "Artist",
+            "Album",
+            "Pop",
+            3
+        ));
+        // Raw stem title -> enrich regardless of genre.
+        assert!(tags_need_enrichment(
+            "Raw_Stem", "Raw_Stem", "Artist", "Album", "Pop", 3
+        ));
     }
 
     #[test]

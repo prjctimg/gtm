@@ -338,6 +338,13 @@ pub struct App {
     pub spotify_search_results: Vec<(String, String, SpotifyTrack)>,
     pub spotify_link_input: String,
     pub spotify_token_input: String,
+    /// True while the OAuth browser flow is pending; the SpotifyLink picker
+    /// shows a "waiting for you to finish login" state until linked.
+    pub spotify_oauth_pending: bool,
+    /// Local redirect port for the Spotify OAuth flow (editable in the picker).
+    pub spotify_oauth_port: String,
+    /// Active field in the SpotifyLink picker (0 = client id, 1 = port).
+    pub spotify_link_field: usize,
     pub cookie_file: Option<String>,
     pub notifications: Vec<Notification>,
     pub notification_history: Vec<NotificationRecord>,
@@ -481,7 +488,13 @@ enum IpcResult {
 fn try_open_browser(url: &str) {
     let url = url.to_string();
     tokio::spawn(async move {
-        for prog in ["xdg-open", "open"] {
+        // Prefer the OS default browser opener, which is cross-platform.
+        if webbrowser::open(&url).is_ok() {
+            return;
+        }
+        // Fallback to common launchers when the `webbrowser` crate can't
+        // resolve one (e.g. minimal containers / WSL).
+        for prog in ["xdg-open", "open", "start"] {
             match tokio::process::Command::new(prog)
                 .arg(&url)
                 .stdout(std::process::Stdio::null())
@@ -707,6 +720,9 @@ impl App {
             spotify_search_results: Vec::new(),
             spotify_link_input: String::new(),
             spotify_token_input: String::new(),
+            spotify_oauth_pending: false,
+            spotify_oauth_port: "8990".to_string(),
+            spotify_link_field: 0,
             cookie_file: None,
             notifications: Vec::new(),
             notification_history: Vec::new(),
@@ -1136,6 +1152,18 @@ impl App {
                             NotificationKind::Success,
                             false,
                         );
+                        // The OAuth browser flow finished: dismiss the
+                        // waiting picker if it's still open.
+                        if self.spotify_oauth_pending {
+                            self.spotify_oauth_pending = false;
+                            if self
+                                .pickers
+                                .top()
+                                .is_some_and(|o| o.id == PickerId::SpotifyLink)
+                            {
+                                self.close_top_picker_with_cleanup();
+                            }
+                        }
                     }
                     self.spotify_status = Some(status);
                 }
@@ -3216,6 +3244,19 @@ impl App {
                     if self
                         .pickers
                         .top()
+                        .is_some_and(|o| o.id == PickerId::SpotifyLink)
+                        && self.spotify_oauth_pending
+                    {
+                        // Cancel the pending OAuth browser flow.
+                        self.spotify_oauth_pending = false;
+                        let c = self.client.clone();
+                        tokio::spawn(async move {
+                            let _ = c.spotify().oauth_cancel().await;
+                        });
+                        self.close_top_picker_with_cleanup();
+                    } else if self
+                        .pickers
+                        .top()
                         .is_some_and(|o| o.id == PickerId::PlaylistSelect)
                         && self.playlist_creating
                     {
@@ -4048,6 +4089,18 @@ impl App {
     }
 
     async fn handle_picker_key(&mut self, key: event::KeyEvent) {
+        // While the OAuth browser flow is pending, the SpotifyLink picker is in
+        // a waiting state; ignore all key input except Esc (handled in
+        // handle_key) so the user can't mutate the now-irrelevant input.
+        if self.spotify_oauth_pending
+            && self
+                .pickers
+                .top()
+                .is_some_and(|o| o.id == PickerId::SpotifyLink)
+        {
+            return;
+        }
+
         let tx = self.cmd_tx();
 
         // Ctrl+D in SpotifySearch picker: download the selected track via YouTube
@@ -4723,6 +4776,13 @@ impl App {
                                 }
                                 3 => {
                                     self.spotify_link_input.clear();
+                                    self.spotify_oauth_port = "8990".to_string();
+                                    self.spotify_link_field = 0;
+                                    if let Some(cid) = gtm_core::secret::get_secret(
+                                        gtm_core::secret::SPOTIFY_CLIENT_ID_KEY,
+                                    ) {
+                                        self.spotify_link_input = cid;
+                                    }
                                     self.pickers.open(PickerId::SpotifyLink);
                                 }
                                 4 => {
@@ -4769,6 +4829,13 @@ impl App {
                                 }
                                 7 => {
                                     self.spotify_link_input.clear();
+                                    self.spotify_oauth_port = "8990".to_string();
+                                    self.spotify_link_field = 0;
+                                    if let Some(cid) = gtm_core::secret::get_secret(
+                                        gtm_core::secret::SPOTIFY_CLIENT_ID_KEY,
+                                    ) {
+                                        self.spotify_link_input = cid;
+                                    }
                                     self.pickers.open(PickerId::SpotifyLink);
                                 }
                                 _ => {}
@@ -5129,16 +5196,31 @@ impl App {
                             } else {
                                 client_id
                             };
+                            let port = self
+                                .spotify_oauth_port
+                                .trim()
+                                .parse::<u16>()
+                                .unwrap_or(8990);
+                            // Persist the client id so future links reuse it.
+                            gtm_core::secret::set_secret(
+                                gtm_core::secret::SPOTIFY_CLIENT_ID_KEY,
+                                &client_id,
+                            );
                             let c = self.client.clone();
                             let ipc_tx = self.ipc_tx.clone();
                             let notify_tx = self.ipc_tx.clone();
-                            self.pickers.close_top();
+                            self.spotify_link_input.clear();
+                            // Keep the picker open and show a waiting state until
+                            // the daemon reports the link completed.
+                            self.spotify_oauth_pending = true;
                             tokio::spawn(async move {
-                                match c.spotify().oauth_start(&client_id).await {
+                                match c.spotify().oauth_start(&client_id, port).await {
                                     Ok(url) => {
                                         let _ = ipc_tx.send(IpcResult::Notification(
                                             "Spotify".to_string(),
-                                            format!("Authorize gtm in your browser: {url}"),
+                                            "Authorize gtm in your browser, then playlists sync \
+                                             automatically…"
+                                                .to_string(),
                                             NotificationKind::Info,
                                         ));
                                         try_open_browser(&url);
@@ -5150,7 +5232,6 @@ impl App {
                                     }
                                 }
                             });
-                            self.spotify_link_input.clear();
                         }
                         PickerId::Queue => {
                             if !self.queue_cache.is_empty() {
@@ -5836,7 +5917,11 @@ impl App {
                             }
                         }
                         PickerId::SpotifyLink => {
-                            self.spotify_link_input.push(c);
+                            if self.spotify_link_field == 0 {
+                                self.spotify_link_input.push(c);
+                            } else {
+                                self.spotify_oauth_port.push(c);
+                            }
                         }
                         PickerId::PlaylistSelect if self.playlist_creating => {
                             top.query.push(c);
@@ -5863,6 +5948,8 @@ impl App {
                         self.last_artist_cover_fetch = None;
                     } else if top.id == PickerId::EditMetadata {
                         self.metadata.field_idx = (self.metadata.field_idx + 1) % 7;
+                    } else if top.id == PickerId::SpotifyLink {
+                        self.spotify_link_field = (self.spotify_link_field + 1) % 2;
                     }
                 }
             }
@@ -5881,7 +5968,11 @@ impl App {
                             }
                         }
                         PickerId::SpotifyLink => {
-                            self.spotify_link_input.pop();
+                            if self.spotify_link_field == 0 {
+                                self.spotify_link_input.pop();
+                            } else {
+                                self.spotify_oauth_port.pop();
+                            }
                         }
                         PickerId::PlaylistSelect if self.playlist_creating => {
                             top.query.pop();
@@ -5914,7 +6005,11 @@ impl App {
                     }
                 }
                 PickerId::SpotifyLink => {
-                    self.spotify_link_input.push_str(text);
+                    if self.spotify_link_field == 0 {
+                        self.spotify_link_input.push_str(text);
+                    } else {
+                        self.spotify_oauth_port.push_str(text);
+                    }
                 }
                 PickerId::EditMetadata => {
                     self.metadata.fields[self.metadata.field_idx].push_str(text);

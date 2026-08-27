@@ -82,6 +82,9 @@ impl SpotifyManager {
     pub async fn set_token(&mut self, raw: &str) -> Result<(), String> {
         let token = parse_token(raw)?;
         self.save_token(&token)?;
+        // Mirror the token into the OS keychain so it survives the file-based
+        // token being cleared and can be restored without a re-login.
+        gtm_core::secret::set_secret(gtm_core::secret::SPOTIFY_TOKEN_KEY, raw);
         self.init_client(token).await
     }
 
@@ -99,6 +102,9 @@ impl SpotifyManager {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => warn!("failed to remove spotify token file: {e}"),
         }
+        // Drop any keychain-stored credentials too.
+        gtm_core::secret::delete_secret(gtm_core::secret::SPOTIFY_TOKEN_KEY);
+        gtm_core::secret::delete_secret(gtm_core::secret::SPOTIFY_CLIENT_ID_KEY);
     }
 
     /// Snapshot of the current link state for the Settings UI.

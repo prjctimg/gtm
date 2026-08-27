@@ -299,6 +299,47 @@ if [ -d "$MAN_DIR" ]; then
   ok "Man pages -> ${MANDIR}/"
 fi
 
+# Enable completions for the user's login shell (best-effort, idempotent).
+enable_login_shell_completion() {
+  [ -d "$COMPLETIONS_DIR" ] || return 0
+  local shell_name
+  shell_name=$(basename "${SHELL:-/bin/bash}")
+  case "$shell_name" in
+    zsh)
+      local rc="${ZDOTDIR:-$HOME}/.zshrc"
+      if [ -d "$ZSH_COMPLETION_DIR" ] && ! grep -q "gtm completion (zsh)" "$rc" 2>/dev/null; then
+        {
+          echo ""
+          echo "# gtm completion (zsh)"
+          echo "fpath=(${ZSH_COMPLETION_DIR} \$fpath)"
+          echo "autoload -Uz compinit && compinit"
+        } >> "$rc"
+        ok "Enabled zsh completions in ${rc} (restart shell or run 'exec zsh')"
+      fi
+      ;;
+    fish)
+      [ -d "$FISH_COMPLETION_DIR" ] && ok "fish completions auto-load from ${FISH_COMPLETION_DIR}"
+      ;;
+    elvish)
+      if [ -d "$ELVISH_COMPLETION_DIR" ]; then
+        info "elvish: load completions by adding to ~/.elvish/rc.elv:"
+        echo "  eval (${PREFIX}/share/elvish/completions/gtm.elv)" >&2
+        echo "  eval (${PREFIX}/share/elvish/completions/gtmd.elv)" >&2
+      fi
+      ;;
+    powershell | pwsh)
+      if [ -d "$POWERSHELL_COMPLETION_DIR" ]; then
+        info "PowerShell: add to your \$PROFILE:"
+        echo "  Import-Module ${POWERSHELL_COMPLETION_DIR}/gtm.ps1" >&2
+        echo "  Import-Module ${POWERSHELL_COMPLETION_DIR}/gtmd.ps1" >&2
+      fi
+      ;;
+    *)
+      [ -d "$BASH_COMPLETION_DIR" ] && ok "bash completions auto-load from ${BASH_COMPLETION_DIR}"
+      ;;
+  esac
+}
+
 # Completions (handle both legacy naming and new)
 if [ -d "$COMPLETIONS_DIR" ]; then
   for f in "$COMPLETIONS_DIR"/*; do
@@ -323,6 +364,9 @@ if [ -d "$COMPLETIONS_DIR" ]; then
   done
   ok "Completions installed"
 fi
+
+# Enable completions for the detected login shell (idempotent).
+enable_login_shell_completion
 
 # Systemd service
 if [ -f "$SYSTEMD_FILE" ]; then

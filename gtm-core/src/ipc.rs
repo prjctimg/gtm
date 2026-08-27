@@ -11,6 +11,12 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::collections::HashMap;
 
+/// Default local callback port for the Spotify OAuth redirect when the caller
+/// doesn't specify one.
+fn default_oauth_port() -> u16 {
+    8990
+}
+
 /// Protocol version this implementation speaks. Matches `prjctimg/gtm.spec`
 /// `protocol.md` "Version Negotiation". Bumped only on breaking wire changes.
 pub const PROTOCOL_VERSION: u32 = 3;
@@ -269,6 +275,7 @@ pub enum DaemonReq {
     },
     SpotifyOauthStart {
         client_id: String,
+        port: u16,
     },
     SpotifyCancelOauth,
     SpotifyClear,
@@ -640,10 +647,13 @@ impl DaemonReq {
                 #[derive(Deserialize)]
                 struct Params {
                     client_id: String,
+                    #[serde(default = "default_oauth_port")]
+                    port: u16,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SpotifyOauthStart {
                     client_id: x.client_id,
+                    port: x.port,
                 }
             }
             "spotify_cancel_oauth" => DaemonReq::SpotifyCancelOauth,
