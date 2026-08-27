@@ -41,10 +41,10 @@ mkdir -p stage/usr/bin \
   stage/usr/lib/systemd/user \
   stage/usr/share/man/man1 \
   stage/usr/share/bash-completion/completions \
-  stage/usr/share/zsh/vendor-completions \
+  stage/usr/share/zsh/site-functions \
   stage/usr/share/fish/vendor_completions.d \
-  stage/usr/share/elvish/completions \
-  stage/usr/share/powershell/completions \
+  stage/usr/share/elvish/lib \
+  stage/usr/share/powershell/Modules \
   stage/usr/share/applications \
   stage/usr/share/icons/hicolor/scalable/apps \
   stage/usr/share/licenses/gtm
@@ -54,14 +54,14 @@ cp dist/gtmd.service stage/usr/lib/systemd/user/
 cp artifacts/man/*.1 stage/usr/share/man/man1/
 cp artifacts/completions/gtm.bash stage/usr/share/bash-completion/completions/gtm
 cp artifacts/completions/gtmd.bash stage/usr/share/bash-completion/completions/gtmd
-cp artifacts/completions/_gtm stage/usr/share/zsh/vendor-completions/_gtm
-cp artifacts/completions/_gtmd stage/usr/share/zsh/vendor-completions/_gtmd
+cp artifacts/completions/_gtm stage/usr/share/zsh/site-functions/_gtm
+cp artifacts/completions/_gtmd stage/usr/share/zsh/site-functions/_gtmd
 cp artifacts/completions/gtm.fish stage/usr/share/fish/vendor_completions.d/
 cp artifacts/completions/gtmd.fish stage/usr/share/fish/vendor_completions.d/
-cp artifacts/completions/gtm.elv stage/usr/share/elvish/completions/
-cp artifacts/completions/gtmd.elv stage/usr/share/elvish/completions/
-cp artifacts/completions/gtm.ps1 stage/usr/share/powershell/completions/
-cp artifacts/completions/gtmd.ps1 stage/usr/share/powershell/completions/
+cp artifacts/completions/gtm.elv stage/usr/share/elvish/lib/
+cp artifacts/completions/gtmd.elv stage/usr/share/elvish/lib/
+cp artifacts/completions/gtm.ps1 stage/usr/share/powershell/Modules/
+cp artifacts/completions/gtmd.ps1 stage/usr/share/powershell/Modules/
 cp dist/gtm.desktop stage/usr/share/applications/
 cp assets/gtm.svg stage/usr/share/icons/hicolor/scalable/apps/
 cp LICENSE stage/usr/share/licenses/gtm/

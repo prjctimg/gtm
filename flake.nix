@@ -29,7 +29,7 @@
       {
         packages.default = pkgs.stdenv.mkDerivation {
           pname = "gtm";
-          version = "0.2.4";
+          version = "0.2.5";
 
           src = ./.;
 
@@ -58,10 +58,10 @@
             # Shell completions
             cargo run --release --bin release-gen completions artifacts
             install -Dm 0644 artifacts/completions/gtm.bash   $out/share/bash-completion/completions/gtm
-            install -Dm 0644 artifacts/completions/_gtm       $out/share/zsh/vendor-completions/_gtm
+            install -Dm 0644 artifacts/completions/_gtm       $out/share/zsh/site-functions/_gtm
             install -Dm 0644 artifacts/completions/gtm.fish   $out/share/fish/vendor_completions.d/gtm.fish
             install -Dm 0644 artifacts/completions/gtmd.bash  $out/share/bash-completion/completions/gtmd
-            install -Dm 0644 artifacts/completions/_gtmd      $out/share/zsh/vendor-completions/_gtmd
+            install -Dm 0644 artifacts/completions/_gtmd      $out/share/zsh/site-functions/_gtmd
             install -Dm 0644 artifacts/completions/gtmd.fish  $out/share/fish/vendor_completions.d/gtmd.fish
 
             # Desktop file

@@ -411,9 +411,9 @@ jobs:
             aarch64-linux) [ "$deb_arch" = "arm64" ] || { echo "::error::expected arm64 for ${{ matrix.platform }}, got $deb_arch" >&2; exit 1; } ;;
           esac
           for deb in target/debian/gtm_*.deb; do
-            # Keep cargo-deb's native name (already contains -1 and arch); just move.
+            # Drop the cargo-deb "-1" revision from the published asset name.
             echo "Built deb: $(basename "$deb") (arch $deb_arch) for ${{ matrix.platform }}"
-            mv "$deb" "release-assets/"
+            mv "$deb" "release-assets/gtm_${version}_${deb_arch}.deb"
           done
           rm -rf gtm/deb-assets
           ls -lh release-assets/*.deb
@@ -429,8 +429,8 @@ jobs:
             stage/usr/share/bash-completion/completions \
             stage/usr/share/zsh/site-functions \
             stage/usr/share/fish/vendor_completions.d \
-            stage/usr/share/elvish/completions \
-            stage/usr/share/powershell/completions \
+            stage/usr/share/elvish/lib \
+            stage/usr/share/powershell/Modules \
             stage/usr/share/applications \
             stage/usr/share/icons/hicolor/scalable/apps \
             stage/usr/share/licenses/gtm
@@ -444,10 +444,10 @@ jobs:
           cp artifacts/completions/_gtmd stage/usr/share/zsh/site-functions/_gtmd
           cp artifacts/completions/gtm.fish  stage/usr/share/fish/vendor_completions.d/
           cp artifacts/completions/gtmd.fish stage/usr/share/fish/vendor_completions.d/
-          cp artifacts/completions/gtm.elv  stage/usr/share/elvish/completions/
-          cp artifacts/completions/gtmd.elv stage/usr/share/elvish/completions/
-          cp artifacts/completions/gtm.ps1  stage/usr/share/powershell/completions/
-          cp artifacts/completions/gtmd.ps1 stage/usr/share/powershell/completions/
+          cp artifacts/completions/gtm.elv  stage/usr/share/elvish/lib/
+          cp artifacts/completions/gtmd.elv stage/usr/share/elvish/lib/
+          cp artifacts/completions/gtm.ps1  stage/usr/share/powershell/Modules/
+          cp artifacts/completions/gtmd.ps1 stage/usr/share/powershell/Modules/
           cp dist/gtm.desktop stage/usr/share/applications/
           cp assets/gtm.svg stage/usr/share/icons/hicolor/scalable/apps/
           cp LICENSE stage/usr/share/licenses/gtm/
@@ -465,7 +465,7 @@ jobs:
             --define "gtm_staging $PWD/stage" \
             --define "gtm_changelog_date $(date -u +'%a %b %d %Y')" \
             dist/rpm/gtm.spec
-          cp rpmbuild/RPMS/*/*.rpm "release-assets/gtm-${version}-1.${rpm_arch}.rpm"
+          cp rpmbuild/RPMS/*/*.rpm "release-assets/gtm-${version}.${rpm_arch}.rpm"
 
       - name: Build Arch Linux package
         if: matrix.family == 'debian'
@@ -475,7 +475,7 @@ jobs:
           version="${{ needs.tag.outputs.version }}"
           rpm_arch="$(rpmbuild --eval '%{_target_cpu}')"
           ./scripts/build/arch-pkg.sh "$version" "$rpm_arch" stage \
-            "release-assets/gtm-${version}-1-${rpm_arch}.pkg.tar.zst"
+            "release-assets/gtm-${version}-${rpm_arch}.pkg.tar.zst"
 
       - name: Stage rootfs tree (Alpine .apk)
         if: matrix.family == 'alpine'
@@ -486,10 +486,10 @@ jobs:
             stage/usr/lib/systemd/user \
             stage/usr/share/man/man1 \
             stage/usr/share/bash-completion/completions \
-            stage/usr/share/zsh/vendor-completions \
+            stage/usr/share/zsh/site-functions \
             stage/usr/share/fish/vendor_completions.d \
-            stage/usr/share/elvish/completions \
-            stage/usr/share/powershell/completions \
+            stage/usr/share/elvish/lib \
+            stage/usr/share/powershell/Modules \
             stage/usr/share/applications \
             stage/usr/share/icons/hicolor/scalable/apps \
             stage/usr/share/licenses/gtm
@@ -499,14 +499,14 @@ jobs:
           cp artifacts/man/*.1 stage/usr/share/man/man1/
           cp artifacts/completions/gtm.bash  stage/usr/share/bash-completion/completions/gtm
           cp artifacts/completions/gtmd.bash stage/usr/share/bash-completion/completions/gtmd
-          cp artifacts/completions/_gtm  stage/usr/share/zsh/vendor-completions/_gtm
-          cp artifacts/completions/_gtmd stage/usr/share/zsh/vendor-completions/_gtmd
+          cp artifacts/completions/_gtm  stage/usr/share/zsh/site-functions/_gtm
+          cp artifacts/completions/_gtmd stage/usr/share/zsh/site-functions/_gtmd
           cp artifacts/completions/gtm.fish  stage/usr/share/fish/vendor_completions.d/
           cp artifacts/completions/gtmd.fish stage/usr/share/fish/vendor_completions.d/
-          cp artifacts/completions/gtm.elv  stage/usr/share/elvish/completions/
-          cp artifacts/completions/gtmd.elv stage/usr/share/elvish/completions/
-          cp artifacts/completions/gtm.ps1  stage/usr/share/powershell/completions/
-          cp artifacts/completions/gtmd.ps1 stage/usr/share/powershell/completions/
+          cp artifacts/completions/gtm.elv  stage/usr/share/elvish/lib/
+          cp artifacts/completions/gtmd.elv stage/usr/share/elvish/lib/
+          cp artifacts/completions/gtm.ps1  stage/usr/share/powershell/Modules/
+          cp artifacts/completions/gtmd.ps1 stage/usr/share/powershell/Modules/
           cp dist/gtm.desktop stage/usr/share/applications/
           cp assets/gtm.svg stage/usr/share/icons/hicolor/scalable/apps/
           cp LICENSE stage/usr/share/licenses/gtm/
@@ -559,6 +559,17 @@ jobs:
         with:
           pattern: release-assets-*
           merge-multiple: true
+
+      - name: Prune stale nightly assets
+        if: needs.tag.outputs.nightly == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view nightly --json assets -q '.assets[].name' 2>/dev/null \
+            | while IFS= read -r name; do
+              [ -n "$name" ] || continue
+              gh release delete-asset nightly "$name" -y || true
+            done
 
       - name: Print release asset manifest
         run: |

@@ -44,10 +44,10 @@ cp -a %{gtm_staging}/. %{buildroot}/
 %{_datadir}/zsh/site-functions/_gtmd
 %{_datadir}/fish/vendor_completions.d/gtm.fish
 %{_datadir}/fish/vendor_completions.d/gtmd.fish
-%{_datadir}/elvish/completions/gtm.elv
-%{_datadir}/elvish/completions/gtmd.elv
-%{_datadir}/powershell/completions/gtm.ps1
-%{_datadir}/powershell/completions/gtmd.ps1
+%{_datadir}/elvish/lib/gtm.elv
+%{_datadir}/elvish/lib/gtmd.elv
+%{_datadir}/powershell/Modules/gtm.ps1
+%{_datadir}/powershell/Modules/gtmd.ps1
 
 %post
 if command -v systemctl >/dev/null 2>&1; then

@@ -3,7 +3,7 @@
 %global debug_package %{nil}
 
 Name: gtmd
-Version: 0.2.4
+Version: 0.2.5
 Release: 1%{?dist}
 Summary: gtm background audio daemon
 License: GPL-3.0-only
@@ -56,13 +56,13 @@ cargo run --release --bin release-gen completions artifacts
 install -Dpm 0644 artifacts/completions/gtm.bash   %{buildroot}%{_datadir}/bash-completion/completions/gtm
 install -Dpm 0644 artifacts/completions/_gtm       %{buildroot}%{_datadir}/zsh/site-functions/_gtm
 install -Dpm 0644 artifacts/completions/gtm.fish   %{buildroot}%{_datadir}/fish/vendor_completions.d/gtm.fish
-install -Dpm 0644 artifacts/completions/gtm.elv    %{buildroot}%{_datadir}/elvish/completions/gtm.elv
-install -Dpm 0644 artifacts/completions/gtm.ps1    %{buildroot}%{_datadir}/powershell/completions/gtm.ps1
+install -Dpm 0644 artifacts/completions/gtm.elv    %{buildroot}%{_datadir}/elvish/lib/gtm.elv
+install -Dpm 0644 artifacts/completions/gtm.ps1    %{buildroot}%{_datadir}/powershell/Modules/gtm.ps1
 install -Dpm 0644 artifacts/completions/gtmd.bash  %{buildroot}%{_datadir}/bash-completion/completions/gtmd
 install -Dpm 0644 artifacts/completions/_gtmd      %{buildroot}%{_datadir}/zsh/site-functions/_gtmd
 install -Dpm 0644 artifacts/completions/gtmd.fish  %{buildroot}%{_datadir}/fish/vendor_completions.d/gtmd.fish
-install -Dpm 0644 artifacts/completions/gtmd.elv   %{buildroot}%{_datadir}/elvish/completions/gtmd.elv
-install -Dpm 0644 artifacts/completions/gtmd.ps1   %{buildroot}%{_datadir}/powershell/completions/gtmd.ps1
+install -Dpm 0644 artifacts/completions/gtmd.elv   %{buildroot}%{_datadir}/elvish/lib/gtmd.elv
+install -Dpm 0644 artifacts/completions/gtmd.ps1   %{buildroot}%{_datadir}/powershell/Modules/gtmd.ps1
 
 # Desktop file
 install -Dpm 0644 dist/gtm.desktop %{buildroot}%{_datadir}/applications/gtm.desktop
@@ -87,8 +87,8 @@ cargo test --workspace
 %{_datadir}/bash-completion/completions/gtmd
 %{_datadir}/zsh/site-functions/_gtmd
 %{_datadir}/fish/vendor_completions.d/gtmd.fish
-%{_datadir}/elvish/completions/gtmd.elv
-%{_datadir}/powershell/completions/gtmd.ps1
+%{_datadir}/elvish/lib/gtmd.elv
+%{_datadir}/powershell/Modules/gtmd.ps1
 
 %files -n gtm
 %license LICENSE
@@ -99,9 +99,9 @@ cargo test --workspace
 %{_datadir}/bash-completion/completions/gtm
 %{_datadir}/zsh/site-functions/_gtm
 %{_datadir}/fish/vendor_completions.d/gtm.fish
-%{_datadir}/elvish/completions/gtm.elv
-%{_datadir}/powershell/completions/gtm.ps1
+%{_datadir}/elvish/lib/gtm.elv
+%{_datadir}/powershell/Modules/gtm.ps1
 
 %changelog
-* %{lua:print(strftime("%a %b %d %Y"))} prjctimg <prjctimg@outlook.com> - 0.2.4-1
+* %{lua:print(strftime("%a %b %d %Y"))} prjctimg <prjctimg@outlook.com> - 0.2.5-1
 - feat: config CLI flags, mouse input, real visualizer, Spotify Web search, struct refactors

@@ -199,7 +199,7 @@ if [ "$USE_DEB" = 1 ]; then
   if [ "$OS" = "android" ]; then
     DEB_FILE="gtm_${DEB_VERSION}_aarch64.deb"
   else
-    DEB_FILE="gtm_${DEB_VERSION}-1_${DEB_ARCH}.deb"
+    DEB_FILE="gtm_${DEB_VERSION}_${DEB_ARCH}.deb"
   fi
 
   DEB_URL="https://github.com/${REPO}/releases/download/${TAG}/${DEB_FILE}"
@@ -259,16 +259,28 @@ SYSTEMD_FILE="${SRC}/systemd/gtmd.service"
 DESKTOP_FILE="${SRC}/desktop/gtm.desktop"
 ICON_FILE="${SRC}/icons/gtm.svg"
 
-BINDIR="${PREFIX}/bin"
-MANDIR="${PREFIX}/share/man/man1"
-BASH_COMPLETION_DIR="${PREFIX}/share/bash-completion/completions"
-ZSH_COMPLETION_DIR="${PREFIX}/share/zsh/site-functions"
-FISH_COMPLETION_DIR="${PREFIX}/share/fish/vendor_completions.d"
-ELVISH_COMPLETION_DIR="${PREFIX}/share/elvish/completions"
-POWERSHELL_COMPLETION_DIR="${PREFIX}/share/powershell/completions"
-SYSTEMD_DIR="${PREFIX}/lib/systemd/user"
-APPLICATIONS_DIR="${PREFIX}/share/applications"
-ICONS_DIR="${PREFIX}/share/icons/hicolor/scalable/apps"
+DATAROOTDIR="${DATAROOTDIR:-${PREFIX}/share}"
+DATADIR="${DATADIR:-${DATAROOTDIR}}"
+BINDIR="${BINDIR:-${PREFIX}/bin}"
+MANDIR="${MANDIR:-${DATADIR}/man/man1}"
+SYSTEMD_DIR="${SYSTEMD_DIR:-${PREFIX}/lib/systemd/user}"
+APPLICATIONS_DIR="${APPLICATIONS_DIR:-${DATADIR}/applications}"
+ICONS_DIR="${ICONS_DIR:-${DATADIR}/icons/hicolor/scalable/apps}"
+if [ "${PREFIX#"$HOME"}" != "$PREFIX" ]; then
+  XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+  XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+  BASH_COMPLETION_DIR="${BASH_COMPLETION_DIR:-$XDG_DATA_HOME/bash-completion/completions}"
+  ZSH_COMPLETION_DIR="${ZSH_COMPLETION_DIR:-${ZDOTDIR:-$HOME}/.zsh/completions}"
+  FISH_COMPLETION_DIR="${FISH_COMPLETION_DIR:-$XDG_CONFIG_HOME/fish/completions}"
+  ELVISH_COMPLETION_DIR="${ELVISH_COMPLETION_DIR:-$HOME/.elvish/lib}"
+  POWERSHELL_COMPLETION_DIR="${POWERSHELL_COMPLETION_DIR:-$XDG_DATA_HOME/powershell/Modules}"
+else
+  BASH_COMPLETION_DIR="${BASH_COMPLETION_DIR:-${DATADIR}/bash-completion/completions}"
+  ZSH_COMPLETION_DIR="${ZSH_COMPLETION_DIR:-${DATADIR}/zsh/site-functions}"
+  FISH_COMPLETION_DIR="${FISH_COMPLETION_DIR:-${DATADIR}/fish/vendor_completions.d}"
+  ELVISH_COMPLETION_DIR="${ELVISH_COMPLETION_DIR:-${DATADIR}/elvish/lib}"
+  POWERSHELL_COMPLETION_DIR="${POWERSHELL_COMPLETION_DIR:-${DATADIR}/powershell/Modules}"
+fi
 
 install -d "$BINDIR" "$MANDIR" 2>/dev/null || mkdir -p "$BINDIR" "$MANDIR"
 
@@ -322,16 +334,18 @@ enable_login_shell_completion() {
       ;;
     elvish)
       if [ -d "$ELVISH_COMPLETION_DIR" ]; then
-        info "elvish: load completions by adding to ~/.elvish/rc.elv:"
-        echo "  eval (${PREFIX}/share/elvish/completions/gtm.elv)" >&2
-        echo "  eval (${PREFIX}/share/elvish/completions/gtmd.elv)" >&2
+        info "elvish: enable completions by adding to ~/.elvish/rc.elv:"
+        echo "  set paths = [\$@paths ${ELVISH_COMPLETION_DIR}]" >&2
+        echo "  use gtm" >&2
+        echo "  use gtmd" >&2
       fi
       ;;
     powershell | pwsh)
       if [ -d "$POWERSHELL_COMPLETION_DIR" ]; then
-        info "PowerShell: add to your \$PROFILE:"
-        echo "  Import-Module ${POWERSHELL_COMPLETION_DIR}/gtm.ps1" >&2
-        echo "  Import-Module ${POWERSHELL_COMPLETION_DIR}/gtmd.ps1" >&2
+        info "PowerShell: enable completions by adding to your \$PROFILE:"
+        echo "  \$env:PSModulePath += [IO.Path]::PathSeparator + '${POWERSHELL_COMPLETION_DIR}'" >&2
+        echo "  Import-Module gtm" >&2
+        echo "  Import-Module gtmd" >&2
       fi
       ;;
     *)

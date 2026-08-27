@@ -30,7 +30,7 @@ You can read about it in [this post.](https://prjctimg.me/blg/feature-rich-termi
 - **Zero configuration**: sane defaults, fully customizable via TOML,
 - **Widget styles** : for the visualizer and progress indicator
 - **Theming**: accent colors extracted from the current track cover (reactive theming),transparent mode and 16 built-in themes
-- **MPRIS**: media player controls via D-Bus (planned)
+- **MPRIS**: media player controls via D-Bus (via the `mpris` feature)
 
 ## Install
 
@@ -41,13 +41,12 @@ curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | b
 
 For `nightly` builds (released on every push to `main`):
 
-```
 ```bash
 # nightly
 curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash -s -- --nightly
 ```
 
-Or grab an archive [releases page](https://github.com/prjctimg/gtm.rs/releases/latest), extract it, and run the `./install.sh` in it's directory
+Or grab an archive [releases page](https://github.com/prjctimg/gtm.rs/releases/latest), extract it, and run the `./install.sh` in its directory
 
 ### Build from Source
 
@@ -57,7 +56,7 @@ This produces a `nightly` build, for tagged versions, checkout first.
 
 ```bash
 
-git clone https://prjctimg/gtm.rs
+git clone https://github.com/prjctimg/gtm.rs
 cd gtm.rs
 
 cargo build --release

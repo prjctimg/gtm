@@ -60,10 +60,10 @@ assets = [
     { source = "deb-assets/man/gtmd.1", dest = "/usr/share/man/man1/" },
     { source = "deb-assets/man/gtmd-ipc.1", dest = "/usr/share/man/man1/" },
     { source = "deb-assets/completions/gtmd.bash", dest = "/usr/share/bash-completion/completions/gtmd" },
-    { source = "deb-assets/completions/_gtmd", dest = "/usr/share/zsh/vendor-completions/_gtmd" },
+     { source = "deb-assets/completions/_gtmd", dest = "/usr/share/zsh/site-functions/_gtmd" },
     { source = "deb-assets/completions/gtmd.fish", dest = "/usr/share/fish/vendor_completions.d/gtmd.fish" },
-    { source = "deb-assets/completions/gtmd.ps1", dest = "/usr/share/powershell/completions/gtmd.ps1" },
-    { source = "deb-assets/completions/gtmd.elv", dest = "/usr/share/elvish/completions/gtmd.elv" },
+     { source = "deb-assets/completions/gtmd.ps1", dest = "/usr/share/powershell/Modules/gtmd.ps1" },
+     { source = "deb-assets/completions/gtmd.elv", dest = "/usr/share/elvish/lib/gtmd.elv" },
 ]
 
 [dev-dependencies]

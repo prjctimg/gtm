@@ -14,14 +14,20 @@
 #   make deb-termux   – build Termux .deb package (requires termux-create-package)
 
 PREFIX ?= /usr/local
+exec_prefix ?= $(PREFIX)
+datarootdir ?= $(PREFIX)/share
+datadir ?= $(datarootdir)
 DESTDIR ?=
-BINDIR ?= $(PREFIX)/bin
-MANDIR ?= $(PREFIX)/share/man
-COMPLETIONSDIR ?= $(PREFIX)/share/bash-completion/completions
-ZSH_COMPLETIONSDIR ?= $(PREFIX)/share/zsh/site-functions
-FISH_COMPLETIONSDIR ?= $(PREFIX)/share/fish/vendor_completions.d
-ELVISH_COMPLETIONSDIR ?= $(PREFIX)/share/elvish/completions
-POWERSHELL_COMPLETIONSDIR ?= $(PREFIX)/share/powershell/completions
+BINDIR ?= $(exec_prefix)/bin
+MANDIR ?= $(datarootdir)/man
+SYSTEMD_DIR ?= $(exec_prefix)/lib/systemd/user
+APPLICATIONS_DIR ?= $(datadir)/applications
+ICONS_DIR ?= $(datadir)/icons/hicolor/scalable/apps
+COMPLETIONSDIR ?= $(datadir)/bash-completion/completions
+ZSH_COMPLETIONSDIR ?= $(datadir)/zsh/site-functions
+FISH_COMPLETIONSDIR ?= $(datadir)/fish/vendor_completions.d
+ELVISH_COMPLETIONSDIR ?= $(datadir)/elvish/lib
+POWERSHELL_COMPLETIONSDIR ?= $(datadir)/powershell/Modules
 ANDROID_API ?= 27
 
 VERSION := $(shell cargo metadata --format-version=1 2>/dev/null | jq -r '.packages[] | select(.name=="gtmd") | .version' 2>/dev/null || echo "0.0.0")
@@ -67,7 +73,7 @@ install: release man completions
 	install -Dm 0644 artifacts/completions/gtmd.elv    $(DESTDIR)$(ELVISH_COMPLETIONSDIR)/gtmd.elv
 	install -Dm 0644 artifacts/completions/gtm.ps1     $(DESTDIR)$(POWERSHELL_COMPLETIONSDIR)/gtm.ps1
 	install -Dm 0644 artifacts/completions/gtmd.ps1    $(DESTDIR)$(POWERSHELL_COMPLETIONSDIR)/gtmd.ps1
-	install -Dm 0644 dist/gtmd.service $(DESTDIR)$(PREFIX)/lib/systemd/user/gtmd.service
+	install -Dm 0644 dist/gtmd.service $(DESTDIR)$(SYSTEMD_DIR)/gtmd.service
 
 deb: release man completions
 	@command -v cargo-deb >/dev/null 2>&1 || { echo "cargo-deb not found. Install with: cargo install cargo-deb"; exit 1; }
