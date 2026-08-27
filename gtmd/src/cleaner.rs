@@ -4,8 +4,6 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-/// Clean a YouTube title by stripping filler strings and optionally extracting the artist.
-///
 /// Returns `(artist_option, cleaned_title)`.
 pub fn clean_youtube_title(title: &str) -> (Option<String>, String) {
     let mut result = title.to_string();
