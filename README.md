@@ -69,7 +69,6 @@ cd gtm.rs
 
 cargo build --release
 
-
 # Also installs completions,manpages etc
 sudo make install
 ```
