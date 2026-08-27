@@ -32,6 +32,6 @@ cd "$REPO_ROOT"
 termux-create-package \
   --pkg-version "$VERSION" \
   --pkg-arch "$ARCH" \
-  termux/gtm.yml
+  dist/termux/gtm.yml
 
 echo "Built: $(ls "$REPO_ROOT"/*.deb 2>/dev/null | head -1)"
