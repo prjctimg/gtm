@@ -513,13 +513,13 @@ async fn test_delete_playing_track() {
     .await;
     assert!(matches!(res, DaemonRes::Ok));
 
-    let mut status = gtm_core::state::PlaybackStatus::Playing;
+    let mut status = gtm_core::global::PlaybackStatus::Playing;
     for _ in 0..50 {
         let res = send_req(&mut reader, &mut writer, &DaemonReq::GetStatus).await;
         let DaemonRes::Status { state } = res else {
             panic!("expected Status, got {res:?}");
         };
-        if state.status == gtm_core::state::PlaybackStatus::Stopped {
+        if state.status == gtm_core::global::PlaybackStatus::Stopped {
             status = state.status;
             break;
         }
@@ -529,7 +529,7 @@ async fn test_delete_playing_track() {
     let DaemonRes::Status { state } = res else {
         panic!("expected Status, got {res:?}");
     };
-    assert_eq!(status, gtm_core::state::PlaybackStatus::Stopped);
+    assert_eq!(status, gtm_core::global::PlaybackStatus::Stopped);
     assert!(state.current_track.is_none());
     assert!(state.queue.is_empty());
 

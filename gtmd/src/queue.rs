@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use gtm_core::state::DaemonState;
+use gtm_core::global::DaemonState;
 use gtm_core::track::TrackInfo;
 
 /// Build a TrackInfo from a file path.  The title is derived from

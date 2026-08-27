@@ -175,17 +175,17 @@ fn strip_bracket_content_matching(s: &str, pred: impl Fn(&str) -> bool) -> Strin
 
 /// Strip a suffix parenthesized group matching a predicate.
 fn strip_suffix_parenthesized(s: &str, pred: impl Fn(&str) -> bool) -> String {
-    if let Some((_open_ch, _close_ch, open_pos, close_pos)) = find_last_bracket_pair(s) {
-        if close_pos == s.len() - 1 {
-            let inner = &s[open_pos + 1..close_pos];
-            if pred(inner) {
-                let mut end = open_pos;
-                // Also strip preceding space
-                while end > 0 && s.as_bytes()[end - 1] == b' ' {
-                    end -= 1;
-                }
-                return s[..end].to_string();
+    if let Some((_open_ch, _close_ch, open_pos, close_pos)) = find_last_bracket_pair(s)
+        && close_pos == s.len() - 1
+    {
+        let inner = &s[open_pos + 1..close_pos];
+        if pred(inner) {
+            let mut end = open_pos;
+            // Also strip preceding space
+            while end > 0 && s.as_bytes()[end - 1] == b' ' {
+                end -= 1;
             }
+            return s[..end].to_string();
         }
     }
     s.to_string()
@@ -201,18 +201,18 @@ fn find_last_bracket_pair(s: &str) -> Option<(char, char, usize, usize)> {
                 last = Some((b as char, i));
             }
             b')' => {
-                if let Some((open, open_pos)) = last {
-                    if open == '(' {
-                        return Some(('(', ')', open_pos, i));
-                    }
+                if let Some((open, open_pos)) = last
+                    && open == '('
+                {
+                    return Some(('(', ')', open_pos, i));
                 }
                 last = None;
             }
             b']' => {
-                if let Some((open, open_pos)) = last {
-                    if open == '[' {
-                        return Some(('[', ']', open_pos, i));
-                    }
+                if let Some((open, open_pos)) = last
+                    && open == '['
+                {
+                    return Some(('[', ']', open_pos, i));
                 }
                 last = None;
             }

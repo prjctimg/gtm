@@ -13,7 +13,7 @@ use fundsp::audiounit::AudioUnit;
 use fundsp::prelude32::*;
 use rodio::Source;
 
-use gtm_core::state::{EQ_DEFAULT_Q, EQ_FREQUENCIES};
+use gtm_core::global::{EQ_DEFAULT_Q, EQ_FREQUENCIES};
 
 use crate::buffer::{DecodeControl, PREBUFFER_SAMPLES, SharedRingBuffer};
 use crate::eq::EqGains;
@@ -174,6 +174,7 @@ pub struct DecodeThread {
 }
 
 impl DecodeThread {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         path: String,
         shared: SharedRingBuffer,
@@ -404,11 +405,10 @@ impl DecodeThread {
                 // Accumulate (decimated) samples for spectrum analysis.
                 if spectrum_count.is_multiple_of(SPECTRUM_DECIMATION)
                     && spectrum_analyzer.push(final_sample, &mut spectrum_frame)
+                    && let Ok(mut spec) = self.spectrum.lock()
                 {
-                    if let Ok(mut spec) = self.spectrum.lock() {
-                        spec.clear();
-                        spec.extend_from_slice(&spectrum_frame);
-                    }
+                    spec.clear();
+                    spec.extend_from_slice(&spectrum_frame);
                 }
                 spectrum_count += 1;
 

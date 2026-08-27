@@ -20,8 +20,8 @@
 // ```
 
 use crate::Result;
+use crate::global::{CoreError, CrossfadeConfig, DaemonState, PlaybackStatus};
 use crate::ipc::DaemonEvent;
-use crate::state::{CoreError, CrossfadeConfig, DaemonState, PlaybackStatus};
 use crate::track::TrackInfo;
 use crate::tripwire::{self, FailPoint};
 
@@ -119,7 +119,7 @@ impl DaemonState {
         Ok(())
     }
 
-    pub fn cycle_repeat(&mut self, mode: crate::state::RepeatMode) -> Result<()> {
+    pub fn cycle_repeat(&mut self, mode: crate::global::RepeatMode) -> Result<()> {
         tripwire::check(FailPoint::StateTransition)?;
         self.repeat = mode;
         self.version += 1;
@@ -145,7 +145,7 @@ impl DaemonState {
         &mut self,
         enabled: bool,
         duration: u8,
-        easing: Option<crate::state::Easing>,
+        easing: Option<crate::global::Easing>,
     ) -> Result<()> {
         tripwire::check(FailPoint::CrossfadeApply)?;
         self.crossfade = if enabled {
@@ -172,7 +172,7 @@ impl DaemonState {
     }
 
     /// Set loudness mode (Off, Track, Album, Auto).
-    pub fn set_loudness_mode(&mut self, mode: crate::state::LoudnessMode) -> Result<()> {
+    pub fn set_loudness_mode(&mut self, mode: crate::global::LoudnessMode) -> Result<()> {
         self.loudness_mode = mode;
         self.version += 1;
         #[cfg(debug_assertions)]
@@ -348,7 +348,7 @@ impl DaemonState {
                 };
             }
             DaemonEvent::ReverbChanged { enabled, room_size } => {
-                self.reverb = crate::state::ReverbConfig {
+                self.reverb = crate::global::ReverbConfig {
                     enabled: *enabled,
                     room_size: *room_size,
                 };

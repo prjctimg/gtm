@@ -266,11 +266,11 @@ impl SpotifyManager {
         while let Some(item) = items.next().await {
             match item {
                 Ok(item) => {
-                    if let Some(playable) = item.item.as_ref() {
-                        if let Some(mut track) = track_from_playable(playable) {
-                            track.index = tracks.len();
-                            tracks.push(track);
-                        }
+                    if let Some(playable) = item.item.as_ref()
+                        && let Some(mut track) = track_from_playable(playable)
+                    {
+                        track.index = tracks.len();
+                        tracks.push(track);
                     }
                 }
                 Err(e) => warn!("spotify playlist item: {e}"),
@@ -369,10 +369,10 @@ fn parse_token(raw: &str) -> Result<Token, String> {
     if raw.is_empty() {
         return Err("empty token".into());
     }
-    if let Ok(token) = serde_json::from_str::<Token>(raw) {
-        if !token.access_token.is_empty() {
-            return Ok(token);
-        }
+    if let Ok(token) = serde_json::from_str::<Token>(raw)
+        && !token.access_token.is_empty()
+    {
+        return Ok(token);
     }
     if !raw.contains('{') {
         return Ok(Token {

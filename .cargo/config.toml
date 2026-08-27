@@ -9,11 +9,12 @@
 #   export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=armv7a-linux-androideabi27-clang
 # API level 27 = Android 8.1 (minimum for AAudio support).
 
-# Native Linux builds: use mold via gcc (no clang required).
+# Native Linux builds: prefer clang with mold, fallback to gcc with mold, then default ld.
+# This is handled at build time via gtm/build.rs which detects available tools.
 [target.aarch64-unknown-linux-gnu]
-linker = "gcc"
+linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 
 [target.x86_64-unknown-linux-gnu]
-linker = "gcc"
+linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]

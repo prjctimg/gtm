@@ -82,28 +82,28 @@ impl CoverCache {
 
         {
             let mut mem = self.memory.lock().await;
-            if let Some(c) = mem.get(&key) {
-                if !Self::cover_too_small(&c.data) {
-                    return Some(c.clone());
-                }
+            if let Some(c) = mem.get(&key)
+                && !Self::cover_too_small(&c.data)
+            {
+                return Some(c.clone());
             }
         }
 
         let disk = self.disk_path(&key);
-        if disk.exists() {
-            if let Ok(data) = fs::read(&disk) {
-                if !Self::cover_too_small(&data) {
-                    let cd = CoverData {
-                        mime: "image/jpeg".to_string(),
-                        data,
-                    };
-                    let mut mem = self.memory.lock().await;
-                    mem.put(key, cd.clone());
-                    return Some(cd);
-                }
-                // Small cover on disk: remove it and re-fetch from Deezer
-                fs::remove_file(&disk).ok();
+        if disk.exists()
+            && let Ok(data) = fs::read(&disk)
+        {
+            if !Self::cover_too_small(&data) {
+                let cd = CoverData {
+                    mime: "image/jpeg".to_string(),
+                    data,
+                };
+                let mut mem = self.memory.lock().await;
+                mem.put(key, cd.clone());
+                return Some(cd);
             }
+            // Small cover on disk: remove it and re-fetch from Deezer
+            fs::remove_file(&disk).ok();
         }
 
         let cd = self.fetch_from_deezer(artist, album, &key).await;
@@ -128,16 +128,16 @@ impl CoverCache {
             }
         }
         let disk = self.artist_disk_path(&key);
-        if disk.exists() {
-            if let Ok(data) = fs::read(&disk) {
-                let cd = CoverData {
-                    mime: "image/jpeg".to_string(),
-                    data,
-                };
-                let mut mem = self.artist_memory.lock().await;
-                mem.put(key, cd.clone());
-                return Some(cd);
-            }
+        if disk.exists()
+            && let Ok(data) = fs::read(&disk)
+        {
+            let cd = CoverData {
+                mime: "image/jpeg".to_string(),
+                data,
+            };
+            let mut mem = self.artist_memory.lock().await;
+            mem.put(key, cd.clone());
+            return Some(cd);
         }
         let deezer = crate::deezer::DeezerSearch::new();
         let img_bytes = deezer.artist_image(artist).await?;

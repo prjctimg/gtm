@@ -11,10 +11,10 @@ use crossterm::event::{
     self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use gtm_core::client::DaemonClient;
+use gtm_core::global::EqPreset;
+use gtm_core::global::{DaemonState, PlaybackStatus, RepeatMode};
 use gtm_core::ipc::DaemonRes;
 use gtm_core::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
-use gtm_core::state::EqPreset;
-use gtm_core::state::{DaemonState, PlaybackStatus, RepeatMode};
 use gtm_core::track::{Playlist, TrackInfo, YTSearchResult};
 use ratatui::Terminal;
 use ratatui::layout::Alignment;
@@ -48,10 +48,10 @@ fn prefs_path() -> std::path::PathBuf {
 /// the `gtm config` CLI command to give the editor a valid starting point.
 pub(crate) fn ensure_prefs_file() -> std::path::PathBuf {
     let path = prefs_path();
-    if !path.exists() {
-        if let Ok(toml_s) = toml::to_string_pretty(&Prefs::default()) {
-            let _ = std::fs::write(&path, format!("{toml_s}\n"));
-        }
+    if !path.exists()
+        && let Ok(toml_s) = toml::to_string_pretty(&Prefs::default())
+    {
+        let _ = std::fs::write(&path, format!("{toml_s}\n"));
     }
     path
 }
@@ -129,7 +129,7 @@ fn save_prefs(prefs: &Prefs) {
 fn build_keybindings(
     overrides: &std::collections::HashMap<String, String>,
 ) -> crate::keymap::Keybindings {
-    use crate::keymap::{BoundCommand, KeyboardAction, KeyContext};
+    use crate::keymap::{BoundCommand, KeyContext, KeyboardAction};
 
     let mut defaults = crate::keymap::default_keybindings();
 
@@ -376,7 +376,7 @@ pub struct App {
     pub manual_track_advance: bool,
     last_track_path_display: Option<String>,
     prev_track_id: Option<i64>,
-    prev_status: gtm_core::state::PlaybackStatus,
+    prev_status: gtm_core::global::PlaybackStatus,
     prev_volume: u8,
     prev_cover_id: Option<i64>,
     cover_art_dirty: bool,
@@ -387,6 +387,10 @@ pub struct App {
     pub visualizer: crate::visualizer::AudioVisualizer,
     pub selected_indices: std::collections::HashSet<usize>,
     pending_motion: Option<char>,
+    /// Queue move mode state: index of item being moved
+    pub queue_move_index: Option<usize>,
+    /// Target position in queue for move operation
+    pub queue_move_target: usize,
     pub pending_playlist_track_ids: Vec<i64>,
     pub playlist_creating: bool,
     pub metadata: MetadataEditState,
@@ -554,7 +558,7 @@ pub enum TuiCommand {
     CycleRepeat(RepeatMode),
     ToggleMute,
     Crossfade(bool, u8),
-    SetCrossfadeEasing(gtm_core::state::Easing),
+    SetCrossfadeEasing(gtm_core::global::Easing),
     QueueAdd(String),
     QueueMove(u64, u64),
     QueueClear,
@@ -751,7 +755,7 @@ impl App {
             manual_track_advance: false,
             last_track_path_display: None,
             prev_track_id: None,
-            prev_status: gtm_core::state::PlaybackStatus::Stopped,
+            prev_status: gtm_core::global::PlaybackStatus::Stopped,
             prev_volume: 100,
             prev_cover_id: None,
             cover_art_dirty: false,
@@ -766,6 +770,8 @@ impl App {
             },
             selected_indices: std::collections::HashSet::new(),
             pending_motion: None,
+            queue_move_index: None,
+            queue_move_target: 0,
             pending_playlist_track_ids: Vec::new(),
             playlist_creating: false,
             metadata: MetadataEditState {
@@ -979,10 +985,9 @@ impl App {
             tokio::spawn(async move {
                 if let Ok(DaemonRes::Tracks { tracks, .. }) =
                     c.library().get_tracks(None, None).await
+                    && !tracks.is_empty()
                 {
-                    if !tracks.is_empty() {
-                        let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
-                    }
+                    let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
                 }
             });
         }
@@ -1064,20 +1069,21 @@ impl App {
                 }
                 // After a background metadata sync finishes, re-pull the
                 // library so scrubbed tags / fetched covers show up live.
-                if let gtm_core::ipc::DaemonEvent::Custom { name, data } = &ev {
-                    if name == "sync_done" && data.get("kind").is_some_and(|k| k == "metadata") {
-                        had_sync_done = true;
-                    }
+                if let gtm_core::ipc::DaemonEvent::Custom { name, data } = &ev
+                    && name == "sync_done"
+                    && data.get("kind").is_some_and(|k| k == "metadata")
+                {
+                    had_sync_done = true;
                 }
                 self.state.apply_event(&ev);
                 events_received = true;
             }
             // If the countdown elapsed without a PlaybackStarted (e.g. the
             // track ended before the crossfade could fire), drop the card.
-            if let Some(u) = self.upnext.as_ref() {
-                if u.started_at.elapsed().as_secs_f64() >= u.total_secs {
-                    self.upnext = None;
-                }
+            if let Some(u) = self.upnext.as_ref()
+                && u.started_at.elapsed().as_secs_f64() >= u.total_secs
+            {
+                self.upnext = None;
             }
             if events_received {
                 self.last_event_time = std::time::Instant::now();
@@ -1112,12 +1118,11 @@ impl App {
             if had_track_change {
                 self.client.seed_clock_from_state(&self.state).await;
             }
-            if had_sync_done {
-                if let Ok(gtm_core::ipc::DaemonRes::Tracks { tracks, .. }) =
+            if had_sync_done
+                && let Ok(gtm_core::ipc::DaemonRes::Tracks { tracks, .. }) =
                     self.client.library().get_tracks(None, None).await
-                {
-                    self.tracks_cache = tracks;
-                }
+            {
+                self.tracks_cache = tracks;
             }
 
             if had_spotify_change {
@@ -1200,23 +1205,20 @@ impl App {
                 // Fetch cover art when needed: for display (no_image_protocol
                 // check) OR for reactive-theming palette extraction.
                 let needs_cover = self.reactive_theme || !no_image_protocol();
-                if needs_cover {
-                    if let Some(tid) = current_tid {
-                        let fetch_gen = self.next_cover_gen();
-                        self.np_cover.pending_gen = Some(fetch_gen);
-                        let client = self.client.clone();
-                        let ipc_tx = self.ipc_tx.clone();
-                        tokio::spawn(async move {
-                            if let Ok(Some(b64)) = client.art().cover(tid).await {
-                                if let Ok(bytes) =
-                                    base64::engine::general_purpose::STANDARD.decode(&b64)
-                                {
-                                    let _ = ipc_tx
-                                        .send(IpcResult::CoverArt(Some(bytes), Some(tid), fetch_gen));
-                                }
-                            }
-                        });
-                    }
+                if needs_cover && let Some(tid) = current_tid {
+                    let fetch_gen = self.next_cover_gen();
+                    self.np_cover.pending_gen = Some(fetch_gen);
+                    let client = self.client.clone();
+                    let ipc_tx = self.ipc_tx.clone();
+                    tokio::spawn(async move {
+                        if let Ok(Some(b64)) = client.art().cover(tid).await
+                            && let Ok(bytes) =
+                                base64::engine::general_purpose::STANDARD.decode(&b64)
+                        {
+                            let _ =
+                                ipc_tx.send(IpcResult::CoverArt(Some(bytes), Some(tid), fetch_gen));
+                        }
+                    });
                 }
                 // Auto-fetch lyrics if lyrics pane is visible
                 if self.show_lyrics {
@@ -1318,18 +1320,16 @@ impl App {
                         if let (Some(_), Some(cur_path)) = (
                             &cover_tid,
                             self.state.current_track.as_ref().map(|t| &t.path),
-                        ) {
-                            if let Some(pending_path) = self.np_cover.track_path.as_ref() {
-                                if pending_path != cur_path {
-                                    continue;
-                                }
-                            }
+                        ) && let Some(pending_path) = self.np_cover.track_path.as_ref()
+                            && pending_path != cur_path
+                        {
+                            continue;
                         }
-                        if let Some(c) = cover.as_ref() {
-                            if self.reactive_theme {
-                                let tx = self.ipc_tx.clone();
-                                self.request_reactive_palette(c, tx);
-                            }
+                        if let Some(c) = cover.as_ref()
+                            && self.reactive_theme
+                        {
+                            let tx = self.ipc_tx.clone();
+                            self.request_reactive_palette(c, tx);
                         }
                         self.np_cover.pending_gen = None;
                         self.np_cover.image = cover;
@@ -1407,11 +1407,10 @@ impl App {
                                     && u.track.id == track_id
                                     && u.cover_fetch_gen == Some(fetch_gen)
                             })
+                            && let Some(u) = self.upnext.as_mut()
                         {
-                            if let Some(u) = self.upnext.as_mut() {
-                                u.cover = cover;
-                                self.upnext_cover_sync();
-                            }
+                            u.cover = cover;
+                            self.upnext_cover_sync();
                         }
                     }
                     IpcResult::QueuePreviewCover(cover, track_id, fetch_gen) => {
@@ -1502,16 +1501,17 @@ impl App {
 
             // YT search debounce: auto-search 500ms after last keystroke
             let now = std::time::Instant::now();
-            if let Some(deadline) = self.yt_search_debounce {
-                if now >= deadline {
-                    self.yt_search_debounce = None;
-                    if let Some(top) = self.pickers.top() {
-                        if top.id == PickerId::YTSearch && !top.query.is_empty() {
-                            let q = top.query.clone();
-                            let tx = self.cmd_tx();
-                            let _ = tx.send(TuiCommand::YtSearch(q)).await;
-                        }
-                    }
+            if let Some(deadline) = self.yt_search_debounce
+                && now >= deadline
+            {
+                self.yt_search_debounce = None;
+                if let Some(top) = self.pickers.top()
+                    && top.id == PickerId::YTSearch
+                    && !top.query.is_empty()
+                {
+                    let q = top.query.clone();
+                    let tx = self.cmd_tx();
+                    let _ = tx.send(TuiCommand::YtSearch(q)).await;
                 }
             }
 
@@ -1857,10 +1857,10 @@ impl App {
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.art().cover(tid).await {
-                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                    let _ = ipc_tx.send(IpcResult::UpNextCover(Some(bytes), tid, fetch_gen));
-                }
+            if let Ok(Some(b64)) = client.art().cover(tid).await
+                && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64)
+            {
+                let _ = ipc_tx.send(IpcResult::UpNextCover(Some(bytes), tid, fetch_gen));
             }
         });
     }
@@ -1993,10 +1993,10 @@ impl App {
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.art().cover(tid).await {
-                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                    let _ = ipc_tx.send(IpcResult::PopupCoverArt(Some(bytes), tid, fetch_gen));
-                }
+            if let Ok(Some(b64)) = client.art().cover(tid).await
+                && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64)
+            {
+                let _ = ipc_tx.send(IpcResult::PopupCoverArt(Some(bytes), tid, fetch_gen));
             }
         });
     }
@@ -2060,10 +2060,10 @@ impl App {
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.art().cover(tid).await {
-                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                    let _ = ipc_tx.send(IpcResult::PickerPreviewCover(Some(bytes), tid, fetch_gen));
-                }
+            if let Ok(Some(b64)) = client.art().cover(tid).await
+                && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64)
+            {
+                let _ = ipc_tx.send(IpcResult::PickerPreviewCover(Some(bytes), tid, fetch_gen));
             }
         });
     }
@@ -2116,10 +2116,10 @@ impl App {
         let ipc_tx = self.ipc_tx.clone();
         let artist = name.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.art().artist_cover(artist.clone()).await {
-                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                    let _ = ipc_tx.send(IpcResult::ArtistCoverArt(Some(bytes), artist, fetch_gen));
-                }
+            if let Ok(Some(b64)) = client.art().artist_cover(artist.clone()).await
+                && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64)
+            {
+                let _ = ipc_tx.send(IpcResult::ArtistCoverArt(Some(bytes), artist, fetch_gen));
             }
         });
     }
@@ -2428,10 +2428,10 @@ impl App {
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.art().cover(tid).await {
-                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                    let _ = ipc_tx.send(IpcResult::QueuePreviewCover(Some(bytes), tid, fetch_gen));
-                }
+            if let Ok(Some(b64)) = client.art().cover(tid).await
+                && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64)
+            {
+                let _ = ipc_tx.send(IpcResult::QueuePreviewCover(Some(bytes), tid, fetch_gen));
             }
         });
     }
@@ -2507,10 +2507,14 @@ impl App {
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.art().cover(track_id).await {
-                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                    let _ = ipc_tx.send(IpcResult::MetadataCoverArt(Some(bytes), track_id, fetch_gen));
-                }
+            if let Ok(Some(b64)) = client.art().cover(track_id).await
+                && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64)
+            {
+                let _ = ipc_tx.send(IpcResult::MetadataCoverArt(
+                    Some(bytes),
+                    track_id,
+                    fetch_gen,
+                ));
             }
         });
     }
@@ -2745,58 +2749,55 @@ impl App {
                             // Find the track by filename substring match in library
                             if let Ok(DaemonRes::Tracks { tracks, .. }) =
                                 client2.library().get_tracks(None, None).await
-                            {
-                                if let Some(track) = tracks
+                                && let Some(track) = tracks
                                     .iter()
                                     .find(|t| {
                                         filename.contains(&t.title)
                                             || t.path.contains(filename.trim_end_matches(".mp3"))
                                     })
                                     .or_else(|| tracks.last())
+                            {
+                                if let Ok(Some(lyrics_data)) =
+                                    client2.lyrics().get(track.id, Some(&track.path)).await
+                                    && !lyrics_data.lines.is_empty()
                                 {
-                                    if let Ok(Some(lyrics_data)) =
-                                        client2.lyrics().get(track.id, Some(&track.path)).await
-                                    {
-                                        if !lyrics_data.lines.is_empty() {
-                                            // Write .lrc sidecar next to the audio file
-                                            let lrc_path = {
-                                                let p = std::path::PathBuf::from(&track.path);
-                                                p.with_extension("lrc")
-                                            };
-                                            let mut lrc_content = String::new();
-                                            if let Some(ref ar) = lyrics_data.artist {
-                                                lrc_content.push_str(&format!("[ar:{}]\n", ar));
-                                            }
-                                            if let Some(ref al) = lyrics_data.album {
-                                                lrc_content.push_str(&format!("[al:{}]\n", al));
-                                            }
-                                            if let Some(ref ti) = lyrics_data.title {
-                                                lrc_content.push_str(&format!("[ti:{}]\n", ti));
-                                            }
-                                            for line in &lyrics_data.lines {
-                                                if line.timestamp < 0.0 {
-                                                    lrc_content.push_str(&line.text);
-                                                    lrc_content.push('\n');
-                                                    continue;
-                                                }
-                                                let mins = (line.timestamp / 60.0) as u64;
-                                                let secs = line.timestamp - (mins as f64 * 60.0);
-                                                lrc_content.push_str(&format!(
-                                                    "[{:02}:{:05.2}]{}\n",
-                                                    mins, secs, line.text
-                                                ));
-                                            }
-                                            let _ = std::fs::write(&lrc_path, lrc_content);
-                                        }
+                                    // Write .lrc sidecar next to the audio file
+                                    let lrc_path = {
+                                        let p = std::path::PathBuf::from(&track.path);
+                                        p.with_extension("lrc")
+                                    };
+                                    let mut lrc_content = String::new();
+                                    if let Some(ref ar) = lyrics_data.artist {
+                                        lrc_content.push_str(&format!("[ar:{}]\n", ar));
                                     }
-                                    // Scrub the downloaded file's tags and fetch
-                                    // its cover art (runs per-path in the
-                                    // background).
-                                    let _ = client2
-                                        .library()
-                                        .sync_metadata(Some(track.path.clone()))
-                                        .await;
+                                    if let Some(ref al) = lyrics_data.album {
+                                        lrc_content.push_str(&format!("[al:{}]\n", al));
+                                    }
+                                    if let Some(ref ti) = lyrics_data.title {
+                                        lrc_content.push_str(&format!("[ti:{}]\n", ti));
+                                    }
+                                    for line in &lyrics_data.lines {
+                                        if line.timestamp < 0.0 {
+                                            lrc_content.push_str(&line.text);
+                                            lrc_content.push('\n');
+                                            continue;
+                                        }
+                                        let mins = (line.timestamp / 60.0) as u64;
+                                        let secs = line.timestamp - (mins as f64 * 60.0);
+                                        lrc_content.push_str(&format!(
+                                            "[{:02}:{:05.2}]{}\n",
+                                            mins, secs, line.text
+                                        ));
+                                    }
+                                    let _ = std::fs::write(&lrc_path, lrc_content);
                                 }
+                                // Scrub the downloaded file's tags and fetch
+                                // its cover art (runs per-path in the
+                                // background).
+                                let _ = client2
+                                    .library()
+                                    .sync_metadata(Some(track.path.clone()))
+                                    .await;
                             }
                             match (&title, &artist) {
                                 (Some(t), Some(a)) => format!("Downloaded: {} - {}", a, t),
@@ -2956,9 +2957,8 @@ impl App {
                         }
                         Err(_) => {
                             let _ = ipc_tx2.send(IpcResult::Lyrics(None));
-                            let _ = ipc_tx2.send(IpcResult::Error(
-                                "Lyrics fetch timed out".to_string(),
-                            ));
+                            let _ = ipc_tx2
+                                .send(IpcResult::Error("Lyrics fetch timed out".to_string()));
                         }
                     }
                 });
@@ -3973,6 +3973,11 @@ impl App {
                             }
                         }
                     }
+                    // Queue move actions: only handled in picker mode
+                    Some(KeyboardAction::QueueMoveUp)
+                    | Some(KeyboardAction::QueueMoveDown)
+                    | Some(KeyboardAction::QueueMoveConfirm)
+                    | Some(KeyboardAction::QueueMoveCancel) => {}
                     None => {
                         match key.code {
                             KeyCode::Char('q') => {
@@ -4083,6 +4088,96 @@ impl App {
                 self.notify("No track selected to download", NotificationKind::Info);
             }
             return;
+        }
+
+        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::Queue)) {
+            // Queue move mode: Ctrl+j/k to move, Enter to confirm, Esc to cancel
+            if self.queue_move_index.is_some() {
+                match key.code {
+                    KeyCode::Esc => {
+                        // Cancel move mode
+                        self.queue_move_index = None;
+                        self.queue_move_target = 0;
+                        if let Some(top) = self.pickers.top_mut() {
+                            top.selected = self.queue_move_target;
+                        }
+                        return;
+                    }
+                    KeyCode::Enter => {
+                        // Confirm move
+                        if let Some(from_idx) = self.queue_move_index {
+                            let to_idx = self.queue_move_target;
+                            if from_idx != to_idx && to_idx < self.queue_cache.len() {
+                                self.send_high(TuiCommand::QueueMove(
+                                    from_idx as u64,
+                                    to_idx as u64,
+                                ));
+                            }
+                        }
+                        self.queue_move_index = None;
+                        self.queue_move_target = 0;
+                        return;
+                    }
+                    KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        // Move down
+                        if let Some(top) = self.pickers.top_mut() {
+                            top.selected =
+                                (top.selected + 1).min(self.queue_cache.len().saturating_sub(1));
+                            self.queue_move_target = top.selected;
+                        }
+                        return;
+                    }
+                    KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        // Move up
+                        if let Some(top) = self.pickers.top_mut() {
+                            top.selected = top.selected.saturating_sub(1);
+                            self.queue_move_target = top.selected;
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+            } else {
+                // Enter move mode when Ctrl+j or Ctrl+k is pressed
+                match key.code {
+                    KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if !self.queue_cache.is_empty() {
+                            self.queue_move_index = Some(
+                                self.pickers
+                                    .top()
+                                    .map(|o| o.selected)
+                                    .unwrap_or(0)
+                                    .min(self.queue_cache.len().saturating_sub(1)),
+                            );
+                            self.queue_move_target = self.queue_move_index.unwrap();
+                            if let Some(top) = self.pickers.top_mut() {
+                                top.selected = (top.selected + 1)
+                                    .min(self.queue_cache.len().saturating_sub(1));
+                                self.queue_move_target = top.selected;
+                            }
+                        }
+                        return;
+                    }
+                    KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if !self.queue_cache.is_empty() {
+                            self.queue_move_index = Some(
+                                self.pickers
+                                    .top()
+                                    .map(|o| o.selected)
+                                    .unwrap_or(0)
+                                    .min(self.queue_cache.len().saturating_sub(1)),
+                            );
+                            self.queue_move_target = self.queue_move_index.unwrap();
+                            if let Some(top) = self.pickers.top_mut() {
+                                top.selected = top.selected.saturating_sub(1);
+                                self.queue_move_target = top.selected;
+                            }
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+            }
         }
 
         if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::SleepTimer)) {
@@ -4213,14 +4308,14 @@ impl App {
                             2 => match self.settings_option {
                                 0 => {
                                     let next = match self.state.repeat {
-                                        gtm_core::state::RepeatMode::Off => {
-                                            gtm_core::state::RepeatMode::One
+                                        gtm_core::global::RepeatMode::Off => {
+                                            gtm_core::global::RepeatMode::One
                                         }
-                                        gtm_core::state::RepeatMode::One => {
-                                            gtm_core::state::RepeatMode::All
+                                        gtm_core::global::RepeatMode::One => {
+                                            gtm_core::global::RepeatMode::All
                                         }
-                                        gtm_core::state::RepeatMode::All => {
-                                            gtm_core::state::RepeatMode::Off
+                                        gtm_core::global::RepeatMode::All => {
+                                            gtm_core::global::RepeatMode::Off
                                         }
                                     };
                                     let c = self.client.clone();
@@ -4279,17 +4374,15 @@ impl App {
                                             let ipc_tx = self.ipc_tx.clone();
                                             tokio::spawn(async move {
                                                 if let Ok(Some(b64)) = client.art().cover(tid).await
-                                                {
-                                                    if let Ok(bytes) =
+                                                    && let Ok(bytes) =
                                                         base64::engine::general_purpose::STANDARD
                                                             .decode(&b64)
-                                                    {
-                                                        let _ = ipc_tx.send(IpcResult::CoverArt(
-                                                            Some(bytes),
-                                                            Some(tid),
-                                                            fetch_gen,
-                                                        ));
-                                                    }
+                                                {
+                                                    let _ = ipc_tx.send(IpcResult::CoverArt(
+                                                        Some(bytes),
+                                                        Some(tid),
+                                                        fetch_gen,
+                                                    ));
                                                 }
                                             });
                                         }
@@ -4299,9 +4392,7 @@ impl App {
                                 }
                                 _ => {}
                             },
-                            4 => match self.settings_option {
-                                _ => {}
-                            },
+                            4 => {}
                             _ => {}
                         }
                     }
@@ -4334,14 +4425,14 @@ impl App {
                             2 => match self.settings_option {
                                 0 => {
                                     let next = match self.state.repeat {
-                                        gtm_core::state::RepeatMode::Off => {
-                                            gtm_core::state::RepeatMode::One
+                                        gtm_core::global::RepeatMode::Off => {
+                                            gtm_core::global::RepeatMode::One
                                         }
-                                        gtm_core::state::RepeatMode::One => {
-                                            gtm_core::state::RepeatMode::All
+                                        gtm_core::global::RepeatMode::One => {
+                                            gtm_core::global::RepeatMode::All
                                         }
-                                        gtm_core::state::RepeatMode::All => {
-                                            gtm_core::state::RepeatMode::Off
+                                        gtm_core::global::RepeatMode::All => {
+                                            gtm_core::global::RepeatMode::Off
                                         }
                                     };
                                     let c = self.client.clone();
@@ -4400,17 +4491,15 @@ impl App {
                                             let ipc_tx = self.ipc_tx.clone();
                                             tokio::spawn(async move {
                                                 if let Ok(Some(b64)) = client.art().cover(tid).await
-                                                {
-                                                    if let Ok(bytes) =
+                                                    && let Ok(bytes) =
                                                         base64::engine::general_purpose::STANDARD
                                                             .decode(&b64)
-                                                    {
-                                                        let _ = ipc_tx.send(IpcResult::CoverArt(
-                                                            Some(bytes),
-                                                            Some(tid),
-                                                            fetch_gen,
-                                                        ));
-                                                    }
+                                                {
+                                                    let _ = ipc_tx.send(IpcResult::CoverArt(
+                                                        Some(bytes),
+                                                        Some(tid),
+                                                        fetch_gen,
+                                                    ));
                                                 }
                                             });
                                         }
@@ -4420,9 +4509,7 @@ impl App {
                                 }
                                 _ => {}
                             },
-                            4 => match self.settings_option {
-                                _ => {}
-                            },
+                            4 => {}
                             _ => {}
                         }
                     }
@@ -4499,14 +4586,14 @@ impl App {
                             2 => match opt {
                                 0 => {
                                     let next = match self.state.repeat {
-                                        gtm_core::state::RepeatMode::Off => {
-                                            gtm_core::state::RepeatMode::One
+                                        gtm_core::global::RepeatMode::Off => {
+                                            gtm_core::global::RepeatMode::One
                                         }
-                                        gtm_core::state::RepeatMode::One => {
-                                            gtm_core::state::RepeatMode::All
+                                        gtm_core::global::RepeatMode::One => {
+                                            gtm_core::global::RepeatMode::All
                                         }
-                                        gtm_core::state::RepeatMode::All => {
-                                            gtm_core::state::RepeatMode::Off
+                                        gtm_core::global::RepeatMode::All => {
+                                            gtm_core::global::RepeatMode::Off
                                         }
                                     };
                                     let c = self.client.clone();
@@ -4598,17 +4685,15 @@ impl App {
                                             let ipc_tx = self.ipc_tx.clone();
                                             tokio::spawn(async move {
                                                 if let Ok(Some(b64)) = client.art().cover(tid).await
-                                                {
-                                                    if let Ok(bytes) =
+                                                    && let Ok(bytes) =
                                                         base64::engine::general_purpose::STANDARD
                                                             .decode(&b64)
-                                                    {
-                                                        let _ = ipc_tx.send(IpcResult::CoverArt(
-                                                            Some(bytes),
-                                                            Some(tid),
-                                                            fetch_gen,
-                                                        ));
-                                                    }
+                                                {
+                                                    let _ = ipc_tx.send(IpcResult::CoverArt(
+                                                        Some(bytes),
+                                                        Some(tid),
+                                                        fetch_gen,
+                                                    ));
                                                 }
                                             });
                                         }
@@ -4762,10 +4847,10 @@ impl App {
             }
             KeyCode::Char('n') if is_help && !ctrl_or_alt => {
                 let total = self.help_picker_total();
-                if let Some(top) = self.pickers.top_mut() {
-                    if total > 0 {
-                        top.selected = (top.selected + 1).min(total - 1);
-                    }
+                if let Some(top) = self.pickers.top_mut()
+                    && total > 0
+                {
+                    top.selected = (top.selected + 1).min(total - 1);
                 }
             }
             KeyCode::Char('N') if is_help && !ctrl_or_alt => {
@@ -4775,31 +4860,33 @@ impl App {
             }
             // Queue move up/down (Ctrl+K/J) must come before plain k/j
             KeyCode::Char('k') if key.modifiers == KeyModifiers::CONTROL => {
-                if let Some(top) = self.pickers.top() {
-                    if top.id == PickerId::Queue && !self.queue_cache.is_empty() {
-                        let idx = top.selected.min(self.queue_cache.len() - 1);
-                        if idx > 0 {
-                            let _ = tx
-                                .send(TuiCommand::QueueMove(
-                                    idx as u64,
-                                    idx.saturating_sub(1) as u64,
-                                ))
-                                .await;
-                            self.fetch_queue().await;
-                        }
+                if let Some(top) = self.pickers.top()
+                    && top.id == PickerId::Queue
+                    && !self.queue_cache.is_empty()
+                {
+                    let idx = top.selected.min(self.queue_cache.len() - 1);
+                    if idx > 0 {
+                        let _ = tx
+                            .send(TuiCommand::QueueMove(
+                                idx as u64,
+                                idx.saturating_sub(1) as u64,
+                            ))
+                            .await;
+                        self.fetch_queue().await;
                     }
                 }
             }
             KeyCode::Char('j') if key.modifiers == KeyModifiers::CONTROL => {
-                if let Some(top) = self.pickers.top() {
-                    if top.id == PickerId::Queue && !self.queue_cache.is_empty() {
-                        let idx = top.selected.min(self.queue_cache.len() - 1);
-                        if idx < self.queue_cache.len() - 1 {
-                            let _ = tx
-                                .send(TuiCommand::QueueMove(idx as u64, (idx + 1) as u64))
-                                .await;
-                            self.fetch_queue().await;
-                        }
+                if let Some(top) = self.pickers.top()
+                    && top.id == PickerId::Queue
+                    && !self.queue_cache.is_empty()
+                {
+                    let idx = top.selected.min(self.queue_cache.len() - 1);
+                    if idx < self.queue_cache.len() - 1 {
+                        let _ = tx
+                            .send(TuiCommand::QueueMove(idx as u64, (idx + 1) as u64))
+                            .await;
+                        self.fetch_queue().await;
                     }
                 }
             }
@@ -4930,10 +5017,7 @@ impl App {
                 if let Some(top) = self.pickers.top() {
                     match top.id {
                         PickerId::SpotifySearch => {
-                            let not_linked = self
-                                .spotify_status
-                                .as_ref()
-                                .is_none_or(|s| !s.linked);
+                            let not_linked = self.spotify_status.as_ref().is_none_or(|s| !s.linked);
                             if not_linked {
                                 let token = self.spotify_token_input.trim().to_string();
                                 if token.is_empty() {
@@ -5662,9 +5746,7 @@ impl App {
                     let url = result.url.clone();
                     let title = Some(result.title.clone());
                     let artist = Some(result.channel.clone());
-                    let _ = tx
-                        .send(TuiCommand::YtDownload { url, title, artist })
-                        .await;
+                    let _ = tx.send(TuiCommand::YtDownload { url, title, artist }).await;
                 }
             }
             KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
@@ -5684,47 +5766,44 @@ impl App {
             }
             KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
                 // Edit Metadata: sync cover using the currently-entered metadata.
-                if top_id == Some(PickerId::EditMetadata) {
-                    if let Some(track_id) = self.metadata.edit_track_id {
-                        let title = self.metadata.fields[0].clone();
-                        let artist = self.metadata.fields[1].clone();
-                        let album = self.metadata.fields[2].clone();
-                        let genre = self.metadata.fields[4].clone();
-                        let year = self.metadata.fields[5].parse::<i32>().ok();
-                        let track_number = self.metadata.fields[6].parse::<i32>().ok();
-                        let fetch_gen = self.next_cover_gen();
-                        self.metadata.cover_fetch_gen = Some(fetch_gen);
-                        let client = self.client.clone();
-                        let ipc_tx = self.ipc_tx.clone();
-                        tokio::spawn(async move {
-                            let patch = gtm_core::MetadataPatch {
-                                title: Some(title),
-                                artist: Some(artist),
-                                album: Some(album),
-                                genre: Some(genre),
-                                year,
-                                track_number,
-                            };
-                            // Persist edited metadata first so the cover lookup
-                            // uses the updated artist/album/title.
-                            let _ = client.library().update_metadata(track_id, patch).await;
-                            if let Ok(Some(b64)) = client.art().cover(track_id).await {
-                                if let Ok(bytes) =
-                                    base64::engine::general_purpose::STANDARD.decode(&b64)
-                                {
-                                    let _ = ipc_tx
-                                        .send(IpcResult::MetadataCoverArt(Some(bytes), track_id, fetch_gen));
-                                }
-                            }
-                        });
-                        self.metadata.cover_dirty = true;
-                        self.notify_titled(
-                            "Library",
-                            "Syncing cover…",
-                            NotificationKind::Info,
-                            true,
-                        );
-                    }
+                if top_id == Some(PickerId::EditMetadata)
+                    && let Some(track_id) = self.metadata.edit_track_id
+                {
+                    let title = self.metadata.fields[0].clone();
+                    let artist = self.metadata.fields[1].clone();
+                    let album = self.metadata.fields[2].clone();
+                    let genre = self.metadata.fields[4].clone();
+                    let year = self.metadata.fields[5].parse::<i32>().ok();
+                    let track_number = self.metadata.fields[6].parse::<i32>().ok();
+                    let fetch_gen = self.next_cover_gen();
+                    self.metadata.cover_fetch_gen = Some(fetch_gen);
+                    let client = self.client.clone();
+                    let ipc_tx = self.ipc_tx.clone();
+                    tokio::spawn(async move {
+                        let patch = gtm_core::MetadataPatch {
+                            title: Some(title),
+                            artist: Some(artist),
+                            album: Some(album),
+                            genre: Some(genre),
+                            year,
+                            track_number,
+                        };
+                        // Persist edited metadata first so the cover lookup
+                        // uses the updated artist/album/title.
+                        let _ = client.library().update_metadata(track_id, patch).await;
+                        if let Ok(Some(b64)) = client.art().cover(track_id).await
+                            && let Ok(bytes) =
+                                base64::engine::general_purpose::STANDARD.decode(&b64)
+                        {
+                            let _ = ipc_tx.send(IpcResult::MetadataCoverArt(
+                                Some(bytes),
+                                track_id,
+                                fetch_gen,
+                            ));
+                        }
+                    });
+                    self.metadata.cover_dirty = true;
+                    self.notify_titled("Library", "Syncing cover…", NotificationKind::Info, true);
                 }
             }
             KeyCode::Char(c) if !ctrl_or_alt => {
@@ -5749,11 +5828,7 @@ impl App {
                             self.metadata.fields[self.metadata.field_idx].push(c);
                         }
                         PickerId::SpotifySearch => {
-                            if self
-                                .spotify_status
-                                .as_ref()
-                                .is_none_or(|s| !s.linked)
-                            {
+                            if self.spotify_status.as_ref().is_none_or(|s| !s.linked) {
                                 self.spotify_token_input.push(c);
                             } else {
                                 top.query.push(c);
@@ -5798,11 +5873,7 @@ impl App {
                             self.metadata.fields[self.metadata.field_idx].pop();
                         }
                         PickerId::SpotifySearch => {
-                            if self
-                                .spotify_status
-                                .as_ref()
-                                .is_none_or(|s| !s.linked)
-                            {
+                            if self.spotify_status.as_ref().is_none_or(|s| !s.linked) {
                                 self.spotify_token_input.pop();
                             } else {
                                 top.query.pop();
@@ -5835,11 +5906,7 @@ impl App {
         if let Some(top) = self.pickers.top_mut() {
             match top.id {
                 PickerId::SpotifySearch => {
-                    if self
-                        .spotify_status
-                        .as_ref()
-                        .is_none_or(|s| !s.linked)
-                    {
+                    if self.spotify_status.as_ref().is_none_or(|s| !s.linked) {
                         self.spotify_token_input.push_str(text);
                     } else {
                         top.query.push_str(text);
@@ -5874,12 +5941,12 @@ impl App {
     }
 
     async fn apply_eq_on_navigation(&mut self) {
-        if let Some(top) = self.pickers.top() {
-            if top.id == PickerId::Equalizer {
-                let idx = top.selected.min(EQ_PRESETS.len() - 1);
-                self.send_high(TuiCommand::SetEqPreset(EQ_PRESETS[idx]));
-                self.state.eq_preset = EQ_PRESETS[idx];
-            }
+        if let Some(top) = self.pickers.top()
+            && top.id == PickerId::Equalizer
+        {
+            let idx = top.selected.min(EQ_PRESETS.len() - 1);
+            self.send_high(TuiCommand::SetEqPreset(EQ_PRESETS[idx]));
+            self.state.eq_preset = EQ_PRESETS[idx];
         }
     }
 
@@ -5941,7 +6008,7 @@ fn lyric_index_at(lines: &[gtm_core::track::LrcLine], position: f64) -> usize {
         .enumerate()
         .filter(|(_, l)| l.timestamp >= 0.0 && l.timestamp <= position)
         .map(|(i, _)| i)
-        .last()
+        .next_back()
         .unwrap_or(0)
 }
 

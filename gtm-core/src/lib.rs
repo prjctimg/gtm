@@ -6,6 +6,7 @@
 
 pub mod client;
 pub mod fsm;
+pub mod global;
 pub mod ipc;
 pub mod log;
 pub mod paths;
@@ -16,14 +17,14 @@ pub mod tripwire;
 pub mod validate;
 pub mod wire;
 
+pub use global::{
+    CoreError, CrossfadeConfig, DaemonState, EQ_FREQUENCIES, Easing, EqBand, ReverbConfig,
+};
 pub use ipc::MetadataPatch;
 pub use paths::{
     is_termux, resolve_command_socket, resolve_pid_file, resolve_pulse_socket, termux_music_dirs,
 };
 pub use spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
-pub use state::{
-    CoreError, CrossfadeConfig, DaemonState, EQ_FREQUENCIES, Easing, EqBand, ReverbConfig,
-};
 pub use track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
 
 pub type Result<T> = std::result::Result<T, CoreError>;

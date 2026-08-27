@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use gtm_core::client::DaemonClient;
-use gtm_core::state::RepeatMode;
+use gtm_core::global::RepeatMode;
 
 use crate::footer::format_uptime;
 
@@ -575,6 +575,9 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
             }
             CliCommand::Status { stream } => {
                 if *stream {
+                    let mut last_track: Option<String> = None;
+                    let mut lyrics: Option<gtm_core::track::LrcData> = None;
+                    let mut first = true;
                     loop {
                         let state = client.get_status().await.map_err(|e| e.to_string())?;
                         let elapsed = state.time_pos as u64;
@@ -587,12 +590,44 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                             }
                         });
                         let vol = state.volume;
+                        // (Re)fetch time-synced lyrics whenever the track changes.
+                        let track_key = state.current_track.as_ref().map(|t| t.path.clone());
+                        if track_key != last_track {
+                            last_track = track_key;
+                            lyrics = match &state.current_track {
+                                Some(t) => client
+                                    .lyrics()
+                                    .search(&t.artist, &t.title)
+                                    .await
+                                    .ok()
+                                    .flatten(),
+                                None => None,
+                            };
+                        }
+                        // Pick the active lyric line for the current position.
+                        let active = lyrics.as_ref().and_then(|l| {
+                            let pos = state.time_pos;
+                            l.lines
+                                .iter()
+                                .rfind(|ln| ln.timestamp >= 0.0 && ln.timestamp <= pos)
+                                .or_else(|| l.lines.iter().find(|ln| ln.timestamp < 0.0))
+                                .map(|ln| ln.text.trim().to_string())
+                        });
+                        if !first {
+                            print!("\x1b[1A");
+                        }
+                        first = false;
                         print!(
-                            "\rStream: {} | {}s / {}s | {}%   ",
+                            "\r\x1b[KStream: {} | {}s / {}s | {}%",
                             track, elapsed, dur, vol
                         );
+                        if let Some(line) = active {
+                            print!("\n\x1b[K  ♪ {}", line);
+                        } else {
+                            print!("\n\x1b[K");
+                        }
                         std::io::stdout().flush().ok();
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                     }
                 } else {
                     let state = client.get_status().await.map_err(|e| e.to_string())?;
@@ -600,9 +635,9 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         serde_json::to_string_pretty(&state).map_err(|e| e.to_string())
                     } else {
                         let status_str = match state.status {
-                            gtm_core::state::PlaybackStatus::Playing => "\x1b[32m▶ Playing\x1b[0m",
-                            gtm_core::state::PlaybackStatus::Paused => "\x1b[33m⏸ Paused\x1b[0m",
-                            gtm_core::state::PlaybackStatus::Stopped => "\x1b[31m⏹ Stopped\x1b[0m",
+                            gtm_core::global::PlaybackStatus::Playing => "\x1b[32m▶ Playing\x1b[0m",
+                            gtm_core::global::PlaybackStatus::Paused => "\x1b[33m⏸ Paused\x1b[0m",
+                            gtm_core::global::PlaybackStatus::Stopped => "\x1b[31m⏹ Stopped\x1b[0m",
                         };
                         let track_str = state
                             .current_track
@@ -817,10 +852,10 @@ fn pick_editor() -> Option<Vec<String>> {
     for var in ["VISUAL", "EDITOR"] {
         if let Ok(val) = std::env::var(var) {
             let parts: Vec<String> = val.split_whitespace().map(String::from).collect();
-            if let Some(program) = parts.first() {
-                if command_exists(program) {
-                    return Some(parts);
-                }
+            if let Some(program) = parts.first()
+                && command_exists(program)
+            {
+                return Some(parts);
             }
         }
     }

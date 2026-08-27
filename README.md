@@ -49,13 +49,6 @@ curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | b
 
 Or grab an archive [releases page](https://github.com/prjctimg/gtm.rs/releases/latest), extract it, and run the `./install.sh` in it's directory
 
-```bash
-
-tar xvf <your archive name> 
-cd your-archive-name && ./install.sh
-
-```
-
 ### Build from Source
 
 Requires Rust 1.81+ and ALSA development headers (`libasound2-dev` on Debian/Ubuntu). `clang` is the default compiler (fallback to `gcc`) and uses `mold` when available instead of `ld`.

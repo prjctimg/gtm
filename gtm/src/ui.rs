@@ -4,6 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use std::borrow::Cow;
 use std::path::PathBuf;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -20,7 +21,7 @@ use crossterm::event::{
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use gtm_core::state::EqPreset;
+use gtm_core::global::EqPreset;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
@@ -112,18 +113,25 @@ impl Render {
 
         let cover_w = COVER_W.min(inner.width.saturating_sub(2));
         let cover_h = COVER_H.min(inner.height);
-        if has_cover && cover_w > 0 {
+        if cover_w > 0 {
             let cover_area = Rect {
                 x: inner.x,
                 y: inner.y,
                 width: cover_w,
                 height: cover_h,
             };
-            if let Some(protocol) = app.upnext.as_mut().and_then(|u| u.cover_stateful.as_mut()) {
-                let image = StatefulImage::new();
-                f.render_stateful_widget(image, cover_area, protocol);
-            } else if let Some(bytes) = app.upnext.as_ref().and_then(|u| u.cover.as_ref()) {
-                Render::cover_block(f, cover_area, bytes);
+            if has_cover {
+                if let Some(protocol) = app.upnext.as_mut().and_then(|u| u.cover_stateful.as_mut())
+                {
+                    let image = StatefulImage::new();
+                    f.render_stateful_widget(image, cover_area, protocol);
+                } else if let Some(bytes) = app.upnext.as_ref().and_then(|u| u.cover.as_ref()) {
+                    Render::cover_block(f, cover_area, bytes);
+                } else {
+                    Render::cover(f, cover_area, None, None, app.theme.fg_dim);
+                }
+            } else {
+                Render::cover(f, cover_area, None, None, app.theme.fg_dim);
             }
         }
 
@@ -203,8 +211,6 @@ impl Render {
                 Render::upnext_card(f, card_area, app);
                 y_bottom = card_y.saturating_sub(gap);
             }
-        } else if app.upnext.is_some() {
-            app.upnext = None;
         }
 
         let mut regular: Vec<_> = app
@@ -732,11 +738,7 @@ impl Render {
                 row += 1;
                 let _cover_row = row - 1; // already counted
                 // skip cover placeholder row
-                if vchunks[row].height == 0 {
-                    row += 1;
-                } else {
-                    row += 1;
-                }
+                row += 1;
 
                 // Title
                 let fav_prefix = if track.favourite { "\u{2665} " } else { "" };
@@ -745,10 +747,7 @@ impl Render {
                 let animated_title =
                     scroll_text(&title_text, title_avail, app.np_title_scroll, true);
                 let title_para = Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        " ",
-                        Style::default(),
-                    ),
+                    Span::styled(" ", Style::default()),
                     Span::styled(
                         &animated_title,
                         Style::default()
@@ -768,14 +767,8 @@ impl Render {
                 // Artist
                 let artist_para = Paragraph::new(Line::from(vec![
                     Span::styled(" ", Style::default()),
-                    Span::styled(
-                        "\u{1f3a4} ",
-                        Style::default().fg(app.theme.fg),
-                    ),
-                    Span::styled(
-                        display_artist,
-                        Style::default().fg(app.theme.fg_bright),
-                    ),
+                    Span::styled("\u{1f3a4} ", Style::default().fg(app.theme.fg)),
+                    Span::styled(display_artist, Style::default().fg(app.theme.fg_bright)),
                 ]));
                 let artist_area = Rect {
                     x: vchunks[row].x + 1,
@@ -790,14 +783,8 @@ impl Render {
                 if has_album {
                     let album_para = Paragraph::new(Line::from(vec![
                         Span::styled(" ", Style::default()),
-                        Span::styled(
-                            "\u{1f4bf} ",
-                            Style::default().fg(app.theme.fg),
-                        ),
-                        Span::styled(
-                            &track.album,
-                            Style::default().fg(app.theme.fg_bright),
-                        ),
+                        Span::styled("\u{1f4bf} ", Style::default().fg(app.theme.fg)),
+                        Span::styled(&track.album, Style::default().fg(app.theme.fg_bright)),
                     ]));
                     let album_area = Rect {
                         x: vchunks[row].x + 1,
@@ -820,8 +807,7 @@ impl Render {
                         height: 1,
                     };
                     let bar_w = (prog_area.width as usize).saturating_sub(12).max(4);
-                    let progress_str =
-                        crate::ui::Render::progress_variant(ratio, bar_w, app);
+                    let progress_str = crate::ui::Render::progress_variant(ratio, bar_w, app);
                     let time_str = format!(
                         " {} / {}",
                         crate::footer::format_duration(pos),
@@ -832,10 +818,7 @@ impl Render {
                             progress_str,
                             Style::default().fg(app.theme.secondary_accent),
                         ),
-                        Span::styled(
-                            time_str,
-                            Style::default().fg(app.theme.fg_dim),
-                        ),
+                        Span::styled(time_str, Style::default().fg(app.theme.fg_dim)),
                     ]));
                     f.render_widget(prog_para, prog_area);
                 }
@@ -852,37 +835,38 @@ impl Render {
             }
         }
 
-        if let Some(vis_a) = vis_area {
-            if vis_a.width >= 4 && vis_a.height >= 3 {
-                app.visualizer.tick(
-                    app.state.status == gtm_core::state::PlaybackStatus::Playing,
-                    vis_a.width,
-                    &app.state.audio_levels,
-                );
-                let vis_header = Paragraph::new(Line::from(Span::styled(
-                    " ",
-                    Style::default()
-                        .fg(app.theme.fg_dim)
-                        .add_modifier(Modifier::BOLD),
-                )));
-                f.render_widget(
-                    vis_header,
-                    Rect {
-                        x: vis_a.x,
-                        y: vis_a.y,
-                        width: vis_a.width,
-                        height: 1,
-                    },
-                );
-                let vis_inner = Rect {
-                    x: vis_a.x + 1,
-                    y: vis_a.y + 1,
-                    width: vis_a.width.saturating_sub(2),
-                    height: vis_a.height.saturating_sub(1),
-                };
-                if let Some(lines) = app.visualizer.render(vis_inner, &app.theme) {
-                    f.render_widget(lines, vis_inner);
-                }
+        if let Some(vis_a) = vis_area
+            && vis_a.width >= 4
+            && vis_a.height >= 3
+        {
+            app.visualizer.tick(
+                app.state.status == gtm_core::global::PlaybackStatus::Playing,
+                vis_a.width,
+                &app.state.audio_levels,
+            );
+            let vis_header = Paragraph::new(Line::from(Span::styled(
+                " ",
+                Style::default()
+                    .fg(app.theme.fg_dim)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            f.render_widget(
+                vis_header,
+                Rect {
+                    x: vis_a.x,
+                    y: vis_a.y,
+                    width: vis_a.width,
+                    height: 1,
+                },
+            );
+            let vis_inner = Rect {
+                x: vis_a.x + 1,
+                y: vis_a.y + 1,
+                width: vis_a.width.saturating_sub(2),
+                height: vis_a.height.saturating_sub(1),
+            };
+            if let Some(lines) = app.visualizer.render(vis_inner, &app.theme) {
+                f.render_widget(lines, vis_inner);
             }
         }
 
@@ -1395,12 +1379,12 @@ impl Render {
                     );
                     return;
                 }
-                if app.footer_cache.suppress_refresh {
-                    if let Some(ref cached) = app.footer_cache.last {
-                        crate::footer::draw(f, area, cached);
-                        Render::footer_help(f, area, app);
-                        return;
-                    }
+                if app.footer_cache.suppress_refresh
+                    && let Some(ref cached) = app.footer_cache.last
+                {
+                    crate::footer::draw(f, area, cached);
+                    Render::footer_help(f, area, app);
+                    return;
                 }
                 let rendered = crate::footer::render(app);
                 if let Some(ref out) = rendered {
@@ -1598,23 +1582,15 @@ impl Render {
         let has_cover = fields.has_cover;
         let can_cover = !no_image_protocol() && area.width > COVER_W + 1;
 
-        let sep_w = sep_area.width.saturating_sub(1) as usize;
-        let sep_label = format!(" Info{} ", fields.fav);
         let sep_style = Style::default().fg(app.theme.fg_dim);
-        let sep_line = if sep_w >= sep_label.len() {
-            let side = (sep_w - sep_label.len()) / 2;
-            let extra = (sep_w - sep_label.len()) % 2;
-            format!(
-                "{}{}{}",
-                "─".repeat(side),
-                sep_label,
-                "─".repeat(side + extra)
-            )
-        } else {
-            sep_label
+        let status_glyph = match app.state.status {
+            gtm_core::global::PlaybackStatus::Playing => "\u{25b6} Now Playing",
+            gtm_core::global::PlaybackStatus::Paused => "\u{23ef} Paused",
+            _ => "\u{266a} Ready",
         };
+        let sep_label = format!(" {} {} ", status_glyph, fields.fav);
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(sep_line, sep_style))),
+            Paragraph::new(Line::from(Span::styled(sep_label, sep_style))),
             sep_area,
         );
 
@@ -1888,10 +1864,9 @@ async fn ensure_daemon_running(
             if let Ok(Ok(n)) =
                 tokio::time::timeout(std::time::Duration::from_millis(100), stream.read(&mut buf))
                     .await
+                && n > 0
             {
-                if n > 0 {
-                    return Ok(());
-                }
+                return Ok(());
             }
         }
         let _ = std::fs::remove_file(socket_path);
@@ -1917,25 +1892,22 @@ async fn ensure_daemon_running(
 
     for _ in 0..120 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if socket_path.exists() {
-            if let Ok(mut stream) = tokio::net::UnixStream::connect(socket_path).await {
-                let ping = serde_json::to_string(&gtm_core::ipc::WireReq {
-                    id: 0,
-                    cmd: "ping".to_string(),
-                    params: serde_json::to_value(gtm_core::ipc::DaemonReq::Ping).unwrap(),
-                })? + "\n";
-                let _ = stream.write_all(ping.as_bytes()).await;
-                let mut buf = [0u8; 256];
-                if let Ok(Ok(n)) = tokio::time::timeout(
-                    std::time::Duration::from_millis(500),
-                    stream.read(&mut buf),
-                )
-                .await
-                {
-                    if n > 0 {
-                        return Ok(());
-                    }
-                }
+        if socket_path.exists()
+            && let Ok(mut stream) = tokio::net::UnixStream::connect(socket_path).await
+        {
+            let ping = serde_json::to_string(&gtm_core::ipc::WireReq {
+                id: 0,
+                cmd: "ping".to_string(),
+                params: serde_json::to_value(gtm_core::ipc::DaemonReq::Ping).unwrap(),
+            })? + "\n";
+            let _ = stream.write_all(ping.as_bytes()).await;
+            let mut buf = [0u8; 256];
+            if let Ok(Ok(n)) =
+                tokio::time::timeout(std::time::Duration::from_millis(500), stream.read(&mut buf))
+                    .await
+                && n > 0
+            {
+                return Ok(());
             }
         }
     }
@@ -1944,12 +1916,12 @@ async fn ensure_daemon_running(
 }
 
 fn find_gtmd_binary() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(parent) = exe.parent() {
-            let candidate = parent.join("gtmd");
-            if candidate.exists() {
-                return Ok(candidate);
-            }
+    if let Ok(exe) = std::env::current_exe()
+        && let Some(parent) = exe.parent()
+    {
+        let candidate = parent.join("gtmd");
+        if candidate.exists() {
+            return Ok(candidate);
         }
     }
 
@@ -2276,11 +2248,10 @@ impl Pickers {
                 let inner = block.inner(picker_area);
                 f.render_widget(block, picker_area);
 
-                let mut lines = Vec::new();
-                lines.push(Line::from(Span::styled(
+                let mut lines = vec![Line::from(Span::styled(
                     "Enter your Spotify app Client ID, then press Enter.",
                     Style::default().fg(app.theme.fg),
-                )));
+                ))];
                 lines.push(Line::from(Span::styled(
                     "A browser window opens to authorize gtm; playlists load",
                     Style::default().fg(app.theme.fg_dim),
@@ -2335,10 +2306,7 @@ impl Pickers {
                         Line::from(""),
                         Line::from(vec![
                             Span::styled(" > ", Style::default().fg(app.theme.fg_dim)),
-                            Span::styled(
-                                token_input.as_str(),
-                                Style::default().fg(app.theme.fg),
-                            ),
+                            Span::styled(token_input.as_str(), Style::default().fg(app.theme.fg)),
                             Span::styled(" ", cursor_style.unwrap_or_default()),
                         ]),
                         Line::from(""),
@@ -2473,10 +2441,14 @@ impl Pickers {
         }
     }
 
-    fn picker_panel<'a>(app: &App, title: &'a str, help: Option<&'a str>) -> Block<'a> {
+    fn picker_panel<'a>(
+        app: &App,
+        title: impl Into<Cow<'a, str>>,
+        help: Option<&'a str>,
+    ) -> Block<'a> {
         let mut block = Block::default()
             .title(Line::from(Span::styled(
-                title,
+                title.into(),
                 Style::default()
                     .fg(app.theme.accent)
                     .add_modifier(Modifier::BOLD),
@@ -2510,11 +2482,21 @@ impl Pickers {
     fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let sel = app.pickers.top().map_or(0, |o| o.selected);
 
-        let block = Self::picker_panel(
-            app,
-            " Queue ",
-            Some(" Enter: play   Ctrl+K/Ctrl+J: move   Ctrl+D: remove   Esc: close"),
-        );
+        let (title, hint) = if app.queue_move_index.is_some() {
+            let from = app.queue_move_index.unwrap_or(0);
+            let to = app.queue_move_target;
+            (
+                format!(" Queue (MOVE MODE: {} -> {}) ", from + 1, to + 1),
+                Some(" Enter: confirm   Esc: cancel   Ctrl+K/Ctrl+J: adjust position"),
+            )
+        } else {
+            (
+                " Queue ".to_string(),
+                Some(" Enter: play   Ctrl+K/Ctrl+J: move   Ctrl+D: remove   Esc: close"),
+            )
+        };
+
+        let block = Self::picker_panel(app, title, hint);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -3697,14 +3679,14 @@ pub const HELP_LINES: &[(&str, &str)] = &[
 
 pub const CROSSFADE_DURATIONS: [u8; 5] = [3, 5, 10, 15, 30];
 
-pub const CROSSFADE_EASINGS: [gtm_core::state::Easing; 7] = [
-    gtm_core::state::Easing::Linear,
-    gtm_core::state::Easing::SlowFadeInFastFadeOut,
-    gtm_core::state::Easing::FastFadeInSlowFadeOut,
-    gtm_core::state::Easing::Logarithmic,
-    gtm_core::state::Easing::Smoothstep,
-    gtm_core::state::Easing::EqualPower,
-    gtm_core::state::Easing::Exponential,
+pub const CROSSFADE_EASINGS: [gtm_core::global::Easing; 7] = [
+    gtm_core::global::Easing::Linear,
+    gtm_core::global::Easing::SlowFadeInFastFadeOut,
+    gtm_core::global::Easing::FastFadeInSlowFadeOut,
+    gtm_core::global::Easing::Logarithmic,
+    gtm_core::global::Easing::Smoothstep,
+    gtm_core::global::Easing::EqualPower,
+    gtm_core::global::Easing::Exponential,
 ];
 
 impl Pickers {
@@ -4141,17 +4123,15 @@ impl Pickers {
         lines.push(Line::from(spans));
         lines.push(Line::from(""));
 
-        if is_active {
-            if let Some(remaining) = app.sleep_timer.remaining {
-                let r_mins = remaining / 60;
-                let r_secs = remaining % 60;
-                lines.push(Line::from(Span::styled(
-                    format!("  Active: {:02}:{:02} remaining", r_mins, r_secs),
-                    Style::default()
-                        .fg(app.theme.success)
-                        .add_modifier(Modifier::BOLD),
-                )));
-            }
+        if is_active && let Some(remaining) = app.sleep_timer.remaining {
+            let r_mins = remaining / 60;
+            let r_secs = remaining % 60;
+            lines.push(Line::from(Span::styled(
+                format!("  Active: {:02}:{:02} remaining", r_mins, r_secs),
+                Style::default()
+                    .fg(app.theme.success)
+                    .add_modifier(Modifier::BOLD),
+            )));
         }
         lines.push(Line::from(""));
 
@@ -4722,25 +4702,25 @@ impl Pickers {
         f.render_widget(list, inner);
     }
 
-    fn easing_description(e: gtm_core::state::Easing) -> &'static str {
+    fn easing_description(e: gtm_core::global::Easing) -> &'static str {
         match e {
-            gtm_core::state::Easing::Linear => {
+            gtm_core::global::Easing::Linear => {
                 "Linear: constant gain ramp; abrupt but predictable."
             }
-            gtm_core::state::Easing::Smoothstep => "Smoothstep: smooth start and end, no clicks.",
-            gtm_core::state::Easing::EqualPower => {
+            gtm_core::global::Easing::Smoothstep => "Smoothstep: smooth start and end, no clicks.",
+            gtm_core::global::Easing::EqualPower => {
                 "Equal Power: constant perceived loudness, no mid-fade dip."
             }
-            gtm_core::state::Easing::Logarithmic => {
+            gtm_core::global::Easing::Logarithmic => {
                 "Logarithmic: fast attack, fast release profile."
             }
-            gtm_core::state::Easing::Exponential => {
+            gtm_core::global::Easing::Exponential => {
                 "Exponential: fast attack, fast release profile."
             }
-            gtm_core::state::Easing::SlowFadeInFastFadeOut => {
+            gtm_core::global::Easing::SlowFadeInFastFadeOut => {
                 "Slow In, Fast Out: asymmetric curve."
             }
-            gtm_core::state::Easing::FastFadeInSlowFadeOut => {
+            gtm_core::global::Easing::FastFadeInSlowFadeOut => {
                 "Fast In, Slow Out: asymmetric curve."
             }
         }

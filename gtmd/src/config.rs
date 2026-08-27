@@ -193,10 +193,10 @@ impl DaemonConfig {
         if let Some(parent) = self.socket_pulse_path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        if let Some(ref log) = self.log_file {
-            if let Some(parent) = log.parent() {
-                std::fs::create_dir_all(parent)?;
-            }
+        if let Some(ref log) = self.log_file
+            && let Some(parent) = log.parent()
+        {
+            std::fs::create_dir_all(parent)?;
         }
         Ok(())
     }

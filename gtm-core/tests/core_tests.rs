@@ -5,12 +5,12 @@
 // This is free software released under the GPL-3.0 license.
 
 use gtm_core::Result;
-use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction};
-use gtm_core::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
-use gtm_core::state::{
+use gtm_core::global::{
     CrossfadeConfig, DaemonState, Easing, Image, PlaybackStatus, RepeatMode, ThemeMode, UIMode,
     YTFilter,
 };
+use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction};
+use gtm_core::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use gtm_core::track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
 use gtm_core::wire::{decode, encode};
 

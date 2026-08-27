@@ -16,7 +16,7 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tracing::{debug, warn};
 
-use gtm_core::state::YTFilter;
+use gtm_core::global::YTFilter;
 use gtm_core::track::{StreamInfo, YTSearchResult};
 
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(30);

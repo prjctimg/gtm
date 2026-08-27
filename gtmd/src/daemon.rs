@@ -24,12 +24,12 @@ use base64::Engine;
 use gtm_audio::PulseAudioMixer;
 use gtm_audio::{AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
 use gtm_core::CoreError;
+use gtm_core::global::{
+    DaemonState, EqPreset, PlaybackStatus, RepeatMode, ReverbConfig, SavedState,
+};
 use gtm_core::ipc::{
     ComponentHealth, DaemonEvent, DaemonReq, DaemonRes, HealthReport, HealthStatus,
     PROTOCOL_VERSION, QueueAction, SyncKind, WireReq,
-};
-use gtm_core::state::{
-    DaemonState, EqPreset, PlaybackStatus, RepeatMode, ReverbConfig, SavedState,
 };
 use gtm_core::track::TrackInfo;
 use gtm_core::wire;
@@ -156,10 +156,10 @@ impl Cmd {
         let mut state = inner.state.write().await;
 
         let track = Daemon::resolve_track_meta(inner, std::path::Path::new(&path_owned), dur);
-        if let Some(pos) = state.queue.iter().position(|t| t.path == track.path) {
-            if pos > 0 {
-                state.queue.rotate_left(pos);
-            }
+        if let Some(pos) = state.queue.iter().position(|t| t.path == track.path)
+            && pos > 0
+        {
+            state.queue.rotate_left(pos);
         }
         state.play(track.clone())?;
         state.time_pos = start_pos;
@@ -273,10 +273,10 @@ impl Cmd {
                 artist_image: None,
             },
         };
-        if let Some(pos) = state.queue.iter().position(|t| t.path == uri_path) {
-            if pos > 0 {
-                state.queue.rotate_left(pos);
-            }
+        if let Some(pos) = state.queue.iter().position(|t| t.path == uri_path)
+            && pos > 0
+        {
+            state.queue.rotate_left(pos);
         }
         state.play(track.clone())?;
         state.time_pos = start_pos;
@@ -393,10 +393,10 @@ impl Cmd {
             let state = inner.state.read().await;
             Daemon::next_track(&state)
         };
-        if let Some(track) = standby {
-            if Daemon::try_start_crossfade(inner, &track).await {
-                return Ok(DaemonRes::Ok);
-            }
+        if let Some(track) = standby
+            && Daemon::try_start_crossfade(inner, &track).await
+        {
+            return Ok(DaemonRes::Ok);
         }
         let next = match Daemon::step_next(inner).await {
             Ok(Some(t)) => t,
@@ -580,7 +580,7 @@ impl Cmd {
     }
 
     pub async fn list_eq_presets(_inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let presets = gtm_core::state::EQ_PRESETS
+        let presets = gtm_core::global::EQ_PRESETS
             .iter()
             .map(|p| p.to_string())
             .collect::<Vec<String>>();
@@ -599,7 +599,7 @@ impl Cmd {
 
     pub async fn cycle_repeat(
         inner: &DaemonInner,
-        mode: gtm_core::state::RepeatMode,
+        mode: gtm_core::global::RepeatMode,
     ) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
         state.cycle_repeat(mode)?;
@@ -629,7 +629,7 @@ impl Cmd {
         inner: &DaemonInner,
         enabled: bool,
         duration_secs: u8,
-        easing: Option<gtm_core::state::Easing>,
+        easing: Option<gtm_core::global::Easing>,
     ) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
         state.set_crossfade(enabled, duration_secs, easing)?;
@@ -648,7 +648,7 @@ impl Cmd {
 
     pub async fn set_loudness_mode(
         inner: &DaemonInner,
-        mode: gtm_core::state::LoudnessMode,
+        mode: gtm_core::global::LoudnessMode,
     ) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
         state.set_loudness_mode(mode)?;
@@ -942,7 +942,7 @@ impl Yt {
     pub async fn search(
         inner: &DaemonInner,
         query: &str,
-        filter: Option<gtm_core::state::YTFilter>,
+        filter: Option<gtm_core::global::YTFilter>,
     ) -> Result<DaemonRes, CoreError> {
         inner.health.yt.count.fetch_add(1, Ordering::Relaxed);
         inner.youtube.lock().await.start_search(query, filter);
@@ -1791,31 +1791,30 @@ impl Cover {
         } else {
             None
         };
-        if let Some(ref library) = lib {
-            if let Ok(Some(track)) = library.get_track(track_id) {
-                if let Some(ref path) = track.cover_path {
-                    if let Ok(data) = tokio::fs::read(path).await {
-                        if !crate::cover::CoverCache::cover_too_small(&data) {
-                            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                            return Ok(DaemonRes::CoverArt { data: Some(b64) });
-                        }
-                    }
-                }
-                let audio_path = std::path::Path::new(&track.path);
-                let parent = audio_path.parent().unwrap_or(std::path::Path::new(""));
-                let stem = audio_path.file_stem().unwrap_or_default();
-                for ext in ["jpg", "jpeg", "png", "webp"] {
-                    let sidecar = parent.join(format!("{}.{}", stem.to_string_lossy(), ext));
-                    if let Ok(data) = tokio::fs::read(&sidecar).await {
-                        if !crate::cover::CoverCache::cover_too_small(&data) {
-                            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                            return Ok(DaemonRes::CoverArt { data: Some(b64) });
-                        }
-                    }
-                }
-                discovered_artist = track.artist;
-                discovered_album = track.album;
+        if let Some(ref library) = lib
+            && let Ok(Some(track)) = library.get_track(track_id)
+        {
+            if let Some(ref path) = track.cover_path
+                && let Ok(data) = tokio::fs::read(path).await
+                && !crate::cover::CoverCache::cover_too_small(&data)
+            {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                return Ok(DaemonRes::CoverArt { data: Some(b64) });
             }
+            let audio_path = std::path::Path::new(&track.path);
+            let parent = audio_path.parent().unwrap_or(std::path::Path::new(""));
+            let stem = audio_path.file_stem().unwrap_or_default();
+            for ext in ["jpg", "jpeg", "png", "webp"] {
+                let sidecar = parent.join(format!("{}.{}", stem.to_string_lossy(), ext));
+                if let Ok(data) = tokio::fs::read(&sidecar).await
+                    && !crate::cover::CoverCache::cover_too_small(&data)
+                {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                    return Ok(DaemonRes::CoverArt { data: Some(b64) });
+                }
+            }
+            discovered_artist = track.artist;
+            discovered_album = track.album;
         }
 
         if discovered_artist.is_empty() {
@@ -1828,11 +1827,11 @@ impl Cover {
             if let Some(t) = in_merged {
                 discovered_artist = t.artist.clone();
                 discovered_album = t.album.clone();
-            } else if let Some(ref t) = state.current_track {
-                if t.id == track_id {
-                    discovered_artist = t.artist.clone();
-                    discovered_album = t.album.clone();
-                }
+            } else if let Some(ref t) = state.current_track
+                && t.id == track_id
+            {
+                discovered_artist = t.artist.clone();
+                discovered_album = t.album.clone();
             }
         }
 
@@ -1970,6 +1969,7 @@ struct DaemonInner {
     sleep_cancel: Arc<AtomicBool>,
     health: Arc<HealthTracker>,
     client_auth: tokio::sync::Mutex<HashMap<ClientId, bool>>,
+    active_clients: AtomicUsize,
     internal_req_tx: mpsc::UnboundedSender<DaemonReq>,
     cmd_lock: tokio::sync::Mutex<()>,
     play_history: tokio::sync::Mutex<Vec<HistoryEntry>>,
@@ -1990,11 +1990,11 @@ impl Daemon {
     pub fn new(config: DaemonConfig) -> Result<Self, CoreError> {
         let mut initial_state = DaemonState::new();
 
-        if !config.test_mode {
-            if let Some(saved) = SavedState::load(&config.state_file) {
-                info!("loaded saved state from {}", config.state_file.display());
-                saved.apply_to(&mut initial_state);
-            }
+        if !config.test_mode
+            && let Some(saved) = SavedState::load(&config.state_file)
+        {
+            info!("loaded saved state from {}", config.state_file.display());
+            saved.apply_to(&mut initial_state);
         }
 
         let state = Arc::new(RwLock::new(initial_state));
@@ -2072,6 +2072,7 @@ impl Daemon {
             sleep_cancel: Arc::new(AtomicBool::new(false)),
             health: Arc::new(HealthTracker::new(audio_backend_name)),
             client_auth: tokio::sync::Mutex::new(HashMap::new()),
+            active_clients: AtomicUsize::new(0),
             internal_req_tx,
             cmd_lock: tokio::sync::Mutex::new(()),
             play_history: tokio::sync::Mutex::new(Vec::new()),
@@ -2177,28 +2178,37 @@ impl Daemon {
                 _ = poll_interval.tick() => {
                     let result = { self.inner.mixer.lock().await.poll() };
                     Self::handle_audio_event(&self.inner, result).await;
-                    // Publish streamed-source spectrum (local files feed the
-                    // analyzer from the decode thread; streams from the
-                    // rodio source itself).
-                    {
-                        let levels = self.inner.stream.lock().await.spectrum_snapshot();
-                        if !levels.is_empty() {
-                            self.inner.mixer.lock().await.publish_spectrum(levels);
+                    // Disable the visualizer (spectrum analysis + broadcast)
+                    // when no TUI client is connected to conserve CPU.
+                    if self.inner.active_clients.load(Ordering::Relaxed) > 0 {
+                        // Publish streamed-source spectrum (local files feed the
+                        // analyzer from the decode thread; streams from the
+                        // rodio source itself).
+                        {
+                            let levels = self.inner.stream.lock().await.spectrum_snapshot();
+                            if !levels.is_empty() {
+                                self.inner.mixer.lock().await.publish_spectrum(levels);
+                            }
                         }
-                    }
-                    let spectrum = self.inner.mixer.lock().await.current_spectrum();
-                    {
-                        let mut state = self.inner.state.write().await;
-                        if spectrum.is_empty() {
-                            state.audio_levels.clear();
-                        } else {
-                            state.audio_levels = spectrum.clone();
+                        let spectrum = self.inner.mixer.lock().await.current_spectrum();
+                        {
+                            let mut state = self.inner.state.write().await;
+                            if spectrum.is_empty() {
+                                state.audio_levels.clear();
+                            } else {
+                                state.audio_levels = spectrum.clone();
+                            }
                         }
-                    }
-                    // Throttle visualizer spectrum broadcast to ~30 Hz.
-                    if !spectrum.is_empty() && last_spectrum_tx.elapsed() >= Duration::from_millis(33) {
-                        last_spectrum_tx = tokio::time::Instant::now();
-                        Self::push_event(&self.inner, DaemonEvent::SpectrumChanged { levels: spectrum });
+                        // Throttle visualizer spectrum broadcast to ~30 Hz.
+                        if !spectrum.is_empty()
+                            && last_spectrum_tx.elapsed() >= Duration::from_millis(33)
+                        {
+                            last_spectrum_tx = tokio::time::Instant::now();
+                            Self::push_event(
+                                &self.inner,
+                                DaemonEvent::SpectrumChanged { levels: spectrum },
+                            );
+                        }
                     }
                 }
                 _ = save_interval.tick() => {
@@ -2318,6 +2328,7 @@ impl Daemon {
         req_tx: mpsc::UnboundedSender<(ClientId, u64, DaemonReq, ReplyTx)>,
     ) {
         inner.client_auth.lock().await.insert(client_id, false);
+        inner.active_clients.fetch_add(1, Ordering::Relaxed);
 
         let (reader, writer) = stream.into_split();
         let event_rx = inner.event_tx.subscribe();
@@ -2386,6 +2397,7 @@ impl Daemon {
             }
             token_reader.cancel();
             inner_clone.client_auth.lock().await.remove(&client_id);
+            inner_clone.active_clients.fetch_sub(1, Ordering::Relaxed);
             info!("client {client_id} disconnected");
         });
 
@@ -2833,10 +2845,10 @@ impl Daemon {
                     .unwrap_or('\0')
                     >= key_char
             });
-            if let Some(pos) = pos {
-                if pos > 0 {
-                    list.rotate_left(pos);
-                }
+            if let Some(pos) = pos
+                && pos > 0
+            {
+                list.rotate_left(pos);
             }
         }
         list
@@ -2962,7 +2974,7 @@ impl Daemon {
             let state = inner.state.read().await;
             match state.crossfade.as_ref() {
                 Some(cf) => (cf.enabled, cf.duration_secs as f64, cf.easing),
-                None => (false, 0.0, gtm_core::state::Easing::Linear),
+                None => (false, 0.0, gtm_core::global::Easing::Linear),
             }
         };
         if !enabled
@@ -3006,15 +3018,14 @@ impl Daemon {
                     t.duration = dur;
                     return t;
                 }
-                if let Ok(tracks) = lib.list_tracks() {
-                    if let Some(matched) = tracks
+                if let Ok(tracks) = lib.list_tracks()
+                    && let Some(matched) = tracks
                         .iter()
                         .find(|t| path_str.contains(&t.path) || t.path.contains(&path_str))
-                    {
-                        let mut t = matched.clone();
-                        t.duration = dur;
-                        return t;
-                    }
+                {
+                    let mut t = matched.clone();
+                    t.duration = dur;
+                    return t;
                 }
             }
 
@@ -3144,27 +3155,29 @@ impl Daemon {
                     .as_ref()
                     .filter(|c| c.enabled)
                     .map_or(0.0, |c| c.duration_secs as f64);
-                if dur > 0.0 && (dur - pos) <= cf_secs + 3.0 {
-                    if let Some(track) = &next {
-                        let mut notified = inner.countdown_notified_for.lock().await;
-                        if notified.as_deref() != Some(track.hash.as_str()) {
-                            *notified = Some(track.hash.clone());
-                            Self::push_event(
-                                inner,
-                                DaemonEvent::CrossfadeCountdown {
-                                    track: track.clone(),
-                                },
-                            );
-                        }
+                if dur > 0.0
+                    && (dur - pos) <= cf_secs + 3.0
+                    && let Some(track) = &next
+                {
+                    let mut notified = inner.countdown_notified_for.lock().await;
+                    if notified.as_deref() != Some(track.hash.as_str()) {
+                        *notified = Some(track.hash.clone());
+                        Self::push_event(
+                            inner,
+                            DaemonEvent::CrossfadeCountdown {
+                                track: track.clone(),
+                            },
+                        );
                     }
                 }
 
-                if let Some(cf) = crossfade {
-                    if cf.enabled && dur > 0.0 && (dur - pos) <= cf.duration_secs as f64 + 0.15 {
-                        if let Some(track) = &next {
-                            let _ = Self::try_start_crossfade(inner, track).await;
-                        }
-                    }
+                if let Some(cf) = crossfade
+                    && cf.enabled
+                    && dur > 0.0
+                    && (dur - pos) <= cf.duration_secs as f64 + 0.15
+                    && let Some(track) = &next
+                {
+                    let _ = Self::try_start_crossfade(inner, track).await;
                 }
             }
             AudioEvent::Duration(dur) => {
@@ -3402,13 +3415,13 @@ fn run_lyrics_sync(
         if lrc_path.exists() {
             continue;
         }
-        if let Some(lyrics) = rt.block_on(manager.get_lyrics(track)) {
-            if !lyrics.lines.is_empty() {
-                let lrc_content = crate::lyrics::lrc_to_text(&lyrics);
-                if std::fs::write(&lrc_path, &lrc_content).is_ok() {
-                    synced += 1;
-                    progress.synced.store(synced, Ordering::Relaxed);
-                }
+        if let Some(lyrics) = rt.block_on(manager.get_lyrics(track))
+            && !lyrics.lines.is_empty()
+        {
+            let lrc_content = crate::lyrics::lrc_to_text(&lyrics);
+            if std::fs::write(&lrc_path, &lrc_content).is_ok() {
+                synced += 1;
+                progress.synced.store(synced, Ordering::Relaxed);
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(100));

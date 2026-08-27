@@ -63,10 +63,7 @@ pub fn render(app: &App) -> Option<FooterRenderOutput> {
     if let Some(text) = render_keyaction(app) {
         let bg = darken(app.theme.tertiary_accent, 0.20);
         let fg = crate::ui::readable_fg(app.theme.tertiary_accent, bg);
-        let span = Span::styled(
-            format!(" {} ", text),
-            Style::default().fg(fg),
-        );
+        let span = Span::styled(format!(" {} ", text), Style::default().fg(fg));
         let width = span.width() as u16 + 2;
         out_groups.push(FooterGroup {
             line: Line::from(span),
@@ -150,10 +147,10 @@ pub fn draw(f: &mut Frame, area: Rect, out: &FooterRenderOutput) {
 }
 
 fn render_keyaction(app: &App) -> Option<String> {
-    if let Some((ref action, expires)) = app.last_action_name {
-        if std::time::Instant::now() < expires {
-            return Some(format!("[{}]", action));
-        }
+    if let Some((ref action, expires)) = app.last_action_name
+        && std::time::Instant::now() < expires
+    {
+        return Some(format!("[{}]", action));
     }
     None
 }

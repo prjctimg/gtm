@@ -4,7 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use crate::state::{
+use crate::global::{
     CrossfadeConfig, DaemonState, DynamicModeConfig, LoudnessMode, PlaybackStatus, RepeatMode,
     ReverbConfig, ScrobbleConfig,
 };
@@ -17,7 +17,7 @@ impl CrossfadeConfig {
         Self {
             enabled,
             duration_secs: duration_secs.min(30),
-            easing: crate::state::Easing::default(),
+            easing: crate::global::Easing::default(),
         }
     }
 }
@@ -37,16 +37,16 @@ impl DaemonState {
             repeat: RepeatMode::Off,
             shuffle: false,
             mute: false,
-            crossfade: Some(crate::state::CrossfadeConfig {
+            crossfade: Some(crate::global::CrossfadeConfig {
                 enabled: true,
                 duration_secs: 6,
-                easing: crate::state::Easing::Linear,
+                easing: crate::global::Easing::Linear,
             }),
             current_track: None,
             time_pos: 0.0,
             duration: 0.0,
             sleep_timer: None,
-            eq_preset: crate::state::EqPreset::Flat,
+            eq_preset: crate::global::EqPreset::Flat,
             eq_enabled: true,
             reverb: ReverbConfig::default(),
             loudness_mode: LoudnessMode::Off,

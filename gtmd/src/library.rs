@@ -174,18 +174,17 @@ impl Library {
 
         let path = std::path::Path::new(&track.path);
         let managed = library_dirs.iter().any(|d| path.starts_with(d));
-        if managed {
-            if let Err(e) = fs::remove_file(path) {
-                if e.kind() != std::io::ErrorKind::NotFound {
-                    warn!("delete audio file {}: {e}", track.path);
-                }
-            }
+        if managed
+            && let Err(e) = fs::remove_file(path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            warn!("delete audio file {}: {e}", track.path);
         }
 
-        if let Some(cover) = &track.cover_path {
-            if cover.contains("covers") {
-                let _ = fs::remove_file(cover);
-            }
+        if let Some(cover) = &track.cover_path
+            && cover.contains("covers")
+        {
+            let _ = fs::remove_file(cover);
         }
 
         let _ = fs::remove_file(path.with_extension("lrc"));
@@ -677,10 +676,10 @@ pub(crate) fn extract_metadata(
                         _ => "jpg",
                     };
                     let cover_file = cache_base.join(format!("{}.{}", hash, ext));
-                    if !cover_file.exists() {
-                        if let Ok(mut buf) = File::create(&cover_file) {
-                            let _ = buf.write_all(&visual.data);
-                        }
+                    if !cover_file.exists()
+                        && let Ok(mut buf) = File::create(&cover_file)
+                    {
+                        let _ = buf.write_all(&visual.data);
                     }
                     cover_path = Some(cover_file.to_string_lossy().to_string());
                     break;

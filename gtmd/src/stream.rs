@@ -30,9 +30,6 @@ use tracing::info;
 // EQ, reverb, volume, and output routing all behave exactly like local
 // files.
 
-
-
-
 /// Bounded channel capacity: each packet is ~23 ms of stereo audio, so this
 /// buffers roughly 1.5 s — enough to ride out network jitter without
 /// unbounded memory use. When rodio's queue is full the sink blocks, which
@@ -77,11 +74,11 @@ impl LibrespotSink for ChannelSink {
         // Snapshot the target under a short lock, then block outside of it so
         // a stalled consumer never wedges target swaps or event handling.
         let target = self.0.lock().unwrap().clone();
-        if let Some(target) = target {
-            if target.tx.send(buf).is_err() {
-                // Receiver gone (track switched/stop); not fatal for the
-                // decoder thread — the player is being replaced anyway.
-            }
+        if let Some(target) = target
+            && target.tx.send(buf).is_err()
+        {
+            // Receiver gone (track switched/stop); not fatal for the
+            // decoder thread — the player is being replaced anyway.
         }
         Ok(())
     }
@@ -260,9 +257,11 @@ impl StreamManager {
         )
         .map_err(|e| format!("spotify cache: {e}"))?;
 
-        let mut session_config = SessionConfig::default();
-        session_config.client_id = gtm_core::spotify::LIBRESPOT_CLIENT_ID.to_string();
-        session_config.device_id = "gtm-rs-stream".to_string();
+        let session_config = SessionConfig {
+            client_id: gtm_core::spotify::LIBRESPOT_CLIENT_ID.to_string(),
+            device_id: "gtm-rs-stream".to_string(),
+            ..Default::default()
+        };
 
         let session = Session::new(session_config, Some(cache));
         session

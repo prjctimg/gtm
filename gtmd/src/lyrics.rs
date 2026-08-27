@@ -81,10 +81,11 @@ impl LyricsManager {
                     .trim()
                     .trim_end_matches("ms")
                     .trim();
-                if let Ok(v) = cleaned.parse::<f64>() {
-                    if v.is_finite() && v.abs() < 3_600_000.0 {
-                        offset_ms = v;
-                    }
+                if let Ok(v) = cleaned.parse::<f64>()
+                    && v.is_finite()
+                    && v.abs() < 3_600_000.0
+                {
+                    offset_ms = v;
                 }
                 continue;
             }
@@ -214,23 +215,18 @@ impl LyricsManager {
         let url = format!("{}/search?q={}", LRCLIB_API, urlencoding(&query),);
 
         for attempt in 0..2 {
-            if let Ok(resp) = self.client.get(&url).send().await {
-                if resp.status().is_success() {
-                    if let Ok(results) = resp.json::<Vec<serde_json::Value>>().await {
-                        for result in &results {
-                            let artist_name =
-                                result.get("artistName")?.as_str()?.to_lowercase();
-                            let track_name =
-                                result.get("trackName")?.as_str()?.to_lowercase();
-                            if artist_name == artist.to_lowercase()
-                                && track_name == title.to_lowercase()
-                            {
-                                return parse_lrclib_response(result);
-                            }
-                        }
-                        return results.first().and_then(parse_lrclib_response);
+            if let Ok(resp) = self.client.get(&url).send().await
+                && resp.status().is_success()
+                && let Ok(results) = resp.json::<Vec<serde_json::Value>>().await
+            {
+                for result in &results {
+                    let artist_name = result.get("artistName")?.as_str()?.to_lowercase();
+                    let track_name = result.get("trackName")?.as_str()?.to_lowercase();
+                    if artist_name == artist.to_lowercase() && track_name == title.to_lowercase() {
+                        return parse_lrclib_response(result);
                     }
                 }
+                return results.first().and_then(parse_lrclib_response);
             }
             if attempt == 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -323,23 +319,20 @@ impl LyricsManager {
         let url = format!("{}/search?q={}", LRCLIB_API, urlencoding(&query),);
 
         for attempt in 0..2 {
-            if let Ok(resp) = self.client.get(&url).send().await {
-                if resp.status().is_success() {
-                    if let Ok(results) = resp.json::<Vec<serde_json::Value>>().await {
-                        for result in &results {
-                            let artist_name =
-                                result.get("artistName")?.as_str()?.to_lowercase();
-                            let track_name =
-                                result.get("trackName")?.as_str()?.to_lowercase();
-                            if artist_name == track.artist.to_lowercase()
-                                && track_name == track.title.to_lowercase()
-                            {
-                                return parse_lrclib_response(result);
-                            }
-                        }
-                        return results.first().and_then(parse_lrclib_response);
+            if let Ok(resp) = self.client.get(&url).send().await
+                && resp.status().is_success()
+                && let Ok(results) = resp.json::<Vec<serde_json::Value>>().await
+            {
+                for result in &results {
+                    let artist_name = result.get("artistName")?.as_str()?.to_lowercase();
+                    let track_name = result.get("trackName")?.as_str()?.to_lowercase();
+                    if artist_name == track.artist.to_lowercase()
+                        && track_name == track.title.to_lowercase()
+                    {
+                        return parse_lrclib_response(result);
                     }
                 }
+                return results.first().and_then(parse_lrclib_response);
             }
             if attempt == 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -415,16 +408,16 @@ fn parse_lrclib_response(json: &serde_json::Value) -> Option<LrcData> {
     let synced = json.get("syncLyrics").and_then(|v| v.as_str());
     let plain = json.get("plainLyrics").and_then(|v| v.as_str());
 
-    if let Some(s) = synced {
-        if !s.is_empty() {
-            return Some(LyricsManager::parse_lrc(s));
-        }
+    if let Some(s) = synced
+        && !s.is_empty()
+    {
+        return Some(LyricsManager::parse_lrc(s));
     }
 
-    if let Some(p) = plain {
-        if !p.is_empty() {
-            return Some(LyricsManager::parse_lrc(p));
-        }
+    if let Some(p) = plain
+        && !p.is_empty()
+    {
+        return Some(LyricsManager::parse_lrc(p));
     }
 
     None

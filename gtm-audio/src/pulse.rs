@@ -20,7 +20,7 @@ use crate::decoder::DecodeThread;
 use crate::eq::{EqGains, EqSource, ReverbSource};
 use crate::mixer::Mixer;
 use crate::symphonia::SymphoniaSource;
-use gtm_core::state::{Easing, EqPreset, ReverbConfig};
+use gtm_core::global::{Easing, EqPreset, ReverbConfig};
 use rodio::Source;
 
 struct PaPlaybackSource {

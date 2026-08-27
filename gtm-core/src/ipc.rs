@@ -4,8 +4,8 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use crate::global::{DaemonState, EqPreset, RepeatMode, YTFilter};
 use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
-use crate::state::{self, DaemonState, EqPreset, RepeatMode, YTFilter};
 use crate::track::{LrcData, Playlist, StreamInfo, TrackInfo, YTSearchResult};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -165,10 +165,10 @@ pub enum DaemonReq {
         enabled: bool,
         duration_secs: u8,
         #[serde(skip_serializing_if = "Option::is_none")]
-        easing: Option<state::Easing>,
+        easing: Option<crate::global::Easing>,
     },
     SetLoudnessMode {
-        mode: state::LoudnessMode,
+        mode: crate::global::LoudnessMode,
     },
     ScanLoudness {
         track_ids: Option<Vec<i64>>,
@@ -445,7 +445,7 @@ impl DaemonReq {
                 struct Params {
                     enabled: bool,
                     duration_secs: u8,
-                    easing: Option<state::Easing>,
+                    easing: Option<crate::global::Easing>,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::Crossfade {
@@ -709,7 +709,7 @@ impl DaemonReq {
             "set_loudness_mode" => {
                 #[derive(Deserialize)]
                 struct Params {
-                    mode: state::LoudnessMode,
+                    mode: crate::global::LoudnessMode,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SetLoudnessMode { mode: x.mode }
@@ -880,7 +880,7 @@ pub enum DaemonEvent {
         enabled: bool,
         duration_secs: u8,
         #[serde(skip_serializing_if = "Option::is_none")]
-        easing: Option<state::Easing>,
+        easing: Option<crate::global::Easing>,
     },
     /// Emitted once when the next track is about to enter crossfade (5s before
     /// it begins). The client animates the countdown until the crossfade
@@ -888,7 +888,7 @@ pub enum DaemonEvent {
     #[serde(rename = "crossfade_countdown")]
     CrossfadeCountdown { track: TrackInfo },
     #[serde(rename = "loudness_mode_changed")]
-    LoudnessModeChanged { mode: state::LoudnessMode },
+    LoudnessModeChanged { mode: crate::global::LoudnessMode },
     #[serde(rename = "loudness_scan_progress")]
     LoudnessScanProgress {
         tracks_remaining: u32,

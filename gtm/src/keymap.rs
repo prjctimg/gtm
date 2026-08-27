@@ -80,6 +80,12 @@ pub enum KeyboardAction {
     ToggleVisualizer,
     ToggleTheme,
     CheckHealth,
+
+    // Queue move mode
+    QueueMoveUp,
+    QueueMoveDown,
+    QueueMoveConfirm,
+    QueueMoveCancel,
 }
 
 #[derive(Debug, Clone)]
@@ -608,6 +614,35 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
+            // Queue move mode: Ctrl+j/k to move, Enter to confirm, Esc to cancel
+            (
+                KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
+                BoundCommand {
+                    action: KeyboardAction::QueueMoveDown,
+                    contexts: vec![KeyContext::List],
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+                BoundCommand {
+                    action: KeyboardAction::QueueMoveUp,
+                    contexts: vec![KeyContext::List],
+                },
+            ),
+            (
+                KeyCode::Enter.into(),
+                BoundCommand {
+                    action: KeyboardAction::QueueMoveConfirm,
+                    contexts: vec![KeyContext::List],
+                },
+            ),
+            (
+                KeyCode::Esc.into(),
+                BoundCommand {
+                    action: KeyboardAction::QueueMoveCancel,
+                    contexts: vec![KeyContext::List],
+                },
+            ),
         ],
     }
 }
@@ -709,6 +744,10 @@ impl KeyboardAction {
             "toggle_visualizer" | "visualizer" | "vis" => KeyboardAction::ToggleVisualizer,
             "toggle_theme" | "theme" => KeyboardAction::ToggleTheme,
             "check_health" | "health" => KeyboardAction::CheckHealth,
+            "queue_move_up" => KeyboardAction::QueueMoveUp,
+            "queue_move_down" => KeyboardAction::QueueMoveDown,
+            "queue_move_confirm" => KeyboardAction::QueueMoveConfirm,
+            "queue_move_cancel" => KeyboardAction::QueueMoveCancel,
             // Overlay openers
             "open_queue" => KeyboardAction::OpenOverlay(PickerId::Queue),
             "open_yt_search" | "open_youtube" => KeyboardAction::OpenOverlay(PickerId::YTSearch),
@@ -742,9 +781,7 @@ impl KeyboardAction {
 ///
 /// Returns a list of warning strings for each pair of bindings that share the
 /// same `KeyEvent` and have at least one overlapping `KeyContext`.
-pub fn detect_clashes(
-    bindings: &[(KeyEvent, String, Vec<KeyContext>)],
-) -> Vec<String> {
+pub fn detect_clashes(bindings: &[(KeyEvent, String, Vec<KeyContext>)]) -> Vec<String> {
     let mut warnings = Vec::new();
     for (i, (ki, action_i, ctx_i)) in bindings.iter().enumerate() {
         for (kj, action_j, ctx_j) in &bindings[i + 1..] {
@@ -754,7 +791,10 @@ pub fn detect_clashes(
                     let ctx_names: Vec<_> = overlap.iter().map(|c| format!("{:?}", c)).collect();
                     warnings.push(format!(
                         "\"{}\" and \"{}\" share key {:?} in [{}]",
-                        action_i, action_j, ki.code, ctx_names.join(", ")
+                        action_i,
+                        action_j,
+                        ki.code,
+                        ctx_names.join(", ")
                     ));
                 }
             }

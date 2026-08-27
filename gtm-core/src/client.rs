@@ -16,12 +16,12 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::CoreError;
 use crate::Result;
+use crate::global::{DaemonState, EqPreset, PlaybackStatus, RepeatMode, YTFilter};
 use crate::ipc::{
     DaemonEvent, DaemonReq, DaemonRes, LibraryAction, MetadataPatch, PROTOCOL_VERSION, QueueAction,
     SyncKind, WireEvent, WireReq, WireRes,
 };
 use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
-use crate::state::{self, DaemonState, EqPreset, PlaybackStatus, RepeatMode, YTFilter};
 use crate::track;
 use crate::wire;
 
@@ -203,11 +203,11 @@ impl DaemonClient {
     /// Returns the position in seconds, or 0.0 if unknown.
     pub async fn estimated_position(&self) -> f64 {
         let base_pos = *self.base_pos.lock().await;
-        if self.is_playing.load(Ordering::Acquire) {
-            if let Some(base_time) = *self.base_time.lock().await {
-                let elapsed = base_time.elapsed().as_secs_f64();
-                return base_pos + elapsed;
-            }
+        if self.is_playing.load(Ordering::Acquire)
+            && let Some(base_time) = *self.base_time.lock().await
+        {
+            let elapsed = base_time.elapsed().as_secs_f64();
+            return base_pos + elapsed;
         }
         base_pos
     }
@@ -326,7 +326,7 @@ impl DaemonClient {
         &self,
         enabled: bool,
         duration_secs: u8,
-        easing: Option<state::Easing>,
+        easing: Option<crate::global::Easing>,
     ) -> Result<()> {
         self.send_ok(DaemonReq::Crossfade {
             enabled,
@@ -336,7 +336,7 @@ impl DaemonClient {
         .await
     }
 
-    pub async fn set_loudness_mode(&self, mode: state::LoudnessMode) -> Result<()> {
+    pub async fn set_loudness_mode(&self, mode: crate::global::LoudnessMode) -> Result<()> {
         self.send_ok(DaemonReq::SetLoudnessMode { mode }).await
     }
 
@@ -1070,15 +1070,15 @@ impl IpcWorker {
                 }
                 sent_any = true;
             }
-            if sent_any && !self.pending.is_empty() {
-                if let Err(e) =
+            if sent_any
+                && !self.pending.is_empty()
+                && let Err(e) =
                     tokio::time::timeout(Duration::from_secs(5), self.writer.flush()).await
-                {
-                    crate::log::log(&format!("IPC worker flush error: {e}"));
-                    self.fail_all_pending("flush failed");
-                    self.reconnect().await;
-                    continue;
-                }
+            {
+                crate::log::log(&format!("IPC worker flush error: {e}"));
+                self.fail_all_pending("flush failed");
+                self.reconnect().await;
+                continue;
             }
 
             // Read from socket with a small timeout so we can loop back

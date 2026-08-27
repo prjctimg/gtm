@@ -33,11 +33,11 @@ fn state_dir() -> PathBuf {
         let p = PathBuf::from("/tmp")
             .join(format!("gtm-{}", user))
             .join("gtm");
-        if let Some(parent) = p.parent() {
-            if parent.exists() {
-                let _ = std::fs::create_dir_all(&p);
-                return p;
-            }
+        if let Some(parent) = p.parent()
+            && parent.exists()
+        {
+            let _ = std::fs::create_dir_all(&p);
+            return p;
         }
     }
     if let Ok(tmpdir) = std::env::var("TMPDIR") {
@@ -47,13 +47,13 @@ fn state_dir() -> PathBuf {
             return p;
         }
     }
-    if is_termux() {
-        if let Ok(prefix) = std::env::var("PREFIX") {
-            let p = PathBuf::from(prefix).join("tmp").join("gtm");
-            if p.parent().is_some_and(|d| d.exists()) {
-                let _ = std::fs::create_dir_all(&p);
-                return p;
-            }
+    if is_termux()
+        && let Ok(prefix) = std::env::var("PREFIX")
+    {
+        let p = PathBuf::from(prefix).join("tmp").join("gtm");
+        if p.parent().is_some_and(|d| d.exists()) {
+            let _ = std::fs::create_dir_all(&p);
+            return p;
         }
     }
     if let Ok(home) = std::env::var("HOME") {

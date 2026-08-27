@@ -50,27 +50,27 @@ pub fn write_tags(
     if !meta.album.is_empty() {
         tag.set_album(meta.album.clone());
     }
-    if let Some(ref genre) = meta.genre {
-        if !genre.is_empty() {
-            tag.set_genre(genre.clone());
-        }
+    if let Some(ref genre) = meta.genre
+        && !genre.is_empty()
+    {
+        tag.set_genre(genre.clone());
     }
-    if let Some(year) = meta.year {
-        if (1000..=9999).contains(&year) {
-            tag.set_date(Timestamp {
-                year: year as u16,
-                month: None,
-                day: None,
-                hour: None,
-                minute: None,
-                second: None,
-            });
-        }
+    if let Some(year) = meta.year
+        && (1000..=9999).contains(&year)
+    {
+        tag.set_date(Timestamp {
+            year: year as u16,
+            month: None,
+            day: None,
+            hour: None,
+            minute: None,
+            second: None,
+        });
     }
-    if let Some(track_number) = meta.track_number {
-        if track_number > 0 {
-            tag.set_track(track_number as u32);
-        }
+    if let Some(track_number) = meta.track_number
+        && track_number > 0
+    {
+        tag.set_track(track_number as u32);
     }
 
     if let Some((bytes, mime)) = cover {

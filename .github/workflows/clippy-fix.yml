@@ -1,0 +1,60 @@
+name: Clippy Auto-Fix
+
+# Keep the tree clippy-clean without failing CI. Applies `cargo clippy --fix`,
+# then verifies with `cargo check`. If verification passes the fixes are
+# committed straight to main (auto-merged). If verification fails a PR is opened
+# for review (Code Rabbit reviews it automatically when the app is installed).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  clippy-fix:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Install ALSA headers (Linux)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Apply clippy auto-fixes
+        run: cargo clippy --fix --workspace --allow-dirty --all-targets
+      - name: Format
+        run: cargo fmt
+      - name: Verify with cargo check
+        id: verify
+        run: cargo check --workspace
+      - name: Commit and auto-merge fixes
+        if: success()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && echo "nothing to commit" && exit 0
+          git commit -m "style: auto-fix clippy lints"
+          git push
+      - name: Open PR if verification failed
+        if: failure()
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          commit-message: "style: apply clippy auto-fixes"
+          title: "style: apply clippy auto-fixes"
+          body: |
+            `cargo clippy --fix` produced changes that did not pass `cargo check`
+            and were not auto-merged. Please review.
+          branch: clippy/auto-fix
+          delete-branch: true
+          labels: |
+            clippy
+            automated

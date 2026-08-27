@@ -307,5 +307,10 @@ fn generate_completions(outdir: &str) {
         fs::write(format!("{comp_dir}/{name_suffix2}"), &buf).expect("write gtmd completion");
     }
 
+    // Copy install.sh to artifacts for release packaging
+    if let Err(e) = fs::copy("../../install.sh", format!("{outdir}/install.sh")) {
+        eprintln!("Warning: failed to copy install.sh: {e}");
+    }
+
     println!("Generated completions in {comp_dir}/");
 }
