@@ -240,14 +240,8 @@ jobs:
         if: matrix.family == 'android'
         run: sudo apt-get update && sudo apt-get install -y pandoc
 
-      # actions/checkout uses GitHub's authenticated transport, avoiding the
-      # "SSL certificate problem: self signed certificate" git clone failures
-      # that intermittently hit the macOS runners.
-      - name: Clone gtm.spec (manpage sources)
-        uses: actions/checkout@v7
-        with:
-          repository: prjctimg/gtm.spec
-          path: gtm.spec
+      # Manpage sources come from docs/man/ in this repo (see scripts/build/
+      # manpages.sh).
 
       # Alpine-on-ARM64 cannot run JavaScript actions inside a container, so the
       # aarch64-musl build runs the whole Alpine pipeline in an ad-hoc container.

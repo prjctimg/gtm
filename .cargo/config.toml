@@ -1,20 +1,11 @@
-# Android cross-compilation: `cargo-ndk` injects the correct NDK linker
-# (e.g. aarch64-linux-android27-clang) via CARGO_TARGET_*_LINKER, so no
-# explicit `linker` entry is needed here. Keeping these entries would break
-# native Termux builds where the host triple is aarch64-linux-android and
-# build scripts would try to invoke the NDK wrapper (see
-# https://github.com/prjctimg/gtm.rs/issues).
+# Native Linux cross-compilation and linker selection.
+#
+# Linker choice (clang/mold vs the system default) is handled at build time
+# by `gtm/build.rs`, which probes for `mold`, `clang`, and `gcc` and emits the
+# matching `-fuse-ld=` flag only when the tool is actually available.  Doing
+# it here via hardcoded rustflags would force `-fuse-ld=mold` onto every crate
+# (including dependencies), breaking CI runners that don't install mold.
+#
 # For non-cargo-ndk cross builds, export manually:
-#   export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=aarch64-linux-android27-clang
-#   export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=armv7a-linux-androideabi27-clang
-# API level 27 = Android 8.1 (minimum for AAudio support).
-
-# Native Linux builds: prefer clang with mold, fallback to gcc with mold, then default ld.
-# This is handled at build time via gtm/build.rs which detects available tools.
-[target.aarch64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
-
-[target.x86_64-unknown-linux-gnu]
-linker = "clang"
-rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+#   export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_ANDROID_LINKER=aarch64-linux-android27-clang
+# (cargo-ndk injects the correct NDK linker via CARGO_TARGET_*_LINKER itself.)

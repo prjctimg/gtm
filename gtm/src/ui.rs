@@ -2171,6 +2171,7 @@ impl Pickers {
             PickerId::SpotifyLink => (60, 12),
             PickerId::Crossfade => (58, 20),
             PickerId::VisualizerPreset => (48, 14),
+            PickerId::FooterPreset => (52, 16),
             PickerId::ProgressStyle => (48, 18),
             PickerId::Settings => (64, 28),
             _ => (56, 22),
@@ -2240,6 +2241,7 @@ impl Pickers {
             PickerId::VisualizerPreset => {
                 Self::render_visualizer_preset_picker(f, picker_area, app)
             }
+            PickerId::FooterPreset => Self::render_footer_preset_picker(f, picker_area, app),
             PickerId::ProgressStyle => Self::render_progress_style_picker(f, picker_area, app),
             PickerId::Settings => Self::render_settings_picker(f, picker_area, app),
             PickerId::Notifications => Self::render_notifications_picker(f, picker_area, app),
@@ -3202,6 +3204,13 @@ impl Pickers {
                     "Sync Covers    Enter  ▶".to_string(),
                     "Sync Lyrics    Enter  ▶".to_string(),
                     "Sync Metadata  Enter  ▶".to_string(),
+                    format!(
+                        "Footer Preset  {}  ▶",
+                        app.footer_presets
+                            .get(app.footer_preset)
+                            .map(|p| p.name.as_ref())
+                            .unwrap_or("Default")
+                    ),
                     format!("Visualizer     {}  ▶", app.visualizer.preset.name()),
                     format!(
                         "Reactive Theme {}",
@@ -3340,19 +3349,31 @@ impl Pickers {
                 Style::default().fg(app.theme.fg_dim),
             ))),
             (3, 2) => lines.push(Line::from(Span::styled(
-                " Download missing cover art from Deezer.",
+                " Press Enter to toggle transparent pickers.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
             (3, 3) => lines.push(Line::from(Span::styled(
-                " Fetch and save lyrics for all tracks.",
+                " Download missing cover art from Deezer.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
             (3, 4) => lines.push(Line::from(Span::styled(
+                " Fetch and save lyrics for all tracks.",
+                Style::default().fg(app.theme.fg_dim),
+            ))),
+            (3, 5) => lines.push(Line::from(Span::styled(
                 " Resolve and embed clean tags into files.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
             (3, 6) => lines.push(Line::from(Span::styled(
+                " Press Enter to open Footer Preset picker.",
+                Style::default().fg(app.theme.fg_dim),
+            ))),
+            (3, 7) => lines.push(Line::from(Span::styled(
                 " Press Enter to open visualizer picker.",
+                Style::default().fg(app.theme.fg_dim),
+            ))),
+            (3, 8) => lines.push(Line::from(Span::styled(
+                " Press Enter to toggle reactive theme.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
             (4, 0) => lines.push(Line::from(Span::styled(
@@ -5132,6 +5153,139 @@ impl Pickers {
                 Rect {
                     x: preview_area.x,
                     y: preview_area.y + 2,
+                    width: preview_area.width,
+                    height: 1,
+                },
+            );
+        }
+    }
+
+    fn render_footer_preset_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let block = Self::picker_panel(
+            app,
+            " Footer Preset ",
+            Some("\u{2191}/\u{2193}: preview   Enter: apply   Esc: close"),
+        );
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let current = app.footer_preset;
+        let presets = &app.footer_presets;
+
+        let sel = app
+            .pickers
+            .top()
+            .map_or(0, |o| o.selected.min(presets.len().saturating_sub(1)));
+
+        let preview_height: u16 = 4;
+        let list_h = inner.height.saturating_sub(preview_height);
+        let list_area = Rect {
+            x: inner.x,
+            y: inner.y,
+            width: inner.width,
+            height: list_h,
+        };
+        let preview_area = Rect {
+            x: inner.x,
+            y: inner.y + list_h,
+            width: inner.width,
+            height: inner.height.saturating_sub(list_h),
+        };
+
+        let visible = list_h as usize;
+        let total = presets.len();
+        let (scroll_start, scroll_end) = if let Some(top) = app.pickers.top_mut() {
+            let (s, e) = step_viewport(top.viewport_offset, sel, visible, total);
+            top.viewport_offset = s;
+            (s, e)
+        } else {
+            (0, total)
+        };
+
+        let mut lines = Vec::new();
+        for (i, preset) in presets
+            .iter()
+            .enumerate()
+            .skip(scroll_start)
+            .take(scroll_end.saturating_sub(scroll_start))
+        {
+            let is_sel = i == sel;
+            let is_cur = i == current;
+            let prefix = if is_sel { " > " } else { "   " };
+            let cur = if is_cur { "   (current)" } else { "" };
+            let line_style = if is_sel {
+                Style::default()
+                    .fg(app.theme.selection_fg_readable())
+                    .bg(app.theme.selection_bg)
+            } else if is_cur {
+                Style::default().fg(app.theme.accent)
+            } else {
+                Style::default()
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{prefix}{}{cur}", preset.name),
+                line_style,
+            )));
+        }
+
+        let list = List::new(lines.into_iter().map(ListItem::new).collect::<Vec<_>>());
+        f.render_widget(list, list_area);
+
+        if preview_area.height >= 3 {
+            let layout = presets
+                .get(sel)
+                .map(|p| {
+                    let mut n = p.left.len() + p.middle.len() + p.right.len();
+                    if n == 0 {
+                        n = 1;
+                    }
+                    format!(
+                        "left {} \u{2022} middle {} \u{2022} right {} \u{2022} {} module{}",
+                        p.left.len(),
+                        p.middle.len(),
+                        p.right.len(),
+                        n,
+                        if n == 1 { "" } else { "s" }
+                    )
+                })
+                .unwrap_or_default();
+            let rule = Line::from(vec![
+                Span::styled(
+                    "\u{2500}".to_string(),
+                    Style::default().fg(app.theme.muted_border),
+                ),
+                Span::styled(format!(" {layout} "), Style::default().fg(app.theme.fg_dim)),
+                Span::styled(
+                    "\u{2500}".repeat(
+                        preview_area
+                            .width
+                            .saturating_sub(layout.len() as u16 + 4)
+                            .max(1) as usize,
+                    ),
+                    Style::default().fg(app.theme.muted_border),
+                ),
+            ]);
+            f.render_widget(
+                Paragraph::new(rule),
+                Rect {
+                    x: preview_area.x,
+                    y: preview_area.y,
+                    width: preview_area.width,
+                    height: 1,
+                },
+            );
+
+            // Live preview of the selected preset rendered as brand-badge
+            // style per-module swatches, so the user sees the real layout.
+            let preview_label = Line::from(Span::styled(
+                "  dragging the selection previews the footer layout",
+                Style::default().fg(app.theme.fg_dim),
+            ));
+            f.render_widget(
+                Paragraph::new(preview_label),
+                Rect {
+                    x: preview_area.x,
+                    y: preview_area.y + 1,
                     width: preview_area.width,
                     height: 1,
                 },

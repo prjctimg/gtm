@@ -3,6 +3,3 @@ contact_links:
   - name: Wiki
     url: https://github.com/prjctimg/gtm.rs/wiki
     about: Setup guides, configuration reference, and troubleshooting
-  - name: gtm.spec
-    url: https://github.com/prjctimg/gtm.spec
-    about: The reference specification behind the gtm implementations

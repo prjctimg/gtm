@@ -17,8 +17,8 @@ fn default_oauth_port() -> u16 {
     8990
 }
 
-/// Protocol version this implementation speaks. Matches `prjctimg/gtm.spec`
-/// `protocol.md` "Version Negotiation". Bumped only on breaking wire changes.
+/// Protocol version this implementation speaks. Bumped only on breaking
+/// wire changes.
 pub const PROTOCOL_VERSION: u32 = 3;
 
 /// `/queue` sub-commands. Internally tagged via `action`, wire encoding is

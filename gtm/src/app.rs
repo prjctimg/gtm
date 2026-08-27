@@ -86,6 +86,8 @@ pub struct Prefs {
     transparent_pickers: bool,
     #[serde(default)]
     reactive_theme: bool,
+    #[serde(default = "default_footer_preset_name")]
+    footer_preset_name: String,
     #[serde(default)]
     progress_style: crate::progress::ProgressStyle,
     #[serde(default)]
@@ -98,6 +100,10 @@ fn default_theme_name() -> String {
     "Chadrula".into()
 }
 
+fn default_footer_preset_name() -> String {
+    "Default".into()
+}
+
 impl Default for Prefs {
     fn default() -> Self {
         Self {
@@ -105,6 +111,7 @@ impl Default for Prefs {
             transparent_bg: false,
             transparent_pickers: false,
             reactive_theme: false,
+            footer_preset_name: default_footer_preset_name(),
             progress_style: crate::progress::ProgressStyle::default(),
             visualizer_preset: crate::visualizer::VisualizerPreset::default(),
             keybindings: std::collections::HashMap::new(),
@@ -388,6 +395,8 @@ pub struct App {
     prev_cover_id: Option<i64>,
     cover_art_dirty: bool,
     pub footer_cache: crate::footer::FooterCache,
+    pub footer_presets: Vec<crate::footer::FooterPreset>,
+    pub footer_preset: usize,
     last_event_time: std::time::Instant,
     pub multiselect_mode: bool,
     pub progress_style: crate::progress::ProgressStyle,
@@ -684,6 +693,13 @@ impl App {
             .position(|t| t.name == prefs.theme_name)
             .unwrap_or(0);
         let theme = themes[theme_index].theme;
+        // Similar to themes: resolve the footer preset by name so adding or
+        // removing built-in presets never shifts a saved slot.
+        let footer_presets = crate::footer::merged_presets();
+        let footer_preset = footer_presets
+            .iter()
+            .position(|p| p.name == prefs.footer_preset_name)
+            .unwrap_or(0);
         Ok(Self {
             theme,
             themes,
@@ -776,6 +792,8 @@ impl App {
             prev_cover_id: None,
             cover_art_dirty: false,
             footer_cache: crate::footer::FooterCache::default(),
+            footer_presets,
+            footer_preset,
             last_event_time: std::time::Instant::now(),
             multiselect_mode: false,
             progress_style: prefs.progress_style,
@@ -871,6 +889,15 @@ impl App {
 
         self.footer_cache.suppress_refresh = true;
 
+        // Footer preset
+        let footer_preset = self
+            .footer_presets
+            .iter()
+            .position(|p| p.name == prefs.footer_preset_name)
+            .unwrap_or(0)
+            .min(self.footer_presets.len().saturating_sub(1));
+        self.footer_preset = footer_preset;
+
         // Progress style
         self.progress_style = prefs.progress_style;
 
@@ -903,6 +930,11 @@ impl App {
             transparent_bg: self.transparent_bg,
             transparent_pickers: self.transparent_pickers,
             reactive_theme: self.reactive_theme,
+            footer_preset_name: self
+                .footer_presets
+                .get(self.footer_preset)
+                .map(|p| p.name.to_string())
+                .unwrap_or_else(default_footer_preset_name),
             progress_style: self.progress_style,
             visualizer_preset: self.visualizer.preset,
             keybindings: self.prefs_keybindings.clone(),
@@ -915,6 +947,13 @@ impl App {
         let idx = idx.min(self.themes.len().saturating_sub(1));
         self.theme_index = idx;
         self.apply_reactive();
+        save_prefs(&self.current_prefs());
+    }
+
+    /// Apply a footer-preset picker selection by index and persist by name.
+    fn apply_footer_preset_index(&mut self, idx: usize) {
+        let idx = idx.min(self.footer_presets.len().saturating_sub(1));
+        self.footer_preset = idx;
         save_prefs(&self.current_prefs());
     }
 
@@ -3048,6 +3087,7 @@ impl App {
             PickerId::VisualizerPreset => crate::visualizer::VisualizerPreset::all()
                 .len()
                 .saturating_sub(1),
+            PickerId::FooterPreset => self.footer_presets.len().saturating_sub(1),
             PickerId::ProgressStyle => crate::progress::ProgressStyle::all()
                 .len()
                 .saturating_sub(1),
@@ -3117,6 +3157,7 @@ impl App {
             PickerId::SleepTimer => 7,
             PickerId::Crossfade => 14,
             PickerId::VisualizerPreset => crate::visualizer::VisualizerPreset::all().len(),
+            PickerId::FooterPreset => self.footer_presets.len(),
             PickerId::ProgressStyle => crate::progress::ProgressStyle::all().len(),
             PickerId::Notifications => self.notification_history.len(),
             PickerId::PlaylistSelect => self.playlist_cache.len() + 1,
@@ -4412,7 +4453,7 @@ impl App {
                                     self.transparent_pickers = !self.transparent_pickers;
                                     save_prefs(&self.current_prefs());
                                 }
-                                7 => {
+                                8 => {
                                     self.reactive_theme = !self.reactive_theme;
                                     if self.reactive_theme && self.reactive_palette.is_none() {
                                         if let Some(c) = self.np_cover.image.clone() {
@@ -4529,7 +4570,7 @@ impl App {
                                     self.transparent_pickers = !self.transparent_pickers;
                                     save_prefs(&self.current_prefs());
                                 }
-                                7 => {
+                                8 => {
                                     self.reactive_theme = !self.reactive_theme;
                                     if self.reactive_theme && self.reactive_palette.is_none() {
                                         if let Some(c) = self.np_cover.image.clone() {
@@ -4721,9 +4762,12 @@ impl App {
                                     );
                                 }
                                 6 => {
-                                    self.pickers.open(PickerId::VisualizerPreset);
+                                    self.pickers.open(PickerId::FooterPreset);
                                 }
                                 7 => {
+                                    self.pickers.open(PickerId::VisualizerPreset);
+                                }
+                                8 => {
                                     self.reactive_theme = !self.reactive_theme;
                                     if self.reactive_theme && self.reactive_palette.is_none() {
                                         if let Some(c) = self.np_cover.image.clone() {
@@ -5315,6 +5359,24 @@ impl App {
                                 save_prefs(&self.current_prefs());
                                 self.notify(
                                     format!("Progress: {}", self.progress_style.name()),
+                                    NotificationKind::Info,
+                                );
+                            }
+                            self.pickers.close_top();
+                        }
+                        PickerId::FooterPreset => {
+                            if let Some(top) = self.pickers.top() {
+                                let idx = top
+                                    .selected
+                                    .min(self.footer_presets.len().saturating_sub(1));
+                                self.apply_footer_preset_index(idx);
+                                let name = self
+                                    .footer_presets
+                                    .get(self.footer_preset)
+                                    .map(|p| p.name.to_string())
+                                    .unwrap_or_else(|| "Default".into());
+                                self.notify(
+                                    format!("Footer preset: {name}"),
                                     NotificationKind::Info,
                                 );
                             }
@@ -6057,6 +6119,13 @@ impl App {
                     let styles = crate::progress::ProgressStyle::all();
                     let idx = top.selected.min(styles.len() - 1);
                     self.progress_style = styles[idx];
+                }
+                PickerId::FooterPreset => {
+                    let idx = top
+                        .selected
+                        .min(self.footer_presets.len().saturating_sub(1));
+                    self.footer_preset = idx;
+                    self.footer_cache.suppress_refresh = false;
                 }
                 _ => {}
             }

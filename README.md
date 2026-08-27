@@ -9,7 +9,7 @@
 [![License](https://img.shields.io/github/license/prjctimg/gtm.rs)](https://github.com/prjctimg/gtm.rs/blob/main/LICENSE)
 
 A terminal music player with background playback and YouTube/Spotify
-integration. Rust implementation of the [gtm spec](https://github.com/prjctimg/gtm.spec).
+integration.
 
 ## another (terminal) audio player ?
 
@@ -93,7 +93,6 @@ cargo build --release --no-default-features --features pulseaudio
 ## Documentation
 
 - [Wiki](https://github.com/prjctimg/gtm.rs/wiki)
-- [gtm.spec](https://github.com/prjctimg/gtm.spec)
 - [gtm(1)](docs/man/gtm.1.md)
 - [gtmd(1)](docs/man/gtmd.1.md)
 - [gtmd-ipc(1)](docs/man/gtmd-ipc.1.md)

@@ -22,6 +22,7 @@ pub enum PickerId {
     EditMetadata,
     Crossfade,
     VisualizerPreset,
+    FooterPreset,
     ProgressStyle,
     Settings,
     Notifications,
