@@ -98,8 +98,8 @@ impl FooterModule {
 }
 
 /// A footer layout preset. `left` and `right` modules hug the extreme ends of
-/// the bar; `middle` modules sit centred between them (mirroring the gtm.nim
-/// layout where playback/status live on the edges).
+/// the bar; `middle` modules sit centred between them (left/right/middle layout;
+/// historically mirrored the archived gtm.nim status-bar ordering).
 #[derive(Debug, Clone)]
 pub struct FooterPreset {
     pub name: Cow<'static, str>,
@@ -120,8 +120,9 @@ impl FooterPreset {
     }
 }
 
-/// Built-in presets, intended to mirror the gtm.nim status-bar ordering where
-/// playback/queue sit at an extreme end and system/device info at the other.
+/// Built-in presets, intended to mirror the left/right/middle layout
+/// (historically mirrored the archived gtm.nim status-bar ordering where
+/// playback/queue sit at an extreme end and system/device info at the other).
 pub fn presets() -> Vec<FooterPreset> {
     vec![
         FooterPreset {
