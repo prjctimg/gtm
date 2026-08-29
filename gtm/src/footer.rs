@@ -97,27 +97,14 @@ impl FooterModule {
     }
 }
 
-/// A footer layout preset. `left` and `right` modules hug the extreme ends of
-/// the bar; `middle` modules sit centred between them (left/right/middle layout;
-/// historically mirrored the archived gtm.nim status-bar ordering).
+/// A footer layout preset. `left` modules hug the left edge and `right`
+/// modules hug the right edge (lualine-style `a,b,c` / `x,y,z` layout with no
+/// centred middle group).
 #[derive(Debug, Clone)]
 pub struct FooterPreset {
     pub name: Cow<'static, str>,
     pub left: Vec<FooterModule>,
-    pub middle: Vec<FooterModule>,
     pub right: Vec<FooterModule>,
-}
-
-impl FooterPreset {
-    /// Modules in display order: left (hugs left edge) then middle then right
-    /// (hugs right edge).
-    pub fn all(&self) -> impl Iterator<Item = FooterModule> + '_ {
-        self.left
-            .iter()
-            .chain(self.middle.iter())
-            .chain(self.right.iter())
-            .copied()
-    }
 }
 
 /// Built-in presets, intended to mirror the left/right/middle layout
@@ -134,8 +121,6 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::Shuffle,
                 FooterModule::Volume,
                 FooterModule::EqPreset,
-            ],
-            middle: vec![
                 FooterModule::KeyAction,
                 FooterModule::Notification,
                 FooterModule::SleepTimer,
@@ -149,8 +134,12 @@ pub fn presets() -> Vec<FooterPreset> {
         // Bare minimum for termux or very small viewports.
         FooterPreset {
             name: Cow::Borrowed("Minimal"),
-            left: vec![FooterModule::Playback, FooterModule::Volume],
-            middle: vec![FooterModule::KeyAction, FooterModule::SleepTimer],
+            left: vec![
+                FooterModule::Playback,
+                FooterModule::Volume,
+                FooterModule::KeyAction,
+                FooterModule::SleepTimer,
+            ],
             right: vec![FooterModule::Backend],
         },
         FooterPreset {
@@ -163,8 +152,9 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::Shuffle,
                 FooterModule::EqPreset,
                 FooterModule::Progress,
+                FooterModule::KeyAction,
+                FooterModule::SleepTimer,
             ],
-            middle: vec![FooterModule::KeyAction, FooterModule::SleepTimer],
             right: vec![
                 FooterModule::Queue,
                 FooterModule::Device,
@@ -198,8 +188,8 @@ struct UserPreset {
     name: String,
     #[serde(default)]
     left: Vec<String>,
-    #[serde(default)]
-    middle: Vec<String>,
+    #[serde(default, alias = "middle")]
+    _legacy_middle: Vec<String>,
     #[serde(default)]
     right: Vec<String>,
 }
@@ -226,7 +216,6 @@ pub fn load_user_presets() -> Vec<FooterPreset> {
         .map(|p| FooterPreset {
             name: Cow::Owned(p.name),
             left: parse_module_list(&p.left),
-            middle: parse_module_list(&p.middle),
             right: parse_module_list(&p.right),
         })
         .collect()
@@ -257,11 +246,12 @@ pub struct FooterGroup {
     pub width: u16,
 }
 
-/// The full output of a footer render: per-module groups plus the background
-/// used for the unfilled trailing area on the right edge.
+/// The full output of a footer render: left and right module groups plus the
+/// background used for the unfilled trailing area on the right edge.
 #[derive(Clone)]
 pub struct FooterRenderOutput {
-    pub groups: Vec<FooterGroup>,
+    pub left: Vec<FooterGroup>,
+    pub right: Vec<FooterGroup>,
     pub right_bg: Color,
 }
 
@@ -272,7 +262,7 @@ pub struct FooterCache {
     pub suppress_refresh: bool,
 }
 
-/// Render the current footer preset into a list of per-module groups plus the
+/// Render the current footer preset into left/right module groups plus the
 /// trailing-area background. Returns `None` when every module would be empty
 /// (e.g. no track loaded and no key action pending).
 pub fn render(app: &App) -> Option<FooterRenderOutput> {
@@ -281,8 +271,14 @@ pub fn render(app: &App) -> Option<FooterRenderOutput> {
         .get(app.footer_preset)
         .or_else(|| app.footer_presets.first())?;
 
-    let mut out_groups: Vec<FooterGroup> = Vec::new();
-    for m in preset.all() {
+    let mut out_left: Vec<FooterGroup> = Vec::new();
+    let mut out_right: Vec<FooterGroup> = Vec::new();
+    for (is_left, m) in preset
+        .left
+        .iter()
+        .map(|m| (true, *m))
+        .chain(preset.right.iter().map(|m| (false, *m)))
+    {
         let Some(text) = module_text(m, app) else {
             continue;
         };
@@ -297,18 +293,24 @@ pub fn render(app: &App) -> Option<FooterRenderOutput> {
             format!(" {} ", text),
             Style::default().fg(fg).add_modifier(Modifier::BOLD),
         );
-        out_groups.push(FooterGroup {
+        let group = FooterGroup {
             width: span.width() as u16,
             line: Line::from(span),
             bg,
-        });
+        };
+        if is_left {
+            out_left.push(group);
+        } else {
+            out_right.push(group);
+        }
     }
 
-    if out_groups.is_empty() {
+    if out_left.is_empty() && out_right.is_empty() {
         return None;
     }
     Some(FooterRenderOutput {
-        groups: out_groups,
+        left: out_left,
+        right: out_right,
         right_bg: if app.transparent_bg {
             Color::Reset
         } else if bg_luminance(app.theme.bg) > 180.0 {
@@ -321,17 +323,18 @@ pub fn render(app: &App) -> Option<FooterRenderOutput> {
 
 /// Draw a previously-computed [`FooterRenderOutput`] into `area`.
 ///
-/// Groups keep their preset order (left, middle, right): the first group hugs
-/// the left edge, the last hugs the right edge, and any middle groups sit
-/// centred in the remaining space.  The whole strip is painted with the
-/// trailing background first so gaps between groups stay transparent-aware.
+/// Left groups are laid out left-to-right hugging the left edge (`a,b,c`) and
+/// right groups are laid out right-to-left hugging the right edge (`x,y,z`),
+/// following the lualine approach with no centred middle group. The whole
+/// strip is painted with the trailing background first so gaps between groups
+/// stay transparent-aware.
 pub fn draw(f: &mut Frame, area: Rect, out: &FooterRenderOutput) {
-    if out.groups.is_empty() || area.width == 0 {
+    if area.width == 0 {
         return;
     }
-    let widths: Vec<u16> = out.groups.iter().map(|g| g.width).collect();
-    let total: u16 = widths.iter().sum();
-    if total == 0 {
+    let left_w: u16 = out.left.iter().map(|g| g.width).sum();
+    let right_w: u16 = out.right.iter().map(|g| g.width).sum();
+    if left_w + right_w == 0 {
         return;
     }
 
@@ -340,53 +343,60 @@ pub fn draw(f: &mut Frame, area: Rect, out: &FooterRenderOutput) {
         area,
     );
 
-    if total > area.width {
+    let render_at = |f: &mut Frame, group: &FooterGroup, x: u16, w: u16| {
+        f.render_widget(
+            Paragraph::new(group.line.clone()).style(Style::default().bg(group.bg)),
+            Rect {
+                x,
+                y: area.y,
+                width: w,
+                height: area.height,
+            },
+        );
+    };
+
+    if left_w + right_w > area.width {
+        // Not enough room: render left groups first, then as many right groups
+        // as fit, truncating overflow at the edges.
         let mut x = area.x;
-        for (group, &w) in out.groups.iter().zip(&widths) {
+        for group in &out.left {
             if x >= area.x + area.width {
                 break;
             }
             let avail = area.x + area.width - x;
-            f.render_widget(
-                Paragraph::new(group.line.clone()).style(Style::default().bg(group.bg)),
-                Rect {
-                    x,
-                    y: area.y,
-                    width: w.min(avail),
-                    height: area.height,
-                },
-            );
-            x += w;
+            render_at(f, group, x, group.width.min(avail));
+            x += group.width;
+            if x >= area.x + area.width {
+                break;
+            }
+        }
+        let mut x = area.x + area.width;
+        for group in out.right.iter().rev() {
+            if x <= area.x {
+                break;
+            }
+            let avail = x - area.x;
+            let w = group.width.min(avail);
+            render_at(f, group, x - w, w);
+            x -= group.width;
+            if x <= area.x {
+                break;
+            }
         }
         return;
     }
 
-    let n = out.groups.len();
-    let mut xs: Vec<u16> = Vec::with_capacity(n);
-    let mut used = 0u16;
-    for (i, group) in out.groups.iter().enumerate() {
-        let x = if i == 0 {
-            0
-        } else if i == n - 1 {
-            area.width - group.width
-        } else {
-            (area.width - group.width) / 2
-        };
-        let x = x.max(used);
-        xs.push(x);
-        used = x.saturating_add(group.width);
+    // Fit: left groups hug the left edge, right groups hug the right edge.
+    let mut x = area.x;
+    for group in &out.left {
+        render_at(f, group, x, group.width);
+        x += group.width;
     }
-
-    for (i, group) in out.groups.iter().enumerate() {
-        f.render_widget(
-            Paragraph::new(group.line.clone()).style(Style::default().bg(group.bg)),
-            Rect {
-                x: area.x + xs[i],
-                y: area.y,
-                width: group.width,
-                height: area.height,
-            },
-        );
+    let mut x = area.x + area.width;
+    for group in out.right.iter().rev() {
+        let w = group.width;
+        render_at(f, group, x - w, w);
+        x -= w;
     }
 }
 
@@ -422,7 +432,7 @@ fn module_text(m: FooterModule, app: &App) -> Option<String> {
         FooterModule::Progress => render_progress(app),
         FooterModule::Queue => render_queue(app),
         FooterModule::KeyAction => render_keyaction(app),
-        FooterModule::Backend => Some(render_backend()),
+        FooterModule::Backend => Some(render_backend(app)),
         FooterModule::System => Some(render_system()),
         FooterModule::Device => render_device(app),
         FooterModule::EqPreset => render_eq_preset(app),
@@ -581,10 +591,18 @@ fn render_keyaction(app: &App) -> Option<String> {
     None
 }
 
-fn render_backend() -> String {
-    let rust_ver = option_env!("VERGEN_RUSTC_SEMVER").unwrap_or("?");
-    let crate_ver = option_env!("CARGO_PKG_VERSION").unwrap_or("?");
-    format!("rust {} \u{2022} v{}", rust_ver, crate_ver)
+fn render_backend(app: &App) -> String {
+    let name = app
+        .health_report
+        .as_ref()
+        .and_then(|h| {
+            h.components
+                .iter()
+                .find(|c| c.name == "audio_backend")
+                .and_then(|c| c.message.as_deref())
+        })
+        .unwrap_or("unknown");
+    name.to_string()
 }
 
 fn render_system() -> String {

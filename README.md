@@ -11,7 +11,7 @@
 A terminal music player with background playback and YouTube/Spotify
 integration.
 
-## another (terminal) audio player ?
+## Why another (terminal) audio player ?
 
 You can read about it in [this post.](https://prjctimg.me/blg/feature-rich-terminal-audio-player)
 

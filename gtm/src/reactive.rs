@@ -127,10 +127,10 @@ pub fn derive_theme(base: &AppTheme, pal: &ReactivePalette, light: bool) -> AppT
     let primary_raw = rgb(pal.primary);
     t.selection_bg = blend_colors(base.selection_bg, primary_raw, 0.4);
     // Ambient wash: keep it subtle so text contrast is untouched.
-    t.bg = blend_colors(base.bg, primary_raw, 0.05);
-    t.pane_bg = blend_colors(base.pane_bg, primary_raw, 0.04);
-    t.elevated_bg = blend_colors(base.elevated_bg, primary_raw, 0.08);
-    t.picker_bg = blend_colors(base.picker_bg, primary_raw, 0.08);
+    t.bg = blend_colors(base.bg, primary_raw, 0.16);
+    t.pane_bg = blend_colors(base.pane_bg, primary_raw, 0.14);
+    t.elevated_bg = blend_colors(base.elevated_bg, primary_raw, 0.18);
+    t.picker_bg = blend_colors(base.picker_bg, primary_raw, 0.18);
     t.monochromatic = false;
     t
 }

@@ -124,7 +124,7 @@ impl AudioVisualizer {
         }
 
         let attack = 0.65;
-        let decay = if is_playing { 0.25 } else { 0.8 };
+        let decay = if is_playing { 0.45 } else { 0.8 };
         for (bar, target) in self.bars.iter_mut().zip(self.target_bars.iter()) {
             let diff = target - *bar;
             let rate = if diff > 0.0 { attack } else { decay };

@@ -162,7 +162,6 @@ pub struct PulseAudioMixer {
     pause_fade_start: Option<Instant>,
     stored_volume: u8,
     user_volume: Arc<AtomicU8>,
-    master_volume: Arc<AtomicU8>,
 
     eq_gains: EqGains,
     eq_enabled: Arc<AtomicBool>,
@@ -199,7 +198,6 @@ impl PulseAudioMixer {
             pause_fade_start: None,
             stored_volume: 100,
             user_volume: Arc::new(AtomicU8::new(100)),
-            master_volume: Arc::new(AtomicU8::new(100)),
             eq_gains: EqGains::new_flat(),
             eq_enabled: Arc::new(AtomicBool::new(true)),
             reverb_enabled: Arc::new(AtomicBool::new(false)),
@@ -554,26 +552,14 @@ impl Mixer for PulseAudioMixer {
     fn set_volume(&mut self, volume: u8) -> AudioResult<()> {
         let vol = volume.min(100);
         self.user_volume.store(vol, Ordering::SeqCst);
-        let master = self.master_volume.load(Ordering::Relaxed);
-        let effective = (vol as u32 * master as u32 / 100).min(100) as u8;
         if !self.pending_pause {
-            Self::set_stream_volume(&self.active(), effective);
+            Self::set_stream_volume(&self.active(), vol);
         }
         Ok(())
     }
 
     fn volume(&self) -> u8 {
         self.user_volume.load(Ordering::SeqCst)
-    }
-
-    fn set_master_volume(&mut self, volume: u8) -> AudioResult<()> {
-        self.master_volume.store(volume.min(100), Ordering::SeqCst);
-        let user_vol = self.user_volume.load(Ordering::SeqCst);
-        self.set_volume(user_vol)
-    }
-
-    fn master_volume(&self) -> u8 {
-        self.master_volume.load(Ordering::SeqCst)
     }
 
     fn is_playing(&self) -> bool {
@@ -755,8 +741,7 @@ impl Mixer for PulseAudioMixer {
             return 0.0;
         }
         let vol = self.user_volume.load(Ordering::SeqCst) as f32 / 100.0;
-        let master = self.master_volume.load(Ordering::SeqCst) as f32 / 100.0;
-        vol * master
+        vol
     }
     fn current_spectrum(&self) -> Vec<f32> {
         self.spectrum.lock().unwrap().clone()

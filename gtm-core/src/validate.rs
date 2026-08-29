@@ -33,7 +33,6 @@ impl DaemonState {
             default_cursor: 0,
             fallback_disabled: false,
             volume: 100,
-            master_volume: 100,
             repeat: RepeatMode::Off,
             shuffle: false,
             mute: false,

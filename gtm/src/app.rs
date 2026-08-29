@@ -458,6 +458,7 @@ pub struct App {
     /// time-sync driver until focus is released.
     pub lyrics_pane_focus: bool,
     pub show_health_panel: bool,
+    pub show_health_on_report: bool,
     pub health_report: Option<gtm_core::ipc::HealthReport>,
     pub hide_help_bar: bool,
     pub lyrics_manual_scroll: bool,
@@ -575,7 +576,6 @@ pub enum TuiCommand {
     Prev,
     Seek(f64),
     SetVolume(u8),
-    SetMasterVolume(u8),
     ToggleShuffle,
     CycleRepeat(RepeatMode),
     ToggleMute,
@@ -848,8 +848,9 @@ impl App {
             show_lyrics: false,
             lyrics_pane_focus: false,
             show_health_panel: false,
+            show_health_on_report: false,
             health_report: None,
-            hide_help_bar: false,
+            hide_help_bar: true,
             pending_suspend: false,
             lyrics_manual_scroll: false,
             last_config_mtime: std::fs::metadata(prefs_path())
@@ -1058,6 +1059,15 @@ impl App {
                 }
             });
         }
+        {
+            let c = self.client.clone();
+            let ipc_tx = self.ipc_tx.clone();
+            tokio::spawn(async move {
+                if let Ok(report) = c.check_health().await {
+                    let _ = ipc_tx.send(IpcResult::HealthReport(report));
+                }
+            });
+        }
 
         // Initialize cover image picker in background (blocking terminal query).
         {
@@ -1191,8 +1201,8 @@ impl App {
                             NotificationKind::Success,
                             false,
                         );
-                        // The OAuth browser flow finished: dismiss the
-                        // waiting picker if it's still open.
+                        // The OAuth browser flow finished: dismiss the waiting
+                        // picker if it's still open and navigate to Spotify.
                         if self.spotify_oauth_pending {
                             self.spotify_oauth_pending = false;
                             if self
@@ -1203,6 +1213,27 @@ impl App {
                                 self.close_top_picker_with_cleanup();
                             }
                         }
+                        self.library_category = 5;
+                        self.library_pane_focus = true;
+                        self.browse_detail = None;
+                        self.set_list_pos(0);
+                    } else if self.spotify_oauth_pending && !status.linked {
+                        // The OAuth browser flow failed (e.g. no network): stop
+                        // waiting, dismiss the picker and report the failure.
+                        let msg = status
+                            .error
+                            .clone()
+                            .filter(|m| !m.is_empty())
+                            .unwrap_or_else(|| "Spotify link failed".to_string());
+                        self.spotify_oauth_pending = false;
+                        if self
+                            .pickers
+                            .top()
+                            .is_some_and(|o| o.id == PickerId::SpotifyLink)
+                        {
+                            self.close_top_picker_with_cleanup();
+                        }
+                        self.notify_titled("Spotify", msg, NotificationKind::Error, false);
                     }
                     self.spotify_status = Some(status);
                 }
@@ -1542,7 +1573,7 @@ impl App {
                     }
                     IpcResult::HealthReport(report) => {
                         self.health_report = Some(report);
-                        self.show_health_panel = true;
+                        self.show_health_panel = std::mem::take(&mut self.show_health_on_report);
                     }
                     IpcResult::SpotifyStatus(s) => self.spotify_status = Some(s),
                     IpcResult::SpotifyPlaylists(p) => self.spotify_playlists = p,
@@ -2480,6 +2511,18 @@ impl App {
             return;
         };
         let tid = track.id;
+        // If the up-next notification refers to the very same track that the
+        // queue picker is showing, reuse its cover bytes so both surfaces are
+        // always in sync and the now-playing cover can never appear here.
+        if let Some(u) = self.upnext.as_ref() {
+            if u.track.id == tid && u.cover.is_some() && self.last_queue_preview_cover_fetch_id != Some(tid) {
+                self.queue_preview_cover = u.cover.clone();
+                self.queue_preview_cover_sync();
+                self.last_queue_preview_cover_fetch_id = Some(tid);
+                self.last_queue_preview_cover_fetch_gen = None;
+                return;
+            }
+        }
         // Generation-guarded dedup: allows `id == 0` tracks to refetch
         // distinctly. Only skip when pending fetch_gen exists.
         if self.last_queue_preview_cover_fetch_id == Some(tid)
@@ -2588,7 +2631,7 @@ impl App {
 
     fn settings_options_for_category(&self) -> usize {
         match self.settings_category {
-            0 => 2, // Audio: Master Volume, Mute
+            0 => 1, // Audio: Mute
             1 => 4, // YouTube: Cookie Source, Cookie File, JS Runtime, Auto Download
             2 => 6, // Playback: Repeat, Shuffle, Crossfade, Easing, EQ Enabled, Reverb
             3 => 9, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme
@@ -2677,13 +2720,6 @@ impl App {
             TuiCommand::SetVolume(v) => {
                 tokio::spawn(async move {
                     if let Err(e) = client.set_volume(v).await {
-                        error_handler(e);
-                    }
-                });
-            }
-            TuiCommand::SetMasterVolume(v) => {
-                tokio::spawn(async move {
-                    if let Err(e) = client.set_master_volume(v).await {
                         error_handler(e);
                     }
                 });
@@ -3049,6 +3085,7 @@ impl App {
                 });
             }
             TuiCommand::CheckHealth => {
+                self.show_health_on_report = true;
                 let client = self.client.clone();
                 let ipc_tx = self.ipc_tx.clone();
                 tokio::spawn(async move {
@@ -4497,15 +4534,6 @@ impl App {
                         match self.settings_category {
                             0 => match self.settings_option {
                                 0 => {
-                                    let current = self.state.master_volume;
-                                    let new_vol = if current >= 100 {
-                                        50
-                                    } else {
-                                        (current + 10).min(100)
-                                    };
-                                    self.send_high(TuiCommand::SetMasterVolume(new_vol));
-                                }
-                                1 => {
                                     let muted = !self.state.mute;
                                     self.send_high(TuiCommand::SetVolume(if muted {
                                         0
@@ -4635,15 +4663,6 @@ impl App {
                         match self.settings_category {
                             0 => match opt {
                                 0 => {
-                                    let current = self.state.master_volume;
-                                    let new_vol = if current >= 100 {
-                                        50
-                                    } else {
-                                        (current + 10).min(100)
-                                    };
-                                    self.send_high(TuiCommand::SetMasterVolume(new_vol));
-                                }
-                                1 => {
                                     let muted = !self.state.mute;
                                     self.send_high(TuiCommand::SetVolume(if muted {
                                         0
@@ -5008,6 +5027,9 @@ impl App {
                         | Some(PickerId::SearchLibrary)
                         | Some(PickerId::CommandPalette)
                         | Some(PickerId::ThemePicker)
+                        | Some(PickerId::Help)
+                        | Some(PickerId::SpotifySearch)
+                        | Some(PickerId::SpotifyLink)
                 );
                 let is_metadata = matches!(
                     self.pickers.top().map(|o| o.id),
@@ -5050,6 +5072,9 @@ impl App {
                         | Some(PickerId::SearchLibrary)
                         | Some(PickerId::CommandPalette)
                         | Some(PickerId::ThemePicker)
+                        | Some(PickerId::Help)
+                        | Some(PickerId::SpotifySearch)
+                        | Some(PickerId::SpotifyLink)
                 );
                 let is_metadata = matches!(
                     self.pickers.top().map(|o| o.id),
@@ -5151,13 +5176,21 @@ impl App {
                                             "Token set. Syncing playlists…".to_string(),
                                             NotificationKind::Info,
                                         ));
-                                        let _ = c.spotify().sync().await;
+                                        match c.spotify().sync().await {
+                                            Ok(()) => {
+                                                let _ = ipc_tx.send(IpcResult::Notification(
+                                                    "Spotify".to_string(),
+                                                    "Sync complete".to_string(),
+                                                    NotificationKind::Success,
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                    "Spotify sync failed: {e}"
+                                                )));
+                                            }
+                                        }
                                         let status = c.spotify().status().await;
-                                        let _ = ipc_tx.send(IpcResult::Notification(
-                                            "Spotify".to_string(),
-                                            "Sync complete".to_string(),
-                                            NotificationKind::Success,
-                                        ));
                                         if let Ok(s) = status {
                                             let _ = ipc_tx.send(IpcResult::SpotifyStatus(s));
                                         }
@@ -5701,37 +5734,40 @@ impl App {
                                     let ipc_tx = self.ipc_tx.clone();
                                     let track_ids = self.pending_playlist_track_ids.clone();
                                     tokio::spawn(async move {
-                                        if client.library().create_playlist(&name).await.is_ok() {
-                                            let mut new_id: Option<i64> = None;
-                                            if let Ok(DaemonRes::Playlists { playlists, .. }) =
-                                                client.library().get_playlists().await
-                                            {
-                                                new_id = playlists
-                                                    .iter()
-                                                    .find(|p| p.name == name)
-                                                    .map(|p| p.id);
-                                                let _ =
-                                                    ipc_tx.send(IpcResult::Playlists(playlists));
-                                            }
-                                            if let Some(pid) = new_id {
-                                                if !track_ids.is_empty() {
-                                                    let _ = client
-                                                        .library()
-                                                        .add_to_playlist(pid, track_ids)
-                                                        .await;
+                                        match client.library().create_playlist(&name).await {
+                                            Ok(()) => {
+                                                let mut new_id: Option<i64> = None;
+                                                if let Ok(DaemonRes::Playlists {
+                                                    playlists,
+                                                    ..
+                                                }) = client.library().get_playlists().await
+                                                {
+                                                    new_id = playlists
+                                                        .iter()
+                                                        .find(|p| p.name == name)
+                                                        .map(|p| p.id);
+                                                    let _ = ipc_tx
+                                                        .send(IpcResult::Playlists(playlists));
                                                 }
-                                                let _ = ipc_tx.send(IpcResult::Notification(
-                                                    "Playlist".to_string(),
-                                                    format!("Created {name}"),
-                                                    NotificationKind::Success,
-                                                ));
+                                                if let Some(pid) = new_id {
+                                                    if !track_ids.is_empty() {
+                                                        let _ = client
+                                                            .library()
+                                                            .add_to_playlist(pid, track_ids)
+                                                            .await;
+                                                    }
+                                                    let _ = ipc_tx.send(IpcResult::Notification(
+                                                        "Playlist".to_string(),
+                                                        format!("Created {name}"),
+                                                        NotificationKind::Success,
+                                                    ));
+                                                }
                                             }
-                                        } else {
-                                            let _ = ipc_tx.send(IpcResult::Notification(
-                                                "Playlist".to_string(),
-                                                "Failed to create playlist".to_string(),
-                                                NotificationKind::Error,
-                                            ));
+                                            Err(e) => {
+                                                let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                    "Failed to create playlist: {e}"
+                                                )));
+                                            }
                                         }
                                     });
                                     self.playlist_creating = false;

@@ -79,10 +79,6 @@ fn default_cooldown_weight() -> f32 {
     0.1
 }
 
-fn default_master_volume() -> u8 {
-    100
-}
-
 impl Default for DynamicModeConfig {
     fn default() -> Self {
         Self {
@@ -142,7 +138,6 @@ pub struct DaemonState {
     /// track ends. Re-enabled by any explicit play or queue add.
     pub fallback_disabled: bool,
     pub volume: u8,
-    pub master_volume: u8,
     pub repeat: RepeatMode,
     pub shuffle: bool,
     pub mute: bool,
@@ -446,8 +441,6 @@ pub struct SavedState {
     pub queue: Vec<TrackInfo>,
     pub queue_cursor: u64,
     pub volume: u8,
-    #[serde(default = "default_master_volume")]
-    pub master_volume: u8,
     pub repeat: RepeatMode,
     pub shuffle: bool,
     pub mute: bool,
@@ -469,7 +462,6 @@ impl SavedState {
             queue: state.queue.clone(),
             queue_cursor: state.queue_cursor,
             volume: state.volume,
-            master_volume: state.master_volume,
             repeat: state.repeat,
             shuffle: state.shuffle,
             mute: state.mute,
@@ -490,7 +482,6 @@ impl SavedState {
         state.queue = self.queue.clone();
         state.queue_cursor = self.queue_cursor.min(state.queue.len() as u64);
         state.volume = self.volume;
-        state.master_volume = self.master_volume;
         state.repeat = self.repeat;
         state.shuffle = self.shuffle;
         state.mute = self.mute;

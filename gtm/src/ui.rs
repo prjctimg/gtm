@@ -742,21 +742,19 @@ impl Render {
                         .constraints(info_constraints)
                         .split(content_area);
 
-                    let fav_prefix = if track.favourite { "\u{2665} " } else { "" };
-                    let title_text = format!("{}{}", fav_prefix, display_title);
+                    let title_text = display_title.to_string();
                     let title_avail = info_chunks[0].width as usize;
                     let animated_title =
                         scroll_text(&title_text, title_avail, app.np_title_scroll, true);
                     let title_para = Paragraph::new(Line::from(vec![Span::styled(
                         &animated_title,
                         Style::default()
-                            .fg(app.theme.fg_bright)
+                            .fg(app.theme.secondary_accent)
                             .add_modifier(Modifier::BOLD),
                     )]));
                     Render::evolving(f, info_chunks[0], title_para, "np", app, true);
 
                     let artist_para = Paragraph::new(Line::from(vec![
-                        Span::styled("\u{1f3a4} ", Style::default().fg(app.theme.fg)),
                         Span::styled(display_artist, Style::default().fg(app.theme.fg_bright)),
                     ]));
                     f.render_widget(artist_para, info_chunks[1]);
@@ -764,7 +762,6 @@ impl Render {
                     let mut info_row = 2;
                     if has_album {
                         let album_para = Paragraph::new(Line::from(vec![
-                            Span::styled("\u{1f4bf} ", Style::default().fg(app.theme.fg)),
                             Span::styled(&track.album, Style::default().fg(app.theme.fg_bright)),
                         ]));
                         f.render_widget(album_para, info_chunks[info_row]);
@@ -774,7 +771,7 @@ impl Render {
                         let pos = app.display_position as u64;
                         let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
                         let bar_w = (info_chunks[info_row].width as usize)
-                            .saturating_sub(12)
+                            .saturating_sub(18)
                             .max(4);
                         let progress_str = crate::ui::Render::progress_variant(ratio, bar_w, app);
                         let time_str = format!(
@@ -792,15 +789,14 @@ impl Render {
                         f.render_widget(prog_para, info_chunks[info_row]);
                     }
                 } else {
-                    let fav_prefix = if track.favourite { "\u{2665} " } else { "" };
-                    let title_text = format!("{}{}", fav_prefix, display_title);
+                    let title_text = display_title.to_string();
                     let title_avail = inner.width as usize;
                     let animated_title =
                         scroll_text(&title_text, title_avail, app.np_title_scroll, true);
                     let title_para = Paragraph::new(Line::from(vec![Span::styled(
                         &animated_title,
                         Style::default()
-                            .fg(app.theme.fg_bright)
+                            .fg(app.theme.secondary_accent)
                             .add_modifier(Modifier::BOLD),
                     )]));
                     let title_area = Rect {
@@ -814,7 +810,6 @@ impl Render {
                     let row_offset = 1u16;
                     if !track.album.is_empty() {
                         let album_para = Paragraph::new(Line::from(vec![
-                            Span::styled("\u{1f4bf} ", Style::default().fg(app.theme.fg)),
                             Span::styled(&track.album, Style::default().fg(app.theme.fg_bright)),
                         ]));
                         let album_area = Rect {
@@ -1587,12 +1582,12 @@ impl Render {
         let can_cover = !no_image_protocol() && area.width > COVER_W + 1;
 
         let sep_style = Style::default().fg(app.theme.fg_dim);
-        let status_glyph = match app.state.status {
-            gtm_core::global::PlaybackStatus::Playing => "\u{25b6} Now Playing",
+        let sep_label = match app.state.status {
+            gtm_core::global::PlaybackStatus::Playing => "",
             gtm_core::global::PlaybackStatus::Paused => "\u{23ef} Paused",
             _ => "\u{266a} Ready",
-        };
-        let sep_label = format!(" {} {} ", status_glyph, fields.fav);
+        }
+        .to_string();
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(sep_label, sep_style))),
             sep_area,
@@ -2337,11 +2332,12 @@ impl Pickers {
                 }
             }
             PickerId::SpotifySearch => {
-                let block = Self::picker_panel(
-                    app,
-                    " \u{f1bc} Search ",
-                    Some(" Enter: play   Ctrl+D: download   Esc: close"),
-                );
+                let help = if app.spotify_status.as_ref().is_none_or(|s| !s.linked) {
+                    " Enter: link   Esc: close"
+                } else {
+                    " Enter: play   Ctrl+D: download   Esc: close"
+                };
+                let block = Self::picker_panel(app, " \u{f1bc} Search ", Some(help));
                 let inner = block.inner(picker_area);
                 f.render_widget(block, picker_area);
 
@@ -3130,13 +3126,10 @@ impl Pickers {
         }
 
         let items: Vec<String> = match app.settings_category {
-            0 => vec![
-                format!("Master Volume  {:>3}%", app.state.master_volume),
-                format!(
-                    "Mute           {}",
-                    if app.state.mute { "On" } else { "Off" }
-                ),
-            ],
+            0 => vec![format!(
+                "Mute           {}",
+                if app.state.mute { "On" } else { "Off" }
+            )],
             1 => vec![
                 "Cookie Source  chromium".to_string(),
                 format!(
@@ -3482,7 +3475,6 @@ struct TrackInfoFields {
     artist: String,
     album: Option<String>,
     meta: String,
-    fav: String,
     has_cover: bool,
 }
 
@@ -3526,12 +3518,12 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                 source_label(use_nerd, source).trim_start()
             );
             let fav = if track.favourite { " \u{2665}" } else { "" };
+            let meta = format!("{}{}", meta, fav);
             Some(TrackInfoFields {
                 title,
                 artist,
                 album,
                 meta,
-                fav: fav.to_string(),
                 has_cover: app.track_popup_cover.is_some(),
             })
         }
@@ -3568,7 +3560,6 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                     plural(*count, "track", "tracks"),
                     source_label(use_nerd, "Local").trim_start()
                 ),
-                fav: String::new(),
                 has_cover: app.track_popup_cover.is_some(),
             })
         }
@@ -3586,7 +3577,6 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                     plural(*count, "track", "tracks"),
                     source_label(use_nerd, "Local").trim_start()
                 ),
-                fav: String::new(),
                 has_cover: app.track_popup_cover.is_some(),
             })
         }
@@ -3605,7 +3595,6 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                     plural(tc, "track", "tracks"),
                     source_label(use_nerd, "Local").trim_start()
                 ),
-                fav: String::new(),
                 has_cover: false,
             })
         }
@@ -3624,7 +3613,6 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                     plural(tc, "track", "tracks"),
                     source_label(use_nerd, "Spotify").trim_start()
                 ),
-                fav: String::new(),
                 has_cover: false,
             })
         }
@@ -3645,7 +3633,6 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                     dur,
                     source_label(use_nerd, "Spotify").trim_start()
                 ),
-                fav: String::new(),
                 has_cover: false,
             })
         }
@@ -5235,14 +5222,13 @@ impl Pickers {
             let layout = presets
                 .get(sel)
                 .map(|p| {
-                    let mut n = p.left.len() + p.middle.len() + p.right.len();
+                    let mut n = p.left.len() + p.right.len();
                     if n == 0 {
                         n = 1;
                     }
                     format!(
-                        "left {} \u{2022} middle {} \u{2022} right {} \u{2022} {} module{}",
+                        "left {} \u{2022} right {} \u{2022} {} module{}",
                         p.left.len(),
-                        p.middle.len(),
                         p.right.len(),
                         n,
                         if n == 1 { "" } else { "s" }

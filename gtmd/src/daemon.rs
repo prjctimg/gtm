@@ -557,19 +557,6 @@ impl Cmd {
         Ok(DaemonRes::Ok)
     }
 
-    pub async fn set_master_volume(
-        inner: &DaemonInner,
-        volume: u8,
-    ) -> Result<DaemonRes, CoreError> {
-        let vol = volume.min(100);
-        inner.mixer.lock().await.set_master_volume(vol)?;
-        let mut state = inner.state.write().await;
-        state.master_volume = vol;
-        drop(state);
-        Daemon::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
     pub async fn get_volume(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let state = inner.state.read().await;
         let volume = state.volume;
@@ -2204,9 +2191,9 @@ impl Daemon {
                                 state.audio_levels = spectrum.clone();
                             }
                         }
-                        // Throttle visualizer spectrum broadcast to ~30 Hz.
+                        // Throttle visualizer spectrum broadcast to ~60 Hz.
                         if !spectrum.is_empty()
-                            && last_spectrum_tx.elapsed() >= Duration::from_millis(33)
+                            && last_spectrum_tx.elapsed() >= Duration::from_millis(16)
                         {
                             last_spectrum_tx = tokio::time::Instant::now();
                             Self::push_event(
@@ -2588,7 +2575,6 @@ impl Daemon {
             DaemonReq::Prev => Cmd::prev(inner).await,
             DaemonReq::Seek { position_secs } => Cmd::seek(inner, *position_secs).await,
             DaemonReq::SetVolume { volume } => Cmd::set_volume(inner, *volume).await,
-            DaemonReq::SetMasterVolume { volume } => Cmd::set_master_volume(inner, *volume).await,
             DaemonReq::GetVolume => Cmd::get_volume(inner).await,
             DaemonReq::ToggleShuffle => Cmd::toggle_shuffle(inner).await,
             DaemonReq::CycleRepeat { mode } => Cmd::cycle_repeat(inner, *mode).await,

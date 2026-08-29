@@ -423,11 +423,11 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Filter mode: /, Ctrl+F
+            // Filter mode: Ctrl+F (the '/' key now opens the library search picker)
             (
                 KeyCode::Char('/').into(),
                 BoundCommand {
-                    action: KeyboardAction::EnterFilter,
+                    action: KeyboardAction::OpenOverlay(PickerId::SearchLibrary),
                     contexts: vec![KeyContext::Normal],
                 },
             ),
