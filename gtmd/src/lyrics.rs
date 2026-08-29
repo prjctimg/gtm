@@ -494,6 +494,26 @@ fn urlencoding(s: &str) -> String {
 mod tests {
     use super::*;
 
+    fn line(timestamp: f64, text: &str) -> LrcLine {
+        LrcLine {
+            timestamp,
+            text: text.to_string(),
+        }
+    }
+
+    fn sample_lrc(lines: Vec<LrcLine>) -> LrcData {
+        LrcData {
+            title: Some("Some Song".to_string()),
+            artist: Some("Some Artist".to_string()),
+            album: Some("Some Album".to_string()),
+            lines,
+        }
+    }
+
+    fn temp_cache_dir(suffix: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("gtm-lyrics-{suffix}-{}", std::process::id()))
+    }
+
     #[test]
     #[ignore = "requires network access to lrclib.net"]
     fn lrclib_search_returns_lyrics() {
@@ -557,21 +577,7 @@ mod tests {
 
     #[test]
     fn lrc_to_text_round_trips_through_parse() {
-        let lrc = LrcData {
-            title: Some("Some Song".to_string()),
-            artist: Some("Some Artist".to_string()),
-            album: Some("Some Album".to_string()),
-            lines: vec![
-                LrcLine {
-                    timestamp: 65.0,
-                    text: "timed line".to_string(),
-                },
-                LrcLine {
-                    timestamp: -1.0,
-                    text: "plain line".to_string(),
-                },
-            ],
-        };
+        let lrc = sample_lrc(vec![line(65.0, "timed line"), line(-1.0, "plain line")]);
 
         let text = lrc_to_text(&lrc);
         let parsed = LyricsManager::parse_lrc(&text);
@@ -585,7 +591,7 @@ mod tests {
 
     #[test]
     fn cache_round_trips_lyrics() {
-        let dir = std::env::temp_dir().join(format!("gtm-lyrics-cache-{}", std::process::id()));
+        let dir = temp_cache_dir("cache");
         let manager = LyricsManager::with_cache_dir(dir.clone());
         let track = TrackInfo {
             id: 1,
@@ -594,21 +600,7 @@ mod tests {
             artist: "Some Artist".to_string(),
             ..Default::default()
         };
-        let lrc = LrcData {
-            title: Some("Some Song".to_string()),
-            artist: Some("Some Artist".to_string()),
-            album: Some("Some Album".to_string()),
-            lines: vec![
-                LrcLine {
-                    timestamp: 0.0,
-                    text: "first".to_string(),
-                },
-                LrcLine {
-                    timestamp: -1.0,
-                    text: "plain line".to_string(),
-                },
-            ],
-        };
+        let lrc = sample_lrc(vec![line(0.0, "first"), line(-1.0, "plain line")]);
 
         assert!(manager.read_cache(&track).is_none(), "cold cache misses");
         manager.write_cache(&track, &lrc);
@@ -625,7 +617,7 @@ mod tests {
 
     #[test]
     fn cache_key_stable_across_paths() {
-        let dir = std::env::temp_dir().join(format!("gtm-lyrics-key-{}", std::process::id()));
+        let dir = temp_cache_dir("key");
         let manager = LyricsManager::with_cache_dir(dir.clone());
         let a = TrackInfo {
             path: "/one/Artist - Song.mp3".to_string(),

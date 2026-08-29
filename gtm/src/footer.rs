@@ -694,12 +694,10 @@ mod tests {
 
     #[test]
     fn presets_have_unique_names() {
-        let all = presets();
-        let names: Vec<&str> = all.iter().map(|p| p.name.as_ref()).collect();
-        let mut sorted = names.clone();
-        sorted.sort();
-        sorted.dedup();
-        assert_eq!(sorted.len(), names.len());
+        crate::theme::assert_unique_names(
+            presets().iter().map(|p| p.name.as_ref()),
+            "preset",
+        );
     }
 
     #[test]

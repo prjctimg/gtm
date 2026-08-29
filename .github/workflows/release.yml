@@ -529,7 +529,7 @@ jobs:
           termux-create-package \
             --pkg-version "$version" \
             --pkg-arch aarch64 \
-            termux/gtm.yml
+            dist/termux/gtm.yml
           mv "gtm_${version}_aarch64.deb" release-assets/
 
       - uses: actions/upload-artifact@v7

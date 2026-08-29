@@ -865,6 +865,16 @@ pub fn merged_themes() -> Vec<ThemeEntry> {
     v
 }
 
+/// Assert a collection of named items has no duplicate names.
+#[cfg(test)]
+pub(crate) fn assert_unique_names<'a>(names: impl IntoIterator<Item = &'a str>, what: &str) {
+    let mut sorted: Vec<&str> = names.into_iter().collect();
+    let total = sorted.len();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), total, "duplicate {what} names");
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -887,11 +897,7 @@ mod tests {
 
     #[test]
     fn builtin_themes_have_unique_names() {
-        let names: Vec<&str> = builtin_themes().iter().map(|t| t.name.as_ref()).collect();
-        let mut sorted = names.clone();
-        sorted.sort();
-        sorted.dedup();
-        assert_eq!(sorted.len(), names.len(), "duplicate theme names");
+        assert_unique_names(builtin_themes().iter().map(|t| t.name.as_ref()), "theme");
     }
 
     #[test]
