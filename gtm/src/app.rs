@@ -2514,14 +2514,16 @@ impl App {
         // If the up-next notification refers to the very same track that the
         // queue picker is showing, reuse its cover bytes so both surfaces are
         // always in sync and the now-playing cover can never appear here.
-        if let Some(u) = self.upnext.as_ref() {
-            if u.track.id == tid && u.cover.is_some() && self.last_queue_preview_cover_fetch_id != Some(tid) {
-                self.queue_preview_cover = u.cover.clone();
-                self.queue_preview_cover_sync();
-                self.last_queue_preview_cover_fetch_id = Some(tid);
-                self.last_queue_preview_cover_fetch_gen = None;
-                return;
-            }
+        if let Some(u) = self.upnext.as_ref()
+            && u.track.id == tid
+            && u.cover.is_some()
+            && self.last_queue_preview_cover_fetch_id != Some(tid)
+        {
+            self.queue_preview_cover = u.cover.clone();
+            self.queue_preview_cover_sync();
+            self.last_queue_preview_cover_fetch_id = Some(tid);
+            self.last_queue_preview_cover_fetch_gen = None;
+            return;
         }
         // Generation-guarded dedup: allows `id == 0` tracks to refetch
         // distinctly. Only skip when pending fetch_gen exists.
@@ -4532,8 +4534,8 @@ impl App {
                 KeyCode::Right | KeyCode::Char('l') => {
                     if !settings_focus {
                         match self.settings_category {
-                            0 => match self.settings_option {
-                                0 => {
+                            0 => {
+                                if self.settings_option == 0 {
                                     let muted = !self.state.mute;
                                     self.send_high(TuiCommand::SetVolume(if muted {
                                         0
@@ -4542,8 +4544,7 @@ impl App {
                                     }));
                                     self.state.mute = muted;
                                 }
-                                _ => {}
-                            },
+                            }
                             2 => match self.settings_option {
                                 0 => {
                                     let next = match self.state.repeat {
@@ -4661,8 +4662,8 @@ impl App {
                     if !settings_focus {
                         let opt = self.settings_option;
                         match self.settings_category {
-                            0 => match opt {
-                                0 => {
+                            0 => {
+                                if opt == 0 {
                                     let muted = !self.state.mute;
                                     self.send_high(TuiCommand::SetVolume(if muted {
                                         0
@@ -4671,8 +4672,7 @@ impl App {
                                     }));
                                     self.state.mute = muted;
                                 }
-                                _ => {}
-                            },
+                            }
                             1 => {
                                 if opt == 1 {
                                     let current = self.cookie_file.clone();
@@ -5738,8 +5738,7 @@ impl App {
                                             Ok(()) => {
                                                 let mut new_id: Option<i64> = None;
                                                 if let Ok(DaemonRes::Playlists {
-                                                    playlists,
-                                                    ..
+                                                    playlists, ..
                                                 }) = client.library().get_playlists().await
                                                 {
                                                     new_id = playlists

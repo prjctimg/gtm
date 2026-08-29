@@ -188,8 +188,8 @@ impl Mixer for AudioMixer {
         if !self.playing.load(Ordering::SeqCst) {
             return 0.0;
         }
-        let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
-        vol
+
+        self.volume.load(Ordering::SeqCst) as f32 / 100.0
     }
     fn current_spectrum(&self) -> Vec<f32> {
         self.spectrum.lock().unwrap().clone()

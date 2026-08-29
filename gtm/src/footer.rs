@@ -694,10 +694,7 @@ mod tests {
 
     #[test]
     fn presets_have_unique_names() {
-        crate::theme::assert_unique_names(
-            presets().iter().map(|p| p.name.as_ref()),
-            "preset",
-        );
+        crate::theme::assert_unique_names(presets().iter().map(|p| p.name.as_ref()), "preset");
     }
 
     #[test]

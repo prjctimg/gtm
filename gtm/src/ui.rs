@@ -754,16 +754,18 @@ impl Render {
                     )]));
                     Render::evolving(f, info_chunks[0], title_para, "np", app, true);
 
-                    let artist_para = Paragraph::new(Line::from(vec![
-                        Span::styled(display_artist, Style::default().fg(app.theme.fg_bright)),
-                    ]));
+                    let artist_para = Paragraph::new(Line::from(vec![Span::styled(
+                        display_artist,
+                        Style::default().fg(app.theme.fg_bright),
+                    )]));
                     f.render_widget(artist_para, info_chunks[1]);
 
                     let mut info_row = 2;
                     if has_album {
-                        let album_para = Paragraph::new(Line::from(vec![
-                            Span::styled(&track.album, Style::default().fg(app.theme.fg_bright)),
-                        ]));
+                        let album_para = Paragraph::new(Line::from(vec![Span::styled(
+                            &track.album,
+                            Style::default().fg(app.theme.fg_bright),
+                        )]));
                         f.render_widget(album_para, info_chunks[info_row]);
                         info_row += 1;
                     }
@@ -809,9 +811,10 @@ impl Render {
 
                     let row_offset = 1u16;
                     if !track.album.is_empty() {
-                        let album_para = Paragraph::new(Line::from(vec![
-                            Span::styled(&track.album, Style::default().fg(app.theme.fg_bright)),
-                        ]));
+                        let album_para = Paragraph::new(Line::from(vec![Span::styled(
+                            &track.album,
+                            Style::default().fg(app.theme.fg_bright),
+                        )]));
                         let album_area = Rect {
                             x: inner.x,
                             y: inner.y + row_offset,
