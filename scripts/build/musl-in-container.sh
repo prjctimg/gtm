@@ -34,6 +34,7 @@ cp dist/gtmd.service "$root/systemd/"
 cp dist/gtm.desktop "$root/desktop/"
 cp assets/gtm.svg "$root/icons/"
 cp LICENSE "$root/"
+cp install.sh "$root/"
 tar czf "release-assets/gtm-${platform}.tar.gz" "$root"
 
 mkdir -p stage/usr/bin \

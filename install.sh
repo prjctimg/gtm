@@ -1,410 +1,351 @@
 #!/usr/bin/env bash
+# gtm installer — see https://github.com/prjctimg/gtm.rs
+#
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash
+#   install.sh                        # download and install the release for this system
+#   install.sh --version 0.2.71       # pin a specific release
+#   install.sh --nightly              # install the latest nightly prerelease
+#   install.sh --prefix ~/.local      # install under a custom prefix
 #
-# Options:
-#   --stable   Install latest stable release (default)
-#   --nightly  Install nightly pre-release
-#   --version  Pin to specific tag (e.g. v0.2.5 or 0.2.5)
-#   --prefix   Prefix for tarball installs (default: $HOME/.local, ignored for .deb)
-#   --yes      Non-interactive (passed to apt for .deb)
+# When run from inside a gtm release archive (bin/gtm + bin/gtmd sit next to
+# this script) the same file installs the bundled assets directly. The
+# standalone form is a thin bootstrap: it downloads the per-platform archive,
+# extracts it, and runs ./install.sh from inside the archive — so the installer
+# logic lives in a single file that is shipped in every archive.
+#
+# Recognised standard environment variables (all overridable):
+#   PREFIX DATAROOTDIR DATADIR BINDIR MANDIR SYSTEMD_DIR APPLICATIONS_DIR
+#   ICONS_DIR XDG_DATA_HOME XDG_CONFIG_HOME ZDOTDIR BASH_COMPLETION_DIR
+#   ZSH_COMPLETION_DIR FISH_COMPLETION_DIR ELVISH_COMPLETION_DIR
+#   POWERSHELL_COMPLETION_DIR
 
 set -euo pipefail
 
 REPO="prjctimg/gtm.rs"
-VERSION="${VERSION:-}"
-PREFIX="${PREFIX:-$HOME/.local}"
+
+NC='\033[0m'
+MUTED='\033[0;2m'
+RED='\033[0;31m'
+ORANGE='\033[38;5;214m'
+GREEN='\033[0;32m'
+
+usage() {
+  cat <<EOF
+gtm installer — https://github.com/${REPO}
+
+Usage: install.sh [options]
+
+Options:
+  -h, --help            Show this help message
+  -v, --version <ver>   Install a specific version (e.g. 0.2.71)
+      --nightly         Install the latest nightly prerelease
+  -p, --prefix <dir>    Install prefix for the tarball (default: \$HOME/.local)
+  -y, --yes             Non-interactive (accepted for compatibility)
+
+When run from inside a release archive this file installs the bundled
+binaries, man pages, completions, systemd unit, desktop entry and icon.
+
+Examples:
+  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash
+  install.sh --version 0.2.71
+  install.sh --prefix /usr/local
+EOF
+}
+
+# Logging helpers — all go to stderr so `install.sh | tee log` stays usable.
+info() { printf "${MUTED}%s${NC}\n" "$*" >&2; }
+log() { printf "${NC}%s\n" "$*" >&2; }
+ok() { printf "${GREEN}%s${NC}\n" "$*" >&2; }
+warn() { printf "${ORANGE}%s${NC}\n" "$*" >&2; }
+die() {
+  printf "${RED}%s${NC}\n" "$*" >&2
+  exit 1
+}
+need() {
+  command -v "$1" >/dev/null 2>&1 || die "requires '$1' — install it first, or download a release archive manually"
+}
+
+VERSION=""
 CHANNEL="stable"
-ASSUME_YES=0
+PREFIX="${PREFIX:-$HOME/.local}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-  --stable)
-    CHANNEL="stable"
-    shift
-    ;;
-  --nightly)
-    CHANNEL="nightly"
-    shift
-    ;;
-  --version)
-    VERSION="$2"
-    shift 2
-    ;;
-  --prefix)
-    PREFIX="$2"
-    shift 2
-    ;;
-  --yes | -y)
-    ASSUME_YES=1
-    shift
-    ;;
-  --help | -h)
-    sed -n '2,22p' "$0" | sed 's/^# //;s/^#//'
-    exit 0
-    ;;
-  *)
-    echo "Unknown option: $1" >&2
-    exit 1
-    ;;
+    -h | --help)
+      usage
+      exit 0
+      ;;
+    --nightly)
+      CHANNEL="nightly"
+      shift
+      ;;
+    -v | --version)
+      if [[ -n "${2:-}" ]]; then
+        VERSION="$2"
+        shift 2
+      else
+        die "--version requires a version argument"
+      fi
+      ;;
+    -p | --prefix)
+      if [[ -n "${2:-}" ]]; then
+        PREFIX="$2"
+        shift 2
+      else
+        die "--prefix requires a directory argument"
+      fi
+      ;;
+    -y | --yes)
+      shift
+      ;;
+    *)
+      die "unknown option: $1 (see --help)"
+      ;;
   esac
 done
 
-# Handle VERSION containing channel hint
-if [[ "$VERSION" == "nightly" ]]; then
-  CHANNEL="nightly"
-  VERSION=""
+# Detect whether this copy lives inside a release archive (bin/gtm + bin/gtmd
+# sit next to it). When piped through `curl | bash` the script path cannot be
+# resolved and we always take the bootstrap path.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-$0}")" 2>/dev/null && pwd 2>/dev/null || true)"
+IN_ARCHIVE=0
+if [ -n "${SCRIPT_DIR}" ] && [ -f "${SCRIPT_DIR}/bin/gtm" ] && [ -f "${SCRIPT_DIR}/bin/gtmd" ]; then
+  IN_ARCHIVE=1
 fi
 
-# ── Helpers (all to stderr to avoid Bad file descriptor when piped) ──
-info() { printf '\033[1;34m▸\033[0m %s\n' "$*" >&2; }
-ok() { printf '\033[1;32m✔\033[0m %s\n' "$*" >&2; }
-warn() { printf '\033[1;33m⚠\033[0m %s\n' "$*" >&2; }
-die() {
-  printf '\033[1;31m✖\033[0m %s\n' "$*" >&2
-  exit 1
+# ── Platform resolution (shared by both modes) ────────────────────────────────
+
+OS=""
+ARCH=""
+PLATFORM=""
+
+detect_platform() {
+  OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  if [ "$(uname -o 2>/dev/null)" = "Android" ] || [ -n "${TERMUX_VERSION:-}" ]; then
+    OS="android"
+  fi
+  case "${OS}" in
+    linux | darwin | android) ;;
+    *) die "unsupported OS: ${OS} (expected linux, darwin, or android/termux)" ;;
+  esac
+
+  ARCH="$(uname -m)"
+  case "${ARCH}" in
+    x86_64 | amd64) ARCH="x86_64" ;;
+    aarch64 | arm64) ARCH="aarch64" ;;
+    *) die "unsupported architecture: ${ARCH} (expected x86_64 or aarch64)" ;;
+  esac
+
+  if [ "${OS}" = "android" ]; then
+    # Termux CI publishes aarch64 builds only.
+    PLATFORM="aarch64-android"
+  elif [ "${OS}" = "darwin" ]; then
+    PLATFORM="aarch64-darwin"
+  else
+    # Linux — pick the glibc (Debian 12) or musl (Alpine-style) archive.
+    if [ -f /etc/alpine-release ]; then
+      is_musl=true
+    elif command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; then
+      is_musl=true
+    else
+      is_musl=false
+    fi
+    if [ "${is_musl}" = true ]; then
+      PLATFORM="${ARCH}-linux-musl"
+    else
+      PLATFORM="debian-12-${ARCH}"
+    fi
+  fi
 }
-
-command -v curl >/dev/null 2>&1 || die "curl is required but not found"
-command -v tar >/dev/null 2>&1 || die "tar is required but not found"
-
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-if [ "$(uname -o 2>/dev/null)" = "Android" ] || [ -n "${TERMUX_VERSION:-}" ]; then
-  OS="android"
-fi
-
-case "$OS" in
-linux | darwin | android) ;;
-*) die "Unsupported OS: $OS (expected Linux, macOS, or Android)" ;;
-esac
-
-ARCH=$(uname -m)
-case "$ARCH" in
-x86_64 | amd64) ARCH="x86_64" ;;
-aarch64 | arm64) ARCH="aarch64" ;;
-*) die "Unsupported architecture: $ARCH (expected x86_64 or aarch64)" ;;
-esac
-
-DISTRO=""
-DEB_VER=""
-if [ "$OS" = "linux" ] && [ -f /etc/os-release ]; then
-  # shellcheck disable=SC1091
-  . /etc/os-release 2>/dev/null || true
-  DISTRO="${ID:-}"
-  DEB_VER="${VERSION_ID:-}"
-fi
-
-PLATFORM="${ARCH}-${OS}"
-if [ "$DISTRO" = "alpine" ]; then
-  PLATFORM="${ARCH}-linux-musl"
-fi
-
-info "Platform: ${PLATFORM} (OS=$OS ARCH=$ARCH ID=${DISTRO:-unknown})"
-info "Channel: ${CHANNEL} ${VERSION:+VERSION=$VERSION}"
 
 resolve_latest_stable_tag() {
   local tag
-  tag=$(curl -sf "https://api.github.com/repos/${REPO}/releases?per_page=20" |
-    grep -o '"tag_name":"v[^"]*"' |
-    grep -v -e '-rc' -e '-beta' -e '-alpha' -e '-dev' |
-    grep -v '"tag_name":"nightly"' |
-    head -1 |
-    sed 's/"tag_name":"v//;s/"//' || true)
-  if [ -z "$tag" ]; then
-    tag=$(curl -sf "https://api.github.com/repos/${REPO}/releases?per_page=20" |
-      grep -o '"tag_name":"v[^"]*"' |
-      head -1 |
-      sed 's/"tag_name":"v//;s/"//' || true)
-  fi
-  [ -n "$tag" ] || die "Could not resolve latest stable tag from GitHub"
-  echo "$tag"
+  tag="$(curl -sf "https://api.github.com/repos/${REPO}/releases/latest" \
+    | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' || true)"
+  [ -n "${tag}" ] || die "could not resolve the latest stable release from GitHub"
+  echo "${tag}"
 }
 
-TAG=""
-RESOLVED_VERSION=""
-if [ "$CHANNEL" = "nightly" ]; then
-  TAG="nightly"
-  RESOLVED_VERSION="nightly"
-else
-  if [ -n "$VERSION" ]; then
-    RESOLVED_VERSION="${VERSION#v}"
-    TAG="v${RESOLVED_VERSION}"
+# ── Bootstrap mode: download this system's archive, extract, re-run ───────────
+
+bootstrap_install() {
+  need curl
+  need tar
+
+  detect_platform
+  info "platform: ${OS}/${ARCH} → ${PLATFORM}"
+
+  local tag
+  if [ "${CHANNEL}" = "nightly" ]; then
+    tag="nightly"
+  elif [ -n "${VERSION}" ]; then
+    tag="v${VERSION#v}"
   else
-    probe_ver=""
-    for bin in gtmd gtm; do
-      if command -v "$bin" >/dev/null 2>&1; then
-        # timeout 2s if available
-        if command -v timeout >/dev/null 2>&1; then
-          probe_ver=$(timeout 2 "$bin" --version 2>/dev/null | head -n1 | awk '{print $2}' || true)
-        else
-          probe_ver=$("$bin" --version 2>/dev/null | head -n1 | awk '{print $2}' || true)
-        fi
-        if [[ "$probe_ver" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-          probe_ver="${probe_ver#v}"
-          break
-        fi
-        probe_ver=""
-      fi
-    done
-    if [ -n "$probe_ver" ]; then
-      info "Detected installed version: ${probe_ver} — upgrading to latest stable"
-    fi
-    RESOLVED_VERSION=$(resolve_latest_stable_tag)
-    TAG="v${RESOLVED_VERSION}"
-    info "Latest stable: ${TAG}"
+    VERSION="$(resolve_latest_stable_tag)"
+    tag="v${VERSION}"
+    info "latest stable: v${VERSION}"
   fi
-fi
 
-TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
+  local archive_name="gtm-${PLATFORM}.tar.gz"
+  local url="https://github.com/${REPO}/releases/download/${tag}/${archive_name}"
 
-USE_DEB=0
-DEB_ARCH=""
-if [ "$OS" = "linux" ] && command -v dpkg >/dev/null 2>&1; then
-  # Only use deb on Debian/Ubuntu family; not on Alpine/musl
-  if [ "$DISTRO" = "debian" ] || [ "$DISTRO" = "ubuntu" ] || [ -f /etc/debian_version ]; then
-    # Ensure platform matches deb arch: x86_64 → amd64, aarch64 → arm64
-    DEB_ARCH=$(dpkg --print-architecture 2>/dev/null || true)
-    case "$DEB_ARCH" in
-    amd64 | arm64) USE_DEB=1 ;;
-    *)
-      warn "dpkg arch $DEB_ARCH not amd64/arm64 — falling back to tarball"
-      USE_DEB=0
-      ;;
-    esac
-    # Cross-check: if PLATFORM arch and DEB_ARCH mismatch, trust DEB_ARCH but warn
-    if [ "$ARCH" = "x86_64" ] && [ "$DEB_ARCH" != "amd64" ]; then
-      warn "ARCH $ARCH vs dpkg $DEB_ARCH mismatch — using deb arch $DEB_ARCH"
-    fi
-    if [ "$ARCH" = "aarch64" ] && [ "$DEB_ARCH" != "arm64" ]; then
-      warn "ARCH $ARCH vs dpkg $DEB_ARCH mismatch — using deb arch $DEB_ARCH"
-    fi
-    if [ "$CHANNEL" = "nightly" ] && [ -z "$VERSION" ]; then
-      if [ -z "$RESOLVED_VERSION" ] || [ "$RESOLVED_VERSION" = "nightly" ]; then
-        RESOLVED_VERSION=$(resolve_latest_stable_tag)
-      fi
-    fi
-  fi
-fi
+  local tmp
+  tmp="$(mktemp -d)"
+  trap 'rm -rf "${tmp}"' EXIT
 
-if [ "$USE_DEB" = 1 ]; then
-  if [ "$PREFIX" != "$HOME/.local" ]; then
-    warn "--prefix is ignored for .deb installs (system package)"
+  log "downloading ${archive_name}..."
+  if ! curl -#fL "${url}" -o "${tmp}/${archive_name}"; then
+    die "download failed: ${url}"
   fi
-  DEB_VERSION="$RESOLVED_VERSION"
-  if [ "$DEB_VERSION" = "nightly" ]; then
-    DEB_VERSION=$(curl -sf "https://raw.githubusercontent.com/${REPO}/main/Cargo.toml" | grep -m1 '^version = ' | sed 's/^version = "\(.*\)"/\1/' || true)
-    [ -n "$DEB_VERSION" ] || DEB_VERSION=$(resolve_latest_stable_tag)
+
+  info "extracting ${archive_name}..."
+  tar -xzf "${tmp}/${archive_name}" -C "${tmp}"
+
+  local extracted_dir="${tmp}/${archive_name%.tar.gz}"
+  [ -d "${extracted_dir}" ] || die "archive did not extract to ${extracted_dir}"
+
+  info "running installer from the archive..."
+  (
+    cd "${extracted_dir}"
+    ./install.sh "$@"
+  )
+}
+
+# ── Archive mode: install the assets bundled next to this script ──────────────
+
+install_from_archive() {
+  detect_platform
+
+  local prefix="${PREFIX}"
+  local datarootdir="${DATAROOTDIR:-${prefix}/share}"
+  local datadir="${DATADIR:-${datarootdir}}"
+  local bindir="${BINDIR:-${prefix}/bin}"
+  local mandir="${MANDIR:-${datadir}/man/man1}"
+
+  local user_install=0
+  if [ "${prefix#"$HOME"}" != "${prefix}" ]; then
+    user_install=1
   fi
-  if [ "$OS" = "android" ]; then
-    DEB_FILE="gtm-android-${DEB_VERSION}-aarch64.deb"
+
+  local systemd_dir applications_dir icons_dir
+  local bash_comp_dir zsh_comp_dir fish_comp_dir elvish_comp_dir powershell_comp_dir
+
+  if [ "${user_install}" = 1 ]; then
+    XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
+    XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
+    systemd_dir="${SYSTEMD_DIR:-${XDG_DATA_HOME}/systemd/user}"
+    applications_dir="${APPLICATIONS_DIR:-${datadir}/applications}"
+    icons_dir="${ICONS_DIR:-${datadir}/icons/hicolor/scalable/apps}"
+    bash_comp_dir="${BASH_COMPLETION_DIR:-${XDG_DATA_HOME}/bash-completion/completions}"
+    zsh_comp_dir="${ZSH_COMPLETION_DIR:-${ZDOTDIR:-$HOME}/.zsh/completions}"
+    fish_comp_dir="${FISH_COMPLETION_DIR:-${XDG_CONFIG_HOME}/fish/completions}"
+    elvish_comp_dir="${ELVISH_COMPLETION_DIR:-$HOME/.elvish/lib}"
+    powershell_comp_dir="${POWERSHELL_COMPLETION_DIR:-${XDG_DATA_HOME}/powershell/Modules}"
   else
-    DEB_FILE="gtm_${DEB_VERSION}_${DEB_ARCH}.deb"
+    systemd_dir="${SYSTEMD_DIR:-${datarootdir}/systemd/user}"
+    applications_dir="${APPLICATIONS_DIR:-${datadir}/applications}"
+    icons_dir="${ICONS_DIR:-${datadir}/icons/hicolor/scalable/apps}"
+    bash_comp_dir="${BASH_COMPLETION_DIR:-${datadir}/bash-completion/completions}"
+    zsh_comp_dir="${ZSH_COMPLETION_DIR:-${datadir}/zsh/site-functions}"
+    fish_comp_dir="${FISH_COMPLETION_DIR:-${datadir}/fish/vendor_completions.d}"
+    elvish_comp_dir="${ELVISH_COMPLETION_DIR:-${datadir}/elvish/lib}"
+    powershell_comp_dir="${POWERSHELL_COMPLETION_DIR:-${datadir}/powershell/Modules}"
   fi
 
-  DEB_URL="https://github.com/${REPO}/releases/download/${TAG}/${DEB_FILE}"
-  DEB_PATH="${TMPDIR}/${DEB_FILE}"
+  log "installing to ${prefix} (bin: ${bindir})"
 
-  info "Downloading .deb: ${DEB_URL}"
-  if ! curl -#fL "$DEB_URL" -o "$DEB_PATH"; then
-    warn "Failed to download .deb, falling back to tarball"
-    USE_DEB=0
-  else
-    info "Installing ${DEB_FILE}..."
-    if [ "$OS" = "android" ]; then
-      dpkg -i "$DEB_PATH" || {
-        info "Fixing dependencies..."
-        pkg install -y -f 2>/dev/null || true
-        dpkg -i "$DEB_PATH"
-      }
+  # Binaries
+  if [ ! -d "bin" ]; then
+    die "archive is missing its bin/ directory"
+  fi
+  mkdir -p "${bindir}"
+  for name in gtm gtmd; do
+    if [ -f "bin/${name}" ]; then
+      install -m 0755 "bin/${name}" "${bindir}/${name}"
+      ok "${name} -> ${bindir}/${name}"
     else
-      if [ "$(id -u)" != "0" ]; then
-        command -v sudo >/dev/null 2>&1 || die "sudo is required to install the .deb package"
-        sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>&1 | tail -n 20 >&2 || true
-        sudo DEBIAN_FRONTEND=noninteractive apt-get install -y "$DEB_PATH"
-      else
-        DEBIAN_FRONTEND=noninteractive apt-get update -qq 2>&1 | tail -n 20 >&2 || true
-        DEBIAN_FRONTEND=noninteractive apt-get install -y "$DEB_PATH"
-      fi
+      warn "missing bin/${name} — skipping"
     fi
-    ok "Installation complete (deb)!"
-    exit 0
+  done
+
+  # Man pages
+  if [ -d "man/man1" ]; then
+    mkdir -p "${mandir}"
+    for f in man/man1/*.1; do
+      [ -f "${f}" ] || continue
+      install -m 0644 "${f}" "${mandir}/$(basename "${f}")"
+    done
+    ok "man pages -> ${mandir}/"
   fi
-fi
 
-ASSET_PLATFORM="$PLATFORM"
-if [ "$OS" = "linux" ] && [ "$DISTRO" != "alpine" ]; then
-  ASSET_PLATFORM="debian-12-${ARCH}"
-fi
-
-TARBALL_URL="https://github.com/${REPO}/releases/download/${TAG}/gtm-${ASSET_PLATFORM}.tar.gz"
-TARBALL="${TMPDIR}/gtm-${ASSET_PLATFORM}.tar.gz"
-
-info "Downloading: ${TARBALL_URL}"
-if ! curl -#fL "$TARBALL_URL" -o "$TARBALL"; then
-  die "Failed to download ${TARBALL_URL} (platform ${ASSET_PLATFORM} may not have a release for ${TAG})"
-fi
-
-info "Extracting..."
-tar xzf "$TARBALL" -C "$TMPDIR"
-
-SRC="${TMPDIR}/gtm-${ASSET_PLATFORM}"
-if [ ! -d "$SRC" ]; then
-  SRC="$TMPDIR"
-fi
-BIN_DIR="${SRC}/bin"
-MAN_DIR="${SRC}/man/man1"
-COMPLETIONS_DIR="${SRC}/completions"
-SYSTEMD_FILE="${SRC}/systemd/gtmd.service"
-DESKTOP_FILE="${SRC}/desktop/gtm.desktop"
-ICON_FILE="${SRC}/icons/gtm.svg"
-
-DATAROOTDIR="${DATAROOTDIR:-${PREFIX}/share}"
-DATADIR="${DATADIR:-${DATAROOTDIR}}"
-BINDIR="${BINDIR:-${PREFIX}/bin}"
-MANDIR="${MANDIR:-${DATADIR}/man/man1}"
-SYSTEMD_DIR="${SYSTEMD_DIR:-${PREFIX}/lib/systemd/user}"
-APPLICATIONS_DIR="${APPLICATIONS_DIR:-${DATADIR}/applications}"
-ICONS_DIR="${ICONS_DIR:-${DATADIR}/icons/hicolor/scalable/apps}"
-if [ "${PREFIX#"$HOME"}" != "$PREFIX" ]; then
-  XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
-  XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config}"
-  BASH_COMPLETION_DIR="${BASH_COMPLETION_DIR:-$XDG_DATA_HOME/bash-completion/completions}"
-  ZSH_COMPLETION_DIR="${ZSH_COMPLETION_DIR:-${ZDOTDIR:-$HOME}/.zsh/completions}"
-  FISH_COMPLETION_DIR="${FISH_COMPLETION_DIR:-$XDG_CONFIG_HOME/fish/completions}"
-  ELVISH_COMPLETION_DIR="${ELVISH_COMPLETION_DIR:-$HOME/.elvish/lib}"
-  POWERSHELL_COMPLETION_DIR="${POWERSHELL_COMPLETION_DIR:-$XDG_DATA_HOME/powershell/Modules}"
-else
-  BASH_COMPLETION_DIR="${BASH_COMPLETION_DIR:-${DATADIR}/bash-completion/completions}"
-  ZSH_COMPLETION_DIR="${ZSH_COMPLETION_DIR:-${DATADIR}/zsh/site-functions}"
-  FISH_COMPLETION_DIR="${FISH_COMPLETION_DIR:-${DATADIR}/fish/vendor_completions.d}"
-  ELVISH_COMPLETION_DIR="${ELVISH_COMPLETION_DIR:-${DATADIR}/elvish/lib}"
-  POWERSHELL_COMPLETION_DIR="${POWERSHELL_COMPLETION_DIR:-${DATADIR}/powershell/Modules}"
-fi
-
-install -d "$BINDIR" "$MANDIR" 2>/dev/null || mkdir -p "$BINDIR" "$MANDIR"
-
-install_bin() {
-  local src="$1" name="$2"
-  if [ ! -f "$src" ]; then
-    warn "Missing $src — skipping $name"
-    return 0
+  # Completions — place each file into the conventional directory for its shell.
+  if [ -d "completions" ]; then
+    for f in completions/*; do
+      [ -f "${f}" ] || continue
+      base="$(basename "${f}")"
+      case "${base}" in
+        gtm.bash | gtmd.bash)
+          mkdir -p "${bash_comp_dir}"
+          install -m 0644 "${f}" "${bash_comp_dir}/${base%.bash}"
+          ;;
+        _gtm | _gtmd)
+          mkdir -p "${zsh_comp_dir}"
+          install -m 0644 "${f}" "${zsh_comp_dir}/${base}"
+          ;;
+        gtm.fish | gtmd.fish)
+          mkdir -p "${fish_comp_dir}"
+          install -m 0644 "${f}" "${fish_comp_dir}/${base}"
+          ;;
+        gtm.elv | gtmd.elv)
+          mkdir -p "${elvish_comp_dir}"
+          install -m 0644 "${f}" "${elvish_comp_dir}/${base}"
+          ;;
+        gtm.ps1 | gtmd.ps1)
+          mkdir -p "${powershell_comp_dir}"
+          install -m 0644 "${f}" "${powershell_comp_dir}/${base}"
+          ;;
+      esac
+    done
+    ok "completions -> ${bash_comp_dir}, ${zsh_comp_dir}, ${fish_comp_dir}, ..."
   fi
-  install -Dm 0755 "$src" "${BINDIR}/${name}"
-  ok "${name} -> ${BINDIR}/${name}"
+
+  # systemd user unit (Linux only — not macOS/Android)
+  if [ "${OS}" = "linux" ] && [ -f "systemd/gtmd.service" ]; then
+    mkdir -p "${systemd_dir}"
+    install -m 0644 "systemd/gtmd.service" "${systemd_dir}/gtmd.service"
+    ok "systemd user unit -> ${systemd_dir}/gtmd.service"
+    log "enable with: systemctl --user enable --now gtmd"
+  elif [ -f "systemd/gtmd.service" ]; then
+    info "skipping systemd unit (no systemd on ${OS})"
+  fi
+
+  # Desktop entry + icon
+  if [ -f "desktop/gtm.desktop" ]; then
+    mkdir -p "${applications_dir}"
+    install -m 0644 "desktop/gtm.desktop" "${applications_dir}/gtm.desktop"
+    ok "desktop entry -> ${applications_dir}/gtm.desktop"
+  fi
+  if [ -f "icons/gtm.svg" ]; then
+    mkdir -p "${icons_dir}"
+    install -m 0644 "icons/gtm.svg" "${icons_dir}/gtm.svg"
+    ok "icon -> ${icons_dir}/gtm.svg"
+  fi
+
+  ok "installation complete"
+  if ! echo ":${PATH}:" | grep -q ":${bindir}:"; then
+    warn "${bindir} is not in your \$PATH"
+    echo "  add it to your shell profile:" >&2
+    echo "" >&2
+    echo "    export PATH=\"${bindir}:\$PATH\"" >&2
+    echo "" >&2
+  fi
 }
 
-if [ -d "$BIN_DIR" ]; then
-  info "Installing binaries to ${BINDIR}..."
-  install_bin "${BIN_DIR}/gtm" "gtm"
-  install_bin "${BIN_DIR}/gtmd" "gtmd"
+# ── Entry point ────────────────────────────────────────────────────────────────
+
+if [ "${IN_ARCHIVE}" = 1 ]; then
+  install_from_archive
 else
-  die "Archive missing bin/ directory"
-fi
-
-# Man pages
-if [ -d "$MAN_DIR" ]; then
-  for f in "$MAN_DIR"/*.1; do
-    [ -f "$f" ] || continue
-    install -Dm 0644 "$f" "${MANDIR}/$(basename "$f")"
-  done
-  ok "Man pages -> ${MANDIR}/"
-fi
-
-# Enable completions for the user's login shell (best-effort, idempotent).
-enable_login_shell_completion() {
-  [ -d "$COMPLETIONS_DIR" ] || return 0
-  local shell_name
-  shell_name=$(basename "${SHELL:-/bin/bash}")
-  case "$shell_name" in
-    zsh)
-      local rc="${ZDOTDIR:-$HOME}/.zshrc"
-      if [ -d "$ZSH_COMPLETION_DIR" ] && ! grep -q "gtm completion (zsh)" "$rc" 2>/dev/null; then
-        {
-          echo ""
-          echo "# gtm completion (zsh)"
-          echo "fpath=(${ZSH_COMPLETION_DIR} \$fpath)"
-          echo "autoload -Uz compinit && compinit"
-        } >> "$rc"
-        ok "Enabled zsh completions in ${rc} (restart shell or run 'exec zsh')"
-      fi
-      ;;
-    fish)
-      [ -d "$FISH_COMPLETION_DIR" ] && ok "fish completions auto-load from ${FISH_COMPLETION_DIR}"
-      ;;
-    elvish)
-      if [ -d "$ELVISH_COMPLETION_DIR" ]; then
-        info "elvish: enable completions by adding to ~/.elvish/rc.elv:"
-        echo "  set paths = [\$@paths ${ELVISH_COMPLETION_DIR}]" >&2
-        echo "  use gtm" >&2
-        echo "  use gtmd" >&2
-      fi
-      ;;
-    powershell | pwsh)
-      if [ -d "$POWERSHELL_COMPLETION_DIR" ]; then
-        info "PowerShell: enable completions by adding to your \$PROFILE:"
-        echo "  \$env:PSModulePath += [IO.Path]::PathSeparator + '${POWERSHELL_COMPLETION_DIR}'" >&2
-        echo "  Import-Module gtm" >&2
-        echo "  Import-Module gtmd" >&2
-      fi
-      ;;
-    *)
-      [ -d "$BASH_COMPLETION_DIR" ] && ok "bash completions auto-load from ${BASH_COMPLETION_DIR}"
-      ;;
-  esac
-}
-
-# Completions (handle both legacy naming and new)
-if [ -d "$COMPLETIONS_DIR" ]; then
-  for f in "$COMPLETIONS_DIR"/*; do
-    [ -f "$f" ] || continue
-    base=$(basename "$f")
-    case "$base" in
-    gtm.bash) install -Dm 0644 "$f" "${BASH_COMPLETION_DIR}/gtm" ;;
-    gtmd.bash) install -Dm 0644 "$f" "${BASH_COMPLETION_DIR}/gtmd" ;;
-    _gtm) install -Dm 0644 "$f" "${ZSH_COMPLETION_DIR}/_gtm" ;;
-    _gtmd) install -Dm 0644 "$f" "${ZSH_COMPLETION_DIR}/_gtmd" ;;
-    gtm.fish) install -Dm 0644 "$f" "${FISH_COMPLETION_DIR}/gtm.fish" ;;
-    gtmd.fish) install -Dm 0644 "$f" "${FISH_COMPLETION_DIR}/gtmd.fish" ;;
-    gtm.elv) install -Dm 0644 "$f" "${ELVISH_COMPLETION_DIR}/gtm.elv" ;;
-    gtmd.elv) install -Dm 0644 "$f" "${ELVISH_COMPLETION_DIR}/gtmd.elv" ;;
-    gtm.ps1) install -Dm 0644 "$f" "${POWERSHELL_COMPLETION_DIR}/gtm.ps1" ;;
-    gtmd.ps1) install -Dm 0644 "$f" "${POWERSHELL_COMPLETION_DIR}/gtmd.ps1" ;;
-    *)
-      mkdir -p "$BASH_COMPLETION_DIR"
-      cp "$f" "$BASH_COMPLETION_DIR/" 2>/dev/null || true
-      ;;
-    esac
-  done
-  ok "Completions installed"
-fi
-
-# Enable completions for the detected login shell (idempotent).
-enable_login_shell_completion
-
-# Systemd service
-if [ -f "$SYSTEMD_FILE" ]; then
-  install -Dm 0644 "$SYSTEMD_FILE" "${SYSTEMD_DIR}/gtmd.service"
-  ok "Systemd service -> ${SYSTEMD_DIR}/gtmd.service"
-fi
-
-# Desktop entry & icon
-if [ -f "$DESKTOP_FILE" ]; then
-  install -Dm 0644 "$DESKTOP_FILE" "${APPLICATIONS_DIR}/gtm.desktop"
-  ok "Desktop entry -> ${APPLICATIONS_DIR}/gtm.desktop"
-fi
-if [ -f "$ICON_FILE" ]; then
-  install -Dm 0644 "$ICON_FILE" "${ICONS_DIR}/gtm.svg"
-  ok "Icon -> ${ICONS_DIR}/gtm.svg"
-fi
-
-echo "" >&2
-ok "Installation complete 🎊 "
-
-if ! echo ":$PATH:" | grep -q ":${BINDIR}:"; then
-  warn "${BINDIR} is not in your \$PATH."
-  echo "  Add this to your shell profile:" >&2
-  echo "" >&2
-  echo "    export PATH=\"${BINDIR}:\$PATH\"" >&2
-  echo "" >&2
+  bootstrap_install "$@"
 fi
