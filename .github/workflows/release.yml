@@ -606,7 +606,7 @@ jobs:
     permissions:
       contents: read
     env:
-      CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO }}
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
     steps:
       - uses: actions/checkout@v7
 
@@ -621,7 +621,7 @@ jobs:
           publish_crate() {
             local crate="$1"
             local attempt
-            for attempt in 1 2 3 4; do
+            for attempt in 1 2 3 4 5 6; do
               local out
               if out="$(cargo publish --locked -p "${crate}" 2>&1)"; then
                 echo "${crate} v${version} published"
@@ -631,9 +631,16 @@ jobs:
                 echo "${crate} v${version}: already published, skipping"
                 return 0
               fi
+              # gtm-core (or another gtm- dep) just went live but the crates.io
+              # index hasn't propagated yet — retry instead of failing the whole
+              # chain of downstream crates.
+              if grep -q "failed to select a version for the requirement \`gtm-" <<<"${out}"; then
+                echo "${crate} v${version}: waiting for gtm- index propagation (attempt ${attempt}/6)..."
+                sleep 30
+                continue
+              fi
               echo "${out}"
-              echo "Retrying ${crate} after index propagation delay (attempt ${attempt}/4)..."
-              sleep 20
+              return 1
             done
             return 1
           }
