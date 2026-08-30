@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Build Termux .deb package for gtm-rs.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"

@@ -14,7 +14,6 @@ if ! command -v pandoc &>/dev/null; then
   exit 1
 fi
 
-# Generate every manpage from the local docs/man sources, filling any gaps.
 for src in "$docs_dir"/*.1.md; do
   [[ -e "$src" ]] || continue
   name="$(basename "$src" .1.md)"

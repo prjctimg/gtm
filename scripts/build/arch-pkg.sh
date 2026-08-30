@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Build an Arch Linux .pkg.tar.zst from a rootfs-style stage tree.
 version="${1:?version required}"
 arch="${2:?arch required}"
 stage="${3:?stage dir required}"

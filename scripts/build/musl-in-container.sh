@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Build the Alpine (musl) release artifacts inside an alpine container.
 set -euo pipefail
 
 platform="${1:?platform required}"

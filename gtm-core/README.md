@@ -1,14 +1,10 @@
 # gtm-core
 
-Shared types for the gtm workspace. Every crate depends on this.
+Shared types for the gtm workspace:
 
-## Contents
+- IPC protocol: `DaemonRequest`, `DaemonResponse`, `DaemonEvent`, `QueueAction`, `LibraryAction`
+- Binary wire framing: `encode_frame` / `decode_frame`
+- Track and playlist models: `TrackInfo`, `Playlist`, `LrcLine`, `LrcData`, `RepeatMode`
+- Daemon state: `DaemonState`, `PlaybackStatus`, `CrossfadeConfig`
 
-- **`ipc.rs`**: `DaemonRequest`, `DaemonResponse`, `DaemonEvent` enums, `QueueAction`, `LibraryAction`
-- **`wire.rs`**: Binary frame encoding/decoding (`encode_frame`, `decode_frame`)
-- **`track.rs`**: `TrackInfo`, `Playlist`, `LrcLine`, `LrcData`, `RepeatMode`
-- **`state.rs`**: `DaemonState`, `PlaybackStatus`, `CrossfadeConfig`
-
-## Dependencies
-
-`serde`, `serde_json`, `bincode`, `thiserror`, `chrono`, `uuid`
+Every other crate in the workspace depends on this one.

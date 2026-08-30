@@ -1,21 +1,7 @@
 # gtm
 
-TUI + CLI frontend for the gtm music player.
+TUI + CLI frontend for the gtm music player. Renders the library, now-playing pane, settings, and pickers (ratatui), ships 12 themes plus TOML user themes, several progress and visualizer styles, and shell completions for bash, zsh, fish, elvish, and powershell.
 
-## Contents
+Install with `cargo install gtm`, and run the daemon with `cargo install gtmd`.
 
-- **`app.rs`**: Application state, event loop, IPC dispatch
-- **`cli.rs`**: CLI subcommand parser and IPC client dispatch
-- **`ui.rs`**: ratatui render layer (library, Now Playing, settings, pickers)
-- **`theme.rs`**: 12 built-in NvChad-inspired themes + TOML user themes
-- **`keymap.rs`**: keyboard bindings and `KeyboardAction` dispatch
-- **`picker.rs`**: floating picker panel stack
-- **`footer.rs`**: status bar modules and presets
-- **`progress.rs`**: progress indicator styles (Braille, Gradient, etc.)
-- **`visualizer.rs`**: audio visualizer presets (Braille, Blocks, Mirror, etc.)
-
-## Building
-
-```bash
-cargo build --release -p gtm
-```
+On Linux, building needs a C compiler, `cmake`, `pkg-config`, and the ALSA development headers (`libasound2-dev` on Debian/Ubuntu).

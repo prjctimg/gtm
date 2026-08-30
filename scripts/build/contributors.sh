@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Regenerate contributors avatars in README.md from git commit authors.
-
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 readme="$repo_root/README.md"
 

@@ -197,7 +197,7 @@ if [ "$USE_DEB" = 1 ]; then
     [ -n "$DEB_VERSION" ] || DEB_VERSION=$(resolve_latest_stable_tag)
   fi
   if [ "$OS" = "android" ]; then
-    DEB_FILE="gtm_${DEB_VERSION}_aarch64.deb"
+    DEB_FILE="gtm-android-${DEB_VERSION}-aarch64.deb"
   else
     DEB_FILE="gtm_${DEB_VERSION}_${DEB_ARCH}.deb"
   fi

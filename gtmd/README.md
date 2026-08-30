@@ -1,47 +1,5 @@
-# gtmd: gtm daemon
+# gtmd
 
-Background audio daemon that owns all playback state, manages the music library,
-and communicates with clients over a Unix domain socket.
+Background daemon for gtm. Owns all playback state, manages the music library via SQLite, and serves the `gtm` TUI/CLI over a Unix domain socket. Handles yt-dlp streams, Deezer cover art, LRCLIB lyrics, crossfade/equalizer audio, and an MPRIS interface (on by default).
 
-## Architecture
-
-```
-┌──────────────────────────────────────────────────┐
-│                    gtmd                            │
-│                                                    │
-│  main():                                           │
-│    1. parse CLI args (clap)                        │
-│    2. load config                                  │
-│    3. init Daemon struct                           │
-│    4. daemon.run().await                           │
-│                                                    │
-│  Daemon::run() (main loop):                        │
-│    loop {                                          │
-│        tokio::select! {                            │
-│            conn = listener.accept()                 │
-│            req  = read_request() → dispatch()      │
-│            ev   = backend.poll()   → handle_event()│
-│            _    = sleep_timer.tick()                │
-│        }                                           │
-│        flush_events()  // broadcast to clients     │
-│    }                                               │
-└──────────────────────────────────────────────────┘
-```
-
-## Modules
-
-| Module | Description |
-|--------|-------------|
-| `daemon.rs` | Daemon struct, main loop, state machine |
-| `ipc.rs` | Unix socket listener, ClientHandle, JSON line I/O |
-| `dispatch.rs` | Request → handler dispatch table |
-| `queue.rs` | QueueManager (shuffle, repeat, cursor) |
-| `library.rs` | SQLite library wrapper (rusqlite, bundled) |
-| `youtube.rs` | yt-dlp subprocess manager |
-| `cover.rs` | Deezer API cover art cache (LRU + disk) |
-| `lyrics.rs` | LRC sidecar + LRCLIB API resolver |
-| `config.rs` | XDG config loading |
-
-## Dependencies
-
-`gtm-core`, `gtm-audio`, `gtm-mpris` (optional), `rusqlite` (bundled), `tokio`, `reqwest`, `tracing`, `clap`
+Install with `cargo install gtmd`.
