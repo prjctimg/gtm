@@ -141,11 +141,7 @@ impl DaemonState {
         Ok(())
     }
 
-    pub fn set_crossfade(
-        &mut self,
-        enabled: bool,
-        duration: u8,
-    ) -> Result<()> {
+    pub fn set_crossfade(&mut self, enabled: bool, duration: u8) -> Result<()> {
         tripwire::check(FailPoint::CrossfadeApply)?;
         self.crossfade = if enabled {
             Some(CrossfadeConfig {

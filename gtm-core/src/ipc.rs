@@ -898,10 +898,7 @@ pub enum DaemonEvent {
     #[serde(rename = "shuffle_changed")]
     ShuffleChanged { enabled: bool },
     #[serde(rename = "crossfade_changed")]
-    CrossfadeChanged {
-        enabled: bool,
-        duration_secs: u8,
-    },
+    CrossfadeChanged { enabled: bool, duration_secs: u8 },
     /// Emitted once when the next track is about to enter crossfade (5s before
     /// it begins). The client animates the countdown until the crossfade
     /// starts.

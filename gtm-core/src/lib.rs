@@ -18,9 +18,7 @@ pub mod tripwire;
 pub mod validate;
 pub mod wire;
 
-pub use global::{
-    CoreError, CrossfadeConfig, DaemonState, EQ_FREQUENCIES, EqBand, ReverbConfig,
-};
+pub use global::{CoreError, CrossfadeConfig, DaemonState, EQ_FREQUENCIES, EqBand, ReverbConfig};
 pub use ipc::MetadataPatch;
 pub use paths::{
     is_termux, resolve_command_socket, resolve_pid_file, resolve_pulse_socket, termux_music_dirs,

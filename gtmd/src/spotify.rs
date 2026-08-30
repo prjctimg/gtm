@@ -288,8 +288,8 @@ impl SpotifyManager {
 
     async fn init_client(&mut self, token: Token) -> Result<(), String> {
         let refreshable = token.refresh_token.is_some();
-        let client_id =
-            gtm_core::secret::get_secret(gtm_core::secret::SPOTIFY_CLIENT_ID_KEY).unwrap_or_default();
+        let client_id = gtm_core::secret::get_secret(gtm_core::secret::SPOTIFY_CLIENT_ID_KEY)
+            .unwrap_or_default();
         let creds = if client_id.is_empty() {
             Credentials::default()
         } else {
@@ -300,10 +300,7 @@ impl SpotifyManager {
         config.token_refreshing = refreshable && !client_id.is_empty();
         let oauth = OAuth::default();
         self.client = Some(AuthCodePkceSpotify::from_token_with_config(
-            token,
-            creds,
-            oauth,
-            config,
+            token, creds, oauth, config,
         ));
         self.error = None;
         match self.sync().await {

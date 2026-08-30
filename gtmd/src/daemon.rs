@@ -829,10 +829,7 @@ impl Cmd {
         Ok(DaemonRes::Ok)
     }
 
-    pub async fn clear_cache(
-        inner: &DaemonInner,
-        what: CacheKind,
-    ) -> Result<DaemonRes, CoreError> {
+    pub async fn clear_cache(inner: &DaemonInner, what: CacheKind) -> Result<DaemonRes, CoreError> {
         let cache_dir = inner.config.cache_dir.clone();
         tokio::task::spawn_blocking(move || match what {
             CacheKind::Lyrics => {
@@ -1039,11 +1036,9 @@ impl Spotify {
             match flow.wait_for_access_token().await {
                 Ok(token) => {
                     let mut spotify = inner2.spotify.lock().await;
-                    let result = tokio::time::timeout(
-                        Duration::from_secs(60),
-                        spotify.set_token(&token),
-                    )
-                    .await;
+                    let result =
+                        tokio::time::timeout(Duration::from_secs(60), spotify.set_token(&token))
+                            .await;
                     match result {
                         Ok(Ok(())) => {
                             info!(

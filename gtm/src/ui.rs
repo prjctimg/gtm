@@ -1443,7 +1443,9 @@ impl Render {
                 )];
                 spans.push(Span::styled(
                     opencode_spinner(app.frame_count as usize),
-                    Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD),
                 ));
                 let msg = Paragraph::new(Line::from(spans)).alignment(Alignment::Center);
                 f.render_widget(msg, inner);
@@ -1695,7 +1697,9 @@ impl Render {
         }
         lines.push(Line::from(Span::styled(
             opencode_spinner(app.frame_count as usize),
-            Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(Span::styled(
             label.to_string(),
@@ -2139,7 +2143,7 @@ impl Pickers {
                     .iter()
                     .map(|r| {
                         let a = r.artist.as_deref().map(|a| a.len()).unwrap_or(0);
-                        (a + r.title.len() as usize + 22) as u16
+                        (a + r.title.len() + 22) as u16
                     })
                     .max()
                     .unwrap_or(52)
@@ -3837,7 +3841,9 @@ impl Pickers {
         let block = Self::picker_panel(
             app,
             " Keybindings ",
-            Some("Esc: close   ?: toggle   \u{2191}/\u{2193}/jk: browse   gg/G: top/bottom   0/$: first/last"),
+            Some(
+                "Esc: close   ?: toggle   \u{2191}/\u{2193}/jk: browse   gg/G: top/bottom   0/$: first/last",
+            ),
         );
         let inner = block.inner(area);
         f.render_widget(block, area);
@@ -5229,16 +5235,8 @@ fn plural(count: usize, singular: &'static str, plural: &'static str) -> &'stati
 }
 
 const LOADER_BRAILLE: [&str; 10] = [
-    "\u{280b}",
-    "\u{2819}",
-    "\u{2839}",
-    "\u{2838}",
-    "\u{283c}",
-    "\u{2834}",
-    "\u{2826}",
-    "\u{2827}",
-    "\u{2807}",
-    "\u{280f}",
+    "\u{280b}", "\u{2819}", "\u{2839}", "\u{2838}", "\u{283c}", "\u{2834}", "\u{2826}", "\u{2827}",
+    "\u{2807}", "\u{280f}",
 ];
 
 fn opencode_spinner(frame: usize) -> &'static str {

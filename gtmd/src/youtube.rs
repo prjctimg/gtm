@@ -303,9 +303,7 @@ async fn run_search(
     // Sort results: prefer "official audio" and "explicit" titles (priority is
     // scored from the RAW title at parse time, before it is cleaned), then by
     // view count as a tiebreaker.
-    results.sort_by(|a, b| {
-        b.priority.cmp(&a.priority).then(b.views.cmp(&a.views))
-    });
+    results.sort_by(|a, b| b.priority.cmp(&a.priority).then(b.views.cmp(&a.views)));
     results
 }
 

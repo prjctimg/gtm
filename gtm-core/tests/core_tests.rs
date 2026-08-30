@@ -6,8 +6,7 @@
 
 use gtm_core::Result;
 use gtm_core::global::{
-    CrossfadeConfig, DaemonState, Image, PlaybackStatus, RepeatMode, ThemeMode, UIMode,
-    YTFilter,
+    CrossfadeConfig, DaemonState, Image, PlaybackStatus, RepeatMode, ThemeMode, UIMode, YTFilter,
 };
 use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction};
 use gtm_core::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};

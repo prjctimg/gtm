@@ -4769,11 +4769,7 @@ impl App {
                                     } else {
                                         gtm_core::ipc::CacheKind::Covers
                                     };
-                                    let label = if opt == 9 {
-                                        "lyrics"
-                                    } else {
-                                        "cover art"
-                                    };
+                                    let label = if opt == 9 { "lyrics" } else { "cover art" };
                                     let c = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
