@@ -4,15 +4,15 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use std::collections::HashSet;
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 
-use chrono::Duration;
+use chrono::{Duration, Utc};
 use futures::StreamExt;
-use rspotify::AuthCodeSpotify;
+use rspotify::AuthCodePkceSpotify;
 use rspotify::clients::{BaseClient, OAuthClient};
 use rspotify::model::{AdditionalType, PlayableItem, SearchType, Token};
+use rspotify::{Config, Credentials, OAuth};
 use tracing::{debug, info, warn};
 
 use gtm_core::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
@@ -23,12 +23,13 @@ const TOKEN_ACCESS_PERMS: u32 = 0o600;
 /// Owns the Spotify Web API client, its token file, and the playlist cache.
 ///
 /// The access token is stored as `spotify.json` inside the daemon config
-/// directory with 0600 permissions. The client is built from the raw token
-/// without client credentials, so requests stop working once the token
-/// expires; the user re-links with a fresh token at that point.
+/// directory with 0600 permissions and mirrored into the OS keychain. The
+/// client is built with the stored client ID and a full token so that
+/// rspotify's automatic reauthentication can refresh the access token once it
+/// expires, keeping the link alive without a manual re-login.
 pub struct SpotifyManager {
     config_dir: PathBuf,
-    client: Option<AuthCodeSpotify>,
+    client: Option<AuthCodePkceSpotify>,
     user: Option<String>,
     /// Whether the linked account has a Premium subscription.
     premium: bool,
@@ -264,7 +265,7 @@ impl SpotifyManager {
 
     async fn fetch_playlist_tracks(
         &self,
-        client: &AuthCodeSpotify,
+        client: &AuthCodePkceSpotify,
         playlist_id: rspotify::model::PlaylistId<'static>,
     ) -> Vec<SpotifyTrack> {
         let mut tracks = Vec::new();
@@ -286,12 +287,29 @@ impl SpotifyManager {
     }
 
     async fn init_client(&mut self, token: Token) -> Result<(), String> {
-        self.client = Some(AuthCodeSpotify::from_token(token));
+        let refreshable = token.refresh_token.is_some();
+        let client_id =
+            gtm_core::secret::get_secret(gtm_core::secret::SPOTIFY_CLIENT_ID_KEY).unwrap_or_default();
+        let creds = if client_id.is_empty() {
+            Credentials::default()
+        } else {
+            Credentials::new_pkce(&client_id)
+        };
+        let mut config = Config::default();
+        config.token_cached = false;
+        config.token_refreshing = refreshable && !client_id.is_empty();
+        let oauth = OAuth::default();
+        self.client = Some(AuthCodePkceSpotify::from_token_with_config(
+            token,
+            creds,
+            oauth,
+            config,
+        ));
         self.error = None;
         match self.sync().await {
             Ok(()) => {
                 info!(
-                    "linked spotify as {:?} ({} playlists)",
+                    "linked spotify as {:?} ({} playlists, auto-refresh: {refreshable})",
                     self.user,
                     self.playlists.len()
                 );
@@ -370,26 +388,32 @@ fn track_from_playable(item: &PlayableItem) -> Option<SpotifyTrack> {
 
 /// Accept either a full rspotify `Token` JSON object or a bare access token
 /// string. Full-token JSON is preferred so scopes/refresh info is preserved.
+/// The expiry is derived from `expires_in` whenever the token file lacks an
+/// explicit `expires_at` so expiry checks (and auto-refresh) behave correctly.
 fn parse_token(raw: &str) -> Result<Token, String> {
     let raw = raw.trim();
     if raw.is_empty() {
         return Err("empty token".into());
     }
-    if let Ok(token) = serde_json::from_str::<Token>(raw)
+    let mut token = if let Ok(token) = serde_json::from_str::<Token>(raw)
         && !token.access_token.is_empty()
     {
-        return Ok(token);
-    }
-    if !raw.contains('{') {
-        return Ok(Token {
+        token
+    } else if !raw.contains('{') {
+        Token {
             access_token: raw.to_string(),
             expires_in: Duration::try_seconds(3600).ok_or("invalid default expiry")?,
             expires_at: None,
             refresh_token: None,
-            scopes: HashSet::new(),
-        });
+            scopes: Default::default(),
+        }
+    } else {
+        return Err("could not parse spotify token".into());
+    };
+    if token.expires_at.is_none() {
+        token.expires_at = Utc::now().checked_add_signed(token.expires_in);
     }
-    Err("could not parse spotify token".into())
+    Ok(token)
 }
 
 #[cfg(test)]

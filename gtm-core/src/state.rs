@@ -23,32 +23,6 @@ pub enum CoreError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum Easing {
-    #[default]
-    Linear,
-    SlowFadeInFastFadeOut,
-    FastFadeInSlowFadeOut,
-    Logarithmic,
-    Smoothstep,
-    EqualPower,
-    Exponential,
-}
-
-impl Easing {
-    pub fn name(&self) -> &'static str {
-        match self {
-            Self::Linear => "Linear",
-            Self::SlowFadeInFastFadeOut => "Slow In, Fast Out",
-            Self::FastFadeInSlowFadeOut => "Fast In, Slow Out",
-            Self::Logarithmic => "Logarithmic",
-            Self::Smoothstep => "Smoothstep",
-            Self::EqualPower => "Equal Power",
-            Self::Exponential => "Exponential",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum LoudnessMode {
     #[default]
     Off,
@@ -103,7 +77,6 @@ pub struct ScrobbleConfig {
 pub struct CrossfadeConfig {
     pub enabled: bool,
     pub duration_secs: u8,
-    pub easing: Easing,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

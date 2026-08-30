@@ -300,11 +300,11 @@ async fn run_search(
     }
 
     let _ = child.wait().await;
-    // Sort results: prefer "official audio" and "explicit" titles
+    // Sort results: prefer "official audio" and "explicit" titles (priority is
+    // scored from the RAW title at parse time, before it is cleaned), then by
+    // view count as a tiebreaker.
     results.sort_by(|a, b| {
-        let a_prio = priority(&a.title);
-        let b_prio = priority(&b.title);
-        b_prio.cmp(&a_prio).then(b.views.cmp(&a.views))
+        b.priority.cmp(&a.priority).then(b.views.cmp(&a.views))
     });
     results
 }
@@ -345,6 +345,7 @@ fn parse_yt_json(line: &str) -> Result<YTSearchResult, String> {
         .unwrap_or("")
         .to_string();
     let (_artist, title) = crate::cleaner::clean_youtube_title(&raw_title);
+    let artist = _artist;
     Ok(YTSearchResult {
         id: id.clone(),
         title,
@@ -365,5 +366,7 @@ fn parse_yt_json(line: &str) -> Result<YTSearchResult, String> {
             .and_then(|v| v.as_str())
             .map(|s| s.to_string()),
         is_playlist,
+        artist,
+        priority: priority(&raw_title),
     })
 }

@@ -19,7 +19,7 @@ pub mod validate;
 pub mod wire;
 
 pub use global::{
-    CoreError, CrossfadeConfig, DaemonState, EQ_FREQUENCIES, Easing, EqBand, ReverbConfig,
+    CoreError, CrossfadeConfig, DaemonState, EQ_FREQUENCIES, EqBand, ReverbConfig,
 };
 pub use ipc::MetadataPatch;
 pub use paths::{

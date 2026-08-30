@@ -6,7 +6,7 @@
 
 use gtm_core::Result;
 use gtm_core::global::{
-    CrossfadeConfig, DaemonState, Easing, Image, PlaybackStatus, RepeatMode, ThemeMode, UIMode,
+    CrossfadeConfig, DaemonState, Image, PlaybackStatus, RepeatMode, ThemeMode, UIMode,
     YTFilter,
 };
 use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction};
@@ -115,6 +115,8 @@ roundtrip!(
         title: "Test Vid".into(),
         url: "https://youtube.com/watch?v=abc".into(),
         channel: "TestChannel".into(),
+        artist: Some("TestArtist".into()),
+        priority: 2,
         duration: 120.0,
         views: 1000,
         thumbnail: Some("https://img.youtube.com/vi/abc/default.jpg".into()),
@@ -137,7 +139,6 @@ roundtrip!(
     CrossfadeConfig {
         enabled: true,
         duration_secs: 8,
-        easing: Easing::default(),
     }
 );
 roundtrip!(daemon_state_roundtrip, DaemonState, sample_state());
@@ -612,18 +613,18 @@ fn state_transition_mute_toggle() {
 #[test]
 fn state_transition_crossfade() {
     let mut s = sample_state();
-    s.set_crossfade(true, 8, None).unwrap();
+    s.set_crossfade(true, 8).unwrap();
     assert!(s.crossfade.is_some());
     assert_eq!(s.crossfade.as_ref().unwrap().duration_secs, 8);
 
-    s.set_crossfade(false, 0, None).unwrap();
+    s.set_crossfade(false, 0).unwrap();
     assert!(s.crossfade.is_none());
 }
 
 #[test]
 fn state_transition_crossfade_clamped() {
     let mut s = sample_state();
-    s.set_crossfade(true, 99, None).unwrap();
+    s.set_crossfade(true, 99).unwrap();
     assert_eq!(s.crossfade.as_ref().unwrap().duration_secs, 30);
 }
 
@@ -928,7 +929,6 @@ fn check_invariants_crossfade_zero_duration() {
     s.crossfade = Some(CrossfadeConfig {
         enabled: true,
         duration_secs: 0,
-        easing: Easing::default(),
     });
     s.check_invariants();
 }

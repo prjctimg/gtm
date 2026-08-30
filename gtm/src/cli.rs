@@ -349,7 +349,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
             } => {
                 let dur = duration_secs.unwrap_or(7);
                 client
-                    .crossfade(*enabled, dur, None)
+                    .crossfade(*enabled, dur)
                     .await
                     .map(|()| "ok".to_string())
                     .map_err(|e| e.to_string())

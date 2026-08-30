@@ -28,7 +28,7 @@ use gtm_core::global::{
     DaemonState, EqPreset, PlaybackStatus, RepeatMode, ReverbConfig, SavedState,
 };
 use gtm_core::ipc::{
-    ComponentHealth, DaemonEvent, DaemonReq, DaemonRes, HealthReport, HealthStatus,
+    CacheKind, ComponentHealth, DaemonEvent, DaemonReq, DaemonRes, HealthReport, HealthStatus,
     PROTOCOL_VERSION, QueueAction, SyncKind, WireReq,
 };
 use gtm_core::track::TrackInfo;
@@ -616,17 +616,15 @@ impl Cmd {
         inner: &DaemonInner,
         enabled: bool,
         duration_secs: u8,
-        easing: Option<gtm_core::global::Easing>,
     ) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
-        state.set_crossfade(enabled, duration_secs, easing)?;
+        state.set_crossfade(enabled, duration_secs)?;
         drop(state);
         Daemon::push_event(
             inner,
             DaemonEvent::CrossfadeChanged {
                 enabled,
                 duration_secs,
-                easing,
             },
         );
         Daemon::save_state(inner);
@@ -831,6 +829,38 @@ impl Cmd {
         Ok(DaemonRes::Ok)
     }
 
+    pub async fn clear_cache(
+        inner: &DaemonInner,
+        what: CacheKind,
+    ) -> Result<DaemonRes, CoreError> {
+        let cache_dir = inner.config.cache_dir.clone();
+        tokio::task::spawn_blocking(move || match what {
+            CacheKind::Lyrics => {
+                let dir = cache_dir.join("lyrics");
+                if let Ok(entries) = std::fs::read_dir(&dir) {
+                    for entry in entries.flatten() {
+                        if entry.path().extension().is_some_and(|x| x == "lrc") {
+                            let _ = std::fs::remove_file(entry.path());
+                        }
+                    }
+                }
+            }
+            CacheKind::Covers => {
+                for sub in ["covers", "artist_covers"] {
+                    let dir = cache_dir.join(sub);
+                    if let Ok(entries) = std::fs::read_dir(&dir) {
+                        for entry in entries.flatten() {
+                            let _ = std::fs::remove_file(entry.path());
+                        }
+                    }
+                }
+            }
+        })
+        .await
+        .map_err(|e| CoreError::Daemon(format!("clear cache task: {e}")))?;
+        Ok(DaemonRes::Ok)
+    }
+
     pub async fn get_status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let state = inner.state.read().await;
         let mut state_clone = state.clone();
@@ -967,10 +997,17 @@ struct Spotify;
 impl Spotify {
     pub async fn set_token(inner: &DaemonInner, token: &str) -> Result<DaemonRes, CoreError> {
         let mut spotify = inner.spotify.lock().await;
-        let _ = tokio::time::timeout(Duration::from_secs(60), spotify.set_token(token)).await;
-        Ok(DaemonRes::SpotifyStatusRes {
-            status: spotify.status(),
-        })
+        match tokio::time::timeout(Duration::from_secs(60), spotify.set_token(token)).await {
+            Ok(Ok(())) => Ok(DaemonRes::SpotifyStatusRes {
+                status: spotify.status(),
+            }),
+            Ok(Err(e)) => Ok(DaemonRes::Error {
+                message: format!("spotify token failed: {e}"),
+            }),
+            Err(_) => Ok(DaemonRes::Error {
+                message: "spotify token link timed out".into(),
+            }),
+        }
     }
 
     /// Kick off an OAuth PKCE link flow: build the authorize URL, serve the
@@ -1002,13 +1039,27 @@ impl Spotify {
             match flow.wait_for_access_token().await {
                 Ok(token) => {
                     let mut spotify = inner2.spotify.lock().await;
-                    let _ =
-                        tokio::time::timeout(Duration::from_secs(60), spotify.set_token(&token))
-                            .await;
-                    info!(
-                        "spotify oauth link complete ({:?} playlists)",
-                        spotify.status().playlists
-                    );
+                    let result = tokio::time::timeout(
+                        Duration::from_secs(60),
+                        spotify.set_token(&token),
+                    )
+                    .await;
+                    match result {
+                        Ok(Ok(())) => {
+                            info!(
+                                "spotify oauth link complete ({:?} playlists)",
+                                spotify.status().playlists
+                            );
+                        }
+                        Ok(Err(e)) => {
+                            warn!("spotify oauth link failed: {e}");
+                            spotify.set_error(format!("oauth link failed: {e}"));
+                        }
+                        Err(_) => {
+                            warn!("spotify oauth link timed out");
+                            spotify.set_error("oauth link timed out".into());
+                        }
+                    }
                     drop(spotify);
                     let _ = inner2.event_tx.send(DaemonEvent::SpotifyStatusChanged);
                 }
@@ -2582,8 +2633,7 @@ impl Daemon {
             DaemonReq::Crossfade {
                 enabled,
                 duration_secs,
-                easing,
-            } => Cmd::crossfade(inner, *enabled, *duration_secs, *easing).await,
+            } => Cmd::crossfade(inner, *enabled, *duration_secs).await,
             DaemonReq::SetLoudnessMode { mode } => Cmd::set_loudness_mode(inner, *mode).await,
             DaemonReq::ScanLoudness { track_ids, force } => {
                 Cmd::scan_loudness(inner, track_ids.clone(), *force).await
@@ -2690,6 +2740,7 @@ impl Daemon {
             } => Spotify::resolve_track(inner, name, artists, album).await,
             DaemonReq::SetSleepTimer { minutes } => Cmd::set_sleep_timer(inner, *minutes).await,
             DaemonReq::CancelSleepTimer => Cmd::cancel_sleep_timer(inner).await,
+            DaemonReq::ClearCache { what } => Cmd::clear_cache(inner, *what).await,
             DaemonReq::GetStatus => Cmd::get_status(inner).await,
             DaemonReq::CheckHealth => Cmd::check_health(inner).await,
             DaemonReq::Ping => Ok(DaemonRes::Pong),
@@ -2961,11 +3012,11 @@ impl Daemon {
     }
 
     async fn try_start_crossfade(inner: &DaemonInner, track: &TrackInfo) -> bool {
-        let (enabled, dur, easing) = {
+        let (enabled, dur) = {
             let state = inner.state.read().await;
             match state.crossfade.as_ref() {
-                Some(cf) => (cf.enabled, cf.duration_secs as f64, cf.easing),
-                None => (false, 0.0, gtm_core::global::Easing::Linear),
+                Some(cf) => (cf.enabled, cf.duration_secs as f64),
+                None => (false, 0.0),
             }
         };
         if !enabled
@@ -2987,7 +3038,6 @@ impl Daemon {
         if mixer.load_standby_decoded(source).is_err() {
             return false;
         }
-        mixer.set_crossfade_easing(easing);
         mixer.start_crossfade(dur);
         drop(mixer);
         *inner.crossfade_loaded_for.lock().await = Some(track.path.clone());
@@ -3327,6 +3377,26 @@ fn metadata_query_for(track: &TrackInfo) -> (String, String) {
         .and_then(|s| s.to_str())
         .unwrap_or("");
     let (cleaned_artist, cleaned_title) = crate::cleaner::clean_filename_stem(stem);
+
+    // A freshly YouTube-downloaded track carries the raw video title and the
+    // uploader as the artist, neither of which Deezer can match (e.g. artist
+    // "DrakeVEVO"). When the title carries YouTube clutter or the artist looks
+    // like a channel, query with the cleaned values so the cover art and metadata
+    // are fetched immediately after the download.
+    let (yt_artist, yt_title) = crate::cleaner::clean_youtube_title(&track.title);
+    let youtube_harvest = yt_title != track.title || is_channel_artist(&track.artist);
+    if youtube_harvest {
+        let artist = yt_artist
+            .or_else(|| cleaned_artist.clone())
+            .unwrap_or_default();
+        let title = if !yt_title.is_empty() {
+            yt_title
+        } else {
+            cleaned_title
+        };
+        return (artist, title);
+    }
+
     let title_unreliable = crate::cleaner::is_filename_like(stem, &track.title);
     let query_artist = if track.artist.is_empty() {
         cleaned_artist.unwrap_or_default()
@@ -3339,6 +3409,13 @@ fn metadata_query_for(track: &TrackInfo) -> (String, String) {
         track.title.clone()
     };
     (query_artist, query_title)
+}
+
+/// True when the artist looks like a YouTube channel/uploader name rather than
+/// a real artist, so the metadata query can prefer the cleaned values.
+fn is_channel_artist(artist: &str) -> bool {
+    let a = artist.trim();
+    a.is_empty() || a.contains("VEVO") || a.contains(" - Topic") || a.contains(" · Topic")
 }
 
 fn run_covers_sync(

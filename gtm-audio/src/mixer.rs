@@ -17,7 +17,7 @@ use crate::buffer::{BUFFER_CAPACITY_SAMPLES, DecodeControl, RingBufferInner, Rin
 use crate::decoder::DecodeThread;
 use crate::eq::{EqGains, EqSource, ReverbSource};
 use crate::symphonia::SymphoniaSource;
-use gtm_core::global::{Easing, EqPreset, ReverbConfig};
+use gtm_core::global::{EqPreset, ReverbConfig};
 
 pub trait Mixer: Send + Sync {
     fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()>;
@@ -43,7 +43,6 @@ pub trait Mixer: Send + Sync {
     fn duration(&self) -> f64;
     fn active_remaining(&self) -> f64;
     fn start_crossfade(&mut self, duration_secs: f64);
-    fn set_crossfade_easing(&mut self, easing: Easing);
     fn is_crossfading(&self) -> bool;
     fn force_complete_crossfade(&mut self);
     fn drop_active(&mut self);
@@ -79,7 +78,6 @@ pub struct AudioMixer {
     pause_fade_start: Option<Instant>,
     stored_volume: u8,
     last_reported_pos: f64,
-    crossfade_easing: Easing,
     // ─── EQ / Reverb ───
     pub eq_gains: EqGains,
     eq_enabled: Arc<AtomicBool>,
@@ -155,9 +153,6 @@ impl Mixer for AudioMixer {
     fn start_crossfade(&mut self, duration_secs: f64) {
         self.start_crossfade(duration_secs)
     }
-    fn set_crossfade_easing(&mut self, easing: Easing) {
-        self.set_crossfade_easing(easing)
-    }
     fn is_crossfading(&self) -> bool {
         self.is_crossfading()
     }
@@ -229,7 +224,6 @@ impl AudioMixer {
             crossfade_start: None,
             crossfade_duration: 0.0,
             standby_duration: 0.0,
-            crossfade_easing: Easing::default(),
             pending_pause: false,
             pause_fade_start: None,
             stored_volume: 100,
@@ -567,10 +561,6 @@ impl AudioMixer {
         (total - self.current_position()).max(0.0)
     }
 
-    pub fn set_crossfade_easing(&mut self, easing: Easing) {
-        self.crossfade_easing = easing;
-    }
-
     pub fn start_crossfade(&mut self, duration_secs: f64) {
         if self.standby().empty() {
             return;
@@ -659,30 +649,6 @@ impl AudioMixer {
         new_standby.pause();
     }
 
-    fn ease_in(t: f64, easing: Easing) -> f64 {
-        match easing {
-            Easing::Linear => t,
-            Easing::SlowFadeInFastFadeOut => t * t,
-            Easing::FastFadeInSlowFadeOut => t.sqrt(),
-            Easing::Logarithmic => 2.0f64.powf(t) - 1.0,
-            Easing::Smoothstep => t * t * (3.0 - 2.0 * t),
-            Easing::EqualPower => (t * std::f64::consts::FRAC_PI_2).sin(),
-            Easing::Exponential => t.powf(3.0),
-        }
-    }
-
-    fn ease_out(t: f64, easing: Easing) -> f64 {
-        match easing {
-            Easing::Linear => 1.0 - t,
-            Easing::SlowFadeInFastFadeOut => 1.0 - t * t,
-            Easing::FastFadeInSlowFadeOut => (1.0 - t) * (1.0 - t),
-            Easing::Logarithmic => 2.0f64.powf(1.0 - t) - 1.0,
-            Easing::Smoothstep => 1.0 - (t * t * (3.0 - 2.0 * t)),
-            Easing::EqualPower => (t * std::f64::consts::FRAC_PI_2).cos(),
-            Easing::Exponential => (1.0 - t).powf(3.0),
-        }
-    }
-
     fn step_crossfade(&mut self) -> bool {
         let start = match self.crossfade_start {
             Some(s) => s,
@@ -690,8 +656,8 @@ impl AudioMixer {
         };
         let elapsed = start.elapsed().as_secs_f64();
         let progress = (elapsed / self.crossfade_duration).min(1.0);
-        let eased_out = Self::ease_out(progress, self.crossfade_easing);
-        let eased_in = Self::ease_in(progress, self.crossfade_easing);
+        let eased_out = 1.0 - progress;
+        let eased_in = progress;
         let vol = self.volume.load(Ordering::SeqCst) as f64 / 100.0;
         let base = vol.min(1.0);
 

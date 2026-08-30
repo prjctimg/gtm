@@ -145,20 +145,12 @@ impl DaemonState {
         &mut self,
         enabled: bool,
         duration: u8,
-        easing: Option<crate::global::Easing>,
     ) -> Result<()> {
         tripwire::check(FailPoint::CrossfadeApply)?;
         self.crossfade = if enabled {
-            let easing_val = easing.unwrap_or_else(|| {
-                self.crossfade
-                    .as_ref()
-                    .map(|c| c.easing)
-                    .unwrap_or_default()
-            });
             Some(CrossfadeConfig {
                 enabled: true,
                 duration_secs: duration.min(30),
-                easing: easing_val,
             })
         } else {
             None
@@ -329,19 +321,11 @@ impl DaemonState {
             DaemonEvent::CrossfadeChanged {
                 enabled,
                 duration_secs,
-                easing,
             } => {
                 self.crossfade = if *enabled {
-                    let easing_val = (*easing).unwrap_or_else(|| {
-                        self.crossfade
-                            .as_ref()
-                            .map(|c| c.easing)
-                            .unwrap_or_default()
-                    });
                     Some(CrossfadeConfig {
                         enabled: true,
                         duration_secs: *duration_secs,
-                        easing: easing_val,
                     })
                 } else {
                     None

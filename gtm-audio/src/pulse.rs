@@ -20,7 +20,7 @@ use crate::decoder::DecodeThread;
 use crate::eq::{EqGains, EqSource, ReverbSource};
 use crate::mixer::Mixer;
 use crate::symphonia::SymphoniaSource;
-use gtm_core::global::{Easing, EqPreset, ReverbConfig};
+use gtm_core::global::{EqPreset, ReverbConfig};
 use rodio::Source;
 
 struct PaPlaybackSource {
@@ -157,7 +157,6 @@ pub struct PulseAudioMixer {
 
     crossfade_start: Option<Instant>,
     crossfade_duration: f64,
-    crossfade_easing: Easing,
     pending_pause: bool,
     pause_fade_start: Option<Instant>,
     stored_volume: u8,
@@ -193,7 +192,6 @@ impl PulseAudioMixer {
             last_reported_pos: f64::NEG_INFINITY,
             crossfade_start: None,
             crossfade_duration: 0.0,
-            crossfade_easing: Easing::default(),
             pending_pause: false,
             pause_fade_start: None,
             stored_volume: 100,
@@ -599,10 +597,6 @@ impl Mixer for PulseAudioMixer {
         self.crossfade_duration = duration_secs.max(1.0);
     }
 
-    fn set_crossfade_easing(&mut self, easing: Easing) {
-        self.crossfade_easing = easing;
-    }
-
     fn is_crossfading(&self) -> bool {
         self.crossfade_start.is_some()
     }
@@ -749,30 +743,6 @@ impl Mixer for PulseAudioMixer {
 }
 
 impl PulseAudioMixer {
-    fn ease_in(t: f64, easing: Easing) -> f64 {
-        match easing {
-            Easing::Linear => t,
-            Easing::SlowFadeInFastFadeOut => t * t,
-            Easing::FastFadeInSlowFadeOut => t.sqrt(),
-            Easing::Logarithmic => 1.0 - 2.0f64.powf(-t),
-            Easing::Smoothstep => t * t * (3.0 - 2.0 * t),
-            Easing::EqualPower => (t * std::f64::consts::FRAC_PI_2).sin(),
-            Easing::Exponential => t.powf(3.0),
-        }
-    }
-
-    fn ease_out(t: f64, easing: Easing) -> f64 {
-        match easing {
-            Easing::Linear => 1.0 - t,
-            Easing::SlowFadeInFastFadeOut => 1.0 - t * t,
-            Easing::FastFadeInSlowFadeOut => (1.0 - t) * (1.0 - t),
-            Easing::Logarithmic => 2.0f64.powf(-t),
-            Easing::Smoothstep => 1.0 - (t * t * (3.0 - 2.0 * t)),
-            Easing::EqualPower => (t * std::f64::consts::FRAC_PI_2).cos(),
-            Easing::Exponential => 1.0 - (1.0 - t).powf(3.0),
-        }
-    }
-
     fn step_crossfade(&mut self) -> bool {
         let start = match self.crossfade_start {
             Some(s) => s,
@@ -780,8 +750,8 @@ impl PulseAudioMixer {
         };
         let elapsed = start.elapsed().as_secs_f64();
         let progress = (elapsed / self.crossfade_duration).min(1.0);
-        let eased_out = Self::ease_out(progress, self.crossfade_easing);
-        let eased_in = Self::ease_in(progress, self.crossfade_easing);
+        let eased_out = 1.0 - progress;
+        let eased_in = progress;
 
         let a_vol = if self.is_a_active {
             eased_out

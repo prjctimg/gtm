@@ -124,6 +124,14 @@ pub enum SyncKind {
     Metadata,
 }
 
+/// Which on-disk cache to erase via [`DaemonReq::ClearCache`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CacheKind {
+    Lyrics,
+    Covers,
+}
+
 /// Wire request: client -> daemon.
 ///
 /// Per `protocol.md`, the on-the-wire shape is:
@@ -167,8 +175,6 @@ pub enum DaemonReq {
     Crossfade {
         enabled: bool,
         duration_secs: u8,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        easing: Option<crate::global::Easing>,
     },
     SetLoudnessMode {
         mode: crate::global::LoudnessMode,
@@ -299,6 +305,9 @@ pub enum DaemonReq {
         minutes: u32,
     },
     CancelSleepTimer,
+    ClearCache {
+        what: CacheKind,
+    },
     GetStatus,
     CheckHealth,
     Ping,
@@ -367,6 +376,7 @@ impl DaemonReq {
             DaemonReq::SpotifyResolveTrack { .. } => "spotify_resolve_track",
             DaemonReq::SetSleepTimer { .. } => "set_sleep_timer",
             DaemonReq::CancelSleepTimer => "cancel_sleep_timer",
+            DaemonReq::ClearCache { .. } => "clear_cache",
             DaemonReq::GetStatus => "get_status",
             DaemonReq::CheckHealth => "check_health",
             DaemonReq::Ping => "ping",
@@ -448,13 +458,11 @@ impl DaemonReq {
                 struct Params {
                     enabled: bool,
                     duration_secs: u8,
-                    easing: Option<crate::global::Easing>,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::Crossfade {
                     enabled: x.enabled,
                     duration_secs: x.duration_secs,
-                    easing: x.easing,
                 }
             }
             "set_eq_preset" => {
@@ -709,6 +717,14 @@ impl DaemonReq {
                 DaemonReq::SetSleepTimer { minutes: x.minutes }
             }
             "cancel_sleep_timer" => DaemonReq::CancelSleepTimer,
+            "clear_cache" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    what: CacheKind,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::ClearCache { what: x.what }
+            }
             "get_status" => DaemonReq::GetStatus,
             "check_health" => DaemonReq::CheckHealth,
             "ping" => DaemonReq::Ping,
@@ -885,8 +901,6 @@ pub enum DaemonEvent {
     CrossfadeChanged {
         enabled: bool,
         duration_secs: u8,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        easing: Option<crate::global::Easing>,
     },
     /// Emitted once when the next track is about to enter crossfade (5s before
     /// it begins). The client animates the countdown until the crossfade

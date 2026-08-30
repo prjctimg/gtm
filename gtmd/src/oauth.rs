@@ -202,6 +202,12 @@ async fn exchange_code_for_token(
     #[derive(serde::Deserialize)]
     struct TokenResponse {
         access_token: String,
+        #[serde(default)]
+        refresh_token: Option<String>,
+        #[serde(default)]
+        expires_in: Option<i64>,
+        #[serde(default)]
+        scope: Option<String>,
     }
 
     let params = [
@@ -232,7 +238,18 @@ async fn exchange_code_for_token(
         .json()
         .await
         .map_err(|e| format!("parse token response: {e}"))?;
-    Ok(parsed.access_token)
+
+    let mut token = serde_json::json!({
+        "access_token": parsed.access_token,
+        "expires_in": parsed.expires_in.unwrap_or(3600),
+    });
+    if let Some(scope) = parsed.scope {
+        token["scope"] = serde_json::Value::String(scope);
+    }
+    if let Some(rt) = parsed.refresh_token {
+        token["refresh_token"] = serde_json::Value::String(rt);
+    }
+    Ok(token.to_string())
 }
 
 #[cfg(test)]

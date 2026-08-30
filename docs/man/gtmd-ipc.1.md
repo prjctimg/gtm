@@ -235,7 +235,7 @@ Response: `{"id": 12, "ok": true}`.
 ## crossfade
 
 ```json
-{"id": 13, "cmd": "crossfade", "enabled": true, "duration_secs": 3, "easing": "linear"}
+{"id": 13, "cmd": "crossfade", "enabled": true, "duration_secs": 3}
 ```
 
 Response: `{"id": 13, "ok": true}`.
@@ -672,7 +672,7 @@ frames on the pulse socket.
 
 ## Audio Effects
 
-- `crossfade_changed`: fields: `enabled`, `duration_secs`, `easing`.
+- `crossfade_changed`: fields: `enabled`, `duration_secs`.
 - `eq_preset_changed`: fields: `preset`.
 - `eq_enabled_changed`: fields: `enabled`.
 - `reverb_changed`: fields: `enabled`, `room_size`.

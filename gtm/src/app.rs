@@ -184,7 +184,7 @@ fn build_keybindings(
     defaults
 }
 
-pub const NUM_SETTINGS_CATEGORIES: usize = 5;
+pub const NUM_SETTINGS_CATEGORIES: usize = 4;
 pub const LIBRARY_CATEGORIES: &[&str] = &[
     "All Tracks",
     "Liked",
@@ -580,7 +580,6 @@ pub enum TuiCommand {
     CycleRepeat(RepeatMode),
     ToggleMute,
     Crossfade(bool, u8),
-    SetCrossfadeEasing(gtm_core::global::Easing),
     QueueAdd(String),
     QueueMove(u64, u64),
     QueueClear,
@@ -2633,11 +2632,10 @@ impl App {
 
     fn settings_options_for_category(&self) -> usize {
         match self.settings_category {
-            0 => 1, // Audio: Mute
-            1 => 4, // YouTube: Cookie Source, Cookie File, JS Runtime, Auto Download
-            2 => 6, // Playback: Repeat, Shuffle, Crossfade, Easing, EQ Enabled, Reverb
-            3 => 9, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme
-            4 => 7, // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Device
+            0 => 4,  // YouTube: Cookie Source, Cookie File, JS Runtime, Auto Download
+            1 => 5,  // Playback: Repeat, Shuffle, Crossfade, EQ Enabled, Reverb
+            2 => 11, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme, Clear Lyrics Cache, Clear Cover Cache
+            3 => 7,  // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Device
             _ => 0,
         }
     }
@@ -2749,20 +2747,7 @@ impl App {
             }
             TuiCommand::Crossfade(en, dur) => {
                 tokio::spawn(async move {
-                    if let Err(e) = client.crossfade(en, dur, None).await {
-                        error_handler(e);
-                    }
-                });
-            }
-            TuiCommand::SetCrossfadeEasing(easing) => {
-                let (enabled, dur) = self
-                    .state
-                    .crossfade
-                    .as_ref()
-                    .map(|c| (c.enabled, c.duration_secs))
-                    .unwrap_or((true, self.crossfade_duration));
-                tokio::spawn(async move {
-                    if let Err(e) = client.crossfade(enabled, dur, Some(easing)).await {
+                    if let Err(e) = client.crossfade(en, dur).await {
                         error_handler(e);
                     }
                 });
@@ -3246,24 +3231,7 @@ impl App {
     }
 
     fn help_picker_total(&self) -> usize {
-        let help_lines = crate::ui::HELP_LINES;
-        if let Some(top) = self.pickers.top() {
-            if top.id == PickerId::Help {
-                let q = top.query.to_lowercase();
-                if q.is_empty() {
-                    help_lines.len()
-                } else {
-                    help_lines
-                        .iter()
-                        .filter(|(_, l)| l.to_lowercase().contains(&q))
-                        .count()
-                }
-            } else {
-                0
-            }
-        } else {
-            0
-        }
+        crate::ui::HELP_LINES.len()
     }
 
     /// Resolve a left-click against the zones registered by `ui::render`
@@ -4438,7 +4406,7 @@ impl App {
                 KeyCode::Left | KeyCode::Char('h') => {
                     if !settings_focus {
                         match self.settings_category {
-                            2 => match self.settings_option {
+                            1 => match self.settings_option {
                                 0 => {
                                     let next = match self.state.repeat {
                                         gtm_core::global::RepeatMode::Off => {
@@ -4464,7 +4432,7 @@ impl App {
                                     });
                                     self.state.shuffle = !self.state.shuffle;
                                 }
-                                4 => {
+                                3 => {
                                     let new_enabled = !self.state.eq_enabled;
                                     self.state.eq_enabled = new_enabled;
                                     let c = self.client.clone();
@@ -4472,7 +4440,7 @@ impl App {
                                         let _ = c.set_eq_enabled(new_enabled).await;
                                     });
                                 }
-                                5 => {
+                                4 => {
                                     let new_enabled = !self.state.reverb.enabled;
                                     let room_size = self.state.reverb.room_size;
                                     self.state.reverb.enabled = new_enabled;
@@ -4483,7 +4451,7 @@ impl App {
                                 }
                                 _ => {}
                             },
-                            3 => match self.settings_option {
+                            2 => match self.settings_option {
                                 1 => {
                                     self.transparent_bg = !self.transparent_bg;
                                     save_prefs(&self.current_prefs());
@@ -4525,7 +4493,7 @@ impl App {
                                 }
                                 _ => {}
                             },
-                            4 => {}
+                            3 => {}
                             _ => {}
                         }
                     }
@@ -4534,18 +4502,7 @@ impl App {
                 KeyCode::Right | KeyCode::Char('l') => {
                     if !settings_focus {
                         match self.settings_category {
-                            0 => {
-                                if self.settings_option == 0 {
-                                    let muted = !self.state.mute;
-                                    self.send_high(TuiCommand::SetVolume(if muted {
-                                        0
-                                    } else {
-                                        self.state.volume
-                                    }));
-                                    self.state.mute = muted;
-                                }
-                            }
-                            2 => match self.settings_option {
+                            1 => match self.settings_option {
                                 0 => {
                                     let next = match self.state.repeat {
                                         gtm_core::global::RepeatMode::Off => {
@@ -4571,7 +4528,7 @@ impl App {
                                     });
                                     self.state.shuffle = !self.state.shuffle;
                                 }
-                                4 => {
+                                3 => {
                                     let new_enabled = !self.state.eq_enabled;
                                     self.state.eq_enabled = new_enabled;
                                     let c = self.client.clone();
@@ -4579,7 +4536,7 @@ impl App {
                                         let _ = c.set_eq_enabled(new_enabled).await;
                                     });
                                 }
-                                5 => {
+                                4 => {
                                     let new_enabled = !self.state.reverb.enabled;
                                     let room_size = self.state.reverb.room_size;
                                     self.state.reverb.enabled = new_enabled;
@@ -4590,7 +4547,7 @@ impl App {
                                 }
                                 _ => {}
                             },
-                            3 => match self.settings_option {
+                            2 => match self.settings_option {
                                 1 => {
                                     self.transparent_bg = !self.transparent_bg;
                                     save_prefs(&self.current_prefs());
@@ -4632,7 +4589,7 @@ impl App {
                                 }
                                 _ => {}
                             },
-                            4 => {}
+                            3 => {}
                             _ => {}
                         }
                     }
@@ -4663,17 +4620,6 @@ impl App {
                         let opt = self.settings_option;
                         match self.settings_category {
                             0 => {
-                                if opt == 0 {
-                                    let muted = !self.state.mute;
-                                    self.send_high(TuiCommand::SetVolume(if muted {
-                                        0
-                                    } else {
-                                        self.state.volume
-                                    }));
-                                    self.state.mute = muted;
-                                }
-                            }
-                            1 => {
                                 if opt == 1 {
                                     let current = self.cookie_file.clone();
                                     let new_path = if current.is_some() {
@@ -4696,7 +4642,7 @@ impl App {
                                     );
                                 }
                             }
-                            2 => match opt {
+                            1 => match opt {
                                 0 => {
                                     let next = match self.state.repeat {
                                         gtm_core::global::RepeatMode::Off => {
@@ -4722,10 +4668,10 @@ impl App {
                                     });
                                     self.state.shuffle = !self.state.shuffle;
                                 }
-                                2 | 3 => {
+                                2 => {
                                     self.pickers.open(PickerId::Crossfade);
                                 }
-                                4 => {
+                                3 => {
                                     let new_enabled = !self.state.eq_enabled;
                                     self.state.eq_enabled = new_enabled;
                                     let c = self.client.clone();
@@ -4733,7 +4679,7 @@ impl App {
                                         let _ = c.set_eq_enabled(new_enabled).await;
                                     });
                                 }
-                                5 => {
+                                4 => {
                                     let new_enabled = !self.state.reverb.enabled;
                                     let room_size = self.state.reverb.room_size;
                                     self.state.reverb.enabled = new_enabled;
@@ -4744,7 +4690,7 @@ impl App {
                                 }
                                 _ => {}
                             },
-                            3 => match opt {
+                            2 => match opt {
                                 0 => {
                                     self.pickers.open(PickerId::ThemePicker);
                                 }
@@ -4817,9 +4763,39 @@ impl App {
                                     self.apply_reactive();
                                     save_prefs(&self.current_prefs());
                                 }
+                                9 | 10 => {
+                                    let what = if opt == 9 {
+                                        gtm_core::ipc::CacheKind::Lyrics
+                                    } else {
+                                        gtm_core::ipc::CacheKind::Covers
+                                    };
+                                    let label = if opt == 9 {
+                                        "lyrics"
+                                    } else {
+                                        "cover art"
+                                    };
+                                    let c = self.client.clone();
+                                    let ipc_tx = self.ipc_tx.clone();
+                                    tokio::spawn(async move {
+                                        match c.clear_cache(what).await {
+                                            Ok(()) => {
+                                                let _ = ipc_tx.send(IpcResult::Notification(
+                                                    "Cache".to_string(),
+                                                    format!("Cleared {label} cache"),
+                                                    NotificationKind::Success,
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                    "Clear {label} cache: {e}"
+                                                )));
+                                            }
+                                        }
+                                    });
+                                }
                                 _ => {}
                             },
-                            4 => match opt {
+                            3 => match opt {
                                 0 => {
                                     let c = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
@@ -4924,21 +4900,10 @@ impl App {
                 self.close_top_picker_with_cleanup();
             }
             // Uniform picker navigation: Left/Right leave
-            // single-section pickers like Esc.  Multi-section pickers (e.g.
-            // Crossfade duration/easing) jump between sections instead.
+            // single-section pickers like Esc.
             KeyCode::Left | KeyCode::Right => {
                 let top_id = self.pickers.top().map(|o| o.id);
-                if top_id == Some(PickerId::Crossfade) {
-                    if let Some(top) = self.pickers.top_mut() {
-                        // Rows: [0] "Duration" header, [1..=5] durations,
-                        // [6] "Easing" header, [7..=13] easings.
-                        if key.code == KeyCode::Right && top.selected <= 5 {
-                            top.selected = 7;
-                        } else if key.code == KeyCode::Left && top.selected >= 7 {
-                            top.selected = 1;
-                        }
-                    }
-                } else if matches!(
+                if matches!(
                     top_id,
                     Some(PickerId::Equalizer)
                         | Some(PickerId::ThemePicker)
@@ -4968,11 +4933,6 @@ impl App {
                 let total = self.help_picker_total();
                 if let Some(top) = self.pickers.top_mut() {
                     top.selected = total.saturating_sub(1);
-                }
-            }
-            KeyCode::Char('/') if is_help && !ctrl_or_alt => {
-                if let Some(top) = self.pickers.top_mut() {
-                    top.query.clear();
                 }
             }
             KeyCode::Char('n') if is_help && !ctrl_or_alt => {
@@ -5027,7 +4987,6 @@ impl App {
                         | Some(PickerId::SearchLibrary)
                         | Some(PickerId::CommandPalette)
                         | Some(PickerId::ThemePicker)
-                        | Some(PickerId::Help)
                         | Some(PickerId::SpotifySearch)
                         | Some(PickerId::SpotifyLink)
                 );
@@ -5072,7 +5031,6 @@ impl App {
                         | Some(PickerId::SearchLibrary)
                         | Some(PickerId::CommandPalette)
                         | Some(PickerId::ThemePicker)
-                        | Some(PickerId::Help)
                         | Some(PickerId::SpotifySearch)
                         | Some(PickerId::SpotifyLink)
                 );
@@ -5346,8 +5304,7 @@ impl App {
                         }
                         PickerId::Crossfade => {
                             let sel = top.selected;
-                            // Rows: [0] "Duration" header, [1..=5] durations,
-                            // [6] "Easing" header, [7..=13] easings.
+                            // Rows: [0] "Duration" header, [1..=5] durations.
                             if (1..=5).contains(&sel) {
                                 let dur = crate::ui::CROSSFADE_DURATIONS[sel - 1];
                                 let enabled = self
@@ -5360,13 +5317,6 @@ impl App {
                                 let _ = tx.send(TuiCommand::Crossfade(enabled, dur)).await;
                                 if let Some(ref mut cf) = self.state.crossfade {
                                     cf.duration_secs = dur;
-                                }
-                                self.pickers.close_top();
-                            } else if (7..=13).contains(&sel) {
-                                let easing = crate::ui::CROSSFADE_EASINGS[sel - 7];
-                                let _ = tx.send(TuiCommand::SetCrossfadeEasing(easing)).await;
-                                if let Some(ref mut cf) = self.state.crossfade {
-                                    cf.easing = easing;
                                 }
                                 self.pickers.close_top();
                             }
@@ -5923,7 +5873,10 @@ impl App {
                     let result = &self.yt_results_cache[idx];
                     let url = result.url.clone();
                     let title = Some(result.title.clone());
-                    let artist = Some(result.channel.clone());
+                    let artist = result
+                        .artist
+                        .clone()
+                        .or_else(|| Some(result.channel.clone()));
                     let _ = tx.send(TuiCommand::YtDownload { url, title, artist }).await;
                 }
             }
@@ -5990,8 +5943,7 @@ impl App {
                         PickerId::YTSearch
                         | PickerId::SearchLibrary
                         | PickerId::CommandPalette
-                        | PickerId::ThemePicker
-                        | PickerId::Help => {
+                        | PickerId::ThemePicker => {
                             top.query.push(c);
                             if top.id == PickerId::YTSearch {
                                 // Invalidate stale results immediately so the
@@ -6117,8 +6069,7 @@ impl App {
                 PickerId::YTSearch
                 | PickerId::SearchLibrary
                 | PickerId::CommandPalette
-                | PickerId::ThemePicker
-                | PickerId::Help => {
+                | PickerId::ThemePicker => {
                     top.query.push_str(text);
                     if top.id == PickerId::YTSearch {
                         self.yt_results_cache.clear();

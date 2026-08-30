@@ -66,6 +66,13 @@ pub struct YTSearchResult {
     pub views: u64,
     pub thumbnail: Option<String>,
     pub is_playlist: bool,
+    /// Artist extracted from the video title, when the title follows an
+    /// "Artist - Title" layout.
+    #[serde(default)]
+    pub artist: Option<String>,
+    /// Official/audio/explicit preference scored from the raw video title.
+    #[serde(default)]
+    pub priority: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

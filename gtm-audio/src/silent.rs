@@ -11,7 +11,7 @@ use rodio::Source;
 
 use crate::backend::{AudioEvent, AudioResult};
 use crate::mixer::Mixer;
-use gtm_core::global::{Easing, EqPreset, ReverbConfig};
+use gtm_core::global::{EqPreset, ReverbConfig};
 
 /// A silent no-op mixer for environments without audio hardware (CI, testing).
 pub struct NullMixer {
@@ -127,8 +127,6 @@ impl Mixer for NullMixer {
     fn start_crossfade(&mut self, _duration_secs: f64) {
         *self.crossfading.lock().unwrap() = true;
     }
-
-    fn set_crossfade_easing(&mut self, _easing: Easing) {}
 
     fn is_crossfading(&self) -> bool {
         *self.crossfading.lock().unwrap()

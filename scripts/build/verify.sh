@@ -77,8 +77,8 @@ else
 fi
 
 echo ""
-echo "4. New v2 commands in DaemonReq (gtm-core/src/ipc.rs)"
-for cmd in "SetLoudnessMode" "ScanLoudness" "SetPreGain" "SetGapless" "SetDynamicMode" "SetScrobble" "OrganizeLibrary"; do
+echo "4. New v2 commands/types in DaemonReq (gtm-core/src/ipc.rs)"
+for cmd in "SetLoudnessMode" "ScanLoudness" "SetPreGain" "SetGapless" "SetDynamicMode" "SetScrobble" "OrganizeLibrary" "ClearCache" "CacheKind"; do
     if grep -q "$cmd" gtm-core/src/ipc.rs; then
         echo "   ✓ $cmd present"
     else
@@ -175,12 +175,13 @@ else
 fi
 
 echo ""
-echo "13. Crossfade with optional easing (gtmd/src/daemon.rs)"
-if grep -q "easing: Option" gtmd/src/daemon.rs && \
-   ! grep -q "cmd_set_crossfade_easing" gtmd/src/daemon.rs; then
-    echo "   ✓ Crossfade has optional easing, SetCrossfadeEasing removed"
+echo "13. Easing fully deprecated (gtm-core/src/state.rs, gtm-core/src/ipc.rs)"
+if ! grep -q "SetCrossfadeEasing" gtm-core/src/ipc.rs && \
+   ! grep -q "easing" gtm-core/src/state.rs && \
+   ! grep -q "easing" gtm-core/src/ipc.rs; then
+    echo "   ✓ Easing removed from CrossfadeConfig and IPC"
 else
-    echo "   ✗ Crossfade easing not updated correctly"
+    echo "   ✗ Easing still present"
     exit 1
 fi
 

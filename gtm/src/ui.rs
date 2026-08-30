@@ -772,9 +772,7 @@ impl Render {
                     if has_progress {
                         let pos = app.display_position as u64;
                         let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
-                        let bar_w = (info_chunks[info_row].width as usize)
-                            .saturating_sub(18)
-                            .max(4);
+                        let bar_w = 14usize;
                         let progress_str = crate::ui::Render::progress_variant(ratio, bar_w, app);
                         let time_str = format!(
                             " {} / {}",
@@ -1443,7 +1441,10 @@ impl Render {
                     "Fetching lyrics ",
                     Style::default().fg(app.theme.accent),
                 )];
-                spans.extend(knight_rider_spans(app.frame_count as usize, 9, app));
+                spans.push(Span::styled(
+                    opencode_spinner(app.frame_count as usize),
+                    Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD),
+                ));
                 let msg = Paragraph::new(Line::from(spans)).alignment(Alignment::Center);
                 f.render_widget(msg, inner);
             } else {
@@ -1585,12 +1586,7 @@ impl Render {
         let can_cover = !no_image_protocol() && area.width > COVER_W + 1;
 
         let sep_style = Style::default().fg(app.theme.fg_dim);
-        let sep_label = match app.state.status {
-            gtm_core::global::PlaybackStatus::Playing => "",
-            gtm_core::global::PlaybackStatus::Paused => "\u{23ef} Paused",
-            _ => "\u{266a} Ready",
-        }
-        .to_string();
+        let sep_label = String::new();
         f.render_widget(
             Paragraph::new(Line::from(Span::styled(sep_label, sep_style))),
             sep_area,
@@ -1693,15 +1689,13 @@ impl Render {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        let width = 21usize.min(area.width as usize);
         let mut lines: Vec<Line> = Vec::new();
         for _ in 0..(area.height as usize / 2).saturating_sub(1) {
             lines.push(Line::from(""));
         }
-        lines.push(Line::from(knight_rider_spans(
-            app.frame_count as usize,
-            width,
-            app,
+        lines.push(Line::from(Span::styled(
+            opencode_spinner(app.frame_count as usize),
+            Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::from(Span::styled(
             label.to_string(),
@@ -2117,9 +2111,9 @@ fn fill_pane(f: &mut ratatui::Frame, area: Rect, app: &App) {
     );
 }
 
-const SETTINGS_ICONS_NERD: &[&str] = &["\u{f028}", "\u{f16a}", "\u{f04b}", "\u{f013}", "\u{f1bc}"];
-const SETTINGS_ICONS_ASCII: &[&str] = &["♪", "YT", "▶", "⚙", "★"];
-const SETTINGS_CATEGORIES: &[&str] = &["Audio", "YouTube", "Playback", "System", "Spotify"];
+const SETTINGS_ICONS_NERD: &[&str] = &["\u{f16a}", "\u{f04b}", "\u{f013}", "\u{f1bc}"];
+const SETTINGS_ICONS_ASCII: &[&str] = &["YT", "▶", "⚙", "★"];
+const SETTINGS_CATEGORIES: &[&str] = &["YouTube", "Playback", "System", "Spotify"];
 
 // ─── Overlay Rendering ───
 
@@ -2143,7 +2137,10 @@ impl Pickers {
                 let w = app
                     .yt_results_cache
                     .iter()
-                    .map(|r| r.channel.len() as u16 + r.title.len() as u16 + 22)
+                    .map(|r| {
+                        let a = r.artist.as_deref().map(|a| a.len()).unwrap_or(0);
+                        (a + r.title.len() as usize + 22) as u16
+                    })
                     .max()
                     .unwrap_or(52)
                     .clamp(48, 84);
@@ -2349,6 +2346,7 @@ impl Pickers {
 
                 if app.spotify_status.as_ref().is_none_or(|s| !s.linked) {
                     let token_input = app.spotify_token_input.clone();
+                    let masked = "•".repeat(token_input.chars().count());
                     let cursor_style = cursor_span_style(app);
                     let lines = vec![
                         Line::from(Span::styled(
@@ -2358,8 +2356,15 @@ impl Pickers {
                         Line::from(""),
                         Line::from(vec![
                             Span::styled(" > ", Style::default().fg(app.theme.fg_dim)),
-                            Span::styled(token_input.as_str(), Style::default().fg(app.theme.fg)),
-                            Span::styled(" ", cursor_style.unwrap_or_default()),
+                            Span::styled(masked, Style::default().fg(app.theme.fg)),
+                            Span::styled(
+                                if app.spotify_token_input.is_empty() {
+                                    String::new()
+                                } else {
+                                    " ".to_string()
+                                },
+                                cursor_style.unwrap_or_default(),
+                            ),
                         ]),
                         Line::from(""),
                         Line::from(Span::styled(
@@ -2805,7 +2810,11 @@ impl Pickers {
                 "\u{f008} "
             };
             let prefix = if i == sel { " > " } else { "   " };
-            let content = format!("{prefix}{}{} - {} [{}]", icon, r.channel, r.title, dur);
+            let display = match r.artist.as_deref() {
+                Some(a) => format!("{a} - {}", r.title),
+                None => r.title.clone(),
+            };
+            let content = format!("{prefix}{}{} [{}]", icon, display, dur);
             let style = if i == sel {
                 Style::default()
                     .fg(app.theme.selection_fg_readable())
@@ -3129,11 +3138,7 @@ impl Pickers {
         }
 
         let items: Vec<String> = match app.settings_category {
-            0 => vec![format!(
-                "Mute           {}",
-                if app.state.mute { "On" } else { "Off" }
-            )],
-            1 => vec![
+            0 => vec![
                 "Cookie Source  chromium".to_string(),
                 format!(
                     "Cookie File    {}",
@@ -3142,7 +3147,7 @@ impl Pickers {
                 "JS Runtime     deno".to_string(),
                 "Auto Download  read-only".to_string(),
             ],
-            2 => {
+            1 => {
                 let crossfade_on = app
                     .state
                     .crossfade
@@ -3155,12 +3160,6 @@ impl Pickers {
                     .as_ref()
                     .map(|c| c.duration_secs)
                     .unwrap_or(0);
-                let easing = app
-                    .state
-                    .crossfade
-                    .as_ref()
-                    .map(|c| c.easing.name())
-                    .unwrap_or("N/A");
                 let reverb_on = app.state.reverb.enabled;
                 vec![
                     format!("Repeat         {:?}  ▶", app.state.repeat),
@@ -3173,7 +3172,6 @@ impl Pickers {
                     } else {
                         "Crossfade      Off  ▶".to_string()
                     },
-                    format!("Easing         {}   ▶", easing),
                     format!(
                         "EQ Enabled     {}",
                         if app.state.eq_enabled { "On" } else { "Off" }
@@ -3181,7 +3179,7 @@ impl Pickers {
                     format!("Reverb         {}", if reverb_on { "On" } else { "Off" }),
                 ]
             }
-            3 => {
+            2 => {
                 let theme_name = app
                     .themes
                     .get(app.theme_index)
@@ -3212,9 +3210,11 @@ impl Pickers {
                         "Reactive Theme {}",
                         if app.reactive_theme { "On" } else { "Off" }
                     ),
+                    "Clear Lyrics Cache  Enter".to_string(),
+                    "Clear Cover Cache    Enter  ▶".to_string(),
                 ]
             }
-            4 => {
+            3 => {
                 let st = app.spotify_status.clone().unwrap_or_default();
                 let connected = if st.linked {
                     "Connected"
@@ -3290,14 +3290,6 @@ impl Pickers {
         }
         lines.push(Line::from(""));
         match (app.settings_category, sel) {
-            (0, 0) => lines.push(Line::from(Span::styled(
-                " Press Enter to cycle volume.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (0, 1) => lines.push(Line::from(Span::styled(
-                " Press Enter to toggle mute.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
             (1, 1) => lines.push(Line::from(Span::styled(
                 " Press Enter to toggle cookie path.",
                 Style::default().fg(app.theme.fg_dim),
@@ -3310,11 +3302,11 @@ impl Pickers {
                 " Press Enter to toggle shuffle.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (2, 2) | (2, 3) => lines.push(Line::from(Span::styled(
+            (2, 2) => lines.push(Line::from(Span::styled(
                 " Press Enter to open crossfade picker.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (2, 4) => {
+            (2, 3) => {
                 let eq_on = app.state.eq_enabled;
                 lines.push(Line::from(Span::styled(
                     if eq_on {
@@ -3325,7 +3317,7 @@ impl Pickers {
                     Style::default().fg(app.theme.fg_dim),
                 )));
             }
-            (2, 5) => {
+            (2, 4) => {
                 let rev_on = app.state.reverb.enabled;
                 lines.push(Line::from(Span::styled(
                     if rev_on {
@@ -3370,6 +3362,14 @@ impl Pickers {
             ))),
             (3, 8) => lines.push(Line::from(Span::styled(
                 " Press Enter to toggle reactive theme.",
+                Style::default().fg(app.theme.fg_dim),
+            ))),
+            (3, 9) => lines.push(Line::from(Span::styled(
+                " Clear cached lyrics for all tracks.",
+                Style::default().fg(app.theme.fg_dim),
+            ))),
+            (3, 10) => lines.push(Line::from(Span::styled(
+                " Clear downloaded cover art cache.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
             (4, 0) => lines.push(Line::from(Span::styled(
@@ -3741,16 +3741,6 @@ pub const HELP_LINES: &[(&str, &str)] = &[
 
 pub const CROSSFADE_DURATIONS: [u8; 5] = [3, 5, 10, 15, 30];
 
-pub const CROSSFADE_EASINGS: [gtm_core::global::Easing; 7] = [
-    gtm_core::global::Easing::Linear,
-    gtm_core::global::Easing::SlowFadeInFastFadeOut,
-    gtm_core::global::Easing::FastFadeInSlowFadeOut,
-    gtm_core::global::Easing::Logarithmic,
-    gtm_core::global::Easing::Smoothstep,
-    gtm_core::global::Easing::EqualPower,
-    gtm_core::global::Easing::Exponential,
-];
-
 impl Pickers {
     fn render_about_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let block = Self::picker_panel(app, " About ", Some("Esc: close"));
@@ -3844,42 +3834,24 @@ impl Pickers {
     }
 
     fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
-
         let block = Self::picker_panel(
             app,
             " Keybindings ",
-            Some(
-                "Esc: close   ?: toggle   /: search   gg/G: top/bottom   0/$: first/last   n/N: next/prev",
-            ),
+            Some("Esc: close   ?: toggle   \u{2191}/\u{2193}/jk: browse   gg/G: top/bottom   0/$: first/last"),
         );
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let filtered: Vec<(&str, &str)> = if query.is_empty() {
-            HELP_LINES.to_vec()
-        } else {
-            let q = query.to_lowercase();
-            HELP_LINES
-                .iter()
-                .filter(|(_, l)| l.to_lowercase().contains(&q))
-                .copied()
-                .collect()
-        };
+        let filtered: Vec<(&str, &str)> = HELP_LINES.to_vec();
 
-        let cursor_style = cursor_span_style(app);
-        let mut lines: Vec<Line> = vec![Line::from(vec![
-            Span::styled(" / ", Style::default().fg(app.theme.fg_dim)),
-            Span::styled(query.as_str(), Style::default().fg(app.theme.fg)),
-            Span::styled(" ", cursor_style.unwrap_or_default()),
-        ])];
+        let mut lines: Vec<Line> = Vec::new();
 
         let total = filtered.len();
         let sel = app
             .pickers
             .top()
             .map_or(0, |o| o.selected.min(total.saturating_sub(1)));
-        let visible = inner.height.saturating_sub(1) as usize;
+        let visible = inner.height as usize;
         let (scroll_start, scroll_end) = if total > 0 {
             if let Some(top) = app.pickers.top_mut() {
                 let (s, e) = step_viewport(top.viewport_offset, sel, visible, total);
@@ -3898,7 +3870,7 @@ impl Pickers {
             .take(scroll_end)
             .skip(scroll_start)
         {
-            let style = if i == sel && !query.is_empty() {
+            let style = if i == sel {
                 Style::default()
                     .fg(app.theme.selection_fg_readable())
                     .bg(app.theme.selection_bg)
@@ -4764,37 +4736,11 @@ impl Pickers {
         f.render_widget(list, inner);
     }
 
-    fn easing_description(e: gtm_core::global::Easing) -> &'static str {
-        match e {
-            gtm_core::global::Easing::Linear => {
-                "Linear: constant gain ramp; abrupt but predictable."
-            }
-            gtm_core::global::Easing::Smoothstep => "Smoothstep: smooth start and end, no clicks.",
-            gtm_core::global::Easing::EqualPower => {
-                "Equal Power: constant perceived loudness, no mid-fade dip."
-            }
-            gtm_core::global::Easing::Logarithmic => {
-                "Logarithmic: fast attack, fast release profile."
-            }
-            gtm_core::global::Easing::Exponential => {
-                "Exponential: fast attack, fast release profile."
-            }
-            gtm_core::global::Easing::SlowFadeInFastFadeOut => {
-                "Slow In, Fast Out: asymmetric curve."
-            }
-            gtm_core::global::Easing::FastFadeInSlowFadeOut => {
-                "Fast In, Slow Out: asymmetric curve."
-            }
-        }
-    }
-
     fn render_crossfade_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let block = Self::picker_panel(
             app,
             " Crossfade Options ",
-            Some(
-                "\u{2191}/\u{2193}: navigate   \u{2190}/\u{2192}: section   Enter: apply   Esc: close",
-            ),
+            Some("\u{2191}/\u{2193}: navigate   Enter: apply   Esc: close"),
         );
         let inner = block.inner(area);
         f.render_widget(block, area);
@@ -4805,23 +4751,12 @@ impl Pickers {
             .as_ref()
             .map(|c| c.duration_secs)
             .unwrap_or(0);
-        let easing = app
-            .state
-            .crossfade
-            .as_ref()
-            .map(|c| c.easing)
-            .unwrap_or_default();
 
         let mut rows: Vec<String> = Vec::new();
         rows.push(" Duration ".to_string());
         for d in CROSSFADE_DURATIONS {
             let cur = if d == dur { "   (current)" } else { "" };
             rows.push(format!("   {d}s{cur}"));
-        }
-        rows.push(" Easing ".to_string());
-        for e in CROSSFADE_EASINGS {
-            let cur = if e == easing { "   (current)" } else { "" };
-            rows.push(format!("   {}{cur}", e.name()));
         }
 
         let sel = app
@@ -4830,7 +4765,7 @@ impl Pickers {
             .map_or(0, |o| o.selected.min(rows.len() - 1));
         let mut lines = Vec::new();
         for (i, row) in rows.iter().enumerate() {
-            let is_header = i == 0 || i == 6;
+            let is_header = i == 0;
             let is_sel = i == sel;
             let line = if is_header {
                 Line::from(Span::styled(
@@ -4854,21 +4789,14 @@ impl Pickers {
         }
 
         lines.push(Line::from(""));
-        if sel >= 7 && sel < 7 + CROSSFADE_EASINGS.len() {
-            let e = CROSSFADE_EASINGS[sel - 7];
-            let desc = Self::easing_description(e);
-            lines.push(Line::from(Span::styled(
-                format!(" {desc}"),
-                Style::default().fg(app.theme.fg_dim),
-            )));
-        } else if sel >= 1 && sel < 1 + CROSSFADE_DURATIONS.len() {
+        if sel >= 1 && sel < 1 + CROSSFADE_DURATIONS.len() {
             lines.push(Line::from(Span::styled(
                 " Select a crossfade duration. 3s is subtle, 30s is ambient.",
                 Style::default().fg(app.theme.fg_dim),
             )));
         } else {
             lines.push(Line::from(Span::styled(
-                " Choose a crossfade duration or an easing curve.",
+                " Choose a crossfade duration.",
                 Style::default().fg(app.theme.fg_dim),
             )));
         }
@@ -5300,42 +5228,21 @@ fn plural(count: usize, singular: &'static str, plural: &'static str) -> &'stati
     if count == 1 { singular } else { plural }
 }
 
-const LOADER_HEADS: [&str; 4] = ["\u{2b25}", "\u{25c6}", "\u{2b29}", "\u{2b2a}"];
-const LOADER_HOLDS: usize = 3;
+const LOADER_BRAILLE: [&str; 10] = [
+    "\u{280b}",
+    "\u{2819}",
+    "\u{2839}",
+    "\u{2838}",
+    "\u{283c}",
+    "\u{2834}",
+    "\u{2826}",
+    "\u{2827}",
+    "\u{2807}",
+    "\u{280f}",
+];
 
-fn scanner_position(frame: usize, width: usize) -> usize {
-    if width <= 1 {
-        return 0;
-    }
-    let span = width - 1;
-    let half = span + LOADER_HOLDS;
-    let t = frame % (2 * half);
-    let forward = t < half;
-    let t = if forward { t } else { t - half };
-    if forward {
-        if t >= span { span } else { t }
-    } else {
-        span.saturating_sub(t)
-    }
-}
-
-fn knight_rider_spans(frame: usize, width: usize, app: &App) -> Vec<Span<'static>> {
-    let pos = scanner_position(frame, width);
-    let head = LOADER_HEADS[(frame / 3) % LOADER_HEADS.len()].to_string();
-    (0..width)
-        .map(|i| {
-            if i == pos {
-                Span::styled(
-                    head.clone(),
-                    Style::default()
-                        .fg(app.theme.accent)
-                        .add_modifier(Modifier::BOLD),
-                )
-            } else {
-                Span::styled("\u{b7}".to_string(), Style::default().fg(app.theme.fg_dim))
-            }
-        })
-        .collect()
+fn opencode_spinner(frame: usize) -> &'static str {
+    LOADER_BRAILLE[(frame / 2) % LOADER_BRAILLE.len()]
 }
 
 pub use crate::theme::readable_fg;

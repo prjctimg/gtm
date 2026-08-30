@@ -530,7 +530,7 @@ jobs:
             --pkg-version "$version" \
             --pkg-arch aarch64 \
             dist/termux/gtm.yml
-          mv "gtm_${version}_aarch64.deb" release-assets/
+          mv "gtm_${version}_aarch64.deb" "release-assets/gtm-android-${version}-aarch64.deb"
 
       - uses: actions/upload-artifact@v7
         with:

@@ -18,8 +18,8 @@ use crate::CoreError;
 use crate::Result;
 use crate::global::{DaemonState, EqPreset, PlaybackStatus, RepeatMode, YTFilter};
 use crate::ipc::{
-    DaemonEvent, DaemonReq, DaemonRes, LibraryAction, MetadataPatch, PROTOCOL_VERSION, QueueAction,
-    SyncKind, WireEvent, WireReq, WireRes,
+    CacheKind, DaemonEvent, DaemonReq, DaemonRes, LibraryAction, MetadataPatch, PROTOCOL_VERSION,
+    QueueAction, SyncKind, WireEvent, WireReq, WireRes,
 };
 use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::track;
@@ -318,16 +318,10 @@ impl DaemonClient {
             .await
     }
 
-    pub async fn crossfade(
-        &self,
-        enabled: bool,
-        duration_secs: u8,
-        easing: Option<crate::global::Easing>,
-    ) -> Result<()> {
+    pub async fn crossfade(&self, enabled: bool, duration_secs: u8) -> Result<()> {
         self.send_ok(DaemonReq::Crossfade {
             enabled,
             duration_secs,
-            easing,
         })
         .await
     }
@@ -391,6 +385,10 @@ impl DaemonClient {
 
     pub async fn cancel_sleep_timer(&self) -> Result<()> {
         self.send_ok(DaemonReq::CancelSleepTimer).await
+    }
+
+    pub async fn clear_cache(&self, what: CacheKind) -> Result<()> {
+        self.send_ok(DaemonReq::ClearCache { what }).await
     }
 
     // ─── Search ───

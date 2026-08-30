@@ -34,4 +34,10 @@ termux-create-package \
   --pkg-arch "$ARCH" \
   dist/termux/gtm.yml
 
-echo "Built: $(ls "$REPO_ROOT"/*.deb 2>/dev/null | head -1)"
+DEB="gtm_${VERSION}_${ARCH}.deb"
+if [ -f "$DEB" ]; then
+  mv "$DEB" "$(dirname "$DEB")/gtm-android-${VERSION}-${ARCH}.deb"
+  echo "Built: $REPO_ROOT/gtm-android-${VERSION}-${ARCH}.deb"
+else
+  echo "Built: $(ls "$REPO_ROOT"/*.deb 2>/dev/null | head -1)"
+fi

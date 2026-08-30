@@ -297,13 +297,16 @@ impl LyricsManager {
     }
 
     async fn fetch_lrclib_exact(&self, track: &TrackInfo) -> Option<LrcData> {
-        let url = format!(
-            "{}/get?artist={}&title={}&album={}",
+        let mut url = format!(
+            "{}/get?artist_name={}&track_name={}&album_name={}",
             LRCLIB_API,
             urlencoding(&track.artist),
             urlencoding(&track.title),
             urlencoding(&track.album),
         );
+        if track.duration >= 1.0 {
+            url.push_str(&format!("&duration={}", track.duration as u64));
+        }
 
         let resp = self.client.get(&url).send().await.ok()?;
         if !resp.status().is_success() {

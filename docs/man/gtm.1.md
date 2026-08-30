@@ -34,7 +34,7 @@ pane selects category, right pane lists tracks. Keys: **Tab** (toggle pane),
 ## Settings (2)
 
 Adjust playback settings and open overlays. Left pane selects category
-(Playback, Appearance, Sleep Timer, About), right pane shows options. Keys:
+(YouTube, Playback, System, Spotify), right pane shows options. Keys:
 **Tab** (toggle pane), **j**/**k** (navigate), **Enter** (toggle/select).
 
 ## Global Keys
@@ -100,7 +100,7 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 
 **crossfade** *enabled* [*duration_secs*]
 :   Enable or disable crossfade between tracks. Optional duration in seconds
-    (default: 3). Easing is picked in Settings.
+    (default: 3).
 
 ## Queue
 

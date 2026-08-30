@@ -17,7 +17,6 @@ impl CrossfadeConfig {
         Self {
             enabled,
             duration_secs: duration_secs.min(30),
-            easing: crate::global::Easing::default(),
         }
     }
 }
@@ -39,7 +38,6 @@ impl DaemonState {
             crossfade: Some(crate::global::CrossfadeConfig {
                 enabled: true,
                 duration_secs: 6,
-                easing: crate::global::Easing::Linear,
             }),
             current_track: None,
             time_pos: 0.0,

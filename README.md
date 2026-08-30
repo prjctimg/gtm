@@ -20,7 +20,7 @@ You can read about it in [this post.](https://prjctimg.me/blg/feature-rich-termi
 - **Background playback**: reattach to the client from anywhere in the terminal
 - **YouTube, Spotify, Deezer**: search & download from YouTube, sync
   Spotify playlists, and fetch missing metadata/lyrics/cover art via Deezer.
-- **Crossfade**: gapless-ish transitions with duration and easing options.
+- **Crossfade**: gapless-ish transitions with a configurable duration.
 - **Lyrics**: automatic fetch from LRCLIB (default provider)
 - **Metadata sync**: backfill missing tags, cover art, and lyrics for local files
 - **Equalizer**: 16 presets plus a spectrum visualizer
