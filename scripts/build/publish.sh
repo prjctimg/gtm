@@ -55,7 +55,7 @@ wait_for_version() {
   local attempts=0
   while true; do
     if cargo search "${crate}" --limit 1 2>/dev/null \
-      | grep -q "(=\s*\"${VERSION}\")"; then
+      | grep -q "= \"${VERSION}\""; then
       echo "   ✓ ${crate} v${VERSION} visible on crates.io"
       return 0
     fi

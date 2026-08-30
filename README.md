@@ -1,4 +1,4 @@
-# gtm.rs
+# gtm 📻
 
 ![](./logo.png)
 

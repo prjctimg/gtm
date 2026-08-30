@@ -215,13 +215,14 @@ else
 fi
 
 echo ""
-echo "17. crates.io publish wiring (release.yml, scripts/build/publish.sh)"
-if grep -q "secrets.CRATES_IO_TOKEN" .github/workflows/release.yml && \
+echo "17. crates.io publish wiring (release.yml OIDC, scripts/build/publish.sh)"
+if grep -q "trusted_publishing/tokens" .github/workflows/release.yml && \
+   grep -q "id-token: write" .github/workflows/release.yml && \
    [ -x scripts/build/publish.sh ] && \
    grep -q "gtm-core gtm-audio gtm-mpris gtmd gtm" scripts/build/publish.sh; then
-    echo "   ✓ Crate publishing uses CRATES_IO_TOKEN and runs in dependency order"
+    echo "   ✓ Publish uses crates.io Trusted Publishing (OIDC, no token secret) in dependency order"
 else
-    echo "   ✗ Crate publishing wiring is broken (wrong secret name or missing ordered publish script)"
+    echo "   ✗ crates.io publish wiring is broken (missing OIDC mint or ordered publish script)"
     exit 1
 fi
 
