@@ -114,7 +114,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions & the crate layout
 - [symphonia](https://crates.io/crates/symphonia),
   [fundsp](https://crates.io/crates/fundsp), and
   [rodio](https://crates.io/crates/rodio)
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp)
+- [innertube-rs](https://crates.io/crates/innertube-rs)
 - [LRCLIB](https://lrclib.net)
 - [Myx](https://github.com/HaseebKhalid1507/Myx)
 - [spotify-player](https://github.com/aome510/spotify-player)  

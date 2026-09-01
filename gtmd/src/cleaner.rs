@@ -240,9 +240,9 @@ pub fn sanitize_filename(s: &str) -> String {
     result.trim().trim_matches('_').to_string()
 }
 
-/// Normalize a yt-dlp filename stem into a spaced-out string.
+/// Normalize an underscored filename stem into a spaced-out string.
 ///
-/// yt-dlp replaces spaces with underscores in filenames, e.g.
+/// Downloaded titles replace spaces with underscores, e.g.
 /// `Bazzi_-_Beautiful_feat._Camila_Official_Audio`. Converting the
 /// underscores back to spaces lets the existing title cleaning parse the
 /// "Artist - Title" structure.
@@ -254,7 +254,7 @@ pub fn normalize_filename_stem(stem: &str) -> String {
     result.trim().to_string()
 }
 
-/// Clean a filename stem (as produced by yt-dlp) into `(artist, title)`.
+/// Clean a filename stem into `(artist, title)`.
 pub fn clean_filename_stem(stem: &str) -> (Option<String>, String) {
     clean_youtube_title(&normalize_filename_stem(stem))
 }

@@ -2792,10 +2792,6 @@ impl App {
                 );
                 let ipc = ipc_tx.clone();
                 let client2 = self.client.clone();
-                let cookie_file = self
-                    .cookie_file
-                    .clone()
-                    .filter(|p| std::path::Path::new(p).is_file());
                 tokio::spawn(async move {
                     let audio_dir = std::env::var("XDG_DATA_HOME")
                         .map(|d| std::path::PathBuf::from(d).join("gtm").join("audio"))
@@ -2804,106 +2800,147 @@ impl App {
                             std::path::PathBuf::from(home).join(".local/share/gtm/audio")
                         });
                     std::fs::create_dir_all(&audio_dir).ok();
-                    let template = audio_dir.join("%(title)s.%(ext)s");
-                    let mut cmd = tokio::process::Command::new("yt-dlp");
-                    cmd.arg("--extract-audio")
-                        .arg("--audio-format")
-                        .arg("mp3")
-                        .arg("--restrict-filenames")
-                        .arg("-o")
-                        .arg(template.to_string_lossy().as_ref())
-                        .arg("--extractor-args")
-                        .arg("youtube:player_client=android,web,tv_embedded;player_skip=webpage");
-                    // YouTube blocks anonymous downloads with HTTP 403; the
-                    // cookie file configured in Settings → YouTube must ride
-                    // along with every download attempt.
-                    if let Some(cf) = cookie_file.as_ref() {
-                        cmd.arg("--cookies").arg(cf);
-                    }
-                    let output = cmd.arg(&url).output().await;
-                    let msg = match output {
-                        Ok(o) if o.status.success() => {
-                            let _ = client2
-                                .library()
-                                .scan(audio_dir.to_string_lossy().as_ref())
-                                .await;
-                            // Also refresh the track cache
-                            if let Ok(DaemonRes::Tracks { tracks, .. }) =
-                                client2.library().get_tracks(None, None).await
-                            {
-                                let _ = ipc.send(IpcResult::LibraryTracks(tracks));
+
+                    let msg = async {
+                        // Resolve a playable direct stream through the daemon
+                        // (InnerTube, no yt-dlp).
+                        let info = match client2.yt().resolve_stream(&url).await {
+                            Ok(DaemonRes::StreamInfo { info }) => *info,
+                            Ok(DaemonRes::Error { message }) => {
+                                return format!("Download failed: {message}");
                             }
-                            // Try to fetch lyrics for the newly downloaded track
-                            let stdout_text = String::from_utf8_lossy(&o.stdout).to_string();
-                            let filename = stdout_text.lines().next().unwrap_or(&url).to_string();
-                            // Find the track by filename substring match in library
-                            if let Ok(DaemonRes::Tracks { tracks, .. }) =
-                                client2.library().get_tracks(None, None).await
-                                && let Some(track) = tracks
-                                    .iter()
-                                    .find(|t| {
-                                        filename.contains(&t.title)
-                                            || t.path.contains(filename.trim_end_matches(".mp3"))
-                                    })
-                                    .or_else(|| tracks.last())
-                            {
-                                if let Ok(Some(lyrics_data)) =
-                                    client2.lyrics().get(track.id, Some(&track.path)).await
-                                    && !lyrics_data.lines.is_empty()
-                                {
-                                    // Write .lrc sidecar next to the audio file
-                                    let lrc_path = {
-                                        let p = std::path::PathBuf::from(&track.path);
-                                        p.with_extension("lrc")
-                                    };
-                                    let mut lrc_content = String::new();
-                                    if let Some(ref ar) = lyrics_data.artist {
-                                        lrc_content.push_str(&format!("[ar:{}]\n", ar));
+                            Ok(_) => return "Download failed: unexpected daemon response".to_string(),
+                            Err(e) => return format!("Download error: {e}"),
+                        };
+                        let ext = if info.ext.is_empty() { "m4a" } else { &info.ext };
+
+                        let file_name = {
+                            let base = title
+                                .clone()
+                                .unwrap_or_else(|| info.title.clone())
+                                .trim()
+                                .to_string();
+                            let base = if base.is_empty() {
+                                "audio".to_string()
+                            } else {
+                                base
+                            };
+                            let mut safe: String = base
+                                .chars()
+                                .map(|c| {
+                                    if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ' {
+                                        c
+                                    } else {
+                                        '_'
                                     }
-                                    if let Some(ref al) = lyrics_data.album {
-                                        lrc_content.push_str(&format!("[al:{}]\n", al));
+                                })
+                                .collect();
+                            if safe.trim().is_empty() {
+                                safe = "audio".to_string();
+                            }
+                            format!("{safe}.{ext}")
+                        };
+                        let dest = audio_dir.join(&file_name);
+
+                        // Stream the audio to disk (no ffmpeg transcode — the
+                        // player decodes m4a/webm/opus natively).
+                        let resp = match reqwest::Client::builder().build() {
+                            Ok(c) => c,
+                            Err(e) => return format!("Download error: {e}"),
+                        }
+                        .get(&info.url)
+                        .send()
+                        .await;
+                        let resp = match resp {
+                            Ok(r) if r.status().is_success() => r,
+                            Ok(r) => return format!("Download failed: HTTP {}", r.status()),
+                            Err(e) => return format!("Download error: {e}"),
+                        };
+                        let mut file = match tokio::fs::File::create(&dest).await {
+                            Ok(f) => f,
+                            Err(e) => return format!("Download error: {e}"),
+                        };
+                        let mut stream = resp.bytes_stream();
+                        use futures::StreamExt;
+                        use tokio::io::AsyncWriteExt;
+                        while let Some(chunk) = stream.next().await {
+                            match chunk {
+                                Ok(c) => {
+                                    if let Err(e) = file.write_all(&c).await {
+                                        return format!("Download error: {e}");
                                     }
-                                    if let Some(ref ti) = lyrics_data.title {
-                                        lrc_content.push_str(&format!("[ti:{}]\n", ti));
-                                    }
-                                    for line in &lyrics_data.lines {
-                                        if line.timestamp < 0.0 {
-                                            lrc_content.push_str(&line.text);
-                                            lrc_content.push('\n');
-                                            continue;
-                                        }
-                                        let mins = (line.timestamp / 60.0) as u64;
-                                        let secs = line.timestamp - (mins as f64 * 60.0);
-                                        lrc_content.push_str(&format!(
-                                            "[{:02}:{:05.2}]{}\n",
-                                            mins, secs, line.text
-                                        ));
-                                    }
-                                    let _ = std::fs::write(&lrc_path, lrc_content);
                                 }
-                                // Scrub the downloaded file's tags and fetch
-                                // its cover art (runs per-path in the
-                                // background).
-                                let _ = client2
-                                    .library()
-                                    .sync_metadata(Some(track.path.clone()))
-                                    .await;
-                            }
-                            match (&title, &artist) {
-                                (Some(t), Some(a)) => format!("Downloaded: {} - {}", a, t),
-                                (Some(t), _) => format!("Downloaded: {}", t),
-                                _ => format!("Downloaded: {}", filename),
+                                Err(e) => return format!("Download error: {e}"),
                             }
                         }
-                        Ok(o) => format!(
-                            "Download failed: {}",
-                            String::from_utf8_lossy(&o.stderr)
-                                .lines()
-                                .last()
-                                .unwrap_or("unknown error")
-                        ),
-                        Err(e) => format!("Download error: {e}"),
-                    };
+
+                        let _ = client2
+                            .library()
+                            .scan(audio_dir.to_string_lossy().as_ref())
+                            .await;
+                        // Also refresh the track cache
+                        if let Ok(DaemonRes::Tracks { tracks, .. }) =
+                            client2.library().get_tracks(None, None).await
+                        {
+                            let _ = ipc.send(IpcResult::LibraryTracks(tracks));
+                        }
+                        // Try to fetch lyrics for the newly downloaded track
+                        if let Ok(DaemonRes::Tracks { tracks, .. }) =
+                            client2.library().get_tracks(None, None).await
+                            && let Some(track) = tracks
+                                .iter()
+                                .find(|t| t.path.contains(&dest.to_string_lossy().to_string()))
+                                .or_else(|| tracks.last())
+                        {
+                            if let Ok(Some(lyrics_data)) =
+                                client2.lyrics().get(track.id, Some(&track.path)).await
+                                && !lyrics_data.lines.is_empty()
+                            {
+                                // Write .lrc sidecar next to the audio file
+                                let lrc_path = {
+                                    let p = std::path::PathBuf::from(&track.path);
+                                    p.with_extension("lrc")
+                                };
+                                let mut lrc_content = String::new();
+                                if let Some(ref ar) = lyrics_data.artist {
+                                    lrc_content.push_str(&format!("[ar:{}]\n", ar));
+                                }
+                                if let Some(ref al) = lyrics_data.album {
+                                    lrc_content.push_str(&format!("[al:{}]\n", al));
+                                }
+                                if let Some(ref ti) = lyrics_data.title {
+                                    lrc_content.push_str(&format!("[ti:{}]\n", ti));
+                                }
+                                for line in &lyrics_data.lines {
+                                    if line.timestamp < 0.0 {
+                                        lrc_content.push_str(&line.text);
+                                        lrc_content.push('\n');
+                                        continue;
+                                    }
+                                    let mins = (line.timestamp / 60.0) as u64;
+                                    let secs = line.timestamp - (mins as f64 * 60.0);
+                                    lrc_content.push_str(&format!(
+                                        "[{:02}:{:05.2}]{}\n",
+                                        mins, secs, line.text
+                                    ));
+                                }
+                                let _ = std::fs::write(&lrc_path, lrc_content);
+                            }
+                            // Scrub the downloaded file's tags and fetch
+                            // its cover art (runs per-path in the
+                            // background).
+                            let _ = client2
+                                .library()
+                                .sync_metadata(Some(track.path.clone()))
+                                .await;
+                        }
+                        match (&title, &artist) {
+                            (Some(t), Some(a)) => format!("Downloaded: {} - {}", a, t),
+                            (Some(t), _) => format!("Downloaded: {}", t),
+                            _ => format!("Downloaded: {}", file_name),
+                        }
+                    }
+                    .await;
                     let kind = if msg.starts_with("Downloaded") {
                         crate::app::NotificationKind::Success
                     } else {

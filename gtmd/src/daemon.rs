@@ -959,7 +959,7 @@ impl Yt {
         filter: Option<gtm_core::global::YTFilter>,
     ) -> Result<DaemonRes, CoreError> {
         inner.health.yt.count.fetch_add(1, Ordering::Relaxed);
-        inner.youtube.lock().await.start_search(query, filter);
+        let _ = inner.youtube.lock().await.start_search(query, filter).await;
         Ok(DaemonRes::Ok)
     }
 
@@ -1236,6 +1236,7 @@ impl Spotify {
             &inner.config.cache_dir,
             &prefix,
             &info.url,
+            &info.ext,
             yt.cookie_file(),
         )
         .await
@@ -1321,6 +1322,7 @@ impl Spotify {
             &inner.config.cache_dir,
             &prefix,
             &info.url,
+            &info.ext,
             yt.cookie_file(),
         )
         .await
@@ -3287,14 +3289,13 @@ impl Daemon {
         cache_dir: &Path,
         prefix: &str,
         url: &str,
-        cookie_file: Option<String>,
+        ext: &str,
+        _cookie_file: Option<String>,
     ) -> Result<String, String> {
         let max_retries = 3u32;
         let mut last_err = String::new();
         for attempt in 1..=max_retries {
-            match Self::try_download_audio_to_cache(cache_dir, prefix, url, cookie_file.as_deref())
-                .await
-            {
+            match Self::try_download_audio_to_cache(cache_dir, prefix, url, ext).await {
                 Ok(path) => return Ok(path),
                 Err(e) => {
                     last_err = e;
@@ -3311,7 +3312,7 @@ impl Daemon {
         cache_dir: &Path,
         prefix: &str,
         url: &str,
-        cookie_file: Option<&str>,
+        ext: &str,
     ) -> Result<String, String> {
         let dir = cache_dir.join("spotify");
         std::fs::create_dir_all(&dir).map_err(|e| format!("create spotify cache: {e}"))?;
@@ -3323,46 +3324,16 @@ impl Daemon {
                 }
             }
         }
-        let template = dir.join(format!("{prefix}.%(ext)s"));
-        let output = tokio::time::timeout(Duration::from_secs(120), async {
-            let mut cmd = tokio::process::Command::new("yt-dlp");
-            cmd.arg("-f")
-                .arg("bestaudio[ext=m4a]/bestaudio")
-                .arg("-o")
-                .arg(&template)
-                .arg("--no-warnings")
-                .args(YoutubeManager::extractor_args());
-            if let Some(cf) = cookie_file.filter(|p| Path::new(p).is_file()) {
-                cmd.arg("--cookies").arg(cf);
-            }
-            cmd.arg(url).output().await
+        let dest = dir.join(format!("{prefix}.{ext}"));
+        tokio::time::timeout(Duration::from_secs(120), async {
+            crate::youtube::YoutubeManager::download_to_path(url, &dest).await
         })
         .await
-        .map_err(|_| "spotify download timed out".to_string())?
-        .map_err(|e| format!("yt-dlp download: {e}"))?;
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let raw = stderr
-                .lines()
-                .last()
-                .unwrap_or("yt-dlp download failed")
-                .trim()
-                .to_string();
-            let hint = if raw.contains("403") || raw.contains("Forbidden") {
-                " (HTTP 403 — set cookie file in Settings → YouTube or update yt-dlp)"
-            } else {
-                ""
-            };
-            return Err(format!("{raw}{hint}"));
+        .map_err(|_| "spotify download timed out".to_string())??;
+        if !dest.is_file() {
+            return Err("download produced no file".into());
         }
-        for entry in std::fs::read_dir(&dir).map_err(|e| e.to_string())? {
-            let entry = entry.map_err(|e| e.to_string())?;
-            let name = entry.file_name().to_string_lossy().into_owned();
-            if name.starts_with(prefix) {
-                return Ok(entry.path().to_string_lossy().into_owned());
-            }
-        }
-        Err("download produced no file".into())
+        Ok(dest.to_string_lossy().into_owned())
     }
 }
 
