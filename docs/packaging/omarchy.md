@@ -31,7 +31,7 @@ Follow the [Arch Rust packaging guidelines](https://wiki.archlinux.org/title/Rus
 ```bash
 # Maintainer: prjctimg <prjctimg@outlook.com>
 pkgname=gtm
-pkgver=0.2.72
+pkgver=0.2.73
 pkgrel=1
 pkgdesc="Feature rich and cross platform terminal audio player with background playback and YouTube/Spotify integration"
 arch=('x86_64' 'aarch64')

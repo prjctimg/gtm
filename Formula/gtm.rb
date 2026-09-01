@@ -5,9 +5,9 @@ class Gtm < Formula
   desc "Terminal-based music player daemon and client"
   homepage "https://github.com/prjctimg/gtm.rs"
   url "https://github.com/prjctimg/gtm.rs.git",
-      tag: "v0.2.72",
+      tag: "v0.2.73",
       using: :git
-  version "0.2.72"
+  version "0.2.73"
   license "GPL-3.0-only"
 
   depends_on "rust" => :build

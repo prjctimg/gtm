@@ -17,8 +17,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 from="${1:?from-ref required (e.g. v0.2.7)}"
-to="${2:?to-ref required (e.g. v0.2.72)}"
-version="${3:?version required (e.g. 0.2.72)}"
+to="${2:?to-ref required (e.g. v0.2.73)}"
+version="${3:?version required (e.g. 0.2.73)}"
 out="${4:-$repo_root/artifacts/release-notes.md}"
 
 cd "$repo_root"
