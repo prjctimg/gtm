@@ -1227,9 +1227,7 @@ impl Spotify {
         let (path, yt_error): (Option<String>, Option<String>) = {
             let mut yt = inner.youtube.lock().await;
             let resolved = match (async {
-                if let Err(e) = yt.search(&query, None).await {
-                    return Err(e);
-                }
+                yt.search(&query, None).await?;
                 let top = match yt.poll_results().await {
                     Ok(Some((_, mut results))) if !results.is_empty() => results.remove(0),
                     _ => return Err("no youtube results for track".to_string()),
@@ -1331,9 +1329,7 @@ impl Spotify {
         let (path, yt_error): (Option<String>, Option<String>) = {
             let mut yt = inner.youtube.lock().await;
             let resolved = match (async {
-                if let Err(e) = yt.search(&query, None).await {
-                    return Err(e);
-                }
+                yt.search(&query, None).await?;
                 let top = match yt.poll_results().await {
                     Ok(Some((_, mut results))) if !results.is_empty() => results.remove(0),
                     _ => return Err("no youtube results for track".to_string()),
