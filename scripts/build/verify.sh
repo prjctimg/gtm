@@ -216,7 +216,7 @@ fi
 
 echo ""
 echo "17. crates.io publish wiring (release.yml OIDC, scripts/build/publish.sh)"
-if grep -q "trusted_publishing/tokens" .github/workflows/release.yml && \
+if grep -q "crates-io-auth-action@v1" .github/workflows/release.yml && \
    grep -q "id-token: write" .github/workflows/release.yml && \
    [ -x scripts/build/publish.sh ] && \
    grep -q "gtm-core gtm-audio gtm-mpris gtmd gtm" scripts/build/publish.sh; then

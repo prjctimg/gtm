@@ -43,6 +43,8 @@ use crate::spotify::SpotifyManager;
 use crate::stream::StreamManager;
 #[cfg(feature = "youtube")]
 use crate::youtube::YoutubeManager;
+#[cfg(feature = "mpris")]
+use gtm_mpris::MprisHandle;
 
 type ClientId = u64;
 type ReplyTx = mpsc::UnboundedSender<(u64, DaemonRes)>;
@@ -2064,6 +2066,8 @@ pub struct Daemon {
     req_rx: mpsc::UnboundedReceiver<(ClientId, u64, DaemonReq, ReplyTx)>,
     internal_req_rx: mpsc::UnboundedReceiver<DaemonReq>,
     next_client_id: ClientId,
+    #[cfg(feature = "mpris")]
+    mpris: Option<MprisHandle>,
 }
 
 impl Daemon {
@@ -2168,6 +2172,8 @@ impl Daemon {
             req_rx,
             internal_req_rx,
             next_client_id: 0,
+            #[cfg(feature = "mpris")]
+            mpris: None,
         })
     }
 
@@ -2247,6 +2253,17 @@ impl Daemon {
                 let _ = hb_event_tx.send(DaemonEvent::Heartbeat);
             }
         });
+
+        #[cfg(feature = "mpris")]
+        if !self.inner.config.test_mode {
+            let mpris_state = self.inner.state.clone();
+            let mpris_event_rx = self.inner.event_tx.subscribe();
+            let mpris_req_tx = self.inner.internal_req_tx.clone();
+            match gtm_mpris::start(mpris_state, mpris_event_rx, mpris_req_tx).await {
+                Ok(handle) => self.mpris = Some(handle),
+                Err(e) => warn!("mpris: failed to start D-Bus server: {e}"),
+            }
+        }
 
         let spotify_inner = Arc::clone(&self.inner);
         tokio::spawn(async move {

@@ -2059,6 +2059,7 @@ version = "0.2.73"
 dependencies = [
  "gtm-core",
  "serde",
+ "tokio",
  "tracing",
  "zbus",
  "zvariant",

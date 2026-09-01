@@ -652,6 +652,7 @@ jobs:
     needs: [tag, build]
     if: needs.tag.outputs.skip != 'true' && needs.tag.outputs.nightly == 'false'
     runs-on: ubuntu-latest
+    environment: crates-io
     permissions:
       id-token: write
       contents: read
@@ -661,27 +662,11 @@ jobs:
       - name: Install build dependencies
         run: sudo apt-get update && sudo apt-get install -y pkg-config libasound2-dev
 
-      - name: Mint crates.io token (Trusted Publishing)
-        run: |
-          jwt=$(curl -sS --fail-with-body \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=crates.io" \
-            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-            | jq -r .value)
-          if [ -z "${jwt}" ] || [ "${jwt}" = "null" ]; then
-            echo "failed to fetch GitHub OIDC token" >&2
-            exit 1
-          fi
-          resp="$(curl -sS --fail-with-body -X POST \
-            https://crates.io/api/v1/trusted_publishing/tokens \
-            -H "Content-Type: application/json" \
-            -d "{\"jwt\": \"${jwt}\"}")"
-          token="$(printf '%s' "${resp}" | jq -r .token)"
-          if [ -z "${token}" ] || [ "${token}" = "null" ]; then
-            echo "crates.io OIDC token exchange failed: ${resp}" >&2
-            exit 1
-          fi
-          echo "::add-mask::${token}"
-          echo "CARGO_REGISTRY_TOKEN=${token}" >> "${GITHUB_ENV}"
+      - uses: rust-lang/crates-io-auth-action@v1
+        id: auth
+
+      - name: Set crates.io token
+        run: echo "CARGO_REGISTRY_TOKEN=${{ steps.auth.outputs.token }}" >> "${GITHUB_ENV}"
 
       - name: Publish crates
         run: |
