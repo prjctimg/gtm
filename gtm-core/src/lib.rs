@@ -21,7 +21,8 @@ pub mod wire;
 pub use global::{CoreError, CrossfadeConfig, DaemonState, EQ_FREQUENCIES, EqBand, ReverbConfig};
 pub use ipc::MetadataPatch;
 pub use paths::{
-    is_termux, resolve_command_socket, resolve_pid_file, resolve_pulse_socket, termux_music_dirs,
+    ensure_termux_pulseaudio, is_termux, resolve_command_socket, resolve_pid_file,
+    resolve_pulse_socket, termux_music_dirs,
 };
 pub use spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 pub use track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};

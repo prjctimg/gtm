@@ -19,7 +19,7 @@ use crate::Result;
 use crate::global::{DaemonState, EqPreset, PlaybackStatus, RepeatMode, YTFilter};
 use crate::ipc::{
     CacheKind, DaemonEvent, DaemonReq, DaemonRes, LibraryAction, MetadataPatch, PROTOCOL_VERSION,
-    QueueAction, SyncKind, WireEvent, WireReq, WireRes,
+    QueueAction, SyncKind, WireReq, WireRes,
 };
 use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::track;
@@ -70,7 +70,6 @@ impl DaemonClient {
                         reader,
                         writer,
                         cmd_rx,
-                        events: events.clone(),
                         connected: connected.clone(),
                         buf: Vec::with_capacity(4096),
                         socket_path: path.clone(),
@@ -985,7 +984,6 @@ struct IpcWorker {
     reader: tokio::net::unix::OwnedReadHalf,
     writer: tokio::net::unix::OwnedWriteHalf,
     cmd_rx: mpsc::UnboundedReceiver<PendingRequest>,
-    events: Arc<Mutex<Vec<DaemonEvent>>>,
     connected: Arc<AtomicBool>,
     buf: Vec<u8>,
     socket_path: std::path::PathBuf,
@@ -1257,30 +1255,11 @@ impl IpcWorker {
             }
             return true;
         }
-        if let Ok(wire_event) = serde_json::from_slice::<WireEvent>(&line) {
-            let event = deserialize_daemon_event(&wire_event.event, wire_event.data);
-            if let Some(event) = event {
-                if matches!(event, DaemonEvent::Heartbeat) {
-                    *self.last_heartbeat_at.lock().unwrap() = Instant::now();
-                }
-                let mut events = self.events.lock().await;
-                events.push(event);
-            }
-        }
+        // DaemonEvents are consumed exclusively over the dedicated pulse
+        // socket (compact binary stream) to avoid double-delivery; the
+        // command socket carries commands and their responses only.
         true
     }
-}
-
-fn deserialize_daemon_event(tag: &str, data: serde_json::Value) -> Option<DaemonEvent> {
-    let mut obj = match data {
-        serde_json::Value::Object(o) => o,
-        _ => return None,
-    };
-    obj.insert(
-        "event".to_string(),
-        serde_json::Value::String(tag.to_string()),
-    );
-    serde_json::from_value(serde_json::Value::Object(obj)).ok()
 }
 
 async fn pulse_reader(

@@ -136,7 +136,7 @@ pub fn blend_colors(a: Color, b: Color, t: f64) -> Color {
 // ─── Built-in presets ─────────────────────────────────────────────────
 
 /// Chadrula: NvChad default
-fn chadrula() -> AppTheme {
+pub(crate) fn chadrula() -> AppTheme {
     AppTheme {
         bg: hex(0x24283b),
         pane_bg: hex(0x24283b),
@@ -863,6 +863,98 @@ pub fn merged_themes() -> Vec<ThemeEntry> {
         }
     }
     v
+}
+
+/// Whether the OS desktop is currently demanding a dark or light theme,
+/// following the omarchy convention of a global `mode` (dark|light). Detection
+/// order:
+///
+/// 1. `GTM_THEME_MODE=dark|light` override env var (manual control without
+///    editing the config file).
+/// 2. GNOME's `org.gnome.desktop.interface color-scheme` gsettings key
+///    (`prefer-dark` → dark, anything else → light).
+/// 3. `GTK_THEME=<name>[-dark]` env var (a trailing `-dark` suffix → dark).
+/// 4. Omarchy's active theme `colors.toml` `mode` field, read from either the
+///    `~/.config/omarchy/current/theme` or `~/.local/state/omarchy/current/theme`
+///    layout.
+///
+/// Returns `None` when every probe is unavailable so the caller keeps its
+/// existing (persisted) choice instead of flipping the theme.
+pub fn detect_os_theme() -> Option<gtm_core::state::ThemeMode> {
+    use gtm_core::state::ThemeMode;
+    // Explicit override always wins.
+    if let Ok(v) = std::env::var("GTM_THEME_MODE") {
+        match v.to_ascii_lowercase().as_str() {
+            "dark" => return Some(ThemeMode::Dark),
+            "light" => return Some(ThemeMode::Light),
+            _ => {}
+        }
+    }
+    // GNOME color-scheme.
+    if let Some(out) = std::process::Command::new("gsettings")
+        .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+    {
+        let s = String::from_utf8_lossy(&out.stdout);
+        if s.contains("prefer-dark") {
+            return Some(ThemeMode::Dark);
+        }
+        if s.contains("default") || s.contains("prefer-light") {
+            return Some(ThemeMode::Light);
+        }
+    }
+    // GTK_THEME env.
+    if let Ok(v) = std::env::var("GTK_THEME") {
+        let v = v.to_ascii_lowercase();
+        return Some(if v.ends_with("-dark") {
+            ThemeMode::Dark
+        } else {
+            ThemeMode::Light
+        });
+    }
+    // Omarchy active theme — probe both the config-state and state-state layouts.
+    let config_home = std::env::var("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+                .join(".config")
+        });
+    let state_home = std::env::var("XDG_STATE_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()))
+                .join(".local")
+                .join("state")
+        });
+    for colors in [
+        config_home
+            .join("omarchy")
+            .join("current")
+            .join("theme")
+            .join("colors.toml"),
+        state_home
+            .join("omarchy")
+            .join("current")
+            .join("theme")
+            .join("colors.toml"),
+    ] {
+        if let Ok(text) = std::fs::read_to_string(&colors) {
+            for line in text.lines() {
+                let line = line.trim();
+                if let Some(rest) = line.strip_prefix("mode") {
+                    if rest.contains("light") {
+                        return Some(ThemeMode::Light);
+                    }
+                    if rest.contains("dark") {
+                        return Some(ThemeMode::Dark);
+                    }
+                }
+            }
+        }
+    }
+    None
 }
 
 /// Assert a collection of named items has no duplicate names.

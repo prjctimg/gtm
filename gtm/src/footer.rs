@@ -51,6 +51,7 @@ pub enum FooterModule {
     EqPreset,
     SleepTimer,
     Notification,
+    Time,
 }
 
 impl FooterModule {
@@ -71,6 +72,7 @@ impl FooterModule {
             FooterModule::EqPreset => "EqPreset",
             FooterModule::SleepTimer => "SleepTimer",
             FooterModule::Notification => "Notification",
+            FooterModule::Time => "Time",
         }
     }
 
@@ -92,6 +94,7 @@ impl FooterModule {
             "EqPreset" => FooterModule::EqPreset,
             "SleepTimer" => FooterModule::SleepTimer,
             "Notification" => FooterModule::Notification,
+            "Time" => FooterModule::Time,
             _ => return None,
         })
     }
@@ -116,7 +119,7 @@ pub fn presets() -> Vec<FooterPreset> {
             name: Cow::Borrowed("Default"),
             left: vec![
                 FooterModule::Playback,
-                FooterModule::Queue,
+                FooterModule::Title,
                 FooterModule::Repeat,
                 FooterModule::Shuffle,
                 FooterModule::Volume,
@@ -126,6 +129,8 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::SleepTimer,
             ],
             right: vec![
+                FooterModule::Queue,
+                FooterModule::Time,
                 FooterModule::Device,
                 FooterModule::System,
                 FooterModule::Backend,
@@ -140,16 +145,16 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::KeyAction,
                 FooterModule::SleepTimer,
             ],
-            right: vec![FooterModule::Backend],
+            right: vec![FooterModule::Time, FooterModule::Backend],
         },
         FooterPreset {
             name: Cow::Borrowed("Full"),
             left: vec![
                 FooterModule::Playback,
                 FooterModule::Title,
-                FooterModule::Volume,
                 FooterModule::Repeat,
                 FooterModule::Shuffle,
+                FooterModule::Volume,
                 FooterModule::EqPreset,
                 FooterModule::Progress,
                 FooterModule::KeyAction,
@@ -157,6 +162,7 @@ pub fn presets() -> Vec<FooterPreset> {
             ],
             right: vec![
                 FooterModule::Queue,
+                FooterModule::Time,
                 FooterModule::Device,
                 FooterModule::System,
                 FooterModule::Backend,
@@ -419,6 +425,7 @@ fn module_color(m: FooterModule, theme: &crate::theme::AppTheme) -> Color {
         FooterModule::EqPreset => theme.secondary_accent,
         FooterModule::SleepTimer => theme.accent,
         FooterModule::Notification => theme.fg_bright,
+        FooterModule::Time => theme.tertiary_accent,
     }
 }
 
@@ -438,6 +445,7 @@ fn module_text(m: FooterModule, app: &App) -> Option<String> {
         FooterModule::EqPreset => render_eq_preset(app),
         FooterModule::SleepTimer => render_sleep_timer(app),
         FooterModule::Notification => render_footer_notification(app),
+        FooterModule::Time => render_time(app),
     }
 }
 
@@ -463,21 +471,27 @@ fn render_title(app: &App) -> Option<String> {
         .current_track
         .as_ref()
         .map_or_else(String::new, |t| {
+            // Show the track title with the artist concatenated after it.
             if t.artist.is_empty() {
                 t.title.clone()
             } else {
-                format!("{} \u{2013} {}", t.artist, t.title)
+                format!("{} \u{2013} {}", t.title, t.artist)
             }
         });
     if raw.is_empty() {
         return None;
     }
     const MAX: usize = 30;
+    const SPEED: usize = 6;
+    const HOLD_STEPS: usize = 50; // ~5s hold at 60fps / SPEED
     let char_count = raw.chars().count();
     if char_count > MAX {
         // Char-based modulo so multibyte UTF-8 never splits mid-sequence.
+        // Scroll one full loop, then hold still before animating again.
         let chars: Vec<char> = raw.chars().collect();
-        let offset = app.footer_title_scroll % char_count;
+        let step = app.footer_title_scroll / SPEED;
+        let pos = step % (char_count + HOLD_STEPS);
+        let offset = if pos < char_count { pos } else { 0 };
         let s: String = chars.iter().cycle().skip(offset).take(MAX).collect();
         Some(format!("{} \u{2026}", s))
     } else {
@@ -496,14 +510,22 @@ fn render_volume(app: &App) -> String {
 fn render_repeat(app: &App) -> Option<String> {
     match app.state.repeat {
         gtm_core::state::RepeatMode::Off => None,
-        gtm_core::state::RepeatMode::One => Some("1".into()),
-        gtm_core::state::RepeatMode::All => Some("A".into()),
+        gtm_core::state::RepeatMode::One => {
+            Some(if crate::ui::use_nerd_fonts() { "\u{f01e}1".into() } else { "1".into() })
+        }
+        gtm_core::state::RepeatMode::All => {
+            Some(if crate::ui::use_nerd_fonts() { "\u{f01e}".into() } else { "A".into() })
+        }
     }
 }
 
 fn render_shuffle(app: &App) -> Option<String> {
     if app.state.shuffle {
-        Some("S".into())
+        Some(if crate::ui::use_nerd_fonts() {
+            "\u{f074}".into()
+        } else {
+            "S".into()
+        })
     } else {
         None
     }
@@ -511,7 +533,8 @@ fn render_shuffle(app: &App) -> Option<String> {
 
 fn render_eq_preset(app: &App) -> Option<String> {
     if app.state.eq_enabled {
-        Some(format!("EQ:{}", app.state.eq_preset.label()))
+        let icon = if crate::ui::use_nerd_fonts() { "\u{f7a5} " } else { "EQ:" };
+        Some(format!("{icon}{}", app.state.eq_preset.label()))
     } else {
         None
     }
@@ -606,30 +629,134 @@ fn render_backend(app: &App) -> String {
 }
 
 fn render_system() -> String {
-    let os = std::env::consts::OS;
-    let arch = std::env::consts::ARCH;
-    let cpus = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(1);
-    let mem = read_process_memory_kb();
-    if let Some(kb) = mem {
-        if kb > 1024 * 1024 {
-            format!(
-                "{} {} \u{2022} {}GB {}CPU",
-                os,
-                arch,
-                kb / (1024 * 1024),
-                cpus
-            )
-        } else {
-            format!("{} {} \u{2022} {}MB {}CPU", os, arch, kb / 1024, cpus)
-        }
-    } else {
-        format!("{} {} \u{2022} {}CPU", os, arch, cpus)
-    }
+    // Just the OS name; the detailed arch/memory/CPU breakdown lives in the
+    // About window so the footer stays clean and cosmetic.
+    std::env::consts::OS.to_string()
 }
 
-fn read_process_memory_kb() -> Option<u64> {
+/// Render the current wall-clock time using the user's strftime-style format.
+fn render_time(app: &App) -> Option<String> {
+    if app.footer_time_format.is_empty() {
+        return None;
+    }
+    Some(strftime(&app.footer_time_format))
+}
+
+/// Minimal strftime-style formatter covering the specifiers users realistically
+/// put in a status bar. Unknown specifiers are passed through verbatim.
+fn strftime(fmt: &str) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+    let days = now.div_euclid(86400);
+    let secs_of_day = now.rem_euclid(86400);
+    let mut year = 1970i64;
+    let mut remaining = days;
+    loop {
+        let leap = (year % 4 == 0 && year % 100 != 0) || year % 400 == 0;
+        let dim = if leap { 366 } else { 365 };
+        if remaining >= dim {
+            remaining -= dim;
+            year += 1;
+        } else {
+            break;
+        }
+    }
+    let (mut month, mut day) = (1u32, 1u32);
+    for (m, dims) in [
+            (1u32, 31u32),
+            (2, if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 { 29 } else { 28 }),
+            (3, 31),
+            (4, 30),
+            (5, 31),
+            (6, 30),
+            (7, 31),
+            (8, 31),
+            (9, 30),
+            (10, 31),
+            (11, 30),
+            (12, 31),
+        ] {
+            if remaining >= dims as i64 {
+                remaining -= dims as i64;
+            } else {
+                month = m;
+                day = (remaining + 1) as u32;
+                break;
+            }
+        }
+    let hour = secs_of_day / 3600;
+    let minute = (secs_of_day % 3600) / 60;
+    let second = secs_of_day % 60;
+
+    let weekday = ((days + 4).rem_euclid(7)) as usize; // 1970-01-01 was a Thursday
+    const WEEKDAY_NAMES: [&str; 7] =
+        ["Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday"];
+    const WEEKDAY_SHORT: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+    const MONTH_NAMES: [&str; 12] = [
+        "January", "February", "March", "April", "May", "June", "July",
+        "August", "September", "October", "November", "December",
+    ];
+    const MONTH_SHORT: [&str; 12] = [
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    ];
+
+    let mut out = String::new();
+    let mut chars = fmt.chars();
+    while let Some(c) = chars.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('H') => out.push_str(&format!("{:02}", hour)),
+            Some('I') => {
+                let h12 = if hour % 12 == 0 { 12 } else { hour % 12 };
+                out.push_str(&format!("{:02}", h12));
+            }
+            Some('M') => out.push_str(&format!("{:02}", minute)),
+            Some('S') => out.push_str(&format!("{:02}", second)),
+            Some('p') => out.push_str(if hour < 12 { "AM" } else { "PM" }),
+            Some('P') => out.push_str(if hour < 12 { "am" } else { "pm" }),
+            Some('Y') => out.push_str(&format!("{:04}", year)),
+            Some('y') => out.push_str(&format!("{:02}", year % 100)),
+            Some('m') => out.push_str(&format!("{:02}", month)),
+            Some('d') => out.push_str(&format!("{:02}", day)),
+            Some('e') => out.push_str(&format!("{:2}", day)),
+            Some('b') => out.push_str(MONTH_SHORT[(month - 1) as usize]),
+            Some('B') => out.push_str(MONTH_NAMES[(month - 1) as usize]),
+            Some('a') => out.push_str(WEEKDAY_SHORT[weekday]),
+            Some('A') => out.push_str(WEEKDAY_NAMES[weekday]),
+            Some('j') => {
+                // Day of year (1-366).
+                let doy = crate::footer::day_of_year(year, month, day);
+                out.push_str(&format!("{:03}", doy));
+            }
+            Some('%') => out.push('%'),
+            Some(other) => {
+                out.push('%');
+                out.push(other);
+            }
+            None => out.push('%'),
+        }
+    }
+    out
+}
+
+fn day_of_year(year: i64, month: u32, day: u32) -> i64 {
+    const CUM: [i64; 12] = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    let leap_adj = if month > 2 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0) {
+        1
+    } else {
+        0
+    };
+    CUM[(month - 1) as usize] + day as i64 + leap_adj
+}
+
+pub(crate) fn read_process_memory_kb() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     for line in status.lines() {
         if let Some(rest) = line.strip_prefix("VmRSS:") {

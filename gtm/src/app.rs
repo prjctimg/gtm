@@ -92,12 +92,68 @@ pub struct Prefs {
     progress_style: crate::progress::ProgressStyle,
     #[serde(default)]
     visualizer_preset: crate::visualizer::VisualizerPreset,
+    #[serde(default = "default_time_format")]
+    time_format: String,
+    #[serde(default = "default_theme_mode")]
+    theme_mode: String,
+    #[serde(default = "default_track_sort")]
+    track_sort: gtm_core::state::TrackSort,
     #[serde(default)]
     keybindings: std::collections::HashMap<String, String>,
 }
 
 fn default_theme_name() -> String {
     "Chadrula".into()
+}
+
+fn default_track_sort() -> gtm_core::state::TrackSort {
+    gtm_core::state::TrackSort::Recents
+}
+
+fn default_time_format() -> String {
+    "%H:%M".into()
+}
+
+fn default_theme_mode() -> String {
+    "auto".into()
+}
+
+/// Resolve which theme to start with. Honors the user's persisted
+/// `theme_name`, unless `theme_mode` is "auto" (the default) and the OS can be
+/// queried for its dark/light preference — in which case a theme matching the
+/// OS preference is chosen over the saved name. A saved name still wins when
+/// it already agrees with the OS preference.
+fn resolve_theme_index(themes: &[crate::theme::ThemeEntry], theme_name: &str, mode: &str) -> usize {
+    if themes.is_empty() {
+        return 0;
+    }
+    // Only override with the OS preference when in auto mode.
+    let os = if mode == "auto" {
+        crate::theme::detect_os_theme()
+    } else {
+        match mode {
+            "dark" => Some(gtm_core::state::ThemeMode::Dark),
+            "light" => Some(gtm_core::state::ThemeMode::Light),
+            _ => None,
+        }
+    };
+    if let Some(os) = os {
+        let os_light = os == gtm_core::state::ThemeMode::Light;
+        // Prefer an exact match on the persisted name if it agrees with the OS.
+        if let Some(idx) = themes.iter().position(|t| t.name == theme_name)
+            && themes[idx].light == os_light
+        {
+            return idx;
+        }
+        // Otherwise pick the first theme whose light flag matches the OS.
+        if let Some(idx) = themes.iter().position(|t| t.light == os_light) {
+            return idx;
+        }
+    }
+    themes
+        .iter()
+        .position(|t| t.name == theme_name)
+        .unwrap_or(0)
 }
 
 fn default_footer_preset_name() -> String {
@@ -114,6 +170,9 @@ impl Default for Prefs {
             footer_preset_name: default_footer_preset_name(),
             progress_style: crate::progress::ProgressStyle::default(),
             visualizer_preset: crate::visualizer::VisualizerPreset::default(),
+            time_format: default_time_format(),
+            theme_mode: default_theme_mode(),
+            track_sort: default_track_sort(),
             keybindings: std::collections::HashMap::new(),
         }
     }
@@ -310,6 +369,17 @@ pub struct App {
     /// time-synced lyric matching so the active verse updates without the
     /// EMA lag that smooths the progress bar.
     raw_position: f64,
+    /// Set when a seek is issued so the monotonic position guard is skipped
+    /// (a backward seek would otherwise be clamped and never re-sync the lyric
+    /// highlight). Cleared shortly after the seek lands.
+    seek_pending: Option<std::time::Instant>,
+    /// Coalesced seek commands: while the user holds a seek key (long-press),
+    /// each repeat press adjusts `seek_cmd_accum` and the local position only.
+    /// The daemon receives a single, debounced seek (via `ensure_seek_flush`)
+    /// once the repeats settle — so it never does a full re-decode per keypress,
+    /// which is what surfaced errors on long-press seeking.
+    seek_cmd_accum: Option<f64>,
+    last_seek_press: Option<std::time::Instant>,
     pub progress_smoother: crate::progress::ProgressSmoother,
     last_frame: std::time::Instant,
     pub frame_count: u64,
@@ -383,11 +453,22 @@ pub struct App {
     reactive_palette: Option<crate::reactive::ReactivePalette>,
     pub last_action_name: Option<(String, std::time::Instant)>,
     pub footer_title_scroll: usize,
+    /// strftime-style format string for the footer `Time` module.
+    pub footer_time_format: String,
+    /// OS-theme compliance mode: "auto" (detect dark/light), "dark", "light".
+    pub theme_mode: String,
+    /// How the library track list is sorted.
+    pub track_sort: gtm_core::state::TrackSort,
     pub is_ready: bool,
     last_queue_cursor: u64,
     /// Set when the user manually triggers Next/Prev so the "Up next"
     /// notification only appears on genuine auto-advance.
     pub manual_track_advance: bool,
+    /// True for the current track change if it was automatic (not a manual
+    /// Next/Prev/seek). Captured when PlaybackStarted is drained, before the
+    /// manual-advance flag is reset, so the dust animation can be gated to
+    /// genuine auto-advances only.
+    pub auto_track_advance: bool,
     last_track_path_display: Option<String>,
     prev_track_id: Option<i64>,
     prev_status: gtm_core::global::PlaybackStatus,
@@ -408,6 +489,10 @@ pub struct App {
     /// Target position in queue for move operation
     pub queue_move_target: usize,
     pub pending_playlist_track_ids: Vec<i64>,
+    /// Id of a freshly-created playlist awaiting track selection.
+    pub pending_playlist_id: Option<i64>,
+    /// Tracks currently highlighted for the in-flight new-playlist flow.
+    pub selected_playlist_track_ids: std::collections::HashSet<i64>,
     pub playlist_creating: bool,
     pub metadata: MetadataEditState,
     pub pending_quit: bool,
@@ -480,6 +565,9 @@ enum IpcResult {
     LibraryTracks(Vec<TrackInfo>),
     PlaylistTracks(Vec<TrackInfo>),
     Playlists(Vec<Playlist>),
+    /// A new playlist was created; carry its id + name so the TUI can open the
+    /// track multi-select picker to populate it.
+    PlaylistCreated(i64, String),
     Queue(Vec<TrackInfo>, usize),
     YtResults(String, Vec<YTSearchResult>),
     Notification(String, String, NotificationKind),
@@ -687,11 +775,12 @@ impl App {
         // prefs by name so adding/removing a built-in never shifts the saved
         // theme off its slot.
         let themes = crate::theme::merged_themes();
-        let theme_index = themes
-            .iter()
-            .position(|t| t.name == prefs.theme_name)
-            .unwrap_or(0);
-        let theme = themes[theme_index].theme;
+        let theme_index = resolve_theme_index(&themes, &prefs.theme_name, &prefs.theme_mode);
+        let theme = if themes.is_empty() {
+            crate::theme::chadrula()
+        } else {
+            themes[theme_index].theme
+        };
         // Similar to themes: resolve the footer preset by name so adding or
         // removing built-in presets never shifts a saved slot.
         let footer_presets = crate::footer::merged_presets();
@@ -707,6 +796,9 @@ impl App {
             display_position: 0.0,
             last_display_position: 0.0,
             raw_position: 0.0,
+            seek_pending: None,
+            seek_cmd_accum: None,
+            last_seek_press: None,
             progress_smoother: crate::progress::ProgressSmoother::new(),
             last_frame: std::time::Instant::now(),
             frame_count: 0,
@@ -781,9 +873,21 @@ impl App {
             reactive_palette: None,
             last_action_name: None,
             footer_title_scroll: 0,
+            footer_time_format: if prefs.time_format.is_empty() {
+                default_time_format()
+            } else {
+                prefs.time_format.clone()
+            },
+            theme_mode: if prefs.theme_mode.is_empty() {
+                default_theme_mode()
+            } else {
+                prefs.theme_mode.clone()
+            },
+            track_sort: prefs.track_sort,
             is_ready: false,
             last_queue_cursor: initial_cursor,
             manual_track_advance: false,
+            auto_track_advance: false,
             last_track_path_display: None,
             prev_track_id: None,
             prev_status: gtm_core::global::PlaybackStatus::Stopped,
@@ -806,6 +910,8 @@ impl App {
             queue_move_index: None,
             queue_move_target: 0,
             pending_playlist_track_ids: Vec::new(),
+            pending_playlist_id: None,
+            selected_playlist_track_ids: std::collections::HashSet::new(),
             playlist_creating: false,
             metadata: MetadataEditState {
                 edit_track_id: None,
@@ -874,12 +980,13 @@ impl App {
         let prefs = load_prefs();
 
         // Theme
-        let theme_index = self
-            .themes
-            .iter()
-            .position(|t| t.name == prefs.theme_name)
-            .unwrap_or(0);
+        let theme_index = resolve_theme_index(&self.themes, &prefs.theme_name, &prefs.theme_mode);
         self.theme_index = theme_index;
+        self.theme_mode = if prefs.theme_mode.is_empty() {
+            default_theme_mode()
+        } else {
+            prefs.theme_mode.clone()
+        };
         self.apply_reactive();
 
         // Transparent bg
@@ -903,6 +1010,13 @@ impl App {
 
         // Visualizer preset
         self.visualizer.preset = prefs.visualizer_preset;
+
+        // Footer time format
+        self.footer_time_format = if prefs.time_format.is_empty() {
+            default_time_format()
+        } else {
+            prefs.time_format.clone()
+        };
 
         // Keybindings
         self.prefs_keybindings = prefs.keybindings.clone();
@@ -937,6 +1051,9 @@ impl App {
                 .unwrap_or_else(default_footer_preset_name),
             progress_style: self.progress_style,
             visualizer_preset: self.visualizer.preset,
+            time_format: self.footer_time_format.clone(),
+            theme_mode: self.theme_mode.clone(),
+            track_sort: self.track_sort,
             keybindings: self.prefs_keybindings.clone(),
         }
     }
@@ -990,6 +1107,9 @@ impl App {
     fn toggle_theme(&mut self) {
         let next = (self.theme_index + 1) % self.themes.len();
         self.apply_theme_index(next);
+        // A manual toggle opts out of OS-theme auto-detection until the user
+        // returns to "auto" mode, so the OS preference can't fight the choice.
+        self.theme_mode = "manual".to_string();
         let name = &self.themes[next].name;
         let light = if self.themes[next].light {
             " (light)"
@@ -1002,6 +1122,59 @@ impl App {
             NotificationKind::Info,
             true,
         );
+    }
+
+    /// Cycle the library track list sort order and persist the selection.
+    fn cycle_track_sort(&mut self) {
+        self.track_sort = self.track_sort.next();
+        self.notify_titled(
+            "Sort",
+            format!("Sorting by: {}", self.track_sort.label()),
+            NotificationKind::Info,
+            true,
+        );
+        save_prefs(&self.current_prefs());
+    }
+
+    /// Accumulate a seek delta from a repeated (held) key press. Updates the
+    /// local position estimate immediately for smooth feedback and only
+    /// defers the authoritative daemon seek to `ensure_seek_flush`, so a
+    /// long-press never floods the daemon with full re-decodes.
+    fn accumulate_seek(&mut self, delta: f64) {
+        if self.state.current_track.is_none() {
+            return;
+        }
+        let raw = self
+            .seek_cmd_accum
+            .unwrap_or(self.raw_position)
+            + delta;
+        self.seek_cmd_accum = Some(raw);
+        self.last_seek_press = Some(std::time::Instant::now());
+        let clamped = raw.clamp(0.0, self.state.duration.max(0.0));
+        // Immediate local feedback; the daemon catches up on flush.
+        self.raw_position = clamped;
+        self.display_position = clamped;
+        self.seek_pending = Some(std::time::Instant::now());
+    }
+
+    /// Send the coalesced seek to the daemon once the user stops hammering the
+    /// seek key (or a full command seek was requested). Called every frame.
+    fn ensure_seek_flush(&mut self) {
+        let Some(accum) = self.seek_cmd_accum else {
+            return;
+        };
+        // Flush once no repeat press has arrived for a short window.
+        let idle = self
+            .last_seek_press
+            .map(|t| t.elapsed())
+            .unwrap_or(std::time::Duration::ZERO)
+            >= std::time::Duration::from_millis(160);
+        if idle {
+            let pos = accum.clamp(0.0, self.state.duration.max(0.0));
+            self.send_high(TuiCommand::Seek(pos));
+            self.seek_cmd_accum = None;
+            self.last_seek_press = None;
+        }
     }
 
     pub async fn run(
@@ -1111,6 +1284,10 @@ impl App {
                 if let gtm_core::ipc::DaemonEvent::PlaybackStarted { .. } = &ev {
                     // The crossfade has begun: drop the Up Next countdown.
                     self.upnext = None;
+                    // Was this change an automatic advance (not a manual
+                    // Next/Prev)? Capture that before the flag is reset so the
+                    // dust animation is only shown on genuine auto-advances.
+                    self.auto_track_advance = !self.manual_track_advance;
                     // Any PlaybackStarted consumes the manual-advance flag.
                     self.manual_track_advance = false;
                 }
@@ -1123,7 +1300,11 @@ impl App {
                 if matches!(ev, gtm_core::ipc::DaemonEvent::SleepTimerExpired) {
                     had_sleep_expired = true;
                 }
-                if let gtm_core::ipc::DaemonEvent::CrossfadeCountdown { track } = &ev {
+                if let gtm_core::ipc::DaemonEvent::CrossfadeCountdown { track } = &ev
+                    // Only surface the crossfade/Up Next card on a genuine
+                    // auto-advance; a manual Next/Prev shouldn't announce it.
+                    && !self.manual_track_advance
+                {
                     self.start_upnext(track.clone());
                 }
                 // The daemon finished an OAuth link flow: pull the fresh
@@ -1444,6 +1625,12 @@ impl App {
                     }
                     IpcResult::LibraryTracks(tracks) => self.tracks_cache = tracks,
                     IpcResult::Playlists(playlists) => self.playlist_cache = playlists,
+                    IpcResult::PlaylistCreated(id, _name) => {
+                        self.pending_playlist_id = Some(id);
+                        self.selected_playlist_track_ids.clear();
+                        self.pickers.open(PickerId::PlaylistTrackSelect);
+                        self.pending_playlist_track_ids = vec![id];
+                    }
                     IpcResult::PlaylistTracks(tracks) => self.playlist_tracks_cache = tracks,
                     IpcResult::Queue(tracks, cursor) => {
                         let cursor_changed = self.queue_cursor != cursor;
@@ -1650,18 +1837,45 @@ impl App {
                 self.prev_cover_id = self.np_cover.track_id;
             }
 
-            let raw_pos = self.client.estimated_position().await;
+            let mut raw_pos = self.client.estimated_position().await;
             // Monotonic guard: prevent large backward jumps from clock skew.
             // Allow at most 0.5s of regression to avoid visible stutter.
-            let raw_pos = raw_pos.max(self.display_position - 0.5);
+            // Skipped right after a seek, otherwise a backward seek gets clamped
+            // and the lyric highlight never re-syncs to the new position.
+            let seeking = self
+                .seek_pending
+                .is_some_and(|t| t.elapsed() < std::time::Duration::from_millis(1200));
+            if seeking {
+                // A real (in-track) seek target has landed: drop the window so
+                // the guard resumes once playback continues past it.
+                if self.state.duration > 0.0 && self.raw_position <= self.state.duration {
+                    self.seek_pending = None;
+                }
+            } else {
+                raw_pos = raw_pos.max(self.display_position - 0.5);
+            }
             // Lyric matching uses the raw (guard-only) position so the active
             // verse switches at the right timestamp; the smoothing below only
-            // glides the progress bar.
-            self.raw_position = raw_pos;
+            // glides the progress bar. While a seek is being accumulated the
+            // daemon hasn't seeked yet, so prefer the optimistic local estimate
+            // rather than the still-stale daemon position.
+            if self.seek_cmd_accum.is_none() {
+                self.raw_position = raw_pos;
+            }
             let now = std::time::Instant::now();
             let dt = now.duration_since(self.last_frame).as_secs_f64().min(0.25);
             self.last_frame = now;
-            self.display_position += (raw_pos - self.display_position) * (1.0 - (-dt / 0.08).exp());
+            if self.seek_cmd_accum.is_some() {
+                // Holding a seek key: hold the optimistic position so the bar
+                // and highlight track the accumulated target, not the stale
+                // daemon position.
+                self.display_position = self.raw_position;
+            } else {
+                self.display_position +=
+                    (raw_pos - self.display_position) * (1.0 - (-dt / 0.08).exp());
+            }
+            // Debounced daemon seek dispatch for long-press seeking.
+            self.ensure_seek_flush();
             let bar_dur = if self.state.duration > 0.0 {
                 self.state.duration
             } else {
@@ -2386,6 +2600,46 @@ impl App {
             // TrackInfo list: resolve/play goes through the daemon.
             tracks.clear();
         }
+        // Sorting applies to the flat track list (All Tracks / Favourites and the
+        // album/artist drill-downs). Playlist and Spotify views sort upstream.
+        if self.browse_detail.is_none() && self.library_category <= 1 {
+            match self.track_sort {
+                gtm_core::state::TrackSort::Recents => {
+                    tracks.sort_by(|a, b| b.year.cmp(&a.year).then_with(|| a.title.cmp(&b.title)));
+                }
+                gtm_core::state::TrackSort::RecentlyAdded => {
+                    tracks.sort_by(|a, b| b.id.cmp(&a.id));
+                }
+                gtm_core::state::TrackSort::Alphabetical => {
+                    tracks.sort_by(|a, b| {
+                        a.title
+                            .to_lowercase()
+                            .cmp(&b.title.to_lowercase())
+                            .then_with(|| a.artist.to_lowercase().cmp(&b.artist.to_lowercase()))
+                    });
+                }
+                gtm_core::state::TrackSort::Artist => {
+                    tracks.sort_by(|a, b| {
+                        a.artist
+                            .to_lowercase()
+                            .cmp(&b.artist.to_lowercase())
+                            .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+                    });
+                }
+                gtm_core::state::TrackSort::Album => {
+                    tracks.sort_by(|a, b| {
+                        a.album
+                            .to_lowercase()
+                            .cmp(&b.album.to_lowercase())
+                            .then_with(|| {
+                                a.track_number
+                                    .cmp(&b.track_number)
+                                    .then_with(|| a.title.cmp(&b.title))
+                            })
+                    });
+                }
+            }
+        }
         tracks
     }
 
@@ -2437,6 +2691,49 @@ impl App {
             5 => self.spotify_playlists.len(),
             _ => self.filtered_tracks().len(),
         }
+    }
+
+    /// Track ids owned by the list position `pos` (when that row maps to a
+    /// concrete track). Returns `None` for album/artist/playlist/spotify rows
+    /// whose cover is derived from a different key.
+    fn track_id_at(&self, pos: usize) -> Option<i64> {
+        if self.browse_detail.is_some() {
+            // Spotify drill-down rows are remote tracks (no local id to warm
+            // the disk-cache with); only local track rows have an id to preload.
+            if self.library_category != 5 {
+                return self.filtered_tracks().get(pos).map(|t| t.id);
+            }
+            return None;
+        }
+        match self.library_category {
+            0 | 1 => self.filtered_tracks().get(pos).map(|t| t.id),
+            _ => None,
+        }
+    }
+
+    /// Preload the cover art for the tracks a short scroll ahead of the cursor
+    /// so fast scrolling (e.g. holding an arrow key) warms the daemon's
+    /// disk/LRU cache and the on-selection fetch becomes a cache hit. Fires in
+    /// the background and never blocks the UI or surfaces errors.
+    pub fn preload_upcoming_covers(&mut self) {
+        let pos = self.list_pos();
+        let mut ids = Vec::new();
+        for off in 1..=3 {
+            if let Some(id) = self.track_id_at(pos + off) {
+                ids.push(id);
+            }
+        }
+        if ids.is_empty() {
+            return;
+        }
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            for id in ids {
+                // Errors (track without cover / daemon lookup fail) are fine:
+                // a warm miss is simply skipped next time.
+                let _ = client.art().cover(id).await;
+            }
+        });
     }
 
     /// Unique artist names with track counts, sorted by artist.
@@ -2711,6 +3008,16 @@ impl App {
                 });
             }
             TuiCommand::Seek(pos) => {
+                // Mirror the seek into the local position estimate immediately so
+                // the lyric highlight follows the new position right away (not a
+                // full daemon round-trip later), and clear the monotonic guard so a
+                // backward seek isn't clamped. `estimated_position` also honours
+                // this seek target while it is fresh.
+                self.seek_pending = Some(std::time::Instant::now());
+                if self.state.current_track.is_some() {
+                    self.raw_position = pos;
+                    self.display_position = pos;
+                }
                 tokio::spawn(async move {
                     if let Err(e) = client.seek(pos).await {
                         error_handler(e);
@@ -3154,6 +3461,9 @@ impl App {
                 .saturating_sub(1),
             PickerId::Notifications => self.notification_history.len().saturating_sub(1),
             PickerId::PlaylistSelect => self.playlist_cache.len(),
+            PickerId::PlaylistTrackSelect => {
+                self.tracks_cache.len().saturating_sub(1)
+            }
             PickerId::ThemePicker => {
                 let q = query.to_lowercase();
                 if q.is_empty() {
@@ -3222,6 +3532,7 @@ impl App {
             PickerId::ProgressStyle => crate::progress::ProgressStyle::all().len(),
             PickerId::Notifications => self.notification_history.len(),
             PickerId::PlaylistSelect => self.playlist_cache.len() + 1,
+            PickerId::PlaylistTrackSelect => self.tracks_cache.len(),
             PickerId::ThemePicker => {
                 let q = query.to_lowercase();
                 if q.is_empty() {
@@ -3519,13 +3830,11 @@ impl App {
                     }
                     Some(KeyboardAction::SeekForward) => {
                         self.set_last_action("Seek Forward");
-                        let pos = (self.display_position + 5.0).min(self.state.duration);
-                        self.send_high(TuiCommand::Seek(pos));
+                        self.accumulate_seek(5.0);
                     }
                     Some(KeyboardAction::SeekBackward) => {
                         self.set_last_action("SeekBackward");
-                        let pos = (self.display_position - 5.0).max(0.0);
-                        self.send_high(TuiCommand::Seek(pos));
+                        self.accumulate_seek(-5.0);
                     }
                     Some(KeyboardAction::ToggleMute) => {
                         self.set_last_action("Toggle Mute");
@@ -3674,6 +3983,9 @@ impl App {
                     Some(KeyboardAction::ToggleTheme) => {
                         self.toggle_theme();
                     }
+                    Some(KeyboardAction::CycleSort) => {
+                        self.cycle_track_sort();
+                    }
                     Some(KeyboardAction::CheckHealth) => {
                         self.send_high(TuiCommand::CheckHealth);
                     }
@@ -3779,6 +4091,7 @@ impl App {
                             let max_list = self.library_list_len().saturating_sub(1);
                             self.set_list_pos((self.list_pos() + 1).min(max_list));
                             self.update_track_popup();
+                            self.preload_upcoming_covers();
                         }
                     }
                     Some(KeyboardAction::PageUp) => {
@@ -3807,6 +4120,7 @@ impl App {
                             let max_list = self.library_list_len().saturating_sub(1);
                             self.set_list_pos((self.list_pos() + page).min(max_list));
                             self.update_track_popup();
+                            self.preload_upcoming_covers();
                         }
                     }
                     Some(KeyboardAction::Top) => {
@@ -4167,10 +4481,47 @@ impl App {
                 PickerId::Queue => {
                     self.clear_queue_preview();
                 }
+                PickerId::PlaylistTrackSelect => {
+                    self.pending_playlist_id = None;
+                    self.selected_playlist_track_ids.clear();
+                }
                 _ => {}
             }
         }
         self.pickers.close_top();
+    }
+
+    /// Add the tracks highlighted in the post-create multi-select picker to the
+    /// pending playlist, then close the picker.
+    fn commit_playlist_selection(&mut self) {
+        let Some(pid) = self.pending_playlist_id else {
+            self.close_top_picker_with_cleanup();
+            return;
+        };
+        let track_ids: Vec<i64> = self.selected_playlist_track_ids.iter().copied().collect();
+        if track_ids.is_empty() {
+            self.notify("No tracks selected — playlist stays empty", NotificationKind::Info);
+            self.close_top_picker_with_cleanup();
+            self.pending_playlist_id = None;
+            self.selected_playlist_track_ids.clear();
+            return;
+        }
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = client.library().add_to_playlist(pid, track_ids).await {
+                let _ = ipc_tx.send(IpcResult::Error(format!("Failed to add tracks: {e}")));
+                return;
+            }
+            let _ = ipc_tx.send(IpcResult::Notification(
+                "Playlist".to_string(),
+                "Tracks added to playlist".to_string(),
+                NotificationKind::Success,
+            ));
+        });
+        self.close_top_picker_with_cleanup();
+        self.pending_playlist_id = None;
+        self.selected_playlist_track_ids.clear();
     }
 
     async fn handle_picker_key(&mut self, key: event::KeyEvent) {
@@ -4226,6 +4577,36 @@ impl App {
                 self.notify("No track selected to download", NotificationKind::Info);
             }
             return;
+        }
+
+        // PlaylistTrackSelect picker (post-create multi-select):
+        //   Space / Tab    toggle the highlighted track
+        //   Ctrl+Enter     commit highlighted tracks to the playlist
+        //   Esc            cancel (handled by the common Esc path)
+        if self
+            .pickers
+            .top()
+            .is_some_and(|o| o.id == PickerId::PlaylistTrackSelect)
+        {
+            let is_ctrl_enter = key.modifiers.contains(KeyModifiers::CONTROL)
+                && (key.code == KeyCode::Enter || key.code == KeyCode::Char('m'));
+            let is_toggle = key.code == KeyCode::Char(' ')
+                || key.code == KeyCode::Tab;
+            if is_ctrl_enter {
+                self.commit_playlist_selection();
+                return;
+            }
+            if is_toggle {
+                if let Some(top) = self.pickers.top() {
+                    if let Some(track) = self.tracks_cache.get(top.selected) {
+                        let id = track.id;
+                        if !self.selected_playlist_track_ids.remove(&id) {
+                            self.selected_playlist_track_ids.insert(id);
+                        }
+                    }
+                }
+                return;
+            }
         }
 
         if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::Queue)) {
@@ -5715,34 +6096,33 @@ impl App {
                                 if !name.is_empty() {
                                     let client = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
-                                    let track_ids = self.pending_playlist_track_ids.clone();
                                     tokio::spawn(async move {
                                         match client.library().create_playlist(&name).await {
                                             Ok(()) => {
-                                                let mut new_id: Option<i64> = None;
                                                 if let Ok(DaemonRes::Playlists {
                                                     playlists, ..
                                                 }) = client.library().get_playlists().await
                                                 {
-                                                    new_id = playlists
+                                                    let new_id = playlists
                                                         .iter()
                                                         .find(|p| p.name == name)
                                                         .map(|p| p.id);
                                                     let _ = ipc_tx
                                                         .send(IpcResult::Playlists(playlists));
-                                                }
-                                                if let Some(pid) = new_id {
-                                                    if !track_ids.is_empty() {
-                                                        let _ = client
-                                                            .library()
-                                                            .add_to_playlist(pid, track_ids)
-                                                            .await;
+                                                    if let Some(pid) = new_id {
+                                                        // Hand off to the track multi-select
+                                                        // picker instead of using a pre-collected
+                                                        // list, so creating can't race/stale out.
+                                                        let _ = ipc_tx.send(IpcResult::PlaylistCreated(
+                                                            pid,
+                                                            name.clone(),
+                                                        ));
+                                                        let _ = ipc_tx.send(IpcResult::Notification(
+                                                            "Playlist".to_string(),
+                                                            format!("Created {name} — pick tracks"),
+                                                            NotificationKind::Success,
+                                                        ));
                                                     }
-                                                    let _ = ipc_tx.send(IpcResult::Notification(
-                                                        "Playlist".to_string(),
-                                                        format!("Created {name}"),
-                                                        NotificationKind::Success,
-                                                    ));
                                                 }
                                             }
                                             Err(e) => {

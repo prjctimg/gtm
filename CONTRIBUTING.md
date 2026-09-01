@@ -20,11 +20,19 @@ sudo make install
 ### Termux (native build on-device)
 
 ```bash
-pkg install rust clang pkg-config pulseaudio
+pkg install rust clang pkg-config pulseaudio make
 # optional: termux-setup-storage for /sdcard/Music access
-cargo build --release --no-default-features --features pulseaudio
-# or cargo build --release for the default (no PulseAudio) build
+
+# build.rs auto-detects Termux; `make termux` (or `make deb-termux` for a
+# .deb) enables the PulseAudio backend automatically.
+make termux
+
+# manual equivalent for a plain build:
+#   cargo build --release --features pulseaudio
 ```
+
+At runtime `gtmd` auto-selects the PulseAudio backend on Termux and
+auto-starts the server, so no `pulseaudio --start` step is required.
 
 Cross-compiling from Linux still uses `cargo-ndk` (see `make termux`):
 

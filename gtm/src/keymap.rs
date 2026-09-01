@@ -79,6 +79,7 @@ pub enum KeyboardAction {
     HideHelpBar,
     ToggleVisualizer,
     ToggleTheme,
+    CycleSort,
     CheckHealth,
 
     // Queue move mode
@@ -614,6 +615,14 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
+            // Alt+S: cycle the library track list sort order
+            (
+                KeyEvent::new(KeyCode::Char('S'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::CycleSort,
+                    contexts: vec![KeyContext::List, KeyContext::Normal],
+                },
+            ),
             // Queue move mode: Ctrl+j/k to move, Enter to confirm, Esc to cancel
             (
                 KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL),
@@ -743,6 +752,7 @@ impl KeyboardAction {
             "hide_help_bar" => KeyboardAction::HideHelpBar,
             "toggle_visualizer" | "visualizer" | "vis" => KeyboardAction::ToggleVisualizer,
             "toggle_theme" | "theme" => KeyboardAction::ToggleTheme,
+            "cycle_sort" | "sort" => KeyboardAction::CycleSort,
             "check_health" | "health" => KeyboardAction::CheckHealth,
             "queue_move_up" => KeyboardAction::QueueMoveUp,
             "queue_move_down" => KeyboardAction::QueueMoveDown,

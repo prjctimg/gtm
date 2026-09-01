@@ -79,6 +79,10 @@ checking for the `event` field (events) versus the `id` field (responses).
 {"event": "playback_started", "track": {"title": "Song"}, "time_pos": 0.0, "duration": 240.0}
 ```
 
+The bundled `gtm` client does **not** read this JSON event stream — it consumes
+events exclusively over the pulse socket (below) so each event is delivered once.
+Third-party clients that want raw JSON events may track the JSON stream instead.
+
 ## Events (daemon → client, binary / MessagePack)
 
 The pulse socket delivers the same events in a compact binary format for

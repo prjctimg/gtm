@@ -154,7 +154,15 @@ jobs:
     # dynamically against the container's musl libc and libasound.so.2
     # (the .apk and archives declare an alsa-lib runtime dependency).
     env:
-      RUSTFLAGS: ${{ contains(matrix.platform, 'musl') && '-C target-feature=-crt-static' || '' }}
+      # Link release binaries with clang + mold for faster, reproducible links.
+      # Android builds link via cargo-ndk's injected NDK clang and do not use
+      # mold, so they suppress both overrides. musl targets additionally need
+      # -crt-static off (no static libasound in Alpine). `-fuse-ld=mold` is
+      # passed via link-arg so rustc's default driver stays intact.
+      RUSTFLAGS: >-
+        ${{ contains(matrix.platform, 'musl') && '-C target-feature=-crt-static' || '' }}
+        ${{ matrix.link_override }}
+        ${{ matrix.mold_arg }}
     strategy:
       fail-fast: false
       matrix:
@@ -163,22 +171,32 @@ jobs:
             platform: x86_64-linux
             container: debian:12
             family: debian
+            link_override: -C linker=clang
+            mold_arg: -C link-arg=-fuse-ld=mold
           - os: ubuntu-24.04-arm
             platform: aarch64-linux
             container: debian:12
             family: debian
+            link_override: -C linker=clang
+            mold_arg: -C link-arg=-fuse-ld=mold
           - os: macos-latest
             platform: aarch64-darwin
             container: null
             family: macos
+            link_override: -C linker=clang
+            mold_arg: -C link-arg=-fuse-ld=mold
           - os: ubuntu-latest
             platform: aarch64-android
             container: null
             family: android
+            link_override:
+            mold_arg:
           - os: ubuntu-22.04
             platform: x86_64-linux-musl
             container: alpine:3.22
             family: alpine
+            link_override: -C linker=clang
+            mold_arg: -C link-arg=-fuse-ld=mold
           - os: ubuntu-24.04-arm
             platform: aarch64-linux-musl
             # JavaScript actions (checkout, upload) cannot run inside Alpine
@@ -186,6 +204,8 @@ jobs:
             # performs the Alpine build via `docker run` (see build step).
             container: null
             family: alpine-arm
+            link_override: -C linker=clang
+            mold_arg: -C link-arg=-fuse-ld=mold
     steps:
       # Debian 12 / Alpine container jobs start from a bare image (no git,
       # no Rust), so bootstrap tooling before checkout. Runner-hosted jobs
@@ -197,7 +217,7 @@ jobs:
           apt-get install -y --no-install-recommends \
             ca-certificates curl git pkg-config \
             libasound2-dev pandoc dpkg-dev rpm zstd libarchive-tools \
-            build-essential cmake liblzma-dev
+            build-essential cmake liblzma-dev clang lld mold
 
       - name: Install Rust (Debian 12 container)
         if: matrix.container == 'debian:12'
@@ -210,6 +230,7 @@ jobs:
         run: |
           apk add --no-cache \
             ca-certificates curl git bash build-base cmake musl-dev \
+            clang lld mold \
             pkgconfig alsa-lib-dev pandoc
 
       - name: Install Rust (Alpine container)
@@ -230,11 +251,11 @@ jobs:
 
       - name: Install system dependencies (Linux)
         if: startsWith(matrix.os, 'ubuntu') && matrix.container == null && matrix.family == 'debian'
-        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pandoc rpm zstd libarchive-tools
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pandoc rpm zstd libarchive-tools clang lld mold
 
       - name: Install system dependencies (macOS)
         if: matrix.family == 'macos'
-        run: brew install pkg-config pandoc
+        run: brew install pkg-config pandoc mold
 
       - name: Install pandoc (Android build)
         if: matrix.family == 'android'
@@ -548,11 +569,33 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       - uses: actions/download-artifact@v8
         with:
           pattern: release-assets-*
           merge-multiple: true
+
+      # Generate a reviewer-ready release-notes draft: every commit as a link,
+      # plus a "New Contributors" list that only marks an author as new when
+      # they had no prior commit before the previous tag. A maintainer reviews
+      # this draft (see wiki:Development / release-process) before publishing.
+      - name: Generate release-notes draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${{ needs.tag.outputs.tag }}"
+          version="${{ needs.tag.outputs.version }}"
+          if [[ "${{ needs.tag.outputs.nightly }}" == "true" ]]; then
+            prev_tag="${tag}"
+          else
+            # Prior version tag = the newest v* tag different from the current one.
+            prev_tag="$(git tag --sort=-v:refname | grep -E '^v[0-9]' | grep -v "^$tag$" | head -1)"
+            [[ -n "$prev_tag" ]] || prev_tag="$(git rev-list --max-parents=0 HEAD)"
+          fi
+          bash scripts/build/release-notes.sh "${prev_tag}" "${{ github.sha }}" "$version" release-notes.md
+          ls -l release-notes.md
 
       - name: Prune stale nightly assets
         if: needs.tag.outputs.nightly == 'true'
@@ -592,6 +635,7 @@ jobs:
             *.pkg.tar.zst
             *.apk
             checksums.txt
+            release-notes.md
 
   # Publishes the workspace crates to crates.io in dependency order
   # (gtm-core → gtm-audio → gtm-mpris → gtmd → gtm). Runs only after every

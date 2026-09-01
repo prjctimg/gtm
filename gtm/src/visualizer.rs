@@ -250,17 +250,15 @@ impl AudioVisualizer {
         Lines(lines)
     }
 
-    /// Scrolling decay band: bars sampled at a seed-driven offset so the
-    /// waveform appears to travel across the screen.
+    /// Solid frequency columns at fixed positions driven directly by the
+    /// realtime audio levels (no horizontal scrolling).
     fn render_spectrum(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
         const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-        let shift = (self.spectrum_offset * 2.0) as usize % num_bars.max(1);
         let mut lines: Vec<Line<'static>> = Vec::new();
         for row_from_top in (0..height).rev() {
             let mut spans: Vec<Span<'static>> = Vec::new();
             for i in 0..num_bars {
-                let src = (i + shift) % num_bars;
-                let val = *self.bars.get(src).unwrap_or(&0.0);
+                let val = *self.bars.get(i).unwrap_or(&0.0);
                 let filled = val * height as f32;
                 let full_rows = filled.floor() as usize;
                 let frac = filled - filled.floor();

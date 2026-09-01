@@ -7,12 +7,12 @@ arch="${3:?arch required}"
 
 cd /work
 
-export RUSTFLAGS="-C target-feature=-crt-static"
+export RUSTFLAGS="-C target-feature=-crt-static -C linker=clang -C link-arg=-fuse-ld=mold"
 
 apk add --no-cache \
   ca-certificates curl cmake musl-dev \
   pkgconfig alsa-lib-dev pandoc \
-  gcc g++ binutils build-base
+  gcc g++ binutils build-base clang lld mold
 
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
 export PATH="$HOME/.cargo/bin:$PATH"

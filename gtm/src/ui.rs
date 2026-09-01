@@ -177,6 +177,13 @@ impl Render {
     fn notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let now = std::time::Instant::now();
 
+        // Absolutely never draw cover art (or any floating card) on top of an
+        // active picker/floating window. With a picker on screen we skip the
+        // whole overlay so images can't leak over it.
+        if app.pickers.is_open() {
+            return;
+        }
+
         let slide_duration_ms: f32 = 300.0;
         for n in &mut app.notifications {
             if n.animation_progress < 1.0 {
@@ -476,7 +483,12 @@ impl Render {
         app: &mut App,
         animate_on_track_change: bool,
     ) {
-        let start = app.track_anim_trigger && (animate_on_track_change || app.frame_count == 0);
+        // Dust/thanos-style evolve-into is reserved for genuine auto-advances;
+        // a manual Next/Prev shouldn't dissolve the pane. (First frame still
+        // evolves so the startup animation is preserved.)
+        let start = app.track_anim_trigger
+            && app.auto_track_advance
+            && (animate_on_track_change || app.frame_count == 0);
         if !start && !app.anim_fx.is_running() {
             f.render_widget(widget, area);
             return;
@@ -583,9 +595,15 @@ impl Render {
 
     fn library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let is_narrow = app.terminal_cols < 60;
+        // Small-height terminals: compress the Now Playing section to a
+        // side-by-side cover + details row so it can never crowd out the
+        // list panes, and drop the extra track-info card in the left pane.
+        let is_small_height = app.terminal_rows < 22;
         let show_vis = app.visualizer.is_enabled() && app.terminal_cols >= 80;
         let np_height: u16 = if is_narrow {
             5
+        } else if is_small_height {
+            6
         } else {
             (area.height / 3).clamp(8, 14)
         };
@@ -664,7 +682,11 @@ impl Render {
             if let Some(track) = app.state.current_track.clone() {
                 let inner = np_inner;
                 let avail_h = inner.height.saturating_sub(2);
-                let cover_h = avail_h.min(12);
+                let cover_h = if is_small_height {
+                    avail_h.min(5).max(2)
+                } else {
+                    avail_h.min(12)
+                };
                 let cover_w = cover_h * 2;
 
                 let display_title = if track.title.is_empty() {
@@ -690,7 +712,11 @@ impl Render {
                 };
                 let has_progress = dur > 0;
 
-                if inner.width >= cover_w + 16 && avail_h >= 5 {
+                // Show cover + details side-by-side whenever there is enough
+                // horizontal room. On small-height terminals the cover is
+                // scaled down but never stacked onto a single-line row: the
+                // cover stays left with the track details to its right.
+                if inner.width >= cover_w + 16 && (avail_h >= 5 || is_small_height) {
                     let hchunks = Layout::default()
                         .direction(Direction::Horizontal)
                         .constraints([
@@ -788,6 +814,58 @@ impl Render {
                         ]));
                         f.render_widget(prog_para, info_chunks[info_row]);
                     }
+                } else if inner.width >= 12 {
+                    // Compact layout still keeps the cover left with the
+                    // details to its right (scaled to a slim column) whenever
+                    // there is any horizontal room at all.
+                    let slim_cover_h = inner.height.saturating_sub(2).min(4).max(2);
+                    let slim_cover_w = (slim_cover_h * 2) as u16;
+                    let hchunks = Layout::default()
+                        .direction(Direction::Horizontal)
+                        .constraints([
+                            Constraint::Length(slim_cover_w),
+                            Constraint::Length(1),
+                            Constraint::Min(0),
+                        ])
+                        .split(inner);
+                    let cover_area = Rect {
+                        x: hchunks[0].x,
+                        y: hchunks[0].y,
+                        width: slim_cover_w.min(hchunks[0].width),
+                        height: slim_cover_h.min(hchunks[0].height),
+                    };
+                    Render::cover(
+                        f,
+                        cover_area,
+                        app.np_cover.stateful.as_mut(),
+                        app.np_cover.image.as_deref(),
+                        app.theme.fg_dim,
+                    );
+                    let info_area = hchunks[2];
+                    let title_text = display_title.to_string();
+                    let title_avail = info_area.width as usize;
+                    let animated_title =
+                        scroll_text(&title_text, title_avail, app.np_title_scroll, true);
+                    let lines = vec![
+                        Line::from(vec![Span::styled(
+                            &animated_title,
+                            Style::default()
+                                .fg(app.theme.secondary_accent)
+                                .add_modifier(Modifier::BOLD),
+                        )]),
+                        Line::from(vec![Span::styled(
+                            display_artist,
+                            Style::default().fg(app.theme.fg_bright),
+                        )]),
+                    ];
+                    Render::evolving(
+                        f,
+                        info_area,
+                        Paragraph::new(lines),
+                        "np",
+                        app,
+                        true,
+                    );
                 } else {
                     let title_text = display_title.to_string();
                     let title_avail = inner.width as usize;
@@ -911,7 +989,7 @@ impl Render {
         let left_inner = Render::pane_header(f, panes[0], app, " ", left_focus, false, false);
         fill_pane(f, left_inner, app);
 
-        let track_info_h: u16 = if app.track_popup_visible {
+        let track_info_h: u16 = if app.track_popup_visible && !is_small_height {
             let avail_h = left_inner.height.saturating_sub(1);
             let need = track_info_block_height();
             // Reserve at least 4 rows for the category list so "Spotify" never gets clipped.
@@ -924,7 +1002,7 @@ impl Render {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(4),
-                Constraint::Length(if app.track_popup_visible { 1 } else { 0 }),
+                Constraint::Length(if app.track_popup_visible && !is_small_height { 1 } else { 0 }),
                 Constraint::Length(track_info_h),
             ])
             .split(left_inner);
@@ -1299,7 +1377,15 @@ impl Render {
             && left_track_info_area.height >= track_info_block_height()
             && (left_track_info_sep_area.height > 0 || left_track_info_area.height > 0)
         {
-            Render::track_info_in_pane(f, left_track_info_sep_area, left_track_info_area, app);
+            // Narrow + lyrics: the middle pane is given over to lyrics, so the
+            // info block is repurposed to show the currently-highlighted list
+            // contents (the selected row and its neighbours) instead of the
+            // now-playing track card.
+            if is_narrow && app.show_lyrics {
+                Render::highlighted_list_in_info(f, left_track_info_area, app);
+            } else {
+                Render::track_info_in_pane(f, left_track_info_sep_area, left_track_info_area, app);
+            }
         }
 
         let right_para = Paragraph::new(right_lines);
@@ -1577,6 +1663,63 @@ impl Render {
             .wrap(Wrap { trim: false })
             .scroll((scroll_display as u16, 0));
         f.render_widget(para, lyrics_inner);
+    }
+
+    /// Narrow + lyrics: show the currently highlighted list row and its
+    /// neighbours in the info block, so the buried middle pane's contents stay
+    /// usable while lyrics take the main area. This replaces the now-playing
+    /// track-info card ("l" swaps it back when lyrics are dismissed).
+    fn highlighted_list_in_info(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let rows: Vec<&gtm_core::track::TrackInfo> = app.filtered_tracks();
+        let total = rows.len();
+        let sel = app.list_pos().min(total.saturating_sub(1));
+        let visible = area.height.saturating_sub(2);
+        let avail = area.width.saturating_sub(2) as usize;
+
+        let mut lines = vec![Line::from(Span::styled(
+            format!(" ▶ {}", app.track_sort.label()),
+            Style::default()
+                .fg(app.theme.accent)
+                .add_modifier(Modifier::BOLD),
+        ))];
+        if rows.is_empty() {
+            lines.push(Line::from(Span::styled(
+                " No tracks",
+                Style::default().fg(app.theme.fg_dim),
+            )));
+        } else {
+            // Window so the selected row stays centered in the block.
+            let rows_h = (visible.saturating_sub(1) as usize).max(1);
+            let half = rows_h / 2;
+            let win_start = sel.saturating_sub(half);
+            let end = (win_start + rows_h).min(total);
+            let avail_disp = avail.saturating_sub(2);
+            for (real_i, track) in rows[win_start..end].iter().enumerate() {
+                let real_i = win_start + real_i;
+                let is_sel = real_i == sel;
+                let prefix = if is_sel { " > " } else { "   " };
+                let label = if track.title.is_empty() {
+                    std::path::Path::new(&track.path)
+                        .file_stem()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                } else {
+                    track.title.clone()
+                };
+                let display = scroll_text(&label, avail_disp, app.footer_title_scroll, is_sel);
+                let row = format!("{prefix}{:<width$}", display, width = avail_disp);
+                let style = if is_sel {
+                    Style::default()
+                        .fg(app.theme.selection_fg_readable())
+                        .bg(app.theme.selection_bg)
+                } else {
+                    Style::default().fg(app.theme.fg)
+                };
+                lines.push(Line::from(Span::styled(row, style)));
+            }
+        }
+        let para = Paragraph::new(lines);
+        f.render_widget(para, area);
     }
 
     fn track_info_in_pane(f: &mut ratatui::Frame, sep_area: Rect, area: Rect, app: &mut App) {
@@ -2071,7 +2214,7 @@ const LIBRARY_ICONS_NERD: &[&str] = &[
 
 const LIBRARY_ICONS_ASCII: &[&str] = &["♫", "♥", "▤", "♪", "≡", "☊"];
 
-fn use_nerd_fonts() -> bool {
+pub(crate) fn use_nerd_fonts() -> bool {
     !matches!(std::env::var("GTM_NERD_FONTS"), Ok(v) if v == "0" || v == "false" || v == "no")
 }
 
@@ -2166,6 +2309,7 @@ impl Pickers {
             PickerId::ThemePicker => (58, 24),
             PickerId::CommandPalette => (46, 18),
             PickerId::PlaylistSelect => (48, 20),
+            PickerId::PlaylistTrackSelect => (64, 26),
             PickerId::SpotifySearch => (60, 28),
             PickerId::SpotifyLink => (60, 12),
             PickerId::Crossfade => (58, 20),
@@ -2202,6 +2346,7 @@ impl Pickers {
                     | PickerId::CommandPalette
                     | PickerId::ThemePicker
                     | PickerId::PlaylistSelect
+                    | PickerId::PlaylistTrackSelect
                     | PickerId::SpotifySearch
             );
             let picker_height = if scrolling {
@@ -2235,6 +2380,9 @@ impl Pickers {
             PickerId::ThemePicker => Self::render_theme_picker_picker(f, picker_area, app),
             PickerId::Help => Self::render_help_picker(f, picker_area, app),
             PickerId::PlaylistSelect => Self::render_playlist_select_picker(f, picker_area, app),
+            PickerId::PlaylistTrackSelect => {
+                Self::render_playlist_track_select_picker(f, picker_area, app)
+            }
             PickerId::EditMetadata => Self::render_edit_metadata_picker(f, picker_area, app),
             PickerId::Crossfade => Self::render_crossfade_picker(f, picker_area, app),
             PickerId::VisualizerPreset => {
@@ -2658,11 +2806,19 @@ impl Pickers {
         next_idx: usize,
     ) {
         app.update_queue_preview_cover();
+        // Use the same transparent/filled background as the picker panel so the
+        // "Up Next" strip never shows a mismatched solid background over the
+        // rest of the (possibly transparent) queue picker.
+        let section_bg = if app.transparent_pickers {
+            ratatui::style::Color::Reset
+        } else {
+            app.float_bg()
+        };
         let block = Block::default()
             .borders(Borders::TOP)
             .title(" Up Next ")
             .border_style(Style::default().fg(app.theme.accent))
-            .style(Style::default().bg(app.float_bg()));
+            .style(Style::default().bg(section_bg));
         f.render_widget(block, area);
         let inner = Rect {
             x: area.x,
@@ -2744,7 +2900,7 @@ impl Pickers {
             }
             None => {
                 let p = Paragraph::new("Nothing queued after this track")
-                    .style(Style::default().fg(app.theme.fg_dim));
+                    .style(Style::default().fg(app.theme.fg_dim).bg(section_bg));
                 f.render_widget(p, inner);
             }
         }
@@ -3451,11 +3607,12 @@ fn library_stats_line(app: &App) -> String {
             let f = app.filtered_tracks();
             let total_dur: u64 = f.iter().map(|t| t.duration as u64).sum();
             format!(
-                " {} {} | {}h {}m ",
+                " {} {} | {}h {}m | {} ",
                 f.len(),
                 plural(f.len(), "track", "tracks"),
                 total_dur / 3600,
-                (total_dur % 3600) / 60
+                (total_dur % 3600) / 60,
+                app.track_sort.label()
             )
         }
     }
@@ -3754,9 +3911,30 @@ impl Pickers {
         let version = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0");
         let commit = option_env!("VERGEN_GIT_SHA").unwrap_or("unknown");
         let build_date = option_env!("VERGEN_BUILD_DATE").unwrap_or("unknown");
-        let rust_ver = option_env!("VERGEN_RUSTC_SEMVER").unwrap_or("unknown");
         let lib_count = app.tracks_cache.len();
         let queue_count = app.queue_cache.len();
+
+        let arch = std::env::consts::ARCH;
+        let cpus = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let mem_kb = crate::footer::read_process_memory_kb();
+        let mem_str = mem_kb
+            .map(|kb| {
+                if kb > 1024 * 1024 {
+                    format!("{} GB", kb / (1024 * 1024))
+                } else {
+                    format!("{} MB", kb / 1024)
+                }
+            })
+            .unwrap_or_else(|| "unknown".into());
+        // Compiler/linker provenance.
+        let compiler = option_env!("VERGEN_RUSTC_SEMVER").unwrap_or("unknown");
+        let linker = option_env!("GTM_LINKER").unwrap_or("unknown");
+        // Audio / rendering backends.
+        let ratatui_ver = option_env!("GTM_RATATUI_VERSION").unwrap_or("unknown");
+        let rodio_ver = option_env!("GTM_RODIO_VERSION").unwrap_or("unknown");
+        let symphonia_ver = option_env!("GTM_SYMPHONIA_VERSION").unwrap_or("unknown");
 
         let lines = vec![
             Line::from(Span::styled(
@@ -3780,15 +3958,32 @@ impl Pickers {
                 Style::default().fg(app.theme.fg_dim),
             )),
             Line::from(Span::styled(
-                format!("   Commit: {:.7}", commit),
+                format!("   Commit:  {:.7}", commit),
                 Style::default().fg(app.theme.fg),
             )),
             Line::from(Span::styled(
-                format!("   Date:   {}", build_date),
+                format!("   Date:    {}", build_date),
                 Style::default().fg(app.theme.fg),
             )),
             Line::from(Span::styled(
-                format!("   Rust:   {}", rust_ver),
+                format!("   Compiler: {}", compiler),
+                Style::default().fg(app.theme.fg),
+            )),
+            Line::from(Span::styled(
+                format!("   Linker:  {}", linker),
+                Style::default().fg(app.theme.fg),
+            )),
+            Line::from(Span::styled(
+                format!(
+                    "   Backends: ratatui {ratatui_ver} \u{2022} rodio {rodio_ver} \u{2022} symphonia {symphonia_ver}"
+                ),
+                Style::default().fg(app.theme.fg),
+            )),
+            Line::from(Span::styled(
+                format!(
+                    "   System:   {} {} \u{2022} {} CPU \u{2022} {} RAM",
+                    std::env::consts::OS, arch, cpus, mem_str
+                ),
                 Style::default().fg(app.theme.fg),
             )),
             Line::from(""),
@@ -4243,7 +4438,17 @@ impl Pickers {
             .pickers
             .top()
             .map_or(0, |o| o.selected.min(filtered.len().saturating_sub(1)));
-        let sel_display = rows.iter().position(|(_, c)| *c == Some(sel));
+        // The viewport + highlight are keyed off the row this selection lives
+        // at. When grouped (empty query) the selected field holds a command
+        // index that we must map through the header rows; when filtering, the
+        // rows are 1:1 with `filtered`, so the selected field is already a row
+        // offset. Getting this wrong makes up/down appear to do nothing while
+        // search input is present.
+        let sel_display = if show_groups {
+            rows.iter().position(|(_, c)| *c == Some(sel))
+        } else {
+            Some(sel).filter(|&s| s < rows.len())
+        };
         let total = rows.len();
         let visible = inner.height.saturating_sub(1) as usize;
         let (scroll_start, scroll_end) = if total > 0 {
@@ -4261,14 +4466,20 @@ impl Pickers {
 
         let row_w = inner.width;
         let mut lines: Vec<Line> = vec![search_line];
+        // Tracks the rendered line offset (past the search row) so mouse zones
+        // stay aligned even though group headings occupy multiple lines.
+        let mut row_line: u16 = 1;
         for (i, (header, cmd)) in rows.iter().enumerate().take(scroll_end).skip(scroll_start) {
             if let Some(gname) = header {
+                lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     format!("  \u{2500}\u{2500} {} \u{2500}\u{2500}", gname),
                     Style::default()
                         .fg(app.theme.accent)
                         .add_modifier(Modifier::BOLD),
                 )));
+                lines.push(Line::from(""));
+                row_line += 3;
                 continue;
             }
             let ci = cmd.unwrap_or(0);
@@ -4298,13 +4509,14 @@ impl Pickers {
             if let Some(ci) = cmd {
                 let row_rect = Rect {
                     x: inner.x,
-                    y: inner.y + 1 + (i - scroll_start) as u16,
+                    y: inner.y + row_line,
                     width: inner.width,
                     height: 1,
                 };
                 app.mouse_map
                     .register(row_rect, crate::mouse::MouseZone::PickerItem(*ci));
             }
+            row_line += 1;
         }
 
         let para = Paragraph::new(lines);
@@ -5245,6 +5457,12 @@ fn opencode_spinner(frame: usize) -> &'static str {
 
 pub use crate::theme::readable_fg;
 
+/// Frames (at ~60 fps) spent stationary after each full marquee loop before
+/// the title starts animating again.
+const SCROLL_HOLD_FRAMES: usize = 300;
+/// Frames per scroll step; larger = slower animation.
+const SCROLL_SPEED: usize = 6;
+
 fn scroll_text(text: &str, max_width: usize, frame: usize, is_selected: bool) -> String {
     if text.chars().count() <= max_width {
         return format!("{:<width$}", text, width = max_width);
@@ -5253,9 +5471,14 @@ fn scroll_text(text: &str, max_width: usize, frame: usize, is_selected: bool) ->
         let truncated: String = text.chars().take(max_width.saturating_sub(1)).collect();
         return format!("{}…", truncated);
     }
+    // Cycle the marquee through n offsets, then hold still for
+    // `SCROLL_HOLD_FRAMES / SCROLL_SPEED` steps before looping again.
     let chars: Vec<char> = text.chars().collect();
     let n = chars.len();
-    let scroll = (frame / 3) % n.max(1);
+    let hold_steps = SCROLL_HOLD_FRAMES / SCROLL_SPEED;
+    let step = frame / SCROLL_SPEED;
+    let pos = step % (n + hold_steps).max(1);
+    let scroll = if pos < n { pos } else { 0 };
     let scrolled: String = chars
         .iter()
         .skip(scroll)
@@ -5335,6 +5558,99 @@ impl Pickers {
             } else {
                 content
             };
+            items.push(ListItem::new(content).style(style));
+        }
+
+        let list = List::new(items);
+        f.render_widget(list, inner);
+    }
+
+    /// Multi-select track picker shown right after a playlist is created:
+    /// every track is listed and `Space` toggles a persistent highlight, with
+    /// `Ctrl+Enter` committing the selection. Highlights survive scrolling.
+    fn render_playlist_track_select_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let selected = app.selected_playlist_track_ids.len();
+        let hint = format!(
+            "Space/Tab: toggle   \u{2191}/\u{2193}: navigate   Ctrl+Enter: add {} to playlist   Esc: cancel",
+            if selected > 0 {
+                format!("({selected} selected)")
+            } else {
+                String::new()
+            }
+        );
+        let block = Self::picker_panel(app, " Add Tracks ", Some(hint.as_str()));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let tracks = &app.tracks_cache;
+        let total = tracks.len();
+        if total == 0 {
+            let p = Paragraph::new("No tracks in library")
+                .style(Style::default().fg(app.theme.fg_dim));
+            f.render_widget(p, inner);
+            return;
+        }
+
+        let sel = app
+            .pickers
+            .top()
+            .map_or(0, |o| o.selected.min(total.saturating_sub(1)));
+        let visible = inner.height.saturating_sub(2) as usize;
+        let (scroll_start, scroll_end) = if let Some(top) = app.pickers.top_mut() {
+            let (s, e) = step_viewport(top.viewport_offset, sel, visible, total);
+            top.viewport_offset = s;
+            (s, e)
+        } else {
+            (0, total)
+        };
+
+        let row_w = inner.width;
+        let mut items: Vec<ListItem> = Vec::new();
+        for i in scroll_start..scroll_end {
+            let Some(track) = tracks.get(i) else { continue };
+            let is_sel = i == sel;
+            let is_picked = app.selected_playlist_track_ids.contains(&track.id);
+            let mark = if is_picked { " \u{2713} " } else { "   " };
+            let label = if track.title.is_empty() {
+                std::path::Path::new(&track.path)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .unwrap_or_default()
+            } else {
+                track.title.clone()
+            };
+            let artist = if track.artist.is_empty() {
+                String::new()
+            } else {
+                format!(" - {}", track.artist)
+            };
+            let dur = format_duration_short(track.duration as u64);
+            let content = format!("{mark}{label}{artist} [{}]", dur);
+            let style = if is_picked {
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else if is_sel {
+                Style::default()
+                    .fg(app.theme.selection_fg_readable())
+                    .bg(app.theme.selection_bg)
+            } else {
+                Style::default().fg(app.theme.fg)
+            };
+            let pad = if is_sel {
+                row_pad(&content, row_w)
+            } else {
+                0
+            };
+            let content = format!("{content}{}", " ".repeat(pad));
+            let row_rect = Rect {
+                x: inner.x,
+                y: inner.y + 1 + (i - scroll_start) as u16,
+                width: inner.width,
+                height: 1,
+            };
+            app.mouse_map
+                .register(row_rect, crate::mouse::MouseZone::PickerItem(i));
             items.push(ListItem::new(content).style(style));
         }
 

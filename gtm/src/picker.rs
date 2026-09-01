@@ -19,6 +19,9 @@ pub enum PickerId {
     ThemePicker,
     Help,
     PlaylistSelect,
+    /// Multi-select track list shown after creating a new playlist, so tracks
+    /// can be picked (persistently highlighted) before Ctrl+Enter commits them.
+    PlaylistTrackSelect,
     EditMetadata,
     Crossfade,
     VisualizerPreset,

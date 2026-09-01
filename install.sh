@@ -4,7 +4,7 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash
 #   install.sh                        # download and install the release for this system
-#   install.sh --version 0.2.71       # pin a specific release
+#   install.sh --version 0.2.72       # pin a specific release
 #   install.sh --nightly              # install the latest nightly prerelease
 #   install.sh --prefix ~/.local      # install under a custom prefix
 #
@@ -38,7 +38,7 @@ Usage: install.sh [options]
 
 Options:
   -h, --help            Show this help message
-  -v, --version <ver>   Install a specific version (e.g. 0.2.71)
+  -v, --version <ver>   Install a specific version (e.g. 0.2.72)
       --nightly         Install the latest nightly prerelease
   -p, --prefix <dir>    Install prefix for the tarball (default: \$HOME/.local)
   -y, --yes             Non-interactive (accepted for compatibility)
@@ -48,7 +48,7 @@ binaries, man pages, completions, systemd unit, desktop entry and icon.
 
 Examples:
   curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash
-  install.sh --version 0.2.71
+  install.sh --version 0.2.72
   install.sh --prefix /usr/local
 EOF
 }

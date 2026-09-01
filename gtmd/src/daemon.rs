@@ -2137,16 +2137,24 @@ impl Daemon {
                 Ok(m) => Ok(Box::new(m)),
                 Err(e) => {
                     if gtm_core::is_termux() {
-                        return Err(CoreError::Daemon(format!(
-                            "PulseAudio init failed: {e}. On Termux start the server first: \
-                             `pulseaudio --start --exit-idle-time=-1` (export \
-                             PULSE_SERVER=127.0.0.1 if audio is routed over TCP)"
-                        )));
+                        // "All the user has to do is run gtm": try to launch the
+                        // PulseAudio server before giving up, so no manual
+                        // `pulseaudio --start` is required.
+                        gtm_core::ensure_termux_pulseaudio();
+                        match PulseAudioMixer::new() {
+                            Ok(m) => Ok(Box::new(m)),
+                            Err(retry) => Err(CoreError::Daemon(format!(
+                                "PulseAudio init failed: {retry}. Auto-start attempted but \
+                                 the server is still unavailable. Ensure audio is routed \
+                                 (export PULSE_SERVER=127.0.0.1 if over TCP)."
+                            ))),
+                        }
+                    } else {
+                        warn!("PulseAudio init failed ({e}), falling back to rodio");
+                        AudioMixer::new()
+                            .map(|m| Box::new(m) as Box<dyn Mixer>)
+                            .map_err(|e| CoreError::Daemon(format!("audio mixer init: {e}")))
                     }
-                    warn!("PulseAudio init failed ({e}), falling back to rodio");
-                    AudioMixer::new()
-                        .map(|m| Box::new(m) as Box<dyn Mixer>)
-                        .map_err(|e| CoreError::Daemon(format!("audio mixer init: {e}")))
                 }
             }
         } else {

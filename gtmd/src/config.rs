@@ -138,7 +138,7 @@ impl DaemonConfig {
             _ if gtm_core::is_termux() => {
                 eprintln!(
                     "gtmd: Termux detected: using the PulseAudio backend. \
-                     Ensure it is running: pulseaudio --start --exit-idle-time=-1"
+                     The server will be started automatically if needed."
                 );
                 AudioBackendKind::PulseAudio
             }

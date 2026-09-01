@@ -68,9 +68,16 @@ sudo make install
 #### Termux (native, on-device)
 
 ```bash
-pkg install rust clang pkg-config pulseaudio
-cargo build --release --no-default-features --features pulseaudio
+pkg install rust clang pkg-config pulseaudio make
+
+# build.rs auto-detects Termux and the Makefile enables the PulseAudio backend for you.
+# (A manual equivalent is `cargo build --release --features pulseaudio`.)
+make termux
 ```
+
+`gtmd` auto-detects Termux at runtime, picks the PulseAudio
+backend, and starts the PulseAudio server automatically — no manual
+`pulseaudio --start` needed.
 
 ## Spotify
 

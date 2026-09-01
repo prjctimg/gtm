@@ -1,28 +1,26 @@
+# Homebrew formula for gtm — built from source via cargo (no prebuilt bottles,
+# no placeholder SHA hashes). Version is pinned to a git tag; bump `version`
+# and `tag` together on each release.
 class Gtm < Formula
   desc "Terminal-based music player daemon and client"
   homepage "https://github.com/prjctimg/gtm.rs"
+  url "https://github.com/prjctimg/gtm.rs.git",
+      tag: "v0.2.72",
+      using: :git
+  version "0.2.72"
   license "GPL-3.0-only"
-  version "0.2.3"
 
-  on_macos do
-    on_arm do
-      url "https://github.com/prjctimg/gtm.rs/releases/download/v#{version}/gtm-aarch64-darwin.tar.gz"
-      sha256 "PLACEHOLDER_ARM64_SHA256"
-    end
-    on_intel do
-      url "https://github.com/prjctimg/gtm.rs/releases/download/v#{version}/gtm-x86_64-darwin.tar.gz"
-      sha256 "PLACEHOLDER_AMD64_SHA256"
-    end
-  end
+  depends_on "rust" => :build
+  depends_on "pkg-config" => :build
+  depends_on "alsa-lib"
 
   def install
-    bin.install "bin/gtm" "bin/gtmd"
-    man1.install "man/man1/gtm.1", "man/man1/gtmd.1", "man/man1/gtmd-ipc.1"
-    bash_completion.install "completions/gtm.bash" => "gtm"
-    zsh_completion.install "completions/_gtm"
-    fish_completion.install "completions/gtm.fish" => "gtm.fish"
-    elvish_completion.install "completions/gtm.elv"
-    powershell_completion.install "completions/gtm.ps1"
+    system "cargo", "fetch", "--locked"
+    system "cargo", "build", "--release", "--locked",
+           "--features", "pulseaudio",
+           "--package", "gtm", "--package", "gtmd"
+    bin.install "target/release/gtm"
+    bin.install "target/release/gtmd"
   end
 
   def caveats
@@ -32,7 +30,7 @@ class Gtm < Formula
 
       Then use gtm to control playback.
 
-      Systemd user service is also available:
+      A systemd user service is also available:
         systemctl --user start gtmd
     EOS
   end

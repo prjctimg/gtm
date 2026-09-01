@@ -127,17 +127,8 @@ pub struct DaemonState {
     pub gapless: bool,
     pub dynamic_mode: DynamicModeConfig,
     pub scrobble: ScrobbleConfig,
-    /// Active lyrics provider. `lrclib` is the default and the only provider
-    /// implemented; other options are documented in the README/wiki but not
-    /// wired up.
-    #[serde(default = "default_lyrics_provider")]
-    pub lyrics_provider: String,
     #[serde(default)]
     pub audio_levels: Vec<f32>,
-}
-
-fn default_lyrics_provider() -> String {
-    "lrclib".to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -185,6 +176,45 @@ pub enum UIMode {
 pub enum ThemeMode {
     Dark,
     Light,
+}
+
+/// Sort order for the library track list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TrackSort {
+    /// Most recently released first (release year, descending).
+    Recents,
+    /// Most recently added first (library id, descending).
+    RecentlyAdded,
+    /// Alphabetical by title.
+    Alphabetical,
+    /// Grouped by artist, ordered alphabetically.
+    Artist,
+    /// Grouped by album, ordered alphabetically.
+    Album,
+}
+
+impl TrackSort {
+    /// Display name used in the UI/keybinding labels.
+    pub fn label(self) -> &'static str {
+        match self {
+            TrackSort::Recents => "Recents",
+            TrackSort::RecentlyAdded => "Recently added",
+            TrackSort::Alphabetical => "Alphabetical",
+            TrackSort::Artist => "Artist",
+            TrackSort::Album => "Album",
+        }
+    }
+
+    /// The next mode to cycle to when the user triggers the sort shortcut.
+    pub fn next(self) -> TrackSort {
+        match self {
+            TrackSort::Recents => TrackSort::RecentlyAdded,
+            TrackSort::RecentlyAdded => TrackSort::Alphabetical,
+            TrackSort::Alphabetical => TrackSort::Artist,
+            TrackSort::Artist => TrackSort::Album,
+            TrackSort::Album => TrackSort::Recents,
+        }
+    }
 }
 
 /// 15-band graphic EQ band with ISO 1/3-octave center frequency.

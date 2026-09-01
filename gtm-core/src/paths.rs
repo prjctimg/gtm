@@ -113,3 +113,23 @@ pub fn termux_music_dirs() -> Vec<PathBuf> {
     }
     dirs
 }
+
+/// Best-effort launch of the Termux PulseAudio server so the daemon can start
+/// audio without the user running `pulseaudio --start` manually.
+///
+/// This is a no-op outside Termux. We only start the server when no
+/// `PULSE_SERVER` is configured and attempting to are reach it fails — the
+/// server is kept alive with `--exit-idle-time=-1` so it does not die between
+/// command invocations. Failures are swallowed (the daemon reports the real
+/// init error if audio still can't start).
+pub fn ensure_termux_pulseaudio() {
+    if !is_termux() {
+        return;
+    }
+    use std::process::Command;
+    // If the user already routes audio via PULSE_SERVER (e.g. remote TCP), do
+    // not spawn a local server that would compete for the default sink.
+    let _ = Command::new("pulseaudio")
+        .args(["--start", "--exit-idle-time=-1"])
+        .spawn();
+}

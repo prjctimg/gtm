@@ -29,7 +29,7 @@
       {
         packages.default = pkgs.stdenv.mkDerivation {
           pname = "gtm";
-          version = "0.2.71";
+          version = "0.2.72";
 
           src = ./.;
 
