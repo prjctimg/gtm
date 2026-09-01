@@ -652,7 +652,6 @@ jobs:
     needs: [tag, build]
     if: needs.tag.outputs.skip != 'true' && needs.tag.outputs.nightly == 'false'
     runs-on: ubuntu-latest
-    environment: crates-io
     permissions:
       id-token: write
       contents: read
