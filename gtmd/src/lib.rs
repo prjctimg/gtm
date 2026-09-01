@@ -16,6 +16,7 @@ pub mod queue;
 pub mod spotify;
 pub mod stream;
 pub mod tags;
+#[cfg(feature = "youtube")]
 pub mod youtube;
 
 pub use config::DaemonConfig;

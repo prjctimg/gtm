@@ -41,6 +41,7 @@ use crate::lyrics::LyricsManager;
 use crate::queue;
 use crate::spotify::SpotifyManager;
 use crate::stream::StreamManager;
+#[cfg(feature = "youtube")]
 use crate::youtube::YoutubeManager;
 
 type ClientId = u64;
@@ -68,6 +69,7 @@ struct HealthTracker {
     start_time: Instant,
     audio_backend: String,
     scan: Counter,
+    #[cfg(feature = "youtube")]
     yt: Counter,
     cover: Counter,
     lyrics: Counter,
@@ -79,6 +81,7 @@ impl HealthTracker {
             start_time: Instant::now(),
             audio_backend: audio_backend.to_string(),
             scan: Counter::new(),
+            #[cfg(feature = "youtube")]
             yt: Counter::new(),
             cover: Counter::new(),
             lyrics: Counter::new(),
@@ -894,18 +897,21 @@ impl Cmd {
             uptime_secs: None,
         });
 
-        let yt = h.yt.count.load(Ordering::Relaxed);
-        let yt_errs = h.yt.errors.load(Ordering::Relaxed);
-        components.push(ComponentHealth {
-            name: "youtube_search".into(),
-            status: if yt_errs > 0 && yt > 0 {
-                HealthStatus::Degraded
-            } else {
-                HealthStatus::Ok
-            },
-            message: Some(format!("{yt} searches, {yt_errs} errors")),
-            uptime_secs: None,
-        });
+        #[cfg(feature = "youtube")]
+        {
+            let yt = h.yt.count.load(Ordering::Relaxed);
+            let yt_errs = h.yt.errors.load(Ordering::Relaxed);
+            components.push(ComponentHealth {
+                name: "youtube_search".into(),
+                status: if yt_errs > 0 && yt > 0 {
+                    HealthStatus::Degraded
+                } else {
+                    HealthStatus::Ok
+                },
+                message: Some(format!("{yt} searches, {yt_errs} errors")),
+                uptime_secs: None,
+            });
+        }
 
         let covers = h.cover.count.load(Ordering::Relaxed);
         let cover_errs = h.cover.errors.load(Ordering::Relaxed);
@@ -950,8 +956,10 @@ impl Cmd {
     }
 }
 
+#[cfg(feature = "youtube")]
 struct Yt;
 
+#[cfg(feature = "youtube")]
 impl Yt {
     pub async fn search(
         inner: &DaemonInner,
@@ -1144,6 +1152,7 @@ impl Spotify {
         }
     }
 
+    #[cfg_attr(not(feature = "youtube"), allow(unused_variables))]
     pub async fn resolve(
         inner: &DaemonInner,
         playlist_id: &str,
@@ -1214,37 +1223,53 @@ impl Spotify {
             format!("{} - {}", track.artists, track.name)
         };
 
-        let mut yt = inner.youtube.lock().await;
-        if let Err(e) = yt.search(&query, None).await {
-            return Ok(DaemonRes::Error { message: e });
-        }
-        let top = match yt.poll_results().await {
-            Ok(Some((_, mut results))) if !results.is_empty() => results.remove(0),
-            _ => {
-                return Ok(DaemonRes::Error {
-                    message: "no youtube results for track".into(),
-                });
-            }
+        #[cfg(feature = "youtube")]
+        let (path, yt_error): (Option<String>, Option<String>) = {
+            let mut yt = inner.youtube.lock().await;
+            let resolved = match (async {
+                if let Err(e) = yt.search(&query, None).await {
+                    return Err(e);
+                }
+                let top = match yt.poll_results().await {
+                    Ok(Some((_, mut results))) if !results.is_empty() => results.remove(0),
+                    _ => return Err("no youtube results for track".to_string()),
+                };
+                let info = match yt.resolve_stream(&top.url).await {
+                    Ok(info) => info,
+                    Err(e) => return Err(e),
+                };
+                let path = match Daemon::download_audio_to_cache(
+                    &inner.config.cache_dir,
+                    &format!("spotify-{playlist_id}-{track_index}"),
+                    &info.url,
+                    &info.ext,
+                    yt.cookie_file(),
+                )
+                .await
+                {
+                    Ok(path) => path,
+                    Err(e) => return Err(e.to_string()),
+                };
+                Ok::<_, String>(path)
+            })
+            .await
+            {
+                Ok(path) => (Some(path), None),
+                Err(e) => (None, Some(e)),
+            };
+            drop(yt);
+            resolved
         };
-        let info = match yt.resolve_stream(&top.url).await {
-            Ok(info) => info,
-            Err(e) => return Ok(DaemonRes::Error { message: e }),
+        #[cfg(not(feature = "youtube"))]
+        let (path, yt_error): (Option<String>, Option<String>) = (None, None);
+        let Some(path) = path else {
+            let message = yt_error
+                .as_deref()
+                .unwrap_or("youtube support is disabled in this build");
+            return Ok(DaemonRes::Error {
+                message: message.to_string(),
+            });
         };
-
-        let prefix = format!("spotify-{playlist_id}-{track_index}");
-        let path = match Daemon::download_audio_to_cache(
-            &inner.config.cache_dir,
-            &prefix,
-            &info.url,
-            &info.ext,
-            yt.cookie_file(),
-        )
-        .await
-        {
-            Ok(path) => path,
-            Err(e) => return Ok(DaemonRes::Error { message: e }),
-        };
-        drop(yt);
 
         let spotify_title = track.name.clone();
         let spotify_artist = track.artists.clone();
@@ -1286,6 +1311,7 @@ impl Spotify {
         Ok(DaemonRes::SpotifyTracksRes { tracks })
     }
 
+    #[cfg_attr(not(feature = "youtube"), allow(unused_variables))]
     pub async fn resolve_track(
         inner: &DaemonInner,
         name: &str,
@@ -1301,36 +1327,53 @@ impl Spotify {
         let spotify_artist = artists.to_string();
         let spotify_album = album.to_string();
 
-        let mut yt = inner.youtube.lock().await;
-        if let Err(e) = yt.search(&query, None).await {
-            return Ok(DaemonRes::Error { message: e });
-        }
-        let top = match yt.poll_results().await {
-            Ok(Some((_, mut results))) if !results.is_empty() => results.remove(0),
-            _ => {
-                return Ok(DaemonRes::Error {
-                    message: "no youtube results for track".into(),
-                });
-            }
+        #[cfg(feature = "youtube")]
+        let (path, yt_error): (Option<String>, Option<String>) = {
+            let mut yt = inner.youtube.lock().await;
+            let resolved = match (async {
+                if let Err(e) = yt.search(&query, None).await {
+                    return Err(e);
+                }
+                let top = match yt.poll_results().await {
+                    Ok(Some((_, mut results))) if !results.is_empty() => results.remove(0),
+                    _ => return Err("no youtube results for track".to_string()),
+                };
+                let info = match yt.resolve_stream(&top.url).await {
+                    Ok(info) => info,
+                    Err(e) => return Err(e),
+                };
+                let path = match Daemon::download_audio_to_cache(
+                    &inner.config.cache_dir,
+                    &format!("spotify-web-{name}"),
+                    &info.url,
+                    &info.ext,
+                    yt.cookie_file(),
+                )
+                .await
+                {
+                    Ok(path) => path,
+                    Err(e) => return Err(e.to_string()),
+                };
+                Ok::<_, String>(path)
+            })
+            .await
+            {
+                Ok(path) => (Some(path), None),
+                Err(e) => (None, Some(e)),
+            };
+            drop(yt);
+            resolved
         };
-        let info = match yt.resolve_stream(&top.url).await {
-            Ok(info) => info,
-            Err(e) => return Ok(DaemonRes::Error { message: e }),
+        #[cfg(not(feature = "youtube"))]
+        let (path, yt_error): (Option<String>, Option<String>) = (None, None);
+        let Some(path) = path else {
+            let message = yt_error
+                .as_deref()
+                .unwrap_or("youtube support is disabled in this build");
+            return Ok(DaemonRes::Error {
+                message: message.to_string(),
+            });
         };
-        let prefix = format!("spotify-web-{name}");
-        let path = match Daemon::download_audio_to_cache(
-            &inner.config.cache_dir,
-            &prefix,
-            &info.url,
-            &info.ext,
-            yt.cookie_file(),
-        )
-        .await
-        {
-            Ok(path) => path,
-            Err(e) => return Ok(DaemonRes::Error { message: e }),
-        };
-        drop(yt);
 
         let was_empty = {
             let mut state = inner.state.write().await;
@@ -1997,6 +2040,7 @@ struct DaemonInner {
     event_tx: broadcast::Sender<DaemonEvent>,
     cover_cache: tokio::sync::Mutex<Option<CoverCache>>,
     lyrics_manager: Option<LyricsManager>,
+    #[cfg(feature = "youtube")]
     youtube: Arc<tokio::sync::Mutex<YoutubeManager>>,
     spotify: tokio::sync::Mutex<SpotifyManager>,
     /// librespot streaming bridge for Premium Spotify playback.
@@ -2103,6 +2147,7 @@ impl Daemon {
             event_tx,
             cover_cache: tokio::sync::Mutex::new(Some(CoverCache::new(cache_dir.clone()))),
             lyrics_manager: Some(LyricsManager::with_cache_dir(cache_dir.join("lyrics"))),
+            #[cfg(feature = "youtube")]
             youtube: Arc::new(tokio::sync::Mutex::new(YoutubeManager::new())),
             spotify: tokio::sync::Mutex::new(SpotifyManager::new(config_dir.clone())),
             stream: tokio::sync::Mutex::new(StreamManager::new()),
@@ -2672,10 +2717,21 @@ impl Daemon {
             DaemonReq::GetFavourites => Favourites::list(inner).await,
             DaemonReq::AddFavourite { track_id } => Favourites::add(inner, *track_id).await,
             DaemonReq::RemoveFavourite { track_id } => Favourites::remove(inner, *track_id).await,
+            #[cfg(feature = "youtube")]
             DaemonReq::YtSearch { query, filter } => Yt::search(inner, query, *filter).await,
+            #[cfg(feature = "youtube")]
             DaemonReq::YtSearchPoll => Yt::poll(inner).await,
+            #[cfg(feature = "youtube")]
             DaemonReq::YtSearchCancel => Yt::cancel(inner).await,
+            #[cfg(feature = "youtube")]
             DaemonReq::YtResolveStream { url } => Yt::resolve_stream(inner, url).await,
+            #[cfg(not(feature = "youtube"))]
+            DaemonReq::YtSearch { .. }
+            | DaemonReq::YtSearchPoll
+            | DaemonReq::YtSearchCancel
+            | DaemonReq::YtResolveStream { .. } => Err(CoreError::Daemon(
+                "youtube support is disabled in this build".into(),
+            )),
             DaemonReq::YtDownload { .. } => {
                 Err(CoreError::Daemon("yt_download not yet implemented".into()))
             }
@@ -2691,6 +2747,7 @@ impl Daemon {
             DaemonReq::YtFetchPlaylistPoll => Err(CoreError::Daemon(
                 "yt_fetch_playlist_poll not yet implemented".into(),
             )),
+            #[cfg(feature = "youtube")]
             DaemonReq::YtSetConfig {
                 cookie_source,
                 cookie_file,
@@ -2716,6 +2773,8 @@ impl Daemon {
                 Self::save_state(inner);
                 Ok(DaemonRes::Ok)
             }
+            #[cfg(not(feature = "youtube"))]
+            DaemonReq::YtSetConfig { .. } => Ok(DaemonRes::Ok),
             DaemonReq::GetCoverArt { track_id } => Cover::get(inner, *track_id).await,
             DaemonReq::GetArtistCoverArt { artist } => Cover::artist(inner, artist).await,
             DaemonReq::GetLyrics { track_id, path } => {
@@ -3293,6 +3352,7 @@ impl Daemon {
 
     // ─── Spotify ───
 
+    #[cfg(feature = "youtube")]
     async fn download_audio_to_cache(
         cache_dir: &Path,
         prefix: &str,
@@ -3316,6 +3376,7 @@ impl Daemon {
         Err(last_err)
     }
 
+    #[cfg(feature = "youtube")]
     async fn try_download_audio_to_cache(
         cache_dir: &Path,
         prefix: &str,

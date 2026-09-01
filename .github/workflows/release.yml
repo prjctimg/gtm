@@ -183,8 +183,10 @@ jobs:
             platform: aarch64-darwin
             container: null
             family: macos
-            link_override: -C linker=clang
-            mold_arg: -C link-arg=-fuse-ld=mold
+            # mold is a Linux/ELF linker and cannot link macOS binaries, so the
+            # macOS job uses the default Apple clang/ld64 and omits link args.
+            link_override:
+            mold_arg:
           - os: ubuntu-latest
             platform: aarch64-android
             container: null
@@ -255,7 +257,7 @@ jobs:
 
       - name: Install system dependencies (macOS)
         if: matrix.family == 'macos'
-        run: brew install pkg-config pandoc mold
+        run: brew install pkg-config pandoc
 
       - name: Install pandoc (Android build)
         if: matrix.family == 'android'
