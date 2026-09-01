@@ -18,9 +18,8 @@ fn main() {
     // Termux cross-builds target `aarch64-linux-android`; the environment also
     // sets $PREFIX and/or $TERMUX_VERSION when building on-device.
     let target = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let in_termux = target == "android"
-        || env::var("PREFIX").is_ok()
-        || env::var("TERMUX_VERSION").is_ok();
+    let in_termux =
+        target == "android" || env::var("PREFIX").is_ok() || env::var("TERMUX_VERSION").is_ok();
 
     if in_termux {
         println!("cargo:rustc-cfg=gtm_termux");

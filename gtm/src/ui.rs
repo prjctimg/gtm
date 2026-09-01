@@ -819,7 +819,7 @@ impl Render {
                     // details to its right (scaled to a slim column) whenever
                     // there is any horizontal room at all.
                     let slim_cover_h = inner.height.saturating_sub(2).min(4).max(2);
-                    let slim_cover_w = (slim_cover_h * 2) as u16;
+                    let slim_cover_w = slim_cover_h * 2;
                     let hchunks = Layout::default()
                         .direction(Direction::Horizontal)
                         .constraints([
@@ -858,14 +858,7 @@ impl Render {
                             Style::default().fg(app.theme.fg_bright),
                         )]),
                     ];
-                    Render::evolving(
-                        f,
-                        info_area,
-                        Paragraph::new(lines),
-                        "np",
-                        app,
-                        true,
-                    );
+                    Render::evolving(f, info_area, Paragraph::new(lines), "np", app, true);
                 } else {
                     let title_text = display_title.to_string();
                     let title_avail = inner.width as usize;
@@ -1002,7 +995,11 @@ impl Render {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(4),
-                Constraint::Length(if app.track_popup_visible && !is_small_height { 1 } else { 0 }),
+                Constraint::Length(if app.track_popup_visible && !is_small_height {
+                    1
+                } else {
+                    0
+                }),
                 Constraint::Length(track_info_h),
             ])
             .split(left_inner);
@@ -3982,7 +3979,10 @@ impl Pickers {
             Line::from(Span::styled(
                 format!(
                     "   System:   {} {} \u{2022} {} CPU \u{2022} {} RAM",
-                    std::env::consts::OS, arch, cpus, mem_str
+                    std::env::consts::OS,
+                    arch,
+                    cpus,
+                    mem_str
                 ),
                 Style::default().fg(app.theme.fg),
             )),
@@ -5585,8 +5585,8 @@ impl Pickers {
         let tracks = &app.tracks_cache;
         let total = tracks.len();
         if total == 0 {
-            let p = Paragraph::new("No tracks in library")
-                .style(Style::default().fg(app.theme.fg_dim));
+            let p =
+                Paragraph::new("No tracks in library").style(Style::default().fg(app.theme.fg_dim));
             f.render_widget(p, inner);
             return;
         }
@@ -5637,11 +5637,7 @@ impl Pickers {
             } else {
                 Style::default().fg(app.theme.fg)
             };
-            let pad = if is_sel {
-                row_pad(&content, row_w)
-            } else {
-                0
-            };
+            let pad = if is_sel { row_pad(&content, row_w) } else { 0 };
             let content = format!("{content}{}", " ".repeat(pad));
             let row_rect = Rect {
                 x: inner.x,

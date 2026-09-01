@@ -1144,10 +1144,7 @@ impl App {
         if self.state.current_track.is_none() {
             return;
         }
-        let raw = self
-            .seek_cmd_accum
-            .unwrap_or(self.raw_position)
-            + delta;
+        let raw = self.seek_cmd_accum.unwrap_or(self.raw_position) + delta;
         self.seek_cmd_accum = Some(raw);
         self.last_seek_press = Some(std::time::Instant::now());
         let clamped = raw.clamp(0.0, self.state.duration.max(0.0));
@@ -3116,10 +3113,16 @@ impl App {
                             Ok(DaemonRes::Error { message }) => {
                                 return format!("Download failed: {message}");
                             }
-                            Ok(_) => return "Download failed: unexpected daemon response".to_string(),
+                            Ok(_) => {
+                                return "Download failed: unexpected daemon response".to_string();
+                            }
                             Err(e) => return format!("Download error: {e}"),
                         };
-                        let ext = if info.ext.is_empty() { "m4a" } else { &info.ext };
+                        let ext = if info.ext.is_empty() {
+                            "m4a"
+                        } else {
+                            &info.ext
+                        };
 
                         let file_name = {
                             let base = title
@@ -3135,7 +3138,8 @@ impl App {
                             let mut safe: String = base
                                 .chars()
                                 .map(|c| {
-                                    if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ' {
+                                    if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' '
+                                    {
                                         c
                                     } else {
                                         '_'
@@ -3461,9 +3465,7 @@ impl App {
                 .saturating_sub(1),
             PickerId::Notifications => self.notification_history.len().saturating_sub(1),
             PickerId::PlaylistSelect => self.playlist_cache.len(),
-            PickerId::PlaylistTrackSelect => {
-                self.tracks_cache.len().saturating_sub(1)
-            }
+            PickerId::PlaylistTrackSelect => self.tracks_cache.len().saturating_sub(1),
             PickerId::ThemePicker => {
                 let q = query.to_lowercase();
                 if q.is_empty() {
@@ -4500,7 +4502,10 @@ impl App {
         };
         let track_ids: Vec<i64> = self.selected_playlist_track_ids.iter().copied().collect();
         if track_ids.is_empty() {
-            self.notify("No tracks selected — playlist stays empty", NotificationKind::Info);
+            self.notify(
+                "No tracks selected — playlist stays empty",
+                NotificationKind::Info,
+            );
             self.close_top_picker_with_cleanup();
             self.pending_playlist_id = None;
             self.selected_playlist_track_ids.clear();
@@ -4590,19 +4595,18 @@ impl App {
         {
             let is_ctrl_enter = key.modifiers.contains(KeyModifiers::CONTROL)
                 && (key.code == KeyCode::Enter || key.code == KeyCode::Char('m'));
-            let is_toggle = key.code == KeyCode::Char(' ')
-                || key.code == KeyCode::Tab;
+            let is_toggle = key.code == KeyCode::Char(' ') || key.code == KeyCode::Tab;
             if is_ctrl_enter {
                 self.commit_playlist_selection();
                 return;
             }
             if is_toggle {
-                if let Some(top) = self.pickers.top() {
-                    if let Some(track) = self.tracks_cache.get(top.selected) {
-                        let id = track.id;
-                        if !self.selected_playlist_track_ids.remove(&id) {
-                            self.selected_playlist_track_ids.insert(id);
-                        }
+                if let Some(top) = self.pickers.top()
+                    && let Some(track) = self.tracks_cache.get(top.selected)
+                {
+                    let id = track.id;
+                    if !self.selected_playlist_track_ids.remove(&id) {
+                        self.selected_playlist_track_ids.insert(id);
                     }
                 }
                 return;
@@ -6113,15 +6117,20 @@ impl App {
                                                         // Hand off to the track multi-select
                                                         // picker instead of using a pre-collected
                                                         // list, so creating can't race/stale out.
-                                                        let _ = ipc_tx.send(IpcResult::PlaylistCreated(
-                                                            pid,
-                                                            name.clone(),
-                                                        ));
-                                                        let _ = ipc_tx.send(IpcResult::Notification(
-                                                            "Playlist".to_string(),
-                                                            format!("Created {name} — pick tracks"),
-                                                            NotificationKind::Success,
-                                                        ));
+                                                        let _ = ipc_tx.send(
+                                                            IpcResult::PlaylistCreated(
+                                                                pid,
+                                                                name.clone(),
+                                                            ),
+                                                        );
+                                                        let _ =
+                                                            ipc_tx.send(IpcResult::Notification(
+                                                                "Playlist".to_string(),
+                                                                format!(
+                                                                    "Created {name} — pick tracks"
+                                                                ),
+                                                                NotificationKind::Success,
+                                                            ));
                                                     }
                                                 }
                                             }

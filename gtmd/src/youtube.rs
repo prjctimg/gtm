@@ -152,7 +152,11 @@ impl YoutubeManager {
     /// Fire-and-forget search: cancels any in-flight search and kicks a new
     /// one off without waiting. The IPC handler uses this so the client's
     /// short response timeout is never hit.
-    pub async fn start_search(&mut self, query: &str, filter: Option<YTFilter>) -> Result<(), String> {
+    pub async fn start_search(
+        &mut self,
+        query: &str,
+        filter: Option<YTFilter>,
+    ) -> Result<(), String> {
         self.start_impl(query, filter).await?;
         Ok(())
     }
@@ -313,10 +317,7 @@ async fn run_search(
                 out.push(YTSearchResult {
                     id: p.playlist_id.clone(),
                     title: p.title,
-                    url: format!(
-                        "https://www.youtube.com/playlist?list={}",
-                        p.playlist_id
-                    ),
+                    url: format!("https://www.youtube.com/playlist?list={}", p.playlist_id),
                     channel: p.author,
                     duration: 0.0,
                     views: 0,
@@ -368,7 +369,11 @@ fn parse_video(v: &innertube_rs::SearchVideoItem) -> Option<YTSearchResult> {
             .as_deref()
             .and_then(parse_duration)
             .unwrap_or(0.0),
-        views: v.view_count.as_deref().and_then(parse_view_count).unwrap_or(0),
+        views: v
+            .view_count
+            .as_deref()
+            .and_then(parse_view_count)
+            .unwrap_or(0),
         thumbnail: v.thumbnails.first().map(|t| t.url.clone()),
         is_playlist: false,
         artist,

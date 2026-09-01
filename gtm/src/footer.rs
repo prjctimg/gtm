@@ -510,12 +510,16 @@ fn render_volume(app: &App) -> String {
 fn render_repeat(app: &App) -> Option<String> {
     match app.state.repeat {
         gtm_core::state::RepeatMode::Off => None,
-        gtm_core::state::RepeatMode::One => {
-            Some(if crate::ui::use_nerd_fonts() { "\u{f01e}1".into() } else { "1".into() })
-        }
-        gtm_core::state::RepeatMode::All => {
-            Some(if crate::ui::use_nerd_fonts() { "\u{f01e}".into() } else { "A".into() })
-        }
+        gtm_core::state::RepeatMode::One => Some(if crate::ui::use_nerd_fonts() {
+            "\u{f01e}1".into()
+        } else {
+            "1".into()
+        }),
+        gtm_core::state::RepeatMode::All => Some(if crate::ui::use_nerd_fonts() {
+            "\u{f01e}".into()
+        } else {
+            "A".into()
+        }),
     }
 }
 
@@ -533,7 +537,11 @@ fn render_shuffle(app: &App) -> Option<String> {
 
 fn render_eq_preset(app: &App) -> Option<String> {
     if app.state.eq_enabled {
-        let icon = if crate::ui::use_nerd_fonts() { "\u{f7a5} " } else { "EQ:" };
+        let icon = if crate::ui::use_nerd_fonts() {
+            "\u{f7a5} "
+        } else {
+            "EQ:"
+        };
         Some(format!("{icon}{}", app.state.eq_preset.label()))
     } else {
         None
@@ -667,38 +675,62 @@ fn strftime(fmt: &str) -> String {
     }
     let (mut month, mut day) = (1u32, 1u32);
     for (m, dims) in [
-            (1u32, 31u32),
-            (2, if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 { 29 } else { 28 }),
-            (3, 31),
-            (4, 30),
-            (5, 31),
-            (6, 30),
-            (7, 31),
-            (8, 31),
-            (9, 30),
-            (10, 31),
-            (11, 30),
-            (12, 31),
-        ] {
-            if remaining >= dims as i64 {
-                remaining -= dims as i64;
+        (1u32, 31u32),
+        (
+            2,
+            if (year % 4 == 0 && year % 100 != 0) || year % 400 == 0 {
+                29
             } else {
-                month = m;
-                day = (remaining + 1) as u32;
-                break;
-            }
+                28
+            },
+        ),
+        (3, 31),
+        (4, 30),
+        (5, 31),
+        (6, 30),
+        (7, 31),
+        (8, 31),
+        (9, 30),
+        (10, 31),
+        (11, 30),
+        (12, 31),
+    ] {
+        if remaining >= dims as i64 {
+            remaining -= dims as i64;
+        } else {
+            month = m;
+            day = (remaining + 1) as u32;
+            break;
         }
+    }
     let hour = secs_of_day / 3600;
     let minute = (secs_of_day % 3600) / 60;
     let second = secs_of_day % 60;
 
     let weekday = ((days + 4).rem_euclid(7)) as usize; // 1970-01-01 was a Thursday
-    const WEEKDAY_NAMES: [&str; 7] =
-        ["Thursday", "Friday", "Saturday", "Sunday", "Monday", "Tuesday", "Wednesday"];
+    const WEEKDAY_NAMES: [&str; 7] = [
+        "Thursday",
+        "Friday",
+        "Saturday",
+        "Sunday",
+        "Monday",
+        "Tuesday",
+        "Wednesday",
+    ];
     const WEEKDAY_SHORT: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
     const MONTH_NAMES: [&str; 12] = [
-        "January", "February", "March", "April", "May", "June", "July",
-        "August", "September", "October", "November", "December",
+        "January",
+        "February",
+        "March",
+        "April",
+        "May",
+        "June",
+        "July",
+        "August",
+        "September",
+        "October",
+        "November",
+        "December",
     ];
     const MONTH_SHORT: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
