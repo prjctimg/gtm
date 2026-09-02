@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.80"
+version = "0.2.81"
 edition = "2024"
 license = "GPL-3.0-only"
 repository = "https://github.com/prjctimg/gtm.rs"
@@ -20,9 +20,9 @@ categories = ["command-line-utilities", "multimedia::audio"]
 readme = "README.md"
 
 [workspace.dependencies]
-gtm-core = { path = "gtm-core", version = "0.2.80" }
-gtm-audio = { path = "gtm-audio", version = "0.2.80" }
-gtm-mpris = { path = "gtm-mpris", version = "0.2.80" }
+gtm-core = { path = "gtm-core", version = "0.2.81" }
+gtm-audio = { path = "gtm-audio", version = "0.2.81" }
+gtm-mpris = { path = "gtm-mpris", version = "0.2.81" }
 
 [profile.release]
 lto = "thin"
