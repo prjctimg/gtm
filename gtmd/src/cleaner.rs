@@ -55,10 +55,11 @@ pub fn clean_youtube_title(title: &str) -> (Option<String>, String) {
             Regex::new(r"(?i)\b1080p\b").unwrap(),
             Regex::new(r"(?i)\b720p\b").unwrap(),
             Regex::new(r"(?i)\b480p\b").unwrap(),
-            // Explicit / clean
-            Regex::new(r"(?i)\bexplicit\b").unwrap(),
-            Regex::new(r"(?i)\bclean\b").unwrap(),
-            // Official tags (with brackets/parens)
+            // Explicit / clean (only in brackets/parens)
+            Regex::new(r"(?i)\(explicit\)").unwrap(),
+            Regex::new(r"(?i)\(clean\)").unwrap(),
+            Regex::new(r"(?i)\[explicit\]").unwrap(),
+            Regex::new(r"(?i)\[clean\]").unwrap(),
             Regex::new(r"(?i)\(official\s*audio\)").unwrap(),
             Regex::new(r"(?i)\(official\s*music\s*video\)").unwrap(),
             Regex::new(r"(?i)\(official\s*video\)").unwrap(),
@@ -79,8 +80,21 @@ pub fn clean_youtube_title(title: &str) -> (Option<String>, String) {
             Regex::new(r"(?i)\[lyric\s*video\]").unwrap(),
             Regex::new(r"(?i)\[explicit\]").unwrap(),
             Regex::new(r"(?i)\[clean\]").unwrap(),
+            // Official tags without brackets (common on YouTube)
+            Regex::new(r"(?i)\bofficial\s+audio\b").unwrap(),
+            Regex::new(r"(?i)\bofficial\s+music\s+video\b").unwrap(),
+            Regex::new(r"(?i)\bofficial\s+video\b").unwrap(),
+            Regex::new(r"(?i)\bofficial\s+lyric\s+video\b").unwrap(),
+            Regex::new(r"(?i)\bofficial\s+visualizer\b").unwrap(),
+            Regex::new(r"(?i)\blyric\s+video\b").unwrap(),
+            Regex::new(r"(?i)\baudio\b").unwrap(),
+            Regex::new(r"(?i)\bmusic\s+video\b").unwrap(),
+            Regex::new(r"(?i)\bofficial\b").unwrap(),
             // Remaster / remastered
             Regex::new(r"(?i)\bremaster(?:ed)?\b").unwrap(),
+            // Empty brackets
+            Regex::new(r"\(\s*\)").unwrap(),
+            Regex::new(r"\[\s*\]").unwrap(),
             // Full album / full track
             Regex::new(r"(?i)\bfull\s*album\b").unwrap(),
             Regex::new(r"(?i)\bfull\s*track\b").unwrap(),

@@ -683,7 +683,7 @@ impl Render {
                 let inner = np_inner;
                 let avail_h = inner.height.saturating_sub(2);
                 let cover_h = if is_small_height {
-                    avail_h.min(5).max(2)
+                    avail_h.clamp(2, 5)
                 } else {
                     avail_h.min(12)
                 };
@@ -818,7 +818,7 @@ impl Render {
                     // Compact layout still keeps the cover left with the
                     // details to its right (scaled to a slim column) whenever
                     // there is any horizontal room at all.
-                    let slim_cover_h = inner.height.saturating_sub(2).min(4).max(2);
+                    let slim_cover_h = inner.height.saturating_sub(2).clamp(2, 4);
                     let slim_cover_w = slim_cover_h * 2;
                     let hchunks = Layout::default()
                         .direction(Direction::Horizontal)

@@ -122,9 +122,7 @@ impl LastfmManager {
 
         // Throttle: Last.fm recommends max 1 update per minute
         let mut last_np = self.last_now_playing.lock().await;
-        if let Some(last) = *last_np
-            && last.elapsed() < Duration::from_secs(60)
-        {
+        if let Some(last) = *last_np && last.elapsed() < Duration::from_secs(60) {
             return Ok(()); // Skip throttled update
         }
         *last_np = Some(Instant::now());
@@ -211,9 +209,7 @@ impl LastfmManager {
 
         // Throttle: avoid rapid successive scrobbles
         let mut last_scrobble = self.last_scrobble.lock().await;
-        if let Some(last) = *last_scrobble
-            && last.elapsed() < Duration::from_secs(5)
-        {
+        if let Some(last) = *last_scrobble && last.elapsed() < Duration::from_secs(5) {
             return Ok(()); // Skip if too recent
         }
         *last_scrobble = Some(Instant::now());

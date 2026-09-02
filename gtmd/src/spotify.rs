@@ -295,9 +295,11 @@ impl SpotifyManager {
         } else {
             Credentials::new_pkce(&client_id)
         };
-        let mut config = Config::default();
-        config.token_cached = false;
-        config.token_refreshing = refreshable && !client_id.is_empty();
+        let config = Config {
+            token_cached: false,
+            token_refreshing: refreshable && !client_id.is_empty(),
+            ..Default::default()
+        };
         let oauth = OAuth::default();
         self.client = Some(AuthCodePkceSpotify::from_token_with_config(
             token, creds, oauth, config,

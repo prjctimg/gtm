@@ -2612,7 +2612,7 @@ impl App {
                     tracks.sort_by(|a, b| b.year.cmp(&a.year).then_with(|| a.title.cmp(&b.title)));
                 }
                 gtm_core::state::TrackSort::RecentlyAdded => {
-                    tracks.sort_by(|a, b| b.id.cmp(&a.id));
+                    tracks.sort_by_key(|a| std::cmp::Reverse(a.id));
                 }
                 gtm_core::state::TrackSort::Alphabetical => {
                     tracks.sort_by(|a, b| {
