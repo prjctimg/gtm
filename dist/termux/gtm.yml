@@ -3,7 +3,7 @@
 # produced by the release workflow or `make termux-release`.
 control:
     Package: gtm
-    Version: 0.2.81
+    Version: 0.2.82
     Architecture: aarch64
     Maintainer: prjctimg <prjctimg@outlook.com>
     Depends: libpulseaudio
