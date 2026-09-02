@@ -310,6 +310,7 @@ jobs:
       # Use lfdevs/archlinuxarm:base-devel (monthly built from official Arch Linux ARM tarball).
       # This image has ARM repositories and archlinuxarm-keyring pre-configured.
       # DisableSandboxFilesystem avoids Landlock issues in Docker.
+      # pandoc is not in Arch ARM repos; install from GitHub release binary.
       - name: Build Arch Linux binaries + packages (container)
         if: matrix.family == 'arch-arm'
         run: |
@@ -318,7 +319,7 @@ jobs:
             -w /work \
             -e HOME=/root \
             lfdevs/archlinuxarm:base-devel \
-            /bin/bash -c "echo 'DisableSandboxFilesystem' >> /etc/pacman.conf && pacman-key --init && pacman-key --populate archlinuxarm && pacman -Syu --noconfirm && /bin/bash /work/scripts/build/arch-in-container.sh \
+            /bin/bash -c "echo 'DisableSandboxFilesystem' >> /etc/pacman.conf && pacman-key --init && pacman-key --populate archlinuxarm && pacman -Syu --noconfirm && curl -L -o /usr/bin/pandoc https://github.com/jgm/pandoc/releases/download/3.1.11.1/pandoc-3.1.11.1-linux-arm64.tar.gz && tar -xzf /usr/bin/pandoc -C /usr/bin --strip-components=1 2>/dev/null || curl -L -o /usr/bin/pandoc https://github.com/jgm/pandoc/releases/download/3.1.11.1/pandoc-3.1.11.1-linux-arm64.tar.gz && tar -xzf - -C /usr/bin < /usr/bin/pandoc && chmod +x /usr/bin/pandoc && /bin/bash /work/scripts/build/arch-in-container.sh \
               aarch64-linux-arch ${{ needs.tag.outputs.version }} aarch64"
 
       - name: Install Android NDK + tools
