@@ -1,6 +1,6 @@
 # Maintainer: prjctimg <prjctimg@outlook.com>
 pkgname=gtm
-pkgver=0.2.76
+pkgver=0.2.77
 pkgrel=1
 pkgdesc="Feature rich and cross platform terminal audio player with background playback and YouTube/Spotify integration"
 arch=('x86_64' 'aarch64')
