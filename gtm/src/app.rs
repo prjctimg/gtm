@@ -581,8 +581,8 @@ enum IpcResult {
 }
 
 /// Best-effort browser open for the OAuth authorize URL. Tries common
-/// openers until one succeeds; silently gives up if none exist (the URL is
-/// also shown as a notification so it can be copied).
+/// openers until one succeeds; prints URL to stdout if all fail so user can
+/// manually open it (the URL is also shown as a notification so it can be copied).
 fn try_open_browser(url: &str) {
     let url = url.to_string();
     tokio::spawn(async move {
@@ -604,6 +604,8 @@ fn try_open_browser(url: &str) {
                 _ => continue,
             }
         }
+        // All openers failed: print URL to stdout so user can manually open it.
+        eprintln!("\n[gtm] Could not open browser automatically.\nPlease open this URL in your browser to authorize gtm:\n{url}\n");
     });
 }
 
@@ -1064,6 +1066,9 @@ impl App {
         let idx = idx.min(self.themes.len().saturating_sub(1));
         self.theme_index = idx;
         self.apply_reactive();
+        // A manual selection opts out of OS-theme auto-detection so the OS
+        // preference can't fight the choice on restart.
+        self.theme_mode = "manual".to_string();
         save_prefs(&self.current_prefs());
     }
 

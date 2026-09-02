@@ -301,6 +301,20 @@ pub enum DaemonReq {
         artists: String,
         album: String,
     },
+    LastfmSetConfig {
+        enabled: bool,
+        api_key: Option<String>,
+        api_secret: Option<String>,
+        session_key: Option<String>,
+        min_play_secs: Option<u32>,
+        min_play_pct: Option<f32>,
+    },
+    LastfmAuthUrl,
+    LastfmAuthenticate {
+        token: String,
+    },
+    LastfmStatus,
+    LastfmClear,
     SetSleepTimer {
         minutes: u32,
     },
@@ -374,6 +388,11 @@ impl DaemonReq {
             DaemonReq::SpotifyResolve { .. } => "spotify_resolve",
             DaemonReq::SpotifySearchWeb { .. } => "spotify_search_web",
             DaemonReq::SpotifyResolveTrack { .. } => "spotify_resolve_track",
+            DaemonReq::LastfmSetConfig { .. } => "lastfm_set_config",
+            DaemonReq::LastfmAuthUrl => "lastfm_auth_url",
+            DaemonReq::LastfmAuthenticate { .. } => "lastfm_authenticate",
+            DaemonReq::LastfmStatus => "lastfm_status",
+            DaemonReq::LastfmClear => "lastfm_clear",
             DaemonReq::SetSleepTimer { .. } => "set_sleep_timer",
             DaemonReq::CancelSleepTimer => "cancel_sleep_timer",
             DaemonReq::ClearCache { .. } => "clear_cache",
@@ -708,6 +727,37 @@ impl DaemonReq {
                     album: x.album,
                 }
             }
+            "lastfm_set_config" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    enabled: bool,
+                    api_key: Option<String>,
+                    api_secret: Option<String>,
+                    session_key: Option<String>,
+                    min_play_secs: Option<u32>,
+                    min_play_pct: Option<f32>,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::LastfmSetConfig {
+                    enabled: x.enabled,
+                    api_key: x.api_key,
+                    api_secret: x.api_secret,
+                    session_key: x.session_key,
+                    min_play_secs: x.min_play_secs,
+                    min_play_pct: x.min_play_pct,
+                }
+            }
+            "lastfm_auth_url" => DaemonReq::LastfmAuthUrl,
+            "lastfm_authenticate" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    token: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::LastfmAuthenticate { token: x.token }
+            }
+            "lastfm_status" => DaemonReq::LastfmStatus,
+            "lastfm_clear" => DaemonReq::LastfmClear,
             "set_sleep_timer" => {
                 #[derive(Deserialize)]
                 struct Params {
@@ -1009,6 +1059,15 @@ pub enum DaemonRes {
     EqPresets {
         presets: Vec<String>,
     },
+    LastfmAuthUrlRes {
+        url: String,
+    },
+    LastfmStatusRes {
+        enabled: bool,
+        api_key: Option<String>,
+        session_token: Option<String>,
+        ready: bool,
+    },
     Handshake {
         version: u32,
         daemon: String,
@@ -1058,6 +1117,18 @@ impl DaemonRes {
             })),
             DaemonRes::HealthReport { report } => Some(serde_json::json!({ "report": report })),
             DaemonRes::EqPresets { presets } => Some(serde_json::json!({ "presets": presets })),
+            DaemonRes::LastfmAuthUrlRes { url } => Some(serde_json::json!({ "url": url })),
+            DaemonRes::LastfmStatusRes {
+                enabled,
+                api_key,
+                session_token,
+                ready,
+            } => Some(serde_json::json!({
+                "enabled": enabled,
+                "api_key": api_key,
+                "session_token": session_token,
+                "ready": ready,
+            })),
             DaemonRes::Handshake {
                 version,
                 daemon,
@@ -1239,6 +1310,22 @@ impl DaemonRes {
                 match serde_json::from_value::<Box<HealthReport>>(report) {
                     Ok(report) => DaemonRes::HealthReport { report },
                     Err(_) => DaemonRes::Value { value: data },
+                }
+            }
+            "lastfm_auth_url" => {
+                let url = data.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                DaemonRes::LastfmAuthUrlRes { url }
+            }
+            "lastfm_status" => {
+                let enabled = data.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
+                let api_key = data.get("api_key").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let session_token = data.get("session_token").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let ready = data.get("ready").and_then(|v| v.as_bool()).unwrap_or(false);
+                DaemonRes::LastfmStatusRes {
+                    enabled,
+                    api_key,
+                    session_token,
+                    ready,
                 }
             }
             "list_eq_presets" => {

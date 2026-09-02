@@ -20,6 +20,10 @@ tokio-util = "0.7"
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls-native-roots"] }
 url = "2"
+urlencoding = "2"
+regex = "1"
+lastfm = "0.10"
+md5 = "0.8"
 innertube-rs = { version = "0.6", optional = true }
 rspotify = { version = "0.16.1", default-features = false, features = ["client-reqwest", "reqwest-rustls-tls"] }
 librespot-core = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }

@@ -3928,10 +3928,10 @@ impl Pickers {
         // Compiler/linker provenance.
         let compiler = option_env!("VERGEN_RUSTC_SEMVER").unwrap_or("unknown");
         let linker = option_env!("GTM_LINKER").unwrap_or("unknown");
-        // Audio / rendering backends.
-        let ratatui_ver = option_env!("GTM_RATATUI_VERSION").unwrap_or("unknown");
-        let rodio_ver = option_env!("GTM_RODIO_VERSION").unwrap_or("unknown");
-        let symphonia_ver = option_env!("GTM_SYMPHONIA_VERSION").unwrap_or("unknown");
+        // Audio / rendering backends (unused after removing backends line).
+        let _ratatui_ver = option_env!("GTM_RATATUI_VERSION").unwrap_or("unknown");
+        let _rodio_ver = option_env!("GTM_RODIO_VERSION").unwrap_or("unknown");
+        let _symphonia_ver = option_env!("GTM_SYMPHONIA_VERSION").unwrap_or("unknown");
 
         let lines = vec![
             Line::from(Span::styled(
@@ -3968,12 +3968,6 @@ impl Pickers {
             )),
             Line::from(Span::styled(
                 format!("   Linker:  {}", linker),
-                Style::default().fg(app.theme.fg),
-            )),
-            Line::from(Span::styled(
-                format!(
-                    "   Backends: ratatui {ratatui_ver} \u{2022} rodio {rodio_ver} \u{2022} symphonia {symphonia_ver}"
-                ),
                 Style::default().fg(app.theme.fg),
             )),
             Line::from(Span::styled(

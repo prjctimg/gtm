@@ -36,6 +36,7 @@ use gtm_core::wire;
 
 use crate::config::DaemonConfig;
 use crate::cover::CoverCache;
+use crate::lastfm::LastfmManager;
 use crate::library::Library;
 use crate::lyrics::LyricsManager;
 use crate::queue;
@@ -160,6 +161,25 @@ impl Cmd {
         };
         let mut state = inner.state.write().await;
 
+        // Scrobble previous track if it was played long enough
+        if let Some(prev_track) = state.current_track.take() {
+            let played_secs = state.time_pos.max(0.0);
+            let _prev_duration = state.duration;
+            let scrobble_enabled = state.scrobble.enabled;
+            let min_secs = state.scrobble.min_play_secs.unwrap_or(240);
+            let min_pct = state.scrobble.min_play_pct.unwrap_or(0.5);
+            drop(state);
+            
+            let lastfm = inner.lastfm.lock().await;
+            if scrobble_enabled && lastfm.is_ready() {
+                let _ = lastfm.scrobble(&prev_track, played_secs, min_secs, min_pct).await;
+            }
+            let mut state = inner.state.write().await;
+            state.current_track = Some(prev_track); // Restore for potential re-play
+        }
+        
+        let mut state = inner.state.write().await;
+
         let track = Daemon::resolve_track_meta(inner, std::path::Path::new(&path_owned), dur);
         if let Some(pos) = state.queue.iter().position(|t| t.path == track.path)
             && pos > 0
@@ -169,7 +189,21 @@ impl Cmd {
         state.play(track.clone())?;
         state.time_pos = start_pos;
         state.duration = dur;
-        drop(state);
+        
+        // Update Last.fm now playing
+        if inner.lastfm.lock().await.is_ready() {
+            let track_for_np = {
+                let state = inner.state.read().await;
+                if state.scrobble.enabled {
+                    state.current_track.clone()
+                } else {
+                    None
+                }
+            };
+            if let Some(ref track) = track_for_np {
+                let _ = inner.lastfm.lock().await.update_now_playing(track).await;
+            }
+        }
         Daemon::push_event(
             inner,
             DaemonEvent::PlaybackStarted {
@@ -1403,6 +1437,86 @@ impl Spotify {
     }
 }
 
+struct Lastfm;
+
+impl Lastfm {
+    pub async fn set_config(
+        inner: &DaemonInner,
+        enabled: bool,
+        api_key: Option<String>,
+        api_secret: Option<String>,
+        session_key: Option<String>,
+        min_play_secs: Option<u32>,
+        min_play_pct: Option<f32>,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut lastfm = inner.lastfm.lock().await;
+        if enabled {
+            if let (Some(api_key), Some(api_secret)) = (api_key, api_secret) {
+                lastfm.init(api_key, api_secret, session_key).await;
+            }
+        }
+        let mut state = inner.state.write().await;
+        state.set_scrobble(enabled, None, None, min_play_secs, min_play_pct)?;
+        drop(state);
+        Daemon::push_event(inner, DaemonEvent::ScrobbleConfigChanged { enabled });
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn auth_url(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let lastfm = inner.lastfm.lock().await;
+        if let Some(url) = lastfm.auth_url() {
+            Ok(DaemonRes::LastfmAuthUrlRes { url })
+        } else {
+            Ok(DaemonRes::Error {
+                message: "Last.fm API key/secret not configured".into(),
+            })
+        }
+    }
+
+    pub async fn authenticate(inner: &DaemonInner, token: &str) -> Result<DaemonRes, CoreError> {
+        let mut lastfm = inner.lastfm.lock().await;
+        match lastfm.authenticate(token).await {
+            Ok(session_key) => {
+                let mut state = inner.state.write().await;
+                state.scrobble.session_token = Some(session_key.clone());
+                drop(state);
+                Daemon::save_state(inner);
+                Ok(DaemonRes::Ok)
+            }
+            Err(e) => Ok(DaemonRes::Error { message: e }),
+        }
+    }
+
+    pub async fn status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let lastfm = inner.lastfm.lock().await;
+        let state = inner.state.read().await;
+        let enabled = state.scrobble.enabled;
+        let api_key = state.scrobble.api_key.clone();
+        let session_token = state.scrobble.session_token.clone();
+        drop(state);
+        let ready = lastfm.is_ready();
+        Ok(DaemonRes::LastfmStatusRes {
+            enabled,
+            api_key,
+            session_token,
+            ready,
+        })
+    }
+
+    pub async fn clear(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let mut lastfm = inner.lastfm.lock().await;
+        lastfm.clear_session().await;
+        let mut state = inner.state.write().await;
+        state.scrobble.enabled = false;
+        state.scrobble.api_key = None;
+        state.scrobble.session_token = None;
+        drop(state);
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+}
+
 struct Queue;
 
 impl Queue {
@@ -2038,6 +2152,7 @@ struct DaemonInner {
     event_tx: broadcast::Sender<DaemonEvent>,
     cover_cache: tokio::sync::Mutex<Option<CoverCache>>,
     lyrics_manager: Option<LyricsManager>,
+    lastfm: tokio::sync::Mutex<LastfmManager>,
     #[cfg(feature = "youtube")]
     youtube: Arc<tokio::sync::Mutex<YoutubeManager>>,
     spotify: tokio::sync::Mutex<SpotifyManager>,
@@ -2140,13 +2255,14 @@ impl Daemon {
             crate::config::AudioBackendKind::Rodio => "rodio",
         };
 
-        let inner = Arc::new(DaemonInner {
+let inner = Arc::new(DaemonInner {
             state,
             mixer: tokio::sync::Mutex::new(mixer),
             config,
             event_tx,
             cover_cache: tokio::sync::Mutex::new(Some(CoverCache::new(cache_dir.clone()))),
             lyrics_manager: Some(LyricsManager::with_cache_dir(cache_dir.join("lyrics"))),
+            lastfm: tokio::sync::Mutex::new(LastfmManager::new()),
             #[cfg(feature = "youtube")]
             youtube: Arc::new(tokio::sync::Mutex::new(YoutubeManager::new())),
             spotify: tokio::sync::Mutex::new(SpotifyManager::new(config_dir.clone())),
@@ -2815,6 +2931,27 @@ impl Daemon {
                 artists,
                 album,
             } => Spotify::resolve_track(inner, name, artists, album).await,
+            DaemonReq::LastfmSetConfig {
+                enabled,
+                api_key,
+                api_secret,
+                session_key,
+                min_play_secs,
+                min_play_pct,
+            } => Lastfm::set_config(
+                inner,
+                *enabled,
+                api_key.clone(),
+                api_secret.clone(),
+                session_key.clone(),
+                *min_play_secs,
+                *min_play_pct,
+            )
+            .await,
+            DaemonReq::LastfmAuthUrl => Lastfm::auth_url(inner).await,
+            DaemonReq::LastfmAuthenticate { token } => Lastfm::authenticate(inner, token).await,
+            DaemonReq::LastfmStatus => Lastfm::status(inner).await,
+            DaemonReq::LastfmClear => Lastfm::clear(inner).await,
             DaemonReq::SetSleepTimer { minutes } => Cmd::set_sleep_timer(inner, *minutes).await,
             DaemonReq::CancelSleepTimer => Cmd::cancel_sleep_timer(inner).await,
             DaemonReq::ClearCache { what } => Cmd::clear_cache(inner, *what).await,
@@ -3080,6 +3217,24 @@ impl Daemon {
             let _ = mixer.stop();
         }
         *inner.crossfade_loaded_for.lock().await = None;
+        
+        // Scrobble current track if it was played long enough
+        let (track, played_secs, _duration) = {
+            let state = inner.state.read().await;
+            (state.current_track.clone(), state.time_pos, state.duration)
+        };
+        if let Some(ref track) = track {
+            let lastfm = inner.lastfm.lock().await;
+            let state = inner.state.read().await;
+            if state.scrobble.enabled && lastfm.is_ready() {
+                let min_secs = state.scrobble.min_play_secs.unwrap_or(240);
+                let min_pct = state.scrobble.min_play_pct.unwrap_or(0.5);
+                drop(state);
+                let played_secs = played_secs.max(0.0);
+                let _ = lastfm.scrobble(track, played_secs, min_secs, min_pct).await;
+            }
+        }
+        
         let mut state = inner.state.write().await;
         state.status = PlaybackStatus::Stopped;
         state.current_track = None;
@@ -3203,6 +3358,26 @@ impl Daemon {
     async fn finish_crossfade(inner: &DaemonInner) {
         let actual = inner.mixer.lock().await.current_position();
         *inner.crossfade_loaded_for.lock().await = None;
+        
+        // Get previous track info for scrobbling before advancing
+        let (prev_track, prev_time_pos, _prev_duration) = {
+            let state = inner.state.read().await;
+            (state.current_track.clone(), state.time_pos, state.duration)
+        };
+        
+        // Scrobble the previous track if it was played long enough
+        if let Some(ref track) = prev_track {
+            let lastfm = inner.lastfm.lock().await;
+            let state = inner.state.read().await;
+            if state.scrobble.enabled && lastfm.is_ready() {
+                let min_secs = state.scrobble.min_play_secs.unwrap_or(240);
+                let min_pct = state.scrobble.min_play_pct.unwrap_or(0.5);
+                drop(state);
+                let played_secs = prev_time_pos.max(0.0);
+                let _ = lastfm.scrobble(track, played_secs, min_secs, min_pct).await;
+            }
+        }
+        
         match Self::step_next(inner).await {
             Ok(Some(mut next)) => {
                 let dur = inner.mixer.lock().await.duration();
@@ -3213,6 +3388,13 @@ impl Daemon {
                     state.time_pos = actual;
                     state.current_track = Some(next.clone());
                     state.duration = dur;
+                }
+                // Update Last.fm now playing for the new track
+                if let Some(ref track) = inner.state.read().await.current_track {
+                    let lastfm = inner.lastfm.lock().await;
+                    if lastfm.is_ready() {
+                        let _ = lastfm.update_now_playing(track).await;
+                    }
                 }
                 Self::push_event(
                     inner,

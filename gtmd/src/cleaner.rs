@@ -4,68 +4,94 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use regex::Regex;
+use std::sync::OnceLock;
+
 /// Returns `(artist_option, cleaned_title)`.
 pub fn clean_youtube_title(title: &str) -> (Option<String>, String) {
     let mut result = title.to_string();
 
-    // Data-driven literal strips. Each pass removes every occurrence of the
-    // substring. Grouped by category; compound labels are listed before their
-    // shorter components so nothing is left half-stripped.
-    const LITERAL_TAGS: &[&str] = &[
-        // Official media tags
-        "(Official Audio)",
-        "(Official Music Video)",
-        "(Official Video)",
-        "(Official Lyric Video)",
-        "(Official Visualizer)",
-        "[Official Audio]",
-        "[Official Music Video]",
-        "[Official Video]",
-        "[Official Lyric Video]",
-        "[Official Visualizer]",
-        "(Lyric Video)",
-        "[Lyric Video]",
-        "(Audio)",
-        "(Video)",
-        "(Music Video)",
-        // Quality tags
-        "[HD]",
-        "[4K]",
-        "[8K]",
-        "[1080p]",
-        "[720p]",
-        "[480p]",
-        "(HD)",
-        "(4K)",
-        "(8K)",
-        "(1080p)",
-        "(720p)",
-        "(480p)",
-        // Explicit / clean
-        "(Explicit)",
-        "(Clean)",
-        "[Explicit]",
-        "[Clean]",
-    ];
-    for tag in LITERAL_TAGS {
-        result = result.replace(tag, "");
-    }
+    // Case-insensitive regex patterns for noise removal.
+    // Each pattern removes every occurrence (global replace).
+    // Ordered: longer/more specific patterns first.
+    static NOISE_PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
+    let patterns = NOISE_PATTERNS.get_or_init(|| {
+        vec![
+            // Visualizers and similar
+            Regex::new(r"(?i)\bvisualizer\b").unwrap(),
+            Regex::new(r"(?i)\bvisualiser\b").unwrap(),
+            // Lyric variants
+            Regex::new(r"(?i)\blyric\s*video\b").unwrap(),
+            Regex::new(r"(?i)\blyrics\s*video\b").unwrap(),
+            Regex::new(r"(?i)\bwith\s*lyrics\b").unwrap(),
+            Regex::new(r"(?i)\blyrics?\b").unwrap(),
+            // Karaoke / sing-along
+            Regex::new(r"(?i)\bkaraoke\b").unwrap(),
+            // Screensaver / ambient / background
+            Regex::new(r"(?i)\bscreensaver\b").unwrap(),
+            Regex::new(r"(?i)\bambient\b").unwrap(),
+            Regex::new(r"(?i)\bbackground\b").unwrap(),
+            // Audio only / instrumental / acoustic
+            Regex::new(r"(?i)\baudio\s*only\b").unwrap(),
+            Regex::new(r"(?i)\binstrumental\b").unwrap(),
+            Regex::new(r"(?i)\bacoustic\b").unwrap(),
+            // Live / performance
+            Regex::new(r"(?i)\blive\b").unwrap(),
+            Regex::new(r"(?i)\bperformance\b").unwrap(),
+            // Remix / edit / version variants
+            Regex::new(r"(?i)\bremix\b").unwrap(),
+            Regex::new(r"(?i)\bedit\b").unwrap(),
+            Regex::new(r"(?i)\bextended\b").unwrap(),
+            Regex::new(r"(?i)\bversion\b").unwrap(),
+            Regex::new(r"(?i)\boriginal\b").unwrap(),
+            Regex::new(r"(?i)\bmix\b").unwrap(),
+            Regex::new(r"(?i)\bradio\s*edit\b").unwrap(),
+            Regex::new(r"(?i)\balbum\s*version\b").unwrap(),
+            Regex::new(r"(?i)\bsingle\s*version\b").unwrap(),
+            // Quality tags
+            Regex::new(r"(?i)\bhd\b").unwrap(),
+            Regex::new(r"(?i)\b4k\b").unwrap(),
+            Regex::new(r"(?i)\b8k\b").unwrap(),
+            Regex::new(r"(?i)\b1080p\b").unwrap(),
+            Regex::new(r"(?i)\b720p\b").unwrap(),
+            Regex::new(r"(?i)\b480p\b").unwrap(),
+            // Explicit / clean
+            Regex::new(r"(?i)\bexplicit\b").unwrap(),
+            Regex::new(r"(?i)\bclean\b").unwrap(),
+            // Official tags (with brackets/parens)
+            Regex::new(r"(?i)\(official\s*audio\)").unwrap(),
+            Regex::new(r"(?i)\(official\s*music\s*video\)").unwrap(),
+            Regex::new(r"(?i)\(official\s*video\)").unwrap(),
+            Regex::new(r"(?i)\(official\s*lyric\s*video\)").unwrap(),
+            Regex::new(r"(?i)\(official\s*visualizer\)").unwrap(),
+            Regex::new(r"(?i)\(lyric\s*video\)").unwrap(),
+            Regex::new(r"(?i)\(audio\)").unwrap(),
+            Regex::new(r"(?i)\(video\)").unwrap(),
+            Regex::new(r"(?i)\(music\s*video\)").unwrap(),
+            Regex::new(r"(?i)\(official\)").unwrap(),
+            Regex::new(r"(?i)\(explicit\)").unwrap(),
+            Regex::new(r"(?i)\(clean\)").unwrap(),
+            Regex::new(r"(?i)\[official\s*audio\]").unwrap(),
+            Regex::new(r"(?i)\[official\s*music\s*video\]").unwrap(),
+            Regex::new(r"(?i)\[official\s*video\]").unwrap(),
+            Regex::new(r"(?i)\[official\s*lyric\s*video\]").unwrap(),
+            Regex::new(r"(?i)\[official\s*visualizer\]").unwrap(),
+            Regex::new(r"(?i)\[lyric\s*video\]").unwrap(),
+            Regex::new(r"(?i)\[explicit\]").unwrap(),
+            Regex::new(r"(?i)\[clean\]").unwrap(),
+            // Remaster / remastered
+            Regex::new(r"(?i)\bremaster(?:ed)?\b").unwrap(),
+            // Full album / full track
+            Regex::new(r"(?i)\bfull\s*album\b").unwrap(),
+            Regex::new(r"(?i)\bfull\s*track\b").unwrap(),
+            // Compilation / various artists
+            Regex::new(r"(?i)\bcompilation\b").unwrap(),
+            Regex::new(r"(?i)\bvarious\s*artists?\b").unwrap(),
+        ]
+    });
 
-    // Generic filler words, longest-first so "Official Lyric Video" is removed
-    // before its "Official" component.
-    const FILLERS: &[&str] = &[
-        "Official Lyric Video",
-        "Official Music Video",
-        "Official Video",
-        "Official Audio",
-        "Lyric Video",
-        "Audio Only",
-        "With Lyrics",
-        "Official",
-        "Music",
-    ];
-    for filler in FILLERS {
-        result = result.replace(filler, "");
+    for re in patterns {
+        result = re.replace_all(&result, "").to_string();
     }
 
     // Strip year: (2024), [2024]

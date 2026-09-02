@@ -7,10 +7,93 @@
 use std::path::{Path, PathBuf};
 
 use reqwest::Client;
+use urlencoding::encode;
 
 use gtm_core::track::{LrcData, LrcLine, TrackInfo};
 
 const LRCLIB_API: &str = "https://lrclib.net/api";
+
+/// Similarity threshold for fuzzy matching artist/title against search results.
+const FUZZY_THRESHOLD: f64 = 0.75;
+
+/// Calculate Jaro-Winkler similarity between two strings (0.0 to 1.0).
+/// Used for fuzzy matching track/artist names against search results.
+fn jaro_winkler_similarity(a: &str, b: &str) -> f64 {
+    let a = a.to_lowercase();
+    let b = b.to_lowercase();
+
+    if a == b {
+        return 1.0;
+    }
+    if a.is_empty() || b.is_empty() {
+        return 0.0;
+    }
+
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let a_len = a_chars.len();
+    let b_len = b_chars.len();
+
+    let match_distance = (a_len.max(b_len) / 2).max(1) - 1;
+    let mut a_matches = vec![false; a_len];
+    let mut b_matches = vec![false; b_len];
+    let mut matches = 0;
+    let mut transpositions = 0;
+
+    for i in 0..a_len {
+        let start = i.saturating_sub(match_distance);
+        let end = (i + match_distance + 1).min(b_len);
+        for j in start..end {
+            if b_matches[j] {
+                continue;
+            }
+            if a_chars[i] != b_chars[j] {
+                continue;
+            }
+            a_matches[i] = true;
+            b_matches[j] = true;
+            matches += 1;
+            break;
+        }
+    }
+
+    if matches == 0 {
+        return 0.0;
+    }
+
+    let mut k = 0;
+    for i in 0..a_len {
+        if !a_matches[i] {
+            continue;
+        }
+        while !b_matches[k] {
+            k += 1;
+        }
+        if a_chars[i] != b_chars[k] {
+            transpositions += 1;
+        }
+        k += 1;
+    }
+
+    let jaro = (matches as f64 / a_len as f64
+        + matches as f64 / b_len as f64
+        + (matches as f64 - transpositions as f64 / 2.0) / matches as f64)
+        / 3.0;
+
+    let prefix_len = a_chars
+        .iter()
+        .zip(b_chars.iter())
+        .take_while(|(ca, cb)| ca == cb)
+        .count()
+        .min(4);
+
+    jaro + (0.1 * prefix_len as f64 * (1.0 - jaro))
+}
+
+/// Check if two strings match fuzzily above threshold.
+fn fuzzy_match(a: &str, b: &str) -> bool {
+    jaro_winkler_similarity(a, b) >= FUZZY_THRESHOLD
+}
 
 #[derive(Clone)]
 pub struct LyricsManager {
@@ -29,7 +112,7 @@ impl Default for LyricsManager {
 impl LyricsManager {
     pub fn new() -> Self {
         let client = Client::builder()
-            .user_agent("gtm/0.2")
+            .user_agent("gtm/0.2 (+https://github.com/prjctimg/gtm.rs)")
             .build()
             .unwrap_or_else(|_| Client::new());
         Self {
@@ -212,20 +295,22 @@ impl LyricsManager {
     /// match without touching sidecar files. Used by the `gtm lyrics` CLI.
     pub async fn search(&self, artist: &str, title: &str) -> Option<LrcData> {
         let query = format!("{} {}", artist, title);
-        let url = format!("{}/search?q={}", LRCLIB_API, urlencoding(&query),);
+        let url = format!("{}/search?q={}", LRCLIB_API, encode(&query));
 
         for attempt in 0..2 {
             if let Ok(resp) = self.client.get(&url).send().await
                 && resp.status().is_success()
                 && let Ok(results) = resp.json::<Vec<serde_json::Value>>().await
             {
+                // Try fuzzy match first
                 for result in &results {
-                    let artist_name = result.get("artistName")?.as_str()?.to_lowercase();
-                    let track_name = result.get("trackName")?.as_str()?.to_lowercase();
-                    if artist_name == artist.to_lowercase() && track_name == title.to_lowercase() {
+                    let artist_name = result.get("artistName")?.as_str()?;
+                    let track_name = result.get("trackName")?.as_str()?;
+                    if fuzzy_match(artist_name, artist) && fuzzy_match(track_name, title) {
                         return parse_lrclib_response(result);
                     }
                 }
+                // Fallback to first result
                 return results.first().and_then(parse_lrclib_response);
             }
             if attempt == 0 {
@@ -300,9 +385,9 @@ impl LyricsManager {
         let mut url = format!(
             "{}/get?artist_name={}&track_name={}&album_name={}",
             LRCLIB_API,
-            urlencoding(&track.artist),
-            urlencoding(&track.title),
-            urlencoding(&track.album),
+            encode(&track.artist),
+            encode(&track.title),
+            encode(&track.album),
         );
         if track.duration >= 1.0 {
             url.push_str(&format!("&duration={}", track.duration as u64));
@@ -319,19 +404,18 @@ impl LyricsManager {
 
     async fn fetch_lrclib_search(&self, track: &TrackInfo) -> Option<LrcData> {
         let query = format!("{} {}", track.artist, track.title);
-        let url = format!("{}/search?q={}", LRCLIB_API, urlencoding(&query),);
+        let url = format!("{}/search?q={}", LRCLIB_API, encode(&query));
 
         for attempt in 0..2 {
             if let Ok(resp) = self.client.get(&url).send().await
                 && resp.status().is_success()
                 && let Ok(results) = resp.json::<Vec<serde_json::Value>>().await
             {
+                // Try fuzzy match first
                 for result in &results {
-                    let artist_name = result.get("artistName")?.as_str()?.to_lowercase();
-                    let track_name = result.get("trackName")?.as_str()?.to_lowercase();
-                    if artist_name == track.artist.to_lowercase()
-                        && track_name == track.title.to_lowercase()
-                    {
+                    let artist_name = result.get("artistName")?.as_str()?;
+                    let track_name = result.get("trackName")?.as_str()?;
+                    if fuzzy_match(artist_name, &track.artist) && fuzzy_match(track_name, &track.title) {
                         return parse_lrclib_response(result);
                     }
                 }
@@ -348,7 +432,7 @@ impl LyricsManager {
         if title.is_empty() {
             return None;
         }
-        let url = format!("{}/search?q={}", LRCLIB_API, urlencoding(title));
+        let url = format!("{}/search?q={}", LRCLIB_API, encode(title));
 
         let resp = self.client.get(&url).send().await.ok()?;
         if !resp.status().is_success() {
@@ -356,10 +440,10 @@ impl LyricsManager {
         }
 
         let results: Vec<serde_json::Value> = resp.json().await.ok()?;
-        let q = title.to_lowercase();
+        // Try fuzzy match against title
         for result in &results {
-            let track_name = result.get("trackName")?.as_str()?.to_lowercase();
-            if track_name == q {
+            let track_name = result.get("trackName")?.as_str()?;
+            if fuzzy_match(track_name, title) {
                 return parse_lrclib_response(result);
             }
         }
@@ -481,16 +565,6 @@ fn parse_lrc_timestamp(ts: &str) -> Option<f64> {
         }
         _ => None,
     }
-}
-
-fn urlencoding(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
-            ' ' => "%20".to_string(),
-            other => format!("%{:02X}", other as u8),
-        })
-        .collect()
 }
 
 #[cfg(test)]

@@ -9,6 +9,7 @@ pub mod config;
 pub mod cover;
 pub mod daemon;
 pub mod deezer;
+pub mod lastfm;
 pub mod library;
 pub mod lyrics;
 pub mod oauth;
