@@ -55,7 +55,9 @@ impl LastfmManager {
 
     /// Check if Last.fm is configured and authenticated.
     pub fn is_ready(&self) -> bool {
-        self.api_key.is_some() && self.api_secret.is_some() && self.session_key.blocking_lock().is_some()
+        self.api_key.is_some()
+            && self.api_secret.is_some()
+            && self.session_key.blocking_lock().is_some()
     }
 
     /// Get the authorization URL for the user to grant permission.
@@ -83,16 +85,25 @@ impl LastfmManager {
             ("format", "json"),
         ];
 
-        let resp = self.client.post(LASTFM_API_URL).form(&params).send().await
+        let resp = self
+            .client
+            .post(LASTFM_API_URL)
+            .form(&params)
+            .send()
+            .await
             .map_err(|e| format!("Request failed: {e}"))?;
 
-        let json: serde_json::Value = resp.json().await.map_err(|e| format!("Invalid JSON: {e}"))?;
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Invalid JSON: {e}"))?;
 
         if let Some(error) = json.get("error") {
             return Err(format!("Last.fm error: {}", error));
         }
 
-        let session_key = json.get("session")
+        let session_key = json
+            .get("session")
             .and_then(|s| s.get("key"))
             .and_then(|k| k.as_str())
             .ok_or("No session key in response")?;
@@ -111,15 +122,19 @@ impl LastfmManager {
 
         // Throttle: Last.fm recommends max 1 update per minute
         let mut last_np = self.last_now_playing.lock().await;
-        if let Some(last) = *last_np {
-            if last.elapsed() < Duration::from_secs(60) {
-                return Ok(()); // Skip throttled update
-            }
+        if let Some(last) = *last_np
+            && last.elapsed() < Duration::from_secs(60)
+        {
+            return Ok(()); // Skip throttled update
         }
         *last_np = Some(Instant::now());
         drop(last_np);
 
-        let session_key = self.session_key.lock().await.clone()
+        let session_key = self
+            .session_key
+            .lock()
+            .await
+            .clone()
             .ok_or("No Last.fm session")?;
 
         let track_name = track.title.clone();
@@ -146,10 +161,18 @@ impl LastfmManager {
             ("format", "json"),
         ];
 
-        let resp = self.client.post(LASTFM_API_URL).form(&params).send().await
+        let resp = self
+            .client
+            .post(LASTFM_API_URL)
+            .form(&params)
+            .send()
+            .await
             .map_err(|e| format!("Request failed: {e}"))?;
 
-        let json: serde_json::Value = resp.json().await.map_err(|e| format!("Invalid JSON: {e}"))?;
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Invalid JSON: {e}"))?;
 
         if let Some(error) = json.get("error") {
             warn!("Last.fm now playing failed: {}", error);
@@ -162,7 +185,13 @@ impl LastfmManager {
 
     /// Scrobble a track to Last.fm.
     /// Only scrobbles if track meets minimum play criteria.
-    pub async fn scrobble(&self, track: &TrackInfo, played_secs: f64, min_secs: u32, min_pct: f32) -> Result<(), String> {
+    pub async fn scrobble(
+        &self,
+        track: &TrackInfo,
+        played_secs: f64,
+        min_secs: u32,
+        min_pct: f32,
+    ) -> Result<(), String> {
         if !self.is_ready() {
             return Err("Last.fm not configured".into());
         }
@@ -171,21 +200,30 @@ impl LastfmManager {
         let pct_played = played_secs / duration;
 
         if played_secs < min_secs as f64 && pct_played < min_pct as f64 {
-            debug!("Track didn't meet scrobble criteria: {:.0}s/{:.0}s ({:.0}%)", played_secs, duration, pct_played * 100.0);
+            debug!(
+                "Track didn't meet scrobble criteria: {:.0}s/{:.0}s ({:.0}%)",
+                played_secs,
+                duration,
+                pct_played * 100.0
+            );
             return Ok(());
         }
 
         // Throttle: avoid rapid successive scrobbles
         let mut last_scrobble = self.last_scrobble.lock().await;
-        if let Some(last) = *last_scrobble {
-            if last.elapsed() < Duration::from_secs(5) {
-                return Ok(()); // Skip if too recent
-            }
+        if let Some(last) = *last_scrobble
+            && last.elapsed() < Duration::from_secs(5)
+        {
+            return Ok(()); // Skip if too recent
         }
         *last_scrobble = Some(Instant::now());
         drop(last_scrobble);
 
-        let session_key = self.session_key.lock().await.clone()
+        let session_key = self
+            .session_key
+            .lock()
+            .await
+            .clone()
             .ok_or("No Last.fm session")?;
 
         let track_name = track.title.clone();
@@ -215,10 +253,18 @@ impl LastfmManager {
             ("format", "json"),
         ];
 
-        let resp = self.client.post(LASTFM_API_URL).form(&params).send().await
+        let resp = self
+            .client
+            .post(LASTFM_API_URL)
+            .form(&params)
+            .send()
+            .await
             .map_err(|e| format!("Request failed: {e}"))?;
 
-        let json: serde_json::Value = resp.json().await.map_err(|e| format!("Invalid JSON: {e}"))?;
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Invalid JSON: {e}"))?;
 
         if let Some(error) = json.get("error") {
             warn!("Last.fm scrobble failed: {}", error);
@@ -238,9 +284,9 @@ impl LastfmManager {
     /// Generate API signature for Last.fm request.
     fn sign_params(&self, params: &[(&str, &str)]) -> String {
         let api_secret = self.api_secret.as_ref().unwrap();
-        let mut sorted: Vec<(&str, &str)> = params.iter().copied().collect();
+        let mut sorted: Vec<(&str, &str)> = params.to_vec();
         sorted.sort_by_key(|(k, _)| *k);
-        
+
         let mut sig_string = String::new();
         for (k, v) in sorted {
             sig_string.push_str(k);

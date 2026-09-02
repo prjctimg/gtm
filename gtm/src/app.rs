@@ -605,7 +605,9 @@ fn try_open_browser(url: &str) {
             }
         }
         // All openers failed: print URL to stdout so user can manually open it.
-        eprintln!("\n[gtm] Could not open browser automatically.\nPlease open this URL in your browser to authorize gtm:\n{url}\n");
+        eprintln!(
+            "\n[gtm] Could not open browser automatically.\nPlease open this URL in your browser to authorize gtm:\n{url}\n"
+        );
     });
 }
 

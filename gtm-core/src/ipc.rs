@@ -1313,13 +1313,26 @@ impl DaemonRes {
                 }
             }
             "lastfm_auth_url" => {
-                let url = data.get("url").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                let url = data
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 DaemonRes::LastfmAuthUrlRes { url }
             }
             "lastfm_status" => {
-                let enabled = data.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false);
-                let api_key = data.get("api_key").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let session_token = data.get("session_token").and_then(|v| v.as_str()).map(|s| s.to_string());
+                let enabled = data
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let api_key = data
+                    .get("api_key")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let session_token = data
+                    .get("session_token")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
                 let ready = data.get("ready").and_then(|v| v.as_bool()).unwrap_or(false);
                 DaemonRes::LastfmStatusRes {
                     enabled,

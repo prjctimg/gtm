@@ -415,7 +415,9 @@ impl LyricsManager {
                 for result in &results {
                     let artist_name = result.get("artistName")?.as_str()?;
                     let track_name = result.get("trackName")?.as_str()?;
-                    if fuzzy_match(artist_name, &track.artist) && fuzzy_match(track_name, &track.title) {
+                    if fuzzy_match(artist_name, &track.artist)
+                        && fuzzy_match(track_name, &track.title)
+                    {
                         return parse_lrclib_response(result);
                     }
                 }

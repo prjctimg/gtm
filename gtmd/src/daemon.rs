@@ -169,15 +169,17 @@ impl Cmd {
             let min_secs = state.scrobble.min_play_secs.unwrap_or(240);
             let min_pct = state.scrobble.min_play_pct.unwrap_or(0.5);
             drop(state);
-            
+
             let lastfm = inner.lastfm.lock().await;
             if scrobble_enabled && lastfm.is_ready() {
-                let _ = lastfm.scrobble(&prev_track, played_secs, min_secs, min_pct).await;
+                let _ = lastfm
+                    .scrobble(&prev_track, played_secs, min_secs, min_pct)
+                    .await;
             }
             let mut state = inner.state.write().await;
             state.current_track = Some(prev_track); // Restore for potential re-play
         }
-        
+
         let mut state = inner.state.write().await;
 
         let track = Daemon::resolve_track_meta(inner, std::path::Path::new(&path_owned), dur);
@@ -189,7 +191,7 @@ impl Cmd {
         state.play(track.clone())?;
         state.time_pos = start_pos;
         state.duration = dur;
-        
+
         // Update Last.fm now playing
         if inner.lastfm.lock().await.is_ready() {
             let track_for_np = {
@@ -1450,10 +1452,8 @@ impl Lastfm {
         min_play_pct: Option<f32>,
     ) -> Result<DaemonRes, CoreError> {
         let mut lastfm = inner.lastfm.lock().await;
-        if enabled {
-            if let (Some(api_key), Some(api_secret)) = (api_key, api_secret) {
-                lastfm.init(api_key, api_secret, session_key).await;
-            }
+        if enabled && let (Some(api_key), Some(api_secret)) = (api_key, api_secret) {
+            lastfm.init(api_key, api_secret, session_key).await;
         }
         let mut state = inner.state.write().await;
         state.set_scrobble(enabled, None, None, min_play_secs, min_play_pct)?;
@@ -2255,7 +2255,7 @@ impl Daemon {
             crate::config::AudioBackendKind::Rodio => "rodio",
         };
 
-let inner = Arc::new(DaemonInner {
+        let inner = Arc::new(DaemonInner {
             state,
             mixer: tokio::sync::Mutex::new(mixer),
             config,
@@ -2938,16 +2938,18 @@ let inner = Arc::new(DaemonInner {
                 session_key,
                 min_play_secs,
                 min_play_pct,
-            } => Lastfm::set_config(
-                inner,
-                *enabled,
-                api_key.clone(),
-                api_secret.clone(),
-                session_key.clone(),
-                *min_play_secs,
-                *min_play_pct,
-            )
-            .await,
+            } => {
+                Lastfm::set_config(
+                    inner,
+                    *enabled,
+                    api_key.clone(),
+                    api_secret.clone(),
+                    session_key.clone(),
+                    *min_play_secs,
+                    *min_play_pct,
+                )
+                .await
+            }
             DaemonReq::LastfmAuthUrl => Lastfm::auth_url(inner).await,
             DaemonReq::LastfmAuthenticate { token } => Lastfm::authenticate(inner, token).await,
             DaemonReq::LastfmStatus => Lastfm::status(inner).await,
@@ -3217,7 +3219,7 @@ let inner = Arc::new(DaemonInner {
             let _ = mixer.stop();
         }
         *inner.crossfade_loaded_for.lock().await = None;
-        
+
         // Scrobble current track if it was played long enough
         let (track, played_secs, _duration) = {
             let state = inner.state.read().await;
@@ -3234,7 +3236,7 @@ let inner = Arc::new(DaemonInner {
                 let _ = lastfm.scrobble(track, played_secs, min_secs, min_pct).await;
             }
         }
-        
+
         let mut state = inner.state.write().await;
         state.status = PlaybackStatus::Stopped;
         state.current_track = None;
@@ -3358,13 +3360,13 @@ let inner = Arc::new(DaemonInner {
     async fn finish_crossfade(inner: &DaemonInner) {
         let actual = inner.mixer.lock().await.current_position();
         *inner.crossfade_loaded_for.lock().await = None;
-        
+
         // Get previous track info for scrobbling before advancing
         let (prev_track, prev_time_pos, _prev_duration) = {
             let state = inner.state.read().await;
             (state.current_track.clone(), state.time_pos, state.duration)
         };
-        
+
         // Scrobble the previous track if it was played long enough
         if let Some(ref track) = prev_track {
             let lastfm = inner.lastfm.lock().await;
@@ -3377,7 +3379,7 @@ let inner = Arc::new(DaemonInner {
                 let _ = lastfm.scrobble(track, played_secs, min_secs, min_pct).await;
             }
         }
-        
+
         match Self::step_next(inner).await {
             Ok(Some(mut next)) => {
                 let dur = inner.mixer.lock().await.duration();
