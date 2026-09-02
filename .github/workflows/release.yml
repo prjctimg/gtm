@@ -785,7 +785,7 @@ jobs:
             local attempt
             for attempt in 1 2 3 4 5 6; do
               local out
-              if out="$(cargo publish --locked -p "${crate}" 2>&1)"; then
+              if out="$(cargo publish -p "${crate}" 2>&1)"; then
                 echo "${crate} v${version} published"
                 return 0
               fi
