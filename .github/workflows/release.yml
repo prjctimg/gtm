@@ -319,8 +319,16 @@ jobs:
             -w /work \
             -e HOME=/root \
             lfdevs/archlinuxarm:base-devel \
-            /bin/bash -c "echo 'DisableSandboxFilesystem' >> /etc/pacman.conf && pacman-key --init && pacman-key --populate archlinuxarm && pacman -Syu --noconfirm && curl -L -o /usr/bin/pandoc https://github.com/jgm/pandoc/releases/download/3.1.11.1/pandoc-3.1.11.1-linux-arm64.tar.gz && tar -xzf /usr/bin/pandoc -C /usr/bin --strip-components=1 2>/dev/null || curl -L -o /usr/bin/pandoc https://github.com/jgm/pandoc/releases/download/3.1.11.1/pandoc-3.1.11.1-linux-arm64.tar.gz && tar -xzf - -C /usr/bin < /usr/bin/pandoc && chmod +x /usr/bin/pandoc && /bin/bash /work/scripts/build/arch-in-container.sh \
-              aarch64-linux-arch ${{ needs.tag.outputs.version }} aarch64"
+            /bin/bash -c "
+              echo 'DisableSandboxFilesystem' >> /etc/pacman.conf &&
+              pacman-key --init &&
+              pacman-key --populate archlinuxarm &&
+              pacman -Syu --noconfirm &&
+              curl -L -o /tmp/pandoc.tar.gz https://github.com/jgm/pandoc/releases/download/3.1.11.1/pandoc-3.1.11.1-linux-arm64.tar.gz &&
+              tar -xzf /tmp/pandoc.tar.gz -C /usr/bin --strip-components=1 &&
+              chmod +x /usr/bin/pandoc &&
+              /bin/bash /work/scripts/build/arch-in-container.sh aarch64-linux-arch ${{ needs.tag.outputs.version }} aarch64
+            "
 
       - name: Install Android NDK + tools
         if: matrix.family == 'android'
