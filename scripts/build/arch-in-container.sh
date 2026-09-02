@@ -9,10 +9,16 @@ cd /work
 
 export RUSTFLAGS="-C linker=clang -C link-arg=-fuse-ld=mold"
 
+# On ARM64, pandoc is not in Arch Linux ARM repos; install binary before calling this script.
+# Skip pandoc in pacman install if already available (e.g., pre-installed on aarch64).
+if [[ "$(uname -m)" == "aarch64" ]] && command -v pandoc &>/dev/null; then
+    PACMAN_PACKAGES="base-devel rust alsa-lib cmake clang lld mold git libarchive zstd"
+else
+    PACMAN_PACKAGES="base-devel rust pandoc alsa-lib cmake clang lld mold git libarchive zstd"
+fi
+
 pacman -Syu --noconfirm
-pacman -S --noconfirm --needed \
-  base-devel rust pandoc alsa-lib cmake clang lld mold git \
-  libarchive zstd
+pacman -S --noconfirm --needed $PACMAN_PACKAGES
 
 cargo build --release
 
