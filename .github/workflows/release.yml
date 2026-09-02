@@ -307,6 +307,7 @@ jobs:
 
       # Arch-on-ARM64 cannot run JavaScript actions inside a container, so the
       # aarch64-arch build runs the whole Arch pipeline in an ad-hoc container.
+      # Use archlinuxarm/archlinux for ARM64 (official archlinux:latest is x86_64 only).
       - name: Build Arch Linux binaries + packages (container)
         if: matrix.family == 'arch-arm'
         run: |
@@ -314,7 +315,7 @@ jobs:
             -v "$PWD":/work \
             -w /work \
             -e HOME=/root \
-            archlinux:latest \
+            archlinuxarm/archlinux \
             /bin/bash -c "pacman -Syu --noconfirm && /bin/bash /work/scripts/build/arch-in-container.sh \
               aarch64-linux-arch ${{ needs.tag.outputs.version }} aarch64"
 
