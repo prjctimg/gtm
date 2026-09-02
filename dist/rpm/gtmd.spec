@@ -3,7 +3,7 @@
 %global debug_package %{nil}
 
 Name: gtmd
-Version: 0.2.78
+Version: 0.2.79
 Release: 1%{?dist}
 Summary: gtm background audio daemon
 License: GPL-3.0-only
@@ -103,5 +103,5 @@ cargo test --workspace
 %{_datadir}/powershell/Modules/gtm.ps1
 
 %changelog
-* %{lua:print(strftime("%a %b %d %Y"))} prjctimg <prjctimg@outlook.com> - 0.2.78-1
+* %{lua:print(strftime("%a %b %d %Y"))} prjctimg <prjctimg@outlook.com> - 0.2.79-1
 - feat: config CLI flags, mouse input, real visualizer, Spotify Web search, struct refactors
