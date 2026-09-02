@@ -5,11 +5,12 @@
 [![Crates.io](https://img.shields.io/crates/v/gtm)](https://crates.io/crates/gtm)
 [![Crates.io downloads](https://img.shields.io/crates/d/gtm)](https://crates.io/crates/gtm)
 [![Docs.rs](https://docs.rs/gtm/badge.svg)](https://docs.rs/gtm)
-[![CI](https://img.shields.io/github/actions/workflow/status/prjctimg/gtm.rs/ci.yml)](https://github.com/prjctimg/gtm.rs/actions/workflows/ci.yml)
+[![CI](https://img.shields.io/github/actions/workflow/status/prjctimg/gtm.rs/ci.yml?label=CI)](https://github.com/prjctimg/gtm.rs/actions/workflows/ci.yml)
 [![License](https://img.shields.io/github/license/prjctimg/gtm.rs)](https://github.com/prjctimg/gtm.rs/blob/main/LICENSE)
 
-A terminal music player with background playback and YouTube/Spotify
-integration.
+A terminal music player (**gtm** — "goto music") with background playback and
+YouTube/Spotify integration. It is a background daemon (`gtmd`) with a client
+(`gtm`); you control it through the terminal.
 
 ## Why another (terminal) audio player ?
 
@@ -29,7 +30,7 @@ You can read about it in [this post.](https://prjctimg.me/blg/feature-rich-termi
 - **Cover art support**: rendered inline via the kitty/terminal image protocol
 - **Zero configuration**: sane defaults, fully customizable via TOML,
 - **Widget styles** : for the visualizer and progress indicator
-- **Theming**: accent colors extracted from the current track cover (reactive theming),transparent mode and 16 built-in themes
+- **Theming**: accent colors extracted from the current track cover (reactive theming), transparent mode and 12 built-in themes
 - **MPRIS**: media player controls via D-Bus (via the `mpris` feature)
 
 ## Install
@@ -96,6 +97,12 @@ backend, and starts the PulseAudio server automatically — no manual
 > Also, first launch opens your browser for authorization (no client secret needed) and the daemon exchanges the code on port `8990` (5 min timeout).
 
 ## Screenshots
+
+<!-- TODO: add screenshots -->
+
+| Now Playing | Library | Settings |
+|-------------|---------|----------|
+| ![](assets/screenshots/now-playing.png) | ![](assets/screenshots/library.png) | ![](assets/screenshots/settings.png) |
 
 ## Documentation
 
