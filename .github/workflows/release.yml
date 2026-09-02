@@ -4,8 +4,10 @@
 #
 # Targets:
 #
-#   x86_64-linux          Debian 12 container (glibc 2.36) → gtm-debian-12-x86_64.tar.gz + deb + rpm + Arch pkg
-#   aarch64-linux         Debian 12 container (glibc 2.36) → gtm-debian-12-aarch64.tar.gz + deb + rpm + Arch pkg
+#   x86_64-linux          Debian 12 container (glibc 2.36) → gtm-debian-12-x86_64.tar.gz + deb + rpm
+#   aarch64-linux         Debian 12 container (glibc 2.36) → gtm-debian-12-aarch64.tar.gz + deb + rpm
+#   x86_64-linux-arch     Arch Linux container             → gtm-arch-x86_64.tar.gz + .pkg.tar.zst
+#   aarch64-linux-arch    Arch Linux container (aarch64)   → gtm-arch-aarch64.tar.gz + .pkg.tar.zst
 #   aarch64-darwin        macOS runner                     → tar.gz
 #   aarch64-android       Ubuntu runner + cargo-ndk        → tar.gz + Termux deb
 #   x86_64-linux-musl     Alpine 3.22 container (musl)      → tar.gz + apk
@@ -26,7 +28,8 @@
 #     │         3. Assemble a complete per-target archive:
 #     │            gtm-{platform}.tar.gz for macOS/Alpine/Android,
 #     │            gtm-debian-12-{x86_64,aarch64}.tar.gz for the Debian 12
-#     │            glibc builds (bin/ man/ completions/ systemd/
+#     │            glibc builds, gtm-arch-{x86_64,aarch64}.tar.gz for the
+#     │            Arch Linux builds (bin/ man/ completions/ systemd/
 #     │            desktop/ icons/ LICENSE)
 #     │         4. Build native packages from the staged tree:
 #     │            .deb (cargo-deb, Linux), .rpm (rpmbuild, Linux),
@@ -194,6 +197,21 @@ jobs:
             link_override:
             mold_arg:
           - os: ubuntu-22.04
+            platform: x86_64-linux-arch
+            container: archlinux:latest
+            family: arch
+            link_override: -C linker=clang
+            mold_arg: -C link-arg=-fuse-ld=mold
+          - os: ubuntu-24.04-arm
+            platform: aarch64-linux-arch
+            # JavaScript actions (checkout, upload) cannot run inside Arch
+            # containers on ARM64 runners, so this job runs on the host and
+            # performs the Arch build via `docker run` (see build step).
+            container: null
+            family: arch-arm
+            link_override: -C linker=clang
+            mold_arg: -C link-arg=-fuse-ld=mold
+          - os: ubuntu-22.04
             platform: x86_64-linux-musl
             container: alpine:3.22
             family: alpine
@@ -226,6 +244,14 @@ jobs:
         run: |
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+
+      - name: Bootstrap tooling (Arch Linux container)
+        if: matrix.container == 'archlinux:latest'
+        run: |
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            base-devel rust pandoc alsa-lib cmake clang lld mold git \
+            libarchive zstd
 
       - name: Bootstrap tooling (Alpine container)
         if: matrix.container == 'alpine:3.22'
@@ -279,6 +305,19 @@ jobs:
             /bin/sh -c "apk add --no-cache bash && /bin/bash /work/scripts/build/musl-in-container.sh \
               aarch64-linux-musl ${{ needs.tag.outputs.version }} aarch64"
 
+      # Arch-on-ARM64 cannot run JavaScript actions inside a container, so the
+      # aarch64-arch build runs the whole Arch pipeline in an ad-hoc container.
+      - name: Build Arch Linux binaries + packages (container)
+        if: matrix.family == 'arch-arm'
+        run: |
+          docker run --rm \
+            -v "$PWD":/work \
+            -w /work \
+            -e HOME=/root \
+            archlinux:latest \
+            /bin/bash -c "pacman -Syu --noconfirm && /bin/bash /work/scripts/build/arch-in-container.sh \
+              aarch64-linux-arch ${{ needs.tag.outputs.version }} aarch64"
+
       - name: Install Android NDK + tools
         if: matrix.family == 'android'
         uses: nttld/setup-ndk@v1
@@ -299,7 +338,7 @@ jobs:
           cmake --build termux-elf-cleaner/build -j
 
       - name: Build release binaries
-        if: matrix.family != 'android' && matrix.family != 'alpine-arm'
+        if: matrix.family != 'android' && matrix.family != 'alpine-arm' && matrix.family != 'arch-arm'
         run: cargo build --release
 
       # Debian 12 ships glibc 2.36; guard the Linux glibc targets so a binary
@@ -331,11 +370,11 @@ jobs:
           termux-elf-cleaner/build/termux-elf-cleaner target/aarch64-linux-android/release/gtm
 
       - name: Generate manpages (pandoc)
-        if: matrix.family != 'alpine-arm'
+        if: matrix.family != 'alpine-arm' && matrix.family != 'arch-arm'
         run: ./scripts/build/manpages.sh artifacts
 
       - name: Generate shell completions
-        if: matrix.family != 'alpine-arm'
+        if: matrix.family != 'alpine-arm' && matrix.family != 'arch-arm'
         run: cargo run --release --bin release-gen completions artifacts
 
       # ── Complete per-target archive (bin + man + completions + service) ──
@@ -389,6 +428,28 @@ jobs:
           cp install.sh         "$root/"
           tar czf "release-assets/gtm-${platform}.tar.gz" "$root"
 
+      - name: Package complete archive (Arch Linux)
+        if: matrix.family == 'arch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          platform="${{ matrix.platform }}"
+          arch="${platform%-linux-arch}"
+          root="gtm-arch-${arch}"
+          mkdir -p release-assets \
+            "$root/bin" "$root/man/man1" "$root/completions" \
+            "$root/systemd" "$root/desktop" "$root/icons"
+          cp target/release/gtm  "$root/bin/"
+          cp target/release/gtmd "$root/bin/"
+          cp artifacts/man/*.1        "$root/man/man1/"
+          cp artifacts/completions/*  "$root/completions/"
+          cp dist/gtmd.service  "$root/systemd/"
+          cp dist/gtm.desktop   "$root/desktop/"
+          cp assets/gtm.svg     "$root/icons/"
+          cp LICENSE            "$root/"
+          cp install.sh         "$root/"
+          tar czf "release-assets/gtm-arch-${arch}.tar.gz" "$root"
+
       - name: Package complete archive (Android)
         if: matrix.family == 'android'
         shell: bash
@@ -435,7 +496,7 @@ jobs:
           rm -rf gtm/deb-assets
           ls -lh release-assets/*.deb
 
-      - name: Stage rootfs tree (RPM + Arch)
+      - name: Stage rootfs tree (RPM)
         if: matrix.family == 'debian'
         shell: bash
         run: |
@@ -484,15 +545,50 @@ jobs:
             dist/rpm/gtm.spec
           cp rpmbuild/RPMS/*/*.rpm "release-assets/gtm-${version}.${rpm_arch}.rpm"
 
-      - name: Build Arch Linux package
-        if: matrix.family == 'debian'
+      - name: Stage rootfs tree (Arch .pkg.tar.zst)
+        if: matrix.family == 'arch'
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p stage/usr/bin \
+            stage/usr/lib/systemd/user \
+            stage/usr/share/man/man1 \
+            stage/usr/share/bash-completion/completions \
+            stage/usr/share/zsh/site-functions \
+            stage/usr/share/fish/vendor_completions.d \
+            stage/usr/share/elvish/lib \
+            stage/usr/share/powershell/Modules \
+            stage/usr/share/applications \
+            stage/usr/share/icons/hicolor/scalable/apps \
+            stage/usr/share/licenses/gtm
+          cp target/release/gtm  stage/usr/bin/
+          cp target/release/gtmd stage/usr/bin/
+          cp dist/gtmd.service stage/usr/lib/systemd/user/
+          cp artifacts/man/*.1 stage/usr/share/man/man1/
+          cp artifacts/completions/gtm.bash  stage/usr/share/bash-completion/completions/gtm
+          cp artifacts/completions/gtmd.bash stage/usr/share/bash-completion/completions/gtmd
+          cp artifacts/completions/_gtm  stage/usr/share/zsh/site-functions/_gtm
+          cp artifacts/completions/_gtmd stage/usr/share/zsh/site-functions/_gtmd
+          cp artifacts/completions/gtm.fish  stage/usr/share/fish/vendor_completions.d/
+          cp artifacts/completions/gtmd.fish stage/usr/share/fish/vendor_completions.d/
+          cp artifacts/completions/gtm.elv  stage/usr/share/elvish/lib/
+          cp artifacts/completions/gtmd.elv stage/usr/share/elvish/lib/
+          cp artifacts/completions/gtm.ps1  stage/usr/share/powershell/Modules/
+          cp artifacts/completions/gtmd.ps1 stage/usr/share/powershell/Modules/
+          cp dist/gtm.desktop stage/usr/share/applications/
+          cp assets/gtm.svg stage/usr/share/icons/hicolor/scalable/apps/
+          cp LICENSE stage/usr/share/licenses/gtm/
+
+      - name: Build Arch Linux package
+        if: matrix.family == 'arch'
+        shell: bash
+        run: |
+          set -euo pipefail
+          platform="${{ matrix.platform }}"
           version="${{ needs.tag.outputs.version }}"
-          rpm_arch="$(rpmbuild --eval '%{_target_cpu}')"
-          ./scripts/build/arch-pkg.sh "$version" "$rpm_arch" stage \
-            "release-assets/gtm-${version}-${rpm_arch}.pkg.tar.zst"
+          arch="${platform%-linux-arch}"
+          ./scripts/build/arch-pkg.sh "$version" "$arch" stage \
+            "release-assets/gtm-${version}-${arch}.pkg.tar.zst"
 
       - name: Stage rootfs tree (Alpine .apk)
         if: matrix.family == 'alpine'

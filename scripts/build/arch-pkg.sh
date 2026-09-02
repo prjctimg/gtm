@@ -33,7 +33,7 @@ size="$(du -sk "$root" | cut -f1)"
 cat >"$root/.PKGINFO" <<EOF
 pkgname = $name
 pkgver = $pkgver
-pkgdesc = Terminal music player (TUI + CLI) and background daemon.
+pkgdesc = Feature rich and cross platform terminal audio player with background playback and YouTube/Spotify integration
 url = https://github.com/prjctimg/gtm.rs
 builddate = $(date +%s)
 packager = prjctimg <prjctimg@outlook.com>
@@ -41,6 +41,7 @@ size = $size
 arch = $arch
 license = GPL3
 depend = glibc
+depend = gcc-libs
 depend = alsa-lib
 EOF
 
