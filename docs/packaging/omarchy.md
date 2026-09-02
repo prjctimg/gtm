@@ -35,7 +35,7 @@ ever need to change it, then sync the copy into `omarchy-pkgs`.
 ```bash
 # Maintainer: prjctimg <prjctimg@outlook.com>
 pkgname=gtm
-pkgver=0.2.74
+pkgver=0.2.75
 pkgrel=1
 pkgdesc="Feature rich and cross platform terminal audio player with background playback and YouTube/Spotify integration"
 arch=('x86_64' 'aarch64')
