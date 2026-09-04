@@ -26,9 +26,14 @@ cd "$repo_root"
 repo_url="$(git config --get remote.origin.url | sed -E 's#(\.git)?$##; s#^git@github.com:#https://github.com/#; s#^git://#https://github.com/#')"
 
 commits="$(git log --format='%H|%aN|%aE|%s' "${from}..${to}" 2>/dev/null || true)"
+if [[ -z "$commits" && "$from" == "$to" ]]; then
+  # The two refs resolve to the same commit (e.g. first-ever build where there
+  # is no prior release): treat that commit itself as the change set so the
+  # draft is never empty.
+  commits="$(git log -1 --format='%H|%aN|%aE|%s' "${to}" 2>/dev/null || true)"
+fi
 if [[ -z "$commits" ]]; then
-  echo "error: no commits between ${from}..${to} (or bad refs)" >&2
-  exit 1
+  echo "warning: no commits between ${from}..${to}, writing an empty changelog" >&2
 fi
 
 # Authors who have ever committed before <from> -> NOT "new".

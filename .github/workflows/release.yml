@@ -91,6 +91,7 @@ jobs:
       version: ${{ steps.set-tag.outputs.version }}
       nightly: ${{ steps.set-tag.outputs.nightly }}
       skip: ${{ steps.set-tag.outputs.skip }}
+      prev_nightly: ${{ steps.prev-nightly.outputs.sha }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -136,6 +137,13 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "nightly=${nightly}" >> "$GITHUB_OUTPUT"
+
+      - name: Capture previous nightly SHA
+        if: steps.set-tag.outputs.skip != 'true'
+        id: prev-nightly
+        run: |
+          prev="$(git rev-parse refs/tags/nightly 2>/dev/null || echo '')"
+          echo "sha=${prev}" >> "$GITHUB_OUTPUT"
 
       - name: Delete and recreate tag
         if: steps.set-tag.outputs.skip != 'true'
@@ -698,7 +706,15 @@ jobs:
           tag="${{ needs.tag.outputs.tag }}"
           version="${{ needs.tag.outputs.version }}"
           if [[ "${{ needs.tag.outputs.nightly }}" == "true" ]]; then
-            prev_tag="${tag}"
+            # The tag job already moved `nightly` onto this build commit, so the
+            # range `nightly..HEAD` would be empty. Compare against the PREVIOUS
+            # nightly commit instead. Fall back to the root commit if there is no
+            # prior nightly, or the previous one is not an ancestor of this build.
+            prev_tag="${{ needs.tag.outputs.prev_nightly }}"
+            if [[ -z "$prev_tag" || "$prev_tag" == "${{ github.sha }}" ]] \
+               || ! git merge-base --is-ancestor "$prev_tag" HEAD 2>/dev/null; then
+              prev_tag="$(git rev-list --max-parents=0 HEAD)"
+            fi
           else
             # Prior version tag = the newest v* tag different from the current one.
             prev_tag="$(git tag --sort=-v:refname | grep -E '^v[0-9]' | grep -v "^$tag$" | head -1)"
