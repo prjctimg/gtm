@@ -26,6 +26,8 @@ pub struct DeezerTrack {
     pub track_number: Option<i32>,
     pub duration: f64,
     pub cover_url: Option<String>,
+    /// Deezer album id, usable for album-level cover reuse.
+    pub album_id: Option<String>,
 }
 
 pub struct DeezerSearch {
@@ -302,6 +304,11 @@ fn to_deezer_track(r: &Value) -> DeezerTrack {
         track_number,
         duration: r.get("duration").and_then(|v| v.as_f64()).unwrap_or(0.0),
         cover_url,
+        album_id: r
+            .get("album")
+            .and_then(|a| a.get("id"))
+            .and_then(|v| v.as_u64())
+            .map(|n| n.to_string()),
     }
 }
 
@@ -363,6 +370,7 @@ mod tests {
         assert_eq!(hit.track_number, Some(4));
         assert_eq!(hit.duration, 208.0);
         assert_eq!(hit.cover_url.as_deref(), Some("http://x/c.jpg"));
+        assert_eq!(hit.album_id, None);
     }
 
     #[test]

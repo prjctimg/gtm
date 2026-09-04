@@ -798,7 +798,8 @@ impl Render {
                     if has_progress {
                         let pos = app.display_position as u64;
                         let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
-                        let bar_w = 14usize;
+                        let bar_w =
+                            (info_chunks[info_row].width).saturating_sub(18).max(4) as usize;
                         let progress_str = crate::ui::Render::progress_variant(ratio, bar_w, app);
                         let time_str = format!(
                             " {} / {}",
@@ -1615,7 +1616,7 @@ impl Render {
         let total = lyrics.lines.len();
         let width = lyrics_inner.width.max(1) as usize;
         let synced = crate::app::lyrics_are_synced(&lyrics.lines);
-        let anchor = app.lyrics_scroll.min(total - 1);
+        let anchor = app.lyrics_scroll.min(total.saturating_sub(1));
         let mut row_offsets = Vec::with_capacity(total);
         let mut text = Vec::with_capacity(total);
         let mut cumulative = 0usize;
@@ -1623,15 +1624,13 @@ impl Render {
             let text_style = if !synced {
                 Style::default().fg(app.theme.fg)
             } else {
+                // Only the active (current) line is highlighted; every other
+                // line is greyed out so the current lyric stands out clearly.
                 let d = i as isize - anchor as isize;
                 if d == 0 {
                     Style::default()
                         .fg(app.theme.accent)
                         .add_modifier(Modifier::BOLD)
-                } else if d < 0 {
-                    Style::default().fg(app.theme.fg_dim)
-                } else if d <= 2 {
-                    Style::default().fg(app.theme.fg)
                 } else {
                     Style::default().fg(app.theme.fg_dim)
                 }

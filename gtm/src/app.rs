@@ -5516,6 +5516,7 @@ impl App {
                                 genre: Some(genre),
                                 year,
                                 track_number,
+                                album_id: None,
                             };
                             let _ = client.library().update_metadata(track_id, patch).await;
                             let _ = ipc_tx.send(IpcResult::Notification(
@@ -6272,6 +6273,7 @@ impl App {
                                             genre: Some(genre),
                                             year,
                                             track_number,
+                                            album_id: None,
                                         };
                                         let _ =
                                             client.library().update_metadata(track_id, patch).await;
@@ -6347,6 +6349,7 @@ impl App {
                             genre: Some(genre),
                             year,
                             track_number,
+                            album_id: None,
                         };
                         // Persist edited metadata first so the cover lookup
                         // uses the updated artist/album/title.

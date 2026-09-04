@@ -20,7 +20,7 @@
 # Pipeline:
 #
 #   tag job    → derive tag/version; force-point tag at the build commit
-#     │          (stable: vX.Y.Z, nightly: `nightly` at latest main)
+#     │          (stable: vX.Y.Z on main, nightly: `nightly` at latest dev)
 #     ▼
 #   build job  → per OS/arch:
 #     │         1. cargo build --release (cargo-ndk for Android; native musl for Alpine)
@@ -53,7 +53,7 @@ name: Release
 
 on:
   push:
-    branches: ["main"]
+    branches: ["dev"]
     tags: ["v*.*.*"]
   workflow_dispatch:
     inputs:
@@ -114,7 +114,7 @@ jobs:
               tag="v${version}"
               nightly="false"
             fi
-          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+          elif [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
             if echo "${{ github.event.head_commit.message }}" | grep -q "\[skip nightly\]"; then
               echo "::notice::Skipping nightly — [skip nightly] in commit message"
               echo "skip=true" >> "$GITHUB_OUTPUT"

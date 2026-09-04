@@ -1211,8 +1211,18 @@ impl IpcWorker {
                 } else {
                     self.buf.extend_from_slice(&tmp[..n]);
                     if self.buf.len() > 16_777_216 {
-                        self.buf.clear();
-                        return Err(CoreError::Daemon("buffer exceeded 16MB".into()));
+                        // Bound memory without silently discarding in-flight
+                        // data: drop only the fully-received lines at the
+                        // front, preserving the incomplete trailing frame.
+                        if let Some(last_nl) = self.buf.iter().rposition(|&b| b == b'\n') {
+                            self.buf.drain(..=last_nl);
+                        } else {
+                            // Single oversized / unterminated frame: nothing
+                            // safe to salvage, clear and report.
+                            self.buf.clear();
+                            return Err(CoreError::Daemon("buffer exceeded 16MB".into()));
+                        }
+                        crate::log::log("IPC read buffer exceeded 16MB; dropped oldest lines");
                     }
                     Ok(true)
                 }

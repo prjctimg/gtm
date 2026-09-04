@@ -6,13 +6,14 @@
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use chrono::{Duration, Utc};
 use futures::StreamExt;
 use rspotify::AuthCodePkceSpotify;
 use rspotify::clients::{BaseClient, OAuthClient};
 use rspotify::model::{AdditionalType, PlayableItem, SearchType, Token};
-use rspotify::{Config, Credentials, OAuth};
+use rspotify::{CallbackError, Config, Credentials, OAuth, TokenCallback};
 use tracing::{debug, info, warn};
 
 use gtm_core::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
@@ -295,9 +296,32 @@ impl SpotifyManager {
         } else {
             Credentials::new_pkce(&client_id)
         };
+        // Persist a refreshed token back to disk with 0600 permissions so a
+        // renewed access token survives a daemon restart instead of reverting
+        // to the stale one. rspotify invokes this callback after every
+        // successful refresh.
+        let token_path = self.token_path();
+        let token_callback = TokenCallback(Box::new(move |refreshed: Token| {
+            let dir = token_path.parent().ok_or_else(|| {
+                CallbackError::CustomizedError("token path has no parent".to_string())
+            })?;
+            std::fs::create_dir_all(dir)
+                .map_err(|e| CallbackError::CustomizedError(format!("create dir: {e}")))?;
+            let json = serde_json::to_string(&refreshed)
+                .map_err(|e| CallbackError::CustomizedError(format!("serialize: {e}")))?;
+            std::fs::write(&token_path, json)
+                .map_err(|e| CallbackError::CustomizedError(format!("write: {e}")))?;
+            std::fs::set_permissions(
+                &token_path,
+                std::fs::Permissions::from_mode(TOKEN_ACCESS_PERMS),
+            )
+            .map_err(|e| CallbackError::CustomizedError(format!("chmod: {e}")))?;
+            Ok::<(), CallbackError>(())
+        }));
         let config = Config {
             token_cached: false,
             token_refreshing: refreshable && !client_id.is_empty(),
+            token_callback_fn: Arc::new(Some(token_callback)),
             ..Default::default()
         };
         let oauth = OAuth::default();
@@ -363,6 +387,74 @@ impl SpotifyManager {
             _ => Vec::new(),
         }
     }
+
+    /// Fetch the largest album-cover image bytes for an artist + album via the
+    /// Web API, when the account is linked. `None` when not linked or no hit.
+    pub async fn album_cover(&self, artist: &str, album: &str) -> Option<Vec<u8>> {
+        let client = self.client.as_ref()?;
+        let q = format!("album:\"{}\" artist:\"{}\"", album.trim(), artist.trim());
+        let albums = match client
+            .search(&q, SearchType::Album, None, None, Some(3), None)
+            .await
+        {
+            Ok(rspotify::model::SearchResult::Albums(page)) => page.items,
+            _ => return None,
+        };
+        let images = albums
+            .into_iter()
+            .flat_map(|a| a.images)
+            .collect::<Vec<_>>();
+        let url = pick_largest_image(&images)?;
+        self.download_image(&url).await
+    }
+
+    /// Fetch the largest artist portrait image bytes via the Web API, when the
+    /// account is linked. `None` when not linked or no hit.
+    pub async fn artist_image(&self, artist: &str) -> Option<Vec<u8>> {
+        let client = self.client.as_ref()?;
+        let q = format!("artist:\"{}\"", artist.trim());
+        let artists = match client
+            .search(&q, SearchType::Artist, None, None, Some(3), None)
+            .await
+        {
+            Ok(rspotify::model::SearchResult::Artists(page)) => page.items,
+            _ => return None,
+        };
+        let images = artists
+            .into_iter()
+            .flat_map(|a| a.images)
+            .collect::<Vec<_>>();
+        let url = pick_largest_image(&images)?;
+        self.download_image(&url).await
+    }
+
+    async fn download_image(&self, url: &str) -> Option<Vec<u8>> {
+        let token = self.access_token().await?;
+        let resp = reqwest::Client::new()
+            .get(url)
+            .bearer_auth(&token)
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let bytes = resp.bytes().await.ok()?;
+        (!bytes.is_empty()).then_some(bytes.to_vec())
+    }
+}
+
+/// Pick the largest (first-sorted-by-area) image URL from a set of Spotify
+/// image variants.
+fn pick_largest_image(images: &[rspotify::model::Image]) -> Option<String> {
+    images
+        .iter()
+        .max_by_key(|img| {
+            let w = img.width.unwrap_or(0);
+            let h = img.height.unwrap_or(0);
+            w.saturating_mul(h)
+        })
+        .map(|img| img.url.clone())
 }
 
 /// Convert an rspotify playable item into our IPC-friendly track shape.

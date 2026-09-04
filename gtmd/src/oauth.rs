@@ -22,7 +22,10 @@ pub const DEFAULT_OAUTH_PORT: u16 = 8990;
 /// Default redirect URI used when no port override is supplied.
 pub const DEFAULT_REDIRECT_URI: &str = "http://127.0.0.1:8990/login";
 
-/// Scopes required for playlist sync plus playback control.
+/// Scopes required for playlist sync plus playback control. `offline_access`
+/// is essential: without it Spotify may omit the `refresh_token`, leaving a
+/// one-shot token that silently dies after `expires_in` (~1 hour) with no way
+/// to renew. The user-profile scopes let us read the display name/product.
 const OAUTH_SCOPES: &[&str] = &[
     "user-read-playback-state",
     "user-modify-playback-state",
@@ -30,6 +33,9 @@ const OAUTH_SCOPES: &[&str] = &[
     "playlist-read-private",
     "playlist-read-collaborative",
     "user-library-read",
+    "user-read-private",
+    "user-read-email",
+    "offline_access",
 ];
 
 /// One pending OAuth link flow. Create it, hand [`Self::authorize_url`] to
@@ -41,6 +47,9 @@ pub struct OauthFlow {
     pkce: Pkce,
     redirect_uri: String,
     redirect_addr: SocketAddr,
+    /// Anti-CSRF token: generated once, embedded in the authorize URL, and
+    /// verified against the value echoed back in the redirect.
+    state: String,
 }
 
 impl OauthFlow {
@@ -55,11 +64,12 @@ impl OauthFlow {
             pkce: Pkce::new_random(),
             redirect_uri,
             redirect_addr,
+            state: random_url_safe(16),
         }
     }
 
     pub fn authorize_url(&self) -> String {
-        let state = random_url_safe(16);
+        let state = self.state.clone();
         let scope = OAUTH_SCOPES.join(" ");
         let params = [
             ("response_type", "code"),
@@ -79,9 +89,11 @@ impl OauthFlow {
     }
 
     /// Serve one redirect on the local callback port, exchange the code for
-    /// an access token, and return it. Cancels itself after 5 minutes.
+    /// an access token, and return it. Cancels itself after 5 minutes. The
+    /// redirect's `state` must match the value this flow issued, or the flow
+    /// is rejected as a cross-site request forgery attempt.
     pub async fn wait_for_access_token(&self) -> Result<String, String> {
-        let code = listen_for_auth_code(self.redirect_addr).await?;
+        let code = listen_for_auth_code(self.redirect_addr, &self.state).await?;
         exchange_code_for_token(
             &code,
             &self.client_id,
@@ -110,7 +122,8 @@ impl Pkce {
 }
 
 fn random_url_safe(n: usize) -> String {
-    let bytes: Vec<u8> = (0..n).map(|_| fastrand::u8(..)).collect();
+    let mut bytes = vec![0u8; n];
+    getrandom::getrandom(&mut bytes).expect("OS random source available");
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
@@ -128,13 +141,14 @@ fn urlencode(s: &str) -> String {
     out
 }
 
-async fn listen_for_auth_code(addr: SocketAddr) -> Result<String, String> {
+async fn listen_for_auth_code(addr: SocketAddr, expected_state: &str) -> Result<String, String> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| format!("bind OAuth callback server to {addr}: {e}"))?;
 
-    // Accept connections until one carries a `?code=` query. A 5 minute
-    // guard keeps a forgotten flow from holding the socket forever.
+    // Accept connections until one carries a `?code=` query with a matching
+    // `state`, or the 5 minute deadline elapses so a forgotten flow does not
+    // hold the socket forever.
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
     loop {
         let accept = tokio::time::timeout_at(deadline, listener.accept()).await;
@@ -143,7 +157,7 @@ async fn listen_for_auth_code(addr: SocketAddr) -> Result<String, String> {
             Ok(Err(e)) => return Err(format!("accept: {e}")),
             Err(_) => return Err("OAuth link timed out after 5 minutes".into()),
         };
-        match read_code_from_stream(&mut stream).await {
+        match read_code_from_stream(&mut stream, expected_state).await {
             Some(code) => {
                 write_response(
                     &mut stream,
@@ -160,7 +174,10 @@ async fn listen_for_auth_code(addr: SocketAddr) -> Result<String, String> {
     }
 }
 
-async fn read_code_from_stream(stream: &mut tokio::net::TcpStream) -> Option<String> {
+async fn read_code_from_stream(
+    stream: &mut tokio::net::TcpStream,
+    expected_state: &str,
+) -> Option<String> {
     use tokio::io::{AsyncBufReadExt, BufReader};
     let mut reader = BufReader::new(stream);
     // The request head's first line is all we need.
@@ -168,7 +185,7 @@ async fn read_code_from_stream(stream: &mut tokio::net::TcpStream) -> Option<Str
     reader.read_line(&mut line).await.ok()?;
     // "GET /login?code=...&state=... HTTP/1.1"
     let target = line.split_whitespace().nth(1)?;
-    code_from_redirect(target)
+    code_from_redirect(target, expected_state)
 }
 
 async fn write_response(stream: &mut tokio::net::TcpStream, status: &str, body: &str) {
@@ -185,12 +202,28 @@ async fn write_response(stream: &mut tokio::net::TcpStream, status: &str, body: 
     let _ = stream.flush().await;
 }
 
-fn code_from_redirect(target: &str) -> Option<String> {
+/// Extract the `code` from a redirect target, but only when the `state` query
+/// value matches the one this flow issued. A mismatch is a CSRF signal and is
+/// rejected by returning `None`.
+fn code_from_redirect(target: &str, expected_state: &str) -> Option<String> {
     let query = target.split_once('?')?.1;
-    query.split('&').find_map(|pair| {
+    let mut code = None;
+    let mut state = None;
+    for pair in query.split('&') {
         let (k, v) = pair.split_once('=')?;
-        (k == "code").then(|| v.to_string())
-    })
+        match k {
+            "code" => code = Some(v.to_string()),
+            "state" => state = Some(v.to_string()),
+            _ => {}
+        }
+    }
+    // Constant-time-ish comparison is not required for list equality here;
+    // exact string equality is sufficient to bind the code to our flow.
+    if state.as_deref() == Some(expected_state) {
+        code
+    } else {
+        None
+    }
 }
 
 async fn exchange_code_for_token(
@@ -276,11 +309,18 @@ mod tests {
     #[test]
     fn code_extraction() {
         assert_eq!(
-            code_from_redirect("/login?code=abc123&state=xyz"),
+            code_from_redirect("/login?code=abc123&state=xyz", "xyz"),
             Some("abc123".to_string())
         );
-        assert_eq!(code_from_redirect("/login?state=xyz"), None);
-        assert_eq!(code_from_redirect("/login"), None);
+        assert_eq!(code_from_redirect("/login?state=xyz", "xyz"), None);
+        assert_eq!(code_from_redirect("/login", "xyz"), None);
+        // Mismatched state (CSRF) must be rejected even when a code is present.
+        assert_eq!(
+            code_from_redirect("/login?code=abc123&state=evil", "xyz"),
+            None
+        );
+        // Missing state with a code is also rejected.
+        assert_eq!(code_from_redirect("/login?code=abc123", "xyz"), None);
     }
 
     #[test]

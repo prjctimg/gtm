@@ -190,6 +190,11 @@ pub struct StreamManager {
     target: SharedTarget,
     spectrum: SpectrumShared,
     current_uri: Option<String>,
+    /// Access token the current session was created with. `load` reconnects
+    /// the session whenever the daemon supplies a fresh token (rspotify
+    /// transparently refreshes it), so an expired access token never leaves a
+    /// stale librespot session silently producing no audio.
+    session_token: Option<String>,
 }
 
 impl Default for StreamManager {
@@ -206,6 +211,7 @@ impl StreamManager {
             target: Arc::new(Mutex::new(None)),
             spectrum: new_spectrum_shared(),
             current_uri: None,
+            session_token: None,
         }
     }
 
@@ -244,11 +250,17 @@ impl StreamManager {
         }
     }
 
-    /// Create the librespot session and player once per daemon lifetime.
+    /// Create the librespot session and player on first use, and reconnect
+    /// with a fresh access token whenever the incoming token differs from the
+    /// one the current session was established with. This keeps playback
+    /// working past a token expiry instead of leaving a stale session that
+    /// silently stops producing audio.
     async fn ensure_session(&mut self, token: &str, config_dir: &Path) -> Result<(), String> {
-        if self.player.is_some() {
+        if self.player.is_some() && self.session_token.as_deref() == Some(token) {
             return Ok(());
         }
+        self.teardown_session();
+
         let cache = Cache::new(
             Some(config_dir.to_path_buf()),
             None::<std::path::PathBuf>,
@@ -301,7 +313,27 @@ impl StreamManager {
 
         self.session = Some(session);
         self.player = Some(player);
+        self.session_token = Some(token.to_string());
         Ok(())
+    }
+
+    /// Drop the current librespot session and player so a fresh one can be
+    /// established (e.g. with a renewed access token).
+    fn teardown_session(&mut self) {
+        self.clear_target();
+        if let Some(player) = &self.player {
+            player.stop();
+        }
+        if let Some(session) = self.session.take() {
+            session.shutdown();
+        }
+        self.player = None;
+        self.session_token = None;
+        self.current_uri = None;
+        {
+            let mut s = self.spectrum.lock().unwrap();
+            s.1.clear();
+        }
     }
 
     /// Start streaming `uri` and return the rodio source to hand to the
@@ -345,5 +377,6 @@ impl StreamManager {
             session.shutdown();
         }
         self.player = None;
+        self.session_token = None;
     }
 }

@@ -113,6 +113,8 @@ pub struct MetadataPatch {
     pub genre: Option<String>,
     pub year: Option<i32>,
     pub track_number: Option<i32>,
+    #[serde(default)]
+    pub album_id: Option<String>,
 }
 
 /// Which library sync operation is (or was last) running.

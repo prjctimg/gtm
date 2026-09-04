@@ -159,22 +159,32 @@ impl Cmd {
             mixer.play()?;
             mixer.duration()
         };
-        let mut state = inner.state.write().await;
 
-        // Scrobble previous track if it was played long enough
-        if let Some(prev_track) = state.current_track.take() {
-            let played_secs = state.time_pos.max(0.0);
-            let _prev_duration = state.duration;
-            let scrobble_enabled = state.scrobble.enabled;
-            let min_secs = state.scrobble.min_play_secs.unwrap_or(240);
-            let min_pct = state.scrobble.min_play_pct.unwrap_or(0.5);
-            drop(state);
-
+        // Scrobble previous track if it was played long enough. The state guard
+        // is taken and dropped in a single scoped block so it is always released
+        // (a second write() below would otherwise deadlock when there was no
+        // previous track to scrobble).
+        let scrobble = {
+            let mut state = inner.state.write().await;
+            let prev = state.current_track.take();
+            (
+                prev,
+                state.time_pos.max(0.0),
+                state.scrobble.enabled,
+                state.scrobble.min_play_secs.unwrap_or(240),
+                state.scrobble.min_play_pct.unwrap_or(0.5),
+            )
+        };
+        if let Some(prev_track) = scrobble.0 {
+            let (played_secs, scrobble_enabled, min_secs, min_pct) =
+                (scrobble.1, scrobble.2, scrobble.3, scrobble.4);
             let lastfm = inner.lastfm.lock().await;
             if scrobble_enabled && lastfm.is_ready() {
-                let _ = lastfm
-                    .scrobble(&prev_track, played_secs, min_secs, min_pct)
-                    .await;
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    lastfm.scrobble(&prev_track, played_secs, min_secs, min_pct),
+                )
+                .await;
             }
             let mut state = inner.state.write().await;
             state.current_track = Some(prev_track); // Restore for potential re-play
@@ -191,6 +201,9 @@ impl Cmd {
         state.play(track.clone())?;
         state.time_pos = start_pos;
         state.duration = dur;
+        // Drop the write guard before the Last.fm block below, which reads
+        // the state again (a read while this write is alive would deadlock).
+        drop(state);
 
         // Update Last.fm now playing
         if inner.lastfm.lock().await.is_ready() {
@@ -203,7 +216,11 @@ impl Cmd {
                 }
             };
             if let Some(ref track) = track_for_np {
-                let _ = inner.lastfm.lock().await.update_now_playing(track).await;
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    inner.lastfm.lock().await.update_now_playing(track),
+                )
+                .await;
             }
         }
         Daemon::push_event(
@@ -307,6 +324,7 @@ impl Cmd {
                 samplerate: None,
                 hash: String::new(),
                 cover_path: None,
+                album_id: None,
                 favourite: false,
                 loudness_lufs: None,
                 loudness_peak_db: None,
@@ -1476,15 +1494,18 @@ impl Lastfm {
 
     pub async fn authenticate(inner: &DaemonInner, token: &str) -> Result<DaemonRes, CoreError> {
         let mut lastfm = inner.lastfm.lock().await;
-        match lastfm.authenticate(token).await {
-            Ok(session_key) => {
+        match tokio::time::timeout(Duration::from_secs(10), lastfm.authenticate(token)).await {
+            Ok(Ok(session_key)) => {
                 let mut state = inner.state.write().await;
                 state.scrobble.session_token = Some(session_key.clone());
                 drop(state);
                 Daemon::save_state(inner);
                 Ok(DaemonRes::Ok)
             }
-            Err(e) => Ok(DaemonRes::Error { message: e }),
+            Ok(Err(e)) => Ok(DaemonRes::Error { message: e }),
+            Err(_elapsed) => Ok(DaemonRes::Error {
+                message: "Last.fm authentication timed out".into(),
+            }),
         }
     }
 
@@ -2031,10 +2052,10 @@ impl Cover {
         }
 
         if !discovered_artist.is_empty() && !discovered_album.is_empty() {
+            let artist = discovered_artist.clone();
+            let album = discovered_album.clone();
             let mut guard = inner.cover_cache.lock().await;
             if let Some(ref mut cache) = *guard {
-                let artist = discovered_artist.clone();
-                let album = discovered_album.clone();
                 let cover =
                     tokio::time::timeout(Duration::from_secs(5), cache.get_cover(&artist, &album))
                         .await
@@ -2045,22 +2066,67 @@ impl Cover {
                     return Ok(DaemonRes::CoverArt { data: Some(b64) });
                 }
             }
+            drop(guard);
+
+            // Spotify Web API fallback for the album cover when Deezer/MusicBrainz
+            // had no match. The bytes are cached so future fetches are offline.
+            let spotify = inner.spotify.lock().await;
+            if spotify.linked() {
+                let bytes = tokio::time::timeout(
+                    Duration::from_secs(8),
+                    spotify.album_cover(&artist, &album),
+                )
+                .await
+                .ok()
+                .flatten();
+                if let Some(bytes) = bytes {
+                    let mut guard = inner.cover_cache.lock().await;
+                    if let Some(ref mut cache) = *guard {
+                        cache.put_cover(&artist, &album, bytes.clone()).await;
+                    }
+                    drop(guard);
+                    return Ok(DaemonRes::CoverArt {
+                        data: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
+                    });
+                }
+            }
         }
 
         Ok(DaemonRes::CoverArt { data: None })
     }
 
     pub async fn artist(inner: &DaemonInner, artist: &str) -> Result<DaemonRes, CoreError> {
-        let mut guard = inner.cover_cache.lock().await;
-        if let Some(ref mut cache) = *guard {
-            let cover =
-                tokio::time::timeout(Duration::from_secs(8), cache.get_artist_image(artist))
-                    .await
-                    .ok()
-                    .flatten();
-            if let Some(cover) = cover {
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&cover.data);
-                return Ok(DaemonRes::CoverArt { data: Some(b64) });
+        {
+            let mut guard = inner.cover_cache.lock().await;
+            if let Some(ref mut cache) = *guard {
+                let cover =
+                    tokio::time::timeout(Duration::from_secs(8), cache.get_artist_image(artist))
+                        .await
+                        .ok()
+                        .flatten();
+                if let Some(cover) = cover {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&cover.data);
+                    return Ok(DaemonRes::CoverArt { data: Some(b64) });
+                }
+            }
+        }
+
+        // Spotify fallback for the artist portrait, cached for later use.
+        let spotify = inner.spotify.lock().await;
+        if spotify.linked() {
+            let bytes = tokio::time::timeout(Duration::from_secs(8), spotify.artist_image(artist))
+                .await
+                .ok()
+                .flatten();
+            if let Some(bytes) = bytes {
+                let mut guard = inner.cover_cache.lock().await;
+                if let Some(ref mut cache) = *guard {
+                    cache.put_artist_image(artist, bytes.clone()).await;
+                }
+                drop(guard);
+                return Ok(DaemonRes::CoverArt {
+                    data: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
+                });
             }
         }
         Ok(DaemonRes::CoverArt { data: None })
@@ -2168,7 +2234,10 @@ struct DaemonInner {
     client_auth: tokio::sync::Mutex<HashMap<ClientId, bool>>,
     active_clients: AtomicUsize,
     internal_req_tx: mpsc::UnboundedSender<DaemonReq>,
-    cmd_lock: tokio::sync::Mutex<()>,
+    /// Serializes state-mutating commands. Read-only commands take a read
+    /// lock so fast reads are not blocked behind slow mutating operations
+    /// (Spotify sync, YouTube download, library scan, audio decode).
+    cmd_lock: tokio::sync::RwLock<()>,
     play_history: tokio::sync::Mutex<Vec<HistoryEntry>>,
     sync_progress: Arc<SyncProgress>,
 }
@@ -2183,6 +2252,42 @@ pub struct Daemon {
     next_client_id: ClientId,
     #[cfg(feature = "mpris")]
     mpris: Option<MprisHandle>,
+}
+
+/// Returns `true` for requests that only read state and never mutate it, so
+/// they can share a read lock and run concurrently with each other instead of
+/// being serialized behind slow mutating commands.
+fn request_is_read_only(req: &DaemonReq) -> bool {
+    use DaemonReq::*;
+    use gtm_core::ipc::{LibraryAction, QueueAction};
+    matches!(
+        req,
+        GetStatus
+            | CheckHealth
+            | Ping
+            | ListEqPresets
+            | GetFavourites
+            | GetCoverArt { .. }
+            | GetArtistCoverArt { .. }
+            | GetLyrics { .. }
+            | LyricsSearch { .. }
+            | SpotifyStatus
+            | SpotifyPlaylists
+            | SpotifyPlaylistTracks { .. }
+            | SpotifySearchWeb { .. }
+            | LastfmStatus
+            | Search { .. }
+            | Queue {
+                action: QueueAction::List,
+            }
+            | Library {
+                action: LibraryAction::GetTracks { .. }
+                    | LibraryAction::GetPlaylists
+                    | LibraryAction::GetPlaylistTracks { .. }
+                    | LibraryAction::GetRecent { .. }
+                    | LibraryAction::SyncStatus,
+            }
+    )
 }
 
 impl Daemon {
@@ -2275,7 +2380,7 @@ impl Daemon {
             client_auth: tokio::sync::Mutex::new(HashMap::new()),
             active_clients: AtomicUsize::new(0),
             internal_req_tx,
-            cmd_lock: tokio::sync::Mutex::new(()),
+            cmd_lock: tokio::sync::RwLock::new(()),
             play_history: tokio::sync::Mutex::new(Vec::new()),
             sync_progress: Arc::new(SyncProgress::default()),
         });
@@ -2466,10 +2571,17 @@ impl Daemon {
                     }
                 }
                 Some(req) = self.internal_req_rx.recv() => {
-                    let _lock = self.inner.cmd_lock.lock().await;
-                    if let Err(e) = Self::handle_request(&self.inner, &req, 0, true).await {
-                        warn!("internal command {:?} failed: {e}", req);
-                    }
+                    // Run internal commands on a detached task rather than
+                    // inline on the select loop: a slow internal command
+                    // (auto-advance next, crossfade finish -> decode, scrobble)
+                    // must never freeze client acceptance or queued responses.
+                    let inner = Arc::clone(&self.inner);
+                    tokio::spawn(async move {
+                        let _lock = inner.cmd_lock.write().await;
+                        if let Err(e) = Self::handle_request(&inner, &req, 0, true).await {
+                            warn!("internal command {:?} failed: {e}", req);
+                        }
+                    });
                 }
                 Some((client_id, request_id, req, reply_tx)) = self.req_rx.recv() => {
                     let inner = Arc::clone(&self.inner);
@@ -2748,8 +2860,20 @@ impl Daemon {
             return;
         }
 
-        let _lock = inner.cmd_lock.lock().await;
-        let res = match Self::handle_request(&inner, &req, client_id, authenticated).await {
+        // Read-only commands share a read lock so they are not serialized
+        // behind slow mutating commands (Spotify sync, library scan, audio
+        // decode, YouTube download). This prevents fast IPC requests such as
+        // `get_status` / `ping` from timing out while a long command holds the
+        // exclusive lock.
+        let res = if request_is_read_only(&req) {
+            let _guard = inner.cmd_lock.read().await;
+            Self::handle_request(&inner, &req, client_id, authenticated).await
+        } else {
+            let _guard = inner.cmd_lock.write().await;
+            Self::handle_request(&inner, &req, client_id, authenticated).await
+        };
+
+        let res = match res {
             Ok(res) => res,
             Err(e) => {
                 warn!("command {:?} failed: {e}", req);
@@ -2970,14 +3094,12 @@ impl Daemon {
             DaemonReq::Quit => {
                 info!("quit requested");
                 let _ = Cmd::stop(inner).await;
-                if !inner.config.test_mode {
+                let cleanup_state = if !inner.config.test_mode {
                     let s = inner.state.read().await;
-                    let saved = SavedState::from_state(&s);
-                    drop(s);
-                    if let Err(e) = saved.save(&inner.config.state_file) {
-                        warn!("failed to save state on quit: {e}");
-                    }
-                }
+                    Some((SavedState::from_state(&s), inner.config.state_file.clone()))
+                } else {
+                    None
+                };
                 let _ = inner.event_tx.send(DaemonEvent::Custom {
                     name: "daemon_quitting".into(),
                     data: [].into(),
@@ -2985,6 +3107,18 @@ impl Daemon {
                 let socket_path = inner.config.socket_path.clone();
                 let socket_pulse_path = inner.config.socket_pulse_path.clone();
                 tokio::spawn(async move {
+                    // Perform the blocking state save and file removal off the
+                    // async thread so shutdown never stalls the event loop.
+                    if let Some((saved, state_file)) = cleanup_state {
+                        let _ = tokio::task::spawn_blocking(move || saved.save(&state_file))
+                            .await
+                            .map_err(|e| warn!("state save join failed: {e}"))
+                            .map(|r| {
+                                if let Err(e) = r {
+                                    warn!("failed to save state on quit: {e}");
+                                }
+                            });
+                    }
                     tokio::time::sleep(Duration::from_millis(200)).await;
                     let _ = std::fs::remove_file(&socket_path);
                     let _ = std::fs::remove_file(&socket_pulse_path);
@@ -3233,7 +3367,11 @@ impl Daemon {
                 let min_pct = state.scrobble.min_play_pct.unwrap_or(0.5);
                 drop(state);
                 let played_secs = played_secs.max(0.0);
-                let _ = lastfm.scrobble(track, played_secs, min_secs, min_pct).await;
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    lastfm.scrobble(track, played_secs, min_secs, min_pct),
+                )
+                .await;
             }
         }
 
@@ -3376,7 +3514,11 @@ impl Daemon {
                 let min_pct = state.scrobble.min_play_pct.unwrap_or(0.5);
                 drop(state);
                 let played_secs = prev_time_pos.max(0.0);
-                let _ = lastfm.scrobble(track, played_secs, min_secs, min_pct).await;
+                let _ = tokio::time::timeout(
+                    Duration::from_secs(10),
+                    lastfm.scrobble(track, played_secs, min_secs, min_pct),
+                )
+                .await;
             }
         }
 
@@ -3395,7 +3537,11 @@ impl Daemon {
                 if let Some(ref track) = inner.state.read().await.current_track {
                     let lastfm = inner.lastfm.lock().await;
                     if lastfm.is_ready() {
-                        let _ = lastfm.update_now_playing(track).await;
+                        let _ = tokio::time::timeout(
+                            Duration::from_secs(10),
+                            lastfm.update_now_playing(track),
+                        )
+                        .await;
                     }
                 }
                 Self::push_event(
@@ -3419,7 +3565,7 @@ impl Daemon {
         }
     }
 
-    async fn handle_audio_event(inner: &DaemonInner, result: AudioResult<Option<AudioEvent>>) {
+    async fn handle_audio_event(inner: &Arc<DaemonInner>, result: AudioResult<Option<AudioEvent>>) {
         let ev = match result {
             Ok(Some(e)) => e,
             Ok(None) => {
@@ -3443,8 +3589,14 @@ impl Daemon {
                 if inner.crossfade_loaded_for.lock().await.is_some()
                     && !inner.mixer.lock().await.is_crossfading()
                 {
-                    let _lock = inner.cmd_lock.lock().await;
-                    Self::finish_crossfade(inner).await;
+                    // Finish the crossfade on a detached task so the 16ms poll
+                    // loop does not stall waiting on the exclusive lock while a
+                    // slow mutating command holds it.
+                    let inner = Arc::clone(inner);
+                    tokio::spawn(async move {
+                        let _lock = inner.cmd_lock.write().await;
+                        Self::finish_crossfade(&inner).await;
+                    });
                 }
                 let mut state = inner.state.write().await;
                 state.time_pos = pos;
@@ -3491,9 +3643,14 @@ impl Daemon {
             AudioEvent::Finished => {
                 let was_crossfading = inner.crossfade_loaded_for.lock().await.is_some();
                 if was_crossfading {
-                    let _lock = inner.cmd_lock.lock().await;
-                    Self::finish_crossfade(inner).await;
-                    let _ = Cmd::next(inner).await;
+                    // Run on a detached task to avoid blocking the poll loop on
+                    // the exclusive lock during next-track startup.
+                    let inner = Arc::clone(inner);
+                    tokio::spawn(async move {
+                        let _lock = inner.cmd_lock.write().await;
+                        Self::finish_crossfade(&inner).await;
+                        let _ = Cmd::next(&inner).await;
+                    });
                 } else {
                     let _ = inner.internal_req_tx.send(DaemonReq::Next);
                 }
@@ -3774,11 +3931,22 @@ fn run_metadata_sync(
         };
 
         if let Some(hit) = hit {
-            let cover = if let Some(ref url) = hit.cover_url {
-                rt.block_on(deezer.download_cover(url))
-            } else {
-                None
-            };
+            let cover_key = hit
+                .album_id
+                .clone()
+                .unwrap_or_else(|| CoverCache::cache_key(&hit.artist, &hit.album));
+            let cover_file = cache_dir.join("covers").join(format!("{cover_key}.jpg"));
+            let mut cover = None;
+            // Album-level reuse: if we already fetched this album's cover this
+            // run, point at the existing file instead of re-downloading.
+            if cover_file.exists() {
+                cover = std::fs::read(&cover_file).ok();
+            }
+            if cover.is_none()
+                && let Some(ref url) = hit.cover_url
+            {
+                cover = rt.block_on(deezer.download_cover(url));
+            }
             let cover_mime = cover.as_ref().map(|_| "image/jpeg".to_string());
             let meta = crate::tags::MetadataToWrite {
                 title: hit.title.clone(),
@@ -3792,8 +3960,6 @@ fn run_metadata_sync(
                 continue;
             }
             if let Some(bytes) = &cover {
-                let key = CoverCache::cache_key(&hit.artist, &hit.album);
-                let cover_file = cache_dir.join("covers").join(format!("{key}.jpg"));
                 if let Some(parent) = cover_file.parent() {
                     std::fs::create_dir_all(parent).ok();
                 }
@@ -3810,6 +3976,7 @@ fn run_metadata_sync(
                     genre: hit.genre,
                     year: hit.year,
                     track_number: hit.track_number,
+                    album_id: hit.album_id,
                 },
             ) {
                 warn!("metadata sync: failed to update DB for {}: {e}", track.path);

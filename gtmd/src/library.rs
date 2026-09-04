@@ -49,7 +49,8 @@ impl Library {
                 samplerate   INTEGER,
                 hash         TEXT NOT NULL DEFAULT '',
                 cover_path   TEXT,
-                favourite    INTEGER NOT NULL DEFAULT 0
+                favourite    INTEGER NOT NULL DEFAULT 0,
+                album_id     TEXT
             );
             CREATE TABLE IF NOT EXISTS playlists (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,6 +69,22 @@ impl Library {
             CREATE INDEX IF NOT EXISTS idx_tracks_fav ON tracks(favourite);",
         )
         .map_err(|e| format!("db init: {e}"))?;
+        // Add the album_id column for tracks that pre-date it. SQLite has no
+        // `ADD COLUMN IF NOT EXISTS`, so probe the column list first.
+        let has_album_id = conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('tracks') WHERE name = 'album_id'")
+            .map_err(|e| format!("db probe: {e}"))?
+            .query_row([], |row| row.get::<_, i64>(0))
+            .map_err(|e| format!("db probe read: {e}"))?
+            > 0;
+        if !has_album_id {
+            conn.execute_batch(
+                "ALTER TABLE tracks ADD COLUMN album_id TEXT;
+             CREATE INDEX IF NOT EXISTS idx_tracks_album_id ON tracks(album_id);",
+            )
+            .map_err(|e| format!("db migrate album_id: {e}"))?;
+        }
+
         Ok(Self {
             conn,
             _watch_dirs: Mutex::new(Vec::new()),
@@ -77,7 +94,7 @@ impl Library {
     pub fn list_tracks(&self) -> Result<Vec<TrackInfo>, String> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite FROM tracks ORDER BY title ASC")
+            .prepare("SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite, album_id FROM tracks ORDER BY title ASC")
             .map_err(|e| format!("prepare: {e}"))?;
         let rows = stmt
             .query_map([], Self::row_to_track)
@@ -89,7 +106,7 @@ impl Library {
     pub fn get_track(&self, id: i64) -> Result<Option<TrackInfo>, String> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite FROM tracks WHERE id = ?1")
+            .prepare("SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite, album_id FROM tracks WHERE id = ?1")
             .map_err(|e| format!("prepare: {e}"))?;
         let mut rows = stmt
             .query_map(params![id], Self::row_to_track)
@@ -234,6 +251,10 @@ impl Library {
             sets.push(format!("track_number = ?{}", values.len() + 1));
             values.push(Box::new(patch.track_number));
         }
+        if patch.album_id.is_some() {
+            sets.push(format!("album_id = ?{}", values.len() + 1));
+            values.push(Box::new(patch.album_id.clone()));
+        }
         if sets.is_empty() {
             return Ok(());
         }
@@ -268,7 +289,7 @@ impl Library {
     pub fn get_favourites(&self) -> Result<Vec<TrackInfo>, String> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite FROM tracks WHERE favourite = 1 ORDER BY title ASC")
+            .prepare("SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite, album_id FROM tracks WHERE favourite = 1 ORDER BY title ASC")
             .map_err(|e| format!("prepare: {e}"))?;
         let rows = stmt
             .query_map([], Self::row_to_track)
@@ -329,7 +350,7 @@ impl Library {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT t.id, t.path, t.title, t.artist, t.album, t.duration, t.track_number, t.genre, t.year, t.bitrate, t.samplerate, t.hash, t.cover_path, t.favourite
+                "SELECT t.id, t.path, t.title, t.artist, t.album, t.duration, t.track_number, t.genre, t.year, t.bitrate, t.samplerate, t.hash, t.cover_path, t.favourite, t.album_id
                  FROM tracks t
                  JOIN playlist_tracks pt ON pt.track_id = t.id
                  WHERE pt.playlist_id = ?1
@@ -371,7 +392,7 @@ impl Library {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite
+                "SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite, album_id
                  FROM tracks ORDER BY id DESC LIMIT ?1",
             )
             .map_err(|e| format!("prepare: {e}"))?;
@@ -507,7 +528,7 @@ impl Library {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite
+                "SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite, album_id
                  FROM tracks
                  WHERE title LIKE ?1 OR artist LIKE ?1 OR album LIKE ?1
                  ORDER BY title ASC
@@ -524,7 +545,7 @@ impl Library {
     pub fn track_by_path(&self, path: &str) -> Result<Option<TrackInfo>, String> {
         let mut stmt = self
             .conn
-            .prepare("SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite FROM tracks WHERE path = ?1")
+            .prepare("SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite, album_id FROM tracks WHERE path = ?1")
             .map_err(|e| format!("prepare: {e}"))?;
         let mut rows = stmt
             .query_map(params![path], Self::row_to_track)
@@ -552,6 +573,7 @@ impl Library {
             hash: row.get(11)?,
             cover_path: row.get(12)?,
             favourite: row.get::<_, i32>(13)? != 0,
+            album_id: row.get(14)?,
             ..Default::default()
         })
     }

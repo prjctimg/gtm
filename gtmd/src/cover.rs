@@ -63,6 +63,63 @@ impl CoverCache {
         hex::encode(&h.finalize()[..8])
     }
 
+    /// Insert externally-provided cover bytes (e.g. from Spotify) into both
+    /// caches so a later fetch is served from disk/memory instantly.
+    pub async fn put_cover(&self, artist: &str, album: &str, bytes: Vec<u8>) {
+        if bytes.is_empty() || Self::cover_too_small(&bytes) {
+            return;
+        }
+        let artist = if artist.is_empty() {
+            "Unknown Artist"
+        } else {
+            artist
+        };
+        let album = if album.is_empty() {
+            "Unknown Album"
+        } else {
+            album
+        };
+        let key = Self::cache_key(artist, album);
+        let cd = CoverData {
+            mime: "image/jpeg".to_string(),
+            data: bytes.clone(),
+        };
+        let disk = self.disk_path(&key);
+        if let Some(parent) = disk.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+        if let Err(e) = fs::write(&disk, &bytes) {
+            warn!("Failed to write cover to disk {disk:?}: {e}");
+        }
+        let mut mem = self.memory.lock().await;
+        mem.put(key, cd);
+    }
+
+    /// Insert externally-provided artist image bytes into both artist caches.
+    pub async fn put_artist_image(&self, artist: &str, bytes: Vec<u8>) {
+        if bytes.is_empty() {
+            return;
+        }
+        let artist = artist.trim();
+        if artist.is_empty() {
+            return;
+        }
+        let key = Self::artist_key(artist);
+        let cd = CoverData {
+            mime: "image/jpeg".to_string(),
+            data: bytes.clone(),
+        };
+        let disk = self.artist_disk_path(&key);
+        if let Some(parent) = disk.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+        if let Err(e) = fs::write(&disk, &bytes) {
+            warn!("Failed to write artist image to disk {disk:?}: {e}");
+        }
+        let mut mem = self.artist_memory.lock().await;
+        mem.put(key, cd);
+    }
+
     fn disk_path(&self, key: &str) -> PathBuf {
         self.cache_dir.join("covers").join(format!("{key}.jpg"))
     }
@@ -107,11 +164,38 @@ impl CoverCache {
         }
 
         let cd = self.fetch_from_deezer(artist, album, &key).await;
+        let cd = match cd {
+            Some(cd) => Some(cd),
+            None => self.fetch_from_musicbrainz(artist, album, &key).await,
+        };
         if let Some(ref cd) = cd {
             let mut mem = self.memory.lock().await;
             mem.put(key, cd.clone());
         }
         cd
+    }
+
+    /// Cover Art Archive fallback when Deezer has no match.
+    async fn fetch_from_musicbrainz(
+        &self,
+        artist: &str,
+        album: &str,
+        key: &str,
+    ) -> Option<CoverData> {
+        let mb = crate::musicbrainz::MusicBrainz::new();
+        let found = mb.find_album(artist, album).await.ok().flatten()?;
+        let bytes = mb.download_cover(&found.release_group_id).await?;
+        let disk = self.disk_path(key);
+        if let Some(parent) = disk.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+        if let Err(e) = fs::write(&disk, &bytes) {
+            warn!("Failed to write MB cover to disk {disk:?}: {e}");
+        }
+        Some(CoverData {
+            data: bytes,
+            mime: "image/jpeg".to_string(),
+        })
     }
 
     pub async fn get_artist_image(&mut self, artist: &str) -> Option<CoverData> {

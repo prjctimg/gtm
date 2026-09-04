@@ -12,6 +12,7 @@ pub mod deezer;
 pub mod lastfm;
 pub mod library;
 pub mod lyrics;
+pub mod musicbrainz;
 pub mod oauth;
 pub mod queue;
 pub mod spotify;

@@ -2088,6 +2088,7 @@ dependencies = [
  "dirs 5.0.1",
  "fastrand",
  "futures",
+ "getrandom 0.2.17",
  "gtm-audio",
  "gtm-core",
  "gtm-mpris",

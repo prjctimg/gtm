@@ -2,12 +2,13 @@ name: Clippy Auto-Fix
 
 # Keep the tree clippy-clean without failing CI. Applies `cargo clippy --fix`,
 # then verifies with `cargo check`. If verification passes the fixes are
-# committed straight to main (auto-merged). If verification fails a PR is opened
-# for review (Code Rabbit reviews it automatically when the app is installed).
+# committed straight to the pushed branch (auto-merged). If verification fails
+# a PR is opened for review (Code Rabbit reviews it automatically when the app
+# is installed).
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   workflow_dispatch:
 
 permissions:

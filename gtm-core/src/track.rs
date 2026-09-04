@@ -23,6 +23,8 @@ pub struct TrackInfo {
     pub samplerate: Option<i32>,
     pub hash: String,
     pub cover_path: Option<String>,
+    #[serde(default)]
+    pub album_id: Option<String>,
     pub favourite: bool,
     #[serde(default)]
     pub loudness_lufs: Option<f32>,
