@@ -1262,7 +1262,7 @@ impl Spotify {
             }
 
             {
-                let mut guard = inner.cover_cache.lock().await;
+                let mut guard = inner.cover_cache().await;
                 if let Some(ref mut cc) = *guard {
                     let _ = cc.get_cover(&spotify_artist, &spotify_album).await;
                 }
@@ -1346,7 +1346,7 @@ impl Spotify {
         }
 
         {
-            let mut guard = inner.cover_cache.lock().await;
+            let mut guard = inner.cover_cache().await;
             if let Some(ref mut cc) = *guard {
                 let _ = cc.get_cover(&spotify_artist, &spotify_album).await;
             }
@@ -1445,7 +1445,7 @@ impl Spotify {
         }
 
         {
-            let mut guard = inner.cover_cache.lock().await;
+            let mut guard = inner.cover_cache().await;
             if let Some(ref mut cc) = *guard {
                 let _ = cc.get_cover(&spotify_artist, &spotify_album).await;
             }
@@ -1882,7 +1882,7 @@ impl LibraryHandler {
 
         let data_dir = inner.config.data_dir.clone();
         let cache_dir = inner.config.cache_dir.clone();
-        let lyrics_manager = inner.lyrics_manager.clone();
+        let lyrics_manager = inner.lyrics_manager().await;
         let progress = inner.sync_progress.clone();
         let event_tx = inner.event_tx.clone();
         tokio::spawn(async move {
@@ -2054,7 +2054,7 @@ impl Cover {
         if !discovered_artist.is_empty() && !discovered_album.is_empty() {
             let artist = discovered_artist.clone();
             let album = discovered_album.clone();
-            let mut guard = inner.cover_cache.lock().await;
+            let mut guard = inner.cover_cache().await;
             if let Some(ref mut cache) = *guard {
                 let cover =
                     tokio::time::timeout(Duration::from_secs(5), cache.get_cover(&artist, &album))
@@ -2080,7 +2080,7 @@ impl Cover {
                 .ok()
                 .flatten();
                 if let Some(bytes) = bytes {
-                    let mut guard = inner.cover_cache.lock().await;
+                    let mut guard = inner.cover_cache().await;
                     if let Some(ref mut cache) = *guard {
                         cache.put_cover(&artist, &album, bytes.clone()).await;
                     }
@@ -2097,7 +2097,7 @@ impl Cover {
 
     pub async fn artist(inner: &DaemonInner, artist: &str) -> Result<DaemonRes, CoreError> {
         {
-            let mut guard = inner.cover_cache.lock().await;
+            let mut guard = inner.cover_cache().await;
             if let Some(ref mut cache) = *guard {
                 let cover =
                     tokio::time::timeout(Duration::from_secs(8), cache.get_artist_image(artist))
@@ -2119,7 +2119,7 @@ impl Cover {
                 .ok()
                 .flatten();
             if let Some(bytes) = bytes {
-                let mut guard = inner.cover_cache.lock().await;
+                let mut guard = inner.cover_cache().await;
                 if let Some(ref mut cache) = *guard {
                     cache.put_artist_image(artist, bytes.clone()).await;
                 }
@@ -2182,7 +2182,7 @@ impl Lyrics {
             }
         }
 
-        if let Some(ref manager) = inner.lyrics_manager {
+        if let Some(manager) = inner.lyrics_manager().await {
             let lyrics = tokio::time::timeout(Duration::from_secs(4), manager.get_lyrics(&track))
                 .await
                 .ok()
@@ -2198,7 +2198,7 @@ impl Lyrics {
         artist: &str,
         title: &str,
     ) -> Result<DaemonRes, CoreError> {
-        if let Some(ref manager) = inner.lyrics_manager {
+        if let Some(manager) = inner.lyrics_manager().await {
             let lyrics =
                 tokio::time::timeout(Duration::from_secs(4), manager.search(artist, title))
                     .await
@@ -2217,7 +2217,7 @@ struct DaemonInner {
     config: DaemonConfig,
     event_tx: broadcast::Sender<DaemonEvent>,
     cover_cache: tokio::sync::Mutex<Option<CoverCache>>,
-    lyrics_manager: Option<LyricsManager>,
+    lyrics_manager: tokio::sync::Mutex<Option<LyricsManager>>,
     lastfm: tokio::sync::Mutex<LastfmManager>,
     #[cfg(feature = "youtube")]
     youtube: Arc<tokio::sync::Mutex<YoutubeManager>>,
@@ -2240,6 +2240,31 @@ struct DaemonInner {
     cmd_lock: tokio::sync::RwLock<()>,
     play_history: tokio::sync::Mutex<Vec<HistoryEntry>>,
     sync_progress: Arc<SyncProgress>,
+}
+
+impl DaemonInner {
+    /// Return the cover cache, creating it on first use so the costly
+    /// `reqwest::Client` (TLS) init is deferred until a cover is actually
+    /// requested instead of at daemon startup.
+    async fn cover_cache(&self) -> tokio::sync::MutexGuard<'_, Option<CoverCache>> {
+        let mut guard = self.cover_cache.lock().await;
+        if guard.is_none() {
+            *guard = Some(CoverCache::new(self.config.cache_dir.clone()));
+        }
+        guard
+    }
+
+    /// Return a clone of the lyrics manager, creating it on first use so the
+    /// `reqwest::Client` (TLS) init is deferred until lyrics are needed.
+    async fn lyrics_manager(&self) -> Option<LyricsManager> {
+        let mut guard = self.lyrics_manager.lock().await;
+        if guard.is_none() {
+            *guard = Some(LyricsManager::with_cache_dir(
+                self.config.cache_dir.join("lyrics"),
+            ));
+        }
+        guard.clone()
+    }
 }
 
 pub struct Daemon {
@@ -2352,7 +2377,6 @@ impl Daemon {
         let (req_tx, req_rx) = mpsc::unbounded_channel();
         let (internal_req_tx, internal_req_rx) = mpsc::unbounded_channel();
 
-        let cache_dir = config.cache_dir.clone();
         let config_dir = config.config_dir.clone();
         let audio_backend_name = match config.audio_backend {
             #[cfg(feature = "pulseaudio")]
@@ -2365,8 +2389,8 @@ impl Daemon {
             mixer: tokio::sync::Mutex::new(mixer),
             config,
             event_tx,
-            cover_cache: tokio::sync::Mutex::new(Some(CoverCache::new(cache_dir.clone()))),
-            lyrics_manager: Some(LyricsManager::with_cache_dir(cache_dir.join("lyrics"))),
+            cover_cache: tokio::sync::Mutex::new(None),
+            lyrics_manager: tokio::sync::Mutex::new(None),
             lastfm: tokio::sync::Mutex::new(LastfmManager::new()),
             #[cfg(feature = "youtube")]
             youtube: Arc::new(tokio::sync::Mutex::new(YoutubeManager::new())),

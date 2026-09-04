@@ -66,6 +66,71 @@ need() {
   command -v "$1" >/dev/null 2>&1 || die "requires '$1' — install it first, or download a release archive manually"
 }
 
+CLR_RESET=$'\033[0m'
+CLR_DIM=$'\033[2m'
+
+# ANSI 256-color gradient (foreground). Maps a 0..1 fraction onto a
+# cyan->magenta ramp for the download progress bar.
+gradient_color() {
+  local f
+  f=$((16 + ($(awk -v f="$1" 'BEGIN{printf "%d", f*235}') % 236)))
+  printf '38;5;%d' "$f"
+}
+
+# Render a gradient-filled progress bar followed by a carriage return.
+#   draw_progress <frac> <label>
+# `<frac>` is 0..1; `<label>` e.g. "3.2 MB of 12.0 MB". Printable row is 46
+# columns wide so it stays on one line of a default 80-col terminal.
+draw_progress() {
+  local frac="$1" label="$2" width=36 filled i color
+  filled=$(awk -v f="$frac" -v w="$width" 'BEGIN{ n=int(f*w); if(n<0)n=0; if(n>w)n=w; print n }')
+  printf '\r%*s' 0 ""
+  for ((i = 0; i < filled; i++)); do
+    color=$(gradient_color "$(awk -v i="$i" -v w="$width" 'BEGIN{ if(w==0)w=1; printf "%.3f", i/w }')")
+    printf '\033[%sm█\033[0m' "$color"
+  done
+  for ((i = filled; i < width; i++)); do
+    printf '%s░%s' "$CLR_DIM" "$CLR_RESET"
+  done
+  printf ' %-3s%%  %s' "$(awk -v p="$frac" 'BEGIN{ printf "%d", p*100 }')" "$label"
+  printf '\033[0m'
+}
+
+# Download a URL with a gradient progress bar (when a terminal + content
+# length are available), falling back to curl's own meter otherwise.
+#   download_gradient <url> <outfile>
+download_gradient() {
+  local url="$1" out="$2" total="" bytes=0 prog
+  if [ -t 1 ] || [ -t 2 ]; then
+    total=$(curl -sfIL "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="content-length:"{print $2; exit}')
+  fi
+  if [ -z "$total" ] || [ "$total" -le 0 ]; then
+    curl -#fL "$url" -o "$out"
+    return $?
+  fi
+  curl -fL "$url" -o "$out" 2>/dev/null &
+  local pid=$!
+  local shown=0
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ -f "$out" ]; then
+      bytes=$(wc -c < "$out" 2>/dev/null || echo 0)
+      prog=$(awk -v b="$bytes" -v t="$total" 'BEGIN{ if(t<=0)printf "0"; else printf "%.3f", (b<t?b:t)/t }')
+    else
+      prog=0
+    fi
+    draw_progress "$prog" "$(awk -v b="$bytes" 'BEGIN{ printf "%.1f", b/1048576 }') / $(awk -v t="$total" 'BEGIN{ printf "%.1f", t/1048576 }') MB" >&2
+    shown=1
+    sleep 0.15
+  done
+  wait "$pid"
+  local rc=$?
+  if [ "$shown" = 1 ]; then
+    draw_progress 1 "$(awk -v b="$bytes" 'BEGIN{ printf "%.1f", b/1048576 }') / $(awk -v t="$total" 'BEGIN{ printf "%.1f", t/1048576 }') MB" >&2
+    printf '\n' >&2
+  fi
+  return "$rc"
+}
+
 VERSION=""
 CHANNEL="stable"
 PREFIX="${PREFIX:-$HOME/.local}"
@@ -195,7 +260,7 @@ bootstrap_install() {
   trap 'rm -rf "${tmp}"' EXIT
 
   log "downloading ${archive_name}..."
-  if ! curl -#fL "${url}" -o "${tmp}/${archive_name}"; then
+  if ! download_gradient "${url}" "${tmp}/${archive_name}"; then
     die "download failed: ${url}"
   fi
 
