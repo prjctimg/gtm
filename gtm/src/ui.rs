@@ -599,7 +599,7 @@ impl Render {
         // side-by-side cover + details row so it can never crowd out the
         // list panes, and drop the extra track-info card in the left pane.
         let is_small_height = app.terminal_rows < 22;
-        let show_vis = app.visualizer.is_enabled() && app.terminal_cols >= 80;
+        let show_vis = app.visualizer.is_enabled() && app.terminal_cols >= 52;
         let np_height: u16 = if is_narrow {
             5
         } else if is_small_height {
@@ -798,7 +798,7 @@ impl Render {
                     if has_progress {
                         let pos = app.display_position as u64;
                         let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
-                        let bar_w = (info_chunks[info_row].width * 2 / 5)
+                        let bar_w = (info_chunks[info_row].width / 3)
                             .saturating_sub(2)
                             .max(4) as usize;
                         let progress_str = crate::ui::Render::progress_variant(ratio, bar_w, app);
@@ -2243,6 +2243,26 @@ pub(crate) fn use_nerd_fonts() -> bool {
     !matches!(std::env::var("GTM_NERD_FONTS"), Ok(v) if v == "0" || v == "false" || v == "no")
 }
 
+/// Human-readable label for the persisted cover-art provider string.
+pub(crate) fn cover_provider_label(v: &str) -> String {
+    match v.trim().to_ascii_lowercase().as_str() {
+        "deezer" => "Deezer".into(),
+        "musicbrainz" | "mb" => "MusicBrainz".into(),
+        "spotify" => "Spotify".into(),
+        _ => "Auto".into(),
+    }
+}
+
+/// Human-readable label for the persisted theme-following mode.
+pub(crate) fn theme_mode_label(v: &str) -> String {
+    match v.trim().to_ascii_lowercase().as_str() {
+        "dark" => "Dark".into(),
+        "light" => "Light".into(),
+        "manual" => "Manual".into(),
+        _ => "Auto".into(),
+    }
+}
+
 pub const COVER_W: u16 = 24;
 pub const COVER_H: u16 = 12;
 
@@ -3355,38 +3375,42 @@ impl Pickers {
                 "JS Runtime     deno".to_string(),
                 "Auto Download  read-only".to_string(),
             ],
-            1 => {
-                let crossfade_on = app
-                    .state
-                    .crossfade
-                    .as_ref()
-                    .map(|c| c.enabled)
-                    .unwrap_or(false);
-                let crossfade_dur = app
-                    .state
-                    .crossfade
-                    .as_ref()
-                    .map(|c| c.duration_secs)
-                    .unwrap_or(0);
-                let reverb_on = app.state.reverb.enabled;
-                vec![
-                    format!("Repeat         {:?}  ▶", app.state.repeat),
-                    format!(
-                        "Shuffle        {}",
-                        if app.state.shuffle { "On" } else { "Off" }
-                    ),
-                    if crossfade_on {
-                        format!("Crossfade      On  {}s  ▶", crossfade_dur)
-                    } else {
-                        "Crossfade      Off  ▶".to_string()
-                    },
-                    format!(
-                        "EQ Enabled     {}",
-                        if app.state.eq_enabled { "On" } else { "Off" }
-                    ),
-                    format!("Reverb         {}", if reverb_on { "On" } else { "Off" }),
-                ]
-            }
+1 => {
+                        let crossfade_on = app
+                            .state
+                            .crossfade
+                            .as_ref()
+                            .map(|c| c.enabled)
+                            .unwrap_or(false);
+                        let crossfade_dur = app
+                            .state
+                            .crossfade
+                            .as_ref()
+                            .map(|c| c.duration_secs)
+                            .unwrap_or(0);
+                        let reverb_on = app.state.reverb.enabled;
+                        vec![
+                            format!("Repeat         {:?}  ▶", app.state.repeat),
+                            format!(
+                                "Shuffle        {}",
+                                if app.state.shuffle { "On" } else { "Off" }
+                            ),
+                            if crossfade_on {
+                                format!("Crossfade      On  {}s  ▶", crossfade_dur)
+                            } else {
+                                "Crossfade      Off  ▶".to_string()
+                            },
+                            format!(
+                                "EQ Enabled     {}",
+                                if app.state.eq_enabled { "On" } else { "Off" }
+                            ),
+                            format!("Reverb         {}", if reverb_on { "On" } else { "Off" }),
+                            format!(
+                                "Cover Source   {}  ▶",
+                                cover_provider_label(&app.cover_provider)
+                            ),
+                        ]
+                    }
             2 => {
                 let theme_name = app
                     .themes
@@ -3421,6 +3445,7 @@ impl Pickers {
                     "Clear Lyrics Cache  Enter".to_string(),
                     "Clear Cover Cache    Enter  ▶".to_string(),
                     "Notification Settings  Enter  ▶".to_string(),
+                    format!("Theme Mode     {}  ▶", theme_mode_label(&app.theme_mode)),
                 ]
             }
             3 => {
@@ -3499,23 +3524,23 @@ impl Pickers {
         }
         lines.push(Line::from(""));
         match (app.settings_category, sel) {
-            (1, 1) => lines.push(Line::from(Span::styled(
+            (0, 1) => lines.push(Line::from(Span::styled(
                 " Press Enter to toggle cookie path.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (2, 0) => lines.push(Line::from(Span::styled(
+            (1, 0) => lines.push(Line::from(Span::styled(
                 format!(" Press Enter to cycle (current: {:?}).", app.state.repeat),
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (2, 1) => lines.push(Line::from(Span::styled(
+            (1, 1) => lines.push(Line::from(Span::styled(
                 " Press Enter to toggle shuffle.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (2, 2) => lines.push(Line::from(Span::styled(
+            (1, 2) => lines.push(Line::from(Span::styled(
                 " Press Enter to open crossfade picker.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (2, 3) => {
+            (1, 3) => {
                 let eq_on = app.state.eq_enabled;
                 lines.push(Line::from(Span::styled(
                     if eq_on {
@@ -3526,7 +3551,7 @@ impl Pickers {
                     Style::default().fg(app.theme.fg_dim),
                 )));
             }
-            (2, 4) => {
+            (1, 4) => {
                 let rev_on = app.state.reverb.enabled;
                 lines.push(Line::from(Span::styled(
                     if rev_on {
@@ -3537,63 +3562,71 @@ impl Pickers {
                     Style::default().fg(app.theme.fg_dim),
                 )));
             }
-            (3, 0) => lines.push(Line::from(Span::styled(
+            (1, 5) => lines.push(Line::from(Span::styled(
+                " Press Enter to cycle the cover art source.",
+                Style::default().fg(app.theme.fg_dim),
+            ))),
+            (2, 0) => lines.push(Line::from(Span::styled(
                 " Press Enter to open Theme Picker.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (3, 1) => lines.push(Line::from(Span::styled(
+            (2, 1) => lines.push(Line::from(Span::styled(
                 " Press Enter to toggle transparent background.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (3, 2) => lines.push(Line::from(Span::styled(
+            (2, 2) => lines.push(Line::from(Span::styled(
                 " Press Enter to toggle transparent pickers.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (3, 3) => lines.push(Line::from(Span::styled(
+            (2, 3) => lines.push(Line::from(Span::styled(
                 " Download missing cover art from Deezer.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (3, 4) => lines.push(Line::from(Span::styled(
+            (2, 4) => lines.push(Line::from(Span::styled(
                 " Fetch and save lyrics for all tracks.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (3, 5) => lines.push(Line::from(Span::styled(
+            (2, 5) => lines.push(Line::from(Span::styled(
                 " Resolve and embed clean tags into files.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (3, 6) => lines.push(Line::from(Span::styled(
+            (2, 6) => lines.push(Line::from(Span::styled(
                 " Press Enter to open Footer Preset picker.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (3, 7) => lines.push(Line::from(Span::styled(
+            (2, 7) => lines.push(Line::from(Span::styled(
                 " Press Enter to open visualizer picker.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (3, 8) => lines.push(Line::from(Span::styled(
+            (2, 8) => lines.push(Line::from(Span::styled(
                 " Press Enter to toggle reactive theme.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (3, 9) => lines.push(Line::from(Span::styled(
+            (2, 9) => lines.push(Line::from(Span::styled(
                 " Clear cached lyrics for all tracks.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (3, 10) => lines.push(Line::from(Span::styled(
+            (2, 10) => lines.push(Line::from(Span::styled(
                 " Clear downloaded cover art cache.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (4, 0) => lines.push(Line::from(Span::styled(
+            (2, 12) => lines.push(Line::from(Span::styled(
+                " Press Enter to cycle theme mode (auto/dark/light).",
+                Style::default().fg(app.theme.fg_dim),
+            ))),
+            (3, 0) => lines.push(Line::from(Span::styled(
                 " Spotify integration status.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (4, 3) => lines.push(Line::from(Span::styled(
+            (3, 3) => lines.push(Line::from(Span::styled(
                 " Press Enter to paste a Spotify access token.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (4, 4) => lines.push(Line::from(Span::styled(
+            (3, 4) => lines.push(Line::from(Span::styled(
                 " Re-fetch playlists from Spotify.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (4, 5) => lines.push(Line::from(Span::styled(
+            (3, 5) => lines.push(Line::from(Span::styled(
                 " Remove token and disconnect.",
                 Style::default().fg(app.theme.fg_dim),
             ))),

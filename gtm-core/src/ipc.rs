@@ -268,6 +268,9 @@ pub enum DaemonReq {
     GetArtistCoverArt {
         artist: String,
     },
+    SetCoverProvider {
+        provider: String,
+    },
     GetLyrics {
         track_id: i64,
         path: Option<String>,
@@ -377,6 +380,7 @@ impl DaemonReq {
             DaemonReq::YtSetConfig { .. } => "yt_set_config",
             DaemonReq::GetCoverArt { .. } => "get_cover_art",
             DaemonReq::GetArtistCoverArt { .. } => "get_artist_cover_art",
+            DaemonReq::SetCoverProvider { .. } => "set_cover_provider",
             DaemonReq::GetLyrics { .. } => "get_lyrics",
             DaemonReq::LyricsSearch { .. } => "lyrics_search",
             DaemonReq::SpotifySetToken { .. } => "spotify_set_token",
@@ -639,6 +643,16 @@ impl DaemonReq {
                 }
                 let x: Params = p(params)?;
                 DaemonReq::GetArtistCoverArt { artist: x.artist }
+            }
+            "set_cover_provider" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    provider: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SetCoverProvider {
+                    provider: x.provider,
+                }
             }
             "get_lyrics" => {
                 #[derive(Deserialize)]

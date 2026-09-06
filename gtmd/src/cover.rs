@@ -7,6 +7,8 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use lru::LruCache;
 use reqwest::Client;
@@ -20,6 +22,9 @@ const ARTIST_CACHE_SIZE: usize = 200;
 const DEEZER_API: &str = "https://api.deezer.com/search";
 const RATE_LIMIT_MS: u64 = 200;
 const MIN_COVER_DIM: u32 = 300;
+/// Upper bound for the on-disk `covers/` cache. Oldest files are pruned by
+/// mtime once the directory exceeds this, so the cache can't grow unbounded.
+const DISK_CACHE_CAP_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Which artwork source(s) to consult, in the requested order. `Auto` is the
 /// default: MusicBrainz/Cover Art Archive first, with Spotify preferred over
@@ -55,6 +60,8 @@ pub struct CoverCache {
     artist_memory: Arc<Mutex<LruCache<String, CoverData>>>,
     cache_dir: PathBuf,
     client: Client,
+    /// Number of covers written to disk; used to throttle the size-prune walk.
+    disk_writes: AtomicUsize,
 }
 
 impl CoverCache {
@@ -70,6 +77,55 @@ impl CoverCache {
             ))),
             cache_dir,
             client: Client::new(),
+            disk_writes: AtomicUsize::new(0),
+        }
+    }
+
+    /// Write cover bytes to the album-cover disk cache, periodically pruning
+    /// oldest-by-mtime files once the directory exceeds `DISK_CACHE_CAP_BYTES`.
+    fn store_disk(&self, path: &PathBuf, bytes: &[u8]) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).ok();
+        }
+        if let Err(e) = fs::write(path, bytes) {
+            warn!("Failed to write cover to disk {path:?}: {e}");
+        }
+        if self.disk_writes.fetch_add(1, Ordering::Relaxed) % 8 == 0 {
+            self.prune_disk_cache();
+        }
+    }
+
+    fn prune_disk_cache(&self) {
+        let dir = self.cache_dir.join("covers");
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return;
+        };
+        let mut files: Vec<(SystemTime, PathBuf, u64)> = Vec::new();
+        let mut total: u64 = 0;
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Ok(md) = entry.metadata()
+                && md.is_file()
+            {
+                total += md.len();
+                files.push((
+                    md.modified().unwrap_or(UNIX_EPOCH),
+                    path,
+                    md.len(),
+                ));
+            }
+        }
+        if total <= DISK_CACHE_CAP_BYTES {
+            return;
+        }
+        files.sort_by_key(|(mtime, _, _)| *mtime);
+        for (_, path, len) in files {
+            if total <= DISK_CACHE_CAP_BYTES {
+                break;
+            }
+            if fs::remove_file(&path).is_ok() {
+                total = total.saturating_sub(len);
+            }
         }
     }
 
@@ -133,12 +189,7 @@ impl CoverCache {
             data: bytes.clone(),
         };
         let disk = self.disk_path(&key);
-        if let Some(parent) = disk.parent() {
-            fs::create_dir_all(parent).ok();
-        }
-        if let Err(e) = fs::write(&disk, &bytes) {
-            warn!("Failed to write cover to disk {disk:?}: {e}");
-        }
+        self.store_disk(&disk, &bytes);
         let mut mem = self.memory.lock().await;
         mem.put(key, cd);
     }
@@ -255,12 +306,7 @@ impl CoverCache {
         let bytes = mb.download_cover(&found.release_group_id).await?;
         let bytes = Self::normalize_cover(&bytes).unwrap_or(bytes);
         let disk = self.disk_path(key);
-        if let Some(parent) = disk.parent() {
-            fs::create_dir_all(parent).ok();
-        }
-        if let Err(e) = fs::write(&disk, &bytes) {
-            warn!("Failed to write MB cover to disk {disk:?}: {e}");
-        }
+        self.store_disk(&disk, &bytes);
         Some(CoverData {
             data: bytes,
             mime: "image/jpeg".to_string(),

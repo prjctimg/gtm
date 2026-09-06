@@ -560,6 +560,8 @@ pub struct App {
     pub crossfade_duration: u8,
     pub yt_search_loading: bool,
     pub yt_search_debounce: Option<std::time::Instant>,
+    pub spotify_search_debounce: Option<std::time::Instant>,
+    pub spotify_web_seq: u64,
     pub yt_search_poll_deadline: Option<std::time::Instant>,
     pub pending_delete: Option<(i64, String)>,
     pub pickers: PickerManager,
@@ -662,6 +664,7 @@ pub struct App {
     pub queue_preview_cover_stateful: Option<StatefulProtocol>,
     last_queue_preview_cover_fetch_id: Option<i64>,
     last_queue_preview_cover_fetch_gen: Option<u64>,
+    queue_preview_cover_fail_until: Option<(i64, std::time::Instant)>,
     // Monotonic generation counter for all cover fetches — disambiguates
     // stale responses and `id == 0` reuse across different tracks.
     next_cover_gen: u64,
@@ -718,7 +721,7 @@ enum IpcResult {
     SpotifyStatus(SpotifyStatus),
     SpotifyPlaylists(Vec<SpotifyPlaylist>),
     SpotifyTracks(Vec<SpotifyTrack>),
-    SpotifySearchWebResults(Vec<SpotifyTrack>),
+    SpotifySearchWebResults(u64, Vec<SpotifyTrack>),
     ReactivePalette(Option<crate::reactive::ReactivePalette>),
 }
 
@@ -1016,6 +1019,8 @@ impl App {
             pending_delete: None,
             yt_search_loading: false,
             yt_search_debounce: None,
+            spotify_search_debounce: None,
+            spotify_web_seq: 0,
             yt_search_poll_deadline: None,
             pickers: PickerManager::new(),
             sleep_timer: SleepTimerState {
@@ -1124,6 +1129,7 @@ impl App {
             queue_preview_cover_stateful: None,
             last_queue_preview_cover_fetch_id: None,
             last_queue_preview_cover_fetch_gen: None,
+            queue_preview_cover_fail_until: None,
             next_cover_gen: 1,
             current_lyrics: None,
             lyrics_scroll: 0,
@@ -1263,6 +1269,64 @@ impl App {
         // preference can't fight the choice on restart.
         self.theme_mode = "manual".to_string();
         save_prefs(&self.current_prefs());
+    }
+
+    /// Cycle the theme-following mode (auto → dark → light → manual → auto),
+    /// immediately re-resolve the matching theme and apply it, then persist so
+    /// the choice survives restarts. `manual` keeps the current pick; `auto`
+    /// re-enables OS light/dark detection.
+    fn cycle_theme_mode(&mut self) {
+        let next_mode = match self.theme_mode.trim().to_ascii_lowercase().as_str() {
+            "auto" => "dark",
+            "dark" => "light",
+            "light" => "manual",
+            "manual" => "auto",
+            _ => "auto",
+        }
+        .to_string();
+        self.theme_mode = next_mode;
+        let saved_name = self
+            .themes
+            .get(self.theme_index)
+            .map(|t| t.name.to_string())
+            .unwrap_or_else(default_theme_name);
+        let idx = resolve_theme_index(&self.themes, &saved_name, &self.theme_mode);
+        self.theme_index = idx;
+        self.apply_reactive();
+        save_prefs(&self.current_prefs());
+        self.notify_typed(
+            "Theme",
+            format!("Theme mode: {}", crate::ui::theme_mode_label(&self.theme_mode)),
+            NotificationKind::Info,
+            true,
+            NotifType::Prefs,
+        );
+    }
+
+    /// Cycle the cover-art provider (auto → musicbrainz → deezer → spotify →
+    /// auto), push the live value to the daemon and persist it for restarts.
+    fn cycle_cover_provider(&mut self) {
+        let next = match self.cover_provider.trim().to_ascii_lowercase().as_str() {
+            "auto" => "musicbrainz",
+            "musicbrainz" | "mb" => "deezer",
+            "deezer" => "spotify",
+            _ => "auto",
+        }
+        .to_string();
+        self.cover_provider = next.clone();
+        let label = crate::ui::cover_provider_label(&next);
+        let c = self.client.clone();
+        tokio::spawn(async move {
+            let _ = c.set_cover_provider(&next).await;
+        });
+        save_prefs(&self.current_prefs());
+        self.notify_typed(
+            "System",
+            format!("Cover source: {}", label),
+            NotificationKind::Info,
+            false,
+            NotifType::Prefs,
+        );
     }
 
     /// Apply a footer-preset picker selection by index and persist by name.
@@ -1913,6 +1977,17 @@ impl App {
                         {
                             self.queue_preview_cover = cover;
                             self.queue_preview_cover_sync();
+                            if self.queue_preview_cover.is_some() {
+                                self.queue_preview_cover_fail_until = None;
+                            } else {
+                                // Failed or empty: release the guard so a later
+                                // preview retries, and throttle the refetch.
+                                self.last_queue_preview_cover_fetch_gen = None;
+                                self.queue_preview_cover_fail_until = Some((
+                                    track_id,
+                                    std::time::Instant::now() + Duration::from_secs(30),
+                                ));
+                            }
                         }
                     }
                     IpcResult::PickerPreviewCover(cover, track_id, fetch_gen) => {
@@ -1998,7 +2073,13 @@ impl App {
                     }
                     IpcResult::SpotifyPlaylists(p) => self.spotify_playlists = p,
                     IpcResult::SpotifyTracks(t) => self.spotify_playlist_tracks_cache = t,
-                    IpcResult::SpotifySearchWebResults(tracks) => {
+                    IpcResult::SpotifySearchWebResults(seq, tracks) => {
+                        if seq != self.spotify_web_seq {
+                            // Stale: a newer query superseded this in-flight
+                            // response, so its rows would be for the wrong
+                            // search. Drop rather than flash wrong results.
+                            continue;
+                        }
                         for track in tracks {
                             self.spotify_search_results.push((
                                 "web".into(),
@@ -2030,6 +2111,21 @@ impl App {
                     let q = top.query.clone();
                     let tx = self.cmd_tx();
                     let _ = tx.send(TuiCommand::YtSearch(q)).await;
+                }
+            }
+
+            // Spotify web-search debounce: auto-search 500ms after the last
+            // keystroke, mirroring the YT search behaviour above.
+            let now = std::time::Instant::now();
+            if let Some(deadline) = self.spotify_search_debounce
+                && now >= deadline
+            {
+                self.spotify_search_debounce = None;
+                if let Some(top) = self.pickers.top()
+                    && top.id == PickerId::SpotifySearch
+                    && !top.query.is_empty()
+                {
+                    self.search_spotify();
                 }
             }
 
@@ -2777,10 +2873,11 @@ impl App {
             .map_or(String::new(), |o| o.query.clone());
         let c = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
+        let seq = self.spotify_web_seq;
         tokio::spawn(async move {
             match c.spotify().search_web(&query).await {
                 Ok(tracks) => {
-                    let _ = ipc_tx.send(IpcResult::SpotifySearchWebResults(tracks));
+                    let _ = ipc_tx.send(IpcResult::SpotifySearchWebResults(seq, tracks));
                 }
                 Err(e) => {
                     let _ =
@@ -3074,6 +3171,15 @@ impl App {
         };
         let tid = track.id;
         let track_path = track.path.clone();
+        // A failed lookup clears the gen guard so a later preview can retry;
+        // this throttle prevents the per-frame render from re-fetching a
+        // cover that isn't there, at most once per 30s per track.
+        if let Some((fail_tid, until)) = self.queue_preview_cover_fail_until
+            && fail_tid == tid
+            && std::time::Instant::now() < until
+        {
+            return;
+        }
         // If the up-next notification refers to the very same track that the
         // queue picker is showing, reuse its cover bytes so both surfaces are
         // always in sync and the now-playing cover can never appear here.
@@ -3109,11 +3215,14 @@ impl App {
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.art().cover_for(tid, Some(track_path)).await
-                && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64)
-            {
-                let _ = ipc_tx.send(IpcResult::QueuePreviewCover(Some(bytes), tid, fetch_gen));
-            }
+            // Report failure as `None` too, so the pending-gen guard is
+            // released and a later save/queue change can retry the lookup.
+            let cover = if let Ok(Some(b64)) = client.art().cover_for(tid, Some(track_path)).await {
+                base64::engine::general_purpose::STANDARD.decode(&b64).ok()
+            } else {
+                None
+            };
+            let _ = ipc_tx.send(IpcResult::QueuePreviewCover(cover, tid, fetch_gen));
         });
     }
 
@@ -3203,8 +3312,8 @@ impl App {
     fn settings_options_for_category(&self) -> usize {
         match self.settings_category {
             0 => 4,  // YouTube: Cookie Source, Cookie File, JS Runtime, Auto Download
-            1 => 5,  // Playback: Repeat, Shuffle, Crossfade, EQ Enabled, Reverb
-            2 => 12, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme, Clear Lyrics Cache, Clear Cover Cache, Notification Settings
+            1 => 6,  // Playback: Repeat, Shuffle, Crossfade, EQ Enabled, Reverb, Cover Source
+            2 => 13, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme, Clear Lyrics Cache, Clear Cover Cache, Notification Settings, Theme Mode
             3 => 7,  // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Device
             _ => 0,
         }
@@ -5318,6 +5427,9 @@ impl App {
                                         let _ = c.set_reverb(new_enabled, room_size).await;
                                     });
                                 }
+                                5 => {
+                                    self.cycle_cover_provider();
+                                }
                                 _ => {}
                             },
                             2 => match self.settings_option {
@@ -5413,6 +5525,9 @@ impl App {
                                     tokio::spawn(async move {
                                         let _ = c.set_reverb(new_enabled, room_size).await;
                                     });
+                                }
+                                5 => {
+                                    self.cycle_cover_provider();
                                 }
                                 _ => {}
                             },
@@ -5560,6 +5675,9 @@ impl App {
                                         let _ = c.set_reverb(new_enabled, room_size).await;
                                     });
                                 }
+                                5 => {
+                                    self.cycle_cover_provider();
+                                }
                                 _ => {}
                             },
                             2 => match opt {
@@ -5664,6 +5782,9 @@ impl App {
                                 }
                                 11 => {
                                     self.pickers.open(PickerId::NotificationSettings);
+                                }
+                                12 => {
+                                    self.cycle_theme_mode();
                                 }
                                 _ => {}
                             },
@@ -6336,7 +6457,10 @@ impl App {
                                     self.pending_quit = true;
                                 } else if action == "quit" {
                                     self.pending_quit = true;
-                                } else if action == "tab cycle" || action == "settings" {
+                                } else if action == "tab cycle" {
+                                    self.cycle_pane_focus(true);
+                                    self.pickers.close_top();
+                                } else if action == "settings" {
                                     self.pickers.open(PickerId::Settings);
                                 } else if action == "queue" {
                                     self.pickers.open(PickerId::Queue);
@@ -6425,7 +6549,8 @@ impl App {
                                         NotifType::Playback,
                                     );
                                 } else if action == "prev tab" {
-                                    self.pickers.open(PickerId::Settings);
+                                    self.cycle_pane_focus(false);
+                                    self.pickers.close_top();
                                 } else if action == "multiselect" {
                                     if !self.library_pane_focus {
                                         self.multiselect_mode = !self.multiselect_mode;
@@ -6906,7 +7031,12 @@ impl App {
                                 self.spotify_token_input.push(c);
                             } else {
                                 top.query.push(c);
-                                self.search_spotify();
+                                // Invalidate stale results immediately and
+                                // re-search after the debounce elapses.
+                                self.spotify_search_results.clear();
+                                self.spotify_web_seq = self.spotify_web_seq.wrapping_add(1);
+                                self.spotify_search_debounce =
+                                    Some(std::time::Instant::now() + Duration::from_millis(500));
                             }
                         }
                         PickerId::SpotifyLink => {
@@ -6957,7 +7087,10 @@ impl App {
                                 self.spotify_token_input.pop();
                             } else {
                                 top.query.pop();
-                                self.search_spotify();
+                                self.spotify_search_results.clear();
+                                self.spotify_web_seq = self.spotify_web_seq.wrapping_add(1);
+                                self.spotify_search_debounce =
+                                    Some(std::time::Instant::now() + Duration::from_millis(500));
                             }
                         }
                         PickerId::SpotifyLink => {
@@ -6994,7 +7127,10 @@ impl App {
                         self.spotify_token_input.push_str(text);
                     } else {
                         top.query.push_str(text);
-                        self.search_spotify();
+                        self.spotify_search_results.clear();
+                        self.spotify_web_seq = self.spotify_web_seq.wrapping_add(1);
+                        self.spotify_search_debounce =
+                            Some(std::time::Instant::now() + Duration::from_millis(500));
                     }
                 }
                 PickerId::SpotifyLink => {

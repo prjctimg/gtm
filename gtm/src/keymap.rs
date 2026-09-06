@@ -672,8 +672,14 @@ pub fn parse_key_event(s: &str) -> Option<KeyEvent> {
                 let c = match p {
                     "space" => KeyCode::Char(' '),
                     "enter" | "return" => KeyCode::Enter,
-                    "tab" => KeyCode::Tab,
-                    "backtab" | "back-tab" | "shift+tab" => KeyCode::BackTab,
+                    "tab" => {
+                        if modifiers.contains(KeyModifiers::SHIFT) {
+                            KeyCode::BackTab
+                        } else {
+                            KeyCode::Tab
+                        }
+                    }
+                    "backtab" | "back-tab" => KeyCode::BackTab,
                     "backspace" | "bs" => KeyCode::Backspace,
                     "delete" | "del" => KeyCode::Delete,
                     "esc" | "escape" => KeyCode::Esc,

@@ -310,8 +310,9 @@ impl LyricsManager {
                         return parse_lrclib_response(result);
                     }
                 }
-                // Fallback to first result
-                return results.first().and_then(parse_lrclib_response);
+                // No fuzzy match on artist+title: prefer no lyrics over a
+                // wrong song's, so a mismatched first hit is never served.
+                return None;
             }
             if attempt == 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -421,7 +422,9 @@ impl LyricsManager {
                         return parse_lrclib_response(result);
                     }
                 }
-                return results.first().and_then(parse_lrclib_response);
+                // No fuzzy match: skip the first-hit fallback so a wrong
+                // song's lyrics are never shown for this track.
+                return None;
             }
             if attempt == 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -449,7 +452,8 @@ impl LyricsManager {
                 return parse_lrclib_response(result);
             }
         }
-        results.first().and_then(parse_lrclib_response)
+        // No fuzzy title match: don't serve an unrelated song's lyrics.
+        None
     }
 }
 

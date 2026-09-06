@@ -587,7 +587,7 @@ fn render_progress(app: &App) -> Option<String> {
     }
     let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
     let time_str = format!("{} / {}", format_duration(pos), format_duration(dur));
-    let bar_w = 16;
+    let bar_w = 12;
     let progress = crate::ui::Render::progress_variant(ratio, bar_w, app);
     Some(format!("{} {}", progress, time_str))
 }
