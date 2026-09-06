@@ -452,9 +452,27 @@ fn render_footer_notification(app: &App) -> Option<String> {
 
 fn render_playback(app: &App) -> String {
     match app.state.status {
-        PlaybackStatus::Playing => "\u{25b6}".into(),
-        PlaybackStatus::Paused => "\u{23f8}".into(),
-        PlaybackStatus::Stopped => "\u{25a0}".into(),
+        PlaybackStatus::Playing => {
+            if crate::ui::use_nerd_fonts() {
+                "\u{f040a}".into()
+            } else {
+                "\u{25b6}".into()
+            }
+        }
+        PlaybackStatus::Paused => {
+            if crate::ui::use_nerd_fonts() {
+                "\u{f03e4}".into()
+            } else {
+                "\u{23f8}".into()
+            }
+        }
+        PlaybackStatus::Stopped => {
+            if crate::ui::use_nerd_fonts() {
+                "\u{f04db}".into()
+            } else {
+                "\u{25a0}".into()
+            }
+        }
     }
 }
 
@@ -504,12 +522,12 @@ fn render_repeat(app: &App) -> Option<String> {
     match app.state.repeat {
         gtm_core::state::RepeatMode::Off => None,
         gtm_core::state::RepeatMode::One => Some(if crate::ui::use_nerd_fonts() {
-            "\u{f01e}1".into()
+            "\u{f0458}".into()
         } else {
             "1".into()
         }),
         gtm_core::state::RepeatMode::All => Some(if crate::ui::use_nerd_fonts() {
-            "\u{f01e}".into()
+            "\u{f0456}".into()
         } else {
             "A".into()
         }),
@@ -519,7 +537,7 @@ fn render_repeat(app: &App) -> Option<String> {
 fn render_shuffle(app: &App) -> Option<String> {
     if app.state.shuffle {
         Some(if crate::ui::use_nerd_fonts() {
-            "\u{f074}".into()
+            "\u{f049d}".into()
         } else {
             "S".into()
         })
@@ -531,7 +549,7 @@ fn render_shuffle(app: &App) -> Option<String> {
 fn render_eq_preset(app: &App) -> Option<String> {
     if app.state.eq_enabled {
         let icon = if crate::ui::use_nerd_fonts() {
-            "\u{f7a5} "
+            "\u{f062e} "
         } else {
             "EQ:"
         };
@@ -545,7 +563,12 @@ fn render_sleep_timer(app: &App) -> Option<String> {
     if let Some(secs) = app.state.sleep_timer {
         let m = secs / 60;
         let s = secs % 60;
-        Some(format!("zzz {}:{:02}", m, s))
+        let icon = if crate::ui::use_nerd_fonts() {
+            "\u{f04b2} "
+        } else {
+            "zzz "
+        };
+        Some(format!("{icon}{}:{:02}", m, s))
     } else {
         None
     }
@@ -564,7 +587,7 @@ fn render_progress(app: &App) -> Option<String> {
     }
     let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
     let time_str = format!("{} / {}", format_duration(pos), format_duration(dur));
-    let bar_w = ((app.terminal_cols as usize) / 4).clamp(10, 30);
+    let bar_w = 16;
     let progress = crate::ui::Render::progress_variant(ratio, bar_w, app);
     Some(format!("{} {}", progress, time_str))
 }

@@ -21,6 +21,29 @@ const DEEZER_API: &str = "https://api.deezer.com/search";
 const RATE_LIMIT_MS: u64 = 200;
 const MIN_COVER_DIM: u32 = 300;
 
+/// Which artwork source(s) to consult, in the requested order. `Auto` is the
+/// default: MusicBrainz/Cover Art Archive first, with Spotify preferred over
+/// everything whenever an account is linked (higher resolution artwork).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CoverProvider {
+    #[default]
+    Auto,
+    Deezer,
+    Musicbrainz,
+    Spotify,
+}
+
+impl CoverProvider {
+    pub fn from_str_lossy(s: &str) -> Self {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "deezer" => Self::Deezer,
+            "musicbrainz" | "mb" | "musicbrainz/cover-art-archive" => Self::Musicbrainz,
+            "spotify" => Self::Spotify,
+            _ => Self::Auto,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct CoverData {
     pub data: Vec<u8>,
@@ -57,6 +80,30 @@ impl CoverCache {
         }
     }
 
+    /// Normalize arbitrary album-cover bytes to a single standard size for the
+    /// whole app: centre-cropped (never distorted) 500x500 JPEG at quality 90.
+    /// Returns `None` when the input can't be decoded so callers can keep the
+    /// original bytes.
+    pub fn normalize_cover(data: &[u8]) -> Option<Vec<u8>> {
+        let img = image::load_from_memory(data).ok()?;
+        if img.width() == 0 || img.height() == 0 {
+            return None;
+        }
+        let side = img.width().min(img.height());
+        let x = (img.width() - side) / 2;
+        let y = (img.height() - side) / 2;
+        let img = img.crop_imm(x, y, side, side);
+        let img = if img.width() == 500 && img.height() == 500 {
+            img
+        } else {
+            img.resize(500, 500, image::imageops::FilterType::CatmullRom)
+        };
+        let mut out = std::io::Cursor::new(Vec::new());
+        let enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 90);
+        img.write_with_encoder(enc).ok()?;
+        Some(out.into_inner())
+    }
+
     pub fn cache_key(artist: &str, album: &str) -> String {
         let mut h = Sha256::new();
         h.update(format!("{}:{}", artist, album).as_bytes());
@@ -69,6 +116,7 @@ impl CoverCache {
         if bytes.is_empty() || Self::cover_too_small(&bytes) {
             return;
         }
+        let bytes = Self::normalize_cover(&bytes).unwrap_or(bytes);
         let artist = if artist.is_empty() {
             "Unknown Artist"
         } else {
@@ -124,7 +172,12 @@ impl CoverCache {
         self.cache_dir.join("covers").join(format!("{key}.jpg"))
     }
 
-    pub async fn get_cover(&mut self, artist: &str, album: &str) -> Option<CoverData> {
+    pub async fn get_cover(
+        &mut self,
+        artist: &str,
+        album: &str,
+        provider: CoverProvider,
+    ) -> Option<CoverData> {
         let artist = if artist.is_empty() {
             "Unknown Artist"
         } else {
@@ -163,11 +216,26 @@ impl CoverCache {
             fs::remove_file(&disk).ok();
         }
 
-        let cd = self.fetch_from_deezer(artist, album, &key).await;
-        let cd = match cd {
-            Some(cd) => Some(cd),
-            None => self.fetch_from_musicbrainz(artist, album, &key).await,
+        // An explicit Deezer choice leads with Deezer, everything else (the
+        // default) leads with MusicBrainz so original artwork wins over
+        // Deezer's often re-scaled/re-sampled copies.
+        let (first, second) = match provider {
+            CoverProvider::Deezer => (CoverProvider::Deezer, CoverProvider::Musicbrainz),
+            _ => (CoverProvider::Musicbrainz, CoverProvider::Deezer),
         };
+        let mut cd = None;
+        for p in [first, second] {
+            if cd.is_some() {
+                break;
+            }
+            cd = match p {
+                CoverProvider::Deezer => self.fetch_from_deezer(artist, album, &key).await,
+                CoverProvider::Musicbrainz => {
+                    self.fetch_from_musicbrainz(artist, album, &key).await
+                }
+                CoverProvider::Auto | CoverProvider::Spotify => continue,
+            };
+        }
         if let Some(ref cd) = cd {
             let mut mem = self.memory.lock().await;
             mem.put(key, cd.clone());
@@ -175,7 +243,7 @@ impl CoverCache {
         cd
     }
 
-    /// Cover Art Archive fallback when Deezer has no match.
+    /// MusicBrainz / Cover Art Archive lookup (original artwork).
     async fn fetch_from_musicbrainz(
         &self,
         artist: &str,
@@ -185,6 +253,7 @@ impl CoverCache {
         let mb = crate::musicbrainz::MusicBrainz::new();
         let found = mb.find_album(artist, album).await.ok().flatten()?;
         let bytes = mb.download_cover(&found.release_group_id).await?;
+        let bytes = Self::normalize_cover(&bytes).unwrap_or(bytes);
         let disk = self.disk_path(key);
         if let Some(parent) = disk.parent() {
             fs::create_dir_all(parent).ok();
@@ -321,6 +390,8 @@ impl CoverCache {
                 return None;
             }
         };
+
+        let img_bytes = Self::normalize_cover(&img_bytes).unwrap_or(img_bytes);
 
         let disk = self.disk_path(key);
         if let Some(parent) = disk.parent() {

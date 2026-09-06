@@ -1261,7 +1261,9 @@ impl Spotify {
             {
                 let mut guard = inner.cover_cache().await;
                 if let Some(ref mut cc) = *guard {
-                    let _ = cc.get_cover(&spotify_artist, &spotify_album).await;
+                    let _ = cc
+                        .get_cover(&spotify_artist, &spotify_album, inner.config.cover_provider)
+                        .await;
                 }
             }
 
@@ -1345,7 +1347,9 @@ impl Spotify {
         {
             let mut guard = inner.cover_cache().await;
             if let Some(ref mut cc) = *guard {
-                let _ = cc.get_cover(&spotify_artist, &spotify_album).await;
+                let _ = cc
+                    .get_cover(&spotify_artist, &spotify_album, inner.config.cover_provider)
+                    .await;
             }
         }
 
@@ -1444,7 +1448,9 @@ impl Spotify {
         {
             let mut guard = inner.cover_cache().await;
             if let Some(ref mut cc) = *guard {
-                let _ = cc.get_cover(&spotify_artist, &spotify_album).await;
+                let _ = cc
+                    .get_cover(&spotify_artist, &spotify_album, inner.config.cover_provider)
+                    .await;
             }
         }
 
@@ -1879,13 +1885,16 @@ impl LibraryHandler {
 
         let data_dir = inner.config.data_dir.clone();
         let cache_dir = inner.config.cache_dir.clone();
+        let inner_config_covers_provider = inner.config.cover_provider;
         let lyrics_manager = inner.lyrics_manager().await;
         let progress = inner.sync_progress.clone();
         let event_tx = inner.event_tx.clone();
         tokio::spawn(async move {
             let progress_inner = progress.clone();
             let result = tokio::task::spawn_blocking(move || match kind {
-                SyncKind::Covers => run_covers_sync(data_dir, cache_dir, &progress_inner),
+                SyncKind::Covers => {
+                    run_covers_sync(data_dir, cache_dir, inner_config_covers_provider, &progress_inner)
+                }
                 SyncKind::Lyrics => run_lyrics_sync(data_dir, lyrics_manager, &progress_inner),
                 SyncKind::Metadata => {
                     run_metadata_sync(data_dir, cache_dir, only_path, &progress_inner)
@@ -1994,8 +2003,9 @@ impl Favourites {
 struct Cover;
 
 impl Cover {
-    pub async fn get(inner: &DaemonInner, track_id: i64) -> Result<DaemonRes, CoreError> {
+    pub async fn get(inner: &DaemonInner, track_id: i64, path: Option<String>) -> Result<DaemonRes, CoreError> {
         inner.health.cover.count.fetch_add(1, Ordering::Relaxed);
+        let track_path = path.as_deref();
         let mut discovered_artist = String::new();
         let mut discovered_album = String::new();
 
@@ -2032,16 +2042,23 @@ impl Cover {
 
         if discovered_artist.is_empty() {
             let state = inner.state.read().await;
-            let in_merged = state
+            let mut in_merged = state
                 .queue
                 .iter()
-                .chain(state.default_list.iter())
-                .find(|t| t.id == track_id);
-            if let Some(t) = in_merged {
+                .chain(state.default_list.iter());
+            // Track ids of `0` collide across every locally-queued entry, so
+            // resolve id-0 tracks by their exact path; otherwise match by id.
+            let hit = if track_id == 0 {
+                track_path.and_then(|p| in_merged.find(|t| t.path == p))
+            } else {
+                in_merged.find(|t| t.id == track_id)
+            };
+            if let Some(t) = hit {
                 discovered_artist = t.artist.clone();
                 discovered_album = t.album.clone();
             } else if let Some(ref t) = state.current_track
-                && t.id == track_id
+                && (t.id == track_id
+                    || (track_id == 0 && track_path.is_some_and(|p| t.path == p)))
             {
                 discovered_artist = t.artist.clone();
                 discovered_album = t.album.clone();
@@ -2051,40 +2068,44 @@ impl Cover {
         if !discovered_artist.is_empty() && !discovered_album.is_empty() {
             let artist = discovered_artist.clone();
             let album = discovered_album.clone();
+            let provider = inner.config.cover_provider;
+
+            // With Auto (the default) or an explicit Spotify preference, a
+            // linked account supplies original 640x640 artwork ahead of the
+            // network fallbacks below.
+            let spotify_first = matches!(
+                provider,
+                crate::cover::CoverProvider::Auto | crate::cover::CoverProvider::Spotify
+            ) && inner.spotify.lock().await.linked();
+
             let mut guard = inner.cover_cache().await;
             if let Some(ref mut cache) = *guard {
-                let cover =
-                    tokio::time::timeout(Duration::from_secs(5), cache.get_cover(&artist, &album))
-                        .await
-                        .ok()
-                        .flatten();
-                if let Some(cover) = cover {
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(&cover.data);
-                    return Ok(DaemonRes::CoverArt { data: Some(b64) });
+                if spotify_first {
+                    let bytes = tokio::time::timeout(
+                        Duration::from_secs(8),
+                        async {
+                            inner.spotify.lock().await.album_cover(&artist, &album).await
+                        },
+                    )
+                    .await
+                    .ok()
+                    .flatten();
+                    if let Some(bytes) = bytes {
+                        cache.put_cover(&artist, &album, bytes.clone()).await;
+                        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                        return Ok(DaemonRes::CoverArt { data: Some(b64) });
+                    }
                 }
-            }
-            drop(guard);
-
-            // Spotify Web API fallback for the album cover when Deezer/MusicBrainz
-            // had no match. The bytes are cached so future fetches are offline.
-            let spotify = inner.spotify.lock().await;
-            if spotify.linked() {
-                let bytes = tokio::time::timeout(
-                    Duration::from_secs(8),
-                    spotify.album_cover(&artist, &album),
+                let cover = tokio::time::timeout(
+                    Duration::from_secs(5),
+                    cache.get_cover(&artist, &album, provider),
                 )
                 .await
                 .ok()
                 .flatten();
-                if let Some(bytes) = bytes {
-                    let mut guard = inner.cover_cache().await;
-                    if let Some(ref mut cache) = *guard {
-                        cache.put_cover(&artist, &album, bytes.clone()).await;
-                    }
-                    drop(guard);
-                    return Ok(DaemonRes::CoverArt {
-                        data: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
-                    });
+                if let Some(cover) = cover {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&cover.data);
+                    return Ok(DaemonRes::CoverArt { data: Some(b64) });
                 }
             }
         }
@@ -3049,7 +3070,9 @@ impl Daemon {
             }
             #[cfg(not(feature = "youtube"))]
             DaemonReq::YtSetConfig { .. } => Ok(DaemonRes::Ok),
-            DaemonReq::GetCoverArt { track_id } => Cover::get(inner, *track_id).await,
+            DaemonReq::GetCoverArt { track_id, path } => {
+                Cover::get(inner, *track_id, path.clone()).await
+            }
             DaemonReq::GetArtistCoverArt { artist } => Cover::artist(inner, artist).await,
             DaemonReq::GetLyrics { track_id, path } => {
                 Lyrics::get(inner, *track_id, path.clone()).await
@@ -3831,6 +3854,7 @@ fn is_channel_artist(artist: &str) -> bool {
 fn run_covers_sync(
     data_dir: PathBuf,
     cache_dir: PathBuf,
+    provider: crate::cover::CoverProvider,
     progress: &SyncProgress,
 ) -> Result<(usize, usize), String> {
     let lib =
@@ -3860,7 +3884,7 @@ fn run_covers_sync(
         } else {
             &track.album
         };
-        if rt.block_on(cache.get_cover(artist, album)).is_some() {
+        if rt.block_on(cache.get_cover(artist, album, provider)).is_some() {
             let key = crate::cover::CoverCache::cache_key(artist, album);
             let cover_file = cache_dir.join("covers").join(format!("{key}.jpg"));
             if cover_file.exists() {

@@ -36,6 +36,8 @@ pub struct DaemonConfig {
     /// remove action is refused with an error instead of touching the file.
     /// Defaults to allowing deletion (matches pre-flag behaviour).
     pub allow_delete_files: bool,
+    /// Artwork source preference, read from the TUI's config.toml.
+    pub cover_provider: crate::cover::CoverProvider,
 }
 
 #[derive(Parser, Debug)]
@@ -166,6 +168,18 @@ impl DaemonConfig {
 
         let state_file = data_dir.join("state.json");
 
+        // `cover_provider` lives in the same config.toml the gtm TUI edits.
+        // Known keys are honored; anything unrecognized falls back to Auto.
+        let cover_provider = std::fs::read_to_string(config_dir.join("config.toml"))
+            .ok()
+            .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
+            .and_then(|v| {
+                v.get("cover_provider")
+                    .and_then(|p| p.as_str())
+                    .map(crate::cover::CoverProvider::from_str_lossy)
+            })
+            .unwrap_or_default();
+
         DaemonConfig {
             socket_path,
             socket_pulse_path,
@@ -180,6 +194,7 @@ impl DaemonConfig {
             test_mode: args.test_mode,
             audio_backend,
             allow_delete_files: true,
+            cover_provider,
         }
     }
 

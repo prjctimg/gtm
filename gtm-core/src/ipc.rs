@@ -263,6 +263,7 @@ pub enum DaemonReq {
     },
     GetCoverArt {
         track_id: i64,
+        path: Option<String>,
     },
     GetArtistCoverArt {
         artist: String,
@@ -622,10 +623,13 @@ impl DaemonReq {
                 #[derive(Deserialize)]
                 struct Params {
                     track_id: i64,
+                    #[serde(default)]
+                    path: Option<String>,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::GetCoverArt {
                     track_id: x.track_id,
+                    path: x.path,
                 }
             }
             "get_artist_cover_art" => {

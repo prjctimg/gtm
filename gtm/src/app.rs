@@ -8,7 +8,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+    self, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
 use gtm_core::client::DaemonClient;
 use gtm_core::global::EqPreset;
@@ -102,6 +102,12 @@ pub struct Prefs {
     keybindings: std::collections::HashMap<String, String>,
     #[serde(default = "default_notification_modes")]
     notification_modes: std::collections::HashMap<String, String>,
+    #[serde(default = "default_cover_provider")]
+    cover_provider: String,
+}
+
+fn default_cover_provider() -> String {
+    "auto".into()
 }
 
 fn default_theme_name() -> String {
@@ -190,6 +196,7 @@ impl Default for Prefs {
             track_sort: default_track_sort(),
             keybindings: std::collections::HashMap::new(),
             notification_modes: default_notification_modes(),
+            cover_provider: default_cover_provider(),
         }
     }
 }
@@ -549,6 +556,9 @@ pub struct App {
     /// Per-category notification visibility, hydrated from `Prefs` on config
     /// load and persisted via `current_prefs`.
     pub notification_modes: std::collections::HashMap<NotifType, NotifMode>,
+    /// Cover provider preference (`auto`/`deezer`/`musicbrainz`/`spotify`),
+    /// persisted in config.toml and consumed by the daemon for cover lookups.
+    pub cover_provider: String,
     pub crossfade_duration: u8,
     pub yt_search_loading: bool,
     pub yt_search_debounce: Option<std::time::Instant>,
@@ -1003,6 +1013,7 @@ impl App {
                 .into_iter()
                 .map(|(k, v)| (NotifType::from_str_lossy(&k), NotifMode::from_str_lossy(&v)))
                 .collect(),
+            cover_provider: prefs.cover_provider.clone(),
             crossfade_duration: 6,
             pending_delete: None,
             yt_search_loading: false,
@@ -1240,6 +1251,7 @@ impl App {
                 .iter()
                 .map(|(t, m)| (t.as_str().to_string(), m.as_str().to_string()))
                 .collect(),
+            cover_provider: self.cover_provider.clone(),
         }
     }
 
@@ -1461,7 +1473,19 @@ impl App {
             }
         });
 
-        loop {
+        'outer: loop {
+            // Input-first: process any already-buffered terminal events before
+            // state work and rendering so key actions are applied immediately.
+            while event::poll(Duration::ZERO).unwrap_or(false) {
+                match event::read() {
+                    Ok(ev) => {
+                        if !self.handle_terminal_event(ev).await {
+                            break 'outer;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
             let mut events_received = false;
             let mut had_track_change = false;
             let mut had_sleep_expired = false;
@@ -1582,10 +1606,8 @@ impl App {
                         {
                             self.close_top_picker_with_cleanup();
                         }
-                        self.library_category = 5;
+                        self.reset_library_view(5, None);
                         self.library_pane_focus = true;
-                        self.browse_detail = None;
-                        self.set_list_pos(0);
                     } else if self.spotify_oauth_pending && !status.linked {
                         // The OAuth browser flow failed (e.g. no network): stop
                         // waiting, dismiss the picker and report the failure.
@@ -1840,7 +1862,7 @@ impl App {
                             self.queue_preview_cover_stateful = None;
                         }
                         if self.queue_cache.is_empty() && self.state.current_track.is_none() {
-                            self.browse_detail = None;
+                            self.reset_library_view(self.library_category, None);
                         }
                     }
                     IpcResult::YtResults(query, results) => {
@@ -2195,31 +2217,12 @@ impl App {
 
             if event::poll(Duration::from_millis(16)).unwrap_or(false) {
                 match event::read() {
-                    Ok(Event::Key(key)) => {
-                        if key.kind == KeyEventKind::Press
-                            && (!self.handle_key(key).await || self.pending_quit)
-                        {
-                            break;
+                    Ok(ev) => {
+                        if !self.handle_terminal_event(ev).await {
+                            break 'outer;
                         }
                     }
-                    Ok(Event::Paste(text)) => {
-                        self.handle_paste(&text).await;
-                    }
-                    Ok(Event::Mouse(mouse)) => match mouse.kind {
-                        MouseEventKind::ScrollUp => {
-                            let key = event::KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
-                            self.handle_key(key).await;
-                        }
-                        MouseEventKind::ScrollDown => {
-                            let key = event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
-                            self.handle_key(key).await;
-                        }
-                        MouseEventKind::Down(MouseButton::Left) => {
-                            self.handle_click(mouse.column, mouse.row).await;
-                        }
-                        _ => {}
-                    },
-                    _ => {}
+                    Err(_) => {}
                 }
             }
 
@@ -2807,6 +2810,18 @@ impl App {
         self.scroll_offset[i] = v;
     }
 
+    /// Fully reset the library-left-pane view to a target category + drill-down.
+    /// Clears the list position, multiselect selection and drill-down caches so
+    /// a stale Enter/toggle can never act on a row from a previous view.
+    fn reset_library_view(&mut self, category: usize, detail: Option<String>) {
+        self.browse_detail = detail;
+        self.library_category = category.min(LIBRARY_CATEGORIES.len() - 1);
+        self.selected_indices.clear();
+        self.playlist_tracks_cache.clear();
+        self.spotify_playlist_tracks_cache.clear();
+        self.set_list_pos(0);
+    }
+
     pub fn filtered_tracks(&self) -> Vec<&TrackInfo> {
         if self.library_category == 4 && self.browse_detail.is_some() {
             return self.playlist_tracks_cache.iter().collect();
@@ -3064,15 +3079,22 @@ impl App {
             return;
         };
         let tid = track.id;
+        let track_path = track.path.clone();
         // If the up-next notification refers to the very same track that the
         // queue picker is showing, reuse its cover bytes so both surfaces are
         // always in sync and the now-playing cover can never appear here.
-        if let Some(u) = self.upnext.as_ref()
-            && u.track.id == tid
-            && u.cover.is_some()
-            && self.last_queue_preview_cover_fetch_id != Some(tid)
-        {
-            self.queue_preview_cover = u.cover.clone();
+        let reuse = self
+            .upnext
+            .as_ref()
+            .filter(|u| {
+                u.track.id == tid
+                    && u.track.path == track_path
+                    && u.cover.is_some()
+                    && self.last_queue_preview_cover_fetch_id != Some(tid)
+            })
+            .and_then(|u| u.cover.clone());
+        if let Some(cover) = reuse {
+            self.queue_preview_cover = Some(cover);
             self.queue_preview_cover_sync();
             self.last_queue_preview_cover_fetch_id = Some(tid);
             self.last_queue_preview_cover_fetch_gen = None;
@@ -3093,7 +3115,7 @@ impl App {
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.art().cover(tid).await
+            if let Ok(Some(b64)) = client.art().cover_for(tid, Some(track_path)).await
                 && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64)
             {
                 let _ = ipc_tx.send(IpcResult::QueuePreviewCover(Some(bytes), tid, fetch_gen));
@@ -3931,6 +3953,38 @@ impl App {
         }
     }
 
+    /// Handle a single terminal event. Returns false when the app should quit.
+    async fn handle_terminal_event(&mut self, event: event::Event) -> bool {
+        match event {
+            event::Event::Key(key) => {
+                if key.kind == KeyEventKind::Press
+                    && (!self.handle_key(key).await || self.pending_quit)
+                {
+                    return false;
+                }
+            }
+            event::Event::Paste(text) => {
+                self.handle_paste(&text).await;
+            }
+            event::Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::ScrollUp => {
+                    let key = event::KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+                    self.handle_key(key).await;
+                }
+                MouseEventKind::ScrollDown => {
+                    let key = event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE);
+                    self.handle_key(key).await;
+                }
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.handle_click(mouse.column, mouse.row).await;
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        true
+    }
+
     async fn handle_key(&mut self, key: event::KeyEvent) -> bool {
         // Ctrl+Z: suspend to background (pass-through SIGTSTP)
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('z') {
@@ -4425,9 +4479,7 @@ impl App {
                         } else if self.library_pane_focus {
                             let new_cat = self.library_category.saturating_sub(1);
                             if new_cat != self.library_category {
-                                self.browse_detail = None;
-                                self.library_category = new_cat;
-                                self.set_list_pos(0);
+                                self.reset_library_view(new_cat, None);
                             }
                         } else {
                             self.set_list_pos(self.list_pos().saturating_sub(1));
@@ -4447,9 +4499,7 @@ impl App {
                             let new_cat =
                                 (self.library_category + 1).min(LIBRARY_CATEGORIES.len() - 1);
                             if new_cat != self.library_category {
-                                self.browse_detail = None;
-                                self.library_category = new_cat;
-                                self.set_list_pos(0);
+                                self.reset_library_view(new_cat, None);
                             }
                         } else {
                             let max_list = self.library_list_len().saturating_sub(1);
@@ -6686,21 +6736,17 @@ impl App {
                                         self.send_high(TuiCommand::Play(path));
                                     }
                                     LibraryPick::Artist(name) => {
-                                        self.library_category = 3;
-                                        self.browse_detail = Some(name.clone());
-                                        self.set_list_pos(0);
+                                        self.reset_library_view(3, Some(name.clone()));
+                                        self.library_pane_focus = false;
                                     }
                                     LibraryPick::Album(album) => {
-                                        self.library_category = 2;
-                                        self.browse_detail = Some(album.clone());
-                                        self.set_list_pos(0);
+                                        self.reset_library_view(2, Some(album.clone()));
+                                        self.library_pane_focus = false;
                                     }
                                     LibraryPick::Playlist(i) => {
                                         let playlist = self.playlist_cache[*i].clone();
-                                        self.library_category = 4;
-                                        self.browse_detail = Some(playlist.name.clone());
-                                        self.set_list_pos(0);
-                                        self.playlist_tracks_cache.clear();
+                                        self.reset_library_view(4, Some(playlist.name.clone()));
+                                        self.library_pane_focus = false;
                                         let c = self.client.clone();
                                         let ipc_tx2 = self.ipc_tx.clone();
                                         let pid = playlist.id;

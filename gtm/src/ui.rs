@@ -799,7 +799,7 @@ impl Render {
                         let pos = app.display_position as u64;
                         let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
                         let bar_w =
-                            (info_chunks[info_row].width).saturating_sub(18).max(4) as usize;
+                            (info_chunks[info_row].width * 2 / 5).saturating_sub(2).max(4) as usize;
                         let progress_str = crate::ui::Render::progress_variant(ratio, bar_w, app);
                         let time_str = format!(
                             " {} / {}",
@@ -1440,9 +1440,10 @@ impl Render {
             // Narrow screens: lyrics act as a tab replacing the list/queue
             // area entirely ('l' toggles, Esc/Back returns to the list).
             let base = panes
-                .iter()
+                .get(1)
+                .filter(|p| p.width > 1)
                 .copied()
-                .find(|p| p.width > 1)
+                .or_else(|| panes.iter().copied().find(|p| p.width > 1))
                 .unwrap_or(chunks[1]);
             let lyrics = Rect {
                 height: base.height.saturating_sub(1),
@@ -1624,20 +1625,47 @@ impl Render {
             let text_style = if !synced {
                 Style::default().fg(app.theme.fg)
             } else {
-                // Only the active (current) line is highlighted; every other
-                // line is greyed out so the current lyric stands out clearly.
+                // Past lines stay readable, the active (current) line matching
+                // the playback timestamp is emphasized, future lines fade out.
                 let d = i as isize - anchor as isize;
                 if d == 0 {
                     Style::default()
                         .fg(app.theme.accent)
                         .add_modifier(Modifier::BOLD)
+                } else if d < 0 {
+                    Style::default().fg(app.theme.fg)
                 } else {
-                    Style::default().fg(app.theme.fg_dim)
+                    Style::default()
+                        .fg(app.theme.fg_dim)
+                        .add_modifier(Modifier::DIM)
                 }
             };
+            // Right-aligned timestamp range gutter on synced lines so the
+            // actively playing verse is clearly time-bounded.
+            let ts_prefix = if synced && line.timestamp >= 0.0 {
+                let ts = format_duration(line.timestamp as u64);
+                let range = match lyrics.lines.get(i + 1) {
+                    Some(next) if next.timestamp >= 0.0 => {
+                        format!("{ts}-{}", format_duration(next.timestamp as u64))
+                    }
+                    _ => ts,
+                };
+                format!("  [{range}]")
+            } else {
+                String::new()
+            };
+            let row_text = format!("{}{}", line.text, ts_prefix);
             row_offsets.push(cumulative);
-            cumulative += (line.text.chars().count().max(1)).div_ceil(width);
-            text.push(Line::from(Span::styled(line.text.clone(), text_style)));
+            cumulative += row_text.chars().count().max(1).div_ceil(width);
+            let ts_style = if i == anchor && synced {
+                Style::default().fg(app.theme.accent)
+            } else {
+                Style::default().fg(app.theme.fg_dim)
+            };
+            text.push(Line::from(vec![
+                Span::styled(line.text.clone(), text_style),
+                Span::styled(ts_prefix, ts_style),
+            ]));
         }
         let total_rows = cumulative;
         let visible = lyrics_inner.height as usize;

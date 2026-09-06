@@ -919,9 +919,13 @@ pub struct Art<'a> {
 
 impl<'a> Art<'a> {
     pub async fn cover(&self, track_id: i64) -> Result<Option<String>> {
+        self.cover_for(track_id, None).await
+    }
+
+    pub async fn cover_for(&self, track_id: i64, cover_path: Option<String>) -> Result<Option<String>> {
         let res = self
             .client
-            .send_raw(DaemonReq::GetCoverArt { track_id })
+            .send_raw(DaemonReq::GetCoverArt { track_id, path: cover_path })
             .await?;
         match res {
             DaemonRes::CoverArt { data, .. } => Ok(data),
