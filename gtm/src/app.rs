@@ -7,9 +7,7 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crossterm::event::{
-    self, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
-};
+use crossterm::event::{self, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use gtm_core::client::DaemonClient;
 use gtm_core::global::EqPreset;
 use gtm_core::global::{DaemonState, PlaybackStatus, RepeatMode};
@@ -2215,15 +2213,11 @@ impl App {
                 }
             }
 
-            if event::poll(Duration::from_millis(16)).unwrap_or(false) {
-                match event::read() {
-                    Ok(ev) => {
-                        if !self.handle_terminal_event(ev).await {
-                            break 'outer;
-                        }
-                    }
-                    Err(_) => {}
-                }
+            if event::poll(Duration::from_millis(16)).unwrap_or(false)
+                && let Ok(ev) = event::read()
+                && !self.handle_terminal_event(ev).await
+            {
+                break 'outer;
             }
 
             // Handle Ctrl+Z suspend: leave terminal, SIGTSTP, re-init on resume

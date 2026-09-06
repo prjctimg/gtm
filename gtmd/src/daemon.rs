@@ -1892,9 +1892,12 @@ impl LibraryHandler {
         tokio::spawn(async move {
             let progress_inner = progress.clone();
             let result = tokio::task::spawn_blocking(move || match kind {
-                SyncKind::Covers => {
-                    run_covers_sync(data_dir, cache_dir, inner_config_covers_provider, &progress_inner)
-                }
+                SyncKind::Covers => run_covers_sync(
+                    data_dir,
+                    cache_dir,
+                    inner_config_covers_provider,
+                    &progress_inner,
+                ),
                 SyncKind::Lyrics => run_lyrics_sync(data_dir, lyrics_manager, &progress_inner),
                 SyncKind::Metadata => {
                     run_metadata_sync(data_dir, cache_dir, only_path, &progress_inner)
@@ -2003,7 +2006,11 @@ impl Favourites {
 struct Cover;
 
 impl Cover {
-    pub async fn get(inner: &DaemonInner, track_id: i64, path: Option<String>) -> Result<DaemonRes, CoreError> {
+    pub async fn get(
+        inner: &DaemonInner,
+        track_id: i64,
+        path: Option<String>,
+    ) -> Result<DaemonRes, CoreError> {
         inner.health.cover.count.fetch_add(1, Ordering::Relaxed);
         let track_path = path.as_deref();
         let mut discovered_artist = String::new();
@@ -2042,10 +2049,7 @@ impl Cover {
 
         if discovered_artist.is_empty() {
             let state = inner.state.read().await;
-            let mut in_merged = state
-                .queue
-                .iter()
-                .chain(state.default_list.iter());
+            let mut in_merged = state.queue.iter().chain(state.default_list.iter());
             // Track ids of `0` collide across every locally-queued entry, so
             // resolve id-0 tracks by their exact path; otherwise match by id.
             let hit = if track_id == 0 {
@@ -2057,8 +2061,7 @@ impl Cover {
                 discovered_artist = t.artist.clone();
                 discovered_album = t.album.clone();
             } else if let Some(ref t) = state.current_track
-                && (t.id == track_id
-                    || (track_id == 0 && track_path.is_some_and(|p| t.path == p)))
+                && (t.id == track_id || (track_id == 0 && track_path.is_some_and(|p| t.path == p)))
             {
                 discovered_artist = t.artist.clone();
                 discovered_album = t.album.clone();
@@ -2081,12 +2084,14 @@ impl Cover {
             let mut guard = inner.cover_cache().await;
             if let Some(ref mut cache) = *guard {
                 if spotify_first {
-                    let bytes = tokio::time::timeout(
-                        Duration::from_secs(8),
-                        async {
-                            inner.spotify.lock().await.album_cover(&artist, &album).await
-                        },
-                    )
+                    let bytes = tokio::time::timeout(Duration::from_secs(8), async {
+                        inner
+                            .spotify
+                            .lock()
+                            .await
+                            .album_cover(&artist, &album)
+                            .await
+                    })
                     .await
                     .ok()
                     .flatten();
@@ -3884,7 +3889,10 @@ fn run_covers_sync(
         } else {
             &track.album
         };
-        if rt.block_on(cache.get_cover(artist, album, provider)).is_some() {
+        if rt
+            .block_on(cache.get_cover(artist, album, provider))
+            .is_some()
+        {
             let key = crate::cover::CoverCache::cache_key(artist, album);
             let cover_file = cache_dir.join("covers").join(format!("{key}.jpg"));
             if cover_file.exists() {

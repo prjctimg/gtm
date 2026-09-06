@@ -922,10 +922,17 @@ impl<'a> Art<'a> {
         self.cover_for(track_id, None).await
     }
 
-    pub async fn cover_for(&self, track_id: i64, cover_path: Option<String>) -> Result<Option<String>> {
+    pub async fn cover_for(
+        &self,
+        track_id: i64,
+        cover_path: Option<String>,
+    ) -> Result<Option<String>> {
         let res = self
             .client
-            .send_raw(DaemonReq::GetCoverArt { track_id, path: cover_path })
+            .send_raw(DaemonReq::GetCoverArt {
+                track_id,
+                path: cover_path,
+            })
             .await?;
         match res {
             DaemonRes::CoverArt { data, .. } => Ok(data),

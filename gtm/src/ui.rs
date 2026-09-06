@@ -798,8 +798,9 @@ impl Render {
                     if has_progress {
                         let pos = app.display_position as u64;
                         let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
-                        let bar_w =
-                            (info_chunks[info_row].width * 2 / 5).saturating_sub(2).max(4) as usize;
+                        let bar_w = (info_chunks[info_row].width * 2 / 5)
+                            .saturating_sub(2)
+                            .max(4) as usize;
                         let progress_str = crate::ui::Render::progress_variant(ratio, bar_w, app);
                         let time_str = format!(
                             " {} / {}",

@@ -131,8 +131,11 @@ pub fn derive_theme(base: &AppTheme, pal: &ReactivePalette, light: bool) -> AppT
     // surface reacts to the current cover (Spotify-style), while panes take a
     // secondary-hue tint for a layered, two-tone depth.
     t.bg = blend_colors(base.bg, primary_raw, 0.34);
-    t.pane_bg =
-        blend_colors(blend_colors(base.pane_bg, primary_raw, 0.3), secondary_raw, 0.18);
+    t.pane_bg = blend_colors(
+        blend_colors(base.pane_bg, primary_raw, 0.3),
+        secondary_raw,
+        0.18,
+    );
     t.elevated_bg = blend_colors(base.elevated_bg, primary_raw, 0.36);
     t.picker_bg = blend_colors(base.picker_bg, primary_raw, 0.36);
     t.monochromatic = false;
