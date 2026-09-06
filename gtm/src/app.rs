@@ -1296,7 +1296,10 @@ impl App {
         save_prefs(&self.current_prefs());
         self.notify_typed(
             "Theme",
-            format!("Theme mode: {}", crate::ui::theme_mode_label(&self.theme_mode)),
+            format!(
+                "Theme mode: {}",
+                crate::ui::theme_mode_label(&self.theme_mode)
+            ),
             NotificationKind::Info,
             true,
             NotifType::Prefs,
