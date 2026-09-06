@@ -1280,7 +1280,11 @@ impl Spotify {
                 let mut guard = inner.cover_cache().await;
                 if let Some(ref mut cc) = *guard {
                     let _ = cc
-                        .get_cover(&spotify_artist, &spotify_album, inner.effective_cover_provider().await)
+                        .get_cover(
+                            &spotify_artist,
+                            &spotify_album,
+                            inner.effective_cover_provider().await,
+                        )
                         .await;
                 }
             }
@@ -1366,7 +1370,11 @@ impl Spotify {
             let mut guard = inner.cover_cache().await;
             if let Some(ref mut cc) = *guard {
                 let _ = cc
-                    .get_cover(&spotify_artist, &spotify_album, inner.effective_cover_provider().await)
+                    .get_cover(
+                        &spotify_artist,
+                        &spotify_album,
+                        inner.effective_cover_provider().await,
+                    )
                     .await;
             }
         }
@@ -1467,7 +1475,11 @@ impl Spotify {
             let mut guard = inner.cover_cache().await;
             if let Some(ref mut cc) = *guard {
                 let _ = cc
-                    .get_cover(&spotify_artist, &spotify_album, inner.effective_cover_provider().await)
+                    .get_cover(
+                        &spotify_artist,
+                        &spotify_album,
+                        inner.effective_cover_provider().await,
+                    )
                     .await;
             }
         }
@@ -2305,8 +2317,7 @@ impl DaemonInner {
     /// Cover provider in effect right now: the runtime override wins over the
     /// value parsed from config.toml at startup.
     async fn effective_cover_provider(&self) -> crate::cover::CoverProvider {
-        (*self.cover_provider_override.lock().await)
-            .unwrap_or(self.config.cover_provider)
+        (*self.cover_provider_override.lock().await).unwrap_or(self.config.cover_provider)
     }
 
     /// Return a clone of the lyrics manager, creating it on first use so the

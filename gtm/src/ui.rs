@@ -798,9 +798,8 @@ impl Render {
                     if has_progress {
                         let pos = app.display_position as u64;
                         let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
-                        let bar_w = (info_chunks[info_row].width / 3)
-                            .saturating_sub(2)
-                            .max(4) as usize;
+                        let bar_w =
+                            (info_chunks[info_row].width / 3).saturating_sub(2).max(4) as usize;
                         let progress_str = crate::ui::Render::progress_variant(ratio, bar_w, app);
                         let time_str = format!(
                             " {} / {}",
@@ -3375,42 +3374,42 @@ impl Pickers {
                 "JS Runtime     deno".to_string(),
                 "Auto Download  read-only".to_string(),
             ],
-1 => {
-                        let crossfade_on = app
-                            .state
-                            .crossfade
-                            .as_ref()
-                            .map(|c| c.enabled)
-                            .unwrap_or(false);
-                        let crossfade_dur = app
-                            .state
-                            .crossfade
-                            .as_ref()
-                            .map(|c| c.duration_secs)
-                            .unwrap_or(0);
-                        let reverb_on = app.state.reverb.enabled;
-                        vec![
-                            format!("Repeat         {:?}  ▶", app.state.repeat),
-                            format!(
-                                "Shuffle        {}",
-                                if app.state.shuffle { "On" } else { "Off" }
-                            ),
-                            if crossfade_on {
-                                format!("Crossfade      On  {}s  ▶", crossfade_dur)
-                            } else {
-                                "Crossfade      Off  ▶".to_string()
-                            },
-                            format!(
-                                "EQ Enabled     {}",
-                                if app.state.eq_enabled { "On" } else { "Off" }
-                            ),
-                            format!("Reverb         {}", if reverb_on { "On" } else { "Off" }),
-                            format!(
-                                "Cover Source   {}  ▶",
-                                cover_provider_label(&app.cover_provider)
-                            ),
-                        ]
-                    }
+            1 => {
+                let crossfade_on = app
+                    .state
+                    .crossfade
+                    .as_ref()
+                    .map(|c| c.enabled)
+                    .unwrap_or(false);
+                let crossfade_dur = app
+                    .state
+                    .crossfade
+                    .as_ref()
+                    .map(|c| c.duration_secs)
+                    .unwrap_or(0);
+                let reverb_on = app.state.reverb.enabled;
+                vec![
+                    format!("Repeat         {:?}  ▶", app.state.repeat),
+                    format!(
+                        "Shuffle        {}",
+                        if app.state.shuffle { "On" } else { "Off" }
+                    ),
+                    if crossfade_on {
+                        format!("Crossfade      On  {}s  ▶", crossfade_dur)
+                    } else {
+                        "Crossfade      Off  ▶".to_string()
+                    },
+                    format!(
+                        "EQ Enabled     {}",
+                        if app.state.eq_enabled { "On" } else { "Off" }
+                    ),
+                    format!("Reverb         {}", if reverb_on { "On" } else { "Off" }),
+                    format!(
+                        "Cover Source   {}  ▶",
+                        cover_provider_label(&app.cover_provider)
+                    ),
+                ]
+            }
             2 => {
                 let theme_name = app
                     .themes

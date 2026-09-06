@@ -90,7 +90,11 @@ impl CoverCache {
         if let Err(e) = fs::write(path, bytes) {
             warn!("Failed to write cover to disk {path:?}: {e}");
         }
-        if self.disk_writes.fetch_add(1, Ordering::Relaxed) % 8 == 0 {
+        if self
+            .disk_writes
+            .fetch_add(1, Ordering::Relaxed)
+            .is_multiple_of(8)
+        {
             self.prune_disk_cache();
         }
     }
@@ -108,11 +112,7 @@ impl CoverCache {
                 && md.is_file()
             {
                 total += md.len();
-                files.push((
-                    md.modified().unwrap_or(UNIX_EPOCH),
-                    path,
-                    md.len(),
-                ));
+                files.push((md.modified().unwrap_or(UNIX_EPOCH), path, md.len()));
             }
         }
         if total <= DISK_CACHE_CAP_BYTES {
