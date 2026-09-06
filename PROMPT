@@ -1,0 +1,23 @@
+## TODO
+
+- Fix the spotify authentication flow to properly login the user and sync their playlist data as expected. Refer to how Myx handles Spotify login, fetching the data and handling playback and adapt the approach correctly to our audio pipeline and available code wherever possible.
+- Fix the slow down of the playback speed experienced when you switch to the next track in between an already playing one and even when we transition to the next track automatically. Ensure that no time stretching is being 
+- Fix the time zone of the timestamp in the footer, currently it is two hours behind my system clock
+- Fix the  reactive theme to apply to ALL the rest of the TUI background so that weird gutter artifacts do not form which ruin the theme. This means that use the approach which produced the more vibrant background and  discard the other one.
+- Clear the reactive theme from the previous track when playing a new track that has no cover.
+- Fix the now playing section to show the track progress indicator on its own line and the elapsed time below it, not inline as is the current behaviour.
+- The default footer preset should show ALL the playback states and not show the current track (leave this for custom footers)
+- Fix multiselect to be triggered when we press Shift+up/down arrows and highlight the selected items and show the count of the selected items in the footer near the place we show the library stats.
+- Fix all petty toggle notifications to not use the floating window notification, it is reserved for longer message and richer notifications. Examples include the count of the multiselect and all state toggles.
+- Fix the text color of elements like the elapsed time and other muted helper text to be dark/light enough to be visible according to the current background.
+- Look at the command palette and compare available commands with the available material design icons and allow the user to toggle between emojis and icons in the config TOML. The default should use material icons.
+- Fix the equalizer picker to not show the preset descriptions inline per item, rather show them below the visualization in the preview and update it as the user scrolls the list.
+- Fix the lyrics to be updated on track change and to try fetching lyrics if they don't exist and there's an internet connection.
+- Fix the queue picker to update the cover of the up next track when the user manually changes the track from it, if the next track has no cover, just show the default.
+- Instead of saying 'linux' use the platform mascot or logo e.g for linux its the tux penguin and show it next to the audio backend instead of making them seperate modules
+- Fix library motions to also work in multiselect mode on multiple items, first prompt for confirmation since the operation involves many items.
+- Fix the prompts that require an input from the user to remain displayed until any of the expected keys have been pressed to make the decision.
+- Fix the commit hash to be added during the build step during CI.
+- Change the build to use gcc for release builds and only use clang for termux builds and when we run cargo build in termux.
+
+Put all the observed changes in a specs/ directory so that another agent can carry out the work.
