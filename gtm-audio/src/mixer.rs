@@ -744,6 +744,16 @@ impl AudioMixer {
                     return Ok(None);
                 }
                 self.underrun_since = None;
+                // A silent ring alone isn't proof the track ended: a long
+                // decode stall (slow disk, format hiccup) drains the buffer
+                // without hitting EOF. Only report `Finished` when the known
+                // duration has actually been reached, mirroring the PulseAudio
+                // backend's guard.
+                let total = *self.duration.lock().unwrap();
+                let pos = self.track_position();
+                if total > 0.0 && pos < total - 0.5 {
+                    return Ok(None);
+                }
                 self.playing.store(false, Ordering::SeqCst);
                 return Ok(Some(AudioEvent::Finished));
             }

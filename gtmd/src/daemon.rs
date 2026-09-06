@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -837,25 +837,29 @@ impl Cmd {
     }
 
     pub async fn set_sleep_timer(
-        inner: &DaemonInner,
+        inner: &Arc<DaemonInner>,
         minutes: u32,
     ) -> Result<DaemonRes, CoreError> {
         let total_secs = minutes * 60;
+        // Invalidate any previously scheduled timer before arming a new one;
+        // overlap would otherwise let both loops drive `sleep_timer`.
+        let timer_gen = inner
+            .sleep_gen
+            .fetch_add(1, Ordering::SeqCst)
+            .wrapping_add(1);
         let event_tx = inner.event_tx.clone();
         let state = inner.state.clone();
 
-        inner.sleep_cancel.store(true, Ordering::SeqCst);
-        inner.sleep_cancel.store(false, Ordering::SeqCst);
-        let cancel_flag = inner.sleep_cancel.clone();
+        {
+            let mut s = state.write().await;
+            s.sleep_timer = Some(total_secs);
+            s.version += 1;
+        }
 
-        let mut s = state.write().await;
-        s.sleep_timer = Some(total_secs);
-        s.version += 1;
-        drop(s);
-
+        let inner = Arc::clone(inner);
         tokio::spawn(async move {
             for remaining in (1..=total_secs).rev() {
-                if cancel_flag.load(Ordering::SeqCst) {
+                if inner.sleep_gen.load(Ordering::SeqCst) != timer_gen {
                     return;
                 }
                 {
@@ -867,6 +871,18 @@ impl Cmd {
                 });
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
+            if inner.sleep_gen.load(Ordering::SeqCst) != timer_gen {
+                return;
+            }
+            // Expiry must actually silence the output, not just flip the
+            // status flag: stop the mixer and any Web (Spotify) stream, then
+            // report the state change.
+            {
+                let mut mixer = inner.mixer.lock().await;
+                let _ = mixer.stop();
+            }
+            inner.stream.lock().await.reset();
+            *inner.crossfade_loaded_for.lock().await = None;
             {
                 let mut s = state.write().await;
                 s.status = PlaybackStatus::Stopped;
@@ -881,7 +897,9 @@ impl Cmd {
     }
 
     pub async fn cancel_sleep_timer(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        inner.sleep_cancel.store(true, Ordering::SeqCst);
+        // Bump the generation so the armed countdown (if any) backs out on its
+        // next tick instead of stopping playback underneath us.
+        inner.sleep_gen.fetch_add(1, Ordering::SeqCst);
         let mut state = inner.state.write().await;
         state.sleep_timer = None;
         state.version += 1;
@@ -1262,7 +1280,7 @@ impl Spotify {
                 let mut guard = inner.cover_cache().await;
                 if let Some(ref mut cc) = *guard {
                     let _ = cc
-                        .get_cover(&spotify_artist, &spotify_album, inner.config.cover_provider)
+                        .get_cover(&spotify_artist, &spotify_album, inner.effective_cover_provider().await)
                         .await;
                 }
             }
@@ -1348,7 +1366,7 @@ impl Spotify {
             let mut guard = inner.cover_cache().await;
             if let Some(ref mut cc) = *guard {
                 let _ = cc
-                    .get_cover(&spotify_artist, &spotify_album, inner.config.cover_provider)
+                    .get_cover(&spotify_artist, &spotify_album, inner.effective_cover_provider().await)
                     .await;
             }
         }
@@ -1449,7 +1467,7 @@ impl Spotify {
             let mut guard = inner.cover_cache().await;
             if let Some(ref mut cc) = *guard {
                 let _ = cc
-                    .get_cover(&spotify_artist, &spotify_album, inner.config.cover_provider)
+                    .get_cover(&spotify_artist, &spotify_album, inner.effective_cover_provider().await)
                     .await;
             }
         }
@@ -1885,7 +1903,7 @@ impl LibraryHandler {
 
         let data_dir = inner.config.data_dir.clone();
         let cache_dir = inner.config.cache_dir.clone();
-        let inner_config_covers_provider = inner.config.cover_provider;
+        let inner_config_covers_provider = inner.effective_cover_provider().await;
         let lyrics_manager = inner.lyrics_manager().await;
         let progress = inner.sync_progress.clone();
         let event_tx = inner.event_tx.clone();
@@ -2071,7 +2089,7 @@ impl Cover {
         if !discovered_artist.is_empty() && !discovered_album.is_empty() {
             let artist = discovered_artist.clone();
             let album = discovered_album.clone();
-            let provider = inner.config.cover_provider;
+            let provider = inner.effective_cover_provider().await;
 
             // With Auto (the default) or an explicit Spotify preference, a
             // linked account supplies original 640x640 artwork ahead of the
@@ -2238,6 +2256,10 @@ struct DaemonInner {
     state: Arc<RwLock<DaemonState>>,
     mixer: tokio::sync::Mutex<Box<dyn Mixer>>,
     config: DaemonConfig,
+    /// Runtime cover-provider override. `None` means the value baked into
+    /// `config` (from config.toml at startup) applies; the TUI switches it
+    /// live via `DaemonReq::SetCoverProvider` without a restart.
+    cover_provider_override: tokio::sync::Mutex<Option<crate::cover::CoverProvider>>,
     event_tx: broadcast::Sender<DaemonEvent>,
     cover_cache: tokio::sync::Mutex<Option<CoverCache>>,
     lyrics_manager: tokio::sync::Mutex<Option<LyricsManager>>,
@@ -2252,7 +2274,10 @@ struct DaemonInner {
     oauth_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     crossfade_loaded_for: tokio::sync::Mutex<Option<String>>,
     countdown_notified_for: tokio::sync::Mutex<Option<String>>,
-    sleep_cancel: Arc<AtomicBool>,
+    /// Monotonic generation counter for the sleep timer. `set_sleep_timer`
+    /// bumps it so any previously scheduled timer observes the mismatch and
+    /// backs out without racing the new one; `cancel_sleep_timer` also bumps.
+    sleep_gen: Arc<AtomicU64>,
     health: Arc<HealthTracker>,
     client_auth: tokio::sync::Mutex<HashMap<ClientId, bool>>,
     active_clients: AtomicUsize,
@@ -2275,6 +2300,13 @@ impl DaemonInner {
             *guard = Some(CoverCache::new(self.config.cache_dir.clone()));
         }
         guard
+    }
+
+    /// Cover provider in effect right now: the runtime override wins over the
+    /// value parsed from config.toml at startup.
+    async fn effective_cover_provider(&self) -> crate::cover::CoverProvider {
+        (*self.cover_provider_override.lock().await)
+            .unwrap_or(self.config.cover_provider)
     }
 
     /// Return a clone of the lyrics manager, creating it on first use so the
@@ -2413,6 +2445,7 @@ impl Daemon {
             config,
             event_tx,
             cover_cache: tokio::sync::Mutex::new(None),
+            cover_provider_override: tokio::sync::Mutex::new(None),
             lyrics_manager: tokio::sync::Mutex::new(None),
             lastfm: tokio::sync::Mutex::new(LastfmManager::new()),
             #[cfg(feature = "youtube")]
@@ -2422,7 +2455,7 @@ impl Daemon {
             oauth_task: tokio::sync::Mutex::new(None),
             crossfade_loaded_for: tokio::sync::Mutex::new(None),
             countdown_notified_for: tokio::sync::Mutex::new(None),
-            sleep_cancel: Arc::new(AtomicBool::new(false)),
+            sleep_gen: Arc::new(AtomicU64::new(0)),
             health: Arc::new(HealthTracker::new(audio_backend_name)),
             client_auth: tokio::sync::Mutex::new(HashMap::new()),
             active_clients: AtomicUsize::new(0),
@@ -3079,6 +3112,11 @@ impl Daemon {
                 Cover::get(inner, *track_id, path.clone()).await
             }
             DaemonReq::GetArtistCoverArt { artist } => Cover::artist(inner, artist).await,
+            DaemonReq::SetCoverProvider { provider } => {
+                *inner.cover_provider_override.lock().await =
+                    Some(crate::cover::CoverProvider::from_str_lossy(provider));
+                Ok(DaemonRes::Ok)
+            }
             DaemonReq::GetLyrics { track_id, path } => {
                 Lyrics::get(inner, *track_id, path.clone()).await
             }
@@ -3890,7 +3928,12 @@ fn run_covers_sync(
             &track.album
         };
         if rt
-            .block_on(cache.get_cover(artist, album, provider))
+            .block_on(tokio::time::timeout(
+                std::time::Duration::from_secs(12),
+                cache.get_cover(artist, album, provider),
+            ))
+            .ok()
+            .flatten()
             .is_some()
         {
             let key = crate::cover::CoverCache::cache_key(artist, album);
@@ -3925,7 +3968,13 @@ fn run_lyrics_sync(
         if lrc_path.exists() {
             continue;
         }
-        if let Some(lyrics) = rt.block_on(manager.get_lyrics(track))
+        if let Some(lyrics) = rt
+            .block_on(tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                manager.get_lyrics(track),
+            ))
+            .ok()
+            .flatten()
             && !lyrics.lines.is_empty()
         {
             let lrc_content = crate::lyrics::lrc_to_text(&lyrics);
@@ -4010,6 +4059,7 @@ fn run_metadata_sync(
                 track_number: hit.track_number,
             };
             if crate::tags::write_tags(&track.path, &meta, cover.clone().zip(cover_mime)).is_err() {
+                warn!("metadata sync: failed to write tags for {}", track.path);
                 continue;
             }
             if let Some(bytes) = &cover {

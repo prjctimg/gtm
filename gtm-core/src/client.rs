@@ -317,6 +317,15 @@ impl DaemonClient {
             .await
     }
 
+    /// Switch the live cover-art provider used by the daemon without a
+    /// restart. The TUI persists the choice in config.toml separately.
+    pub async fn set_cover_provider(&self, provider: &str) -> Result<()> {
+        self.send_ok(DaemonReq::SetCoverProvider {
+            provider: provider.to_string(),
+        })
+        .await
+    }
+
     pub async fn crossfade(&self, enabled: bool, duration_secs: u8) -> Result<()> {
         self.send_ok(DaemonReq::Crossfade {
             enabled,
