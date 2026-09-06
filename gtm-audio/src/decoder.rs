@@ -296,7 +296,7 @@ impl DecodeThread {
                     None => {
                         // EOF: drain ring buffer then signal finished
                         while self.shared.available() > 0 {
-                            std::thread::yield_now();
+                            std::thread::sleep(std::time::Duration::from_micros(50));
                             if !self.control.running.load(Ordering::Acquire) {
                                 self.control.seeking.store(false, Ordering::Release);
                                 return;

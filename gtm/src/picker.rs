@@ -29,6 +29,7 @@ pub enum PickerId {
     ProgressStyle,
     Settings,
     Notifications,
+    NotificationSettings,
 }
 
 /// Which list a fuzzy-finder picker searches. `Tab` cycles through these.

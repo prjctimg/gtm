@@ -1100,23 +1100,20 @@ impl Spotify {
             match flow.wait_for_access_token().await {
                 Ok(token) => {
                     let mut spotify = inner2.spotify.lock().await;
-                    let result =
-                        tokio::time::timeout(Duration::from_secs(60), spotify.set_token(&token))
-                            .await;
-                    match result {
-                        Ok(Ok(())) => {
+                    // No artificial timeout here: the first sync after linking
+                    // paginates every playlist and can legitimately take longer
+                    // than a minute on large libraries. Aborting it mid-flight
+                    // left a half-populated cache and a misleading failure toast.
+                    match spotify.set_token(&token).await {
+                        Ok(()) => {
                             info!(
                                 "spotify oauth link complete ({:?} playlists)",
                                 spotify.status().playlists
                             );
                         }
-                        Ok(Err(e)) => {
+                        Err(e) => {
                             warn!("spotify oauth link failed: {e}");
                             spotify.set_error(format!("oauth link failed: {e}"));
-                        }
-                        Err(_) => {
-                            warn!("spotify oauth link timed out");
-                            spotify.set_error("oauth link timed out".into());
                         }
                     }
                     drop(spotify);

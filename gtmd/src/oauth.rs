@@ -264,8 +264,18 @@ async fn exchange_code_for_token(
         .send()
         .await
         .map_err(|e| format!("send token exchange request: {e}"))?;
-    if !resp.status().is_success() {
-        return Err(format!("token exchange failed: HTTP {}", resp.status()));
+    let status = resp.status();
+    if !status.is_success() {
+        // Spotify replies with a JSON error body (invalid_client,
+        // invalid_grant, invalid redirect_uri...) that makes the failure
+        // actionable; surface it instead of an opaque status code.
+        let body = resp.text().await.unwrap_or_default().trim().to_string();
+        let detail = if body.is_empty() {
+            String::new()
+        } else {
+            format!(": {body}")
+        };
+        return Err(format!("token exchange failed: HTTP {status}{detail}"));
     }
     let parsed: TokenResponse = resp
         .json()

@@ -26,35 +26,54 @@ use rodio::Source;
 struct PaPlaybackSource {
     ring: SharedRingBuffer,
     volume: Arc<AtomicU8>,
+    /// Consecutive polls that returned empty while the decode thread was still
+    /// feeding the ring — used to report underruns once per burst instead of
+    /// once per poll.
+    underrun_burst: u32,
 }
 
 impl PlaybackSource for PaPlaybackSource {
     fn poll_read(self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<usize> {
-        let vol = self.volume.load(Ordering::Relaxed) as f32 / 100.0;
+        let self_ = self.get_mut();
+        let vol = self_.volume.load(Ordering::Relaxed) as f32 / 100.0;
         let float_count = buf.len() / 4;
         let mut written = 0usize;
 
         for _i in 0..float_count {
-            match self.ring.pop() {
+            match self_.ring.pop() {
                 Some(s) => {
+                    // Producer caught up; a previously empty burst is over.
+                    if self_.underrun_burst > 0 {
+                        log::debug!("pa underrun cleared after {} empty polls", self_.underrun_burst);
+                        self_.underrun_burst = 0;
+                    }
                     let scaled = s * vol;
                     let offset = written * 4;
                     buf[offset..offset + 4].copy_from_slice(&scaled.to_le_bytes());
                     written += 1;
                 }
                 None => {
-                    if self.ring.is_finished() {
+                    if self_.ring.is_finished() {
                         break;
                     }
                     if written > 0 {
                         return Poll::Ready(written * 4);
+                    }
+                    // Ring empty but decoding: report once per burst so stutter
+                    // is visible in diagnostics without spamming the log.
+                    self_.underrun_burst += 1;
+                    if self_.underrun_burst == 1 || self_.underrun_burst % 500 == 0 {
+                        log::warn!(
+                            "pa underrun: ring empty while decoding, {} consecutive polls",
+                            self_.underrun_burst
+                        );
                     }
                     return Poll::Pending;
                 }
             }
         }
 
-        if written == 0 && self.ring.is_finished() {
+        if written == 0 && self_.ring.is_finished() {
             Poll::Ready(0)
         } else {
             Poll::Ready(written * 4)
@@ -78,6 +97,7 @@ impl PaStreamState {
         let source = PaPlaybackSource {
             ring: ring.clone(),
             volume: stream_volume.clone(),
+            underrun_burst: 0,
         };
 
         let params = protocol::PlaybackStreamParams {
@@ -393,7 +413,9 @@ impl Mixer for PulseAudioMixer {
             .spawn(move || {
                 for sample in source {
                     while !ring.push(sample) {
-                        std::thread::yield_now();
+                        // Ring full (PA consumer drains it): nap instead of
+                        // spinning to keep the feed thread off a hot core.
+                        std::thread::sleep(std::time::Duration::from_micros(50));
                     }
                 }
                 ring.set_finished(true);
@@ -470,7 +492,9 @@ impl Mixer for PulseAudioMixer {
             .spawn(move || {
                 for sample in source {
                     while !ring.push(sample) {
-                        std::thread::yield_now();
+                        // Ring full (PA consumer drains it): nap instead of
+                        // spinning to keep the feed thread off a hot core.
+                        std::thread::sleep(std::time::Duration::from_micros(50));
                     }
                 }
                 ring.set_finished(true);

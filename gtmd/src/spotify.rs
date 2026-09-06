@@ -291,8 +291,13 @@ impl SpotifyManager {
         let refreshable = token.refresh_token.is_some();
         let client_id = gtm_core::secret::get_secret(gtm_core::secret::SPOTIFY_CLIENT_ID_KEY)
             .unwrap_or_default();
+        // Fall back to librespot's public desktop client id when the user
+        // linked with a plain pasted access token (which never stores a
+        // client id). `Credentials::default()` is a dead end: rspotify's
+        // bundled demo id cannot refresh, so such tokens silently expire and
+        // every later Web API call fails with a 401.
         let creds = if client_id.is_empty() {
-            Credentials::default()
+            Credentials::new_pkce(gtm_core::spotify::LIBRESPOT_CLIENT_ID)
         } else {
             Credentials::new_pkce(&client_id)
         };
@@ -320,7 +325,7 @@ impl SpotifyManager {
         }));
         let config = Config {
             token_cached: false,
-            token_refreshing: refreshable && !client_id.is_empty(),
+            token_refreshing: refreshable,
             token_callback_fn: Arc::new(Some(token_callback)),
             ..Default::default()
         };

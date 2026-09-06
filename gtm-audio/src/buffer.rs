@@ -232,9 +232,11 @@ impl Iterator for RingBufferSource {
 
     fn next(&mut self) -> Option<f32> {
         loop {
-            // If a seek is in progress, spin until it completes
+            // If a seek is in progress, wait for it to complete. Sleep rather
+            // than spin: a `yield_now`-only loop burns a full core on seek-y
+            // tracks where the decode thread is blocked restarting a decoder.
             if self.control.seeking.load(Ordering::Acquire) {
-                std::thread::yield_now();
+                std::thread::sleep(std::time::Duration::from_micros(50));
                 continue;
             }
 
@@ -247,8 +249,10 @@ impl Iterator for RingBufferSource {
                 return None;
             }
 
-            // Decode still running but buffer empty: brief yield to avoid hot spin
-            std::thread::yield_now();
+            // Decode still running but buffer empty: brief nap instead of a hot
+            // yield loop. rodio's mixer polls this iteration; 50µs keeps wakeup
+            // latency far below a buffer period while avoiding core burn.
+            std::thread::sleep(std::time::Duration::from_micros(50));
         }
     }
 }

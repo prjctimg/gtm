@@ -255,9 +255,11 @@ bootstrap_install() {
   local archive_name="gtm-${PLATFORM}.tar.gz"
   local url="https://github.com/${REPO}/releases/download/${tag}/${archive_name}"
 
-  local tmp
+  # Script-scope variable (no `local`): the EXIT trap below must still be
+  # able to read it after this function returns, or `set -u` would trip on
+  # an unbound variable at shutdown.
   tmp="$(mktemp -d)"
-  trap 'rm -rf "${tmp}"' EXIT
+  trap 'rm -rf "${tmp:-}"' EXIT
 
   log "downloading ${archive_name}..."
   if ! download_gradient "${url}" "${tmp}/${archive_name}"; then

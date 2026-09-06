@@ -47,7 +47,6 @@ pub enum FooterModule {
     KeyAction,
     Backend,
     System,
-    Device,
     EqPreset,
     SleepTimer,
     Notification,
@@ -68,7 +67,6 @@ impl FooterModule {
             FooterModule::KeyAction => "KeyAction",
             FooterModule::Backend => "Backend",
             FooterModule::System => "System",
-            FooterModule::Device => "Device",
             FooterModule::EqPreset => "EqPreset",
             FooterModule::SleepTimer => "SleepTimer",
             FooterModule::Notification => "Notification",
@@ -90,7 +88,6 @@ impl FooterModule {
             "KeyAction" => FooterModule::KeyAction,
             "Backend" => FooterModule::Backend,
             "System" => FooterModule::System,
-            "Device" => FooterModule::Device,
             "EqPreset" => FooterModule::EqPreset,
             "SleepTimer" => FooterModule::SleepTimer,
             "Notification" => FooterModule::Notification,
@@ -131,7 +128,6 @@ pub fn presets() -> Vec<FooterPreset> {
             right: vec![
                 FooterModule::Queue,
                 FooterModule::Time,
-                FooterModule::Device,
                 FooterModule::System,
                 FooterModule::Backend,
             ],
@@ -163,7 +159,6 @@ pub fn presets() -> Vec<FooterPreset> {
             right: vec![
                 FooterModule::Queue,
                 FooterModule::Time,
-                FooterModule::Device,
                 FooterModule::System,
                 FooterModule::Backend,
             ],
@@ -421,7 +416,6 @@ fn module_color(m: FooterModule, theme: &crate::theme::AppTheme) -> Color {
         FooterModule::KeyAction => theme.tertiary_accent,
         FooterModule::Backend => theme.secondary_accent,
         FooterModule::System => theme.accent,
-        FooterModule::Device => theme.tertiary_accent,
         FooterModule::EqPreset => theme.secondary_accent,
         FooterModule::SleepTimer => theme.accent,
         FooterModule::Notification => theme.fg_bright,
@@ -441,7 +435,6 @@ fn module_text(m: FooterModule, app: &App) -> Option<String> {
         FooterModule::KeyAction => render_keyaction(app),
         FooterModule::Backend => Some(render_backend(app)),
         FooterModule::System => Some(render_system()),
-        FooterModule::Device => render_device(app),
         FooterModule::EqPreset => render_eq_preset(app),
         FooterModule::SleepTimer => render_sleep_timer(app),
         FooterModule::Notification => render_footer_notification(app),
@@ -799,20 +792,6 @@ pub(crate) fn read_process_memory_kb() -> Option<u64> {
     None
 }
 
-fn render_device(app: &App) -> Option<String> {
-    let track_count = app.tracks_cache.len();
-    if track_count == 0 {
-        return None;
-    }
-    let total_dur: u64 = app.tracks_cache.iter().map(|t| t.duration as u64).sum();
-    let hours = total_dur / 3600;
-    let mins = (total_dur % 3600) / 60;
-    Some(format!(
-        "{} tracks \u{2022} {}h{}m",
-        track_count, hours, mins
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -840,7 +819,6 @@ mod tests {
             FooterModule::KeyAction,
             FooterModule::Backend,
             FooterModule::System,
-            FooterModule::Device,
             FooterModule::EqPreset,
             FooterModule::SleepTimer,
             FooterModule::Notification,

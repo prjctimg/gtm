@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::app::{
-    App, InputMode, LIBRARY_CATEGORIES, LibraryPick, NotificationKind, TrackInfoKind,
-    no_image_protocol,
+    App, InputMode, LIBRARY_CATEGORIES, LibraryPick, NotificationKind, NotifMode, NotifType,
+    TrackInfoKind, no_image_protocol,
 };
 use crate::footer::format_duration;
 use crate::picker::{Picker, PickerId, PickerSource};
@@ -2311,6 +2311,7 @@ impl Pickers {
             PickerId::Crossfade => (58, 20),
             PickerId::VisualizerPreset => (48, 14),
             PickerId::FooterPreset => (52, 16),
+            PickerId::NotificationSettings => (60, 14),
             PickerId::ProgressStyle => (48, 18),
             PickerId::Settings => (64, 28),
             _ => (56, 22),
@@ -2388,6 +2389,9 @@ impl Pickers {
             PickerId::ProgressStyle => Self::render_progress_style_picker(f, picker_area, app),
             PickerId::Settings => Self::render_settings_picker(f, picker_area, app),
             PickerId::Notifications => Self::render_notifications_picker(f, picker_area, app),
+            PickerId::NotificationSettings => {
+                Self::render_notification_settings_picker(f, picker_area, app)
+            }
             PickerId::SpotifyLink => {
                 let block = Self::picker_panel(
                     app,
@@ -2397,27 +2401,46 @@ impl Pickers {
                 let inner = block.inner(picker_area);
                 f.render_widget(block, picker_area);
 
-                if app.spotify_oauth_pending {
-                    let lines = vec![
-                        Line::from(Span::styled(
+                if app.spotify_oauth_pending || app.spotify_oauth_error.is_some() {
+                    let mut lines = Vec::new();
+                    if app.spotify_oauth_pending {
+                        lines.push(Line::from(Span::styled(
                             "Waiting for you to finish login in your browser…",
                             Style::default().fg(app.theme.fg_bright),
-                        )),
-                        Line::from(""),
-                        Line::from(Span::styled(
+                        )));
+                        lines.push(Line::from(""));
+                        lines.push(Line::from(Span::styled(
                             "A browser window should have opened to authorize gtm.",
                             Style::default().fg(app.theme.fg_dim),
-                        )),
-                        Line::from(Span::styled(
+                        )));
+                        lines.push(Line::from(Span::styled(
                             "Once you approve, playlists sync automatically.",
                             Style::default().fg(app.theme.fg_dim),
-                        )),
-                        Line::from(""),
-                        Line::from(Span::styled(
-                            "Press Esc to cancel.",
+                        )));
+                        lines.push(Line::from(""));
+                    }
+                    if let Some(err) = app.spotify_oauth_error.as_deref() {
+                        lines.push(Line::from(Span::styled(
+                            err,
+                            Style::default().fg(app.theme.error),
+                        )));
+                        lines.push(Line::from(""));
+                    }
+                    if let Some(url) = app.spotify_oauth_url.as_deref() {
+                        lines.push(Line::from(Span::styled(
+                            "If your browser did not open, copy this URL:",
                             Style::default().fg(app.theme.fg_dim),
-                        )),
-                    ];
+                        )));
+                        lines.push(Line::from(Span::styled(
+                            url,
+                            Style::default().fg(app.theme.accent),
+                        )));
+                        lines.push(Line::from(""));
+                    }
+                    lines.push(Line::from(Span::styled(
+                        "Press Esc to cancel.",
+                        Style::default().fg(app.theme.fg_dim),
+                    )));
                     let p = Paragraph::new(lines);
                     f.render_widget(p, inner);
                 } else {
@@ -3368,6 +3391,7 @@ impl Pickers {
                     ),
                     "Clear Lyrics Cache  Enter".to_string(),
                     "Clear Cover Cache    Enter  ▶".to_string(),
+                    "Notification Settings  Enter  ▶".to_string(),
                 ]
             }
             3 => {
@@ -3381,8 +3405,8 @@ impl Pickers {
                 let status_label = if !st.linked {
                     connected.to_string()
                 } else if let Some(err) = st.error.as_deref() {
-                    let mut e = err.chars().take(14).collect::<String>();
-                    if err.chars().count() > 14 {
+                    let mut e = err.chars().take(28).collect::<String>();
+                    if err.chars().count() > 28 {
                         e.push('…');
                     }
                     format!("{connected}: {e}")
@@ -4242,6 +4266,56 @@ impl Pickers {
                 f.render_widget(preview_para, msg_area);
             }
         }
+    }
+
+    fn render_notification_settings_picker(
+        f: &mut ratatui::Frame,
+        area: Rect,
+        app: &mut App,
+    ) {
+        let block = Self::picker_panel(
+            app,
+            " Notification Settings ",
+            Some("\u{2191}/\u{2193}: browse   Left/Right/Enter: toggle mode   Esc: close"),
+        );
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let sel = app
+            .pickers
+            .top()
+            .map_or(0, |o| o.selected.min(NotifType::ALL.len() - 1));
+
+        let mut lines: Vec<Line> = Vec::new();
+        for (i, ntype) in NotifType::ALL.iter().enumerate() {
+            let mode = app
+                .notification_modes
+                .get(ntype)
+                .copied()
+                .unwrap_or(NotifMode::Floating);
+            let is_sel = i == sel;
+            let style = if is_sel {
+                Style::default()
+                    .fg(app.theme.selection_fg_readable())
+                    .bg(app.theme.selection_bg)
+            } else {
+                Style::default().fg(app.theme.fg)
+            };
+            let mode_style = if is_sel {
+                style
+            } else {
+                Style::default().fg(app.theme.accent)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!(" {:<26}", ntype.label()),
+                    style,
+                ),
+                Span::styled(format!("{}", mode.label()), mode_style),
+            ]));
+        }
+        let para = Paragraph::new(lines);
+        f.render_widget(para, inner);
     }
 
     fn relative_age(elapsed: std::time::Duration) -> String {
