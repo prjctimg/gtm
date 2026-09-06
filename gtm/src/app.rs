@@ -166,7 +166,12 @@ fn default_footer_preset_name() -> String {
 fn default_notification_modes() -> std::collections::HashMap<String, String> {
     NotifType::ALL
         .iter()
-        .map(|t| (t.as_str().to_string(), NotifMode::Floating.as_str().to_string()))
+        .map(|t| {
+            (
+                t.as_str().to_string(),
+                NotifMode::Floating.as_str().to_string(),
+            )
+        })
         .collect()
 }
 
@@ -996,12 +1001,7 @@ impl App {
             footer_notification: None,
             notification_modes: default_notification_modes()
                 .into_iter()
-                .map(|(k, v)| {
-                    (
-                        NotifType::from_str_lossy(&k),
-                        NotifMode::from_str_lossy(&v),
-                    )
-                })
+                .map(|(k, v)| (NotifType::from_str_lossy(&k), NotifMode::from_str_lossy(&v)))
                 .collect(),
             crossfade_duration: 6,
             pending_delete: None,
@@ -1601,7 +1601,13 @@ impl App {
                         self.spotify_oauth_error = Some(msg);
                         // The authorize URL (set when the flow started) stays
                         // visible so the user can retry from the browser side.
-                        self.notify_titled("Spotify", "Spotify link failed", NotificationKind::Error, false, NotifType::Spotify);
+                        self.notify_titled(
+                            "Spotify",
+                            "Spotify link failed",
+                            NotificationKind::Error,
+                            false,
+                            NotifType::Spotify,
+                        );
                     }
                     self.spotify_status = Some(status);
                 }
@@ -1962,7 +1968,13 @@ impl App {
                         self.spotify_oauth_pending = false;
                         // Keep the picker open so the error and URL stay
                         // visible; Esc closes it (clearing the state below).
-                        self.notify_titled("Spotify", e, NotificationKind::Error, false, NotifType::Spotify);
+                        self.notify_titled(
+                            "Spotify",
+                            e,
+                            NotificationKind::Error,
+                            false,
+                            NotifType::Spotify,
+                        );
                     }
                     IpcResult::SpotifyPlaylists(p) => self.spotify_playlists = p,
                     IpcResult::SpotifyTracks(t) => self.spotify_playlist_tracks_cache = t,
@@ -4040,12 +4052,12 @@ impl App {
                     self.set_list_pos((pos + 1).min(max));
                     let count = self.selected_indices.len();
                     self.notify_typed(
-                            "System",
-                            format!("{count} selected"),
-                            NotificationKind::Info,
-                            false,
-                            NotifType::Prefs,
-                        );
+                        "System",
+                        format!("{count} selected"),
+                        NotificationKind::Info,
+                        false,
+                        NotifType::Prefs,
+                    );
                     return true;
                 }
                 match self.keybindings.dispatch(key, KeyContext::Normal) {
@@ -4144,9 +4156,21 @@ impl App {
                         self.set_last_action("Toggle Mute");
                         self.send_high(TuiCommand::ToggleMute);
                         if self.state.mute {
-                            self.notify_titled("Volume", "Unmuted", NotificationKind::Info, true, NotifType::Playback);
+                            self.notify_titled(
+                                "Volume",
+                                "Unmuted",
+                                NotificationKind::Info,
+                                true,
+                                NotifType::Playback,
+                            );
                         } else {
-                            self.notify_titled("Volume", "Muted", NotificationKind::Warning, true, NotifType::Playback);
+                            self.notify_titled(
+                                "Volume",
+                                "Muted",
+                                NotificationKind::Warning,
+                                true,
+                                NotifType::Playback,
+                            );
                         }
                     }
                     Some(KeyboardAction::CycleRepeat) => {
@@ -4294,7 +4318,13 @@ impl App {
                         self.set_last_action("Clear Queue");
                         let tx = self.cmd_tx();
                         let _ = tx.send(TuiCommand::QueueClear).await;
-                        self.notify_titled("Queue", "Queue cleared", NotificationKind::Info, true, NotifType::Playback);
+                        self.notify_titled(
+                            "Queue",
+                            "Queue cleared",
+                            NotificationKind::Info,
+                            true,
+                            NotifType::Playback,
+                        );
                     }
                     Some(KeyboardAction::ToggleVisualizer) => {
                         self.visualizer.toggle();
@@ -4375,7 +4405,10 @@ impl App {
                             self.lyrics_pane_focus = false;
                             self.lyrics_manual_scroll = false;
                         }
-                        if self.show_lyrics && self.current_lyrics.is_none() && !self.lyrics_fetching {
+                        if self.show_lyrics
+                            && self.current_lyrics.is_none()
+                            && !self.lyrics_fetching
+                        {
                             self.lyrics_fetching = true;
                             self.send_high(TuiCommand::FetchLyrics);
                         }
@@ -4622,12 +4655,12 @@ impl App {
                                 "Multiselect OFF"
                             };
                             self.notify_typed(
-                            "System",
-                            msg,
-                            NotificationKind::Info,
-                            false,
-                            NotifType::Prefs,
-                        );
+                                "System",
+                                msg,
+                                NotificationKind::Info,
+                                false,
+                                NotifType::Prefs,
+                            );
                         }
                     }
                     Some(KeyboardAction::AddToQueue) => {
@@ -5934,20 +5967,20 @@ impl App {
                                             )));
                                             return;
                                         }
-let _ = ipc_tx.send(IpcResult::Notification(
-                                                "Spotify".to_string(),
-                                                "Token set. Syncing playlists…".to_string(),
-                                                NotificationKind::Info,
-                                                NotifType::Spotify,
-                                            ));
+                                        let _ = ipc_tx.send(IpcResult::Notification(
+                                            "Spotify".to_string(),
+                                            "Token set. Syncing playlists…".to_string(),
+                                            NotificationKind::Info,
+                                            NotifType::Spotify,
+                                        ));
                                         match c.spotify().sync().await {
                                             Ok(()) => {
-let _ = ipc_tx.send(IpcResult::Notification(
-                                                        "Spotify".to_string(),
-                                                        "Sync complete".to_string(),
-                                                        NotificationKind::Success,
-                                                        NotifType::Spotify,
-                                                    ));
+                                                let _ = ipc_tx.send(IpcResult::Notification(
+                                                    "Spotify".to_string(),
+                                                    "Sync complete".to_string(),
+                                                    NotificationKind::Success,
+                                                    NotifType::Spotify,
+                                                ));
                                             }
                                             Err(e) => {
                                                 let _ = ipc_tx.send(IpcResult::Error(format!(
@@ -5993,15 +6026,15 @@ let _ = ipc_tx.send(IpcResult::Notification(
                                             .await
                                         {
                                             Ok(()) => {
-let _ = ipc_tx2.send(IpcResult::Notification(
-                                                            "Spotify".to_string(),
-                                                            format!(
-                                                                "Queued: {} - {}",
-                                                                track_clone.artists, track_clone.name
-                                                            ),
-                                                            NotificationKind::Success,
-                                                            NotifType::Spotify,
-                                                        ));
+                                                let _ = ipc_tx2.send(IpcResult::Notification(
+                                                    "Spotify".to_string(),
+                                                    format!(
+                                                        "Queued: {} - {}",
+                                                        track_clone.artists, track_clone.name
+                                                    ),
+                                                    NotificationKind::Success,
+                                                    NotifType::Spotify,
+                                                ));
                                             }
                                             Err(e) => {
                                                 let _ = ipc_tx2.send(IpcResult::Error(format!(
@@ -6014,15 +6047,15 @@ let _ = ipc_tx2.send(IpcResult::Notification(
                                     tokio::spawn(async move {
                                         match c.spotify().resolve(&playlist_id, track_index).await {
                                             Ok(()) => {
-let _ = ipc_tx.send(IpcResult::Notification(
-                                                        "Spotify".to_string(),
-                                                        format!(
-                                                            "Queued: {} - {}",
-                                                            track.artists, track.name
-                                                        ),
-                                                        NotificationKind::Success,
-                                                        NotifType::Spotify,
-                                                    ));
+                                                let _ = ipc_tx.send(IpcResult::Notification(
+                                                    "Spotify".to_string(),
+                                                    format!(
+                                                        "Queued: {} - {}",
+                                                        track.artists, track.name
+                                                    ),
+                                                    NotificationKind::Success,
+                                                    NotifType::Spotify,
+                                                ));
                                             }
                                             Err(e) => {
                                                 let _ = ipc_tx.send(IpcResult::Error(format!(
@@ -6064,7 +6097,8 @@ let _ = ipc_tx.send(IpcResult::Notification(
                             tokio::spawn(async move {
                                 match c.spotify().oauth_start(&client_id, port).await {
                                     Ok(url) => {
-                                        let _ = ipc_tx.send(IpcResult::SpotifyOauthUrl(url.clone()));
+                                        let _ =
+                                            ipc_tx.send(IpcResult::SpotifyOauthUrl(url.clone()));
                                         // Surfaced inline in the picker; the toast
                                         // keeps the message visible after the picker
                                         // closes for copy/record.
@@ -6359,13 +6393,13 @@ let _ = ipc_tx.send(IpcResult::Notification(
                                         } else {
                                             "Multiselect OFF"
                                         };
-self.notify_typed(
-                                "System",
-                                msg,
-                                NotificationKind::Info,
-                                false,
-                                NotifType::Prefs,
-                            );
+                                        self.notify_typed(
+                                            "System",
+                                            msg,
+                                            NotificationKind::Info,
+                                            false,
+                                            NotifType::Prefs,
+                                        );
                                     }
                                 } else if action == "add to queue" {
                                     if !self.library_pane_focus {
@@ -6798,7 +6832,13 @@ self.notify_typed(
                         }
                     });
                     self.metadata.cover_dirty = true;
-                    self.notify_titled("Library", "Syncing cover…", NotificationKind::Info, true, NotifType::Library);
+                    self.notify_titled(
+                        "Library",
+                        "Syncing cover…",
+                        NotificationKind::Info,
+                        true,
+                        NotifType::Library,
+                    );
                 }
             }
             KeyCode::Char(c) if !ctrl_or_alt => {

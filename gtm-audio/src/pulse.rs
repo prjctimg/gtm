@@ -44,7 +44,10 @@ impl PlaybackSource for PaPlaybackSource {
                 Some(s) => {
                     // Producer caught up; a previously empty burst is over.
                     if self_.underrun_burst > 0 {
-                        log::debug!("pa underrun cleared after {} empty polls", self_.underrun_burst);
+                        log::debug!(
+                            "pa underrun cleared after {} empty polls",
+                            self_.underrun_burst
+                        );
                         self_.underrun_burst = 0;
                     }
                     let scaled = s * vol;

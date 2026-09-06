@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::app::{
-    App, InputMode, LIBRARY_CATEGORIES, LibraryPick, NotificationKind, NotifMode, NotifType,
+    App, InputMode, LIBRARY_CATEGORIES, LibraryPick, NotifMode, NotifType, NotificationKind,
     TrackInfoKind, no_image_protocol,
 };
 use crate::footer::format_duration;
@@ -4268,11 +4268,7 @@ impl Pickers {
         }
     }
 
-    fn render_notification_settings_picker(
-        f: &mut ratatui::Frame,
-        area: Rect,
-        app: &mut App,
-    ) {
+    fn render_notification_settings_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let block = Self::picker_panel(
             app,
             " Notification Settings ",
@@ -4307,11 +4303,8 @@ impl Pickers {
                 Style::default().fg(app.theme.accent)
             };
             lines.push(Line::from(vec![
-                Span::styled(
-                    format!(" {:<26}", ntype.label()),
-                    style,
-                ),
-                Span::styled(format!("{}", mode.label()), mode_style),
+                Span::styled(format!(" {:<26}", ntype.label()), style),
+                Span::styled(mode.label().to_string(), mode_style),
             ]));
         }
         let para = Paragraph::new(lines);
