@@ -125,9 +125,7 @@ fn insert_at(state: &mut DaemonState, track: TrackInfo, pos: usize) {
 /// Returns the created TrackInfo.
 pub fn add(state: &mut DaemonState, path: &str, position: Option<u64>) -> TrackInfo {
     let mut added = add_many(state, &[path.to_string()], position);
-    added
-        .pop()
-        .expect("add_many returns one entry per path")
+    added.pop().expect("add_many returns one entry per path")
 }
 
 /// Add multiple tracks as a batch.  The whole batch is queued to play next
