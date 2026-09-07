@@ -94,6 +94,29 @@ impl Default for ReverbConfig {
     }
 }
 
+/// Equalizer + audio-effect settings. `#[serde(flatten)]` keeps the on-disk
+/// and IPC wire schema flat (`eq_preset`, `eq_enabled`, ... at top level).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AudioSettings {
+    pub eq_preset: EqPreset,
+    pub eq_enabled: bool,
+    pub reverb: ReverbConfig,
+    pub loudness_mode: LoudnessMode,
+    pub pre_gain_db: f32,
+}
+
+impl Default for AudioSettings {
+    fn default() -> Self {
+        Self {
+            eq_preset: EqPreset::Flat,
+            eq_enabled: true,
+            reverb: ReverbConfig::default(),
+            loudness_mode: LoudnessMode::Off,
+            pre_gain_db: 0.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DaemonState {
     pub version: u64,
@@ -119,11 +142,8 @@ pub struct DaemonState {
     pub time_pos: f64,
     pub duration: f64,
     pub sleep_timer: Option<u32>,
-    pub eq_preset: EqPreset,
-    pub eq_enabled: bool,
-    pub reverb: ReverbConfig,
-    pub loudness_mode: LoudnessMode,
-    pub pre_gain_db: f32,
+    #[serde(flatten)]
+    pub audio: AudioSettings,
     pub gapless: bool,
     pub dynamic_mode: DynamicModeConfig,
     pub scrobble: ScrobbleConfig,
@@ -448,11 +468,8 @@ pub struct SavedState {
     pub shuffle: bool,
     pub mute: bool,
     pub crossfade: Option<CrossfadeConfig>,
-    pub eq_preset: EqPreset,
-    pub eq_enabled: bool,
-    pub reverb: ReverbConfig,
-    pub loudness_mode: LoudnessMode,
-    pub pre_gain_db: f32,
+    #[serde(flatten)]
+    pub audio: AudioSettings,
     pub gapless: bool,
     pub dynamic_mode: DynamicModeConfig,
     pub scrobble: ScrobbleConfig,
@@ -469,11 +486,7 @@ impl SavedState {
             shuffle: state.shuffle,
             mute: state.mute,
             crossfade: state.crossfade.clone(),
-            eq_preset: state.eq_preset,
-            eq_enabled: state.eq_enabled,
-            reverb: state.reverb.clone(),
-            loudness_mode: state.loudness_mode,
-            pre_gain_db: state.pre_gain_db,
+            audio: state.audio.clone(),
             gapless: state.gapless,
             dynamic_mode: state.dynamic_mode.clone(),
             scrobble: state.scrobble.clone(),
@@ -489,11 +502,7 @@ impl SavedState {
         state.shuffle = self.shuffle;
         state.mute = self.mute;
         state.crossfade = self.crossfade.clone();
-        state.eq_preset = self.eq_preset;
-        state.eq_enabled = self.eq_enabled;
-        state.reverb = self.reverb.clone();
-        state.loudness_mode = self.loudness_mode;
-        state.pre_gain_db = self.pre_gain_db;
+        state.audio = self.audio.clone();
         state.gapless = self.gapless;
         state.dynamic_mode = self.dynamic_mode.clone();
         state.scrobble = self.scrobble.clone();

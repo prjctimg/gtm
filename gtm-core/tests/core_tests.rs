@@ -74,6 +74,25 @@ macro_rules! roundtrip {
     };
 }
 
+/// Like [`roundtrip!`] but JSON-only. `DaemonState` uses `#[serde(flatten)]`
+/// for its `audio` settings, which bincode (a non-self-describing format)
+/// cannot round-trip; JSON preserves the flat wire schema.
+macro_rules! roundtrip_json {
+    ($name:ident, $ty:ty, $val:expr) => {
+        #[test]
+        fn $name() {
+            let val: $ty = $val;
+            let json = serde_json::to_string(&val).unwrap();
+            let de: $ty = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                format!("{:?}", val),
+                format!("{:?}", de),
+                "JSON round-trip failed"
+            );
+        }
+    };
+}
+
 roundtrip!(track_info_roundtrip, TrackInfo, sample_track());
 roundtrip!(
     playlist_roundtrip,
@@ -140,7 +159,7 @@ roundtrip!(
         duration_secs: 8,
     }
 );
-roundtrip!(daemon_state_roundtrip, DaemonState, sample_state());
+roundtrip_json!(daemon_state_roundtrip, DaemonState, sample_state());
 roundtrip!(
     image_roundtrip,
     Image,

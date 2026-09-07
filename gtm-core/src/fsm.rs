@@ -161,7 +161,7 @@ impl DaemonState {
 
     /// Set loudness mode (Off, Track, Album, Auto).
     pub fn set_loudness_mode(&mut self, mode: crate::global::LoudnessMode) -> Result<()> {
-        self.loudness_mode = mode;
+        self.audio.loudness_mode = mode;
         self.version += 1;
         #[cfg(debug_assertions)]
         {
@@ -172,7 +172,7 @@ impl DaemonState {
 
     /// Set pre-gain in dB.
     pub fn set_pre_gain(&mut self, pre_gain_db: f32) -> Result<()> {
-        self.pre_gain_db = pre_gain_db;
+        self.audio.pre_gain_db = pre_gain_db;
         self.version += 1;
         #[cfg(debug_assertions)]
         {
@@ -312,7 +312,7 @@ impl DaemonState {
                 // it here previously erased pending entries on every track end.
             }
             DaemonEvent::EqEnabledChanged { enabled } => {
-                self.eq_enabled = *enabled;
+                self.audio.eq_enabled = *enabled;
             }
             DaemonEvent::CrossfadeChanged {
                 enabled,
@@ -328,19 +328,19 @@ impl DaemonState {
                 };
             }
             DaemonEvent::ReverbChanged { enabled, room_size } => {
-                self.reverb = crate::global::ReverbConfig {
+                self.audio.reverb = crate::global::ReverbConfig {
                     enabled: *enabled,
                     room_size: *room_size,
                 };
             }
             DaemonEvent::EqPresetChanged { preset } => {
-                self.eq_preset = *preset;
+                self.audio.eq_preset = *preset;
             }
             DaemonEvent::LoudnessModeChanged { mode } => {
-                self.loudness_mode = *mode;
+                self.audio.loudness_mode = *mode;
             }
             DaemonEvent::PreGainChanged { pre_gain_db } => {
-                self.pre_gain_db = *pre_gain_db;
+                self.audio.pre_gain_db = *pre_gain_db;
             }
             DaemonEvent::GaplessChanged { enabled } => {
                 self.gapless = *enabled;
