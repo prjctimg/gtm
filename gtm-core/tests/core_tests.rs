@@ -612,9 +612,9 @@ fn state_transition_shuffle_toggle() {
 #[test]
 fn state_transition_repeat_cycle() {
     let mut s = sample_state();
-    s.cycle_repeat(RepeatMode::One).unwrap();
+    s.set_repeat_mode(RepeatMode::One).unwrap();
     assert_eq!(s.repeat, RepeatMode::One);
-    s.cycle_repeat(RepeatMode::All).unwrap();
+    s.set_repeat_mode(RepeatMode::All).unwrap();
     assert_eq!(s.repeat, RepeatMode::All);
 }
 

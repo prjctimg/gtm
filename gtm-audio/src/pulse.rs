@@ -796,8 +796,8 @@ impl PulseAudioMixer {
             eased_out
         };
 
-        Self::set_stream_volume(&self.stream_a, gtm_core::volume_from_ratio(a_vol));
-        Self::set_stream_volume(&self.stream_b, gtm_core::volume_from_ratio(b_vol));
+        Self::set_stream_volume(&self.stream_a, gtm_core::volume_from_ratio(a_vol as f32));
+        Self::set_stream_volume(&self.stream_b, gtm_core::volume_from_ratio(b_vol as f32));
 
         if progress >= 1.0 {
             self.swap_active_standby();
