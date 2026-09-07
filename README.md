@@ -12,6 +12,19 @@ A terminal music player (**gtm** — "goto music") with background playback and
 YouTube/Spotify integration. It is a background daemon (`gtmd`) with a client
 (`gtm`); you control it through the terminal.
 
+## On this page
+
+- [Features](#features)
+- [Install](#install)
+  - [Build from Source](#build-from-source)
+  - [Termux](#termux-native-on-device)
+- [Spotify](#spotify)
+- [Screenshots](#screenshots)
+- [Documentation](#documentation)
+- [Contributing](#contributing)
+- [Acknowledgements](#acknowledgements)
+- [Contributors](#contributors)
+
 ## Why another (terminal) audio player ?
 
 You can read about it in [this post.](https://prjctimg.me/blg/feature-rich-terminal-audio-player)
