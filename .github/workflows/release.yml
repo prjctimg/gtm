@@ -69,6 +69,11 @@ on:
         description: "Release version (e.g. 0.1.2) for stable releases"
         required: false
         type: string
+      bench_seconds:
+        description: "Benchmark sampling window in seconds (CI default 15)"
+        required: false
+        default: "30"
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -799,6 +804,106 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/releases/tags/nightly" \
             -X PATCH -f draft=false >/dev/null || \
             echo "::warning::could not un-draft nightly release"
+
+  # Benchmarks gtm against the just-published x86_64-linux binary (through its
+  # headless daemon, NullMixer — no audio device needed) and the reference
+  # player cliamp when an audio backend is available. Writes
+  # bench-results/<version>.json + latest.json, re-renders BENCHMARK.md (diff
+  # vs the last run), and — on dev runs — commits the results back. Pushes use
+  # the default GITHUB_TOKEN, which GitHub does not use to trigger new
+  # workflows, so benchmark commits never re-trigger the release pipeline; the
+  # commit message still carries the [skip nightly] marker as a belt-and-braces
+  # guard. Runs on every dev push (nightly) and on manual dispatch.
+  bench:
+    needs: [tag, release]
+    if: needs.tag.outputs.skip != 'true' && (github.ref == 'refs/heads/dev' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-assets-*
+          merge-multiple: true
+
+      - name: Install runtime dependencies
+        run: |
+          sudo apt-get update
+          # libasound2t64 is the 24.04 (noble) name; older images use libasound2.
+          sudo apt-get install -y jq libasound2t64 || sudo apt-get install -y libasound2
+
+      - name: Install cliamp (reference player)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23'
+      - run: go install github.com/bjarneo/cliamp@latest
+
+      - name: Extract gtm binaries from published archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -f gtm-debian-12-x86_64.tar.gz ] || { echo "::error::x86_64-linux archive not found (bench uses the Debian 12 glibc build)" >&2; exit 1; }
+          tar xzf gtm-debian-12-x86_64.tar.gz
+          mkdir -p bench-bins
+          cp gtm-debian-12-x86_64/bin/gtm gtm-debian-12-x86_64/bin/gtmd bench-bins/
+          chmod +x bench-bins/gtm bench-bins/gtmd
+          ls -l bench-bins/
+
+      - name: Collect benchmark results
+        shell: bash
+        env:
+          GTM_BIN: bench-bins/gtm
+          GTMD_BIN: bench-bins/gtmd
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          echo "$HOME/go/bin" >> "$GITHUB_PATH"
+          ./scripts/bench/collect.sh "${{ needs.tag.outputs.version }}" "${{ github.event.inputs.bench_seconds || '30' }}"
+
+      - name: Render BENCHMARK.md
+        shell: bash
+        run: ./scripts/bench/render-bench.sh --tag "${{ needs.tag.outputs.version }}"
+
+      - name: Commit benchmark results back (dev only)
+        if: github.ref == 'refs/heads/dev'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          attempt=0
+          while true; do
+            if git diff --cached --quiet; then
+              git add bench-results/ BENCHMARK.md
+            fi
+            if git diff --cached --quiet; then
+              echo "no benchmark changes to commit"
+              exit 0
+            fi
+            git commit -m "bench: results for ${{ needs.tag.outputs.version }} [skip nightly]" >/dev/null
+            if git push origin dev 2>/dev/null; then
+              break
+            fi
+            attempt=$((attempt + 1))
+            if [ "${attempt}" -ge 3 ]; then
+              echo "::error::could not push benchmark results after 3 attempts (concurrent run?)" >&2
+              exit 1
+            fi
+            sleep 5
+            git pull --rebase origin dev 2>/dev/null || true
+          done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: bench-results
+          path: |
+            bench-results/*.json
+            BENCHMARK.md
+          if-no-files-found: error
 
   # Publishes the workspace crates to crates.io in dependency order
   # (gtm-core → gtm-audio → gtm-mpris → gtmd → gtm). Runs only after every

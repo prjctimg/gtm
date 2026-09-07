@@ -138,28 +138,32 @@ run_gtm() {
 run_cliamp() {
   [ -n "${CLIAMP}" ] || {
     RESULT_JSON="$(emit_error "cliamp not found; install it or set CLIAMP_BIN")"; return 1; }
-  export XDG_RUNTIME_DIR="${SOCK_DIR}"
-  # --low-power disables the visualizer / caps CPU; the socket is isolated via
-  # XDG_RUNTIME_DIR so a user's running instance is never touched.
+  # cliamp's socket is '$HOME/.config/cliamp/cliamp.sock'; isolate HOME so a
+  # user's running instance (and its config) is never touched.
+  export HOME="${SOCK_DIR}/home"
+  mkdir -p "${HOME}"
+  # --low-power reduces CPU (lower UI cadence / no visualizer) in the daemon;
+  # the explicit sample-rate/buffer keep PCM as close to the gtm measurement
+  # as possible.
   "${CLIAMP}" --daemon --low-power --sample-rate 44100 --buffer-ms 500 \
     >"${SOCK_DIR}/cliamp.log" 2>&1 &
   PID=$!
   local tries=300
   local sockpath=""
   while [ "${tries}" -gt 0 ]; do
-    sockpath="$(find "${SOCK_DIR}" -name '*.sock' -print -quit 2>/dev/null || true)"
+    sockpath="$(find "${HOME}/.config/cliamp" -name '*.sock' -print -quit 2>/dev/null || true)"
     [ -n "${sockpath}" ] && break
     /bin/sleep 0.05
     tries=$((tries - 1))
   done
   [ -n "${sockpath}" ] || {
-    RESULT_JSON="$(emit_error "cliamp did not create a socket")"; return 1; }
+    RESULT_JSON="$(emit_error "cliamp did not create a socket (see cliamp.log)")"; return 1; }
 
   local t0 t1
   t0="$(date +%s%N)"
-  "${CLIAMP}" --socket "${sockpath}" add "${FILE}" >/dev/null 2>&1 \
-    && "${CLIAMP}" --socket "${sockpath}" play >/dev/null 2>&1 \
-    || { RESULT_JSON="$(emit_error "cliamp add/play failed")"; return 1; }
+  "${CLIAMP}" queue "${FILE}" >/dev/null 2>&1 \
+    && "${CLIAMP}" play >/dev/null 2>&1 \
+    || { RESULT_JSON="$(emit_error "cliamp queue/play failed (see cliamp.log)")"; return 1; }
   t1="$(date +%s%N)"
   t_ready_ms=$(( (t1 - t0) / 1000000 ))
 
@@ -167,7 +171,7 @@ run_cliamp() {
   kill "${PID}" 2>/dev/null || true
   wait "${PID}" 2>/dev/null || true
   PID=""
-  unset XDG_RUNTIME_DIR
+  unset HOME
 }
 
 emit_error() {
