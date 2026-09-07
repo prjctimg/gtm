@@ -769,6 +769,11 @@ jobs:
         with:
           tag_name: ${{ needs.tag.outputs.tag }}
           name: ${{ needs.tag.outputs.version }}
+          # Never leave the release as a draft: drafts hide every asset behind
+          # 404s on releases/download/<tag>/<name>. The action toggles the
+          # release into a draft while overwriting assets; publishing is what
+          # makes the nightly installer's URLs resolve.
+          draft: false
           prerelease: ${{ needs.tag.outputs.nightly == 'true' }}
           generate_release_notes: true
           overwrite_files: true
@@ -780,6 +785,20 @@ jobs:
             *.apk
             checksums.txt
             release-notes.md
+
+      # If any step above fails after the release was toggled into a draft
+      # (softprops drafts it to overwrite assets), the nightly would stay a
+      # draft and `releases/download/nightly/<asset>` would 404 for every
+      # user. Force-publish again even when a step failed so the previous
+      # nightly assets remain downloadable.
+      - name: Force-publish nightly (draft guard)
+        if: always() && needs.tag.outputs.nightly == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/nightly" \
+            -X PATCH -f draft=false >/dev/null || \
+            echo "::warning::could not un-draft nightly release"
 
   # Publishes the workspace crates to crates.io in dependency order
   # (gtm-core → gtm-audio → gtm-mpris → gtmd → gtm). Runs only after every
