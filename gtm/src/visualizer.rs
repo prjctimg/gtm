@@ -264,7 +264,9 @@ impl AudioVisualizer {
     }
 
     fn render_braille(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
-        self.render_braille_grid(num_bars, height, theme, |val, theme| self.amplitude_color(val, theme))
+        self.render_braille_grid(num_bars, height, theme, |val, theme| {
+            self.amplitude_color(val, theme)
+        })
     }
 }
 

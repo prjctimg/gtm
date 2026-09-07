@@ -711,7 +711,8 @@ impl Mixer for PulseAudioMixer {
                 self.playing.store(false, Ordering::SeqCst);
             } else {
                 let progress = elapsed / FADE_MS;
-                let target = gtm_core::volume_ratio(self.stored_volume.min(gtm_core::MAX_VOLUME)) * (1.0 - progress as f32);
+                let target = gtm_core::volume_ratio(self.stored_volume.min(gtm_core::MAX_VOLUME))
+                    * (1.0 - progress as f32);
                 Self::set_stream_volume(&self.active(), gtm_core::volume_from_ratio(target));
             }
         }
