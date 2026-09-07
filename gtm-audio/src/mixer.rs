@@ -13,7 +13,10 @@ use std::time::{Duration, Instant};
 use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
 
 use crate::backend::{AudioError, AudioEvent, AudioResult};
-use crate::buffer::{BUFFER_CAPACITY_SAMPLES, DecodeControl, RingBufferInner, RingBufferSource};
+use crate::buffer::{
+    BUFFER_CAPACITY_SAMPLES, DecodeControl, PREBUFFER_SAMPLES, PREBUFFER_SAMPLES_REDUCED,
+    RingBufferInner, RingBufferSource,
+};
 use crate::decoder::DecodeThread;
 use crate::eq::{EqGains, EqSource, ReverbSource};
 use crate::symphonia::SymphoniaSource;
@@ -91,9 +94,11 @@ pub struct AudioMixer {
     underrun_since: Option<Instant>,
     // ─── Spectrum ───
     spectrum: Arc<Mutex<Vec<f32>>>,
+    // Track if this is the first track (for prebuffer optimization)
+    first_track: bool,
 }
 
-const UNDERFLOW_GRACE: Duration = Duration::from_millis(100);
+const UNDERFLOW_GRACE: Duration = Duration::from_millis(30);
 
 struct MixerDeviceSink(rodio::MixerDeviceSink);
 
@@ -238,6 +243,7 @@ impl AudioMixer {
             standby_decode_handle: None,
             underrun_since: None,
             spectrum: Arc::new(Mutex::new(Vec::new())),
+            first_track: true,
         })
     }
 
@@ -325,6 +331,7 @@ impl AudioMixer {
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
         spectrum: &Arc<Mutex<Vec<f32>>>,
+        prebuffer_samples: usize,
     ) -> AudioResult<(
         Arc<DecodeControl>,
         RingBufferSource,
@@ -342,6 +349,7 @@ impl AudioMixer {
             reverb_enabled.clone(),
             reverb_room_size.clone(),
             spectrum.clone(),
+            prebuffer_samples,
         );
         let handle = thread.spawn().map_err(AudioError::DecodeError)?;
 
@@ -361,6 +369,12 @@ impl AudioMixer {
     }
 
     pub fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()> {
+        let prebuffer = if self.first_track {
+            PREBUFFER_SAMPLES
+        } else {
+            PREBUFFER_SAMPLES_REDUCED
+        };
+        self.first_track = false;
         Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
 
         let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
@@ -379,6 +393,7 @@ impl AudioMixer {
             &self.reverb_enabled,
             &self.reverb_room_size,
             &self.spectrum,
+            prebuffer,
         )?;
 
         self.active().append(source);
@@ -436,6 +451,7 @@ impl AudioMixer {
             &self.reverb_enabled,
             &self.reverb_room_size,
             &self.spectrum,
+            PREBUFFER_SAMPLES,
         )?;
 
         self.standby().append(source);

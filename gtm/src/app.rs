@@ -74,6 +74,14 @@ const EQ_PRESETS: [EqPreset; 16] = [
     EqPreset::Speaker,
 ];
 
+fn default_auto_fetch_lyrics() -> bool {
+    true
+}
+
+fn default_icon_style() -> String {
+    "mdi".to_string()
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Prefs {
     #[serde(default = "default_theme_name")]
@@ -102,6 +110,10 @@ pub struct Prefs {
     notification_modes: std::collections::HashMap<String, String>,
     #[serde(default = "default_cover_provider")]
     cover_provider: String,
+    #[serde(default = "default_auto_fetch_lyrics")]
+    auto_fetch_lyrics: bool,
+    #[serde(default = "default_icon_style")]
+    icon_style: String,
 }
 
 fn default_cover_provider() -> String {
@@ -195,6 +207,8 @@ impl Default for Prefs {
             keybindings: std::collections::HashMap::new(),
             notification_modes: default_notification_modes(),
             cover_provider: default_cover_provider(),
+            auto_fetch_lyrics: default_auto_fetch_lyrics(),
+            icon_style: default_icon_style(),
         }
     }
 }
@@ -478,6 +492,27 @@ pub struct NowPlayingCoverState {
     pub pending_gen: Option<u64>,
 }
 
+/// A pending prompt that waits for user input. Used for confirmations and
+/// other modal dialogs that should persist until a specific key is pressed.
+pub struct PendingPrompt {
+    pub message: String,
+    /// Keys that confirm the action (e.g., 'y', 'Y', Enter)
+    pub confirm_keys: Vec<KeyCode>,
+    /// Keys that cancel the action (e.g., 'n', 'N', 'q', Esc)
+    pub cancel_keys: Vec<KeyCode>,
+    /// Type of prompt to handle the action
+    pub prompt_type: PromptType,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum PromptType {
+    DeleteTrack(i64),
+    MultiselectDelete(usize),
+    MultiselectAddToQueue,
+    MultiselectAddToPlaylist,
+    None,
+}
+
 pub struct App {
     pub theme: AppTheme,
     pub themes: Vec<ThemeEntry>,
@@ -557,6 +592,10 @@ pub struct App {
     /// Cover provider preference (`auto`/`deezer`/`musicbrainz`/`spotify`),
     /// persisted in config.toml and consumed by the daemon for cover lookups.
     pub cover_provider: String,
+    /// Whether to automatically fetch lyrics on track change
+    pub auto_fetch_lyrics: bool,
+    /// Icon style for command palette: "mdi" (Material Design Icons) or "emoji"
+    pub icon_style: String,
     pub crossfade_duration: u8,
     pub yt_search_loading: bool,
     pub yt_search_debounce: Option<std::time::Instant>,
@@ -564,6 +603,8 @@ pub struct App {
     pub spotify_web_seq: u64,
     pub yt_search_poll_deadline: Option<std::time::Instant>,
     pub pending_delete: Option<(i64, String)>,
+    /// Pending prompt for confirmations that require user input
+    pub pending_prompt: Option<PendingPrompt>,
     pub pickers: PickerManager,
     pub sleep_timer: SleepTimerState,
     pub np_cover: NowPlayingCoverState,
@@ -1015,8 +1056,11 @@ impl App {
                 .map(|(k, v)| (NotifType::from_str_lossy(&k), NotifMode::from_str_lossy(&v)))
                 .collect(),
             cover_provider: prefs.cover_provider.clone(),
+            auto_fetch_lyrics: prefs.auto_fetch_lyrics,
+            icon_style: prefs.icon_style.clone(),
             crossfade_duration: 6,
             pending_delete: None,
+            pending_prompt: None,
             yt_search_loading: false,
             yt_search_debounce: None,
             spotify_search_debounce: None,
@@ -1256,6 +1300,8 @@ impl App {
                 .map(|(t, m)| (t.as_str().to_string(), m.as_str().to_string()))
                 .collect(),
             cover_provider: self.cover_provider.clone(),
+            auto_fetch_lyrics: self.auto_fetch_lyrics,
+            icon_style: self.icon_style.clone(),
         }
     }
 
@@ -1599,6 +1645,20 @@ impl App {
                 self.state.apply_event(&ev);
                 events_received = true;
             }
+            // After track change, check if new track has cover art.
+            // If not, clear reactive palette so theme reverts to base.
+            if had_track_change && self.reactive_theme {
+                let has_cover = self
+                    .state
+                    .current_track
+                    .as_ref()
+                    .map(|t| t.cover_path.is_some())
+                    .unwrap_or(false);
+                if !has_cover {
+                    self.reactive_palette = None;
+                    self.apply_reactive();
+                }
+            }
             // If the countdown elapsed without a PlaybackStarted (e.g. the
             // track ended before the crossfade could fire), drop the card.
             if let Some(u) = self.upnext.as_ref()
@@ -1779,10 +1839,9 @@ impl App {
                         }
                     });
                 }
-                // Auto-fetch lyrics on every track change, whether or not the
-                // pane is visible, so toggling it on later shows the right
-                // lines immediately instead of racing a fresh fetch.
-                {
+                // Auto-fetch lyrics on track change if enabled and (pane visible or auto-fetch enabled)
+                let should_fetch_lyrics = self.auto_fetch_lyrics || self.show_lyrics;
+                if should_fetch_lyrics {
                     let fetch_gen = self.next_lyrics_gen();
                     self.current_lyrics = None;
                     self.lyrics_pending_gen = Some(fetch_gen);
@@ -2049,6 +2108,18 @@ impl App {
                             // playback position so opening lyrics mid-track
                             // doesn't start with the first line highlighted.
                             self.lyrics_scroll = self.current_lyric_index();
+                            // Show "No lyrics found" if lyrics fetch returned None
+                            if self.current_lyrics.is_none() {
+                                self.current_lyrics = Some(gtm_core::track::LrcData {
+                                    title: None,
+                                    artist: None,
+                                    album: None,
+                                    lines: vec![gtm_core::track::LrcLine {
+                                        timestamp: 0.0,
+                                        text: "No lyrics found".to_string(),
+                                    }],
+                                });
+                            }
                         }
                     }
                     IpcResult::HealthReport(report) => {
@@ -3921,7 +3992,7 @@ impl App {
                 .saturating_sub(1)
             }
             PickerId::CommandPalette => {
-                let commands = crate::ui::COMMAND_PALETTE_COMMANDS;
+                let commands = crate::ui::command_palette_commands(&self.icon_style);
                 let q = query.to_lowercase();
                 if q.is_empty() {
                     commands.len()
@@ -3990,7 +4061,7 @@ impl App {
                 }
             }
             PickerId::CommandPalette => {
-                let commands = crate::ui::COMMAND_PALETTE_COMMANDS;
+                let commands = crate::ui::command_palette_commands(&self.icon_style);
                 let q = query.to_lowercase();
                 if q.is_empty() {
                     commands.len()
@@ -4165,19 +4236,61 @@ impl App {
                 _ => {}
             },
             InputMode::Normal => {
-                // If a delete confirmation is pending, intercept Enter/Esc
-                if self.pending_delete.is_some() {
-                    match key.code {
-                        KeyCode::Enter => {
-                            if let Some((track_id, _)) = self.pending_delete.take() {
+                // If a prompt is pending, intercept keys
+                if let Some(prompt) = self.pending_prompt.take() {
+                    let is_confirm = prompt.confirm_keys.contains(&key.code);
+                    let is_cancel = prompt.cancel_keys.contains(&key.code);
+                    if is_confirm {
+                        match prompt.prompt_type {
+                            PromptType::DeleteTrack(track_id) => {
                                 let tx = self.cmd_tx();
                                 let _ = tx.send(TuiCommand::RemoveTrack(track_id)).await;
                             }
+                            PromptType::MultiselectAddToQueue => {
+                                let tracks = self.filtered_tracks();
+                                let indices: Vec<usize> =
+                                    self.selected_indices.iter().copied().collect();
+                                let mut added = 0;
+                                for idx in indices {
+                                    if let Some(track) = tracks.get(idx) {
+                                        let c = self.client.clone();
+                                        let path = track.path.clone();
+                                        tokio::spawn(async move {
+                                            let _ = c.queue().add(&path, None).await;
+                                        });
+                                        added += 1;
+                                    }
+                                }
+                                self.selected_indices.clear();
+                                self.multiselect_mode = false;
+                                self.fetch_queue().await;
+                                self.footer_notification = Some((
+                                    format!("Added {added} track(s) to queue"),
+                                    std::time::Instant::now() + std::time::Duration::from_secs(2),
+                                ));
+                            }
+                            PromptType::MultiselectAddToPlaylist => {
+                                let tracks = self.filtered_tracks();
+                                let indices: Vec<i64> = self
+                                    .selected_indices
+                                    .iter()
+                                    .filter_map(|i| tracks.get(*i).map(|t| t.id))
+                                    .collect();
+                                if !indices.is_empty() {
+                                    self.pending_playlist_track_ids = indices;
+                                    self.selected_indices.clear();
+                                    self.multiselect_mode = false;
+                                    self.playlist_creating = false;
+                                    self.pickers.open(PickerId::PlaylistSelect);
+                                }
+                            }
+                            PromptType::MultiselectDelete(_) | PromptType::None => {}
                         }
-                        KeyCode::Esc => {
-                            self.pending_delete = None;
-                        }
-                        _ => {}
+                    } else if is_cancel {
+                        // Just drop the prompt
+                    } else {
+                        // Put the prompt back if key wasn't recognized
+                        self.pending_prompt = Some(prompt);
                     }
                     return true;
                 }
@@ -4315,23 +4428,11 @@ impl App {
                     Some(KeyboardAction::ToggleMute) => {
                         self.set_last_action("Toggle Mute");
                         self.send_high(TuiCommand::ToggleMute);
-                        if self.state.mute {
-                            self.notify_titled(
-                                "Volume",
-                                "Unmuted",
-                                NotificationKind::Info,
-                                true,
-                                NotifType::Playback,
-                            );
-                        } else {
-                            self.notify_titled(
-                                "Volume",
-                                "Muted",
-                                NotificationKind::Warning,
-                                true,
-                                NotifType::Playback,
-                            );
-                        }
+                        let msg = if self.state.mute { "Unmuted" } else { "Muted" };
+                        self.footer_notification = Some((
+                            msg.to_string(),
+                            std::time::Instant::now() + std::time::Duration::from_secs(2),
+                        ));
                     }
                     Some(KeyboardAction::CycleRepeat) => {
                         self.set_last_action("Cycle Repeat");
@@ -4341,34 +4442,23 @@ impl App {
                             RepeatMode::All => RepeatMode::Off,
                         };
                         self.send_high(TuiCommand::CycleRepeat(new_mode));
-                        self.notify_typed(
-                            "System",
+                        self.footer_notification = Some((
                             format!("Repeat: {:?}", new_mode),
-                            NotificationKind::Info,
-                            false,
-                            NotifType::Playback,
-                        );
+                            std::time::Instant::now() + std::time::Duration::from_secs(2),
+                        ));
                     }
                     Some(KeyboardAction::ToggleShuffle) => {
                         self.set_last_action("Toggle Shuffle");
                         self.send_high(TuiCommand::ToggleShuffle);
-                        if self.state.shuffle {
-                            self.notify_typed(
-                                "System",
-                                "Shuffle OFF",
-                                NotificationKind::Info,
-                                false,
-                                NotifType::Playback,
-                            );
+                        let msg = if self.state.shuffle {
+                            "Shuffle OFF"
                         } else {
-                            self.notify_typed(
-                                "System",
-                                "Shuffle ON",
-                                NotificationKind::Info,
-                                false,
-                                NotifType::Playback,
-                            );
-                        }
+                            "Shuffle ON"
+                        };
+                        self.footer_notification = Some((
+                            msg.to_string(),
+                            std::time::Instant::now() + std::time::Duration::from_secs(2),
+                        ));
                     }
                     Some(KeyboardAction::ToggleFavourite) => {
                         self.set_last_action("Toggle Favourite");
@@ -4478,13 +4568,10 @@ impl App {
                         self.set_last_action("Clear Queue");
                         let tx = self.cmd_tx();
                         let _ = tx.send(TuiCommand::QueueClear).await;
-                        self.notify_titled(
-                            "Queue",
-                            "Queue cleared",
-                            NotificationKind::Info,
-                            true,
-                            NotifType::Playback,
-                        );
+                        self.footer_notification = Some((
+                            "Queue cleared".to_string(),
+                            std::time::Instant::now() + std::time::Duration::from_secs(2),
+                        ));
                     }
                     Some(KeyboardAction::ToggleVisualizer) => {
                         self.visualizer.toggle();
@@ -4493,13 +4580,10 @@ impl App {
                         } else {
                             "OFF"
                         };
-                        self.notify_typed(
-                            "System",
+                        self.footer_notification = Some((
                             format!("Visualizer: {}", state),
-                            NotificationKind::Info,
-                            false,
-                            NotifType::Playback,
-                        );
+                            std::time::Instant::now() + std::time::Duration::from_secs(2),
+                        ));
                     }
                     Some(KeyboardAction::ToggleTheme) => {
                         self.toggle_theme();
@@ -4641,6 +4725,24 @@ impl App {
                             self.set_list_pos((self.list_pos() + page).min(max_list));
                             self.update_track_popup();
                             self.preload_upcoming_covers();
+                        }
+                    }
+                    Some(KeyboardAction::MultiselectUp) => {
+                        if self.multiselect_mode && !self.library_pane_focus {
+                            let pos = self.list_pos().saturating_sub(1);
+                            self.set_list_pos(pos);
+                            self.update_track_popup();
+                            self.selected_indices.insert(pos);
+                        }
+                    }
+                    Some(KeyboardAction::MultiselectDown) => {
+                        if self.multiselect_mode && !self.library_pane_focus {
+                            let max_list = self.library_list_len().saturating_sub(1);
+                            let pos = (self.list_pos() + 1).min(max_list);
+                            self.set_list_pos(pos);
+                            self.update_track_popup();
+                            self.preload_upcoming_covers();
+                            self.selected_indices.insert(pos);
                         }
                     }
                     Some(KeyboardAction::Top) => {
@@ -4786,16 +4888,21 @@ impl App {
                                 .get(self.list_pos())
                                 .map(|t| (t.id, t.title.clone()));
                             if let Some((track_id, track_name)) = track_data {
-                                self.pending_delete = Some((track_id, track_name.clone()));
-                                self.notify_typed(
-                                    "System",
-                                    format!(
-                                        "Delete \"{track_name}\"? Enter to confirm, Esc to cancel"
-                                    ),
-                                    NotificationKind::Info,
-                                    false,
-                                    NotifType::NowPlaying,
-                                );
+                                self.pending_prompt = Some(PendingPrompt {
+                                    message: format!("Delete \"{track_name}\"? [y/N]"),
+                                    confirm_keys: vec![
+                                        KeyCode::Char('y'),
+                                        KeyCode::Char('Y'),
+                                        KeyCode::Enter,
+                                    ],
+                                    cancel_keys: vec![
+                                        KeyCode::Char('n'),
+                                        KeyCode::Char('N'),
+                                        KeyCode::Esc,
+                                        KeyCode::Char('q'),
+                                    ],
+                                    prompt_type: PromptType::DeleteTrack(track_id),
+                                });
                             }
                         }
                     }
@@ -4810,13 +4917,10 @@ impl App {
                             } else {
                                 "Multiselect OFF"
                             };
-                            self.notify_typed(
-                                "System",
-                                msg,
-                                NotificationKind::Info,
-                                false,
-                                NotifType::Prefs,
-                            );
+                            self.footer_notification = Some((
+                                msg.to_string(),
+                                std::time::Instant::now() + std::time::Duration::from_secs(2),
+                            ));
                         }
                     }
                     Some(KeyboardAction::AddToQueue) => {
@@ -4828,25 +4932,41 @@ impl App {
                                 } else {
                                     vec![self.list_pos()]
                                 };
-                            let mut added = 0;
-                            for idx in indices {
-                                if let Some(track) = tracks.get(idx) {
-                                    let c = self.client.clone();
-                                    let path = track.path.clone();
-                                    tokio::spawn(async move {
-                                        let _ = c.queue().add(&path, None).await;
-                                    });
-                                    added += 1;
+                            if self.multiselect_mode && !self.selected_indices.is_empty() {
+                                let count = indices.len();
+                                self.pending_prompt = Some(PendingPrompt {
+                                    message: format!("Add {count} tracks to queue? [y/N]"),
+                                    confirm_keys: vec![
+                                        KeyCode::Char('y'),
+                                        KeyCode::Char('Y'),
+                                        KeyCode::Enter,
+                                    ],
+                                    cancel_keys: vec![
+                                        KeyCode::Char('n'),
+                                        KeyCode::Char('N'),
+                                        KeyCode::Esc,
+                                        KeyCode::Char('q'),
+                                    ],
+                                    prompt_type: PromptType::MultiselectAddToQueue,
+                                });
+                            } else {
+                                let mut added = 0;
+                                for idx in indices {
+                                    if let Some(track) = tracks.get(idx) {
+                                        let c = self.client.clone();
+                                        let path = track.path.clone();
+                                        tokio::spawn(async move {
+                                            let _ = c.queue().add(&path, None).await;
+                                        });
+                                        added += 1;
+                                    }
                                 }
+                                self.fetch_queue().await;
+                                self.footer_notification = Some((
+                                    format!("Added {added} track(s) to queue"),
+                                    std::time::Instant::now() + std::time::Duration::from_secs(2),
+                                ));
                             }
-                            self.fetch_queue().await;
-                            self.notify_typed(
-                                "System",
-                                format!("Added {added} track(s) to queue"),
-                                NotificationKind::Info,
-                                false,
-                                NotifType::NowPlaying,
-                            );
                         }
                     }
                     Some(KeyboardAction::AddToPlaylist) => {
@@ -4864,7 +4984,24 @@ impl App {
                                         .map(|t| vec![t.id])
                                         .unwrap_or_default()
                                 };
-                            if !indices.is_empty() {
+                            if self.multiselect_mode && !self.selected_indices.is_empty() {
+                                let count = indices.len();
+                                self.pending_prompt = Some(PendingPrompt {
+                                    message: format!("Add {count} tracks to playlist? [y/N]"),
+                                    confirm_keys: vec![
+                                        KeyCode::Char('y'),
+                                        KeyCode::Char('Y'),
+                                        KeyCode::Enter,
+                                    ],
+                                    cancel_keys: vec![
+                                        KeyCode::Char('n'),
+                                        KeyCode::Char('N'),
+                                        KeyCode::Esc,
+                                        KeyCode::Char('q'),
+                                    ],
+                                    prompt_type: PromptType::MultiselectAddToPlaylist,
+                                });
+                            } else if !indices.is_empty() {
                                 self.pending_playlist_track_ids = indices;
                                 self.playlist_creating = false;
                                 self.pickers.open(PickerId::PlaylistSelect);
@@ -5321,13 +5458,10 @@ impl App {
                     let mins = self.sleep_timer.minutes;
                     self.sleep_timer.remaining = Some(mins as u64);
                     self.send_high(TuiCommand::SetSleepTimer(mins));
-                    self.notify_typed(
-                        "System",
+                    self.footer_notification = Some((
                         format!("Sleep timer set: {} min", mins),
-                        NotificationKind::Info,
-                        false,
-                        NotifType::Playback,
-                    );
+                        std::time::Instant::now() + std::time::Duration::from_secs(2),
+                    ));
                     self.pickers.close_top();
                     return;
                 }
@@ -5339,13 +5473,10 @@ impl App {
                 KeyCode::Char('c') => {
                     self.sleep_timer.remaining = None;
                     self.send_high(TuiCommand::CancelSleepTimer);
-                    self.notify_titled(
-                        "Sleep Timer",
-                        "Sleep timer cancelled",
-                        NotificationKind::Info,
-                        true,
-                        NotifType::Playback,
-                    );
+                    self.footer_notification = Some((
+                        "Sleep timer cancelled".to_string(),
+                        std::time::Instant::now() + std::time::Duration::from_secs(2),
+                    ));
                     return;
                 }
                 KeyCode::Up | KeyCode::Char('j') => {
@@ -6295,6 +6426,9 @@ impl App {
                             if !self.queue_cache.is_empty() {
                                 let idx = top.selected.min(self.queue_cache.len() - 1);
                                 let path = self.queue_cache[idx].path.clone();
+                                // Immediately update queue_cursor so the up-next preview
+                                // reflects the newly selected track's next track.
+                                self.queue_cursor = idx;
                                 self.send_high(TuiCommand::Play(path));
                             }
                         }
@@ -6350,13 +6484,10 @@ impl App {
                                 let idx = top.selected.min(presets.len() - 1);
                                 self.visualizer.preset = presets[idx];
                                 save_prefs(&self.current_prefs());
-                                self.notify_typed(
-                                    "System",
+                                self.footer_notification = Some((
                                     format!("Visualizer: {}", self.visualizer.preset.name()),
-                                    NotificationKind::Info,
-                                    false,
-                                    NotifType::Playback,
-                                );
+                                    std::time::Instant::now() + std::time::Duration::from_secs(2),
+                                ));
                             }
                             self.pickers.close_top();
                         }
@@ -6401,7 +6532,7 @@ impl App {
                             self.cycle_notification_mode(1);
                         }
                         PickerId::CommandPalette => {
-                            let commands = crate::ui::COMMAND_PALETTE_COMMANDS;
+                            let commands = crate::ui::command_palette_commands(&self.icon_style);
                             let query = top.query.to_lowercase();
                             let filtered: Vec<&(&str, &str, &str)> = if query.is_empty() {
                                 commands.iter().collect()
@@ -6544,13 +6675,11 @@ impl App {
                                 } else if action == "clear queue" {
                                     let tx = self.cmd_tx();
                                     let _ = tx.send(TuiCommand::QueueClear).await;
-                                    self.notify_titled(
-                                        "Queue",
-                                        "Queue cleared",
-                                        NotificationKind::Info,
-                                        true,
-                                        NotifType::Playback,
-                                    );
+                                    self.footer_notification = Some((
+                                        "Queue cleared".to_string(),
+                                        std::time::Instant::now()
+                                            + std::time::Duration::from_secs(2),
+                                    ));
                                 } else if action == "prev tab" {
                                     self.cycle_pane_focus(false);
                                     self.pickers.close_top();
@@ -6565,13 +6694,11 @@ impl App {
                                         } else {
                                             "Multiselect OFF"
                                         };
-                                        self.notify_typed(
-                                            "System",
-                                            msg,
-                                            NotificationKind::Info,
-                                            false,
-                                            NotifType::Prefs,
-                                        );
+                                        self.footer_notification = Some((
+                                            msg.to_string(),
+                                            std::time::Instant::now()
+                                                + std::time::Duration::from_secs(2),
+                                        ));
                                     }
                                 } else if action == "add to queue" {
                                     if !self.library_pane_focus {
@@ -6821,13 +6948,10 @@ impl App {
                             tokio::spawn(async move {
                                 let _ = c.set_eq_preset(preset).await;
                             });
-                            self.notify_titled(
-                                "Equalizer",
+                            self.footer_notification = Some((
                                 format!("Equalizer preset: {}", preset.label()),
-                                NotificationKind::Info,
-                                true,
-                                NotifType::Prefs,
-                            );
+                                std::time::Instant::now() + std::time::Duration::from_secs(2),
+                            ));
                             self.pickers.close_top();
                         }
                         PickerId::ThemePicker => {

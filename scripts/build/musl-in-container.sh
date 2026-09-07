@@ -7,7 +7,7 @@ arch="${3:?arch required}"
 
 cd /work
 
-export RUSTFLAGS="-C target-feature=-crt-static -C linker=clang -C link-arg=-fuse-ld=mold"
+export RUSTFLAGS="-C target-feature=-crt-static -C linker=gcc -C link-arg=-fuse-ld=mold"
 
 apk add --no-cache \
   ca-certificates curl cmake musl-dev \

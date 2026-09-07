@@ -21,6 +21,9 @@ pub const NO_SEEK: u64 = u64::MAX;
 /// Prebuffer threshold in samples (1.5 seconds at 44100 stereo).
 pub const PREBUFFER_SAMPLES: usize = 44100 * 2 * 3 / 2; // 132300
 
+/// Reduced prebuffer for subsequent track transitions (0.5 seconds at 44100 stereo).
+pub const PREBUFFER_SAMPLES_REDUCED: usize = 44100 * 2 / 2; // 44100
+
 /// Ring buffer capacity (6 seconds at 44100 stereo) so the decode thread
 /// can push well ahead of the consumer on slow disks or EQ-heavy tracks.
 pub const BUFFER_CAPACITY_SAMPLES: usize = 44100 * 2 * 6; // 529200
