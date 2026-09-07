@@ -100,11 +100,12 @@ jobs:
       - name: Derive tag
         id: set-tag
         run: |
+          short_sha="${GITHUB_SHA::7}"
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
             if [[ "${{ github.event.inputs.release_type }}" == "nightly" ]]; then
               tag="nightly"
-              version="$(grep -m1 '^version = ' Cargo.toml | sed 's/^version = "\(.*\)"/\1/')"
+              version="nightly-${short_sha}"
               nightly="true"
             else
               version="${{ github.event.inputs.version }}"
@@ -126,7 +127,7 @@ jobs:
             fi
             echo "skip=false" >> "$GITHUB_OUTPUT"
             tag="nightly"
-            version="$(grep -m1 '^version = ' Cargo.toml | sed 's/^version = "\(.*\)"/\1/')"
+            version="nightly-${short_sha}"
             nightly="true"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -750,7 +751,7 @@ jobs:
       - uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ needs.tag.outputs.tag }}
-          name: ${{ needs.tag.outputs.tag }}
+          name: ${{ needs.tag.outputs.version }}
           prerelease: ${{ needs.tag.outputs.nightly == 'true' }}
           generate_release_notes: true
           overwrite_files: true
