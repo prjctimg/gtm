@@ -17,19 +17,24 @@ fn locked_version(pkg: &str) -> Option<String> {
 }
 
 fn main() {
-    // Git commit SHA
-    let git_sha = Command::new("git")
-        .args(["rev-parse", "--short", "HEAD"])
-        .output()
+    // Git commit SHA - try env var first (for CI), then git rev-parse
+    let git_sha = std::env::var("VERGEN_GIT_SHA")
         .ok()
-        .and_then(|o| {
-            if o.status.success() {
-                String::from_utf8(o.stdout)
-                    .ok()
-                    .map(|s| s.trim().to_string())
-            } else {
-                None
-            }
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            Command::new("git")
+                .args(["rev-parse", "--short", "HEAD"])
+                .output()
+                .ok()
+                .and_then(|o| {
+                    if o.status.success() {
+                        String::from_utf8(o.stdout)
+                            .ok()
+                            .map(|s| s.trim().to_string())
+                    } else {
+                        None
+                    }
+                })
         })
         .unwrap_or_else(|| "unknown".into());
     println!("cargo:rustc-env=VERGEN_GIT_SHA={}", git_sha);

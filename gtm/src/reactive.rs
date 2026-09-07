@@ -138,8 +138,39 @@ pub fn derive_theme(base: &AppTheme, pal: &ReactivePalette, light: bool) -> AppT
     );
     t.elevated_bg = blend_colors(base.elevated_bg, primary_raw, 0.36);
     t.picker_bg = blend_colors(base.picker_bg, primary_raw, 0.36);
+    // Ensure fg_dim contrasts with the reactive bg for readability.
+    // Target luminance difference of at least 60 from bg luminance.
+    let bg_lum = luminance(&pal.primary);
+    let target_dim_lum = if bg_lum > 128.0 {
+        bg_lum - 60.0
+    } else {
+        bg_lum + 60.0
+    };
+    t.fg_dim = adjust_for_contrast(base.fg_dim, target_dim_lum);
     t.monochromatic = false;
     t
+}
+
+fn adjust_for_contrast(base_fg_dim: Color, target_lum: f32) -> Color {
+    match base_fg_dim {
+        Color::Rgb(r, g, b) => {
+            let current_lum = 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32;
+            let diff = (target_lum - current_lum).abs();
+            if diff >= 60.0 {
+                base_fg_dim
+            } else {
+                // Adjust toward target luminance
+                let factor = (target_lum - current_lum) / 255.0;
+                let t = factor.clamp(-0.4, 0.4);
+                if t >= 0.0 {
+                    blend_colors(base_fg_dim, Color::Rgb(255, 255, 255), t as f64)
+                } else {
+                    blend_colors(base_fg_dim, Color::Rgb(0, 0, 0), (-t) as f64)
+                }
+            }
+        }
+        _ => base_fg_dim,
+    }
 }
 
 fn luminance(c: &[u8; 3]) -> f32 {

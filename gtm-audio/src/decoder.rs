@@ -15,7 +15,7 @@ use rodio::Source;
 
 use gtm_core::global::{EQ_DEFAULT_Q, EQ_FREQUENCIES};
 
-use crate::buffer::{DecodeControl, PREBUFFER_SAMPLES, SharedRingBuffer};
+use crate::buffer::{DecodeControl, SharedRingBuffer};
 use crate::eq::EqGains;
 use crate::symphonia::SymphoniaSource;
 
@@ -171,6 +171,7 @@ pub struct DecodeThread {
     reverb_enabled: Arc<AtomicBool>,
     reverb_room_size: Arc<Mutex<f32>>,
     spectrum: Arc<Mutex<Vec<f32>>>,
+    prebuffer_samples: usize,
 }
 
 impl DecodeThread {
@@ -184,6 +185,7 @@ impl DecodeThread {
         reverb_enabled: Arc<AtomicBool>,
         reverb_room_size: Arc<Mutex<f32>>,
         spectrum: Arc<Mutex<Vec<f32>>>,
+        prebuffer_samples: usize,
     ) -> Self {
         Self {
             path,
@@ -194,6 +196,7 @@ impl DecodeThread {
             reverb_enabled,
             reverb_room_size,
             spectrum,
+            prebuffer_samples,
         }
     }
 
@@ -362,6 +365,7 @@ impl DecodeThread {
                                             &self.shared,
                                             &self.control,
                                             &mut prebuffered,
+                                            self.prebuffer_samples,
                                         );
                                         continue; // both channels written
                                     } else {
@@ -372,6 +376,7 @@ impl DecodeThread {
                                             &self.shared,
                                             &self.control,
                                             &mut prebuffered,
+                                            self.prebuffer_samples,
                                         );
                                         continue;
                                     }
@@ -412,7 +417,12 @@ impl DecodeThread {
                 }
                 spectrum_count += 1;
 
-                prebuffer_check(&self.shared, &self.control, &mut prebuffered);
+                prebuffer_check(
+                    &self.shared,
+                    &self.control,
+                    &mut prebuffered,
+                    self.prebuffer_samples,
+                );
             }
         }
 
@@ -420,8 +430,13 @@ impl DecodeThread {
     }
 }
 
-fn prebuffer_check(shared: &SharedRingBuffer, control: &DecodeControl, prebuffered: &mut bool) {
-    if !*prebuffered && shared.available() >= PREBUFFER_SAMPLES {
+fn prebuffer_check(
+    shared: &SharedRingBuffer,
+    control: &DecodeControl,
+    prebuffered: &mut bool,
+    prebuffer_samples: usize,
+) {
+    if !*prebuffered && shared.available() >= prebuffer_samples {
         *prebuffered = true;
         control.ready.store(true, Ordering::Release);
         log::info!(

@@ -87,6 +87,10 @@ pub enum KeyboardAction {
     QueueMoveDown,
     QueueMoveConfirm,
     QueueMoveCancel,
+
+    // Multiselect
+    MultiselectUp,
+    MultiselectDown,
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +215,21 @@ pub fn default_keybindings() -> Keybindings {
                 KeyCode::Down.into(),
                 BoundCommand {
                     action: KeyboardAction::MoveDown,
+                    contexts: vec![KeyContext::List, KeyContext::Normal],
+                },
+            ),
+            // Multiselect: Shift+Up/Down
+            (
+                KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT),
+                BoundCommand {
+                    action: KeyboardAction::MultiselectUp,
+                    contexts: vec![KeyContext::List, KeyContext::Normal],
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Down, KeyModifiers::SHIFT),
+                BoundCommand {
+                    action: KeyboardAction::MultiselectDown,
                     contexts: vec![KeyContext::List, KeyContext::Normal],
                 },
             ),
@@ -747,6 +766,8 @@ impl KeyboardAction {
             "focus_right" => KeyboardAction::FocusRight,
             "fetch_lyrics" | "lyrics" => KeyboardAction::FetchLyrics,
             "toggle_multiselect" | "multiselect" => KeyboardAction::ToggleMultiselect,
+            "multiselect_up" => KeyboardAction::MultiselectUp,
+            "multiselect_down" => KeyboardAction::MultiselectDown,
             "add_to_queue" | "enqueue" => KeyboardAction::AddToQueue,
             "add_to_playlist" => KeyboardAction::AddToPlaylist,
             "delete_from_list" => KeyboardAction::DeleteFromList,

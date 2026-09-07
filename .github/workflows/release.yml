@@ -182,13 +182,13 @@ jobs:
             platform: x86_64-linux
             container: debian:12
             family: debian
-            link_override: -C linker=clang
+            link_override: -C linker=gcc
             mold_arg: -C link-arg=-fuse-ld=mold
           - os: ubuntu-24.04-arm
             platform: aarch64-linux
             container: debian:12
             family: debian
-            link_override: -C linker=clang
+            link_override: -C linker=gcc
             mold_arg: -C link-arg=-fuse-ld=mold
           - os: macos-latest
             platform: aarch64-darwin
@@ -208,7 +208,7 @@ jobs:
             platform: x86_64-linux-arch
             container: archlinux:latest
             family: arch
-            link_override: -C linker=clang
+            link_override: -C linker=gcc
             mold_arg: -C link-arg=-fuse-ld=mold
           - os: ubuntu-24.04-arm
             platform: aarch64-linux-arch
@@ -217,13 +217,13 @@ jobs:
             # performs the Arch build via `docker run` (see build step).
             container: null
             family: arch-arm
-            link_override: -C linker=clang
+            link_override: -C linker=gcc
             mold_arg: -C link-arg=-fuse-ld=mold
           - os: ubuntu-22.04
             platform: x86_64-linux-musl
             container: alpine:3.22
             family: alpine
-            link_override: -C linker=clang
+            link_override: -C linker=gcc
             mold_arg: -C link-arg=-fuse-ld=mold
           - os: ubuntu-24.04-arm
             platform: aarch64-linux-musl
@@ -232,7 +232,7 @@ jobs:
             # performs the Alpine build via `docker run` (see build step).
             container: null
             family: alpine-arm
-            link_override: -C linker=clang
+            link_override: -C linker=gcc
             mold_arg: -C link-arg=-fuse-ld=mold
     steps:
       # Debian 12 / Alpine container jobs start from a bare image (no git,

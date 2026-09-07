@@ -7,7 +7,7 @@ arch="${3:?arch required}"
 
 cd /work
 
-export RUSTFLAGS="-C linker=clang -C link-arg=-fuse-ld=mold"
+export RUSTFLAGS="-C linker=gcc -C link-arg=-fuse-ld=mold"
 
 # On ARM64, pandoc is not in Arch Linux ARM repos; install binary before calling this script.
 # Skip pandoc in pacman install if already available (e.g., pre-installed on aarch64).

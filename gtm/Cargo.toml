@@ -30,6 +30,7 @@ tracing-subscriber = "0.3"
 toml = "0.8"
 libc = "0.2"
 webbrowser = "1"
+chrono = { version = "0.4", features = ["serde"] }
 rpassword = "7"
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls-native-roots"] }
 futures = "0.3"

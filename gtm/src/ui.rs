@@ -762,6 +762,7 @@ impl Render {
                     }
                     if has_progress {
                         info_constraints.push(Constraint::Length(1));
+                        info_constraints.push(Constraint::Length(1)); // Extra line for elapsed time
                     }
                     let info_chunks = Layout::default()
                         .direction(Direction::Vertical)
@@ -806,14 +807,20 @@ impl Render {
                             crate::footer::format_duration(pos),
                             crate::footer::format_duration(dur)
                         );
-                        let prog_para = Paragraph::new(Line::from(vec![
-                            Span::styled(
-                                progress_str,
-                                Style::default().fg(app.theme.secondary_accent),
-                            ),
-                            Span::styled(time_str, Style::default().fg(app.theme.fg_dim)),
-                        ]));
+                        // Progress bar on first line
+                        let prog_para = Paragraph::new(Line::from(vec![Span::styled(
+                            progress_str,
+                            Style::default().fg(app.theme.secondary_accent),
+                        )]));
                         f.render_widget(prog_para, info_chunks[info_row]);
+                        // Elapsed time on second line
+                        if info_row + 1 < info_chunks.len() {
+                            let time_para = Paragraph::new(Line::from(vec![Span::styled(
+                                time_str,
+                                Style::default().fg(app.theme.fg_dim),
+                            )]));
+                            f.render_widget(time_para, info_chunks[info_row + 1]);
+                        }
                     }
                 } else if inner.width >= 12 {
                     // Compact layout still keeps the cover left with the
@@ -1057,6 +1064,8 @@ impl Render {
                 for (i, tr) in tracks[app.list_scroll..end].iter().enumerate() {
                     let real_i = app.list_scroll + i;
                     let is_sel = real_i == sel && !left_focus;
+                    let is_multiselected =
+                        app.multiselect_mode && app.selected_indices.contains(&real_i);
                     let label = tr.name.clone();
                     let avail = pane_w.saturating_sub(2);
                     let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
@@ -1070,6 +1079,8 @@ impl Render {
                         Style::default()
                             .fg(app.theme.selection_fg_readable())
                             .bg(app.theme.selection_bg)
+                    } else if is_multiselected {
+                        Style::default().bg(app.theme.warning).fg(app.theme.bg)
                     } else {
                         Style::default().fg(app.theme.fg)
                     };
@@ -1080,7 +1091,12 @@ impl Render {
                     } else {
                         Style::default().fg(app.theme.fg_dim)
                     };
-                    let head = format!("{prefix}{:<width$}", display_label, width = name_pad);
+                    let checkbox = if is_multiselected { "☑ " } else { "" };
+                    let head = format!(
+                        "{prefix}{checkbox}{:<width$}",
+                        display_label,
+                        width = name_pad.saturating_sub(checkbox.len())
+                    );
                     let tail = format!("  {:>6}", dur);
                     let pad = row_pad(&format!("{head}{tail}"), panes[1].width);
                     lines.push(Line::from(vec![
@@ -1128,11 +1144,14 @@ impl Render {
                     let is_current =
                         app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
                     let is_sel = real_i == sel && !left_focus;
+                    let is_multiselected =
+                        app.multiselect_mode && app.selected_indices.contains(&real_i);
                     let label = track.title.clone();
                     let avail = pane_w.saturating_sub(2);
                     let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
                     let prefix = if is_current { "\u{25b6} " } else { "  " };
-                    let row = format!("{}{}", prefix, display_label);
+                    let checkbox = if is_multiselected { "☑ " } else { "" };
+                    let row = format!("{}{}{}", prefix, checkbox, display_label);
                     let style = if is_sel {
                         Style::default()
                             .fg(app.theme.selection_fg_readable())
@@ -1141,6 +1160,8 @@ impl Render {
                         Style::default()
                             .fg(app.theme.accent)
                             .add_modifier(Modifier::BOLD)
+                    } else if is_multiselected {
+                        Style::default().bg(app.theme.warning).fg(app.theme.bg)
                     } else {
                         Style::default()
                     };
@@ -1341,11 +1362,14 @@ impl Render {
                 let real_i = app.list_scroll + i;
                 let is_current = app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
                 let is_sel = real_i == sel && !left_focus;
+                let is_multiselected =
+                    app.multiselect_mode && app.selected_indices.contains(&real_i);
                 let label = track.title.clone();
                 let avail = pane_w.saturating_sub(2);
                 let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
                 let prefix = if is_current { "\u{25b6} " } else { "  " };
-                let row = format!("{}{}", prefix, display_label);
+                let checkbox = if is_multiselected { "☑ " } else { "" };
+                let row = format!("{}{}{}", prefix, checkbox, display_label);
                 let style = if is_sel {
                     Style::default()
                         .fg(app.theme.selection_fg_readable())
@@ -1354,6 +1378,8 @@ impl Render {
                     Style::default()
                         .fg(app.theme.accent)
                         .add_modifier(Modifier::BOLD)
+                } else if is_multiselected {
+                    Style::default().bg(app.theme.warning).fg(app.theme.bg)
                 } else {
                     Style::default()
                 };
@@ -1721,6 +1747,8 @@ impl Render {
             for (real_i, track) in rows[win_start..end].iter().enumerate() {
                 let real_i = win_start + real_i;
                 let is_sel = real_i == sel;
+                let is_multiselected =
+                    app.multiselect_mode && app.selected_indices.contains(&real_i);
                 let prefix = if is_sel { " > " } else { "   " };
                 let label = if track.title.is_empty() {
                     std::path::Path::new(&track.path)
@@ -1731,11 +1759,18 @@ impl Render {
                     track.title.clone()
                 };
                 let display = scroll_text(&label, avail_disp, app.footer_title_scroll, is_sel);
-                let row = format!("{prefix}{:<width$}", display, width = avail_disp);
+                let checkbox = if is_multiselected { "☑ " } else { "" };
+                let row = format!(
+                    "{prefix}{checkbox}{:<width$}",
+                    display,
+                    width = avail_disp.saturating_sub(checkbox.len())
+                );
                 let style = if is_sel {
                     Style::default()
                         .fg(app.theme.selection_fg_readable())
                         .bg(app.theme.selection_bg)
+                } else if is_multiselected {
+                    Style::default().bg(app.theme.warning).fg(app.theme.bg)
                 } else {
                     Style::default().fg(app.theme.fg)
                 };
@@ -2161,6 +2196,9 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
 
     Render::notification_overlay(f, area, app);
 
+    // Render pending prompt if any
+    Render::pending_prompt(f, area, app);
+
     if app.show_health_panel {
         Render::health_panel(f, area, app);
     }
@@ -2199,6 +2237,62 @@ fn dim_background(f: &mut ratatui::Frame, area: Rect) {
                 cell.set_bg(bg);
             }
         }
+    }
+}
+
+fn render_pending_prompt(f: &mut ratatui::Frame, area: Rect, app: &crate::app::App) {
+    let Some(prompt) = &app.pending_prompt else {
+        return;
+    };
+    let theme = &app.theme;
+    // Dim the background
+    dim_background(f, area);
+
+    // Calculate prompt area
+    let prompt_w = (area.width * 3 / 4).clamp(40, 60);
+    let prompt_h = 5u16;
+    let prompt_x = (area.width - prompt_w) / 2;
+    let prompt_y = (area.height - prompt_h) / 2;
+
+    let prompt_area = Rect {
+        x: prompt_x,
+        y: prompt_y,
+        width: prompt_w,
+        height: prompt_h,
+    };
+
+    // Background
+    let bg = Block::default()
+        .style(Style::default().bg(theme.elevated_bg))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.accent));
+    f.render_widget(bg, prompt_area);
+
+    let inner = prompt_area.inner(Margin {
+        horizontal: 2,
+        vertical: 1,
+    });
+
+    // Message
+    let lines = vec![
+        Line::from(Span::styled(
+            prompt.message.clone(),
+            Style::default().fg(theme.fg_bright),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "[y] Yes  [n] No  [Esc] Cancel",
+            Style::default().fg(theme.fg_dim),
+        )),
+    ];
+
+    let para = Paragraph::new(lines).alignment(Alignment::Center);
+    f.render_widget(para, inner);
+}
+
+impl Render {
+    pub fn pending_prompt(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        render_pending_prompt(f, area, app);
     }
 }
 
@@ -3884,7 +3978,56 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
     }
 }
 
-pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str, &str)] = &[
+pub const COMMAND_PALETTE_COMMANDS_MDI: &[(&str, &str, &str)] = &[
+    ("\u{f04ba} Play/Pause", "Space", "play/pause"),
+    ("\u{f04ad} Next Track", "n", "next track"),
+    ("\u{f04a8} Prev Track", "p", "prev track"),
+    ("\u{f04cd} Stop", "s", "stop"),
+    ("\u{f04e2} Seek Forward", ".", "seek forward"),
+    ("\u{f04e0} Seek Backward", ",", "seek backward"),
+    ("\u{f057e} Volume Up", "+", "volume up"),
+    ("\u{f057d} Volume Down", "-", "volume down"),
+    ("\u{f0580} Mute: Toggle", "m", "mute"),
+    ("\u{f0577} Repeat Mode", "r", "repeat"),
+    ("\u{f0578} Shuffle Library", "S", "shuffle"),
+    ("\u{f0493} Toggle Favourite", "f", "toggle favourite"),
+    ("\u{f057a} Search Track", "/", "search"),
+    ("\u{f057a} Search Library", "Alt+/", "search lib"),
+    ("\u{f056e} Queue", "Alt+Q", "queue"),
+    ("\u{f167} YouTube Search", "Alt+Y", "youtube"),
+    ("\u{f1bc} Spotify", "Alt+S", "spotify"),
+    ("\u{f1dd} Fetch Lyrics", "l", "fetch lyrics"),
+    ("\u{f156} Clear Queue", "D", "clear queue"),
+    ("\u{f285} Multiselect", "v", "multiselect"),
+    ("\u{f285} Multiselect Up", "Shift+Up", "multiselect up"),
+    (
+        "\u{f285} Multiselect Down",
+        "Shift+Down",
+        "multiselect down",
+    ),
+    ("\u{f055e} Add to Queue", "a", "add to queue"),
+    ("\u{f055e} Add to Playlist", "A", "add to playlist"),
+    ("\u{f156} Delete from List", "x", "delete from list"),
+    ("\u{f045d} Jump to End", "G", "jump to end"),
+    ("\u{f0493} Edit Metadata", "e", "edit metadata"),
+    ("\u{f0493} Tab Cycle", "Tab", "tab cycle"),
+    ("\u{f0493} Prev Tab", "Shift+Tab", "prev tab"),
+    ("\u{f0493} Settings", "Alt+,", "settings"),
+    ("\u{f0570} Equalizer", "Alt+E", "eq"),
+    ("\u{f04b2} Sleep Timer", "Alt+Z", "sleeptimer"),
+    ("\u{f0493} Theme", "Alt+C", "themepicker"),
+    ("\u{f051d} Notifications", "Alt+N", "notifications"),
+    ("\u{f0493} Progress Style", "Alt+P", "progress style"),
+    ("\u{f0570} Visualizer: Toggle", "Ctrl+V", "visualizer"),
+    ("\u{f0570} Visualizer Preset", "Alt+V", "visualizer preset"),
+    ("\u{f04db} Quit", "q", "quit"),
+    ("\u{f04db} Quit Daemon", "Q/Ctrl+Q", "quit daemon"),
+    ("\u{f051d} Toggle Help", "?", "toggle help"),
+    ("\u{f051d} Hide Help Bar", "Ctrl+H", "hide help bar"),
+    ("\u{f0493} Health Check", "Alt+H", "health check"),
+];
+
+pub const COMMAND_PALETTE_COMMANDS_EMOJI: &[(&str, &str, &str)] = &[
     ("\u{25b6}\u{fe0f} Play/Pause", "Space", "play/pause"),
     ("\u{23ed}\u{fe0f} Next Track", "n", "next track"),
     ("\u{23ee}\u{fe0f} Prev Track", "p", "prev track"),
@@ -3905,6 +4048,16 @@ pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str, &str)] = &[
     ("\u{1f4dd} Fetch Lyrics", "l", "fetch lyrics"),
     ("\u{1f5d1} Clear Queue", "D", "clear queue"),
     ("\u{2611}\u{fe0f} Multiselect", "v", "multiselect"),
+    (
+        "\u{2611}\u{fe0f} Multiselect Up",
+        "Shift+Up",
+        "multiselect up",
+    ),
+    (
+        "\u{2611}\u{fe0f} Multiselect Down",
+        "Shift+Down",
+        "multiselect down",
+    ),
     ("\u{2795} Add to Queue", "a", "add to queue"),
     ("\u{1f4dc} Add to Playlist", "A", "add to playlist"),
     ("\u{274c} Delete from List", "x", "delete from list"),
@@ -3930,10 +4083,19 @@ pub const COMMAND_PALETTE_COMMANDS: &[(&str, &str, &str)] = &[
 
 pub const COMMAND_GROUPS: &[(&str, usize)] = &[
     ("Playback", 12),
-    ("Library & Queue", 13),
+    ("Library & Queue", 15),
     ("View & Overlays", 11),
     ("System", 5),
 ];
+
+/// Get the appropriate command palette commands based on icon style.
+pub fn command_palette_commands(icon_style: &str) -> &[(&str, &str, &str)] {
+    if icon_style == "mdi" {
+        COMMAND_PALETTE_COMMANDS_MDI
+    } else {
+        COMMAND_PALETTE_COMMANDS_EMOJI
+    }
+}
 
 pub const HELP_LINES: &[(&str, &str)] = &[
     ("topic", "── Playback ──"),
@@ -3973,6 +4135,8 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   x           Delete from List"),
     ("", "   D           Clear Queue"),
     ("", "   v           Multiselect"),
+    ("", "   Shift+Up    Multiselect Up"),
+    ("", "   Shift+Down  Multiselect Down"),
     ("", "   e           Edit Metadata"),
     ("topic", "── System ──"),
     ("", "   q           Quit"),
@@ -4496,7 +4660,7 @@ impl Pickers {
     }
 
     fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let commands = COMMAND_PALETTE_COMMANDS;
+        let commands = crate::ui::command_palette_commands(&app.icon_style);
 
         let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
         let q = query.to_lowercase();
@@ -4689,7 +4853,7 @@ impl Pickers {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let preview_height: u16 = 4;
+        let preview_height: u16 = 5;
         let list_h = inner.height.saturating_sub(preview_height);
         let list_area = Rect {
             x: inner.x,
@@ -4715,7 +4879,7 @@ impl Pickers {
         };
 
         let mut list_items: Vec<ListItem> = Vec::new();
-        for (i, (name, desc, _eq)) in presets
+        for (i, (name, _desc, _eq)) in presets
             .iter()
             .enumerate()
             .skip(scroll_start)
@@ -4732,19 +4896,17 @@ impl Pickers {
             } else {
                 Style::default()
             };
-            let mut spans = vec![Span::styled(format!("{prefix}{}", name), Style::default())];
-            spans.push(Span::styled(
-                format!("  \u{2014} {desc}"),
-                Style::default().fg(app.theme.fg_dim),
-            ));
+            let spans = vec![Span::styled(format!("{prefix}{}", name), Style::default())];
             list_items.push(ListItem::new(Line::from(spans)).style(style));
         }
 
         let list = List::new(list_items);
         f.render_widget(list, list_area);
 
-        if preview_area.height >= 3 {
-            let selected_name = presets.get(sel).map(|p| p.0).unwrap_or("");
+        if preview_area.height >= 4 {
+            let selected_preset = presets.get(sel);
+            let selected_name = selected_preset.map(|p| p.0).unwrap_or("");
+            let selected_desc = selected_preset.map(|p| p.1).unwrap_or("");
             let rule = Line::from(vec![
                 Span::styled(
                     "\u{2500}".to_string(),
@@ -4776,7 +4938,7 @@ impl Pickers {
                 },
             );
 
-            let selected_eq = presets.get(sel).map(|p| p.2);
+            let selected_eq = selected_preset.map(|p| p.2);
 
             let mut preview_spans = Vec::new();
             if let Some(eq) = selected_eq {
@@ -4791,6 +4953,22 @@ impl Pickers {
                     height: 1,
                 },
             );
+
+            // Render description below visualization
+            if !selected_desc.is_empty() {
+                f.render_widget(
+                    Paragraph::new(Line::from(vec![Span::styled(
+                        format!("  {selected_desc}"),
+                        Style::default().fg(app.theme.fg_dim),
+                    )])),
+                    Rect {
+                        x: preview_area.x,
+                        y: preview_area.y + 2,
+                        width: preview_area.width,
+                        height: 1,
+                    },
+                );
+            }
         }
     }
 
