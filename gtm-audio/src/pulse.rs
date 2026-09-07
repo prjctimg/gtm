@@ -276,6 +276,7 @@ impl PulseAudioMixer {
             .unwrap_or(0.0))
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_decode(
         path: &str,
         ring: &SharedRingBuffer,
@@ -284,6 +285,7 @@ impl PulseAudioMixer {
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
         spectrum: &Arc<Mutex<Vec<f32>>>,
+        prebuffer_samples: usize,
     ) -> AudioResult<(Arc<DecodeControl>, std::thread::JoinHandle<()>)> {
         let control = Arc::new(DecodeControl::new());
         let thread = DecodeThread::new(
@@ -295,6 +297,7 @@ impl PulseAudioMixer {
             reverb_enabled.clone(),
             reverb_room_size.clone(),
             spectrum.clone(),
+            prebuffer_samples,
         );
         let handle = thread.spawn().map_err(AudioError::DecodeError)?;
 
@@ -363,6 +366,7 @@ impl Mixer for PulseAudioMixer {
             &self.reverb_enabled,
             &self.reverb_room_size,
             &self.spectrum,
+            PREBUFFER_SAMPLES,
         )?;
 
         self.active_mut().control = Some(control);
@@ -454,6 +458,7 @@ impl Mixer for PulseAudioMixer {
             &self.reverb_enabled,
             &self.reverb_room_size,
             &self.spectrum,
+            PREBUFFER_SAMPLES,
         )?;
 
         self.standby_mut().control = Some(control);
