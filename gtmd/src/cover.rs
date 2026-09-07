@@ -129,7 +129,7 @@ impl CoverCache {
         }
     }
 
-    pub fn cover_too_small(data: &[u8]) -> bool {
+    pub fn too_small(data: &[u8]) -> bool {
         match image::load_from_memory(data) {
             Ok(img) => img.width() < MIN_COVER_DIM || img.height() < MIN_COVER_DIM,
             Err(_) => true,
@@ -140,7 +140,7 @@ impl CoverCache {
     /// whole app: centre-cropped (never distorted) 500x500 JPEG at quality 90.
     /// Returns `None` when the input can't be decoded so callers can keep the
     /// original bytes.
-    pub fn normalize_cover(data: &[u8]) -> Option<Vec<u8>> {
+    pub fn normalize(data: &[u8]) -> Option<Vec<u8>> {
         let img = image::load_from_memory(data).ok()?;
         if img.width() == 0 || img.height() == 0 {
             return None;
@@ -168,11 +168,11 @@ impl CoverCache {
 
     /// Insert externally-provided cover bytes (e.g. from Spotify) into both
     /// caches so a later fetch is served from disk/memory instantly.
-    pub async fn put_cover(&self, artist: &str, album: &str, bytes: Vec<u8>) {
-        if bytes.is_empty() || Self::cover_too_small(&bytes) {
+    pub async fn put(&self, artist: &str, album: &str, bytes: Vec<u8>) {
+        if bytes.is_empty() || Self::too_small(&bytes) {
             return;
         }
-        let bytes = Self::normalize_cover(&bytes).unwrap_or(bytes);
+        let bytes = Self::normalize(&bytes).unwrap_or(bytes);
         let artist = if artist.is_empty() {
             "Unknown Artist"
         } else {
@@ -223,7 +223,7 @@ impl CoverCache {
         self.cache_dir.join("covers").join(format!("{key}.jpg"))
     }
 
-    pub async fn get_cover(
+    pub async fn get(
         &mut self,
         artist: &str,
         album: &str,
@@ -244,7 +244,7 @@ impl CoverCache {
         {
             let mut mem = self.memory.lock().await;
             if let Some(c) = mem.get(&key)
-                && !Self::cover_too_small(&c.data)
+                && !Self::too_small(&c.data)
             {
                 return Some(c.clone());
             }
@@ -254,7 +254,7 @@ impl CoverCache {
         if disk.exists()
             && let Ok(data) = fs::read(&disk)
         {
-            if !Self::cover_too_small(&data) {
+            if !Self::too_small(&data) {
                 let cd = CoverData {
                     mime: "image/jpeg".to_string(),
                     data,
@@ -304,7 +304,7 @@ impl CoverCache {
         let mb = crate::musicbrainz::MusicBrainz::new();
         let found = mb.find_album(artist, album).await.ok().flatten()?;
         let bytes = mb.download_cover(&found.release_group_id).await?;
-        let bytes = Self::normalize_cover(&bytes).unwrap_or(bytes);
+        let bytes = Self::normalize(&bytes).unwrap_or(bytes);
         let disk = self.disk_path(key);
         self.store_disk(&disk, &bytes);
         Some(CoverData {
@@ -437,7 +437,7 @@ impl CoverCache {
             }
         };
 
-        let img_bytes = Self::normalize_cover(&img_bytes).unwrap_or(img_bytes);
+        let img_bytes = Self::normalize(&img_bytes).unwrap_or(img_bytes);
 
         let disk = self.disk_path(key);
         if let Some(parent) = disk.parent() {

@@ -398,7 +398,7 @@ impl Cmd {
                 Cmd::play(inner, &path, 0.0, false).await
             } else {
                 let state = inner.state.read().await;
-                let (queue, cursor) = queue::visible_queue(&state);
+                let (queue, cursor) = queue::visible(&state);
                 drop(state);
                 if !queue.is_empty() {
                     let idx = (cursor as usize).min(queue.len() - 1);
@@ -794,7 +794,7 @@ impl Cmd {
         preset: EqPreset,
     ) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
-        state.eq_preset = preset;
+        state.audio.eq_preset = preset;
         state.version += 1;
         drop(state);
         inner.mixer.lock().await.set_eq_preset(&preset);
@@ -808,7 +808,7 @@ impl Cmd {
         enabled: bool,
     ) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
-        state.eq_enabled = enabled;
+        state.audio.eq_enabled = enabled;
         state.version += 1;
         drop(state);
         inner.mixer.lock().await.set_eq_enabled(enabled);
@@ -823,7 +823,7 @@ impl Cmd {
         room_size: f32,
     ) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
-        state.reverb = ReverbConfig { enabled, room_size };
+        state.audio.reverb = ReverbConfig { enabled, room_size };
         state.version += 1;
         drop(state);
         inner
@@ -938,7 +938,7 @@ impl Cmd {
     pub async fn get_status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let state = inner.state.read().await;
         let mut state_clone = state.clone();
-        let (queue, cursor) = queue::visible_queue(&state);
+        let (queue, cursor) = queue::visible(&state);
         state_clone.queue = queue;
         state_clone.queue_cursor = cursor;
         drop(state);
@@ -1259,7 +1259,7 @@ impl Spotify {
             let was_empty = {
                 let mut state = inner.state.write().await;
                 let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
-                let added = queue::queue_add(&mut state, &uri, None);
+                let added = queue::add(&mut state, &uri, None);
                 if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == added.path) {
                     entry.title = spotify_title.clone();
                     entry.artist = spotify_artist.clone();
@@ -1280,7 +1280,7 @@ impl Spotify {
                 let mut guard = inner.cover_cache().await;
                 if let Some(ref mut cc) = *guard {
                     let _ = cc
-                        .get_cover(
+                        .get(
                             &spotify_artist,
                             &spotify_album,
                             inner.effective_cover_provider().await,
@@ -1353,7 +1353,7 @@ impl Spotify {
             let mut state = inner.state.write().await;
             state.fallback_disabled = false;
             let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
-            let added = queue::queue_add(&mut state, &path, None);
+            let added = queue::add(&mut state, &path, None);
             if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == added.path) {
                 entry.title = spotify_title.clone();
                 entry.artist = spotify_artist.clone();
@@ -1370,7 +1370,7 @@ impl Spotify {
             let mut guard = inner.cover_cache().await;
             if let Some(ref mut cc) = *guard {
                 let _ = cc
-                    .get_cover(
+                    .get(
                         &spotify_artist,
                         &spotify_album,
                         inner.effective_cover_provider().await,
@@ -1458,7 +1458,7 @@ impl Spotify {
             let mut state = inner.state.write().await;
             state.fallback_disabled = false;
             let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
-            let added = queue::queue_add(&mut state, &path, None);
+            let added = queue::add(&mut state, &path, None);
             if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == added.path) {
                 entry.title = spotify_title.clone();
                 entry.artist = spotify_artist.clone();
@@ -1475,7 +1475,7 @@ impl Spotify {
             let mut guard = inner.cover_cache().await;
             if let Some(ref mut cc) = *guard {
                 let _ = cc
-                    .get_cover(
+                    .get(
                         &spotify_artist,
                         &spotify_album,
                         inner.effective_cover_provider().await,
@@ -1578,7 +1578,7 @@ impl Queue {
         match action {
             QueueAction::List => {
                 let state = inner.state.read().await;
-                let (queue, cursor) = queue::visible_queue(&state);
+                let (queue, cursor) = queue::visible(&state);
                 drop(state);
                 Ok(DaemonRes::QueueState { queue, cursor })
             }
@@ -1586,7 +1586,7 @@ impl Queue {
                 Daemon::clear_history(inner).await;
                 {
                     let mut state = inner.state.write().await;
-                    queue::queue_clear(&mut state);
+                    queue::clear(&mut state);
                 }
                 Daemon::push_queue_state(inner).await;
                 Daemon::save_state(inner);
@@ -1595,7 +1595,7 @@ impl Queue {
             QueueAction::Remove { index } => {
                 {
                     let mut state = inner.state.write().await;
-                    queue::queue_remove(&mut state, *index);
+                    queue::remove(&mut state, *index);
                 }
                 Daemon::push_queue_state(inner).await;
                 Daemon::save_state(inner);
@@ -1604,7 +1604,7 @@ impl Queue {
             QueueAction::Move { from, to } => {
                 {
                     let mut state = inner.state.write().await;
-                    queue::queue_move(&mut state, *from, *to);
+                    queue::move_track(&mut state, *from, *to);
                 }
                 Daemon::push_queue_state(inner).await;
                 Daemon::save_state(inner);
@@ -1625,7 +1625,7 @@ impl Queue {
                     let mut state = inner.state.write().await;
                     state.fallback_disabled = false;
                     let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
-                    queue::queue_add_many(&mut state, &expanded, *position);
+                    queue::add_many(&mut state, &expanded, *position);
                     drop(state);
                     w
                 };
@@ -1640,7 +1640,7 @@ impl Queue {
                 Daemon::clear_history(inner).await;
                 {
                     let mut state = inner.state.write().await;
-                    queue::queue_set(&mut state, paths, *start_idx);
+                    queue::set(&mut state, paths, *start_idx);
                 }
                 Daemon::push_queue_state(inner).await;
                 Daemon::save_state(inner);
@@ -2056,7 +2056,7 @@ impl Cover {
         {
             if let Some(ref path) = track.cover_path
                 && let Ok(data) = tokio::fs::read(path).await
-                && !crate::cover::CoverCache::cover_too_small(&data)
+                && !crate::cover::CoverCache::too_small(&data)
             {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
                 return Ok(DaemonRes::CoverArt { data: Some(b64) });
@@ -2067,7 +2067,7 @@ impl Cover {
             for ext in ["jpg", "jpeg", "png", "webp"] {
                 let sidecar = parent.join(format!("{}.{}", stem.to_string_lossy(), ext));
                 if let Ok(data) = tokio::fs::read(&sidecar).await
-                    && !crate::cover::CoverCache::cover_too_small(&data)
+                    && !crate::cover::CoverCache::too_small(&data)
                 {
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
                     return Ok(DaemonRes::CoverArt { data: Some(b64) });
@@ -2126,14 +2126,14 @@ impl Cover {
                     .ok()
                     .flatten();
                     if let Some(bytes) = bytes {
-                        cache.put_cover(&artist, &album, bytes.clone()).await;
+                        cache.put(&artist, &album, bytes.clone()).await;
                         let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
                         return Ok(DaemonRes::CoverArt { data: Some(b64) });
                     }
                 }
                 let cover = tokio::time::timeout(
                     Duration::from_secs(5),
-                    cache.get_cover(&artist, &album, provider),
+                    cache.get(&artist, &album, provider),
                 )
                 .await
                 .ok()
@@ -3259,7 +3259,7 @@ impl Daemon {
 
     async fn push_queue_state(inner: &DaemonInner) {
         let state = inner.state.read().await;
-        let (queue, cursor) = queue::visible_queue(&state);
+        let (queue, cursor) = queue::visible(&state);
         drop(state);
         Self::push_event(inner, DaemonEvent::QueueChanged { queue, cursor });
     }
@@ -3941,7 +3941,7 @@ fn run_covers_sync(
         if rt
             .block_on(tokio::time::timeout(
                 std::time::Duration::from_secs(12),
-                cache.get_cover(artist, album, provider),
+                cache.get(artist, album, provider),
             ))
             .ok()
             .flatten()
