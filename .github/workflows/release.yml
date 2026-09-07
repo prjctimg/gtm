@@ -101,11 +101,15 @@ jobs:
         id: set-tag
         run: |
           short_sha="${GITHUB_SHA::7}"
+          manifest_version="$(grep -m1 '^version = ' Cargo.toml | sed 's/^version = "\(.*\)"/\1/')"
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
             if [[ "${{ github.event.inputs.release_type }}" == "nightly" ]]; then
+              # Nightly package version: <manifest>+<sha>+nightly. Starts with a
+              # digit and uses only +/. — valid for .deb, .rpm, .apk and .pkg.tar.zst
+              # control fields, and unique per commit so no stale assets collide.
               tag="nightly"
-              version="nightly-${short_sha}"
+              version="${manifest_version}+${short_sha}+nightly"
               nightly="true"
             else
               version="${{ github.event.inputs.version }}"
@@ -127,7 +131,7 @@ jobs:
             fi
             echo "skip=false" >> "$GITHUB_OUTPUT"
             tag="nightly"
-            version="nightly-${short_sha}"
+            version="${manifest_version}+${short_sha}+nightly"
             nightly="true"
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
@@ -138,6 +142,19 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "nightly=${nightly}" >> "$GITHUB_OUTPUT"
+
+      - name: Validate release version
+        if: steps.set-tag.outputs.skip != 'true'
+        run: |
+          version="${{ steps.set-tag.outputs.version }}"
+          # Guard the package-control version so a malformed string can never
+          # fail a build job again: must start with a digit and use only
+          # [0-9A-Za-z.+~] (no '-' — rpm splits Version-Release on it). A
+          # version that sorts as a valid deb/rpm/apk version is required.
+          if ! [[ "$version" =~ ^[0-9][0-9A-Za-z.+~]*$ ]]; then
+            echo "::error::invalid release version '$version' — must start with a digit and contain only [0-9A-Za-z.+~]" >&2
+            exit 1
+          fi
 
       - name: Capture previous nightly SHA
         if: steps.set-tag.outputs.skip != 'true'
