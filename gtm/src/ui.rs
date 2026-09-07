@@ -616,7 +616,7 @@ impl Render {
             28u16.min(area.width.saturating_sub(2))
         };
 
-        let lyrics_takes_full_height = app.show_lyrics && !is_narrow;
+        let lyrics_takes_full_height = app.lyrics.show && !is_narrow;
 
         let (left_area, lyrics_area) = if lyrics_takes_full_height {
             let lyrics_w = area.width / 3;
@@ -965,7 +965,7 @@ impl Render {
                     "Albums" => app.unique_albums().len(),
                     "Artists" => app.unique_artists().len(),
                     "Playlists" => app.playlist_cache.len(),
-                    "Spotify" => app.spotify_playlists.len(),
+                    "Spotify" => app.spotify.playlists.len(),
                     _ => 0,
                 };
                 let label = if count > 0 {
@@ -1041,7 +1041,7 @@ impl Render {
         let mut lib_total_rows: usize = 0;
         let (right_lines, _stats_line) = if app.browse_detail.is_some() && app.library_category == 5
         {
-            let tracks = &app.spotify_playlist_tracks_cache;
+            let tracks = &app.spotify.playlist_tracks_cache;
             let total_len = tracks.len();
             let st_line = format!(" {} {} ", total_len, plural(total_len, "track", "tracks"));
             let reserve = 3usize;
@@ -1286,7 +1286,7 @@ impl Render {
                 (lines, st_line)
             }
         } else if app.library_category == 5 {
-            let playlists = &app.spotify_playlists;
+            let playlists = &app.spotify.playlists;
             let total_len = playlists.len();
             let sel = app.list_pos().min(total_len.saturating_sub(1));
             let st_line = format!(
@@ -1405,7 +1405,7 @@ impl Render {
             // info block is repurposed to show the currently-highlighted list
             // contents (the selected row and its neighbours) instead of the
             // now-playing track card.
-            if is_narrow && app.show_lyrics {
+            if is_narrow && app.lyrics.show {
                 Render::highlighted_list_in_info(f, left_track_info_area, app);
             } else {
                 Render::track_info_in_pane(f, left_track_info_sep_area, left_track_info_area, app);
@@ -1462,7 +1462,7 @@ impl Render {
 
         if let Some(lyrics_area) = lyrics_area {
             Render::lyrics_pane(f, lyrics_area, app);
-        } else if app.show_lyrics && is_narrow {
+        } else if app.lyrics.show && is_narrow {
             // Narrow screens: lyrics act as a tab replacing the list/queue
             // area entirely ('l' toggles, Esc/Back returns to the list).
             let base = panes
@@ -1543,11 +1543,11 @@ impl Render {
     }
 
     fn lyrics_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let inner = Render::pane_header(f, area, app, "LYRICS", app.lyrics_pane_focus, false, true);
+        let inner = Render::pane_header(f, area, app, "LYRICS", app.lyrics.pane_focus, false, true);
         fill_pane(f, inner, app);
 
-        let Some(ref lyrics) = app.current_lyrics else {
-            if app.lyrics_fetching {
+        let Some(ref lyrics) = app.lyrics.current else {
+            if app.lyrics.fetching {
                 let mut spans = vec![Span::styled(
                     "Fetching lyrics ",
                     Style::default().fg(app.theme.accent),
@@ -1643,7 +1643,7 @@ impl Render {
         let total = lyrics.lines.len();
         let width = lyrics_inner.width.max(1) as usize;
         let synced = crate::app::lyrics_are_synced(&lyrics.lines);
-        let anchor = app.lyrics_scroll.min(total.saturating_sub(1));
+        let anchor = app.lyrics.scroll.min(total.saturating_sub(1));
         let mut row_offsets = Vec::with_capacity(total);
         let mut text = Vec::with_capacity(total);
         let mut cumulative = 0usize;
@@ -1698,7 +1698,7 @@ impl Render {
         let bottom = total_rows.saturating_sub(visible);
         let scroll_display = if total_rows <= visible {
             0
-        } else if app.lyrics_manual_scroll {
+        } else if app.lyrics.manual_scroll {
             if anchor == total - 1 {
                 bottom
             } else {
@@ -2409,13 +2409,14 @@ impl Pickers {
         match top.id {
             PickerId::Queue => {
                 let w = app
-                    .queue_cache
+                    .queue
+                    .cache
                     .iter()
                     .map(|t| t.artist.len() as u16 + t.title.len() as u16 + 14)
                     .max()
                     .unwrap_or(46)
                     .clamp(44, 72);
-                let h = (app.queue_cache.len() as u16 + 6).clamp(18, 30);
+                let h = (app.queue.cache.len() as u16 + 6).clamp(18, 30);
                 (w, h)
             }
             PickerId::YTSearch => {
@@ -2514,7 +2515,7 @@ impl Pickers {
             PickerId::SearchLibrary => Self::render_search_library_picker(f, picker_area, app),
             PickerId::About => Self::render_about_picker(f, picker_area, app),
             PickerId::SleepTimer => Self::render_sleep_timer_picker(f, picker_area, app),
-            PickerId::CommandPalette => Self::render_command_palette_picker(f, picker_area, app),
+            PickerId::CommandPalette => Self::command_palette_picker(f, picker_area, app),
             PickerId::Equalizer => Self::render_equalizer_picker(f, picker_area, app),
             PickerId::ThemePicker => Self::render_theme_picker_picker(f, picker_area, app),
             PickerId::Help => Self::render_help_picker(f, picker_area, app),
@@ -2543,9 +2544,9 @@ impl Pickers {
                 let inner = block.inner(picker_area);
                 f.render_widget(block, picker_area);
 
-                if app.spotify_oauth_pending || app.spotify_oauth_error.is_some() {
+                if app.spotify.oauth_pending || app.spotify.oauth_error.is_some() {
                     let mut lines = Vec::new();
-                    if app.spotify_oauth_pending {
+                    if app.spotify.oauth_pending {
                         lines.push(Line::from(Span::styled(
                             "Waiting for you to finish login in your browser…",
                             Style::default().fg(app.theme.fg_bright),
@@ -2561,14 +2562,14 @@ impl Pickers {
                         )));
                         lines.push(Line::from(""));
                     }
-                    if let Some(err) = app.spotify_oauth_error.as_deref() {
+                    if let Some(err) = app.spotify.oauth_error.as_deref() {
                         lines.push(Line::from(Span::styled(
                             err,
                             Style::default().fg(app.theme.error),
                         )));
                         lines.push(Line::from(""));
                     }
-                    if let Some(url) = app.spotify_oauth_url.as_deref() {
+                    if let Some(url) = app.spotify.oauth_url.as_deref() {
                         lines.push(Line::from(Span::styled(
                             "If your browser did not open, copy this URL:",
                             Style::default().fg(app.theme.fg_dim),
@@ -2601,16 +2602,16 @@ impl Pickers {
 
                     // Client ID field (active = field 0). Masked so the secret
                     // isn't echoed to the terminal while typing.
-                    let cid_active = app.spotify_link_field == 0;
+                    let cid_active = app.spotify.link_field == 0;
                     let cid_label = if cid_active {
                         app.theme.fg_bright
                     } else {
                         app.theme.fg_dim
                     };
-                    let cid_text = if app.spotify_link_input.is_empty() {
+                    let cid_text = if app.spotify.link_input.is_empty() {
                         "[ client id ]".to_string()
                     } else {
-                        "•".repeat(app.spotify_link_input.chars().count())
+                        "•".repeat(app.spotify.link_input.chars().count())
                     };
                     let mut cid_spans = vec![
                         Span::styled(" Client ID: ", Style::default().fg(cid_label)),
@@ -2622,7 +2623,7 @@ impl Pickers {
                     lines.push(Line::from(cid_spans));
 
                     // Port field (active = field 1)
-                    let port_active = app.spotify_link_field == 1;
+                    let port_active = app.spotify.link_field == 1;
                     let port_label = if port_active {
                         app.theme.fg_bright
                     } else {
@@ -2631,7 +2632,7 @@ impl Pickers {
                     let mut port_spans = vec![
                         Span::styled(" Port:      ", Style::default().fg(port_label)),
                         Span::styled(
-                            app.spotify_oauth_port.clone(),
+                            app.spotify.oauth_port.clone(),
                             Style::default().fg(app.theme.accent),
                         ),
                     ];
@@ -2645,7 +2646,7 @@ impl Pickers {
                 }
             }
             PickerId::SpotifySearch => {
-                let help = if app.spotify_status.as_ref().is_none_or(|s| !s.linked) {
+                let help = if app.spotify.status.as_ref().is_none_or(|s| !s.linked) {
                     " Enter: link   Esc: close"
                 } else {
                     " Enter: play   Ctrl+D: download   Esc: close"
@@ -2657,8 +2658,8 @@ impl Pickers {
                 let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
                 let cursor_style = cursor_span_style(app);
 
-                if app.spotify_status.as_ref().is_none_or(|s| !s.linked) {
-                    let token_input = app.spotify_token_input.clone();
+                if app.spotify.status.as_ref().is_none_or(|s| !s.linked) {
+                    let token_input = app.spotify.token_input.clone();
                     let masked = "•".repeat(token_input.chars().count());
                     let cursor_style = cursor_span_style(app);
                     let lines = vec![
@@ -2671,7 +2672,7 @@ impl Pickers {
                             Span::styled(" > ", Style::default().fg(app.theme.fg_dim)),
                             Span::styled(masked, Style::default().fg(app.theme.fg)),
                             Span::styled(
-                                if app.spotify_token_input.is_empty() {
+                                if app.spotify.token_input.is_empty() {
                                     String::new()
                                 } else {
                                     " ".to_string()
@@ -2695,7 +2696,7 @@ impl Pickers {
                     ]);
 
                     let sel = app.pickers.top().map_or(0, |o| o.selected);
-                    let total = app.spotify_search_results.len();
+                    let total = app.spotify.search_results.len();
                     let preview_h: u16 = if total > 0 { 7 } else { 0 };
                     let visible = inner.height.saturating_sub(preview_h) as usize;
                     let (scroll_start, scroll_end) = if total > 0 {
@@ -2730,7 +2731,7 @@ impl Pickers {
                         )));
                     } else {
                         for i in scroll_start..scroll_end {
-                            let (_, _pl_name, track) = &app.spotify_search_results[i];
+                            let (_, _pl_name, track) = &app.spotify.search_results[i];
                             let prefix = if i == sel { " > " } else { "   " };
                             let dur = track
                                 .duration_ms
@@ -2782,7 +2783,7 @@ impl Pickers {
                             width: preview_area.width,
                             height: preview_area.height.saturating_sub(1),
                         };
-                        let (_, _, track) = &app.spotify_search_results[sel.min(total - 1)];
+                        let (_, _, track) = &app.spotify.search_results[sel.min(total - 1)];
                         let mut meta_lines = Vec::new();
                         let mut push = |key: &str, value: &str| {
                             meta_lines.push(Line::from(vec![
@@ -2852,9 +2853,9 @@ impl Pickers {
     fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let sel = app.pickers.top().map_or(0, |o| o.selected);
 
-        let (title, hint) = if app.queue_move_index.is_some() {
-            let from = app.queue_move_index.unwrap_or(0);
-            let to = app.queue_move_target;
+        let (title, hint) = if app.queue.move_index.is_some() {
+            let from = app.queue.move_index.unwrap_or(0);
+            let to = app.queue.move_target;
             (
                 format!(" Queue (MOVE MODE: {} -> {}) ", from + 1, to + 1),
                 Some(" Enter: confirm   Esc: cancel   Ctrl+K/Ctrl+J: adjust position"),
@@ -2870,7 +2871,7 @@ impl Pickers {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let total = app.queue_cache.len();
+        let total = app.queue.cache.len();
         if total == 0 {
             let p = Paragraph::new("Queue is empty").style(Style::default().fg(app.theme.fg_dim));
             f.render_widget(p, inner);
@@ -2897,8 +2898,8 @@ impl Pickers {
         let mut lines = Vec::new();
 
         for i in scroll_start..scroll_end {
-            let track = &app.queue_cache[i];
-            let is_current = i == app.queue_cursor;
+            let track = &app.queue.cache[i];
+            let is_current = i == app.queue.cursor;
             let is_sel = i == sel;
             let prefix = if is_sel { " > " } else { "   " };
             let icon = if is_current { "\u{25b6} " } else { "\u{266b} " };
@@ -2956,7 +2957,7 @@ impl Pickers {
                 width: inner.width,
                 height: preview_h,
             };
-            Self::render_queue_upnext_preview(f, preview_area, app, app.queue_cursor + 1);
+            Self::render_queue_upnext_preview(f, preview_area, app, app.queue.cursor + 1);
         }
     }
 
@@ -2987,7 +2988,7 @@ impl Pickers {
             width: area.width,
             height: area.height.saturating_sub(1),
         };
-        match app.queue_cache.get(next_idx) {
+        match app.queue.cache.get(next_idx) {
             Some(track) => {
                 let label = if track.title.is_empty() {
                     std::path::Path::new(&track.path)
@@ -3009,7 +3010,7 @@ impl Pickers {
                 };
                 let cover_w = 20u16.min(inner.width.saturating_sub(24).max(8));
                 let cover_h = COVER_H.min(inner.height);
-                let has_cover = app.queue_preview_cover.is_some();
+                let has_cover = app.queue.preview_cover.is_some();
                 if cover_w > 0 && cover_h > 0 {
                     let cover_area = Rect {
                         x: inner.x + 1,
@@ -3018,10 +3019,10 @@ impl Pickers {
                         height: cover_h,
                     };
                     if has_cover {
-                        if let Some(ref mut protocol) = app.queue_preview_cover_stateful {
+                        if let Some(ref mut protocol) = app.queue.preview_cover_stateful {
                             let image = StatefulImage::new();
                             f.render_stateful_widget(image, cover_area, protocol);
-                        } else if let Some(ref bytes) = app.queue_preview_cover {
+                        } else if let Some(ref bytes) = app.queue.preview_cover {
                             Render::cover_block(f, cover_area, bytes);
                         }
                     } else {
@@ -3481,7 +3482,7 @@ impl Pickers {
                     .as_ref()
                     .map(|c| c.duration_secs)
                     .unwrap_or(0);
-                let reverb_on = app.state.reverb.enabled;
+                let reverb_on = app.state.audio.reverb.enabled;
                 vec![
                     format!("Repeat         {:?}  ▶", app.state.repeat),
                     format!(
@@ -3495,7 +3496,7 @@ impl Pickers {
                     },
                     format!(
                         "EQ Enabled     {}",
-                        if app.state.eq_enabled { "On" } else { "Off" }
+                        if app.state.audio.eq_enabled { "On" } else { "Off" }
                     ),
                     format!("Reverb         {}", if reverb_on { "On" } else { "Off" }),
                     format!(
@@ -3542,7 +3543,7 @@ impl Pickers {
                 ]
             }
             3 => {
-                let st = app.spotify_status.clone().unwrap_or_default();
+                let st = app.spotify.status.clone().unwrap_or_default();
                 let connected = if st.linked {
                     "Connected"
                 } else {
@@ -3634,7 +3635,7 @@ impl Pickers {
                 Style::default().fg(app.theme.fg_dim),
             ))),
             (1, 3) => {
-                let eq_on = app.state.eq_enabled;
+                let eq_on = app.state.audio.eq_enabled;
                 lines.push(Line::from(Span::styled(
                     if eq_on {
                         " Press Enter to disable EQ."
@@ -3645,7 +3646,7 @@ impl Pickers {
                 )));
             }
             (1, 4) => {
-                let rev_on = app.state.reverb.enabled;
+                let rev_on = app.state.audio.reverb.enabled;
                 lines.push(Line::from(Span::styled(
                     if rev_on {
                         " Press Enter to disable reverb."
@@ -3748,7 +3749,7 @@ fn track_info_block_height() -> u16 {
 fn library_stats_line(app: &App) -> String {
     if app.browse_detail.is_some() {
         if app.library_category == 5 {
-            let n = app.spotify_playlist_tracks_cache.len();
+            let n = app.spotify.playlist_tracks_cache.len();
             return format!(" {} {} ", n, plural(n, "track", "tracks"));
         }
         let f = app.filtered_tracks();
@@ -3775,7 +3776,7 @@ fn library_stats_line(app: &App) -> String {
             format!(" {} {} ", n, plural(n, "playlist", "playlists"))
         }
         5 => {
-            let n = app.spotify_playlists.len();
+            let n = app.spotify.playlists.len();
             format!(" {} {} ", n, plural(n, "playlist", "playlists"))
         }
         _ => {
@@ -3938,7 +3939,7 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
             })
         }
         TrackInfoKind::SpotifyPlaylist => {
-            let playlists = &app.spotify_playlists;
+            let playlists = &app.spotify.playlists;
             let pos = app.list_pos();
             let pl = playlists.get(pos)?;
             let tc = pl.tracks.len();
@@ -3956,7 +3957,7 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
             })
         }
         TrackInfoKind::SpotifyTrack => {
-            let tracks = &app.spotify_playlist_tracks_cache;
+            let tracks = &app.spotify.playlist_tracks_cache;
             let pos = app.list_pos();
             let st = tracks.get(pos)?;
             let dur = st
@@ -3978,108 +3979,119 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
     }
 }
 
-pub const COMMAND_PALETTE_COMMANDS_MDI: &[(&str, &str, &str)] = &[
-    ("\u{f04ba} Play/Pause", "Space", "play/pause"),
-    ("\u{f04ad} Next Track", "n", "next track"),
-    ("\u{f04a8} Prev Track", "p", "prev track"),
-    ("\u{f04cd} Stop", "s", "stop"),
-    ("\u{f04e2} Seek Forward", ".", "seek forward"),
-    ("\u{f04e0} Seek Backward", ",", "seek backward"),
-    ("\u{f057e} Volume Up", "+", "volume up"),
-    ("\u{f057d} Volume Down", "-", "volume down"),
-    ("\u{f0580} Mute: Toggle", "m", "mute"),
-    ("\u{f0577} Repeat Mode", "r", "repeat"),
-    ("\u{f0578} Shuffle Library", "S", "shuffle"),
-    ("\u{f0493} Toggle Favourite", "f", "toggle favourite"),
-    ("\u{f057a} Search Track", "/", "search"),
-    ("\u{f057a} Search Library", "Alt+/", "search lib"),
-    ("\u{f056e} Queue", "Alt+Q", "queue"),
-    ("\u{f167} YouTube Search", "Alt+Y", "youtube"),
-    ("\u{f1bc} Spotify", "Alt+S", "spotify"),
-    ("\u{f1dd} Fetch Lyrics", "l", "fetch lyrics"),
-    ("\u{f156} Clear Queue", "D", "clear queue"),
-    ("\u{f285} Multiselect", "v", "multiselect"),
-    ("\u{f285} Multiselect Up", "Shift+Up", "multiselect up"),
-    (
-        "\u{f285} Multiselect Down",
-        "Shift+Down",
-        "multiselect down",
-    ),
-    ("\u{f055e} Add to Queue", "a", "add to queue"),
-    ("\u{f055e} Add to Playlist", "A", "add to playlist"),
-    ("\u{f156} Delete from List", "x", "delete from list"),
-    ("\u{f045d} Jump to End", "G", "jump to end"),
-    ("\u{f0493} Edit Metadata", "e", "edit metadata"),
-    ("\u{f0493} Tab Cycle", "Tab", "tab cycle"),
-    ("\u{f0493} Prev Tab", "Shift+Tab", "prev tab"),
-    ("\u{f0493} Settings", "Alt+,", "settings"),
-    ("\u{f0570} Equalizer", "Alt+E", "eq"),
-    ("\u{f04b2} Sleep Timer", "Alt+Z", "sleeptimer"),
-    ("\u{f0493} Theme", "Alt+C", "themepicker"),
-    ("\u{f051d} Notifications", "Alt+N", "notifications"),
-    ("\u{f0493} Progress Style", "Alt+P", "progress style"),
-    ("\u{f0570} Visualizer: Toggle", "Ctrl+V", "visualizer"),
-    ("\u{f0570} Visualizer Preset", "Alt+V", "visualizer preset"),
-    ("\u{f04db} Quit", "q", "quit"),
-    ("\u{f04db} Quit Daemon", "Q/Ctrl+Q", "quit daemon"),
-    ("\u{f051d} Toggle Help", "?", "toggle help"),
-    ("\u{f051d} Hide Help Bar", "Ctrl+H", "hide help bar"),
-    ("\u{f0493} Health Check", "Alt+H", "health check"),
-];
+#[derive(Debug, Clone)]
+pub struct Command {
+    pub icon: &'static str,
+    pub keys: &'static str,
+    pub hint: &'static str,
+}
 
-pub const COMMAND_PALETTE_COMMANDS_EMOJI: &[(&str, &str, &str)] = &[
-    ("\u{25b6}\u{fe0f} Play/Pause", "Space", "play/pause"),
-    ("\u{23ed}\u{fe0f} Next Track", "n", "next track"),
-    ("\u{23ee}\u{fe0f} Prev Track", "p", "prev track"),
-    ("\u{23f9}\u{fe0f} Stop", "s", "stop"),
-    ("\u{23e9}\u{fe0f} Seek Forward", ".", "seek forward"),
-    ("\u{23ea}\u{fe0f} Seek Backward", ",", "seek backward"),
-    ("\u{1f50a} Volume Up", "+", "volume up"),
-    ("\u{1f509} Volume Down", "-", "volume down"),
-    ("\u{1f507} Mute: Toggle", "m", "mute"),
-    ("\u{1f501} Repeat Mode", "r", "repeat"),
-    ("\u{1f500} Shuffle Library", "S", "shuffle"),
-    ("\u{2764}\u{fe0f} Toggle Favourite", "f", "toggle favourite"),
-    ("\u{1f50d} Search Track", "/", "search"),
-    ("\u{1f50e} Search Library", "Alt+/", "search lib"),
-    ("\u{1f4cb} Queue", "Alt+Q", "queue"),
-    ("\u{25b6}\u{fe0f} YouTube Search", "Alt+Y", "youtube"),
-    ("\u{1f3b5} Spotify", "Alt+S", "spotify"),
-    ("\u{1f4dd} Fetch Lyrics", "l", "fetch lyrics"),
-    ("\u{1f5d1} Clear Queue", "D", "clear queue"),
-    ("\u{2611}\u{fe0f} Multiselect", "v", "multiselect"),
-    (
-        "\u{2611}\u{fe0f} Multiselect Up",
-        "Shift+Up",
-        "multiselect up",
-    ),
-    (
-        "\u{2611}\u{fe0f} Multiselect Down",
-        "Shift+Down",
-        "multiselect down",
-    ),
-    ("\u{2795} Add to Queue", "a", "add to queue"),
-    ("\u{1f4dc} Add to Playlist", "A", "add to playlist"),
-    ("\u{274c} Delete from List", "x", "delete from list"),
-    ("\u{2b07}\u{fe0f} Jump to End", "G", "jump to end"),
-    ("\u{270f}\u{fe0f} Edit Metadata", "e", "edit metadata"),
-    ("\u{27a1}\u{fe0f} Tab Cycle", "Tab", "tab cycle"),
-    ("\u{2b05}\u{fe0f} Prev Tab", "Shift+Tab", "prev tab"),
-    ("\u{2699}\u{fe0f} Settings", "Alt+,", "settings"),
-    ("\u{1f39a} Equalizer", "Alt+E", "eq"),
-    ("\u{23f0}\u{fe0f} Sleep Timer", "Alt+Z", "sleeptimer"),
-    ("\u{1f3a8} Theme", "Alt+C", "themepicker"),
-    ("\u{2139}\u{fe0f} About", "Alt+A", "about"),
-    ("\u{1f514} Notifications", "Alt+N", "notifications"),
-    ("\u{1f3a8} Progress Style", "Alt+P", "progress style"),
-    ("\u{1f3b6} Visualizer: Toggle", "Ctrl+V", "visualizer"),
-    ("\u{1f3b6} Visualizer Preset", "Alt+V", "visualizer preset"),
-    ("\u{23f9}\u{fe0f} Quit", "q", "quit"),
-    ("\u{23f9}\u{fe0f} Quit Daemon", "Q/Ctrl+Q", "quit daemon"),
-    ("\u{2753} Toggle Help", "?", "toggle help"),
-    ("\u{1f6ab} Hide Help Bar", "Ctrl+H", "hide help bar"),
-    ("\u{1fa7a} Health Check", "Alt+H", "health check"),
-];
+pub struct CommandPalette;
+
+impl CommandPalette {
+    pub fn commands(icon_style: &str) -> &'static [Command] {
+        if icon_style == "mdi" {
+            Self::commands_mdi()
+        } else {
+            Self::commands_emoji()
+        }
+    }
+
+    fn commands_mdi() -> &'static [Command] {
+        &[
+            Command { icon: "\u{f04ba} Play/Pause", keys: "Space", hint: "play/pause" },
+            Command { icon: "\u{f04ad} Next Track", keys: "n", hint: "next track" },
+            Command { icon: "\u{f04a8} Prev Track", keys: "p", hint: "prev track" },
+            Command { icon: "\u{f04cd} Stop", keys: "s", hint: "stop" },
+            Command { icon: "\u{f04e2} Seek Forward", keys: ".", hint: "seek forward" },
+            Command { icon: "\u{f04e0} Seek Backward", keys: ",", hint: "seek backward" },
+            Command { icon: "\u{f057e} Volume Up", keys: "+", hint: "volume up" },
+            Command { icon: "\u{f057d} Volume Down", keys: "-", hint: "volume down" },
+            Command { icon: "\u{f0580} Mute: Toggle", keys: "m", hint: "mute" },
+            Command { icon: "\u{f0577} Repeat Mode", keys: "r", hint: "repeat" },
+            Command { icon: "\u{f0578} Shuffle Library", keys: "S", hint: "shuffle" },
+            Command { icon: "\u{f0493} Toggle Favourite", keys: "f", hint: "toggle favourite" },
+            Command { icon: "\u{f057a} Search Track", keys: "/", hint: "search" },
+            Command { icon: "\u{f057a} Search Library", keys: "Alt+/", hint: "search lib" },
+            Command { icon: "\u{f056e} Queue", keys: "Alt+Q", hint: "queue" },
+            Command { icon: "\u{f167} YouTube Search", keys: "Alt+Y", hint: "youtube" },
+            Command { icon: "\u{f1bc} Spotify", keys: "Alt+S", hint: "spotify" },
+            Command { icon: "\u{f1dd} Fetch Lyrics", keys: "l", hint: "fetch lyrics" },
+            Command { icon: "\u{f156} Clear Queue", keys: "D", hint: "clear queue" },
+            Command { icon: "\u{f285} Multiselect", keys: "v", hint: "multiselect" },
+            Command { icon: "\u{f285} Multiselect Up", keys: "Shift+Up", hint: "multiselect up" },
+            Command { icon: "\u{f285} Multiselect Down", keys: "Shift+Down", hint: "multiselect down" },
+            Command { icon: "\u{f055e} Add to Queue", keys: "a", hint: "add to queue" },
+            Command { icon: "\u{f055e} Add to Playlist", keys: "A", hint: "add to playlist" },
+            Command { icon: "\u{f156} Delete from List", keys: "x", hint: "delete from list" },
+            Command { icon: "\u{f045d} Jump to End", keys: "G", hint: "jump to end" },
+            Command { icon: "\u{f0493} Edit Metadata", keys: "e", hint: "edit metadata" },
+            Command { icon: "\u{f0493} Tab Cycle", keys: "Tab", hint: "tab cycle" },
+            Command { icon: "\u{f0493} Prev Tab", keys: "Shift+Tab", hint: "prev tab" },
+            Command { icon: "\u{f0493} Settings", keys: "Alt+,", hint: "settings" },
+            Command { icon: "\u{f0570} Equalizer", keys: "Alt+E", hint: "eq" },
+            Command { icon: "\u{f04b2} Sleep Timer", keys: "Alt+Z", hint: "sleeptimer" },
+            Command { icon: "\u{f0493} Theme", keys: "Alt+C", hint: "themepicker" },
+            Command { icon: "\u{f051d} Notifications", keys: "Alt+N", hint: "notifications" },
+            Command { icon: "\u{f0493} Progress Style", keys: "Alt+P", hint: "progress style" },
+            Command { icon: "\u{f0570} Visualizer: Toggle", keys: "Ctrl+V", hint: "visualizer" },
+            Command { icon: "\u{f0570} Visualizer Preset", keys: "Alt+V", hint: "visualizer preset" },
+            Command { icon: "\u{f04db} Quit", keys: "q", hint: "quit" },
+            Command { icon: "\u{f04db} Quit Daemon", keys: "Q/Ctrl+Q", hint: "quit daemon" },
+            Command { icon: "\u{f051d} Toggle Help", keys: "?", hint: "toggle help" },
+            Command { icon: "\u{f051d} Hide Help Bar", keys: "Ctrl+H", hint: "hide help bar" },
+            Command { icon: "\u{f0493} Health Check", keys: "Alt+H", hint: "health check" },
+        ]
+    }
+
+    fn commands_emoji() -> &'static [Command] {
+        &[
+            Command { icon: "\u{25b6}\u{fe0f} Play/Pause", keys: "Space", hint: "play/pause" },
+            Command { icon: "\u{23ed}\u{fe0f} Next Track", keys: "n", hint: "next track" },
+            Command { icon: "\u{23ee}\u{fe0f} Prev Track", keys: "p", hint: "prev track" },
+            Command { icon: "\u{23f9}\u{fe0f} Stop", keys: "s", hint: "stop" },
+            Command { icon: "\u{23e9}\u{fe0f} Seek Forward", keys: ".", hint: "seek forward" },
+            Command { icon: "\u{23ea}\u{fe0f} Seek Backward", keys: ",", hint: "seek backward" },
+            Command { icon: "\u{1f50a} Volume Up", keys: "+", hint: "volume up" },
+            Command { icon: "\u{1f509} Volume Down", keys: "-", hint: "volume down" },
+            Command { icon: "\u{1f507} Mute: Toggle", keys: "m", hint: "mute" },
+            Command { icon: "\u{1f501} Repeat Mode", keys: "r", hint: "repeat" },
+            Command { icon: "\u{1f500} Shuffle Library", keys: "S", hint: "shuffle" },
+            Command { icon: "\u{2764}\u{fe0f} Toggle Favourite", keys: "f", hint: "toggle favourite" },
+            Command { icon: "\u{1f50d} Search Track", keys: "/", hint: "search" },
+            Command { icon: "\u{1f50e} Search Library", keys: "Alt+/", hint: "search lib" },
+            Command { icon: "\u{1f4cb} Queue", keys: "Alt+Q", hint: "queue" },
+            Command { icon: "\u{25b6}\u{fe0f} YouTube Search", keys: "Alt+Y", hint: "youtube" },
+            Command { icon: "\u{1f3b5} Spotify", keys: "Alt+S", hint: "spotify" },
+            Command { icon: "\u{1f4dd} Fetch Lyrics", keys: "l", hint: "fetch lyrics" },
+            Command { icon: "\u{1f5d1} Clear Queue", keys: "D", hint: "clear queue" },
+            Command { icon: "\u{2611}\u{fe0f} Multiselect", keys: "v", hint: "multiselect" },
+            Command { icon: "\u{2611}\u{fe0f} Multiselect Up", keys: "Shift+Up", hint: "multiselect up" },
+            Command { icon: "\u{2611}\u{fe0f} Multiselect Down", keys: "Shift+Down", hint: "multiselect down" },
+            Command { icon: "\u{2795} Add to Queue", keys: "a", hint: "add to queue" },
+            Command { icon: "\u{1f4dc} Add to Playlist", keys: "A", hint: "add to playlist" },
+            Command { icon: "\u{274c} Delete from List", keys: "x", hint: "delete from list" },
+            Command { icon: "\u{2b07}\u{fe0f} Jump to End", keys: "G", hint: "jump to end" },
+            Command { icon: "\u{270f}\u{fe0f} Edit Metadata", keys: "e", hint: "edit metadata" },
+            Command { icon: "\u{27a1}\u{fe0f} Tab Cycle", keys: "Tab", hint: "tab cycle" },
+            Command { icon: "\u{2b05}\u{fe0f} Prev Tab", keys: "Shift+Tab", hint: "prev tab" },
+            Command { icon: "\u{2699}\u{fe0f} Settings", keys: "Alt+,", hint: "settings" },
+            Command { icon: "\u{1f39a} Equalizer", keys: "Alt+E", hint: "eq" },
+            Command { icon: "\u{23f0}\u{fe0f} Sleep Timer", keys: "Alt+Z", hint: "sleeptimer" },
+            Command { icon: "\u{1f3a8} Theme", keys: "Alt+C", hint: "themepicker" },
+            Command { icon: "\u{2139}\u{fe0f} About", keys: "Alt+A", hint: "about" },
+            Command { icon: "\u{1f514} Notifications", keys: "Alt+N", hint: "notifications" },
+            Command { icon: "\u{1f3a8} Progress Style", keys: "Alt+P", hint: "progress style" },
+            Command { icon: "\u{1f3b6} Visualizer: Toggle", keys: "Ctrl+V", hint: "visualizer" },
+            Command { icon: "\u{1f3b6} Visualizer Preset", keys: "Alt+V", hint: "visualizer preset" },
+            Command { icon: "\u{23f9}\u{fe0f} Quit", keys: "q", hint: "quit" },
+            Command { icon: "\u{23f9}\u{fe0f} Quit Daemon", keys: "Q/Ctrl+Q", hint: "quit daemon" },
+            Command { icon: "\u{2753} Toggle Help", keys: "?", hint: "toggle help" },
+            Command { icon: "\u{1f6ab} Hide Help Bar", keys: "Ctrl+H", hint: "hide help bar" },
+            Command { icon: "\u{1fa7a} Health Check", keys: "Alt+H", hint: "health check" },
+        ]
+    }
+}
 
 pub const COMMAND_GROUPS: &[(&str, usize)] = &[
     ("Playback", 12),
@@ -4087,15 +4099,6 @@ pub const COMMAND_GROUPS: &[(&str, usize)] = &[
     ("View & Overlays", 11),
     ("System", 5),
 ];
-
-/// Get the appropriate command palette commands based on icon style.
-pub fn command_palette_commands(icon_style: &str) -> &[(&str, &str, &str)] {
-    if icon_style == "mdi" {
-        COMMAND_PALETTE_COMMANDS_MDI
-    } else {
-        COMMAND_PALETTE_COMMANDS_EMOJI
-    }
-}
 
 pub const HELP_LINES: &[(&str, &str)] = &[
     ("topic", "── Playback ──"),
@@ -4157,7 +4160,7 @@ impl Pickers {
         let commit = option_env!("VERGEN_GIT_SHA").unwrap_or("unknown");
         let build_date = option_env!("VERGEN_BUILD_DATE").unwrap_or("unknown");
         let lib_count = app.tracks_cache.len();
-        let queue_count = app.queue_cache.len();
+        let queue_count = app.queue.cache.len();
 
         let arch = std::env::consts::ARCH;
         let cpus = std::thread::available_parallelism()
@@ -4659,8 +4662,8 @@ impl Pickers {
         f.render_widget(paragraph, inner);
     }
 
-    fn render_command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let commands = crate::ui::command_palette_commands(&app.icon_style);
+    fn command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let commands = crate::ui::CommandPalette::commands(&app.icon_style);
 
         let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
         let q = query.to_lowercase();
@@ -4671,7 +4674,7 @@ impl Pickers {
                 .iter()
                 .enumerate()
                 .filter_map(|(i, c)| {
-                    let lower = c.0.to_lowercase();
+                    let lower = c.icon.to_lowercase();
                     let mut qi = 0usize;
                     for ch in lower.chars() {
                         if qi < q.len() && ch == q.as_bytes()[qi] as char {
@@ -4702,7 +4705,7 @@ impl Pickers {
         let mut rows: Vec<(Option<&'static str>, Option<usize>)> = Vec::new();
         if show_groups {
             let mut acc = 0usize;
-            for (gname, gcount) in COMMAND_GROUPS {
+            for (gname, gcount) in crate::ui::COMMAND_GROUPS {
                 if acc >= commands.len() {
                     break;
                 }
@@ -4768,7 +4771,7 @@ impl Pickers {
                 continue;
             }
             let ci = cmd.unwrap_or(0);
-            let (name, key, _) = commands[ci];
+            let (name, key) = (&commands[ci].icon, commands[ci].keys);
             let is_sel = Some(i) == sel_display;
             let full = format!(
                 " {prefix}{name}  [{key}]",
@@ -4891,7 +4894,7 @@ impl Pickers {
                 Style::default()
                     .fg(app.theme.selection_fg_readable())
                     .bg(app.theme.selection_bg)
-            } else if *name == app.state.eq_preset.label() {
+            } else if *name == app.state.audio.eq_preset.label() {
                 Style::default().fg(app.theme.success)
             } else {
                 Style::default()

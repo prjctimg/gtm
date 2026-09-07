@@ -513,6 +513,68 @@ pub enum PromptType {
     None,
 }
 
+/// Spotify search/link UI state, grouped under `App::spotify`.
+pub struct SpotifyView {
+    pub status: Option<SpotifyStatus>,
+    pub playlists: Vec<SpotifyPlaylist>,
+    pub playlist_tracks_cache: Vec<SpotifyTrack>,
+    pub search_results: Vec<(String, String, SpotifyTrack)>,
+    pub link_input: String,
+    pub token_input: String,
+    /// True while the OAuth browser flow is pending; the SpotifyLink picker
+    /// shows a "waiting for you to finish login" state until linked.
+    pub oauth_pending: bool,
+    /// Authorize URL of the in-flight OAuth flow, shown in the SpotifyLink
+    /// picker so the user can copy it even when no browser can be opened.
+    pub oauth_url: Option<String>,
+    /// Error from the most recent OAuth attempt, shown in the picker.
+    pub oauth_error: Option<String>,
+    /// Local redirect port for the Spotify OAuth flow (editable in the picker).
+    pub oauth_port: String,
+    /// Active field in the SpotifyLink picker (0 = client id, 1 = port).
+    pub link_field: usize,
+    pub search_debounce: Option<std::time::Instant>,
+    pub web_seq: u64,
+}
+
+/// Queue picker/view UI state, grouped under `App::queue`. Note this mirrors
+/// (but is distinct from) the daemon-side `DaemonState::queue`.
+pub struct QueueView {
+    pub cache: Vec<TrackInfo>,
+    pub cursor: usize,
+    /// Queue move mode state: index of item being moved.
+    pub move_index: Option<usize>,
+    /// Target position in queue for move operation.
+    pub move_target: usize,
+    /// Cover art for the queue picker "Up Next" strip: fetched for the
+    /// track after the current one, including locally-inserted (`id == 0`)
+    /// entries.
+    pub preview_cover: Option<Vec<u8>>,
+    pub preview_cover_stateful: Option<StatefulProtocol>,
+    pub last_preview_cover_fetch_id: Option<i64>,
+    pub last_preview_cover_fetch_gen: Option<u64>,
+    pub preview_cover_fail_until: Option<(i64, std::time::Instant)>,
+}
+
+/// Lyrics pane UI state, grouped under `App::lyrics`.
+pub struct LyricsView {
+    pub current: Option<gtm_core::track::LrcData>,
+    pub scroll: usize,
+    pub fetching: bool,
+    /// Gen of the in-flight lyrics fetch; stale responses (track changed while
+    /// a fetch was pending) are dropped when they don't match this.
+    pub pending_gen: Option<u64>,
+    /// Monotonic generation counter for lyrics fetches, disambiguates stale
+    /// responses on fast track skips (mirrors `next_cover_gen`).
+    pub next_gen: u64,
+    pub show: bool,
+    /// Whether the lyrics pane holds focus. While true, MoveUp/Down,
+    /// PageUp/Down, Top/Bottom scroll the lyrics and take over from the
+    /// time-sync driver until focus is released.
+    pub pane_focus: bool,
+    pub manual_scroll: bool,
+}
+
 pub struct App {
     pub theme: AppTheme,
     pub themes: Vec<ThemeEntry>,
@@ -558,30 +620,12 @@ pub struct App {
     pub settings_pane_focus: bool,
     pub settings_option: usize,
     pub tracks_cache: Vec<TrackInfo>,
-    pub queue_cache: Vec<TrackInfo>,
-    pub queue_cursor: usize,
+    pub queue: QueueView,
     pub browse_detail: Option<String>,
     pub yt_results_cache: Vec<gtm_core::track::YTSearchResult>,
     pub playlist_cache: Vec<gtm_core::track::Playlist>,
     pub playlist_tracks_cache: Vec<TrackInfo>,
-    pub spotify_status: Option<SpotifyStatus>,
-    pub spotify_playlists: Vec<SpotifyPlaylist>,
-    pub spotify_playlist_tracks_cache: Vec<SpotifyTrack>,
-    pub spotify_search_results: Vec<(String, String, SpotifyTrack)>,
-    pub spotify_link_input: String,
-    pub spotify_token_input: String,
-    /// True while the OAuth browser flow is pending; the SpotifyLink picker
-    /// shows a "waiting for you to finish login" state until linked.
-    pub spotify_oauth_pending: bool,
-    /// Authorize URL of the in-flight OAuth flow, shown in the SpotifyLink
-    /// picker so the user can copy it even when no browser can be opened.
-    pub spotify_oauth_url: Option<String>,
-    /// Error from the most recent OAuth attempt, shown in the picker.
-    pub spotify_oauth_error: Option<String>,
-    /// Local redirect port for the Spotify OAuth flow (editable in the picker).
-    pub spotify_oauth_port: String,
-    /// Active field in the SpotifyLink picker (0 = client id, 1 = port).
-    pub spotify_link_field: usize,
+    pub spotify: SpotifyView,
     pub cookie_file: Option<String>,
     pub notifications: Vec<Notification>,
     pub notification_history: Vec<NotificationRecord>,
@@ -599,8 +643,6 @@ pub struct App {
     pub crossfade_duration: u8,
     pub yt_search_loading: bool,
     pub yt_search_debounce: Option<std::time::Instant>,
-    pub spotify_search_debounce: Option<std::time::Instant>,
-    pub spotify_web_seq: u64,
     pub yt_search_poll_deadline: Option<std::time::Instant>,
     pub pending_delete: Option<(i64, String)>,
     /// Pending prompt for confirmations that require user input
@@ -658,10 +700,6 @@ pub struct App {
     pub visualizer: crate::visualizer::AudioVisualizer,
     pub selected_indices: std::collections::HashSet<usize>,
     pending_motion: Option<char>,
-    /// Queue move mode state: index of item being moved
-    pub queue_move_index: Option<usize>,
-    /// Target position in queue for move operation
-    pub queue_move_target: usize,
     pub pending_playlist_track_ids: Vec<i64>,
     /// Id of a freshly-created playlist awaiting track selection.
     pub pending_playlist_id: Option<i64>,
@@ -698,36 +736,14 @@ pub struct App {
     last_artist_cover_fetch_gen: Option<u64>,
     /// Active "Up Next" crossfade-countdown notification.
     pub upnext: Option<UpNextNotif>,
-    /// Cover art for the queue picker "Up Next" strip: fetched for the
-    /// track after the current one, including locally-inserted (`id == 0`)
-    /// entries.
-    pub queue_preview_cover: Option<Vec<u8>>,
-    pub queue_preview_cover_stateful: Option<StatefulProtocol>,
-    last_queue_preview_cover_fetch_id: Option<i64>,
-    last_queue_preview_cover_fetch_gen: Option<u64>,
-    queue_preview_cover_fail_until: Option<(i64, std::time::Instant)>,
     // Monotonic generation counter for all cover fetches — disambiguates
     // stale responses and `id == 0` reuse across different tracks.
     next_cover_gen: u64,
-    pub current_lyrics: Option<gtm_core::track::LrcData>,
-    pub lyrics_scroll: usize,
-    pub lyrics_fetching: bool,
-    /// Gen of the in-flight lyrics fetch; stale responses (track changed while
-    /// a fetch was pending) are dropped when they don't match this.
-    pub lyrics_pending_gen: Option<u64>,
-    /// Monotonic generation counter for lyrics fetches, disambiguates stale
-    /// responses on fast track skips (mirrors `next_cover_gen`).
-    next_lyrics_gen: u64,
-    pub show_lyrics: bool,
-    /// Whether the lyrics pane holds focus. While true, MoveUp/Down,
-    /// PageUp/Down, Top/Bottom scroll the lyrics and take over from the
-    /// time-sync driver until focus is released.
-    pub lyrics_pane_focus: bool,
+    pub lyrics: LyricsView,
     pub show_health_panel: bool,
     pub show_health_on_report: bool,
     pub health_report: Option<gtm_core::ipc::HealthReport>,
     pub hide_help_bar: bool,
-    pub lyrics_manual_scroll: bool,
     pub pending_suspend: bool,
     last_config_mtime: Option<std::time::SystemTime>,
 }
@@ -942,8 +958,8 @@ impl App {
     }
 
     fn next_lyrics_gen(&mut self) -> u64 {
-        let g = self.next_lyrics_gen;
-        self.next_lyrics_gen = self.next_lyrics_gen.wrapping_add(1).max(1);
+        let g = self.lyrics.next_gen;
+        self.lyrics.next_gen = self.lyrics.next_gen.wrapping_add(1).max(1);
         g
     }
 
@@ -958,11 +974,11 @@ impl App {
         self.last_artist_cover_fetch_gen = None;
     }
 
-    fn clear_queue_preview(&mut self) {
-        self.queue_preview_cover = None;
-        self.queue_preview_cover_stateful = None;
-        self.last_queue_preview_cover_fetch_id = None;
-        self.last_queue_preview_cover_fetch_gen = None;
+    fn clear_preview(&mut self) {
+        self.queue.preview_cover = None;
+        self.queue.preview_cover_stateful = None;
+        self.queue.last_preview_cover_fetch_id = None;
+        self.queue.last_preview_cover_fetch_gen = None;
     }
 
     fn clear_popup_cover(&mut self) {
@@ -1030,23 +1046,36 @@ impl App {
             settings_pane_focus: false,
             settings_option: 0,
             tracks_cache: Vec::new(),
-            queue_cache: Vec::new(),
-            queue_cursor: 0,
+            queue: QueueView {
+                cache: Vec::new(),
+                cursor: 0,
+                move_index: None,
+                move_target: 0,
+                preview_cover: None,
+                preview_cover_stateful: None,
+                last_preview_cover_fetch_id: None,
+                last_preview_cover_fetch_gen: None,
+                preview_cover_fail_until: None,
+            },
             browse_detail: None,
             yt_results_cache: Vec::new(),
             playlist_cache: Vec::new(),
             playlist_tracks_cache: Vec::new(),
-            spotify_status: None,
-            spotify_playlists: Vec::new(),
-            spotify_playlist_tracks_cache: Vec::new(),
-            spotify_search_results: Vec::new(),
-            spotify_link_input: String::new(),
-            spotify_token_input: String::new(),
-            spotify_oauth_pending: false,
-            spotify_oauth_url: None,
-            spotify_oauth_error: None,
-            spotify_oauth_port: "8990".to_string(),
-            spotify_link_field: 0,
+            spotify: SpotifyView {
+                status: None,
+                playlists: Vec::new(),
+                playlist_tracks_cache: Vec::new(),
+                search_results: Vec::new(),
+                link_input: String::new(),
+                token_input: String::new(),
+                oauth_pending: false,
+                oauth_url: None,
+                oauth_error: None,
+                oauth_port: "8990".to_string(),
+                link_field: 0,
+                search_debounce: None,
+                web_seq: 0,
+            },
             cookie_file: None,
             notifications: Vec::new(),
             notification_history: Vec::new(),
@@ -1063,8 +1092,6 @@ impl App {
             pending_prompt: None,
             yt_search_loading: false,
             yt_search_debounce: None,
-            spotify_search_debounce: None,
-            spotify_web_seq: 0,
             yt_search_poll_deadline: None,
             pickers: PickerManager::new(),
             sleep_timer: SleepTimerState {
@@ -1134,8 +1161,6 @@ impl App {
             },
             selected_indices: std::collections::HashSet::new(),
             pending_motion: None,
-            queue_move_index: None,
-            queue_move_target: 0,
             pending_playlist_track_ids: Vec::new(),
             pending_playlist_id: None,
             selected_playlist_track_ids: std::collections::HashSet::new(),
@@ -1169,25 +1194,22 @@ impl App {
             last_artist_cover_fetch: None,
             last_artist_cover_fetch_gen: None,
             upnext: None,
-            queue_preview_cover: None,
-            queue_preview_cover_stateful: None,
-            last_queue_preview_cover_fetch_id: None,
-            last_queue_preview_cover_fetch_gen: None,
-            queue_preview_cover_fail_until: None,
             next_cover_gen: 1,
-            current_lyrics: None,
-            lyrics_scroll: 0,
-            lyrics_fetching: false,
-            lyrics_pending_gen: None,
-            next_lyrics_gen: 1,
-            show_lyrics: false,
-            lyrics_pane_focus: false,
+            lyrics: LyricsView {
+                current: None,
+                scroll: 0,
+                fetching: false,
+                pending_gen: None,
+                next_gen: 1,
+                show: false,
+                pane_focus: false,
+                manual_scroll: false,
+            },
             show_health_panel: false,
             show_health_on_report: false,
             health_report: None,
             hide_help_bar: true,
             pending_suspend: false,
-            lyrics_manual_scroll: false,
             last_config_mtime: std::fs::metadata(prefs_path())
                 .ok()
                 .and_then(|m| m.modified().ok()),
@@ -1709,7 +1731,7 @@ impl App {
 
             if had_spotify_change {
                 if let Ok(status) = self.client.spotify().status().await {
-                    let was_linked = self.spotify_status.as_ref().is_some_and(|s| s.linked);
+                    let was_linked = self.spotify.status.as_ref().is_some_and(|s| s.linked);
                     if status.linked && !was_linked {
                         let user = status.user.clone().unwrap_or_else(|| "account".into());
                         self.notify_titled(
@@ -1721,9 +1743,9 @@ impl App {
                         );
                         // The OAuth browser flow finished: dismiss the waiting
                         // picker if it's still open and navigate to Spotify.
-                        self.spotify_oauth_pending = false;
-                        self.spotify_oauth_url = None;
-                        self.spotify_oauth_error = None;
+                        self.spotify.oauth_pending = false;
+                        self.spotify.oauth_url = None;
+                        self.spotify.oauth_error = None;
                         if self
                             .pickers
                             .top()
@@ -1733,7 +1755,7 @@ impl App {
                         }
                         self.reset_library_view(5, None);
                         self.library_pane_focus = true;
-                    } else if self.spotify_oauth_pending && !status.linked {
+                    } else if self.spotify.oauth_pending && !status.linked {
                         // The OAuth browser flow failed (e.g. no network): stop
                         // waiting, dismiss the picker and report the failure.
                         let msg = status
@@ -1741,11 +1763,11 @@ impl App {
                             .clone()
                             .filter(|m| !m.is_empty())
                             .unwrap_or_else(|| "Spotify link failed".to_string());
-                        self.spotify_oauth_pending = false;
+                        self.spotify.oauth_pending = false;
                         // Keep the picker open and render the error inline: a
                         // floating toast is suppressed while a picker is open,
                         // so dismissing here would drop the only feedback.
-                        self.spotify_oauth_error = Some(msg);
+                        self.spotify.oauth_error = Some(msg);
                         // The authorize URL (set when the flow started) stays
                         // visible so the user can retry from the browser side.
                         self.notify_titled(
@@ -1756,10 +1778,10 @@ impl App {
                             NotifType::Spotify,
                         );
                     }
-                    self.spotify_status = Some(status);
+                    self.spotify.status = Some(status);
                 }
                 if let Ok(playlists) = self.client.spotify().playlists().await {
-                    self.spotify_playlists = playlists;
+                    self.spotify.playlists = playlists;
                 }
             }
 
@@ -1806,7 +1828,7 @@ impl App {
                 self.track_anim_trigger = true;
                 // Re-enable auto-sync for the new track; a manual lyric scroll
                 // on a previous track must not stick across track changes.
-                self.lyrics_manual_scroll = false;
+                self.lyrics.manual_scroll = false;
             }
 
             // Clear stale cover immediately so we don't show old art on the
@@ -1840,13 +1862,13 @@ impl App {
                     });
                 }
                 // Auto-fetch lyrics on track change if enabled and (pane visible or auto-fetch enabled)
-                let should_fetch_lyrics = self.auto_fetch_lyrics || self.show_lyrics;
+                let should_fetch_lyrics = self.auto_fetch_lyrics || self.lyrics.show;
                 if should_fetch_lyrics {
                     let fetch_gen = self.next_lyrics_gen();
-                    self.current_lyrics = None;
-                    self.lyrics_pending_gen = Some(fetch_gen);
-                    self.lyrics_fetching = true;
-                    self.lyrics_scroll = 0;
+                    self.lyrics.current = None;
+                    self.lyrics.pending_gen = Some(fetch_gen);
+                    self.lyrics.fetching = true;
+                    self.lyrics.scroll = 0;
                     let client = self.client.clone();
                     let ipc_tx = self.ipc_tx.clone();
                     let tpath = self.state.current_track.as_ref().map(|t| t.path.clone());
@@ -1978,14 +2000,14 @@ impl App {
                     }
                     IpcResult::PlaylistTracks(tracks) => self.playlist_tracks_cache = tracks,
                     IpcResult::Queue(tracks, cursor) => {
-                        let cursor_changed = self.queue_cursor != cursor;
-                        self.queue_cache = tracks.clone();
-                        self.queue_cursor = cursor;
+                        let cursor_changed = self.queue.cursor != cursor;
+                        self.queue.cache = tracks.clone();
+                        self.queue.cursor = cursor;
                         if cursor_changed {
-                            self.queue_preview_cover = None;
-                            self.queue_preview_cover_stateful = None;
+                            self.queue.preview_cover = None;
+                            self.queue.preview_cover_stateful = None;
                         }
-                        if self.queue_cache.is_empty() && self.state.current_track.is_none() {
+                        if self.queue.cache.is_empty() && self.state.current_track.is_none() {
                             self.reset_library_view(self.library_category, None);
                         }
                     }
@@ -2034,18 +2056,18 @@ impl App {
                     }
                     IpcResult::QueuePreviewCover(cover, track_id, fetch_gen) => {
                         if !no_image_protocol()
-                            && self.last_queue_preview_cover_fetch_id == Some(track_id)
-                            && self.last_queue_preview_cover_fetch_gen == Some(fetch_gen)
+                            && self.queue.last_preview_cover_fetch_id == Some(track_id)
+                            && self.queue.last_preview_cover_fetch_gen == Some(fetch_gen)
                         {
-                            self.queue_preview_cover = cover;
+                            self.queue.preview_cover = cover;
                             self.queue_preview_cover_sync();
-                            if self.queue_preview_cover.is_some() {
-                                self.queue_preview_cover_fail_until = None;
+                            if self.queue.preview_cover.is_some() {
+                                self.queue.preview_cover_fail_until = None;
                             } else {
                                 // Failed or empty: release the guard so a later
                                 // preview retries, and throttle the refetch.
-                                self.last_queue_preview_cover_fetch_gen = None;
-                                self.queue_preview_cover_fail_until = Some((
+                                self.queue.last_preview_cover_fetch_gen = None;
+                                self.queue.preview_cover_fail_until = Some((
                                     track_id,
                                     std::time::Instant::now() + Duration::from_secs(30),
                                 ));
@@ -2096,21 +2118,21 @@ impl App {
                         self.metadata_cover_sync();
                     }
                     IpcResult::Lyrics(lyrics, lyrics_gen) => {
-                        if Some(lyrics_gen) != self.lyrics_pending_gen {
+                        if Some(lyrics_gen) != self.lyrics.pending_gen {
                             // Stale: the track changed while this fetch was in
                             // flight, so the lines belong to the previous song.
                             // Drop rather than flash the wrong lyrics.
                         } else {
-                            self.lyrics_pending_gen = None;
-                            self.current_lyrics = lyrics;
-                            self.lyrics_fetching = false;
+                            self.lyrics.pending_gen = None;
+                            self.lyrics.current = lyrics;
+                            self.lyrics.fetching = false;
                             // Snap to the lyric line matching the current
                             // playback position so opening lyrics mid-track
                             // doesn't start with the first line highlighted.
-                            self.lyrics_scroll = self.current_lyric_index();
+                            self.lyrics.scroll = self.current_lyric_index();
                             // Show "No lyrics found" if lyrics fetch returned None
-                            if self.current_lyrics.is_none() {
-                                self.current_lyrics = Some(gtm_core::track::LrcData {
+                            if self.lyrics.current.is_none() {
+                                self.lyrics.current = Some(gtm_core::track::LrcData {
                                     title: None,
                                     artist: None,
                                     album: None,
@@ -2126,15 +2148,15 @@ impl App {
                         self.health_report = Some(report);
                         self.show_health_panel = std::mem::take(&mut self.show_health_on_report);
                     }
-                    IpcResult::SpotifyStatus(s) => self.spotify_status = Some(s),
+                    IpcResult::SpotifyStatus(s) => self.spotify.status = Some(s),
                     IpcResult::SpotifyOauthUrl(url) => {
-                        self.spotify_oauth_url = Some(url);
-                        self.spotify_oauth_error = None;
+                        self.spotify.oauth_url = Some(url);
+                        self.spotify.oauth_error = None;
                     }
                     IpcResult::SpotifyOauthError(e) => {
                         let e = e.to_string();
-                        self.spotify_oauth_error = Some(e.clone());
-                        self.spotify_oauth_pending = false;
+                        self.spotify.oauth_error = Some(e.clone());
+                        self.spotify.oauth_pending = false;
                         // Keep the picker open so the error and URL stay
                         // visible; Esc closes it (clearing the state below).
                         self.notify_titled(
@@ -2145,17 +2167,17 @@ impl App {
                             NotifType::Spotify,
                         );
                     }
-                    IpcResult::SpotifyPlaylists(p) => self.spotify_playlists = p,
-                    IpcResult::SpotifyTracks(t) => self.spotify_playlist_tracks_cache = t,
+                    IpcResult::SpotifyPlaylists(p) => self.spotify.playlists = p,
+                    IpcResult::SpotifyTracks(t) => self.spotify.playlist_tracks_cache = t,
                     IpcResult::SpotifySearchWebResults(seq, tracks) => {
-                        if seq != self.spotify_web_seq {
+                        if seq != self.spotify.web_seq {
                             // Stale: a newer query superseded this in-flight
                             // response, so its rows would be for the wrong
                             // search. Drop rather than flash wrong results.
                             continue;
                         }
                         for track in tracks {
-                            self.spotify_search_results.push((
+                            self.spotify.search_results.push((
                                 "web".into(),
                                 "Spotify".into(),
                                 track,
@@ -2191,10 +2213,10 @@ impl App {
             // Spotify web-search debounce: auto-search 500ms after the last
             // keystroke, mirroring the YT search behaviour above.
             let now = std::time::Instant::now();
-            if let Some(deadline) = self.spotify_search_debounce
+            if let Some(deadline) = self.spotify.search_debounce
                 && now >= deadline
             {
-                self.spotify_search_debounce = None;
+                self.spotify.search_debounce = None;
                 if let Some(top) = self.pickers.top()
                     && top.id == PickerId::SpotifySearch
                     && !top.query.is_empty()
@@ -2300,19 +2322,19 @@ impl App {
             // playback reaches the line the user scrolled to, re-enable
             // auto-follow so the highlight can't stay frozen for the rest of
             // the track.  Reading ahead still holds until the audio catches up.
-            if self.lyrics_manual_scroll
-                && self.show_lyrics
-                && self.current_lyrics.is_some()
-                && self.current_lyric_index() >= self.lyrics_scroll
+            if self.lyrics.manual_scroll
+                && self.lyrics.show
+                && self.lyrics.current.is_some()
+                && self.current_lyric_index() >= self.lyrics.scroll
             {
-                self.lyrics_manual_scroll = false;
+                self.lyrics.manual_scroll = false;
             }
 
             // Auto-scroll lyrics to current playback position.  Not gated on
             // `status == Playing` so a mirrored-status desync (e.g. after a
             // daemon restart) can't freeze the highlight at the first line.
-            if !self.lyrics_manual_scroll && self.show_lyrics && self.current_lyrics.is_some() {
-                self.lyrics_scroll = self.current_lyric_index();
+            if !self.lyrics.manual_scroll && self.lyrics.show && self.lyrics.current.is_some() {
+                self.lyrics.scroll = self.current_lyric_index();
             }
 
             // Dirty-render: skip redraw if position hasn't changed meaningfully
@@ -2424,7 +2446,7 @@ impl App {
     /// Untimed lines (timestamp < 0) are skipped for matching but keep their
     /// index so the highlight tracks timed lines correctly.
     pub fn current_lyric_index(&self) -> usize {
-        let Some(ref lyrics) = self.current_lyrics else {
+        let Some(ref lyrics) = self.lyrics.current else {
             return 0;
         };
         lyric_index_at(&lyrics.lines, self.raw_position)
@@ -2435,13 +2457,13 @@ impl App {
     /// otherwise it toggles the left/right panes.  Leaving the lyrics pane
     /// re-enables lyric auto-follow.
     fn cycle_pane_focus(&mut self, forward: bool) {
-        if self.show_lyrics {
+        if self.lyrics.show {
             let (lib, lyr) =
-                cycle_library_focus(self.library_pane_focus, self.lyrics_pane_focus, forward);
+                cycle_library_focus(self.library_pane_focus, self.lyrics.pane_focus, forward);
             self.library_pane_focus = lib;
-            self.lyrics_pane_focus = lyr;
+            self.lyrics.pane_focus = lyr;
             if !lyr {
-                self.lyrics_manual_scroll = false;
+                self.lyrics.manual_scroll = false;
             }
         } else {
             self.library_pane_focus = !self.library_pane_focus;
@@ -2673,9 +2695,9 @@ impl App {
 
         let valid = match kind {
             TrackInfoKind::Playlist => self.list_pos() < self.playlist_cache.len(),
-            TrackInfoKind::SpotifyPlaylist => self.list_pos() < self.spotify_playlists.len(),
+            TrackInfoKind::SpotifyPlaylist => self.list_pos() < self.spotify.playlists.len(),
             TrackInfoKind::SpotifyTrack => {
-                self.list_pos() < self.spotify_playlist_tracks_cache.len()
+                self.list_pos() < self.spotify.playlist_tracks_cache.len()
             }
             _ => maybe_track.is_some(),
         };
@@ -2918,11 +2940,11 @@ impl App {
             .pickers
             .top()
             .map_or(String::new(), |o| o.query.to_lowercase());
-        self.spotify_search_results.clear();
+        self.spotify.search_results.clear();
         if q.is_empty() {
             return;
         }
-        for pl in &self.spotify_playlists {
+        for pl in &self.spotify.playlists {
             for track in &pl.tracks {
                 if track.name.to_lowercase().contains(&q)
                     || track.artists.to_lowercase().contains(&q)
@@ -2933,7 +2955,7 @@ impl App {
                         .to_lowercase()
                         .contains(&q)
                 {
-                    self.spotify_search_results.push((
+                    self.spotify.search_results.push((
                         pl.id.clone(),
                         pl.name.clone(),
                         track.clone(),
@@ -2947,7 +2969,7 @@ impl App {
             .map_or(String::new(), |o| o.query.clone());
         let c = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
-        let seq = self.spotify_web_seq;
+        let seq = self.spotify.web_seq;
         tokio::spawn(async move {
             match c.spotify().search_web(&query).await {
                 Ok(tracks) => {
@@ -2983,7 +3005,7 @@ impl App {
         self.library_category = category.min(LIBRARY_CATEGORIES.len() - 1);
         self.selected_indices.clear();
         self.playlist_tracks_cache.clear();
-        self.spotify_playlist_tracks_cache.clear();
+        self.spotify.playlist_tracks_cache.clear();
         self.set_list_pos(0);
     }
 
@@ -3117,7 +3139,7 @@ impl App {
     pub fn library_list_len(&self) -> usize {
         if self.browse_detail.is_some() {
             if self.library_category == 5 {
-                return self.spotify_playlist_tracks_cache.len();
+                return self.spotify.playlist_tracks_cache.len();
             }
             return self.filtered_tracks().len();
         }
@@ -3125,7 +3147,7 @@ impl App {
             2 => self.unique_albums().len(),
             3 => self.unique_artists().len(),
             4 => self.playlist_cache.len(),
-            5 => self.spotify_playlists.len(),
+            5 => self.spotify.playlists.len(),
             _ => self.filtered_tracks().len(),
         }
     }
@@ -3235,12 +3257,12 @@ impl App {
         if no_image_protocol() {
             return;
         }
-        let next_idx = self.queue_cursor + 1;
-        let Some(track) = self.queue_cache.get(next_idx) else {
-            self.last_queue_preview_cover_fetch_id = None;
-            self.last_queue_preview_cover_fetch_gen = None;
-            self.queue_preview_cover = None;
-            self.queue_preview_cover_stateful = None;
+        let next_idx = self.queue.cursor + 1;
+        let Some(track) = self.queue.cache.get(next_idx) else {
+            self.queue.last_preview_cover_fetch_id = None;
+            self.queue.last_preview_cover_fetch_gen = None;
+            self.queue.preview_cover = None;
+            self.queue.preview_cover_stateful = None;
             return;
         };
         let tid = track.id;
@@ -3248,7 +3270,7 @@ impl App {
         // A failed lookup clears the gen guard so a later preview can retry;
         // this throttle prevents the per-frame render from re-fetching a
         // cover that isn't there, at most once per 30s per track.
-        if let Some((fail_tid, until)) = self.queue_preview_cover_fail_until
+        if let Some((fail_tid, until)) = self.queue.preview_cover_fail_until
             && fail_tid == tid
             && std::time::Instant::now() < until
         {
@@ -3264,28 +3286,28 @@ impl App {
                 u.track.id == tid
                     && u.track.path == track_path
                     && u.cover.is_some()
-                    && self.last_queue_preview_cover_fetch_id != Some(tid)
+                    && self.queue.last_preview_cover_fetch_id != Some(tid)
             })
             .and_then(|u| u.cover.clone());
         if let Some(cover) = reuse {
-            self.queue_preview_cover = Some(cover);
+            self.queue.preview_cover = Some(cover);
             self.queue_preview_cover_sync();
-            self.last_queue_preview_cover_fetch_id = Some(tid);
-            self.last_queue_preview_cover_fetch_gen = None;
+            self.queue.last_preview_cover_fetch_id = Some(tid);
+            self.queue.last_preview_cover_fetch_gen = None;
             return;
         }
         // Generation-guarded dedup: allows `id == 0` tracks to refetch
         // distinctly. Only skip when pending fetch_gen exists.
-        if self.last_queue_preview_cover_fetch_id == Some(tid)
-            && self.last_queue_preview_cover_fetch_gen.is_some()
+        if self.queue.last_preview_cover_fetch_id == Some(tid)
+            && self.queue.last_preview_cover_fetch_gen.is_some()
         {
             return;
         }
         let fetch_gen = self.next_cover_gen();
-        self.last_queue_preview_cover_fetch_id = Some(tid);
-        self.last_queue_preview_cover_fetch_gen = Some(fetch_gen);
-        self.queue_preview_cover = None;
-        self.queue_preview_cover_stateful = None;
+        self.queue.last_preview_cover_fetch_id = Some(tid);
+        self.queue.last_preview_cover_fetch_gen = Some(fetch_gen);
+        self.queue.preview_cover = None;
+        self.queue.preview_cover_stateful = None;
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
@@ -3301,15 +3323,15 @@ impl App {
     }
 
     fn queue_preview_cover_sync(&mut self) {
-        match (&self.queue_preview_cover, &self.np_cover.picker) {
+        match (&self.queue.preview_cover, &self.np_cover.picker) {
             (Some(bytes), Some(picker)) => {
                 if let Ok(img) = image::load_from_memory(bytes) {
-                    self.queue_preview_cover_stateful = Some(picker.new_resize_protocol(img));
+                    self.queue.preview_cover_stateful = Some(picker.new_resize_protocol(img));
                 } else {
-                    self.queue_preview_cover_stateful = None;
+                    self.queue.preview_cover_stateful = None;
                 }
             }
-            _ => self.queue_preview_cover_stateful = None,
+            _ => self.queue.preview_cover_stateful = None,
         }
     }
 
@@ -3434,8 +3456,8 @@ impl App {
             ..
         }) = self.client.queue().list().await
         {
-            self.queue_cache = tracks;
-            self.queue_cursor = cursor as usize;
+            self.queue.cache = tracks;
+            self.queue.cursor = cursor as usize;
         }
     }
 
@@ -3879,7 +3901,7 @@ impl App {
                 let track_path = self.state.current_track.as_ref().map(|t| t.path.clone());
                 let track_id = self.state.current_track.as_ref().map(|t| t.id).unwrap_or(0);
                 let fetch_gen = self.next_lyrics_gen();
-                self.lyrics_pending_gen = Some(fetch_gen);
+                self.lyrics.pending_gen = Some(fetch_gen);
                 let client2 = self.client.clone();
                 let ipc_tx2 = self.ipc_tx.clone();
                 tokio::spawn(async move {
@@ -3953,7 +3975,7 @@ impl App {
             None => return,
         };
         let max = match id {
-            PickerId::Queue => self.queue_cache.len().saturating_sub(1),
+            PickerId::Queue => self.queue.cache.len().saturating_sub(1),
             PickerId::YTSearch => self.yt_results_cache.len().saturating_sub(1),
             PickerId::SearchLibrary => self.search_library_picks().len().saturating_sub(1),
             PickerId::Equalizer => EQ_PRESETS.len().saturating_sub(1),
@@ -3992,7 +4014,7 @@ impl App {
                 .saturating_sub(1)
             }
             PickerId::CommandPalette => {
-                let commands = crate::ui::command_palette_commands(&self.icon_style);
+                let commands = crate::ui::CommandPalette::commands(&self.icon_style);
                 let q = query.to_lowercase();
                 if q.is_empty() {
                     commands.len()
@@ -4000,7 +4022,7 @@ impl App {
                     commands
                         .iter()
                         .filter(|c| {
-                            let lower = c.0.to_lowercase();
+                            let lower = c.icon.to_lowercase();
                             let mut qi = 0usize;
                             for ch in lower.chars() {
                                 if qi < q.len() && ch == q.as_bytes()[qi] as char {
@@ -4027,7 +4049,7 @@ impl App {
             None => return 0,
         };
         match id {
-            PickerId::Queue => self.queue_cache.len(),
+            PickerId::Queue => self.queue.cache.len(),
             PickerId::YTSearch => self.yt_results_cache.len(),
             PickerId::SearchLibrary => self.search_library_picks().len(),
             PickerId::Equalizer => EQ_PRESETS.len(),
@@ -4061,7 +4083,7 @@ impl App {
                 }
             }
             PickerId::CommandPalette => {
-                let commands = crate::ui::command_palette_commands(&self.icon_style);
+                let commands = crate::ui::CommandPalette::commands(&self.icon_style);
                 let q = query.to_lowercase();
                 if q.is_empty() {
                     commands.len()
@@ -4069,7 +4091,7 @@ impl App {
                     commands
                         .iter()
                         .filter(|c| {
-                            let lower = c.0.to_lowercase();
+                            let lower = c.icon.to_lowercase();
                             let mut qi = 0usize;
                             for ch in lower.chars() {
                                 if qi < q.len() && ch == q.as_bytes()[qi] as char {
@@ -4180,12 +4202,12 @@ impl App {
                         .pickers
                         .top()
                         .is_some_and(|o| o.id == PickerId::SpotifyLink)
-                        && self.spotify_oauth_pending
+                        && self.spotify.oauth_pending
                     {
                         // Cancel the pending OAuth browser flow.
-                        self.spotify_oauth_pending = false;
-                        self.spotify_oauth_url = None;
-                        self.spotify_oauth_error = None;
+                        self.spotify.oauth_pending = false;
+                        self.spotify.oauth_url = None;
+                        self.spotify.oauth_error = None;
                         let c = self.client.clone();
                         tokio::spawn(async move {
                             let _ = c.spotify().oauth_cancel().await;
@@ -4339,7 +4361,7 @@ impl App {
                             self.browse_detail = None;
                             self.set_list_pos(0);
                             if self.library_category == 5 {
-                                self.spotify_playlist_tracks_cache.clear();
+                                self.spotify.playlist_tracks_cache.clear();
                             }
                         } else {
                             return false;
@@ -4386,9 +4408,9 @@ impl App {
                                 self.send_high(TuiCommand::PlayPause);
                             }
                             PlaybackStatus::Stopped => {
-                                if !self.queue_cache.is_empty() {
-                                    let idx = self.queue_cursor.min(self.queue_cache.len() - 1);
-                                    let path = self.queue_cache[idx].path.clone();
+                                if !self.queue.cache.is_empty() {
+                                    let idx = self.queue.cursor.min(self.queue.cache.len() - 1);
+                                    let path = self.queue.cache[idx].path.clone();
                                     self.send_high(TuiCommand::Play(path));
                                 }
                             }
@@ -4595,11 +4617,11 @@ impl App {
                         self.send_high(TuiCommand::CheckHealth);
                     }
                     Some(KeyboardAction::FocusLeft) => {
-                        if self.show_lyrics {
-                            if self.lyrics_pane_focus {
+                        if self.lyrics.show {
+                            if self.lyrics.pane_focus {
                                 // lyrics → right (track) pane
-                                self.lyrics_pane_focus = false;
-                                self.lyrics_manual_scroll = false;
+                                self.lyrics.pane_focus = false;
+                                self.lyrics.manual_scroll = false;
                                 self.library_pane_focus = false;
                             } else {
                                 self.library_pane_focus = true;
@@ -4609,14 +4631,14 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::FocusRight) => {
-                        if self.show_lyrics {
+                        if self.lyrics.show {
                             if self.library_pane_focus {
                                 // left → right (track) pane
                                 self.library_pane_focus = false;
                                 self.update_track_popup();
                             } else {
                                 // right pane → lyrics pane
-                                self.lyrics_pane_focus = true;
+                                self.lyrics.pane_focus = true;
                             }
                         } else {
                             self.library_pane_focus = false;
@@ -4624,19 +4646,19 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::Back) => {
-                        if self.lyrics_pane_focus {
+                        if self.lyrics.pane_focus {
                             // Exit lyrics focus back to the track pane.
-                            self.lyrics_pane_focus = false;
-                            self.lyrics_manual_scroll = false;
+                            self.lyrics.pane_focus = false;
+                            self.lyrics.manual_scroll = false;
                         } else {
                             let is_narrow = self.terminal_cols < 60;
-                            if is_narrow && self.show_lyrics {
-                                self.show_lyrics = false;
+                            if is_narrow && self.lyrics.show {
+                                self.lyrics.show = false;
                             } else if self.browse_detail.is_some() {
                                 self.browse_detail = None;
                                 self.set_list_pos(0);
                                 if self.library_category == 5 {
-                                    self.spotify_playlist_tracks_cache.clear();
+                                    self.spotify.playlist_tracks_cache.clear();
                                 }
                             } else if !self.library_pane_focus {
                                 self.library_pane_focus = true;
@@ -4644,16 +4666,16 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::FetchLyrics) => {
-                        self.show_lyrics = !self.show_lyrics;
-                        if !self.show_lyrics {
-                            self.lyrics_pane_focus = false;
-                            self.lyrics_manual_scroll = false;
+                        self.lyrics.show = !self.lyrics.show;
+                        if !self.lyrics.show {
+                            self.lyrics.pane_focus = false;
+                            self.lyrics.manual_scroll = false;
                         }
-                        if self.show_lyrics
-                            && self.current_lyrics.is_none()
-                            && !self.lyrics_fetching
+                        if self.lyrics.show
+                            && self.lyrics.current.is_none()
+                            && !self.lyrics.fetching
                         {
-                            self.lyrics_fetching = true;
+                            self.lyrics.fetching = true;
                             self.send_high(TuiCommand::FetchLyrics);
                         }
                         self.dismiss_track_popup();
@@ -4663,9 +4685,9 @@ impl App {
                         self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::MoveUp) => {
-                        if self.lyrics_pane_focus && self.show_lyrics {
-                            self.lyrics_manual_scroll = true;
-                            self.lyrics_scroll = self.lyrics_scroll.saturating_sub(1);
+                        if self.lyrics.pane_focus && self.lyrics.show {
+                            self.lyrics.manual_scroll = true;
+                            self.lyrics.scroll = self.lyrics.scroll.saturating_sub(1);
                         } else if self.library_pane_focus {
                             let new_cat = self.library_category.saturating_sub(1);
                             if new_cat != self.library_category {
@@ -4677,14 +4699,15 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::MoveDown) => {
-                        if self.lyrics_pane_focus && self.show_lyrics {
-                            self.lyrics_manual_scroll = true;
+                        if self.lyrics.pane_focus && self.lyrics.show {
+                            self.lyrics.manual_scroll = true;
                             let max = self
-                                .current_lyrics
+                                .lyrics
+                                .current
                                 .as_ref()
                                 .map(|l| l.lines.len().saturating_sub(1))
                                 .unwrap_or(0);
-                            self.lyrics_scroll = (self.lyrics_scroll + 1).min(max);
+                            self.lyrics.scroll = (self.lyrics.scroll + 1).min(max);
                         } else if self.library_pane_focus {
                             let new_cat =
                                 (self.library_category + 1).min(LIBRARY_CATEGORIES.len() - 1);
@@ -4699,10 +4722,10 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::PageUp) => {
-                        if self.lyrics_pane_focus && self.show_lyrics {
-                            self.lyrics_manual_scroll = true;
+                        if self.lyrics.pane_focus && self.lyrics.show {
+                            self.lyrics.manual_scroll = true;
                             let page = self.viewport_items.max(1);
-                            self.lyrics_scroll = self.lyrics_scroll.saturating_sub(page);
+                            self.lyrics.scroll = self.lyrics.scroll.saturating_sub(page);
                         } else if !self.library_pane_focus {
                             let page = self.viewport_items.max(1);
                             self.set_list_pos(self.list_pos().saturating_sub(page));
@@ -4710,15 +4733,16 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::PageDown) => {
-                        if self.lyrics_pane_focus && self.show_lyrics {
-                            self.lyrics_manual_scroll = true;
+                        if self.lyrics.pane_focus && self.lyrics.show {
+                            self.lyrics.manual_scroll = true;
                             let page = self.viewport_items.max(1);
                             let max = self
-                                .current_lyrics
+                                .lyrics
+                                .current
                                 .as_ref()
                                 .map(|l| l.lines.len().saturating_sub(1))
                                 .unwrap_or(0);
-                            self.lyrics_scroll = (self.lyrics_scroll + page).min(max);
+                            self.lyrics.scroll = (self.lyrics.scroll + page).min(max);
                         } else if !self.library_pane_focus {
                             let page = self.viewport_items.max(1);
                             let max_list = self.library_list_len().saturating_sub(1);
@@ -4746,22 +4770,23 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::Top) => {
-                        if self.lyrics_pane_focus && self.show_lyrics {
-                            self.lyrics_manual_scroll = true;
-                            self.lyrics_scroll = 0;
+                        if self.lyrics.pane_focus && self.lyrics.show {
+                            self.lyrics.manual_scroll = true;
+                            self.lyrics.scroll = 0;
                         } else if !self.library_pane_focus {
                             self.set_list_pos(0);
                         }
                     }
                     Some(KeyboardAction::Bottom) => {
-                        if self.lyrics_pane_focus && self.show_lyrics {
-                            self.lyrics_manual_scroll = true;
+                        if self.lyrics.pane_focus && self.lyrics.show {
+                            self.lyrics.manual_scroll = true;
                             let max = self
-                                .current_lyrics
+                                .lyrics
+                                .current
                                 .as_ref()
                                 .map(|l| l.lines.len().saturating_sub(1))
                                 .unwrap_or(0);
-                            self.lyrics_scroll = max;
+                            self.lyrics.scroll = max;
                         } else if !self.library_pane_focus {
                             let max_list = self.library_list_len().saturating_sub(1);
                             self.set_list_pos(max_list);
@@ -4777,8 +4802,8 @@ impl App {
                                 if self.library_category == 5 {
                                     // Spotify playlist: resolve track to a playable
                                     // local stream (via YouTube) and enqueue it.
-                                    if self.list_pos() < self.spotify_playlist_tracks_cache.len() {
-                                        let track = self.spotify_playlist_tracks_cache
+                                    if self.list_pos() < self.spotify.playlist_tracks_cache.len() {
+                                        let track = self.spotify.playlist_tracks_cache
                                             [self.list_pos()]
                                         .clone();
                                         // Resolve the track to a playable local
@@ -4853,11 +4878,11 @@ impl App {
                                 }
                             } else if self.library_category == 5 {
                                 // Spotify: select playlist → show its cached tracks
-                                if self.list_pos() < self.spotify_playlists.len() {
-                                    let playlist = self.spotify_playlists[self.list_pos()].clone();
+                                if self.list_pos() < self.spotify.playlists.len() {
+                                    let playlist = self.spotify.playlists[self.list_pos()].clone();
                                     self.browse_detail = Some(playlist.id.clone());
                                     self.set_list_pos(0);
-                                    self.spotify_playlist_tracks_cache.clear();
+                                    self.spotify.playlist_tracks_cache.clear();
                                     let c = self.client.clone();
                                     let ipc_tx2 = self.ipc_tx.clone();
                                     let pid = playlist.id;
@@ -5143,11 +5168,11 @@ impl App {
                 PickerId::SleepTimer => self.sleep_timer.remaining = None,
                 PickerId::SpotifyLink => {
                     // Closing the link picker ends any pending/cancelled flow.
-                    self.spotify_oauth_pending = false;
-                    self.spotify_oauth_url = None;
-                    self.spotify_oauth_error = None;
+                    self.spotify.oauth_pending = false;
+                    self.spotify.oauth_url = None;
+                    self.spotify.oauth_error = None;
                 }
-                PickerId::SpotifySearch => self.spotify_search_results.clear(),
+                PickerId::SpotifySearch => self.spotify.search_results.clear(),
                 PickerId::EditMetadata => {
                     self.metadata.cover = None;
                     self.metadata.cover_stateful = None;
@@ -5158,11 +5183,11 @@ impl App {
                     // Robust: clear preview dedup state so reopen does not retain
                     // stale fetch ids/gens and show blank until selection moves.
                     self.clear_search_previews();
-                    self.clear_queue_preview();
+                    self.clear_preview();
                     self.clear_popup_cover();
                 }
                 PickerId::Queue => {
-                    self.clear_queue_preview();
+                    self.clear_preview();
                 }
                 PickerId::PlaylistTrackSelect => {
                     self.pending_playlist_id = None;
@@ -5218,7 +5243,7 @@ impl App {
         // While the OAuth browser flow is pending, the SpotifyLink picker is in
         // a waiting state; ignore all key input except Esc (handled in
         // handle_key) so the user can't mutate the now-irrelevant input.
-        if self.spotify_oauth_pending
+        if self.spotify.oauth_pending
             && self
                 .pickers
                 .top()
@@ -5237,13 +5262,13 @@ impl App {
                 .top()
                 .is_some_and(|o| o.id == PickerId::SpotifySearch)
         {
-            if !self.spotify_search_results.is_empty() {
+            if !self.spotify.search_results.is_empty() {
                 let idx = self
                     .pickers
                     .top()
                     .map_or(0, |o| o.selected)
-                    .min(self.spotify_search_results.len() - 1);
-                let (playlist_id, _, track) = self.spotify_search_results[idx].clone();
+                    .min(self.spotify.search_results.len() - 1);
+                let (playlist_id, _, track) = self.spotify.search_results[idx].clone();
                 let track_index = track.index;
                 let c = self.client.clone();
                 let ipc_tx = self.ipc_tx.clone();
@@ -5307,38 +5332,38 @@ impl App {
 
         if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::Queue)) {
             // Queue move mode: Ctrl+j/k to move, Enter to confirm, Esc to cancel
-            if self.queue_move_index.is_some() {
+            if self.queue.move_index.is_some() {
                 match key.code {
                     KeyCode::Esc => {
                         // Cancel move mode
-                        self.queue_move_index = None;
-                        self.queue_move_target = 0;
+                        self.queue.move_index = None;
+                        self.queue.move_target = 0;
                         if let Some(top) = self.pickers.top_mut() {
-                            top.selected = self.queue_move_target;
+                            top.selected = self.queue.move_target;
                         }
                         return;
                     }
                     KeyCode::Enter => {
                         // Confirm move
-                        if let Some(from_idx) = self.queue_move_index {
-                            let to_idx = self.queue_move_target;
-                            if from_idx != to_idx && to_idx < self.queue_cache.len() {
+                        if let Some(from_idx) = self.queue.move_index {
+                            let to_idx = self.queue.move_target;
+                            if from_idx != to_idx && to_idx < self.queue.cache.len() {
                                 self.send_high(TuiCommand::QueueMove(
                                     from_idx as u64,
                                     to_idx as u64,
                                 ));
                             }
                         }
-                        self.queue_move_index = None;
-                        self.queue_move_target = 0;
+                        self.queue.move_index = None;
+                        self.queue.move_target = 0;
                         return;
                     }
                     KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                         // Move down
                         if let Some(top) = self.pickers.top_mut() {
                             top.selected =
-                                (top.selected + 1).min(self.queue_cache.len().saturating_sub(1));
-                            self.queue_move_target = top.selected;
+                                (top.selected + 1).min(self.queue.cache.len().saturating_sub(1));
+                            self.queue.move_target = top.selected;
                         }
                         return;
                     }
@@ -5346,7 +5371,7 @@ impl App {
                         // Move up
                         if let Some(top) = self.pickers.top_mut() {
                             top.selected = top.selected.saturating_sub(1);
-                            self.queue_move_target = top.selected;
+                            self.queue.move_target = top.selected;
                         }
                         return;
                     }
@@ -5356,36 +5381,36 @@ impl App {
                 // Enter move mode when Ctrl+j or Ctrl+k is pressed
                 match key.code {
                     KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        if !self.queue_cache.is_empty() {
-                            self.queue_move_index = Some(
+                        if !self.queue.cache.is_empty() {
+                            self.queue.move_index = Some(
                                 self.pickers
                                     .top()
                                     .map(|o| o.selected)
                                     .unwrap_or(0)
-                                    .min(self.queue_cache.len().saturating_sub(1)),
+                                    .min(self.queue.cache.len().saturating_sub(1)),
                             );
-                            self.queue_move_target = self.queue_move_index.unwrap();
+                            self.queue.move_target = self.queue.move_index.unwrap();
                             if let Some(top) = self.pickers.top_mut() {
                                 top.selected = (top.selected + 1)
-                                    .min(self.queue_cache.len().saturating_sub(1));
-                                self.queue_move_target = top.selected;
+                                    .min(self.queue.cache.len().saturating_sub(1));
+                                self.queue.move_target = top.selected;
                             }
                         }
                         return;
                     }
                     KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                        if !self.queue_cache.is_empty() {
-                            self.queue_move_index = Some(
+                        if !self.queue.cache.is_empty() {
+                            self.queue.move_index = Some(
                                 self.pickers
                                     .top()
                                     .map(|o| o.selected)
                                     .unwrap_or(0)
-                                    .min(self.queue_cache.len().saturating_sub(1)),
+                                    .min(self.queue.cache.len().saturating_sub(1)),
                             );
-                            self.queue_move_target = self.queue_move_index.unwrap();
+                            self.queue.move_target = self.queue.move_index.unwrap();
                             if let Some(top) = self.pickers.top_mut() {
                                 top.selected = top.selected.saturating_sub(1);
-                                self.queue_move_target = top.selected;
+                                self.queue.move_target = top.selected;
                             }
                         }
                         return;
@@ -5545,17 +5570,17 @@ impl App {
                                     self.state.shuffle = !self.state.shuffle;
                                 }
                                 3 => {
-                                    let new_enabled = !self.state.eq_enabled;
-                                    self.state.eq_enabled = new_enabled;
+                                    let new_enabled = !self.state.audio.eq_enabled;
+                                    self.state.audio.eq_enabled = new_enabled;
                                     let c = self.client.clone();
                                     tokio::spawn(async move {
                                         let _ = c.set_eq_enabled(new_enabled).await;
                                     });
                                 }
                                 4 => {
-                                    let new_enabled = !self.state.reverb.enabled;
-                                    let room_size = self.state.reverb.room_size;
-                                    self.state.reverb.enabled = new_enabled;
+                                    let new_enabled = !self.state.audio.reverb.enabled;
+                                    let room_size = self.state.audio.reverb.room_size;
+                                    self.state.audio.reverb.enabled = new_enabled;
                                     let c = self.client.clone();
                                     tokio::spawn(async move {
                                         let _ = c.set_reverb(new_enabled, room_size).await;
@@ -5644,17 +5669,17 @@ impl App {
                                     self.state.shuffle = !self.state.shuffle;
                                 }
                                 3 => {
-                                    let new_enabled = !self.state.eq_enabled;
-                                    self.state.eq_enabled = new_enabled;
+                                    let new_enabled = !self.state.audio.eq_enabled;
+                                    self.state.audio.eq_enabled = new_enabled;
                                     let c = self.client.clone();
                                     tokio::spawn(async move {
                                         let _ = c.set_eq_enabled(new_enabled).await;
                                     });
                                 }
                                 4 => {
-                                    let new_enabled = !self.state.reverb.enabled;
-                                    let room_size = self.state.reverb.room_size;
-                                    self.state.reverb.enabled = new_enabled;
+                                    let new_enabled = !self.state.audio.reverb.enabled;
+                                    let room_size = self.state.audio.reverb.room_size;
+                                    self.state.audio.reverb.enabled = new_enabled;
                                     let c = self.client.clone();
                                     tokio::spawn(async move {
                                         let _ = c.set_reverb(new_enabled, room_size).await;
@@ -5793,17 +5818,17 @@ impl App {
                                     self.pickers.open(PickerId::Crossfade);
                                 }
                                 3 => {
-                                    let new_enabled = !self.state.eq_enabled;
-                                    self.state.eq_enabled = new_enabled;
+                                    let new_enabled = !self.state.audio.eq_enabled;
+                                    self.state.audio.eq_enabled = new_enabled;
                                     let c = self.client.clone();
                                     tokio::spawn(async move {
                                         let _ = c.set_eq_enabled(new_enabled).await;
                                     });
                                 }
                                 4 => {
-                                    let new_enabled = !self.state.reverb.enabled;
-                                    let room_size = self.state.reverb.room_size;
-                                    self.state.reverb.enabled = new_enabled;
+                                    let new_enabled = !self.state.audio.reverb.enabled;
+                                    let room_size = self.state.audio.reverb.room_size;
+                                    self.state.audio.reverb.enabled = new_enabled;
                                     let c = self.client.clone();
                                     tokio::spawn(async move {
                                         let _ = c.set_reverb(new_enabled, room_size).await;
@@ -5941,13 +5966,13 @@ impl App {
                                     });
                                 }
                                 3 => {
-                                    self.spotify_link_input.clear();
-                                    self.spotify_oauth_port = "8990".to_string();
-                                    self.spotify_link_field = 0;
+                                    self.spotify.link_input.clear();
+                                    self.spotify.oauth_port = "8990".to_string();
+                                    self.spotify.link_field = 0;
                                     if let Some(cid) = gtm_core::secret::get_secret(
                                         gtm_core::secret::SPOTIFY_CLIENT_ID_KEY,
                                     ) {
-                                        self.spotify_link_input = cid;
+                                        self.spotify.link_input = cid;
                                     }
                                     self.pickers.open(PickerId::SpotifyLink);
                                 }
@@ -5996,13 +6021,13 @@ impl App {
                                     });
                                 }
                                 7 => {
-                                    self.spotify_link_input.clear();
-                                    self.spotify_oauth_port = "8990".to_string();
-                                    self.spotify_link_field = 0;
+                                    self.spotify.link_input.clear();
+                                    self.spotify.oauth_port = "8990".to_string();
+                                    self.spotify.link_field = 0;
                                     if let Some(cid) = gtm_core::secret::get_secret(
                                         gtm_core::secret::SPOTIFY_CLIENT_ID_KEY,
                                     ) {
-                                        self.spotify_link_input = cid;
+                                        self.spotify.link_input = cid;
                                     }
                                     self.pickers.open(PickerId::SpotifyLink);
                                 }
@@ -6084,9 +6109,9 @@ impl App {
             KeyCode::Char('k') if key.modifiers == KeyModifiers::CONTROL => {
                 if let Some(top) = self.pickers.top()
                     && top.id == PickerId::Queue
-                    && !self.queue_cache.is_empty()
+                    && !self.queue.cache.is_empty()
                 {
-                    let idx = top.selected.min(self.queue_cache.len() - 1);
+                    let idx = top.selected.min(self.queue.cache.len() - 1);
                     if idx > 0 {
                         let _ = tx
                             .send(TuiCommand::QueueMove(
@@ -6101,10 +6126,10 @@ impl App {
             KeyCode::Char('j') if key.modifiers == KeyModifiers::CONTROL => {
                 if let Some(top) = self.pickers.top()
                     && top.id == PickerId::Queue
-                    && !self.queue_cache.is_empty()
+                    && !self.queue.cache.is_empty()
                 {
-                    let idx = top.selected.min(self.queue_cache.len() - 1);
-                    if idx < self.queue_cache.len() - 1 {
+                    let idx = top.selected.min(self.queue.cache.len() - 1);
+                    if idx < self.queue.cache.len() - 1 {
                         let _ = tx
                             .send(TuiCommand::QueueMove(idx as u64, (idx + 1) as u64))
                             .await;
@@ -6245,9 +6270,9 @@ impl App {
                 if let Some(top) = self.pickers.top() {
                     match top.id {
                         PickerId::SpotifySearch => {
-                            let not_linked = self.spotify_status.as_ref().is_none_or(|s| !s.linked);
+                            let not_linked = self.spotify.status.as_ref().is_none_or(|s| !s.linked);
                             if not_linked {
-                                let token = self.spotify_token_input.trim().to_string();
+                                let token = self.spotify.token_input.trim().to_string();
                                 if token.is_empty() {
                                     self.notify_typed(
                                         "System",
@@ -6292,9 +6317,9 @@ impl App {
                                             let _ = ipc_tx.send(IpcResult::SpotifyStatus(s));
                                         }
                                     });
-                                    self.spotify_token_input.clear();
+                                    self.spotify.token_input.clear();
                                 }
-                            } else if self.spotify_search_results.is_empty() {
+                            } else if self.spotify.search_results.is_empty() {
                                 self.notify_typed(
                                     "System",
                                     "Type to search your synced Spotify playlists",
@@ -6303,9 +6328,9 @@ impl App {
                                     NotifType::Spotify,
                                 );
                             } else {
-                                let idx = top.selected.min(self.spotify_search_results.len() - 1);
+                                let idx = top.selected.min(self.spotify.search_results.len() - 1);
                                 let (playlist_id, _, track) =
-                                    self.spotify_search_results[idx].clone();
+                                    self.spotify.search_results[idx].clone();
                                 let track_index = track.index;
                                 let c = self.client.clone();
                                 let ipc_tx = self.ipc_tx.clone();
@@ -6369,14 +6394,15 @@ impl App {
                         PickerId::SpotifyLink => {
                             // An empty entry falls back to librespot's public
                             // desktop client id so no dashboard app is needed.
-                            let client_id = self.spotify_link_input.trim().to_string();
+                            let client_id = self.spotify.link_input.trim().to_string();
                             let client_id = if client_id.is_empty() {
                                 gtm_core::spotify::LIBRESPOT_CLIENT_ID.to_string()
                             } else {
                                 client_id
                             };
                             let port = self
-                                .spotify_oauth_port
+                                .spotify
+                                .oauth_port
                                 .trim()
                                 .parse::<u16>()
                                 .unwrap_or(8990);
@@ -6387,12 +6413,12 @@ impl App {
                             );
                             let c = self.client.clone();
                             let ipc_tx = self.ipc_tx.clone();
-                            self.spotify_link_input.clear();
+                            self.spotify.link_input.clear();
                             // Keep the picker open and show a waiting state until
                             // the daemon reports the link completed.
-                            self.spotify_oauth_pending = true;
-                            self.spotify_oauth_url = None;
-                            self.spotify_oauth_error = None;
+                            self.spotify.oauth_pending = true;
+                            self.spotify.oauth_url = None;
+                            self.spotify.oauth_error = None;
                             tokio::spawn(async move {
                                 match c.spotify().oauth_start(&client_id, port).await {
                                     Ok(url) => {
@@ -6423,12 +6449,12 @@ impl App {
                             });
                         }
                         PickerId::Queue => {
-                            if !self.queue_cache.is_empty() {
-                                let idx = top.selected.min(self.queue_cache.len() - 1);
-                                let path = self.queue_cache[idx].path.clone();
+                            if !self.queue.cache.is_empty() {
+                                let idx = top.selected.min(self.queue.cache.len() - 1);
+                                let path = self.queue.cache[idx].path.clone();
                                 // Immediately update queue_cursor so the up-next preview
                                 // reflects the newly selected track's next track.
-                                self.queue_cursor = idx;
+                                self.queue.cursor = idx;
                                 self.send_high(TuiCommand::Play(path));
                             }
                         }
@@ -6532,16 +6558,16 @@ impl App {
                             self.cycle_notification_mode(1);
                         }
                         PickerId::CommandPalette => {
-                            let commands = crate::ui::command_palette_commands(&self.icon_style);
+                            let commands = crate::ui::CommandPalette::commands(&self.icon_style);
                             let query = top.query.to_lowercase();
-                            let filtered: Vec<&(&str, &str, &str)> = if query.is_empty() {
+                            let filtered: Vec<&crate::ui::Command> = if query.is_empty() {
                                 commands.iter().collect()
                             } else {
                                 commands
                                     .iter()
-                                    .filter(|c| !(c.1.is_empty() && c.2.is_empty()))
+                                    .filter(|c| !(c.keys.is_empty() && c.hint.is_empty()))
                                     .filter(|c| {
-                                        let lower = c.0.to_lowercase();
+                                        let lower = c.icon.to_lowercase();
                                         let mut qi = 0usize;
                                         for ch in lower.chars() {
                                             if qi < query.len()
@@ -6559,7 +6585,7 @@ impl App {
                                 // Dispatch on the stable action id, never on the
                                 // display label, so the highlighted row's command
                                 // is what actually runs.
-                                let action = cmd.2;
+                                let action = cmd.hint;
                                 if action == "play/pause" {
                                     self.send_high(TuiCommand::PlayPause);
                                 } else if action == "next track" {
@@ -6620,7 +6646,7 @@ impl App {
                                 } else if action == "spotify" {
                                     self.pickers.open(PickerId::SpotifySearch);
                                 } else if action == "fetch lyrics" {
-                                    self.show_lyrics = true;
+                                    self.lyrics.show = true;
                                     self.send_high(TuiCommand::FetchLyrics);
                                 } else if action == "progress style" {
                                     self.pickers.open(PickerId::ProgressStyle);
@@ -7154,23 +7180,23 @@ impl App {
                             self.metadata.fields[self.metadata.field_idx].push(c);
                         }
                         PickerId::SpotifySearch => {
-                            if self.spotify_status.as_ref().is_none_or(|s| !s.linked) {
-                                self.spotify_token_input.push(c);
+                            if self.spotify.status.as_ref().is_none_or(|s| !s.linked) {
+                                self.spotify.token_input.push(c);
                             } else {
                                 top.query.push(c);
                                 // Invalidate stale results immediately and
                                 // re-search after the debounce elapses.
-                                self.spotify_search_results.clear();
-                                self.spotify_web_seq = self.spotify_web_seq.wrapping_add(1);
-                                self.spotify_search_debounce =
+                                self.spotify.search_results.clear();
+                                self.spotify.web_seq = self.spotify.web_seq.wrapping_add(1);
+                                self.spotify.search_debounce =
                                     Some(std::time::Instant::now() + Duration::from_millis(500));
                             }
                         }
                         PickerId::SpotifyLink => {
-                            if self.spotify_link_field == 0 {
-                                self.spotify_link_input.push(c);
+                            if self.spotify.link_field == 0 {
+                                self.spotify.link_input.push(c);
                             } else {
-                                self.spotify_oauth_port.push(c);
+                                self.spotify.oauth_port.push(c);
                             }
                         }
                         PickerId::PlaylistSelect if self.playlist_creating => {
@@ -7199,7 +7225,7 @@ impl App {
                     } else if top.id == PickerId::EditMetadata {
                         self.metadata.field_idx = (self.metadata.field_idx + 1) % 7;
                     } else if top.id == PickerId::SpotifyLink {
-                        self.spotify_link_field = (self.spotify_link_field + 1) % 2;
+                        self.spotify.link_field = (self.spotify.link_field + 1) % 2;
                     }
                 }
             }
@@ -7210,21 +7236,21 @@ impl App {
                             self.metadata.fields[self.metadata.field_idx].pop();
                         }
                         PickerId::SpotifySearch => {
-                            if self.spotify_status.as_ref().is_none_or(|s| !s.linked) {
-                                self.spotify_token_input.pop();
+                            if self.spotify.status.as_ref().is_none_or(|s| !s.linked) {
+                                self.spotify.token_input.pop();
                             } else {
                                 top.query.pop();
-                                self.spotify_search_results.clear();
-                                self.spotify_web_seq = self.spotify_web_seq.wrapping_add(1);
-                                self.spotify_search_debounce =
+                                self.spotify.search_results.clear();
+                                self.spotify.web_seq = self.spotify.web_seq.wrapping_add(1);
+                                self.spotify.search_debounce =
                                     Some(std::time::Instant::now() + Duration::from_millis(500));
                             }
                         }
                         PickerId::SpotifyLink => {
-                            if self.spotify_link_field == 0 {
-                                self.spotify_link_input.pop();
+                            if self.spotify.link_field == 0 {
+                                self.spotify.link_input.pop();
                             } else {
-                                self.spotify_oauth_port.pop();
+                                self.spotify.oauth_port.pop();
                             }
                         }
                         PickerId::PlaylistSelect if self.playlist_creating => {
@@ -7250,21 +7276,21 @@ impl App {
         if let Some(top) = self.pickers.top_mut() {
             match top.id {
                 PickerId::SpotifySearch => {
-                    if self.spotify_status.as_ref().is_none_or(|s| !s.linked) {
-                        self.spotify_token_input.push_str(text);
+                    if self.spotify.status.as_ref().is_none_or(|s| !s.linked) {
+                        self.spotify.token_input.push_str(text);
                     } else {
                         top.query.push_str(text);
-                        self.spotify_search_results.clear();
-                        self.spotify_web_seq = self.spotify_web_seq.wrapping_add(1);
-                        self.spotify_search_debounce =
+                        self.spotify.search_results.clear();
+                        self.spotify.web_seq = self.spotify.web_seq.wrapping_add(1);
+                        self.spotify.search_debounce =
                             Some(std::time::Instant::now() + Duration::from_millis(500));
                     }
                 }
                 PickerId::SpotifyLink => {
-                    if self.spotify_link_field == 0 {
-                        self.spotify_link_input.push_str(text);
+                    if self.spotify.link_field == 0 {
+                        self.spotify.link_input.push_str(text);
                     } else {
-                        self.spotify_oauth_port.push_str(text);
+                        self.spotify.oauth_port.push_str(text);
                     }
                 }
                 PickerId::EditMetadata => {
@@ -7296,7 +7322,7 @@ impl App {
         {
             let idx = top.selected.min(EQ_PRESETS.len() - 1);
             self.send_high(TuiCommand::SetEqPreset(EQ_PRESETS[idx]));
-            self.state.eq_preset = EQ_PRESETS[idx];
+            self.state.audio.eq_preset = EQ_PRESETS[idx];
         }
     }
 
