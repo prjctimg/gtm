@@ -114,6 +114,8 @@ pub struct Prefs {
     auto_fetch_lyrics: bool,
     #[serde(default = "default_icon_style")]
     icon_style: String,
+    #[serde(default)]
+    hide_footer: bool,
 }
 
 fn default_cover_provider() -> String {
@@ -209,6 +211,7 @@ impl Default for Prefs {
             cover_provider: default_cover_provider(),
             auto_fetch_lyrics: default_auto_fetch_lyrics(),
             icon_style: default_icon_style(),
+            hide_footer: false,
         }
     }
 }
@@ -744,6 +747,7 @@ pub struct App {
     pub show_health_on_report: bool,
     pub health_report: Option<gtm_core::ipc::HealthReport>,
     pub hide_help_bar: bool,
+    pub hide_footer: bool,
     pub pending_suspend: bool,
     last_config_mtime: Option<std::time::SystemTime>,
 }
@@ -1209,6 +1213,7 @@ impl App {
             show_health_on_report: false,
             health_report: None,
             hide_help_bar: true,
+            hide_footer: false,
             pending_suspend: false,
             last_config_mtime: std::fs::metadata(prefs_path())
                 .ok()
@@ -1282,6 +1287,9 @@ impl App {
             let m = NotifMode::from_str_lossy(v);
             self.notification_modes.insert(t, m);
         }
+
+        // Hide footer
+        self.hide_footer = prefs.hide_footer;
     }
 
     pub fn cmd_tx(&self) -> mpsc::Sender<TuiCommand> {
@@ -1324,6 +1332,7 @@ impl App {
             cover_provider: self.cover_provider.clone(),
             auto_fetch_lyrics: self.auto_fetch_lyrics,
             icon_style: self.icon_style.clone(),
+            hide_footer: self.hide_footer,
         }
     }
 
@@ -4179,7 +4188,7 @@ impl App {
                 }
                 _ => {}
             },
-            _ => {}
+            event::Event::FocusGained | event::Event::FocusLost | event::Event::Resize(_, _) => {}
         }
         true
     }
@@ -4418,11 +4427,53 @@ impl App {
                     }
                     Some(KeyboardAction::Next) => {
                         self.set_last_action("Next");
-                        self.send_high(TuiCommand::Next);
+                        if self.multiselect_mode && !self.selected_indices.is_empty() {
+                            let indices: Vec<usize> =
+                                self.selected_indices.iter().copied().collect();
+                            let count = indices.len();
+                            self.pending_prompt = Some(PendingPrompt {
+                                message: format!("Queue {count} selected track(s)? [y/N]"),
+                                confirm_keys: vec![
+                                    KeyCode::Char('y'),
+                                    KeyCode::Char('Y'),
+                                    KeyCode::Enter,
+                                ],
+                                cancel_keys: vec![
+                                    KeyCode::Char('n'),
+                                    KeyCode::Char('N'),
+                                    KeyCode::Esc,
+                                    KeyCode::Char('q'),
+                                ],
+                                prompt_type: PromptType::MultiselectAddToQueue,
+                            });
+                        } else {
+                            self.send_high(TuiCommand::Next);
+                        }
                     }
                     Some(KeyboardAction::Prev) => {
                         self.set_last_action("Previous");
-                        self.send_high(TuiCommand::Prev);
+                        if self.multiselect_mode && !self.selected_indices.is_empty() {
+                            let indices: Vec<usize> =
+                                self.selected_indices.iter().copied().collect();
+                            let count = indices.len();
+                            self.pending_prompt = Some(PendingPrompt {
+                                message: format!("Queue {count} selected track(s)? [y/N]"),
+                                confirm_keys: vec![
+                                    KeyCode::Char('y'),
+                                    KeyCode::Char('Y'),
+                                    KeyCode::Enter,
+                                ],
+                                cancel_keys: vec![
+                                    KeyCode::Char('n'),
+                                    KeyCode::Char('N'),
+                                    KeyCode::Esc,
+                                    KeyCode::Char('q'),
+                                ],
+                                prompt_type: PromptType::MultiselectAddToQueue,
+                            });
+                        } else {
+                            self.send_high(TuiCommand::Prev);
+                        }
                     }
                     Some(KeyboardAction::Stop) => {
                         self.set_last_action("Stop");
@@ -6033,6 +6084,10 @@ impl App {
                                 }
                                 _ => {}
                             },
+                            9 => {
+                                self.hide_footer = !self.hide_footer;
+                                save_prefs(&self.current_prefs());
+                            }
                             _ => {}
                         }
                     }
@@ -6180,6 +6235,14 @@ impl App {
                 self.clamp_picker_selection();
                 self.apply_eq_on_navigation().await;
                 self.apply_preset_preview();
+                // Refresh picker preview cover for SearchLibrary when selection changes
+                if self
+                    .pickers
+                    .top()
+                    .is_some_and(|t| t.id == PickerId::SearchLibrary)
+                {
+                    self.update_picker_preview();
+                }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 let has_input = matches!(
@@ -6225,6 +6288,14 @@ impl App {
                 self.clamp_picker_selection();
                 self.apply_eq_on_navigation().await;
                 self.apply_preset_preview();
+                // Refresh picker preview cover for SearchLibrary when selection changes
+                if self
+                    .pickers
+                    .top()
+                    .is_some_and(|t| t.id == PickerId::SearchLibrary)
+                {
+                    self.update_picker_preview();
+                }
             }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if matches!(

@@ -13,6 +13,7 @@ use std::time::Duration;
 use innertube_rs::{
     FormatFilter, FormatType, Innertube, QualityPreference, SessionOptions, StreamingFormat,
 };
+use tokio::process::Command;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
@@ -23,6 +24,20 @@ use gtm_core::track::{StreamInfo, YTSearchResult};
 
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONCURRENT: usize = 2;
+
+fn parse_yt_dlp_progress(line: &str) -> Option<f64> {
+    if let Some(start) = line.find("[download]") {
+        let rest = &line[start..];
+        if let Some(pct_start) = rest.find('%') {
+            let pct_str = &rest[..pct_start];
+            if let Some(num_start) = pct_str.rfind(|c: char| c.is_ascii_digit() || c == '.') {
+                let num_str = &pct_str[num_start..];
+                return num_str.parse::<f64>().ok().map(|p| p / 100.0);
+            }
+        }
+    }
+    None
+}
 
 /// Owns the interactive InnerTube search pipeline. Each new search cancels any
 /// in-flight one and bumps a generation counter, so results published by a
@@ -42,6 +57,32 @@ pub struct YoutubeManager {
     last_query: String,
     results_tx: mpsc::UnboundedSender<(u64, Vec<YTSearchResult>)>,
     results_rx: mpsc::UnboundedReceiver<(u64, Vec<YTSearchResult>)>,
+    download_task: Option<JoinHandle<()>>,
+    download_cancel: Option<oneshot::Sender<()>>,
+    download_progress_tx: mpsc::UnboundedSender<DownloadProgress>,
+    download_progress_rx: mpsc::UnboundedReceiver<DownloadProgress>,
+    download_dir: PathBuf,
+    max_concurrent_downloads: usize,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct DownloadProgress {
+    pub id: u64,
+    pub url: String,
+    pub title: String,
+    pub progress: f64,
+    pub status: DownloadStatus,
+    pub error: Option<String>,
+    pub file_path: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum DownloadStatus {
+    Pending,
+    Downloading,
+    Completed,
+    Failed,
+    Cancelled,
 }
 
 impl Default for YoutubeManager {
@@ -53,11 +94,13 @@ impl Default for YoutubeManager {
 impl YoutubeManager {
     pub fn new() -> Self {
         let (results_tx, results_rx) = mpsc::unbounded_channel();
+        let (download_progress_tx, download_progress_rx) = mpsc::unbounded_channel();
+        let download_dir = dirs::audio_dir()
+            .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
+            .join("gtm")
+            .join("downloads");
+        let _ = std::fs::create_dir_all(&download_dir);
         Self {
-            // The InnerTube client is built lazily on first async use (see
-            // `ensure_client`) because `Innertube::with_options` is async and
-            // `YoutubeManager::new()` must stay synchronous. The client shares
-            // a single HTTP session + QuickJS decipher engine behind Arcs.
             client: None,
             cancel: None,
             active_task: None,
@@ -68,6 +111,12 @@ impl YoutubeManager {
             last_query: String::new(),
             results_tx,
             results_rx,
+            download_task: None,
+            download_cancel: None,
+            download_progress_tx,
+            download_progress_rx,
+            download_dir,
+            max_concurrent_downloads: 2,
         }
     }
 
@@ -177,6 +226,268 @@ impl YoutubeManager {
 
     pub async fn cancel(&mut self) {
         self.cancel_current();
+    }
+
+    /// Start downloading a YouTube video as audio. Returns a download ID for polling.
+    pub async fn download(
+        &mut self,
+        url: String,
+        title: Option<String>,
+        _artist: Option<String>,
+    ) -> Result<u64, String> {
+        self.cancel_download().await;
+
+        let download_id = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        self.download_cancel = Some(cancel_tx);
+
+        let cookie_file = self.cookie_file.clone();
+        let download_dir = self.download_dir.clone();
+        let progress_tx = self.download_progress_tx.clone();
+
+        let url_for_spawn = url.clone();
+        let title_for_spawn = title.clone();
+
+        let handle = tokio::spawn(async move {
+            let progress = DownloadProgress {
+                id: download_id,
+                url: url_for_spawn.clone(),
+                title: title_for_spawn
+                    .clone()
+                    .unwrap_or_else(|| url_for_spawn.clone()),
+                progress: 0.0,
+                status: DownloadStatus::Downloading,
+                error: None,
+                file_path: None,
+            };
+            let _ = progress_tx.send(progress.clone());
+
+            let output_template = download_dir
+                .join("%(title)s.%(ext)s")
+                .to_string_lossy()
+                .to_string();
+
+            let mut cmd = Command::new("yt-dlp");
+            cmd.args([
+                "-x",
+                "--audio-format",
+                "m4a",
+                "--audio-quality",
+                "0",
+                "-o",
+                &output_template,
+                &url_for_spawn,
+            ]);
+
+            if let Some(cookie_path) = cookie_file {
+                cmd.args(["--cookies", &cookie_path.to_string_lossy()]);
+            }
+
+            let mut child = match cmd
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = progress_tx.send(DownloadProgress {
+                        id: download_id,
+                        url: url_for_spawn.clone(),
+                        title: title_for_spawn
+                            .clone()
+                            .unwrap_or_else(|| url_for_spawn.clone()),
+                        progress: 0.0,
+                        status: DownloadStatus::Failed,
+                        error: Some(format!("failed to spawn yt-dlp: {e}")),
+                        file_path: None,
+                    });
+                    return;
+                }
+            };
+
+            let stdout = child.stdout.take();
+            let stderr = child.stderr.take();
+
+            let url_for_stdout = url_for_spawn.clone();
+            let title_for_stdout = title_for_spawn.clone();
+            let download_id_for_stdout = download_id;
+            let progress_tx_stdout = progress_tx.clone();
+
+            let stdout_task = if let Some(stdout) = stdout {
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncBufReadExt, BufReader};
+                    let reader = BufReader::new(stdout);
+                    let mut lines = reader.lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        if let Some(p) = parse_yt_dlp_progress(&line) {
+                            let _ = progress_tx_stdout.send(DownloadProgress {
+                                id: download_id_for_stdout,
+                                url: url_for_stdout.clone(),
+                                title: title_for_stdout
+                                    .clone()
+                                    .unwrap_or_else(|| url_for_stdout.clone()),
+                                progress: p,
+                                status: DownloadStatus::Downloading,
+                                error: None,
+                                file_path: None,
+                            });
+                        }
+                    }
+                })
+            } else {
+                tokio::spawn(async {})
+            };
+
+            let url_for_stderr = url_for_spawn.clone();
+            let title_for_stderr = title_for_spawn.clone();
+            let download_id_for_stderr = download_id;
+            let progress_tx_stderr = progress_tx.clone();
+
+            let stderr_task = if let Some(stderr) = stderr {
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncBufReadExt, BufReader};
+                    let reader = BufReader::new(stderr);
+                    let mut lines = reader.lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        if let Some(p) = parse_yt_dlp_progress(&line) {
+                            let _ = progress_tx_stderr.send(DownloadProgress {
+                                id: download_id_for_stderr,
+                                url: url_for_stderr.clone(),
+                                title: title_for_stderr
+                                    .clone()
+                                    .unwrap_or_else(|| url_for_stderr.clone()),
+                                progress: p,
+                                status: DownloadStatus::Downloading,
+                                error: None,
+                                file_path: None,
+                            });
+                        }
+                    }
+                })
+            } else {
+                tokio::spawn(async {})
+            };
+
+            let url_for_select = url_for_spawn.clone();
+            let title_for_select = title_for_spawn.clone();
+            let download_id_for_select = download_id;
+            let download_dir_for_select = download_dir.clone();
+            let progress_tx_select = progress_tx.clone();
+
+            tokio::select! {
+                _ = cancel_rx => {
+                    let _ = child.kill().await;
+                    let _ = progress_tx_select.send(DownloadProgress {
+                        id: download_id_for_select,
+                        url: url_for_select.clone(),
+                        title: title_for_select.clone().unwrap_or_else(|| url_for_select.clone()),
+                        progress: 0.0,
+                        status: DownloadStatus::Cancelled,
+                        error: Some("Cancelled by user".to_string()),
+                        file_path: None,
+                    });
+                }
+                result = child.wait() => {
+                    let _ = stdout_task.await;
+                    let _ = stderr_task.await;
+
+                    match result {
+                        Ok(status) if status.success() => {
+                            let files: Vec<_> = std::fs::read_dir(&download_dir_for_select)
+                                .ok()
+                                .into_iter()
+                                .flat_map(|d| d.filter_map(|e| e.ok()))
+                                .filter(|e| e.path().extension().map(|ext| ext == "m4a").unwrap_or(false))
+                                .collect();
+
+                            let file_path = files.into_iter()
+                                .max_by_key(|e| e.metadata().ok().and_then(|m| m.modified().ok()).unwrap_or(std::time::SystemTime::UNIX_EPOCH))
+                                .map(|e| e.path().to_string_lossy().to_string());
+
+                            if let Some(fp) = file_path {
+                                let _ = progress_tx_select.send(DownloadProgress {
+                                    id: download_id_for_select,
+                                    url: url_for_select.clone(),
+                                    title: title_for_select.clone().unwrap_or_else(|| url_for_select.clone()),
+                                    progress: 1.0,
+                                    status: DownloadStatus::Completed,
+                                    error: None,
+                                    file_path: Some(fp),
+                                });
+                            } else {
+                                let _ = progress_tx_select.send(DownloadProgress {
+                                    id: download_id_for_select,
+                                    url: url_for_select.clone(),
+                                    title: title_for_select.clone().unwrap_or_else(|| url_for_select.clone()),
+                                    progress: 0.0,
+                                    status: DownloadStatus::Failed,
+                                    error: Some("Download completed but file not found".to_string()),
+                                    file_path: None,
+                                });
+                            }
+                        }
+                        Ok(status) => {
+                            let _ = progress_tx_select.send(DownloadProgress {
+                                id: download_id_for_select,
+                                url: url_for_select.clone(),
+                                title: title_for_select.clone().unwrap_or_else(|| url_for_select.clone()),
+                                progress: 0.0,
+                                status: DownloadStatus::Failed,
+                                error: Some(format!("yt-dlp exited with status: {status}")),
+                                file_path: None,
+                            });
+                        }
+                        Err(e) => {
+                            let url_for_err = url_for_select.clone();
+                            let title_for_err = title_for_select.clone();
+                            let title_resolved = title_for_err.clone().unwrap_or_else(|| url_for_err.clone());
+                            let _ = progress_tx_select.send(DownloadProgress {
+                                id: download_id_for_select,
+                                url: url_for_err,
+                                title: title_resolved,
+                                progress: 0.0,
+                                status: DownloadStatus::Failed,
+                                error: Some(format!("yt-dlp error: {e}")),
+                                file_path: None,
+                            });
+                        }
+                    }
+                }
+            }
+        });
+
+        self.download_task = Some(handle);
+        Ok(download_id)
+    }
+
+    /// Poll for download progress updates.
+    pub fn poll_download(&mut self) -> Result<Option<DownloadProgress>, String> {
+        match self.download_progress_rx.try_recv() {
+            Ok(progress) => Ok(Some(progress)),
+            Err(mpsc::error::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                Err("download channel disconnected".to_string())
+            }
+        }
+    }
+
+    /// Cancel the current download.
+    pub async fn cancel_download(&mut self) {
+        if let Some(tx) = self.download_cancel.take() {
+            let _ = tx.send(());
+        }
+        if let Some(handle) = self.download_task.take() {
+            handle.abort();
+        }
+        while self.download_progress_rx.try_recv().is_ok() {}
+    }
+
+    pub fn set_max_concurrent_downloads(&mut self, max: usize) {
+        self.max_concurrent_downloads = max.max(1);
+    }
+
+    pub fn download_dir(&self) -> &Path {
+        &self.download_dir
     }
 
     /// Resolve a YouTube watch URL into a playable direct audio stream.

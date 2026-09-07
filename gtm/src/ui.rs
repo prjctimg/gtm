@@ -595,11 +595,11 @@ impl Render {
 
     fn library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let is_narrow = app.terminal_cols < 60;
-        // Small-height terminals: compress the Now Playing section to a
-        // side-by-side cover + details row so it can never crowd out the
-        // list panes, and drop the extra track-info card in the left pane.
         let is_small_height = app.terminal_rows < 22;
-        let show_vis = app.visualizer.is_enabled() && app.terminal_cols >= 52;
+        // Visualizer needs at least 80 columns for useful display
+        let show_vis = app.visualizer.is_enabled() && app.terminal_cols >= 80;
+        // Lyrics in third pane only when >= 100 columns; otherwise show in results pane
+        let lyrics_in_third_pane = app.lyrics.show && app.terminal_cols >= 100;
         let np_height: u16 = if is_narrow {
             5
         } else if is_small_height {
@@ -616,7 +616,7 @@ impl Render {
             28u16.min(area.width.saturating_sub(2))
         };
 
-        let lyrics_takes_full_height = app.lyrics.show && !is_narrow;
+        let lyrics_takes_full_height = lyrics_in_third_pane;
 
         let (left_area, lyrics_area) = if lyrics_takes_full_height {
             let lyrics_w = area.width / 3;
@@ -1462,9 +1462,9 @@ impl Render {
 
         if let Some(lyrics_area) = lyrics_area {
             Render::lyrics_pane(f, lyrics_area, app);
-        } else if app.lyrics.show && is_narrow {
-            // Narrow screens: lyrics act as a tab replacing the list/queue
-            // area entirely ('l' toggles, Esc/Back returns to the list).
+        } else if app.lyrics.show && !lyrics_in_third_pane {
+            // Medium-width screens (60-99 cols): show lyrics in the results pane
+            // instead of a separate third pane.
             let base = panes
                 .get(1)
                 .filter(|p| p.width > 1)
@@ -1480,6 +1480,9 @@ impl Render {
     }
 
     fn footer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        if app.hide_footer {
+            return;
+        }
         match app.input_mode {
             InputMode::Normal => {
                 if !app.search_query.is_empty() {
@@ -1631,13 +1634,18 @@ impl Render {
         };
         let lyrics_inner = if let Some(hdr) = header_area {
             Rect {
-                x: inner.x,
-                y: hdr.y + hdr.height,
-                width: inner.width,
-                height: inner.height.saturating_sub(hdr.height + 1),
+                x: inner.x.saturating_add(1),
+                y: hdr.y + hdr.height + 1,
+                width: inner.width.saturating_sub(2),
+                height: inner.height.saturating_sub(hdr.height + 2),
             }
         } else {
-            inner
+            Rect {
+                x: inner.x.saturating_add(1),
+                y: inner.y.saturating_add(1),
+                width: inner.width.saturating_sub(2),
+                height: inner.height.saturating_sub(2),
+            }
         };
 
         let total = lyrics.lines.len();
@@ -2161,13 +2169,16 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
             .style(ratatui::style::Style::default().bg(app.surface_bg())),
         area,
     );
+    let footer_height = if app.hide_footer { 0 } else { 1 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .constraints([Constraint::Min(0), Constraint::Length(footer_height)])
         .split(area);
 
     Render::content(f, chunks[0], app);
-    Render::footer(f, chunks[1], app);
+    if !app.hide_footer {
+        Render::footer(f, chunks[1], app);
+    }
 
     // "gtm" brand badge pinned to the top-right corner with the themed
     // accent background (restored from the pre-tabless UI).
@@ -3539,6 +3550,10 @@ impl Pickers {
                     format!(
                         "Reactive Theme {}",
                         if app.reactive_theme { "On" } else { "Off" }
+                    ),
+                    format!(
+                        "Hide Footer    {}",
+                        if app.hide_footer { "On" } else { "Off" }
                     ),
                     "Clear Lyrics Cache  Enter".to_string(),
                     "Clear Cover Cache    Enter  ▶".to_string(),

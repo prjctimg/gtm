@@ -125,19 +125,14 @@ pub fn derive_theme(base: &AppTheme, pal: &ReactivePalette, light: bool) -> AppT
     t.sidebar_active_border = blend_colors(base.sidebar_active_border, primary, 0.7);
     t.notification_border = blend_colors(base.notification_border, primary, 0.5);
     let primary_raw = rgb(pal.primary);
-    let secondary_raw = rgb(pal.secondary);
     t.selection_bg = blend_colors(base.selection_bg, primary_raw, 0.4);
     // Ambient wash: pull the background toward the artwork so the whole
-    // surface reacts to the current cover (Spotify-style), while panes take a
-    // secondary-hue tint for a layered, two-tone depth.
-    t.bg = blend_colors(base.bg, primary_raw, 0.34);
-    t.pane_bg = blend_colors(
-        blend_colors(base.pane_bg, primary_raw, 0.3),
-        secondary_raw,
-        0.18,
-    );
-    t.elevated_bg = blend_colors(base.elevated_bg, primary_raw, 0.36);
-    t.picker_bg = blend_colors(base.picker_bg, primary_raw, 0.36);
+    // surface reacts to the current cover (Spotify-style).
+    let unified_bg = blend_colors(base.bg, primary_raw, 0.34);
+    t.bg = unified_bg;
+    t.pane_bg = unified_bg;
+    t.elevated_bg = unified_bg;
+    t.picker_bg = unified_bg;
     // Ensure fg_dim contrasts with the reactive bg for readability.
     // Target luminance difference of at least 60 from bg luminance.
     let bg_lum = luminance(&pal.primary);

@@ -602,7 +602,6 @@ impl Footer {
         format!("{} {}", platform_icon(), backend)
     }
     /// Render the current wall-clock time using the user's strftime-style format.
-
     fn time(app: &App) -> Option<String> {
         if app.footer_time_format.is_empty() {
             return None;

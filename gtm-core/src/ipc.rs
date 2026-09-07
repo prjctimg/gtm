@@ -1088,6 +1088,21 @@ pub enum DaemonRes {
         session_token: Option<String>,
         ready: bool,
     },
+    YtDownloadProgress {
+        id: u64,
+        url: String,
+        title: String,
+        progress: f64,
+        status: String,
+        error: Option<String>,
+        file_path: Option<String>,
+    },
+    YtDownloadResult {
+        id: u64,
+        url: String,
+        title: String,
+        file_path: String,
+    },
     Handshake {
         version: u32,
         daemon: String,
@@ -1148,6 +1163,34 @@ impl DaemonRes {
                 "api_key": api_key,
                 "session_token": session_token,
                 "ready": ready,
+            })),
+            DaemonRes::YtDownloadProgress {
+                id,
+                url,
+                title,
+                progress,
+                status,
+                error,
+                file_path,
+            } => Some(serde_json::json!({
+                "id": id,
+                "url": url,
+                "title": title,
+                "progress": progress,
+                "status": status,
+                "error": error,
+                "file_path": file_path,
+            })),
+            DaemonRes::YtDownloadResult {
+                id,
+                url,
+                title,
+                file_path,
+            } => Some(serde_json::json!({
+                "id": id,
+                "url": url,
+                "title": title,
+                "file_path": file_path,
             })),
             DaemonRes::Handshake {
                 version,
@@ -1359,6 +1402,66 @@ impl DaemonRes {
                     api_key,
                     session_token,
                     ready,
+                }
+            }
+            "yt_download_progress" => {
+                let id = data.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+                let url = data
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let title = data
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let progress = data.get("progress").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let status = data
+                    .get("status")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let error = data
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let file_path = data
+                    .get("file_path")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                DaemonRes::YtDownloadProgress {
+                    id,
+                    url,
+                    title,
+                    progress,
+                    status,
+                    error,
+                    file_path,
+                }
+            }
+            "yt_download_result" => {
+                let id = data.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
+                let url = data
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let title = data
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let file_path = data
+                    .get("file_path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                DaemonRes::YtDownloadResult {
+                    id,
+                    url,
+                    title,
+                    file_path,
                 }
             }
             "list_eq_presets" => {

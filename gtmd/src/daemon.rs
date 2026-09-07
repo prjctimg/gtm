@@ -432,6 +432,7 @@ impl Cmd {
             return Ok(DaemonRes::Ok);
         }
         *inner.crossfade_loaded_for.lock().await = None;
+        *inner.countdown_notified_for.lock().await = None;
         let standby = {
             let state = inner.state.read().await;
             Daemon::next_track(&state)
@@ -463,6 +464,7 @@ impl Cmd {
         if let Some(path) = Daemon::promote_crossfade(inner).await {
             Daemon::report_promoted(inner, &path).await;
         }
+        *inner.countdown_notified_for.lock().await = None;
         let pos = inner.mixer.lock().await.current_position();
         if pos > RESTART_THRESHOLD_SECS {
             return Cmd::seek(inner, 0.0).await;
@@ -619,8 +621,14 @@ impl Cmd {
 
     pub async fn toggle_shuffle(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
+        let was_shuffled = state.shuffle;
         state.toggle_shuffle()?;
         let enabled = state.shuffle;
+
+        if enabled && !was_shuffled && !state.queue.is_empty() {
+            fastrand::shuffle(&mut state.queue);
+        }
+
         drop(state);
         Daemon::push_event(inner, DaemonEvent::ShuffleChanged { enabled });
         Daemon::save_state(inner);
@@ -3060,15 +3068,73 @@ impl Daemon {
             | DaemonReq::YtResolveStream { .. } => Err(CoreError::Daemon(
                 "youtube support is disabled in this build".into(),
             )),
-            DaemonReq::YtDownload { .. } => {
-                Err(CoreError::Daemon("yt_download not yet implemented".into()))
+            DaemonReq::YtDownload {
+                url,
+                title,
+                channel,
+            } => {
+                #[cfg(feature = "youtube")]
+                {
+                    let mut yt = inner.youtube.lock().await;
+                    let artist = channel.clone();
+                    match yt.download(url.clone(), title.clone(), artist).await {
+                        Ok(id) => Ok(DaemonRes::Value {
+                            value: serde_json::json!({ "id": id }),
+                        }),
+                        Err(e) => Err(CoreError::Daemon(e)),
+                    }
+                }
+                #[cfg(not(feature = "youtube"))]
+                {
+                    Err(CoreError::Daemon(
+                        "youtube support is disabled in this build".into(),
+                    ))
+                }
             }
-            DaemonReq::YtDownloadPoll => Err(CoreError::Daemon(
-                "yt_download_poll not yet implemented".into(),
-            )),
-            DaemonReq::YtCancelDownload { .. } => Err(CoreError::Daemon(
-                "yt_cancel_download not yet implemented".into(),
-            )),
+            DaemonReq::YtDownloadPoll => {
+                #[cfg(feature = "youtube")]
+                {
+                    let mut yt = inner.youtube.lock().await;
+                    match yt.poll_download() {
+                        Ok(Some(progress)) => {
+                            let status_str = format!("{:?}", progress.status).to_lowercase();
+                            Ok(DaemonRes::YtDownloadProgress {
+                                id: progress.id,
+                                url: progress.url,
+                                title: progress.title,
+                                progress: progress.progress,
+                                status: status_str,
+                                error: progress.error,
+                                file_path: progress.file_path,
+                            })
+                        }
+                        Ok(None) => Ok(DaemonRes::Value {
+                            value: serde_json::json!({}),
+                        }),
+                        Err(e) => Err(CoreError::Daemon(e)),
+                    }
+                }
+                #[cfg(not(feature = "youtube"))]
+                {
+                    Err(CoreError::Daemon(
+                        "youtube support is disabled in this build".into(),
+                    ))
+                }
+            }
+            DaemonReq::YtCancelDownload { url: _ } => {
+                #[cfg(feature = "youtube")]
+                {
+                    let mut yt = inner.youtube.lock().await;
+                    yt.cancel_download().await;
+                    Ok(DaemonRes::Ok)
+                }
+                #[cfg(not(feature = "youtube"))]
+                {
+                    Err(CoreError::Daemon(
+                        "youtube support is disabled in this build".into(),
+                    ))
+                }
+            }
             DaemonReq::YtFetchPlaylist { .. } => Err(CoreError::Daemon(
                 "yt_fetch_playlist not yet implemented".into(),
             )),
@@ -3435,6 +3501,7 @@ impl Daemon {
             let _ = mixer.stop();
         }
         *inner.crossfade_loaded_for.lock().await = None;
+        *inner.countdown_notified_for.lock().await = None;
 
         // Scrobble current track if it was played long enough
         let (track, played_secs, _duration) = {
@@ -3580,6 +3647,7 @@ impl Daemon {
     async fn finish_crossfade(inner: &DaemonInner) {
         let actual = inner.mixer.lock().await.current_position();
         *inner.crossfade_loaded_for.lock().await = None;
+        *inner.countdown_notified_for.lock().await = None;
 
         // Get previous track info for scrobbling before advancing
         let (prev_track, prev_time_pos, _prev_duration) = {
