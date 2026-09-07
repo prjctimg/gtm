@@ -4429,7 +4429,7 @@ impl App {
                         self.send_high(TuiCommand::Stop);
                     }
                     Some(KeyboardAction::VolumeUp) => {
-                        let new_vol = (self.state.volume + 5).min(100);
+                        let new_vol = (self.state.volume + 5).min(gtm_core::MAX_VOLUME);
                         self.send_high(TuiCommand::SetVolume(new_vol));
                         self.notify_volume(new_vol);
                     }
@@ -6593,7 +6593,7 @@ impl App {
                                 } else if action == "prev track" {
                                     self.send_high(TuiCommand::Prev);
                                 } else if action == "volume up" {
-                                    let new_vol = (self.state.volume + 5).min(100);
+                                    let new_vol = (self.state.volume + 5).min(gtm_core::MAX_VOLUME);
                                     self.send_high(TuiCommand::SetVolume(new_vol));
                                 } else if action == "volume down" {
                                     let new_vol = self.state.volume.saturating_sub(5);

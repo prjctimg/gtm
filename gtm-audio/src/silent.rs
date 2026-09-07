@@ -33,7 +33,7 @@ impl NullMixer {
     pub fn new() -> Self {
         Self {
             playing: AtomicBool::new(false),
-            volume: AtomicU8::new(100),
+            volume: AtomicU8::new(gtm_core::MAX_VOLUME),
             position: Mutex::new(0.0),
             duration: Mutex::new(0.0),
             crossfading: Mutex::new(false),
@@ -100,7 +100,8 @@ impl Mixer for NullMixer {
     }
 
     fn set_volume(&mut self, volume: u8) -> AudioResult<()> {
-        self.volume.store(volume.min(100), Ordering::SeqCst);
+        self.volume
+            .store(volume.min(gtm_core::MAX_VOLUME), Ordering::SeqCst);
         Ok(())
     }
 

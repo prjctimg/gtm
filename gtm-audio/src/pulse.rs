@@ -35,7 +35,7 @@ struct PaPlaybackSource {
 impl PlaybackSource for PaPlaybackSource {
     fn poll_read(self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<usize> {
         let self_ = self.get_mut();
-        let vol = self_.volume.load(Ordering::Relaxed) as f32 / 100.0;
+        let vol = gtm_core::volume_ratio(self_.volume.load(Ordering::Relaxed));
         let float_count = buf.len() / 4;
         let mut written = 0usize;
 
@@ -197,7 +197,7 @@ impl PulseAudioMixer {
         let client = Client::from_env(c"gtm")
             .map_err(|e| AudioError::OutputError(format!("PulseAudio client: {e}")))?;
 
-        let mixer_volume = Arc::new(AtomicU8::new(100));
+        let mixer_volume = Arc::new(AtomicU8::new(gtm_core::MAX_VOLUME));
 
         let stream_a = PaStreamState::new(&client, "gtm-a", &mixer_volume)?;
         let stream_b = PaStreamState::new(&client, "gtm-b", &mixer_volume)?;
@@ -217,8 +217,8 @@ impl PulseAudioMixer {
             crossfade_duration: 0.0,
             pending_pause: false,
             pause_fade_start: None,
-            stored_volume: 100,
-            user_volume: Arc::new(AtomicU8::new(100)),
+            stored_volume: gtm_core::MAX_VOLUME,
+            user_volume: Arc::new(AtomicU8::new(gtm_core::MAX_VOLUME)),
             eq_gains: EqGains::new_flat(),
             eq_enabled: Arc::new(AtomicBool::new(true)),
             reverb_enabled: Arc::new(AtomicBool::new(false)),
@@ -580,7 +580,7 @@ impl Mixer for PulseAudioMixer {
     }
 
     fn set_volume(&mut self, volume: u8) -> AudioResult<()> {
-        let vol = volume.min(100);
+        let vol = volume.min(gtm_core::MAX_VOLUME);
         self.user_volume.store(vol, Ordering::SeqCst);
         if !self.pending_pause {
             Self::set_stream_volume(&self.active(), vol);
@@ -711,8 +711,8 @@ impl Mixer for PulseAudioMixer {
                 self.playing.store(false, Ordering::SeqCst);
             } else {
                 let progress = elapsed / FADE_MS;
-                let target = (self.stored_volume.min(100) as f32 / 100.0) * (1.0 - progress as f32);
-                Self::set_stream_volume(&self.active(), (target * 100.0) as u8);
+                let target = gtm_core::volume_ratio(self.stored_volume.min(gtm_core::MAX_VOLUME)) * (1.0 - progress as f32);
+                Self::set_stream_volume(&self.active(), gtm_core::volume_from_ratio(target));
             }
         }
 
@@ -766,7 +766,7 @@ impl Mixer for PulseAudioMixer {
         if !self.playing.load(Ordering::SeqCst) {
             return 0.0;
         }
-        let vol = self.user_volume.load(Ordering::SeqCst) as f32 / 100.0;
+        let vol = gtm_core::volume_ratio(self.user_volume.load(Ordering::SeqCst));
         vol
     }
     fn current_spectrum(&self) -> Vec<f32> {
@@ -796,8 +796,8 @@ impl PulseAudioMixer {
             eased_out
         };
 
-        Self::set_stream_volume(&self.stream_a, (a_vol * 100.0) as u8);
-        Self::set_stream_volume(&self.stream_b, (b_vol * 100.0) as u8);
+        Self::set_stream_volume(&self.stream_a, gtm_core::volume_from_ratio(a_vol));
+        Self::set_stream_volume(&self.stream_b, gtm_core::volume_from_ratio(b_vol));
 
         if progress >= 1.0 {
             self.swap_active_standby();

@@ -63,8 +63,9 @@ pub trait Mixer: Send + Sync {
 }
 
 pub struct AudioMixer {
-    #[allow(dead_code)]
-    sink: Arc<MixerDeviceSink>,
+    // Kept alive for the mixer's lifetime: the underlying device must stay
+    // open or ALSA/pulse would tear the output sinks down.
+    _keepalive_sink: Arc<MixerDeviceSink>,
     player_a: Player,
     player_b: Player,
     is_a_active: bool,
@@ -189,7 +190,7 @@ impl Mixer for AudioMixer {
             return 0.0;
         }
 
-        self.volume.load(Ordering::SeqCst) as f32 / 100.0
+        self.volume.load(Ordering::SeqCst) as f32 / gtm_core::MAX_VOLUME as f32
     }
     fn current_spectrum(&self) -> Vec<f32> {
         self.spectrum.lock().unwrap().clone()
@@ -216,14 +217,14 @@ impl AudioMixer {
         b.pause();
 
         Ok(Self {
-            sink,
+            _keepalive_sink: sink,
             player_a: a,
             player_b: b,
             is_a_active: true,
             position: Arc::new(Mutex::new(0.0)),
             duration: Arc::new(Mutex::new(0.0)),
             playing: Arc::new(AtomicBool::new(false)),
-            volume: Arc::new(AtomicU8::new(100)),
+            volume: Arc::new(AtomicU8::new(gtm_core::MAX_VOLUME)),
             start_time: Arc::new(Mutex::new(None)),
             start_pos: Arc::new(Mutex::new(0.0)),
             crossfade_start: None,
@@ -231,7 +232,7 @@ impl AudioMixer {
             standby_duration: 0.0,
             pending_pause: false,
             pause_fade_start: None,
-            stored_volume: 100,
+            stored_volume: gtm_core::MAX_VOLUME,
             last_reported_pos: f64::NEG_INFINITY,
             eq_gains: EqGains::new_flat(),
             eq_enabled: Arc::new(AtomicBool::new(true)),
@@ -377,7 +378,7 @@ impl AudioMixer {
         self.first_track = false;
         Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
 
-        let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
+        let vol = gtm_core::volume_ratio(self.volume.load(Ordering::SeqCst));
         self.active().stop();
         self.active().set_volume(vol);
 
@@ -417,7 +418,7 @@ impl AudioMixer {
     ) -> AudioResult<()> {
         Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
 
-        let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
+        let vol = gtm_core::volume_ratio(self.volume.load(Ordering::SeqCst));
         self.active().stop();
         self.active().set_volume(vol);
 
@@ -485,13 +486,13 @@ impl AudioMixer {
     pub fn play(&mut self) -> AudioResult<()> {
         if self.active().is_paused() {
             self.active().play();
-            let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
+            let vol = gtm_core::volume_ratio(self.volume.load(Ordering::SeqCst));
             self.active().set_volume(vol);
         }
         if self.pending_pause {
             self.pending_pause = false;
             self.pause_fade_start = None;
-            let vol = self.stored_volume.min(100) as f32 / 100.0;
+            let vol = gtm_core::volume_ratio(self.stored_volume.min(gtm_core::MAX_VOLUME));
             self.active().set_volume(vol);
         }
         *self.start_time.lock().unwrap() = Some(Instant::now());
@@ -532,11 +533,12 @@ impl AudioMixer {
     }
 
     fn effective_vol_ratio(&self, volume: u8) -> f32 {
-        volume.min(100) as f32 / 100.0
+        gtm_core::volume_ratio(volume.min(gtm_core::MAX_VOLUME))
     }
 
     pub fn set_volume(&mut self, volume: u8) -> AudioResult<()> {
-        self.volume.store(volume.min(100), Ordering::SeqCst);
+        self.volume
+            .store(volume.min(gtm_core::MAX_VOLUME), Ordering::SeqCst);
         self.active().set_volume(self.effective_vol_ratio(volume));
         Ok(())
     }
@@ -592,7 +594,7 @@ impl AudioMixer {
     }
 
     pub fn drop_active(&mut self) {
-        let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
+        let vol = gtm_core::volume_ratio(self.volume.load(Ordering::SeqCst));
         let outgoing = if self.is_a_active {
             &self.player_a
         } else {
@@ -637,7 +639,7 @@ impl AudioMixer {
             return;
         }
         self.crossfade_start = None;
-        let vol = self.volume.load(Ordering::SeqCst) as f32 / 100.0;
+        let vol = gtm_core::volume_ratio(self.volume.load(Ordering::SeqCst));
         if self.is_a_active {
             self.player_a.set_volume(0.0);
             self.player_a.stop();
@@ -674,7 +676,7 @@ impl AudioMixer {
         let progress = (elapsed / self.crossfade_duration).min(1.0);
         let eased_out = 1.0 - progress;
         let eased_in = progress;
-        let vol = self.volume.load(Ordering::SeqCst) as f64 / 100.0;
+        let vol = gtm_core::volume_ratio(self.volume.load(Ordering::SeqCst)) as f64;
         let base = vol.min(1.0);
 
         self.player_a.set_volume(if self.is_a_active {
@@ -740,7 +742,7 @@ impl AudioMixer {
                 self.playing.store(false, Ordering::SeqCst);
             } else {
                 let progress = elapsed / FADE_MS;
-                let start = self.stored_volume.min(100) as f32 / 100.0;
+                let start = gtm_core::volume_ratio(self.stored_volume.min(gtm_core::MAX_VOLUME));
                 let target = start * (1.0 - progress as f32);
                 self.active().set_volume(target);
             }

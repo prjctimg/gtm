@@ -38,11 +38,7 @@ impl DaemonState {
         }
         self.status = PlaybackStatus::Playing;
         self.current_track = Some(track);
-        self.version += 1;
-        #[cfg(debug_assertions)]
-        {
-            self.check_invariants();
-        }
+        self.commit();
         Ok(())
     }
 
@@ -57,11 +53,7 @@ impl DaemonState {
             )));
         }
         self.status = PlaybackStatus::Paused;
-        self.version += 1;
-        #[cfg(debug_assertions)]
-        {
-            self.check_invariants();
-        }
+        self.commit();
         Ok(())
     }
 
@@ -75,11 +67,7 @@ impl DaemonState {
         self.status = PlaybackStatus::Stopped;
         self.current_track = None;
         self.time_pos = 0.0;
-        self.version += 1;
-        #[cfg(debug_assertions)]
-        {
-            self.check_invariants();
-        }
+        self.commit();
         Ok(())
     }
 
@@ -95,49 +83,33 @@ impl DaemonState {
         Ok(())
     }
 
-    /// Set volume, clamped to [0, 100].
+    /// Set volume, clamped to [0, MAX_VOLUME].
     pub fn set_volume(&mut self, vol: u8) -> Result<()> {
         tripwire::check(FailPoint::VolumeChange)?;
-        self.volume = vol.min(100);
+        self.volume = vol.min(crate::MAX_VOLUME);
         self.mute = false;
-        self.version += 1;
-        #[cfg(debug_assertions)]
-        {
-            self.check_invariants();
-        }
+        self.commit();
         Ok(())
     }
 
     pub fn toggle_shuffle(&mut self) -> Result<()> {
         tripwire::check(FailPoint::StateTransition)?;
         self.shuffle = !self.shuffle;
-        self.version += 1;
-        #[cfg(debug_assertions)]
-        {
-            self.check_invariants();
-        }
+        self.commit();
         Ok(())
     }
 
-    pub fn cycle_repeat(&mut self, mode: crate::global::RepeatMode) -> Result<()> {
+    pub fn set_repeat_mode(&mut self, mode: crate::global::RepeatMode) -> Result<()> {
         tripwire::check(FailPoint::StateTransition)?;
         self.repeat = mode;
-        self.version += 1;
-        #[cfg(debug_assertions)]
-        {
-            self.check_invariants();
-        }
+        self.commit();
         Ok(())
     }
 
     pub fn toggle_mute(&mut self) -> Result<()> {
         tripwire::check(FailPoint::StateTransition)?;
         self.mute = !self.mute;
-        self.version += 1;
-        #[cfg(debug_assertions)]
-        {
-            self.check_invariants();
-        }
+        self.commit();
         Ok(())
     }
 
@@ -151,44 +123,31 @@ impl DaemonState {
         } else {
             None
         };
-        self.version += 1;
-        #[cfg(debug_assertions)]
-        {
-            self.check_invariants();
-        }
+        self.commit();
         Ok(())
     }
 
     /// Set loudness mode (Off, Track, Album, Auto).
     pub fn set_loudness_mode(&mut self, mode: crate::global::LoudnessMode) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
         self.audio.loudness_mode = mode;
-        self.version += 1;
-        #[cfg(debug_assertions)]
-        {
-            self.check_invariants();
-        }
+        self.commit();
         Ok(())
     }
 
     /// Set pre-gain in dB.
     pub fn set_pre_gain(&mut self, pre_gain_db: f32) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
         self.audio.pre_gain_db = pre_gain_db;
-        self.version += 1;
-        #[cfg(debug_assertions)]
-        {
-            self.check_invariants();
-        }
+        self.commit();
         Ok(())
     }
 
     /// Set gapless playback.
     pub fn set_gapless(&mut self, enabled: bool) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
         self.gapless = enabled;
-        self.version += 1;
-        #[cfg(debug_assertions)]
-        {
-            self.check_invariants();
-        }
+        self.commit();
         Ok(())
     }
 
@@ -199,6 +158,7 @@ impl DaemonState {
         min_queue_remaining: Option<u32>,
         max_history: Option<u32>,
     ) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
         self.dynamic_mode.enabled = enabled;
         if let Some(min) = min_queue_remaining {
             self.dynamic_mode.min_queue_remaining = min;
@@ -206,11 +166,7 @@ impl DaemonState {
         if let Some(max) = max_history {
             self.dynamic_mode.max_history = max;
         }
-        self.version += 1;
-        #[cfg(debug_assertions)]
-        {
-            self.check_invariants();
-        }
+        self.commit();
         Ok(())
     }
 
@@ -223,16 +179,13 @@ impl DaemonState {
         min_play_secs: Option<u32>,
         min_play_pct: Option<f32>,
     ) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
         self.scrobble.enabled = enabled;
         self.scrobble.api_key = api_key;
         self.scrobble.session_token = session_token;
         self.scrobble.min_play_secs = min_play_secs;
         self.scrobble.min_play_pct = min_play_pct;
-        self.version += 1;
-        #[cfg(debug_assertions)]
-        {
-            self.check_invariants();
-        }
+        self.commit();
         Ok(())
     }
 
@@ -247,11 +200,7 @@ impl DaemonState {
         }
         self.queue.remove(0);
         self.queue_cursor = 0;
-        self.version += 1;
-        #[cfg(debug_assertions)]
-        {
-            self.check_invariants();
-        }
+        self.commit();
         Ok(self.queue.first())
     }
 
@@ -368,16 +317,24 @@ impl DaemonState {
             }
             _ => {} // MetadataChanged, Custom: no state mirror field
         }
+        self.commit();
+    }
+
+    /// Bump the version and assert invariants after a successful transition.
+    fn commit(&mut self) {
         self.version += 1;
         #[cfg(debug_assertions)]
-        {
-            self.check_invariants();
-        }
+        self.check_invariants();
     }
 
     /// Assert all internal invariants. Only compiled in debug/test builds.
     pub fn check_invariants(&self) {
-        assert!(self.volume <= 100, "volume {} exceeds 100", self.volume);
+        assert!(
+            self.volume <= crate::MAX_VOLUME,
+            "volume {} exceeds {}",
+            self.volume,
+            crate::MAX_VOLUME
+        );
         assert!(
             self.queue.is_empty() || self.queue_cursor < self.queue.len() as u64,
             "queue_cursor {} out of bounds for queue len {}",

@@ -25,6 +25,11 @@ use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::track;
 use crate::wire;
 
+/// Map a response that did not match the awaited variant into an error.
+fn unexpected(res: &DaemonRes) -> CoreError {
+    CoreError::Daemon(format!("unexpected response: {res:?}"))
+}
+
 /// Snapshot of a background library sync operation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 pub struct LibrarySyncStatus {
@@ -78,7 +83,6 @@ impl DaemonClient {
                         consecutive_failures: 0,
                         pending: HashMap::new(),
                         next_id: 0,
-                        handshake_sent: false,
                         authenticated: Arc::new(AtomicBool::new(false)),
                     };
                     // Spawn worker before constructing the client handle so
@@ -445,7 +449,7 @@ impl DaemonClient {
         match res {
             DaemonRes::Status { state, .. } => Ok(*state),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+            _ => Err(unexpected(&res)),
         }
     }
 
@@ -454,7 +458,7 @@ impl DaemonClient {
         match res {
             DaemonRes::Pong => Ok(()),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+            _ => Err(unexpected(&res)),
         }
     }
 
@@ -467,7 +471,7 @@ impl DaemonClient {
         match res {
             DaemonRes::HealthReport { report, .. } => Ok(*report),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+            _ => Err(unexpected(&res)),
         }
     }
 }
@@ -798,7 +802,7 @@ impl<'a> Spotify<'a> {
         match res {
             DaemonRes::SpotifyOauthStarted { url } => Ok(url),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+            _ => Err(unexpected(&res)),
         }
     }
 
@@ -836,7 +840,7 @@ impl<'a> Spotify<'a> {
         match res {
             DaemonRes::SpotifyPlaylistsRes { playlists, .. } => Ok(playlists),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+            _ => Err(unexpected(&res)),
         }
     }
 
@@ -849,7 +853,7 @@ impl<'a> Spotify<'a> {
         match res {
             DaemonRes::SpotifyTracksRes { tracks, .. } => Ok(tracks),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+            _ => Err(unexpected(&res)),
         }
     }
 
@@ -875,7 +879,7 @@ impl<'a> Spotify<'a> {
         match res {
             DaemonRes::SpotifyTracksRes { tracks, .. } => Ok(tracks),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+            _ => Err(unexpected(&res)),
         }
     }
 
@@ -895,7 +899,7 @@ impl<'a> Spotify<'a> {
         match res {
             DaemonRes::SpotifyStatusRes { status, .. } => Ok(status),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+            _ => Err(unexpected(&res)),
         }
     }
 }
@@ -946,7 +950,7 @@ impl<'a> Art<'a> {
         match res {
             DaemonRes::CoverArt { data, .. } => Ok(data),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+            _ => Err(unexpected(&res)),
         }
     }
 
@@ -958,7 +962,7 @@ impl<'a> Art<'a> {
         match res {
             DaemonRes::CoverArt { data, .. } => Ok(data),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+            _ => Err(unexpected(&res)),
         }
     }
 }
@@ -979,7 +983,7 @@ impl<'a> Lyrics<'a> {
         match res {
             DaemonRes::Lyrics { lyrics, .. } => Ok(lyrics),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+            _ => Err(unexpected(&res)),
         }
     }
 
@@ -995,7 +999,7 @@ impl<'a> Lyrics<'a> {
         match res {
             DaemonRes::Lyrics { lyrics, .. } => Ok(lyrics),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(CoreError::Daemon(format!("unexpected response: {res:?}"))),
+            _ => Err(unexpected(&res)),
         }
     }
 }
@@ -1012,7 +1016,6 @@ struct IpcWorker {
     consecutive_failures: u32,
     pending: HashMap<u64, (String, oneshot::Sender<Result<DaemonRes>>)>,
     next_id: u64,
-    handshake_sent: bool,
     authenticated: Arc<AtomicBool>,
 }
 
@@ -1137,7 +1140,6 @@ impl IpcWorker {
                     self.next_id = 0;
                     self.connected.store(true, Ordering::Release);
                     crate::log::log(&format!("IPC worker reconnected after {attempt} attempts"));
-                    self.handshake_sent = false;
                     self.authenticated.store(false, Ordering::Release);
                     if let Err(e) = self.post_reconnect_handshake().await {
                         crate::log::log(&format!(
@@ -1209,7 +1211,6 @@ impl IpcWorker {
 
         match wire_res.ok {
             Some(true) => {
-                self.handshake_sent = true;
                 self.authenticated.store(true, Ordering::Release);
                 *self.last_heartbeat_at.lock().unwrap() = Instant::now();
                 crate::log::log("IPC worker post-reconnect handshake OK");

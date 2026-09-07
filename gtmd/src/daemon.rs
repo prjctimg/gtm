@@ -171,8 +171,8 @@ impl Cmd {
                 prev,
                 state.time_pos.max(0.0),
                 state.scrobble.enabled,
-                state.scrobble.min_play_secs.unwrap_or(240),
-                state.scrobble.min_play_pct.unwrap_or(0.5),
+                state.scrobble.min_play_secs_effective(),
+                state.scrobble.min_play_pct_effective(),
             )
         };
         if let Some(prev_track) = scrobble.0 {
@@ -310,26 +310,10 @@ impl Cmd {
                 t.clone()
             }
             None => TrackInfo {
-                id: 0,
                 path: uri_path.to_string(),
                 title: "Spotify Track".to_string(),
-                artist: String::new(),
-                album: String::new(),
                 duration: dur,
-                actual_duration: None,
-                track_number: None,
-                genre: String::new(),
-                year: None,
-                bitrate: None,
-                samplerate: None,
-                hash: String::new(),
-                cover_path: None,
-                album_id: None,
-                favourite: false,
-                loudness_lufs: None,
-                loudness_peak_db: None,
-                loudness_range: None,
-                artist_image: None,
+                ..Default::default()
             },
         };
         if let Some(pos) = state.queue.iter().position(|t| t.path == uri_path)
@@ -643,12 +627,12 @@ impl Cmd {
         Ok(DaemonRes::Ok)
     }
 
-    pub async fn cycle_repeat(
+    pub async fn set_repeat_mode(
         inner: &DaemonInner,
         mode: gtm_core::global::RepeatMode,
     ) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
-        state.cycle_repeat(mode)?;
+        state.set_repeat_mode(mode)?;
         let m = state.repeat;
         drop(state);
         Daemon::push_event(inner, DaemonEvent::RepeatModeChanged { mode: m });
@@ -3022,7 +3006,7 @@ impl Daemon {
             DaemonReq::SetVolume { volume } => Cmd::set_volume(inner, *volume).await,
             DaemonReq::GetVolume => Cmd::get_volume(inner).await,
             DaemonReq::ToggleShuffle => Cmd::toggle_shuffle(inner).await,
-            DaemonReq::CycleRepeat { mode } => Cmd::cycle_repeat(inner, *mode).await,
+            DaemonReq::CycleRepeat { mode } => Cmd::set_repeat_mode(inner, *mode).await,
             DaemonReq::ToggleMute => Cmd::toggle_mute(inner).await,
             DaemonReq::Crossfade {
                 enabled,
@@ -3461,8 +3445,8 @@ impl Daemon {
             let lastfm = inner.lastfm.lock().await;
             let state = inner.state.read().await;
             if state.scrobble.enabled && lastfm.is_ready() {
-                let min_secs = state.scrobble.min_play_secs.unwrap_or(240);
-                let min_pct = state.scrobble.min_play_pct.unwrap_or(0.5);
+                let min_secs = state.scrobble.min_play_secs_effective();
+                let min_pct = state.scrobble.min_play_pct_effective();
                 drop(state);
                 let played_secs = played_secs.max(0.0);
                 let _ = tokio::time::timeout(
@@ -3608,8 +3592,8 @@ impl Daemon {
             let lastfm = inner.lastfm.lock().await;
             let state = inner.state.read().await;
             if state.scrobble.enabled && lastfm.is_ready() {
-                let min_secs = state.scrobble.min_play_secs.unwrap_or(240);
-                let min_pct = state.scrobble.min_play_pct.unwrap_or(0.5);
+                let min_secs = state.scrobble.min_play_secs_effective();
+                let min_pct = state.scrobble.min_play_pct_effective();
                 drop(state);
                 let played_secs = prev_time_pos.max(0.0);
                 let _ = tokio::time::timeout(

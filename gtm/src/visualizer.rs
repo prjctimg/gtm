@@ -157,7 +157,7 @@ impl AudioVisualizer {
             VisualizerPreset::Blocks => self.render_blocks(num_bars, h, theme),
             VisualizerPreset::Mirror => self.render_mirror(num_bars, h, theme),
             VisualizerPreset::Gradient => self.render_gradient(num_bars, h, theme),
-            VisualizerPreset::Spectrum => self.render_spectrum(num_bars, h, theme),
+            VisualizerPreset::Spectrum => self.render_blocks(num_bars, h, theme),
         })
     }
 
@@ -214,8 +214,14 @@ impl AudioVisualizer {
         Lines(lines)
     }
 
-    /// Braille cells with a 4-step color ramp by amplitude.
-    fn render_gradient(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
+    /// Braille cells; color chosen per-bar by `color_fn`.
+    fn render_braille_grid(
+        &self,
+        num_bars: usize,
+        height: usize,
+        theme: &AppTheme,
+        color_fn: impl Fn(f32, &AppTheme) -> Color,
+    ) -> Lines<'_> {
         let mut lines: Vec<Line<'static>> = Vec::new();
         let braille_fill = '⣿';
         let braille_empty = '⠀';
@@ -225,15 +231,7 @@ impl AudioVisualizer {
             for i in 0..num_bars {
                 let val = *self.bars.get(i).unwrap_or(&0.0);
                 if val >= threshold {
-                    let color = if val > 0.75 {
-                        theme.accent
-                    } else if val > 0.5 {
-                        theme.fg_bright
-                    } else if val > 0.25 {
-                        theme.fg
-                    } else {
-                        theme.fg_dim
-                    };
+                    let color = color_fn(val, theme);
                     spans.push(Span::styled(
                         braille_fill.to_string(),
                         Style::default().fg(color),
@@ -250,62 +248,23 @@ impl AudioVisualizer {
         Lines(lines)
     }
 
-    /// Solid frequency columns at fixed positions driven directly by the
-    /// realtime audio levels (no horizontal scrolling).
-    fn render_spectrum(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
-        const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        for row_from_top in (0..height).rev() {
-            let mut spans: Vec<Span<'static>> = Vec::new();
-            for i in 0..num_bars {
-                let val = *self.bars.get(i).unwrap_or(&0.0);
-                let filled = val * height as f32;
-                let full_rows = filled.floor() as usize;
-                let frac = filled - filled.floor();
-                let ch = if row_from_top < full_rows {
-                    BLOCKS[7]
-                } else if row_from_top == full_rows && frac > 0.0 && full_rows < height {
-                    BLOCKS[((frac * 8.0) as usize).min(7)]
-                } else {
-                    ' '
-                };
-                let color = if ch == ' ' {
-                    theme.bg
-                } else {
-                    self.amplitude_color(val, theme)
-                };
-                spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+    /// Braille cells with a 4-step color ramp by amplitude.
+    fn render_gradient(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
+        self.render_braille_grid(num_bars, height, theme, |val, theme| {
+            if val > 0.75 {
+                theme.accent
+            } else if val > 0.5 {
+                theme.fg_bright
+            } else if val > 0.25 {
+                theme.fg
+            } else {
+                theme.fg_dim
             }
-            lines.push(Line::from(spans));
-        }
-        Lines(lines)
+        })
     }
 
     fn render_braille(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        let braille_fill = '⣿';
-        let braille_empty = '⠀';
-        for row in (0..height).rev() {
-            let mut spans: Vec<Span<'static>> = Vec::new();
-            let threshold = (row + 1) as f32 / height as f32;
-            for i in 0..num_bars {
-                let val = *self.bars.get(i).unwrap_or(&0.0);
-                if val >= threshold {
-                    let color = self.amplitude_color(val, theme);
-                    spans.push(Span::styled(
-                        braille_fill.to_string(),
-                        Style::default().fg(color),
-                    ));
-                } else {
-                    spans.push(Span::styled(
-                        braille_empty.to_string(),
-                        Style::default().fg(theme.bg),
-                    ));
-                }
-            }
-            lines.push(Line::from(spans));
-        }
-        Lines(lines)
+        self.render_braille_grid(num_bars, height, theme, |val, theme| self.amplitude_color(val, theme))
     }
 }
 

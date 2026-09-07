@@ -73,6 +73,34 @@ pub struct ScrobbleConfig {
     pub min_play_pct: Option<f32>,
 }
 
+/// Default minimum play time (seconds) before a track qualifies for scrobbling.
+pub const DEFAULT_MIN_PLAY_SECS: u32 = 240;
+/// Default minimum play fraction of the total track duration for scrobbling.
+pub const DEFAULT_MIN_PLAY_PCT: f32 = 0.5;
+
+impl ScrobbleConfig {
+    pub fn min_play_secs_effective(&self) -> u32 {
+        self.min_play_secs.unwrap_or(DEFAULT_MIN_PLAY_SECS)
+    }
+
+    pub fn min_play_pct_effective(&self) -> f32 {
+        self.min_play_pct.unwrap_or(DEFAULT_MIN_PLAY_PCT)
+    }
+}
+
+/// Maximum volume, in percent (0..=MAX_VOLUME).
+pub const MAX_VOLUME: u8 = 100;
+
+/// Scale a 0..=MAX_VOLUME volume to a 0..1 ratio.
+pub fn volume_ratio(vol: u8) -> f32 {
+    vol as f32 / MAX_VOLUME as f32
+}
+
+/// Scale a 0..1 ratio back to a 0..=MAX_VOLUME volume.
+pub fn volume_from_ratio(ratio: f32) -> u8 {
+    (ratio.clamp(0.0, 1.0) * MAX_VOLUME as f32) as u8
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CrossfadeConfig {
     pub enabled: bool,
