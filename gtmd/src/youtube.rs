@@ -63,6 +63,17 @@ pub struct YoutubeManager {
     download_progress_rx: mpsc::UnboundedReceiver<DownloadProgress>,
     download_dir: PathBuf,
     max_concurrent_downloads: usize,
+    /// Mtime of the cookie file the current InnerTube client was built with,
+    /// so freshly-exported cookies (the usual fix for HTTP 403) are picked up
+    /// without requiring a restart.
+    client_cookie_mtime: Option<std::time::SystemTime>,
+}
+
+#[derive(Debug, Clone)]
+struct Cookie {
+    domain: String,
+    name: String,
+    value: String,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -117,15 +128,26 @@ impl YoutubeManager {
             download_progress_rx,
             download_dir,
             max_concurrent_downloads: 2,
+            client_cookie_mtime: None,
         }
     }
 
     /// Build (once) and hand back a cloneable InnerTube client. Errors are
     /// surfaced so callers can report a helpful message instead of silently
     /// producing empty results.
+    ///
+    /// If the configured cookies.txt changes after the client was built, the
+    /// client is rebuilt so fresh cookies take effect immediately.
     async fn ensure_client(&mut self) -> Result<Innertube, String> {
+        let cookie_mtime = self.cookie_file.as_ref().and_then(|p| {
+            std::fs::metadata(p)
+                .ok()
+                .and_then(|m| m.modified().ok())
+        });
         if let Some(c) = &self.client {
-            return Ok(c.clone());
+            if cookie_mtime == self.client_cookie_mtime {
+                return Ok(c.clone());
+            }
         }
         let cookie_args = self.cookie_args();
         let options = SessionOptions {
@@ -136,11 +158,15 @@ impl YoutubeManager {
             .await
             .map_err(|e| format!("failed to initialize InnerTube: {e}"))?;
         self.client = Some(client.clone());
+        self.client_cookie_mtime = cookie_mtime;
         Ok(client)
     }
 
     pub fn set_cookie_file(&mut self, path: Option<String>) {
         self.cookie_file = path.map(PathBuf::from);
+        // Cookie auth may have changed: force a client rebuild on next use.
+        self.client = None;
+        self.client_cookie_mtime = None;
     }
 
     /// Active cookie file path, if configured.  Callers that download audio
@@ -534,11 +560,25 @@ impl YoutubeManager {
 
     /// Download a resolved stream to a local file, streaming with reqwest
     /// (no ffmpeg transcode — the player decodes m4a/webm/opus natively).
-    pub async fn download_to_path(url: &str, dest: &Path) -> Result<(), String> {
-        let resp = reqwest::Client::builder()
+    /// The optional cookie header is attached so authenticated streams don't
+    /// get rejected with HTTP 403 the way anonymous requests do.
+    pub async fn download_to_path(
+        url: &str,
+        dest: &Path,
+        cookie_header: Option<String>,
+    ) -> Result<(), String> {
+        let mut req = reqwest::Client::builder()
+            .user_agent(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) \
+                 Chrome/124.0 Safari/537.36",
+            )
             .build()
             .map_err(|e| format!("build http client: {e}"))?
-            .get(url)
+            .get(url);
+        if let Some(header) = cookie_header {
+            req = req.header("Cookie", header);
+        }
+        let resp = req
             .send()
             .await
             .map_err(|e| format!("download: {e}"))?;
@@ -565,10 +605,24 @@ impl YoutubeManager {
     /// if any. Passed to the InnerTube session so authenticated extraction
     /// works (YouTube answers anonymous requests with HTTP 403).
     fn cookie_args(&self) -> Option<String> {
-        match self.cookie_file.as_ref() {
+        let cookies = match self.cookie_file.as_ref() {
             Some(p) if p.is_file() => parse_cookie_file(p),
-            _ => None,
-        }
+            _ => return None,
+        };
+        let refs: Vec<&Cookie> = cookies.iter().collect();
+        header_from_cookies(&refs)
+    }
+
+    /// Cookie header for a specific download URL, domain-filtered so unrelated
+    /// cookies in the file aren't sent to the CDN. Falls back to the full
+    /// cookie set (a bare YouTube export is almost always what's configured)
+    /// so authenticated streams — the typical HTTP 403 case — are covered.
+    pub fn cookie_header_for(&self, url: &str) -> Option<String> {
+        let cookies = match self.cookie_file.as_ref() {
+            Some(p) if p.is_file() => parse_cookie_file(p),
+            _ => return None,
+        };
+        header_for_host(&cookies, url)
     }
 }
 
@@ -748,10 +802,14 @@ fn container_ext(f: &StreamingFormat) -> &'static str {
     }
 }
 
-/// Parse a Netscape cookies.txt file into a HTTP `Cookie` header string.
-fn parse_cookie_file(path: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let mut pairs: Vec<(String, String)> = Vec::new();
+/// Parse a Netscape cookies.txt file into individual cookies, keeping the
+/// domain so headers can be scoped to the exact host being requested.
+fn parse_cookie_file(path: &Path) -> Vec<Cookie> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    let mut cookies: Vec<Cookie> = Vec::new();
     for line in content.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -764,17 +822,47 @@ fn parse_cookie_file(path: &Path) -> Option<String> {
         let name = fields[5];
         let value = fields[6];
         if !name.is_empty() && !value.is_empty() {
-            pairs.push((name.to_string(), value.to_string()));
+            cookies.push(Cookie {
+                domain: fields[0].to_string(),
+                name: name.to_string(),
+                value: value.to_string(),
+            });
         }
     }
-    if pairs.is_empty() {
+    cookies
+}
+
+/// Join cookies into a single `name=value; name=value` header string.
+fn header_from_cookies(cookies: &[&Cookie]) -> Option<String> {
+    if cookies.is_empty() {
         return None;
     }
     Some(
-        pairs
+        cookies
             .iter()
-            .map(|(k, v)| format!("{k}={v}"))
+            .map(|c| format!("{}={}", c.name, c.value))
             .collect::<Vec<_>>()
             .join("; "),
     )
+}
+
+/// True when a cookie's domain applies to `host` (domain parent matching,
+/// Netscape cookies use a leading dot to signal "all subdomains").
+fn cookie_matches(domain: &str, host: &str) -> bool {
+    let d = domain.trim_start_matches('.');
+    host == d || host.ends_with(&format!(".{d}"))
+}
+
+/// Header for `host` only (plus the all-cookies fallback when nothing
+/// belongs to that host, e.g. a bare YouTube export hitting googlevideo).
+fn header_for_host(cookies: &[Cookie], url: &str) -> Option<String> {
+    let host = url::Url::parse(url).ok()?.host_str()?.to_string();
+    let mut matching: Vec<&Cookie> = cookies
+        .iter()
+        .filter(|c| cookie_matches(&c.domain, &host))
+        .collect();
+    if matching.is_empty() {
+        matching = cookies.iter().collect();
+    }
+    header_from_cookies(&matching)
 }

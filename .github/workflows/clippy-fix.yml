@@ -31,7 +31,7 @@ jobs:
       - name: Apply clippy auto-fixes
         run: cargo clippy --fix --workspace --allow-dirty --all-targets
       - name: Format
-        run: cargo fmt
+        run: cargo fmt --check
       - name: Verify with cargo check
         id: verify
         run: cargo check --workspace

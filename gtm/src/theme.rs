@@ -114,9 +114,9 @@ pub fn readable_fg(fg: Color, bg: Color) -> Color {
     if (fg_l - bg_l).abs() >= CONTRAST_THRESHOLD {
         fg
     } else if bg_l > 128.0 {
-        Color::Rgb(20, 20, 20)
+        Color::Black
     } else {
-        Color::Rgb(240, 240, 240)
+        Color::White
     }
 }
 

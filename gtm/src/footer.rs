@@ -135,6 +135,7 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::Queue,
                 FooterModule::Time,
                 FooterModule::System,
+                FooterModule::Multiselect,
             ],
         },
         // Bare minimum for termux or very small viewports.
@@ -309,6 +310,27 @@ pub fn render(app: &App) -> Option<FooterRenderOutput> {
         } else {
             out_right.push(group);
         }
+    }
+
+    // Multiselect mode is on: pin a "SEL" marker at the very far-left so the
+    // active selection mode is always visible, independent of the preset.
+    if app.multiselect_mode {
+        let bg = app.theme.accent;
+        let span = Span::styled(
+            " SEL ",
+            Style::default()
+                .fg(crate::theme::readable_fg(app.theme.fg, bg))
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
+        );
+        out_left.insert(
+            0,
+            FooterGroup {
+                width: span.width() as u16,
+                line: Line::from(span),
+                bg,
+            },
+        );
     }
 
     if out_left.is_empty() && out_right.is_empty() {

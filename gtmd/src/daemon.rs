@@ -52,6 +52,9 @@ type ReplyTx = mpsc::UnboundedSender<(u64, DaemonRes)>;
 
 const RESTART_THRESHOLD_SECS: f64 = 3.0;
 
+/// Capacity of the daemon→client event broadcast channel.
+pub const EVENT_CHANNEL_CAPACITY: usize = 4096;
+
 use std::time::Instant;
 
 struct Counter {
@@ -1310,7 +1313,7 @@ impl Spotify {
                     &format!("spotify-{playlist_id}-{track_index}"),
                     &info.url,
                     &info.ext,
-                    yt.cookie_file(),
+                    yt.cookie_header_for(&info.url),
                 )
                 .await
                 {
@@ -1418,7 +1421,7 @@ impl Spotify {
                     &format!("spotify-web-{name}"),
                     &info.url,
                     &info.ext,
-                    yt.cookie_file(),
+                    yt.cookie_header_for(&info.url),
                 )
                 .await
                 {
@@ -2278,6 +2281,12 @@ struct DaemonInner {
     oauth_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     crossfade_loaded_for: tokio::sync::Mutex<Option<String>>,
     countdown_notified_for: tokio::sync::Mutex<Option<String>>,
+    /// Wall-clock instant of the last `PositionChanged` broadcast. The 16ms
+    /// poll loop emits `AudioEvent::Position` at ~20 Hz; re-anchoring the
+    /// client clock on every one would flood the socket, so position gets
+    /// broadcast at most this often. Clients extrapolate smoothly between
+    /// broadcasts, keeping the lyric highlight and progress bar tight.
+    last_pos_broadcast: tokio::sync::Mutex<Option<std::time::Instant>>,
     /// Monotonic generation counter for the sleep timer. `set_sleep_timer`
     /// bumps it so any previously scheduled timer observes the mismatch and
     /// backs out without racing the new one; `cancel_sleep_timer` also bumps.
@@ -2431,7 +2440,12 @@ impl Daemon {
             warn!("failed to write PID file: {e}");
         }
 
-        let (event_tx, _) = broadcast::channel::<DaemonEvent>(1024);
+        // Daemon → client event broadcast. Sized generously (4× the original
+        // 1024) because the visualizer alone bursts at ~60 Hz on top of
+        // position/notification traffic; the lagged-receiver path re-syncs to
+        // the newest event, but a small channel overflowed on busy sessions
+        // and forced frequent resyncs.
+        let (event_tx, _) = broadcast::channel::<DaemonEvent>(EVENT_CHANNEL_CAPACITY);
         let (req_tx, req_rx) = mpsc::unbounded_channel();
         let (internal_req_tx, internal_req_rx) = mpsc::unbounded_channel();
 
@@ -2458,6 +2472,7 @@ impl Daemon {
             oauth_task: tokio::sync::Mutex::new(None),
             crossfade_loaded_for: tokio::sync::Mutex::new(None),
             countdown_notified_for: tokio::sync::Mutex::new(None),
+            last_pos_broadcast: tokio::sync::Mutex::new(None),
             sleep_gen: Arc::new(AtomicU64::new(0)),
             health: Arc::new(HealthTracker::new(audio_backend_name)),
             client_auth: tokio::sync::Mutex::new(HashMap::new()),
@@ -2594,13 +2609,14 @@ impl Daemon {
                         // Publish streamed-source spectrum (local files feed the
                         // analyzer from the decode thread; streams from the
                         // rodio source itself).
-                        {
-                            let levels = self.inner.stream.lock().await.spectrum_snapshot();
+                        let levels = self.inner.stream.lock().await.spectrum_snapshot();
+                        let spectrum = {
+                            let mixer = self.inner.mixer.lock().await;
                             if !levels.is_empty() {
-                                self.inner.mixer.lock().await.publish_spectrum(levels);
+                                mixer.publish_spectrum(levels);
                             }
-                        }
-                        let spectrum = self.inner.mixer.lock().await.current_spectrum();
+                            mixer.current_spectrum()
+                        };
                         {
                             let mut state = self.inner.state.write().await;
                             if spectrum.is_empty() {
@@ -3755,6 +3771,25 @@ impl Daemon {
                 let next = Self::next_track(&state);
                 drop(state);
 
+                // Re-anchor client clocks at ~1 Hz so the TUI's extrapolated
+                // position (and hence the lyric highlight) never drifts by
+                // more than a fraction of a second. Seek and track-change
+                // broadcasts still happen immediately on their own paths.
+                {
+                    let mut last = inner.last_pos_broadcast.lock().await;
+                    let due = last
+                        .as_ref()
+                        .map(|t| t.elapsed() >= std::time::Duration::from_secs(1))
+                        .unwrap_or(true);
+                    if due {
+                        *last = Some(std::time::Instant::now());
+                        Self::push_event(
+                            inner,
+                            DaemonEvent::PositionChanged { time_pos: pos },
+                        );
+                    }
+                }
+
                 let cf_secs = crossfade
                     .as_ref()
                     .filter(|c| c.enabled)
@@ -3862,12 +3897,20 @@ impl Daemon {
         prefix: &str,
         url: &str,
         ext: &str,
-        _cookie_file: Option<String>,
+        cookie_header: Option<String>,
     ) -> Result<String, String> {
         let max_retries = 3u32;
         let mut last_err = String::new();
         for attempt in 1..=max_retries {
-            match Self::try_download_audio_to_cache(cache_dir, prefix, url, ext).await {
+            match Self::try_download_audio_to_cache(
+                cache_dir,
+                prefix,
+                url,
+                ext,
+                cookie_header.clone(),
+            )
+            .await
+            {
                 Ok(path) => return Ok(path),
                 Err(e) => {
                     last_err = e;
@@ -3886,6 +3929,7 @@ impl Daemon {
         prefix: &str,
         url: &str,
         ext: &str,
+        cookie_header: Option<String>,
     ) -> Result<String, String> {
         let dir = cache_dir.join("spotify");
         std::fs::create_dir_all(&dir).map_err(|e| format!("create spotify cache: {e}"))?;
@@ -3899,7 +3943,7 @@ impl Daemon {
         }
         let dest = dir.join(format!("{prefix}.{ext}"));
         tokio::time::timeout(Duration::from_secs(120), async {
-            crate::youtube::YoutubeManager::download_to_path(url, &dest).await
+            crate::youtube::YoutubeManager::download_to_path(url, &dest, cookie_header).await
         })
         .await
         .map_err(|_| "spotify download timed out".to_string())??;

@@ -92,6 +92,8 @@ pub struct Prefs {
     transparent_pickers: bool,
     #[serde(default)]
     reactive_theme: bool,
+    #[serde(default = "default_reactive_intensity")]
+    reactive_theme_intensity: f32,
     #[serde(default = "default_footer_preset_name")]
     footer_preset_name: String,
     #[serde(default)]
@@ -124,6 +126,12 @@ fn default_cover_provider() -> String {
 
 fn default_theme_name() -> String {
     "Chadrula".into()
+}
+
+/// Default reactive background wash strength (matches the pre-0.2.84
+/// hardcoded blend factor in `reactive::derive_theme`).
+fn default_reactive_intensity() -> f32 {
+    0.34
 }
 
 fn default_track_sort() -> gtm_core::state::TrackSort {
@@ -200,6 +208,7 @@ impl Default for Prefs {
             transparent_bg: false,
             transparent_pickers: false,
             reactive_theme: false,
+            reactive_theme_intensity: default_reactive_intensity(),
             footer_preset_name: default_footer_preset_name(),
             progress_style: crate::progress::ProgressStyle::default(),
             visualizer_preset: crate::visualizer::VisualizerPreset::default(),
@@ -669,6 +678,7 @@ pub struct App {
     pub transparent_bg: bool,
     pub transparent_pickers: bool,
     pub reactive_theme: bool,
+    pub reactive_theme_intensity: f32,
     reactive_palette: Option<crate::reactive::ReactivePalette>,
     pub last_action_name: Option<(String, std::time::Instant)>,
     pub footer_title_scroll: usize,
@@ -1128,6 +1138,7 @@ impl App {
             transparent_bg: prefs.transparent_bg,
             transparent_pickers: prefs.transparent_pickers,
             reactive_theme: prefs.reactive_theme,
+            reactive_theme_intensity: prefs.reactive_theme_intensity,
             reactive_palette: None,
             last_action_name: None,
             footer_title_scroll: 0,
@@ -1250,6 +1261,10 @@ impl App {
         self.transparent_bg = prefs.transparent_bg;
         self.transparent_pickers = prefs.transparent_pickers;
         self.reactive_theme = prefs.reactive_theme;
+        self.reactive_theme_intensity = prefs.reactive_theme_intensity;
+        // Reactive palette may be retained from before a reload; re-derive
+        // the theme so a changed intensity/wash applies immediately.
+        self.apply_reactive();
 
         self.footer_cache.suppress_refresh = true;
 
@@ -1313,6 +1328,7 @@ impl App {
             transparent_bg: self.transparent_bg,
             transparent_pickers: self.transparent_pickers,
             reactive_theme: self.reactive_theme,
+            reactive_theme_intensity: self.reactive_theme_intensity,
             footer_preset_name: self
                 .footer_presets
                 .get(self.footer_preset)
@@ -1425,9 +1441,45 @@ impl App {
         let light = entry.light;
         let base = entry.theme;
         self.theme = match (self.reactive_theme, self.reactive_palette) {
-            (true, Some(pal)) => crate::reactive::derive_theme(&base, &pal, light),
+            (true, Some(pal)) => crate::reactive::derive_theme(
+                &base,
+                &pal,
+                light,
+                self.reactive_theme_intensity,
+            ),
             _ => base,
         };
+    }
+
+    /// Cycle the reactive background wash strength between presets, persist,
+    /// and re-apply the reactive theme so the change is visible immediately.
+    fn cycle_reactive_intensity(&mut self) {
+        const STEPS: [f32; 5] = [0.15, 0.25, 0.34, 0.45, 0.6];
+        let cur = STEPS
+            .iter()
+            .position(|v| (v - self.reactive_theme_intensity).abs() < 1e-3);
+        let next = match cur {
+            Some(i) => (i + 1) % STEPS.len(),
+            // Exact-match on a custom value: advance to the next preset, or
+            // wrap back to the strongest one.
+            None => STEPS
+                .iter()
+                .position(|v| *v > self.reactive_theme_intensity)
+                .unwrap_or(0),
+        };
+        self.reactive_theme_intensity = STEPS[next];
+        self.apply_reactive();
+        save_prefs(&self.current_prefs());
+        self.notify_titled(
+            "Reactive Theme",
+            format!(
+                "Intensity: {:.0}%",
+                self.reactive_theme_intensity * 100.0
+            ),
+            NotificationKind::Info,
+            true,
+            NotifType::Prefs,
+        );
     }
 
     /// Kick off palette extraction for freshly received cover art.  Runs on
@@ -2036,7 +2088,16 @@ impl App {
                         }
                     }
                     IpcResult::Notification(title, msg, kind, ntype) => {
-                        self.notify_typed(&title, msg, kind, false, ntype);
+                        // Petty flow acknowledgements (add/remove playlist,
+                        // playlist creation hand-off, cache clears) surface in
+                        // the footer or history instead of floating cards that
+                        // interrupt the view.
+                        let trivial = (title == "Playlist"
+                            && (msg.starts_with("Tracks added to playlist")
+                                || msg.starts_with("Removed from playlist")
+                                || msg.starts_with("Created ")))
+                            || title == "Cache";
+                        self.notify_typed(&title, msg, kind, trivial, ntype);
                     }
                     IpcResult::Error(e) => {
                         self.notify(e, NotificationKind::Error);
@@ -2070,6 +2131,10 @@ impl App {
                         {
                             self.queue.preview_cover = cover;
                             self.queue_preview_cover_sync();
+                            // The cover arrived on the IPC event loop; force a
+                            // redraw this frame so the picker shows it without
+                            // waiting for a coincidental render trigger.
+                            self.cover_art_dirty = true;
                             if self.queue.preview_cover.is_some() {
                                 self.queue.preview_cover_fail_until = None;
                             } else {
@@ -2090,6 +2155,7 @@ impl App {
                         {
                             self.picker_preview_cover = cover;
                             self.picker_preview_sync();
+                            self.cover_art_dirty = true;
                         }
                     }
                     IpcResult::MetadataCoverArt(cover, track_id, fetch_gen) => {
@@ -3418,7 +3484,7 @@ impl App {
         match self.settings_category {
             0 => 4,  // YouTube: Cookie Source, Cookie File, JS Runtime, Auto Download
             1 => 6,  // Playback: Repeat, Shuffle, Crossfade, EQ Enabled, Reverb, Cover Source
-            2 => 13, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme, Clear Lyrics Cache, Clear Cover Cache, Notification Settings, Theme Mode
+            2 => 14, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme, Reactive Intensity, Hide Footer, Clear Lyrics Cache, Clear Cover Cache, Notification Settings, Theme Mode
             3 => 7,  // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Device
             _ => 0,
         }
@@ -4359,7 +4425,7 @@ impl App {
                         "System",
                         format!("{count} selected"),
                         NotificationKind::Info,
-                        false,
+                        true,
                         NotifType::Prefs,
                     );
                     return true;
@@ -5682,6 +5748,9 @@ impl App {
                                     self.apply_reactive();
                                     save_prefs(&self.current_prefs());
                                 }
+                                9 => {
+                                    self.cycle_reactive_intensity();
+                                }
                                 _ => {}
                             },
                             3 => {}
@@ -5780,6 +5849,9 @@ impl App {
                                     }
                                     self.apply_reactive();
                                     save_prefs(&self.current_prefs());
+                                }
+                                9 => {
+                                    self.cycle_reactive_intensity();
                                 }
                                 _ => {}
                             },
@@ -5963,13 +6035,16 @@ impl App {
                                     self.apply_reactive();
                                     save_prefs(&self.current_prefs());
                                 }
-                                9 | 10 => {
-                                    let what = if opt == 9 {
+                                9 => {
+                                    self.cycle_reactive_intensity();
+                                }
+                                10 | 11 => {
+                                    let what = if opt == 10 {
                                         gtm_core::ipc::CacheKind::Lyrics
                                     } else {
                                         gtm_core::ipc::CacheKind::Covers
                                     };
-                                    let label = if opt == 9 { "lyrics" } else { "cover art" };
+                                    let label = if opt == 10 { "lyrics" } else { "cover art" };
                                     let c = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
@@ -5990,10 +6065,10 @@ impl App {
                                         }
                                     });
                                 }
-                                11 => {
+                                12 => {
                                     self.pickers.open(PickerId::NotificationSettings);
                                 }
-                                12 => {
+                                13 => {
                                     self.cycle_theme_mode();
                                 }
                                 _ => {}
@@ -6967,37 +7042,37 @@ impl App {
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
                                         match client.library().create_playlist(&name).await {
-                                            Ok(()) => {
-                                                if let Ok(DaemonRes::Playlists {
-                                                    playlists, ..
-                                                }) = client.library().get_playlists().await
+                                            Ok(playlists) => {
+                                                if let Some(new_p) =
+                                                    playlists.iter().next().cloned()
                                                 {
-                                                    let new_id = playlists
-                                                        .iter()
-                                                        .find(|p| p.name == name)
-                                                        .map(|p| p.id);
-                                                    let _ = ipc_tx
-                                                        .send(IpcResult::Playlists(playlists));
-                                                    if let Some(pid) = new_id {
-                                                        // Hand off to the track multi-select
-                                                        // picker instead of using a pre-collected
-                                                        // list, so creating can't race/stale out.
-                                                        let _ = ipc_tx.send(
-                                                            IpcResult::PlaylistCreated(
-                                                                pid,
-                                                                name.clone(),
-                                                            ),
-                                                        );
-                                                        let _ =
-                                                            ipc_tx.send(IpcResult::Notification(
-                                                                "Playlist".to_string(),
-                                                                format!(
-                                                                    "Created {name} — pick tracks"
-                                                                ),
-                                                                NotificationKind::Success,
-                                                                NotifType::NowPlaying,
-                                                            ));
+                                                    let playlists =
+                                                        client.library().get_playlists().await;
+                                                    if let Ok(DaemonRes::Playlists {
+                                                        playlists,
+                                                        ..
+                                                    }) = playlists
+                                                    {
+                                                        let _ = ipc_tx.send(IpcResult::Playlists(
+                                                            playlists,
+                                                        ));
                                                     }
+                                                    let _ = ipc_tx.send(
+                                                        IpcResult::PlaylistCreated(
+                                                            new_p.id,
+                                                            name.clone(),
+                                                        ),
+                                                    );
+                                                    let _ = ipc_tx.send(
+                                                        IpcResult::Notification(
+                                                            "Playlist".to_string(),
+                                                            format!(
+                                                                "Created {name} — pick tracks"
+                                                            ),
+                                                            NotificationKind::Success,
+                                                            NotifType::NowPlaying,
+                                                        ),
+                                                    );
                                                 }
                                             }
                                             Err(e) => {

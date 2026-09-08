@@ -256,6 +256,22 @@ impl DaemonClient {
         }
     }
 
+    /// Send a request whose response is expected to be `DaemonRes::Playlists`
+    /// (e.g. `CreatePlaylist`, `ImportM3u`). Returns the created/imported
+    /// playlists so callers can attach tracks without a second round-trip.
+    async fn send_playlists(&self, req: DaemonReq) -> Result<Vec<track::Playlist>> {
+        let cmd = req.cmd_name().to_string();
+        match self.send_raw(req).await? {
+            DaemonRes::Playlists { playlists } => Ok(playlists),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            other => {
+                let msg = format!("unexpected response to {cmd}: {other:?}");
+                tracing::warn!("{msg}");
+                Err(CoreError::Daemon(msg))
+            }
+        }
+    }
+
     // ─── Playback ───
 
     pub async fn play(&self, path: &str, start_pos: f64) -> Result<()> {
@@ -586,9 +602,9 @@ impl<'a> Library<'a> {
             .await
     }
 
-    pub async fn create_playlist(&self, name: &str) -> Result<()> {
+    pub async fn create_playlist(&self, name: &str) -> Result<Vec<track::Playlist>> {
         self.client
-            .send_ok(DaemonReq::Library {
+            .send_playlists(DaemonReq::Library {
                 action: LibraryAction::CreatePlaylist { name: name.into() },
             })
             .await
@@ -613,9 +629,9 @@ impl<'a> Library<'a> {
             .await
     }
 
-    pub async fn import_m3u(&self, path: &str) -> Result<()> {
+    pub async fn import_m3u(&self, path: &str) -> Result<Vec<track::Playlist>> {
         self.client
-            .send_ok(DaemonReq::Library {
+            .send_playlists(DaemonReq::Library {
                 action: LibraryAction::ImportM3u { path: path.into() },
             })
             .await

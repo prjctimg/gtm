@@ -93,7 +93,13 @@ pub fn extract_palette(bytes: &[u8]) -> Option<ReactivePalette> {
 /// Blend a reactive palette into a copy of `base`.  Backgrounds receive only
 /// a faint wash of the dominant color so readability is preserved on both
 /// dark and light themes; accents take the artwork colors nearly verbatim.
-pub fn derive_theme(base: &AppTheme, pal: &ReactivePalette, light: bool) -> AppTheme {
+/// `intensity` (0.0–1.0) scales the ambient background wash — 0 disables it.
+pub fn derive_theme(
+    base: &AppTheme,
+    pal: &ReactivePalette,
+    light: bool,
+    intensity: f32,
+) -> AppTheme {
     let mut t = *base;
     let rgb = |c: [u8; 3]| Color::Rgb(c[0], c[1], c[2]);
 
@@ -127,8 +133,9 @@ pub fn derive_theme(base: &AppTheme, pal: &ReactivePalette, light: bool) -> AppT
     let primary_raw = rgb(pal.primary);
     t.selection_bg = blend_colors(base.selection_bg, primary_raw, 0.4);
     // Ambient wash: pull the background toward the artwork so the whole
-    // surface reacts to the current cover (Spotify-style).
-    let unified_bg = blend_colors(base.bg, primary_raw, 0.34);
+    // surface reacts to the current cover (Spotify-style). The strength is
+    // user-tunable; 0 disables the wash entirely.
+    let unified_bg = blend_colors(base.bg, primary_raw, intensity.clamp(0.0, 1.0) as f64);
     t.bg = unified_bg;
     t.pane_bg = unified_bg;
     t.elevated_bg = unified_bg;

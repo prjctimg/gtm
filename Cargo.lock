@@ -2036,6 +2036,7 @@ version = "0.2.83"
 dependencies = [
  "fundsp",
  "gtm-core",
+ "libc",
  "log",
  "pulseaudio",
  "rodio",

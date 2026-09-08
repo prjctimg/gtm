@@ -426,7 +426,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .library()
                 .create_playlist(name)
                 .await
-                .map(|()| "ok".to_string())
+                .map(|playlists| format!("created {} playlist", playlists.len()))
                 .map_err(|e| e.to_string()),
             CliCommand::DeletePlaylist { id } => client
                 .library()
@@ -447,7 +447,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .library()
                 .import_m3u(path)
                 .await
-                .map(|()| "ok".to_string())
+                .map(|playlists| format!("imported {} playlist", playlists.len()))
                 .map_err(|e| e.to_string()),
             CliCommand::ExportM3u { playlist_id, path } => client
                 .library()

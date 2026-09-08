@@ -25,9 +25,28 @@ use gtm_core::track::{Playlist, TrackInfo};
 
 const DB_NAME: &str = "library.db";
 
+/// Map a playlist name to a safe `.m3u8` file name in the data directory.
+fn m3u8_file_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '(' | ')' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{}.m3u8", cleaned.trim().replace(' ', "_"))
+}
+
 pub struct Library {
     conn: Connection,
     _watch_dirs: Mutex<Vec<String>>,
+    /// Directory holding the SQLite database; playlists are mirrored as
+    /// `.m3u8` files here so they survive DB resets and are directly
+    /// portable/readable by other players.
+    data_dir: PathBuf,
 }
 
 impl Library {
@@ -88,6 +107,7 @@ impl Library {
         Ok(Self {
             conn,
             _watch_dirs: Mutex::new(Vec::new()),
+            data_dir: PathBuf::from(db_dir),
         })
     }
 
@@ -303,17 +323,39 @@ impl Library {
             .execute("INSERT INTO playlists (name) VALUES (?1)", params![name])
             .map_err(|e| format!("create playlist: {e}"))?;
         let id = self.conn.last_insert_rowid();
+        // Mirror the playlist as a `.m3u8` file next to the database so the
+        // playlist survives a DB reset and is usable by other players.
+        let m3u_path = self.data_dir.join(m3u8_file_name(name));
+        if let Err(e) = std::fs::write(
+            &m3u_path,
+            format!("#EXTM3U\n#PLAYLIST: {name}\n"),
+        ) {
+            tracing::warn!("failed to write {}: {e}", m3u_path.display());
+        }
         self.get_playlist(id)?
             .ok_or_else(|| "created playlist not found".to_string())
     }
 
     pub fn delete_playlist(&self, id: i64) -> Result<(), String> {
+        let name: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT name FROM playlists WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .ok();
         let affected = self
             .conn
             .execute("DELETE FROM playlists WHERE id = ?1", params![id])
             .map_err(|e| format!("delete playlist: {e}"))?;
         if affected == 0 {
             return Err("playlist not found".to_string());
+        }
+        // Clean up the mirrored `.m3u8` file if one exists.
+        if let Some(name) = name {
+            let m3u_path = self.data_dir.join(m3u8_file_name(&name));
+            let _ = std::fs::remove_file(m3u_path);
         }
         Ok(())
     }

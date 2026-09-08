@@ -1412,34 +1412,40 @@ impl Render {
             }
         }
 
-        let right_para = Paragraph::new(right_lines);
-        let header_label = if let Some(detail) = app.browse_detail.as_deref() {
-            format!("▶ {detail}")
-        } else {
-            category_label.to_string()
-        };
-        let right_inner =
-            Render::pane_header(f, panes[1], app, &header_label, !left_focus, false, true);
-        fill_pane(f, right_inner, app);
-        Render::evolving(f, right_inner, right_para, "lib", app, false);
+        // On narrow/medium screens lyrics take over the results pane entirely,
+        // so skip rendering the list underneath and registering hit zones for
+        // rows that are not visible.
+        let lyrics_in_results_pane = app.lyrics.show && lyrics_area.is_none();
+        if !lyrics_in_results_pane {
+            let right_para = Paragraph::new(right_lines);
+            let header_label = if let Some(detail) = app.browse_detail.as_deref() {
+                format!("▶ {detail}")
+            } else {
+                category_label.to_string()
+            };
+            let right_inner =
+                Render::pane_header(f, panes[1], app, &header_label, !left_focus, false, true);
+            fill_pane(f, right_inner, app);
+            Render::evolving(f, right_inner, right_para, "lib", app, false);
 
-        // Mouse hit zones for the visible library rows: rows start
-        // below one leading blank line.
-        if lib_total_rows > 0 {
-            let avail = right_inner.height.saturating_sub(2) as usize;
-            let visible_rows = lib_total_rows
-                .saturating_sub(app.list_scroll)
-                .min(app.viewport_items)
-                .min(avail);
-            for v in 0..visible_rows {
-                let rect = Rect {
-                    x: right_inner.x,
-                    y: right_inner.y + 1 + v as u16,
-                    width: right_inner.width,
-                    height: 1,
-                };
-                app.mouse_map
-                    .register(rect, crate::mouse::MouseZone::ListItem(app.list_scroll + v));
+            // Mouse hit zones for the visible library rows: rows start
+            // below one leading blank line.
+            if lib_total_rows > 0 {
+                let avail = right_inner.height.saturating_sub(2) as usize;
+                let visible_rows = lib_total_rows
+                    .saturating_sub(app.list_scroll)
+                    .min(app.viewport_items)
+                    .min(avail);
+                for v in 0..visible_rows {
+                    let rect = Rect {
+                        x: right_inner.x,
+                        y: right_inner.y + 1 + v as u16,
+                        width: right_inner.width,
+                        height: 1,
+                    };
+                    app.mouse_map
+                        .register(rect, crate::mouse::MouseZone::ListItem(app.list_scroll + v));
+                }
             }
         }
 
@@ -3255,7 +3261,12 @@ impl Pickers {
                 LibraryPick::Artist(name) => format!("{}\u{1f465} {}", prefix, name),
                 LibraryPick::Album(album) => format!("{}\u{1f4bf} {}", prefix, album),
                 LibraryPick::Playlist(i) => {
-                    format!("{}\u{1f4dc} {}", prefix, app.playlist_cache[*i].name)
+                    match app.playlist_cache.get(*i) {
+                        Some(p) if !p.name.is_empty() => {
+                            format!("{}\u{1f4dc} {}", prefix, p.name)
+                        }
+                        _ => format!("{}\u{1f4dc} (missing playlist)", prefix),
+                    }
                 }
             };
             let row = if i == sel {
@@ -3403,9 +3414,10 @@ impl Pickers {
                 push("Tracks", &count.to_string());
             }
             Some(LibraryPick::Playlist(i)) => {
-                let p = &app.playlist_cache[*i];
-                push("Playlist", &p.name);
-                push("Tracks", &p.track_count.to_string());
+                if let Some(p) = app.playlist_cache.get(*i) {
+                    push("Playlist", &p.name);
+                    push("Tracks", &p.track_count.to_string());
+                }
             }
             None => {
                 push("", "No results");
@@ -3550,6 +3562,10 @@ impl Pickers {
                     format!(
                         "Reactive Theme {}",
                         if app.reactive_theme { "On" } else { "Off" }
+                    ),
+                    format!(
+                        "Reactive Intensity {:.0}%  ▶",
+                        app.reactive_theme_intensity * 100.0
                     ),
                     format!(
                         "Hide Footer    {}",

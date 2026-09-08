@@ -7,7 +7,7 @@
 use std::num::{NonZeroU16, NonZeroU32};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use rodio::Source;
 
@@ -43,6 +43,10 @@ pub struct RingBufferInner {
     write_pos: AtomicUsize,
     read_pos: AtomicUsize,
     finished: AtomicBool,
+    /// Cumulative samples discarded by the producer after a 1 s consumer
+    /// stall.  A nonzero value on a healthy run indicates the output device
+    /// died; see `push_blocking`.
+    dropped_samples: AtomicU64,
 }
 
 impl RingBufferInner {
@@ -59,6 +63,7 @@ impl RingBufferInner {
             write_pos: AtomicUsize::new(0),
             read_pos: AtomicUsize::new(0),
             finished: AtomicBool::new(false),
+            dropped_samples: AtomicU64::new(0),
         }
     }
 
@@ -89,15 +94,18 @@ impl RingBufferInner {
         true
     }
 
-    /// Write a single sample, waiting (bounded) for space instead of silently
-    /// dropping.  The wait is short — a few milliseconds of yield — then it
-    /// falls back to dropping so a wedged consumer can never hang the
-    /// producer.  Prefer this over `push` on the decode thread so an overrun
-    /// never clips audio.
+    /// Write a single sample, waiting for space instead of silently dropping.
+    /// A momentary stall in the consumer (CPU contention, network hiccup)
+    /// must never discard samples: dropping shifts the decoded timeline and
+    /// the stutter would persist even after the load disappears.  We wait
+    /// here until the consumer drains a slot, re-checking `running` so a
+    /// truly dead consumer can still stop the decode thread.  Only after a
+    /// long (1 s) continuous stall do we give up and drop, signalling the
+    /// loss on [`DecodeControl::dropped_samples`] for diagnostics.
     /// SAFETY: Only the producer thread calls push_blocking(), so no data
     /// race with pop().
-    pub fn push_blocking(&self, sample: f32) {
-        let mut waits = 0u32;
+    pub fn push_blocking(&self, sample: f32, running: &AtomicBool) {
+        let deadline = Instant::now() + Duration::from_secs(1);
         loop {
             let w = self.write_pos.load(Ordering::Relaxed);
             let r = self.read_pos.load(Ordering::Acquire);
@@ -108,11 +116,11 @@ impl RingBufferInner {
                 self.write_pos.store(w + 1, Ordering::Release);
                 return;
             }
-            waits += 1;
-            if waits >= 100 {
+            if !running.load(Ordering::Acquire) || Instant::now() >= deadline {
+                self.dropped_samples.fetch_add(1, Ordering::Relaxed);
                 return;
             }
-            std::thread::sleep(Duration::from_micros(50));
+            std::thread::sleep(Duration::from_micros(100));
         }
     }
 
@@ -141,6 +149,12 @@ impl RingBufferInner {
 
     pub fn set_finished(&self, val: bool) {
         self.finished.store(val, Ordering::Release);
+    }
+
+    /// Cumulative samples dropped by the producer after a sustained consumer
+    /// stall (see [`RingBufferInner::push_blocking`]).
+    pub fn dropped_samples(&self) -> u64 {
+        self.dropped_samples.load(Ordering::Relaxed)
     }
 }
 
