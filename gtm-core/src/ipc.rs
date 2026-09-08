@@ -306,6 +306,21 @@ pub enum DaemonReq {
         name: String,
         artists: String,
         album: String,
+        /// `spotify:track:` URI when the caller already knows it (e.g. web
+        /// search hits), enabling native librespot streaming on Premium.
+        #[serde(default)]
+        uri: Option<String>,
+    },
+    /// Play every track of a synced Spotify playlist. `shuffle` randomises the
+    /// track order before enqueueing so `S` on a playlist becomes "shuffle all".
+    SpotifyPlayAll {
+        playlist_id: String,
+        shuffle: bool,
+    },
+    /// Fetch the raw bytes (base64) for a Spotify album-cover URL, used to
+    /// render cover art in the Spotify search picker preview.
+    SpotifyTrackImage {
+        image_url: String,
     },
     LastfmSetConfig {
         enabled: bool,
@@ -395,6 +410,8 @@ impl DaemonReq {
             DaemonReq::SpotifyResolve { .. } => "spotify_resolve",
             DaemonReq::SpotifySearchWeb { .. } => "spotify_search_web",
             DaemonReq::SpotifyResolveTrack { .. } => "spotify_resolve_track",
+            DaemonReq::SpotifyPlayAll { .. } => "spotify_play_all",
+            DaemonReq::SpotifyTrackImage { .. } => "spotify_track_image",
             DaemonReq::LastfmSetConfig { .. } => "lastfm_set_config",
             DaemonReq::LastfmAuthUrl => "lastfm_auth_url",
             DaemonReq::LastfmAuthenticate { .. } => "lastfm_authenticate",
@@ -739,13 +756,37 @@ impl DaemonReq {
                     name: String,
                     artists: String,
                     album: String,
+                    #[serde(default)]
+                    uri: Option<String>,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SpotifyResolveTrack {
                     name: x.name,
                     artists: x.artists,
                     album: x.album,
+                    uri: x.uri,
                 }
+            }
+            "spotify_play_all" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    playlist_id: String,
+                    #[serde(default)]
+                    shuffle: bool,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SpotifyPlayAll {
+                    playlist_id: x.playlist_id,
+                    shuffle: x.shuffle,
+                }
+            }
+            "spotify_track_image" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    image_url: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SpotifyTrackImage { image_url: x.image_url }
             }
             "lastfm_set_config" => {
                 #[derive(Deserialize)]
@@ -1063,6 +1104,10 @@ pub enum DaemonRes {
     SpotifyTracksRes {
         tracks: Vec<SpotifyTrack>,
     },
+    /// Base64-encoded cover image bytes fetched from a Spotify CDN URL.
+    SpotifyImageRes {
+        data: Option<String>,
+    },
     CoverArt {
         data: Option<String>,
     },
@@ -1138,6 +1183,7 @@ impl DaemonRes {
             }
             DaemonRes::SpotifyOauthStarted { url } => Some(serde_json::json!({ "url": url })),
             DaemonRes::SpotifyTracksRes { tracks } => Some(serde_json::json!({ "tracks": tracks })),
+            DaemonRes::SpotifyImageRes { data } => Some(serde_json::json!({ "data": data })),
             DaemonRes::CoverArt { data } => Some(serde_json::json!({ "data": data })),
             DaemonRes::SyncStatus {
                 running,
@@ -1365,6 +1411,13 @@ impl DaemonRes {
                 let status = data.get("status").cloned().unwrap_or(Value::Null);
                 match serde_json::from_value::<SpotifyStatus>(status) {
                     Ok(status) => DaemonRes::SpotifyStatusRes { status },
+                    Err(_) => DaemonRes::Value { value: data },
+                }
+            }
+            "spotify_track_image" => {
+                let img = data.get("data").cloned().unwrap_or(Value::Null);
+                match serde_json::from_value::<Option<String>>(img) {
+                    Ok(data) => DaemonRes::SpotifyImageRes { data },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }

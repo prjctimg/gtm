@@ -899,16 +899,52 @@ impl<'a> Spotify<'a> {
         }
     }
 
-    /// Resolve a Spotify track (by metadata) to a playable local stream via
-    /// YouTube search and append it to the user queue.
-    pub async fn resolve_track(&self, name: &str, artists: &str, album: &str) -> Result<()> {
+    /// Resolve a Spotify track (by metadata) to a playable stream and append
+    /// it to the user queue. With a known `spotify:track:` URI on a Premium
+    /// account the track streams natively via librespot instead of a YouTube
+    /// match.
+    pub async fn resolve_track(
+        &self,
+        name: &str,
+        artists: &str,
+        album: &str,
+        uri: Option<String>,
+    ) -> Result<()> {
         self.client
             .send_ok(DaemonReq::SpotifyResolveTrack {
                 name: name.into(),
                 artists: artists.into(),
                 album: album.into(),
+                uri,
             })
             .await
+    }
+
+    /// Play every track of a synced Spotify playlist. With `shuffle` the
+    /// track order is randomised before enqueueing (i.e. dash `S`).
+    pub async fn play_all(&self, playlist_id: &str, shuffle: bool) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::SpotifyPlayAll {
+                playlist_id: playlist_id.into(),
+                shuffle,
+            })
+            .await
+    }
+
+    /// Fetch the raw bytes of a Spotify album-cover URL as base64, so the
+    /// client can render it without proxying through Spotify's CDN itself.
+    pub async fn track_image(&self, image_url: &str) -> Result<Option<String>> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::SpotifyTrackImage {
+                image_url: image_url.into(),
+            })
+            .await?;
+        match res {
+            DaemonRes::SpotifyImageRes { data, .. } => Ok(data),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
     }
 
     fn status_from(res: DaemonRes) -> Result<SpotifyStatus> {

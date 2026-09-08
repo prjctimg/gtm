@@ -387,6 +387,7 @@ impl SpotifyManager {
                     album: Some(t.album.name.clone()),
                     duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
                     uri: t.id.as_ref().map(|id| format!("spotify:track:{id}")),
+                    image_url: pick_largest_image(&t.album.images),
                 })
                 .collect(),
             _ => Vec::new(),
@@ -447,6 +448,16 @@ impl SpotifyManager {
         let bytes = resp.bytes().await.ok()?;
         (!bytes.is_empty()).then_some(bytes.to_vec())
     }
+
+    /// Fetch the raw bytes of an album-cover image located at `image_url`
+    /// (as exposed via `SpotifyTrack::image_url`), without an extra search.
+    pub async fn image_by_url(&self, image_url: &str) -> Option<Vec<u8>> {
+        let image_url = image_url.trim();
+        if image_url.is_empty() {
+            return None;
+        }
+        self.download_image(image_url).await
+    }
 }
 
 /// Pick the largest (first-sorted-by-area) image URL from a set of Spotify
@@ -477,6 +488,7 @@ fn track_from_playable(item: &PlayableItem) -> Option<SpotifyTrack> {
             album: Some(t.album.name.clone()),
             duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
             uri: t.id.as_ref().map(|id| format!("spotify:track:{id}")),
+            image_url: pick_largest_image(&t.album.images),
         }),
         PlayableItem::Episode(_) | PlayableItem::Unknown(_) => None,
     }

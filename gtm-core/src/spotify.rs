@@ -63,4 +63,16 @@ pub struct SpotifyTrack {
     /// this exact track. `None` for entries without a resolvable ID.
     #[serde(default)]
     pub uri: Option<String>,
+    /// URL of the highest-resolution album-cover image, when the Web API
+    /// exposes one. Used to render cover art in the Spotify search picker
+    /// without an extra network round-trip to the daemon.
+    #[serde(default)]
+    pub image_url: Option<String>,
+}
+
+impl SpotifyTrack {
+    /// True when the track carries a resolvable `spotify:track:` URI.
+    pub fn has_uri(&self) -> bool {
+        self.uri.is_some()
+    }
 }

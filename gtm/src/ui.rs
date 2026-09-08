@@ -1042,8 +1042,12 @@ impl Render {
         let (right_lines, _stats_line) = if app.browse_detail.is_some() && app.library_category == 5
         {
             let tracks = &app.spotify.playlist_tracks_cache;
-            let total_len = tracks.len();
-            let st_line = format!(" {} {} ", total_len, plural(total_len, "track", "tracks"));
+            let total_len = app.spotify_playlist_rows();
+            let st_line = format!(
+                " {} {} (+ play all / shuffle) ",
+                tracks.len(),
+                plural(tracks.len(), "track", "tracks")
+            );
             let reserve = 3usize;
             let available = panes[1].height.saturating_sub(reserve as u16) as usize;
             app.viewport_items = available;
@@ -1053,6 +1057,37 @@ impl Render {
 
             let pane_w = panes[1].width as usize;
             let mut lines = vec![Line::from("")];
+            const ACTION_ROWS: usize = App::SPOTIFY_PLAYLIST_ACTION_ROWS;
+            // Rows 0/1: virtual actions (Play All / Shuffle), then the tracks.
+            let action_help = [
+                ("▶  Play All", "  Enter"),
+                ("🔀  Shuffle", "  Enter / S"),
+            ];
+            for (ai, (action, key_hint)) in action_help.iter().enumerate() {
+                let real_i = ai;
+                let is_sel = real_i == sel && !left_focus;
+                let style = if is_sel {
+                    Style::default()
+                        .fg(app.theme.selection_fg_readable())
+                        .bg(app.theme.selection_bg)
+                } else {
+                    Style::default().fg(app.theme.fg_bright)
+                };
+                let prefix = if is_sel { " > " } else { "   " };
+                let content = format!("{prefix}{action}");
+                let pad = row_pad(&content, panes[1].width);
+                let hint_style = if is_sel {
+                    Style::default()
+                        .fg(app.theme.selection_fg_readable())
+                        .bg(app.theme.selection_bg)
+                } else {
+                    Style::default().fg(app.theme.fg_dim)
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("{content}{}", " ".repeat(pad)), style),
+                    Span::styled(format!("{key_hint:>10}"), hint_style),
+                ]));
+            }
             if tracks.is_empty() {
                 lines.push(Line::from(Span::styled(
                     " No tracks: run Settings > Spotify > Sync Now, then press Enter again",
@@ -1061,7 +1096,9 @@ impl Render {
                 lib_total_rows = total_len;
                 (lines, st_line)
             } else {
-                for (i, tr) in tracks[app.list_scroll..end].iter().enumerate() {
+                let start = app.list_scroll.saturating_sub(ACTION_ROWS).min(tracks.len());
+                let stop = end.saturating_sub(ACTION_ROWS).min(tracks.len());
+                for (i, tr) in tracks[start..stop].iter().enumerate() {
                     let real_i = app.list_scroll + i;
                     let is_sel = real_i == sel && !left_focus;
                     let is_multiselected =
@@ -2481,6 +2518,7 @@ impl Pickers {
     fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         app.update_picker_preview();
         app.update_artist_cover();
+        app.update_spotify_search_preview();
         let Some(top) = app.pickers.top() else {
             return;
         };
@@ -2801,6 +2839,53 @@ impl Pickers {
                             height: preview_area.height.saturating_sub(1),
                         };
                         let (_, _, track) = &app.spotify.search_results[sel.min(total - 1)];
+                        let cover_w = 20u16.min(body.width.saturating_sub(24).max(8));
+                        let (cover_area, meta_area) = if (app.spotify.preview_cover_stateful.is_some()
+                            || app.spotify.preview_cover.is_some())
+                            && body.width >= cover_w + 8
+                        {
+                            let hchunks = Layout::default()
+                                .direction(Direction::Horizontal)
+                                .constraints([Constraint::Length(cover_w), Constraint::Min(0)])
+                                .split(body);
+                            (
+                                Rect {
+                                    x: hchunks[0].x + 1,
+                                    y: hchunks[0].y,
+                                    width: hchunks[0].width.saturating_sub(1),
+                                    height: hchunks[0].height,
+                                },
+                                hchunks[1],
+                            )
+                        } else {
+                            (body, body)
+                        };
+                        if let Some(protocol) = app.spotify.preview_cover_stateful.as_mut() {
+                            let image = StatefulImage::new();
+                            f.render_stateful_widget(image, cover_area, protocol);
+                        } else if let Some(bytes) = app.spotify.preview_cover.as_deref() {
+                            Render::cover_block(f, cover_area, bytes);
+                        } else {
+                            let placeholder = Paragraph::new(Line::from(Span::styled(
+                                format!("{:^width$}", "\u{1f3b5}", width = cover_w as usize),
+                                Style::default().fg(app.theme.fg_dim),
+                            )));
+                            f.render_widget(placeholder, cover_area);
+                        }
+                        if meta_area != body {
+                            f.render_widget(
+                                Paragraph::new(Line::from(Span::styled(
+                                    "\u{2502}".repeat(meta_area.width as usize),
+                                    Style::default().fg(app.theme.muted_border),
+                                ))),
+                                Rect {
+                                    x: meta_area.x.saturating_sub(1),
+                                    y: meta_area.y,
+                                    width: 1,
+                                    height: meta_area.height,
+                                },
+                            );
+                        }
                         let mut meta_lines = Vec::new();
                         let mut push = |key: &str, value: &str| {
                             meta_lines.push(Line::from(vec![
@@ -2822,7 +2907,7 @@ impl Pickers {
                         if let Some(ms) = track.duration_ms {
                             push("Length", &format_duration_short(ms / 1000));
                         }
-                        f.render_widget(Paragraph::new(meta_lines), body);
+                        f.render_widget(Paragraph::new(meta_lines), meta_area);
                     }
                 }
             }
@@ -3783,7 +3868,7 @@ fn library_stats_line(app: &App) -> String {
     if app.browse_detail.is_some() {
         if app.library_category == 5 {
             let n = app.spotify.playlist_tracks_cache.len();
-            return format!(" {} {} ", n, plural(n, "track", "tracks"));
+            return format!(" {} {} (+ play all / shuffle) ", n, plural(n, "track", "tracks"));
         }
         let f = app.filtered_tracks();
         let total_dur: u64 = f.iter().map(|t| t.duration as u64).sum();
@@ -3990,9 +4075,7 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
             })
         }
         TrackInfoKind::SpotifyTrack => {
-            let tracks = &app.spotify.playlist_tracks_cache;
-            let pos = app.list_pos();
-            let st = tracks.get(pos)?;
+            let st = app.selected_spotify_track()?;
             let dur = st
                 .duration_ms
                 .map(|ms| format!(" [{}]", format_duration(ms / 1000)))

@@ -547,6 +547,12 @@ pub struct SpotifyView {
     pub link_field: usize,
     pub search_debounce: Option<std::time::Instant>,
     pub web_seq: u64,
+    /// Cover art for the SpotifySearch picker preview window, fetched from the
+    /// album-cover URL of the highlighted web result.
+    pub preview_cover: Option<Vec<u8>>,
+    pub preview_cover_stateful: Option<StatefulProtocol>,
+    pub last_preview_fetch: Option<String>,
+    pub last_preview_fetch_gen: Option<u64>,
 }
 
 /// Queue picker/view UI state, grouped under `App::queue`. Note this mirrors
@@ -771,6 +777,7 @@ enum IpcResult {
     PickerPreviewCover(Option<Vec<u8>>, i64, u64),
     MetadataCoverArt(Option<Vec<u8>>, i64, u64),
     ArtistCoverArt(Option<Vec<u8>>, String, u64),
+    SpotifyPreviewCover(Option<Vec<u8>>, String, u64),
     CoverPicker(Option<Picker>),
     Lyrics(Option<gtm_core::track::LrcData>, u64),
     /// Authorize URL produced by the daemon's OAuth flow. Kept separate from
@@ -1089,6 +1096,10 @@ impl App {
                 link_field: 0,
                 search_debounce: None,
                 web_seq: 0,
+                preview_cover: None,
+                preview_cover_stateful: None,
+                last_preview_fetch: None,
+                last_preview_fetch_gen: None,
             },
             cookie_file: None,
             notifications: Vec::new(),
@@ -2171,6 +2182,15 @@ impl App {
                             self.artist_cover_sync();
                         }
                     }
+                    IpcResult::SpotifyPreviewCover(cover, url, fetch_gen) => {
+                        if !no_image_protocol()
+                            && self.spotify.last_preview_fetch.as_deref() == Some(&url)
+                            && self.spotify.last_preview_fetch_gen == Some(fetch_gen)
+                        {
+                            self.spotify.preview_cover = cover;
+                            self.spotify_preview_sync();
+                        }
+                    }
                     IpcResult::CoverPicker(picker) => {
                         self.np_cover.picker = picker;
                         // Rebuild all active StatefulProtocols with the new
@@ -2184,6 +2204,7 @@ impl App {
                         self.queue_preview_cover_sync();
                         self.picker_preview_sync();
                         self.artist_cover_sync();
+                        self.spotify_preview_sync();
                         self.metadata_cover_sync();
                     }
                     IpcResult::Lyrics(lyrics, lyrics_gen) => {
@@ -2765,9 +2786,7 @@ impl App {
         let valid = match kind {
             TrackInfoKind::Playlist => self.list_pos() < self.playlist_cache.len(),
             TrackInfoKind::SpotifyPlaylist => self.list_pos() < self.spotify.playlists.len(),
-            TrackInfoKind::SpotifyTrack => {
-                self.list_pos() < self.spotify.playlist_tracks_cache.len()
-            }
+            TrackInfoKind::SpotifyTrack => self.selected_spotify_track().is_some(),
             _ => maybe_track.is_some(),
         };
 
@@ -3010,6 +3029,10 @@ impl App {
             .top()
             .map_or(String::new(), |o| o.query.to_lowercase());
         self.spotify.search_results.clear();
+        self.spotify.last_preview_fetch = None;
+        self.spotify.last_preview_fetch_gen = None;
+        self.spotify.preview_cover = None;
+        self.spotify.preview_cover_stateful = None;
         if q.is_empty() {
             return;
         }
@@ -3208,7 +3231,7 @@ impl App {
     pub fn library_list_len(&self) -> usize {
         if self.browse_detail.is_some() {
             if self.library_category == 5 {
-                return self.spotify.playlist_tracks_cache.len();
+                return self.spotify_playlist_rows();
             }
             return self.filtered_tracks().len();
         }
@@ -3219,6 +3242,33 @@ impl App {
             5 => self.spotify.playlists.len(),
             _ => self.filtered_tracks().len(),
         }
+    }
+
+    /// Virtual action rows (Play All / Shuffle) prepended to a Spotify playlist
+    /// drill-down track list.
+    pub const SPOTIFY_PLAYLIST_ACTION_ROWS: usize = 2;
+
+    /// True while the right pane is showing the track list of a Spotify
+    /// playlist (drilled down from the Spotify playlists category).
+    pub fn in_spotify_playlist(&self) -> bool {
+        self.browse_detail.is_some() && self.library_category == 5
+    }
+
+    /// Row count of the Spotify playlist drill-down list, including the two
+    /// virtual action rows (`Play All`, `Shuffle`) at the top.
+    pub fn spotify_playlist_rows(&self) -> usize {
+        self.spotify.playlist_tracks_cache.len() + Self::SPOTIFY_PLAYLIST_ACTION_ROWS
+    }
+
+    /// The track the current list position maps to in a Spotify playlist
+    /// drill-down. `None` for the action rows and non-Spotify views.
+    pub fn selected_spotify_track(&self) -> Option<&SpotifyTrack> {
+        if !self.in_spotify_playlist() {
+            return None;
+        }
+        self.spotify
+            .playlist_tracks_cache
+            .get(self.list_pos().saturating_sub(Self::SPOTIFY_PLAYLIST_ACTION_ROWS))
     }
 
     /// Track ids owned by the list position `pos` (when that row maps to a
@@ -3442,6 +3492,87 @@ impl App {
             }
             _ => self.artist_cover_stateful = None,
         }
+    }
+
+    fn spotify_preview_sync(&mut self) {
+        match (&self.spotify.preview_cover, &self.np_cover.picker) {
+            (Some(bytes), Some(picker)) => {
+                if let Ok(img) = image::load_from_memory(bytes) {
+                    self.spotify.preview_cover_stateful = Some(picker.new_resize_protocol(img));
+                } else {
+                    self.spotify.preview_cover_stateful = None;
+                }
+            }
+            _ => self.spotify.preview_cover_stateful = None,
+        }
+    }
+
+    /// Fetch cover art for the highlighted SpotifySearch picker row (a web
+    /// search hit carrying an album-cover URL) so the preview window can render
+    /// it as ASCII, mirroring the SearchLibrary picker behaviour.
+    pub fn update_spotify_search_preview(&mut self) {
+        let Some(top) = self.pickers.top() else {
+            self.spotify.preview_cover = None;
+            self.spotify.preview_cover_stateful = None;
+            self.spotify.last_preview_fetch = None;
+            self.spotify.last_preview_fetch_gen = None;
+            return;
+        };
+        if top.id != PickerId::SpotifySearch {
+            self.spotify.preview_cover = None;
+            self.spotify.preview_cover_stateful = None;
+            self.spotify.last_preview_fetch = None;
+            self.spotify.last_preview_fetch_gen = None;
+            return;
+        }
+        if self.spotify.search_results.is_empty() {
+            self.spotify.preview_cover = None;
+            self.spotify.preview_cover_stateful = None;
+            self.spotify.last_preview_fetch = None;
+            self.spotify.last_preview_fetch_gen = None;
+            return;
+        }
+        let sel = top
+            .selected
+            .min(self.spotify.search_results.len().saturating_sub(1));
+        let Some(url) = self.spotify.search_results[sel].2.image_url.clone() else {
+            self.spotify.preview_cover = None;
+            self.spotify.preview_cover_stateful = None;
+            self.spotify.last_preview_fetch = None;
+            self.spotify.last_preview_fetch_gen = None;
+            return;
+        };
+        if self.spotify.last_preview_fetch.as_deref() == Some(&url)
+            && self.spotify.last_preview_fetch_gen.is_some()
+        {
+            return;
+        }
+        let fetch_gen = self.next_cover_gen();
+        self.spotify.last_preview_fetch = Some(url.clone());
+        self.spotify.last_preview_fetch_gen = Some(fetch_gen);
+        self.spotify.preview_cover = None;
+        self.spotify.preview_cover_stateful = None;
+        if no_image_protocol() {
+            return;
+        }
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            match client.spotify().track_image(&url).await {
+                Ok(Some(b64)) => {
+                    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
+                        let _ = ipc_tx.send(IpcResult::SpotifyPreviewCover(
+                            Some(bytes),
+                            url,
+                            fetch_gen,
+                        ));
+                    }
+                }
+                Ok(None) | Err(_) => {
+                    let _ = ipc_tx.send(IpcResult::SpotifyPreviewCover(None, url, fetch_gen));
+                }
+            }
+        });
     }
 
     /// Fetch the cover art for the track currently being edited and stream it
@@ -4581,6 +4712,37 @@ impl App {
                         ));
                     }
                     Some(KeyboardAction::ToggleShuffle) => {
+                        // In a Spotify playlist drill-down, `S` (shift-s) means
+                        // "shuffle play this playlist" instead of toggling the
+                        // global queue shuffle.
+                        if self.in_spotify_playlist() && !self.library_pane_focus {
+                            let playlist_id =
+                                self.browse_detail.clone().unwrap_or_default();
+                            let c = self.client.clone();
+                            let ipc_tx2 = self.ipc_tx.clone();
+                            self.footer_notification = Some((
+                                "Shuffling playlist…".to_string(),
+                                std::time::Instant::now() + std::time::Duration::from_secs(2),
+                            ));
+                            tokio::spawn(async move {
+                                match c.spotify().play_all(&playlist_id, true).await {
+                                    Ok(()) => {
+                                        let _ = ipc_tx2.send(IpcResult::Notification(
+                                            "Spotify".to_string(),
+                                            "Shuffling playlist".to_string(),
+                                            NotificationKind::Success,
+                                            NotifType::Spotify,
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        let _ = ipc_tx2.send(IpcResult::Error(format!(
+                                            "Spotify shuffle failed: {e}"
+                                        )));
+                                    }
+                                }
+                            });
+                            return true;
+                        }
                         self.set_last_action("Toggle Shuffle");
                         self.send_high(TuiCommand::ToggleShuffle);
                         let msg = if self.state.shuffle {
@@ -4911,12 +5073,46 @@ impl App {
                                 // In detail view: play the selected track of
                                 // the rendered right-pane list.
                                 if self.library_category == 5 {
-                                    // Spotify playlist: resolve track to a playable
-                                    // local stream (via YouTube) and enqueue it.
-                                    if self.list_pos() < self.spotify.playlist_tracks_cache.len() {
-                                        let track = self.spotify.playlist_tracks_cache
-                                            [self.list_pos()]
-                                        .clone();
+                                    // Spotify playlist drill-down: rows 0/1 are
+                                    // virtual actions (Play All / Shuffle), rows
+                                    // 2+ resolve their track to a playable stream.
+                                    let pos = self.list_pos();
+                                    if pos < Self::SPOTIFY_PLAYLIST_ACTION_ROWS {
+                                        let shuffle = pos == 1;
+                                        let playlist_id =
+                                            self.browse_detail.clone().unwrap_or_default();
+                                        let c = self.client.clone();
+                                        let ipc_tx2 = self.ipc_tx.clone();
+                                        tokio::spawn(async move {
+                                            match c
+                                                .spotify()
+                                                .play_all(&playlist_id, shuffle)
+                                                .await
+                                            {
+                                                Ok(()) => {
+                                                    let _ = ipc_tx2.send(
+                                                        IpcResult::Notification(
+                                                            "Spotify".to_string(),
+                                                            if shuffle {
+                                                                "Shuffling playlist".to_string()
+                                                            } else {
+                                                                "Playing playlist".to_string()
+                                                            },
+                                                            NotificationKind::Success,
+                                                            NotifType::Spotify,
+                                                        ),
+                                                    );
+                                                }
+                                                Err(e) => {
+                                                    let _ = ipc_tx2.send(IpcResult::Error(
+                                                        format!("Spotify play-all failed: {e}"),
+                                                    ));
+                                                }
+                                            }
+                                        });
+                                        return true;
+                                    }
+                                    if let Some(track) = self.selected_spotify_track().cloned() {
                                         // Resolve the track to a playable local
                                         // stream and enqueue it.
                                         let playlist_id =
@@ -5381,15 +5577,38 @@ impl App {
                     .min(self.spotify.search_results.len() - 1);
                 let (playlist_id, _, track) = self.spotify.search_results[idx].clone();
                 let track_index = track.index;
+                let can_stream = track.uri.is_some();
                 let c = self.client.clone();
                 let ipc_tx = self.ipc_tx.clone();
                 self.pickers.close_top();
                 tokio::spawn(async move {
-                    match c.spotify().resolve(&playlist_id, track_index).await {
+                    // Web hits are not in any synced playlist: resolve by
+                    // metadata + known URI (streams natively on Premium), not
+                    // by playlist index.
+                    let res = if playlist_id == "web" {
+                        c.spotify()
+                            .resolve_track(
+                                &track.name,
+                                &track.artists,
+                                track.album.as_deref().unwrap_or(""),
+                                track.uri.clone(),
+                            )
+                            .await
+                    } else {
+                        c.spotify()
+                            .resolve(&playlist_id, track_index)
+                            .await
+                    };
+                    match res {
                         Ok(()) => {
                             let _ = ipc_tx.send(IpcResult::Notification(
                                 "Spotify".to_string(),
-                                format!("Queued: {} - {}", track.artists, track.name),
+                                format!(
+                                    "Queued: {} - {}{}",
+                                    track.artists,
+                                    track.name,
+                                    if can_stream { "" } else { " (YouTube)" }
+                                ),
                                 NotificationKind::Success,
                                 NotifType::Spotify,
                             ));
@@ -6312,6 +6531,15 @@ impl App {
                 {
                     self.update_picker_preview();
                 }
+                // Spotify search results can carry album art too: refresh the
+                // preview when the highlighted row changes.
+                if self
+                    .pickers
+                    .top()
+                    .is_some_and(|t| t.id == PickerId::SpotifySearch)
+                {
+                    self.update_spotify_search_preview();
+                }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 let has_input = matches!(
@@ -6364,6 +6592,13 @@ impl App {
                     .is_some_and(|t| t.id == PickerId::SearchLibrary)
                 {
                     self.update_picker_preview();
+                }
+                if self
+                    .pickers
+                    .top()
+                    .is_some_and(|t| t.id == PickerId::SpotifySearch)
+                {
+                    self.update_spotify_search_preview();
                 }
             }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -6486,6 +6721,7 @@ impl App {
                                                 &track_clone.name,
                                                 &track_clone.artists,
                                                 track_clone.album.as_deref().unwrap_or(""),
+                                                track_clone.uri.clone(),
                                             )
                                             .await
                                         {

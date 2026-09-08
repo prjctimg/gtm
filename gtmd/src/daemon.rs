@@ -32,6 +32,7 @@ use gtm_core::ipc::{
     PROTOCOL_VERSION, QueueAction, SyncKind, WireReq,
 };
 use gtm_core::track::TrackInfo;
+use gtm_core::spotify::SpotifyTrack;
 use gtm_core::wire;
 
 use crate::config::DaemonConfig;
@@ -1066,6 +1067,56 @@ impl Yt {
     }
 }
 
+/// Shared YouTube-fallback path for Spotify tracks: search `query`, pick the
+/// top hit, resolve its stream, and download it into the cache under
+/// `cache_key`. Returns the local file path. Callers hold no locks so the
+/// youtube lock is scoped inside.
+#[cfg(feature = "youtube")]
+async fn spotify_yt_fallback(
+    inner: &DaemonInner,
+    cache_key: &str,
+    query: &str,
+) -> Result<String, String> {
+    let mut yt = inner.youtube.lock().await;
+    let resolved = match (async {
+        yt.search(query, None).await?;
+        let top = match yt.poll_results().await {
+            Ok(Some((_, mut results))) if !results.is_empty() => results.remove(0),
+            _ => return Err("no youtube results for track".to_string()),
+        };
+        let info = match yt.resolve_stream(&top.url).await {
+            Ok(info) => info,
+            Err(e) => return Err(e),
+        };
+        let path = Daemon::download_audio_to_cache(
+            &inner.config.cache_dir,
+            cache_key,
+            &info.url,
+            &info.ext,
+            yt.cookie_header_for(&info.url),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+        Ok::<_, String>(path)
+    })
+    .await
+    {
+        Ok(path) => Ok(path),
+        Err(e) => Err(e),
+    };
+    drop(yt);
+    resolved
+}
+
+#[cfg(not(feature = "youtube"))]
+async fn spotify_yt_fallback(
+    _inner: &DaemonInner,
+    _cache_key: &str,
+    _query: &str,
+) -> Result<String, String> {
+    Err("youtube support is disabled in this build".to_string())
+}
+
 struct Spotify;
 
 impl Spotify {
@@ -1251,41 +1302,16 @@ impl Spotify {
             }
         };
         if let Some(uri) = stream_uri {
-            let was_empty = {
-                let mut state = inner.state.write().await;
-                let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
-                let added = queue::add(&mut state, &uri, None);
-                if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == added.path) {
-                    entry.title = spotify_title.clone();
-                    entry.artist = spotify_artist.clone();
-                    entry.album = spotify_album.clone();
-                    entry.duration = track
-                        .duration_ms
-                        .map(|ms| ms as f64 / 1000.0)
-                        .unwrap_or(0.0);
-                }
-                drop(state);
-                w
-            };
-            if was_empty {
-                let _ = Cmd::play(inner, &uri, 0.0, false).await;
-            }
-
-            {
-                let mut guard = inner.cover_cache().await;
-                if let Some(ref mut cc) = *guard {
-                    let _ = cc
-                        .get(
-                            &spotify_artist,
-                            &spotify_album,
-                            inner.effective_cover_provider().await,
-                        )
-                        .await;
-                }
-            }
-
-            Daemon::push_queue_state(inner).await;
-            Daemon::save_state(inner);
+            let duration = track.duration_ms.map(|ms| ms as f64 / 1000.0);
+            let _ = Spotify::queue_stream_with_meta(
+                inner,
+                &uri,
+                &spotify_title,
+                &spotify_artist,
+                &spotify_album,
+                duration,
+            )
+            .await;
             return Ok(DaemonRes::Ok);
         }
 
@@ -1295,50 +1321,19 @@ impl Spotify {
             format!("{} - {}", track.artists, track.name)
         };
 
-        #[cfg(feature = "youtube")]
-        let (path, yt_error): (Option<String>, Option<String>) = {
-            let mut yt = inner.youtube.lock().await;
-            let resolved = match (async {
-                yt.search(&query, None).await?;
-                let top = match yt.poll_results().await {
-                    Ok(Some((_, mut results))) if !results.is_empty() => results.remove(0),
-                    _ => return Err("no youtube results for track".to_string()),
-                };
-                let info = match yt.resolve_stream(&top.url).await {
-                    Ok(info) => info,
-                    Err(e) => return Err(e),
-                };
-                let path = match Daemon::download_audio_to_cache(
-                    &inner.config.cache_dir,
-                    &format!("spotify-{playlist_id}-{track_index}"),
-                    &info.url,
-                    &info.ext,
-                    yt.cookie_header_for(&info.url),
-                )
-                .await
-                {
-                    Ok(path) => path,
-                    Err(e) => return Err(e.to_string()),
-                };
-                Ok::<_, String>(path)
-            })
-            .await
-            {
-                Ok(path) => (Some(path), None),
-                Err(e) => (None, Some(e)),
-            };
-            drop(yt);
-            resolved
-        };
-        #[cfg(not(feature = "youtube"))]
-        let (path, yt_error): (Option<String>, Option<String>) = (None, None);
-        let Some(path) = path else {
-            let message = yt_error
-                .as_deref()
-                .unwrap_or("youtube support is disabled in this build");
-            return Ok(DaemonRes::Error {
-                message: message.to_string(),
-            });
+        let path = match spotify_yt_fallback(
+            inner,
+            &format!("spotify-{playlist_id}-{track_index}"),
+            &query,
+        )
+        .await
+        {
+            Ok(path) => path,
+            Err(message) => {
+                return Ok(DaemonRes::Error {
+                    message: message.to_string(),
+                });
+            }
         };
 
         let spotify_title = track.name.clone();
@@ -1387,66 +1382,39 @@ impl Spotify {
         Ok(DaemonRes::SpotifyTracksRes { tracks })
     }
 
-    #[cfg_attr(not(feature = "youtube"), allow(unused_variables))]
+    /// Resolve a Spotify track into a playable stream and append it to the
+    /// user queue. On a Premium account an accompanying `spotify:track:` URI
+    /// streams natively via librespot; everyone else falls back to the top
+    /// YouTube match for the track metadata.
     pub async fn resolve_track(
         inner: &DaemonInner,
         name: &str,
         artists: &str,
         album: &str,
+        uri: &Option<String>,
     ) -> Result<DaemonRes, CoreError> {
+        let can_stream = {
+            let spotify = inner.spotify.lock().await;
+            spotify.can_stream().await && uri.is_some()
+        };
+        if can_stream {
+            let uri = uri.clone().expect("checked above");
+            Spotify::queue_stream_with_meta(inner, &uri, name, artists, album, None).await?;
+            return Ok(DaemonRes::Ok);
+        }
+
         let query = if artists.is_empty() {
             name.to_string()
         } else {
             format!("{artists} - {name}")
         };
-        let spotify_title = name.to_string();
-        let spotify_artist = artists.to_string();
-        let spotify_album = album.to_string();
-
-        #[cfg(feature = "youtube")]
-        let (path, yt_error): (Option<String>, Option<String>) = {
-            let mut yt = inner.youtube.lock().await;
-            let resolved = match (async {
-                yt.search(&query, None).await?;
-                let top = match yt.poll_results().await {
-                    Ok(Some((_, mut results))) if !results.is_empty() => results.remove(0),
-                    _ => return Err("no youtube results for track".to_string()),
-                };
-                let info = match yt.resolve_stream(&top.url).await {
-                    Ok(info) => info,
-                    Err(e) => return Err(e),
-                };
-                let path = match Daemon::download_audio_to_cache(
-                    &inner.config.cache_dir,
-                    &format!("spotify-web-{name}"),
-                    &info.url,
-                    &info.ext,
-                    yt.cookie_header_for(&info.url),
-                )
-                .await
-                {
-                    Ok(path) => path,
-                    Err(e) => return Err(e.to_string()),
-                };
-                Ok::<_, String>(path)
-            })
-            .await
-            {
-                Ok(path) => (Some(path), None),
-                Err(e) => (None, Some(e)),
-            };
-            drop(yt);
-            resolved
-        };
-        #[cfg(not(feature = "youtube"))]
-        let (path, yt_error): (Option<String>, Option<String>) = (None, None);
-        let Some(path) = path else {
-            let message = yt_error
-                .as_deref()
-                .unwrap_or("youtube support is disabled in this build");
-            return Ok(DaemonRes::Error {
-                message: message.to_string(),
-            });
+        let path = match spotify_yt_fallback(inner, &format!("spotify-web-{name}"), &query).await {
+            Ok(path) => path,
+            Err(message) => {
+                return Ok(DaemonRes::Error {
+                    message: message.to_string(),
+                });
+            }
         };
 
         let was_empty = {
@@ -1455,9 +1423,9 @@ impl Spotify {
             let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
             let added = queue::add(&mut state, &path, None);
             if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == added.path) {
-                entry.title = spotify_title.clone();
-                entry.artist = spotify_artist.clone();
-                entry.album = spotify_album.clone();
+                entry.title = name.to_string();
+                entry.artist = artists.to_string();
+                entry.album = album.to_string();
             }
             drop(state);
             w
@@ -1470,11 +1438,7 @@ impl Spotify {
             let mut guard = inner.cover_cache().await;
             if let Some(ref mut cc) = *guard {
                 let _ = cc
-                    .get(
-                        &spotify_artist,
-                        &spotify_album,
-                        inner.effective_cover_provider().await,
-                    )
+                    .get(artists, album, inner.effective_cover_provider().await)
                     .await;
             }
         }
@@ -1482,6 +1446,209 @@ impl Spotify {
         Daemon::push_queue_state(inner).await;
         Daemon::save_state(inner);
         Ok(DaemonRes::Ok)
+    }
+
+    /// Enqueue a native `spotify:track:` URI into the user queue with the
+    /// given title/artist/album metadata, pre-warm the cover cache for the
+    /// album, and start playback immediately when the queue was empty. Mirrors
+    /// the Premium branch of `resolve`.
+    async fn queue_stream_with_meta(
+        inner: &DaemonInner,
+        uri: &str,
+        title: &str,
+        artist: &str,
+        album: &str,
+        duration: Option<f64>,
+    ) -> Result<DaemonRes, CoreError> {
+        let was_empty = {
+            let mut state = inner.state.write().await;
+            let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
+            let added = queue::add(&mut state, uri, None);
+            if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == added.path) {
+                entry.title = title.to_string();
+                entry.artist = artist.to_string();
+                entry.album = album.to_string();
+                if let Some(duration) = duration {
+                    entry.duration = duration;
+                }
+            }
+            drop(state);
+            w
+        };
+        if was_empty {
+            let _ = Cmd::play(inner, uri, 0.0, false).await;
+        }
+
+        {
+            let mut guard = inner.cover_cache().await;
+            if let Some(ref mut cc) = *guard {
+                let _ = cc.get(artist, album, inner.effective_cover_provider().await).await;
+            }
+        }
+
+        Daemon::push_queue_state(inner).await;
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    /// Play every track of a synced Spotify playlist. With `shuffle` the order
+    /// is randomised first. Premium enqueues all `spotify:track:` URIs and
+    /// starts the first; non-Premium resolves the first via YouTube and lazily
+    /// resolves + enqueues the rest in the background.
+    pub async fn play_all(
+        inner: &Arc<DaemonInner>,
+        playlist_id: &str,
+        shuffle: bool,
+    ) -> Result<DaemonRes, CoreError> {
+        let tracks = {
+            let spotify = inner.spotify.lock().await;
+            spotify.playlist_tracks(playlist_id).unwrap_or_default()
+        };
+        if tracks.is_empty() {
+            return Ok(DaemonRes::Error {
+                message: "spotify playlist not in cache (run Sync first)".into(),
+            });
+        }
+        let mut order: Vec<usize> = (0..tracks.len()).collect();
+        if shuffle {
+            fastrand::shuffle(&mut order);
+        }
+
+        let can_stream = {
+            let spotify = inner.spotify.lock().await;
+            spotify.can_stream().await
+        };
+
+        if can_stream {
+            let pairs: Vec<(String, SpotifyTrack)> = order
+                .iter()
+                .filter_map(|&i| tracks.get(i))
+                .filter_map(|t| t.uri.clone().map(|uri| (uri, t.clone())))
+                .collect();
+            if pairs.is_empty() {
+                return Ok(DaemonRes::Error {
+                    message: "playlist tracks carry no streamable spotify URIs".into(),
+                });
+            }
+            let uris: Vec<String> = pairs.iter().map(|(uri, _)| uri.clone()).collect();
+            let was_empty = {
+                let mut state = inner.state.write().await;
+                let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
+                let added = queue::add_many(&mut state, &uris, None);
+                for (entry, (_, st)) in added.iter().zip(pairs.iter()) {
+                    if let Some(e) = state.queue.iter_mut().find(|t| t.path == entry.path) {
+                        e.title = st.name.clone();
+                        e.artist = st.artists.clone();
+                        e.album = st.album.clone().unwrap_or_default();
+                        e.duration = st.duration_ms.map(|ms| ms as f64 / 1000.0).unwrap_or(0.0);
+                    }
+                }
+                drop(state);
+                w
+            };
+            if was_empty {
+                let first = {
+                    let read = inner.state.read().await;
+                    read.queue.first().map(|t| t.path.clone())
+                };
+                if let Some(uri) = first {
+                    let _ = Cmd::play(inner, &uri, 0.0, false).await;
+                }
+            }
+            Daemon::push_queue_state(inner).await;
+            Daemon::save_state(inner);
+            return Ok(DaemonRes::Ok);
+        }
+
+        // Non-Premium: resolve and start the first track, then lazily resolve
+        // the rest so the queue fills as each download completes.
+        let first_track = tracks[order[0]].clone();
+        let query = if first_track.artists.is_empty() {
+            first_track.name.clone()
+        } else {
+            format!("{} - {}", first_track.artists, first_track.name)
+        };
+        let path = match spotify_yt_fallback(
+            inner,
+            &format!("spotify-{playlist_id}-first"),
+            &query,
+        )
+        .await
+        {
+            Ok(path) => path,
+            Err(message) => {
+                return Ok(DaemonRes::Error {
+                    message: message.to_string(),
+                });
+            }
+        };
+        {
+            let mut state = inner.state.write().await;
+            state.fallback_disabled = false;
+            let added = queue::add(&mut state, &path, None);
+            if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == added.path) {
+                entry.title = first_track.name.clone();
+                entry.artist = first_track.artists.clone();
+                entry.album = first_track.album.clone().unwrap_or_default();
+            }
+        }
+        let _ = Cmd::play(inner, &path, 0.0, false).await;
+
+        let inner2 = Arc::clone(inner);
+        let playlist_id = playlist_id.to_string();
+        let rest: Vec<SpotifyTrack> = order[1..]
+            .iter()
+            .filter_map(|&i| tracks.get(i).cloned())
+            .collect();
+        tokio::spawn(async move {
+            let mut position = {
+                let state = inner2.state.read().await;
+                (state.queue.len() + state.default_list.len()) as u64
+            };
+            for st in rest {
+                let query = if st.artists.is_empty() {
+                    st.name.clone()
+                } else {
+                    format!("{} - {}", st.artists, st.name)
+                };
+                let cache_key = format!("spotify-{playlist_id}-{position}");
+                match spotify_yt_fallback(&inner2, &cache_key, &query).await {
+                    Ok(path) => {
+                        let mut state = inner2.state.write().await;
+                        state.fallback_disabled = false;
+                        let added = queue::add(&mut state, &path, Some(position));
+                        if let Some(entry) =
+                            state.queue.iter_mut().rev().find(|t| t.path == added.path)
+                        {
+                            entry.title = st.name.clone();
+                            entry.artist = st.artists.clone();
+                            entry.album = st.album.clone().unwrap_or_default();
+                        }
+                        drop(state);
+                        position += 1;
+                        Daemon::push_queue_state(&inner2).await;
+                        Daemon::save_state(&inner2);
+                    }
+                    Err(e) => warn!("spotify play-all: failed to resolve `{query}`: {e}"),
+                }
+            }
+        });
+
+        Daemon::push_queue_state(inner).await;
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    /// Fetch the raw bytes of a Spotify album-cover URL as base64 for the
+    /// search picker preview. `None` when the account is unlinked or the CDN
+    /// request fails.
+    pub async fn track_image(inner: &DaemonInner, image_url: &str) -> Result<DaemonRes, CoreError> {
+        let data = {
+            let spotify = inner.spotify.lock().await;
+            spotify.image_by_url(image_url).await
+        }
+        .map(|bytes| base64::engine::general_purpose::STANDARD.encode(&bytes));
+        Ok(DaemonRes::SpotifyImageRes { data })
     }
 }
 
@@ -2367,6 +2534,7 @@ fn request_is_read_only(req: &DaemonReq) -> bool {
             | SpotifyPlaylists
             | SpotifyPlaylistTracks { .. }
             | SpotifySearchWeb { .. }
+            | SpotifyTrackImage { .. }
             | LastfmStatus
             | Search { .. }
             | Queue {
@@ -3218,7 +3386,13 @@ impl Daemon {
                 name,
                 artists,
                 album,
-            } => Spotify::resolve_track(inner, name, artists, album).await,
+                uri,
+            } => Spotify::resolve_track(inner, name, artists, album, uri).await,
+            DaemonReq::SpotifyPlayAll {
+                playlist_id,
+                shuffle,
+            } => Spotify::play_all(inner, playlist_id, *shuffle).await,
+            DaemonReq::SpotifyTrackImage { image_url } => Spotify::track_image(inner, image_url).await,
             DaemonReq::LastfmSetConfig {
                 enabled,
                 api_key,

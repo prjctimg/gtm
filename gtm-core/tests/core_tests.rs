@@ -274,9 +274,39 @@ fn daemon_req_parse_cmd_spotify_variants() {
             serde_json::json!({ "playlist_id": "37i9dQZEVX", "track_index": 3 }),
             "spotify_resolve",
         ),
+        (
+            "spotify_resolve_track",
+            serde_json::json!({
+                "name": "Drift",
+                "artists": "Artist",
+                "album": "Album",
+                "uri": "spotify:track:abc123"
+            }),
+            "spotify_resolve_track",
+        ),
+        (
+            "spotify_resolve_track",
+            serde_json::json!({ "name": "Drift", "artists": "Artist", "album": "Album" }),
+            "spotify_resolve_track",
+        ),
+        (
+            "spotify_play_all",
+            serde_json::json!({ "playlist_id": "37i9dQZEVX", "shuffle": true }),
+            "spotify_play_all",
+        ),
+        (
+            "spotify_play_all",
+            serde_json::json!({ "playlist_id": "37i9dQZEVX" }),
+            "spotify_play_all",
+        ),
+        (
+            "spotify_track_image",
+            serde_json::json!({ "image_url": "https://i.scdn.co/image/abc" }),
+            "spotify_track_image",
+        ),
     ];
     for (cmd, params, expected) in cases {
-        let req = DaemonReq::parse_cmd(cmd, params).unwrap();
+        let req = DaemonReq::parse_cmd(cmd, params.clone()).unwrap();
         assert_eq!(req.cmd_name(), expected);
         match req {
             DaemonReq::SpotifySetToken { token } => assert_eq!(token, "BQCabc"),
@@ -287,6 +317,28 @@ fn daemon_req_parse_cmd_spotify_variants() {
             } => {
                 assert_eq!(playlist_id, "37i9dQZEVX");
                 assert_eq!(track_index, 3);
+            }
+            DaemonReq::SpotifyResolveTrack { name, uri, .. } => {
+                assert_eq!(name, "Drift");
+                if params.get("uri").is_some() {
+                    assert_eq!(uri.as_deref(), Some("spotify:track:abc123"));
+                } else {
+                    assert!(uri.is_none(), "uri must default to None when absent");
+                }
+            }
+            DaemonReq::SpotifyPlayAll {
+                playlist_id,
+                shuffle,
+            } => {
+                assert_eq!(playlist_id, "37i9dQZEVX");
+                if params.get("shuffle").is_some() {
+                    assert!(shuffle);
+                } else {
+                    assert!(!shuffle, "shuffle must default to false when absent");
+                }
+            }
+            DaemonReq::SpotifyTrackImage { image_url } => {
+                assert_eq!(image_url, "https://i.scdn.co/image/abc");
             }
             _ => {}
         }
@@ -316,6 +368,7 @@ fn daemon_res_spotify_wire_roundtrip() {
             album: Some("Album".into()),
             duration_ms: Some(240000),
             uri: None,
+            image_url: None,
         }],
     };
     let cases: Vec<(&str, DaemonRes)> = vec![
@@ -335,6 +388,12 @@ fn daemon_res_spotify_wire_roundtrip() {
             "spotify_playlist_tracks",
             DaemonRes::SpotifyTracksRes {
                 tracks: playlist.tracks.clone(),
+            },
+        ),
+        (
+            "spotify_track_image",
+            DaemonRes::SpotifyImageRes {
+                data: Some("AAECAw==".into()),
             },
         ),
     ];
