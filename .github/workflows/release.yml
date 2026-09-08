@@ -842,7 +842,7 @@ jobs:
       - name: Install cliamp (reference player)
         uses: actions/setup-go@v6
         with:
-          go-version: '1.23'
+          go-version: stable
       - run: go install github.com/bjarneo/cliamp@latest
 
       - name: Extract gtm binaries from published archive
