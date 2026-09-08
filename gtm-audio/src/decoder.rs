@@ -170,7 +170,11 @@ impl SpectrumAnalyzer {
 #[cfg(target_os = "linux")]
 fn boost_thread_priority() {
     unsafe {
-        let param = libc::sched_param { sched_priority: 1 };
+        // glibc exposes only `sched_priority` (private rest), while musl
+        // exposes the POSIX sporadic-scheduling fields too — zero-initialise
+        // so the literal works on every libc variant.
+        let mut param: libc::sched_param = std::mem::zeroed();
+        param.sched_priority = 1;
         let allowed_sched = [
             libc::SCHED_FIFO,
             libc::SCHED_RR,
