@@ -1441,12 +1441,9 @@ impl App {
         let light = entry.light;
         let base = entry.theme;
         self.theme = match (self.reactive_theme, self.reactive_palette) {
-            (true, Some(pal)) => crate::reactive::derive_theme(
-                &base,
-                &pal,
-                light,
-                self.reactive_theme_intensity,
-            ),
+            (true, Some(pal)) => {
+                crate::reactive::derive_theme(&base, &pal, light, self.reactive_theme_intensity)
+            }
             _ => base,
         };
     }
@@ -1472,10 +1469,7 @@ impl App {
         save_prefs(&self.current_prefs());
         self.notify_titled(
             "Reactive Theme",
-            format!(
-                "Intensity: {:.0}%",
-                self.reactive_theme_intensity * 100.0
-            ),
+            format!("Intensity: {:.0}%", self.reactive_theme_intensity * 100.0),
             NotificationKind::Info,
             true,
             NotifType::Prefs,
@@ -7053,26 +7047,20 @@ impl App {
                                                         ..
                                                     }) = playlists
                                                     {
-                                                        let _ = ipc_tx.send(IpcResult::Playlists(
-                                                            playlists,
-                                                        ));
+                                                        let _ = ipc_tx
+                                                            .send(IpcResult::Playlists(playlists));
                                                     }
-                                                    let _ = ipc_tx.send(
-                                                        IpcResult::PlaylistCreated(
+                                                    let _ =
+                                                        ipc_tx.send(IpcResult::PlaylistCreated(
                                                             new_p.id,
                                                             name.clone(),
-                                                        ),
-                                                    );
-                                                    let _ = ipc_tx.send(
-                                                        IpcResult::Notification(
-                                                            "Playlist".to_string(),
-                                                            format!(
-                                                                "Created {name} — pick tracks"
-                                                            ),
-                                                            NotificationKind::Success,
-                                                            NotifType::NowPlaying,
-                                                        ),
-                                                    );
+                                                        ));
+                                                    let _ = ipc_tx.send(IpcResult::Notification(
+                                                        "Playlist".to_string(),
+                                                        format!("Created {name} — pick tracks"),
+                                                        NotificationKind::Success,
+                                                        NotifType::NowPlaying,
+                                                    ));
                                                 }
                                             }
                                             Err(e) => {

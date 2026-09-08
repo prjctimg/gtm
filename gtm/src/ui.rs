@@ -3260,14 +3260,12 @@ impl Pickers {
                 }
                 LibraryPick::Artist(name) => format!("{}\u{1f465} {}", prefix, name),
                 LibraryPick::Album(album) => format!("{}\u{1f4bf} {}", prefix, album),
-                LibraryPick::Playlist(i) => {
-                    match app.playlist_cache.get(*i) {
-                        Some(p) if !p.name.is_empty() => {
-                            format!("{}\u{1f4dc} {}", prefix, p.name)
-                        }
-                        _ => format!("{}\u{1f4dc} (missing playlist)", prefix),
+                LibraryPick::Playlist(i) => match app.playlist_cache.get(*i) {
+                    Some(p) if !p.name.is_empty() => {
+                        format!("{}\u{1f4dc} {}", prefix, p.name)
                     }
-                }
+                    _ => format!("{}\u{1f4dc} (missing playlist)", prefix),
+                },
             };
             let row = if i == sel {
                 format!("{text}{}", " ".repeat(row_pad(&text, results_area.width)))

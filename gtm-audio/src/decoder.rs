@@ -167,7 +167,7 @@ impl SpectrumAnalyzer {
 /// Tries SCHED_FIFO first (needs CAP_SYS_NICE / rtkit), then SCHED_RR, then
 /// a moderated nice value.  All failures are intentional and ignored — this
 /// is an optimization, never a requirement.
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 fn boost_thread_priority() {
     unsafe {
         let param = libc::sched_param { sched_priority: 1 };
@@ -184,6 +184,15 @@ fn boost_thread_priority() {
         // SCHED_OTHER twist: keep the thread out of the top of the CFS queue;
         // lowering below the parent's nice needs privilege, but nudging the
         // process doesn't hurt when permitted.
+        let _ = libc::setpriority(libc::PRIO_PROCESS, 0, -10);
+    }
+}
+
+// Other unix platforms (macOS, BSDs): sched_param/FIFO/RR are Linux-only, so
+// fall back to a nice-value nudge.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn boost_thread_priority() {
+    unsafe {
         let _ = libc::setpriority(libc::PRIO_PROCESS, 0, -10);
     }
 }
@@ -405,7 +414,8 @@ impl DecodeThread {
                                         );
                                         continue; // both channels written
                                     } else {
-                                        self.shared.push_blocking(eq_sample, &*self.control.running);
+                                        self.shared
+                                            .push_blocking(eq_sample, &*self.control.running);
                                         self.shared.push_blocking(right_eq, &*self.control.running);
                                         sample_count += 1;
                                         prebuffer_check(
@@ -440,7 +450,8 @@ impl DecodeThread {
                     eq_sample
                 };
 
-                self.shared.push_blocking(final_sample, &*self.control.running);
+                self.shared
+                    .push_blocking(final_sample, &*self.control.running);
                 sample_count += 1;
 
                 // Accumulate (decimated) samples for spectrum analysis.

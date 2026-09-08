@@ -3783,10 +3783,7 @@ impl Daemon {
                         .unwrap_or(true);
                     if due {
                         *last = Some(std::time::Instant::now());
-                        Self::push_event(
-                            inner,
-                            DaemonEvent::PositionChanged { time_pos: pos },
-                        );
+                        Self::push_event(inner, DaemonEvent::PositionChanged { time_pos: pos });
                     }
                 }
 

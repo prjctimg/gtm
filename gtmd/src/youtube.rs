@@ -139,11 +139,10 @@ impl YoutubeManager {
     /// If the configured cookies.txt changes after the client was built, the
     /// client is rebuilt so fresh cookies take effect immediately.
     async fn ensure_client(&mut self) -> Result<Innertube, String> {
-        let cookie_mtime = self.cookie_file.as_ref().and_then(|p| {
-            std::fs::metadata(p)
-                .ok()
-                .and_then(|m| m.modified().ok())
-        });
+        let cookie_mtime = self
+            .cookie_file
+            .as_ref()
+            .and_then(|p| std::fs::metadata(p).ok().and_then(|m| m.modified().ok()));
         if let Some(c) = &self.client {
             if cookie_mtime == self.client_cookie_mtime {
                 return Ok(c.clone());
@@ -578,10 +577,7 @@ impl YoutubeManager {
         if let Some(header) = cookie_header {
             req = req.header("Cookie", header);
         }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| format!("download: {e}"))?;
+        let resp = req.send().await.map_err(|e| format!("download: {e}"))?;
         if !resp.status().is_success() {
             return Err(format!("download failed: HTTP {}", resp.status()));
         }

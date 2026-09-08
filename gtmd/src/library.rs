@@ -326,10 +326,7 @@ impl Library {
         // Mirror the playlist as a `.m3u8` file next to the database so the
         // playlist survives a DB reset and is usable by other players.
         let m3u_path = self.data_dir.join(m3u8_file_name(name));
-        if let Err(e) = std::fs::write(
-            &m3u_path,
-            format!("#EXTM3U\n#PLAYLIST: {name}\n"),
-        ) {
+        if let Err(e) = std::fs::write(&m3u_path, format!("#EXTM3U\n#PLAYLIST: {name}\n")) {
             tracing::warn!("failed to write {}: {e}", m3u_path.display());
         }
         self.get_playlist(id)?
