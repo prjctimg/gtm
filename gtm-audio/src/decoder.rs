@@ -403,8 +403,8 @@ impl DecodeThread {
                                         let (out_l, out_r) =
                                             rev.process_stereo(eq_sample, right_eq);
                                         // Write left now, push right to ring buffer
-                                        self.shared.push_blocking(out_l, &*self.control.running);
-                                        self.shared.push_blocking(out_r, &*self.control.running);
+                                        self.shared.push_blocking(out_l, &self.control.running);
+                                        self.shared.push_blocking(out_r, &self.control.running);
                                         sample_count += 1;
                                         prebuffer_check(
                                             &self.shared,
@@ -414,9 +414,8 @@ impl DecodeThread {
                                         );
                                         continue; // both channels written
                                     } else {
-                                        self.shared
-                                            .push_blocking(eq_sample, &*self.control.running);
-                                        self.shared.push_blocking(right_eq, &*self.control.running);
+                                        self.shared.push_blocking(eq_sample, &self.control.running);
+                                        self.shared.push_blocking(right_eq, &self.control.running);
                                         sample_count += 1;
                                         prebuffer_check(
                                             &self.shared,
@@ -428,7 +427,7 @@ impl DecodeThread {
                                     }
                                 }
                                 None => {
-                                    self.shared.push_blocking(eq_sample, &*self.control.running);
+                                    self.shared.push_blocking(eq_sample, &self.control.running);
                                     self.shared.set_finished(true);
                                     self.control.ready.store(true, Ordering::Release);
                                     return;
@@ -451,7 +450,7 @@ impl DecodeThread {
                 };
 
                 self.shared
-                    .push_blocking(final_sample, &*self.control.running);
+                    .push_blocking(final_sample, &self.control.running);
                 sample_count += 1;
 
                 // Accumulate (decimated) samples for spectrum analysis.
