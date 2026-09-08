@@ -143,10 +143,10 @@ impl YoutubeManager {
             .cookie_file
             .as_ref()
             .and_then(|p| std::fs::metadata(p).ok().and_then(|m| m.modified().ok()));
-        if let Some(c) = &self.client {
-            if cookie_mtime == self.client_cookie_mtime {
-                return Ok(c.clone());
-            }
+        if let Some(c) = &self.client
+            && cookie_mtime == self.client_cookie_mtime
+        {
+            return Ok(c.clone());
         }
         let cookie_args = self.cookie_args();
         let options = SessionOptions {

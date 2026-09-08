@@ -7037,9 +7037,7 @@ impl App {
                                     tokio::spawn(async move {
                                         match client.library().create_playlist(&name).await {
                                             Ok(playlists) => {
-                                                if let Some(new_p) =
-                                                    playlists.iter().next().cloned()
-                                                {
+                                                if let Some(new_p) = playlists.first().cloned() {
                                                     let playlists =
                                                         client.library().get_playlists().await;
                                                     if let Ok(DaemonRes::Playlists {
