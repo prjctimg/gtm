@@ -3813,93 +3813,60 @@ impl App {
                 let ipc = ipc_tx.clone();
                 let client2 = self.client.clone();
                 tokio::spawn(async move {
-                    let audio_dir = std::env::var("XDG_DATA_HOME")
-                        .map(|d| std::path::PathBuf::from(d).join("gtm").join("audio"))
-                        .unwrap_or_else(|_| {
-                            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                            std::path::PathBuf::from(home).join(".local/share/gtm/audio")
-                        });
-                    std::fs::create_dir_all(&audio_dir).ok();
-
                     let msg = async {
-                        // Resolve a playable direct stream through the daemon
-                        // (InnerTube, no yt-dlp).
-                        let info = match client2.yt().resolve_stream(&url).await {
-                            Ok(DaemonRes::StreamInfo { info }) => *info,
-                            Ok(DaemonRes::Error { message }) => {
-                                return format!("Download failed: {message}");
-                            }
-                            Ok(_) => {
-                                return "Download failed: unexpected daemon response".to_string();
-                            }
+                        // Kick off the daemon-side yt-dlp download (fresh PO
+                        // token + signature extraction on every run).
+                        let _ = match client2
+                            .yt()
+                            .download(url.clone(), title.clone(), artist.clone())
+                            .await
+                        {
+                            Ok(id) => id,
                             Err(e) => return format!("Download error: {e}"),
                         };
-                        let ext = if info.ext.is_empty() {
-                            "m4a"
-                        } else {
-                            &info.ext
-                        };
-
-                        let file_name = {
-                            let base = title
-                                .clone()
-                                .unwrap_or_else(|| info.title.clone())
-                                .trim()
-                                .to_string();
-                            let base = if base.is_empty() {
-                                "audio".to_string()
-                            } else {
-                                base
+                        let deadline = std::time::Instant::now() + Duration::from_secs(600);
+                        let file_path = loop {
+                            if std::time::Instant::now() > deadline {
+                                let _ = client2.yt().cancel_download(url.clone()).await;
+                                return "Download timed out".to_string();
+                            }
+                            let res = match client2.yt().download_poll().await {
+                                Ok(res) => res,
+                                Err(e) => return format!("Download error: {e}"),
                             };
-                            let mut safe: String = base
-                                .chars()
-                                .map(|c| {
-                                    if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' '
-                                    {
-                                        c
-                                    } else {
-                                        '_'
+                            match res {
+                                DaemonRes::YtDownloadProgress {
+                                    status,
+                                    error,
+                                    file_path: fp,
+                                    ..
+                                } => {
+                                    if let Some(fp) = fp {
+                                        if status == "completed" {
+                                            break fp;
+                                        }
                                     }
-                                })
-                                .collect();
-                            if safe.trim().is_empty() {
-                                safe = "audio".to_string();
-                            }
-                            format!("{safe}.{ext}")
-                        };
-                        let dest = audio_dir.join(&file_name);
-
-                        // Stream the audio to disk (no ffmpeg transcode — the
-                        // player decodes m4a/webm/opus natively).
-                        let resp = match reqwest::Client::builder().build() {
-                            Ok(c) => c,
-                            Err(e) => return format!("Download error: {e}"),
-                        }
-                        .get(&info.url)
-                        .send()
-                        .await;
-                        let resp = match resp {
-                            Ok(r) if r.status().is_success() => r,
-                            Ok(r) => return format!("Download failed: HTTP {}", r.status()),
-                            Err(e) => return format!("Download error: {e}"),
-                        };
-                        let mut file = match tokio::fs::File::create(&dest).await {
-                            Ok(f) => f,
-                            Err(e) => return format!("Download error: {e}"),
-                        };
-                        let mut stream = resp.bytes_stream();
-                        use futures::StreamExt;
-                        use tokio::io::AsyncWriteExt;
-                        while let Some(chunk) = stream.next().await {
-                            match chunk {
-                                Ok(c) => {
-                                    if let Err(e) = file.write_all(&c).await {
-                                        return format!("Download error: {e}");
+                                    if status == "failed" || status == "cancelled" {
+                                        return error
+                                            .unwrap_or_else(|| format!("Download {status}"));
                                     }
                                 }
-                                Err(e) => return format!("Download error: {e}"),
+                                DaemonRes::Error { message } => {
+                                    return format!("Download failed: {message}");
+                                }
+                                DaemonRes::Value { .. } => {}
+                                _ => {
+                                    return "Download error: unexpected daemon response".to_string()
+                                }
                             }
-                        }
+                            tokio::time::sleep(Duration::from_millis(250)).await;
+                        };
+                        let audio_dir = std::path::PathBuf::from(&file_path)
+                            .parent()
+                            .map(|p| p.to_path_buf())
+                            .unwrap_or_else(|| {
+                                std::path::PathBuf::from(".")
+                            });
 
                         let _ = client2
                             .library()
@@ -3916,7 +3883,7 @@ impl App {
                             client2.library().get_tracks(None, None).await
                             && let Some(track) = tracks
                                 .iter()
-                                .find(|t| t.path.contains(&dest.to_string_lossy().to_string()))
+                                .find(|t| t.path.contains(&file_path))
                                 .or_else(|| tracks.last())
                         {
                             if let Ok(Some(lyrics_data)) =
@@ -3964,7 +3931,13 @@ impl App {
                         match (&title, &artist) {
                             (Some(t), Some(a)) => format!("Downloaded: {} - {}", a, t),
                             (Some(t), _) => format!("Downloaded: {}", t),
-                            _ => format!("Downloaded: {}", file_name),
+                            _ => {
+                                let name = std::path::Path::new(&file_path)
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_else(|| file_path.clone());
+                                format!("Downloaded: {}", name)
+                            }
                         }
                     }
                     .await;

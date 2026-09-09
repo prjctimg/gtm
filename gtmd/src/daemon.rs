@@ -1068,44 +1068,27 @@ impl Yt {
 }
 
 /// Shared YouTube-fallback path for Spotify tracks: search `query`, pick the
-/// top hit, resolve its stream, and download it into the cache under
-/// `cache_key`. Returns the local file path. Callers hold no locks so the
-/// youtube lock is scoped inside.
+/// top hit, and download its audio into the cache under `cache_key` via
+/// yt-dlp. Returns the local file path. The youtube lock is held only during
+/// the (fast) search, dropped before the (slow) download.
 #[cfg(feature = "youtube")]
 async fn spotify_yt_fallback(
     inner: &DaemonInner,
     cache_key: &str,
     query: &str,
 ) -> Result<String, String> {
-    let mut yt = inner.youtube.lock().await;
-    let resolved = match (async {
+    let top_url = {
+        let mut yt = inner.youtube.lock().await;
         yt.search(query, None).await?;
         let top = match yt.poll_results().await {
             Ok(Some((_, mut results))) if !results.is_empty() => results.remove(0),
             _ => return Err("no youtube results for track".to_string()),
         };
-        let info = match yt.resolve_stream(&top.url).await {
-            Ok(info) => info,
-            Err(e) => return Err(e),
-        };
-        let path = Daemon::download_audio_to_cache(
-            &inner.config.cache_dir,
-            cache_key,
-            &info.url,
-            &info.ext,
-            yt.cookie_header_for(&info.url),
-        )
-        .await
-        .map_err(|e| e.to_string())?;
-        Ok::<_, String>(path)
-    })
-    .await
-    {
-        Ok(path) => Ok(path),
-        Err(e) => Err(e),
+        let cookie = yt.cookie_file();
+        drop(yt);
+        Daemon::download_audio_to_cache(&inner.config.cache_dir, cache_key, &top.url, cookie).await
     };
-    drop(yt);
-    resolved
+    top_url
 }
 
 #[cfg(not(feature = "youtube"))]
@@ -3341,11 +3324,9 @@ impl Daemon {
                 if let Some(js) = js_runtime {
                     _ = js;
                 }
-                if let Some(dd) = download_dir {
-                    _ = dd;
-                }
+                yt.set_download_dir(download_dir.clone());
                 if let Some(mc) = max_concurrent {
-                    _ = mc;
+                    yt.set_max_concurrent_downloads(*mc as usize);
                 }
                 drop(yt);
                 Self::save_state(inner);
@@ -4067,20 +4048,13 @@ impl Daemon {
         cache_dir: &Path,
         prefix: &str,
         url: &str,
-        ext: &str,
-        cookie_header: Option<String>,
+        cookie_file: Option<String>,
     ) -> Result<String, String> {
         let max_retries = 3u32;
         let mut last_err = String::new();
         for attempt in 1..=max_retries {
-            match Self::try_download_audio_to_cache(
-                cache_dir,
-                prefix,
-                url,
-                ext,
-                cookie_header.clone(),
-            )
-            .await
+            match Self::try_download_audio_to_cache(cache_dir, prefix, url, cookie_file.clone())
+                .await
             {
                 Ok(path) => return Ok(path),
                 Err(e) => {
@@ -4099,8 +4073,7 @@ impl Daemon {
         cache_dir: &Path,
         prefix: &str,
         url: &str,
-        ext: &str,
-        cookie_header: Option<String>,
+        cookie_file: Option<String>,
     ) -> Result<String, String> {
         let dir = cache_dir.join("spotify");
         std::fs::create_dir_all(&dir).map_err(|e| format!("create spotify cache: {e}"))?;
@@ -4112,16 +4085,14 @@ impl Daemon {
                 }
             }
         }
-        let dest = dir.join(format!("{prefix}.{ext}"));
-        tokio::time::timeout(Duration::from_secs(120), async {
-            crate::youtube::YoutubeManager::download_to_path(url, &dest, cookie_header).await
-        })
-        .await
-        .map_err(|_| "spotify download timed out".to_string())??;
-        if !dest.is_file() {
-            return Err("download produced no file".into());
-        }
-        Ok(dest.to_string_lossy().into_owned())
+        let path = crate::youtube::download_into(
+            url,
+            &dir,
+            prefix,
+            cookie_file.as_deref().map(Path::new),
+        )
+        .await?;
+        Ok(path.to_string_lossy().into_owned())
     }
 }
 

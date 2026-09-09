@@ -766,6 +766,44 @@ impl<'a> Yt<'a> {
             .await
     }
 
+    /// Start a daemon-side yt-dlp download of `url`. Returns a download ID to
+    /// poll with [`Yt::download_poll`].
+    pub async fn download(
+        &self,
+        url: String,
+        title: Option<String>,
+        channel: Option<String>,
+    ) -> Result<u64> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::YtDownload {
+                url,
+                title,
+                channel,
+            })
+            .await?;
+        match res {
+            DaemonRes::Value { value } => value
+                .get("id")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| CoreError::Daemon("missing download id".into())),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
+    /// Poll progress of the current daemon-side download.
+    pub async fn download_poll(&self) -> Result<DaemonRes> {
+        self.client.send_raw(DaemonReq::YtDownloadPoll).await
+    }
+
+    /// Cancel the current daemon-side download.
+    pub async fn cancel_download(&self, url: String) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::YtCancelDownload { url })
+            .await
+    }
+
     pub async fn set_config(
         &self,
         cookie_source: Option<String>,
