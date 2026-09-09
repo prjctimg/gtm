@@ -22,6 +22,7 @@ use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
 use gtm_core::global::EqPreset;
+use gtm_core::radio::RadioStation;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
@@ -2511,6 +2512,91 @@ impl Pickers {
             PickerId::NotificationSettings => (60, 14),
             PickerId::ProgressStyle => (48, 18),
             PickerId::Settings => (64, 28),
+            PickerId::SubsonicSearch => {
+                let n = app.subsonic.search_results.artists.len()
+                    + app.subsonic.search_results.albums.len()
+                    + app.subsonic.search_results.tracks.len();
+                let w = app
+                    .subsonic
+                    .search_results
+                    .tracks
+                    .iter()
+                    .map(|t| t.artist.len() as u16 + t.title.len() as u16 + 14)
+                    .max()
+                    .unwrap_or(58)
+                    .clamp(48, 78);
+                (w, (n as u16 + 6).clamp(18, 30))
+            }
+            PickerId::SubsonicAlbums => {
+                let w = app
+                    .subsonic
+                    .albums
+                    .iter()
+                    .map(|a| a.title.len() as u16 + a.artist.len() as u16 + 16)
+                    .max()
+                    .unwrap_or(54)
+                    .clamp(50, 78);
+                (w, (app.subsonic.albums.len() as u16 + 6).clamp(18, 30))
+            }
+            PickerId::SubsonicAlbumTracks => {
+                let w = app
+                    .subsonic
+                    .album_tracks
+                    .iter()
+                    .map(|t| t.artist.len() as u16 + t.title.len() as u16 + 30)
+                    .max()
+                    .unwrap_or(60)
+                    .clamp(52, 84);
+                (w, (app.subsonic.album_tracks.len() as u16 + 6).clamp(18, 30))
+            }
+            PickerId::SubsonicSetup => (56, 12),
+            PickerId::PodcastFeeds => {
+                let w = app
+                    .podcast
+                    .feeds
+                    .iter()
+                    .map(|f| f.title.len() as u16 + 24)
+                    .max()
+                    .unwrap_or(56)
+                    .clamp(52, 84);
+                (w, (app.podcast.feeds.len() as u16 + 6).clamp(16, 28))
+            }
+            PickerId::PodcastEpisodes => {
+                let w = app
+                    .podcast
+                    .episodes
+                    .iter()
+                    .map(|e| e.title.len() as u16 + 16)
+                    .max()
+                    .unwrap_or(58)
+                    .clamp(52, 86);
+                (w, (app.podcast.episodes.len() as u16 + 6).clamp(18, 30))
+            }
+            PickerId::PodcastSubscribe => (56, 8),
+            PickerId::RadioSearch => {
+                let n = app.radio.search.len();
+                let w = app
+                    .radio
+                    .search
+                    .iter()
+                    .map(|s| s.name.len() as u16 + 40)
+                    .max()
+                    .unwrap_or(60)
+                    .clamp(54, 88);
+                (w, (n as u16 + 6).clamp(18, 30))
+            }
+            PickerId::RadioTop => {
+                let n = app.radio.top.len();
+                let w = app
+                    .radio
+                    .top
+                    .iter()
+                    .map(|s| s.name.len() as u16 + 40)
+                    .max()
+                    .unwrap_or(60)
+                    .clamp(54, 88);
+                (w, (n as u16 + 6).clamp(18, 30))
+            }
             _ => (56, 22),
         }
     }
@@ -2543,6 +2629,13 @@ impl Pickers {
                     | PickerId::PlaylistSelect
                     | PickerId::PlaylistTrackSelect
                     | PickerId::SpotifySearch
+                    | PickerId::SubsonicSearch
+                    | PickerId::SubsonicAlbums
+                    | PickerId::SubsonicAlbumTracks
+                    | PickerId::PodcastFeeds
+                    | PickerId::PodcastEpisodes
+                    | PickerId::RadioSearch
+                    | PickerId::RadioTop
             );
             let picker_height = if scrolling {
                 let height_cap = (area.height.saturating_sub(2) / 2).max(10);
@@ -2590,6 +2683,19 @@ impl Pickers {
             PickerId::NotificationSettings => {
                 Self::render_notification_settings_picker(f, picker_area, app)
             }
+            PickerId::SubsonicSearch => Self::render_subsonic_search_picker(f, picker_area, app),
+            PickerId::SubsonicAlbums => Self::render_subsonic_albums_picker(f, picker_area, app),
+            PickerId::SubsonicAlbumTracks => {
+                Self::render_subsonic_album_tracks_picker(f, picker_area, app)
+            }
+            PickerId::SubsonicSetup => Self::render_subsonic_setup_picker(f, picker_area, app),
+            PickerId::PodcastFeeds => Self::render_podcast_feeds_picker(f, picker_area, app),
+            PickerId::PodcastEpisodes => Self::render_podcast_episodes_picker(f, picker_area, app),
+            PickerId::PodcastSubscribe => {
+                Self::render_podcast_subscribe_picker(f, picker_area, app)
+            }
+            PickerId::RadioSearch => Self::render_radio_search_picker(f, picker_area, app),
+            PickerId::RadioTop => Self::render_radio_top_picker(f, picker_area, app),
             PickerId::SpotifyLink => {
                 let block = Self::picker_panel(
                     app,
@@ -3380,6 +3486,383 @@ impl Pickers {
             };
             Self::render_search_preview(f, preview_area, app, &picks, sel);
         }
+    }
+
+    /// Prompt line shown at the top of query pickers (Subsonic search, radio).
+    fn picker_query_line(app: &App) -> Line<'static> {
+        let q = app.pickers.top().map_or(String::new(), |o| o.query.clone());
+        Line::from(vec![
+            Span::styled(" > ", Style::default().fg(app.theme.fg)),
+            Span::styled(q, Style::default().fg(app.theme.fg)),
+            match cursor_span_style(app) {
+                Some(style) => Span::styled(" ", style),
+                None => Span::raw(""),
+            },
+        ])
+    }
+
+    /// Shared row list for the remote-service pickers: a stackable panel with
+    /// optional leading lines, a scrollable row region and row mouse zones.
+    fn render_scroll_rows(
+        f: &mut ratatui::Frame,
+        area: Rect,
+        app: &mut App,
+        title: &str,
+        hint: &str,
+        prepend: Vec<Line<'static>>,
+        rows: Vec<String>,
+        empty_msg: &str,
+    ) {
+        let block = Self::picker_panel(app, title, Some(hint));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let total = rows.len();
+        let sel = app
+            .pickers
+            .top()
+            .map_or(0, |o| o.selected.min(total.saturating_sub(1)));
+        let prepend_h = prepend.len() as u16;
+        let visible = inner.height.saturating_sub(prepend_h).max(1) as usize;
+        let (s, e) = if total > 0 {
+            if let Some(top) = app.pickers.top_mut() {
+                let (a, b) = step_viewport(top.viewport_offset, sel, visible, total);
+                top.viewport_offset = a;
+                (a, b)
+            } else {
+                (0, total)
+            }
+        } else {
+            (0, 0)
+        };
+
+        let mut lines = prepend;
+        if total == 0 {
+            lines.push(Line::from(Span::styled(
+                empty_msg.to_string(),
+                Style::default().fg(app.theme.fg_dim),
+            )));
+        }
+        for i in s..e {
+            let text = &rows[i];
+            let prefix = if i == sel { " > " } else { "   " };
+            let style = if i == sel {
+                Style::default()
+                    .fg(app.theme.selection_fg_readable())
+                    .bg(app.theme.selection_bg)
+            } else {
+                Style::default()
+            };
+            let row = if i == sel {
+                format!("{prefix}{text}{}", " ".repeat(row_pad(&text, inner.width)))
+            } else {
+                format!("{prefix}{text}")
+            };
+            lines.push(Line::from(Span::styled(row, style)));
+            let row_rect = Rect {
+                x: inner.x,
+                y: inner.y + (i - s) as u16,
+                width: inner.width,
+                height: 1,
+            };
+            app.mouse_map
+                .register(row_rect, crate::mouse::MouseZone::PickerItem(i));
+        }
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+
+    fn render_subsonic_search_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let r = &app.subsonic.search_results;
+        let mut rows = Vec::new();
+        for a in &r.artists {
+            rows.push(format!("\u{1f465} {}\u{2003}artist", a.name));
+        }
+        for a in &r.albums {
+            rows.push(format!("\u{1f4bf} {} - {}", a.title, a.artist));
+        }
+        for t in &r.tracks {
+            rows.push(format!(
+                "\u{266b} {} - {} [{}]",
+                t.artist,
+                t.title,
+                format_duration_short(t.duration_secs as u64)
+            ));
+        }
+        let mut prepend = vec![Self::picker_query_line(app)];
+        if app.subsonic.search_pending {
+            prepend.push(Line::from(Span::styled(
+                " searching\u{2026}",
+                Style::default().fg(app.theme.fg_dim),
+            )));
+        }
+        Self::render_scroll_rows(
+            f,
+            area,
+            app,
+            " Subsonic search ",
+            " Enter: search / play   Esc: close",
+            prepend,
+            rows,
+            "type a query, then Enter",
+        );
+    }
+
+    fn render_subsonic_albums_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let mut rows = Vec::new();
+        for a in &app.subsonic.albums {
+            rows.push(format!(
+                "\u{1f4bf} {} - {}\u{2003}[{}]",
+                a.title, a.artist, a.track_count
+            ));
+        }
+        let mut prepend = Vec::new();
+        if let Some(st) = app.subsonic.status.as_ref() {
+            prepend.push(Line::from(Span::styled(
+                format!(
+                    " \u{1f5a5}  {}@{}",
+                    st.user.as_deref().unwrap_or("?"),
+                    st.server.as_deref().unwrap_or("?")
+                ),
+                Style::default().fg(app.theme.fg_dim),
+            )));
+        }
+        Self::render_scroll_rows(
+            f,
+            area,
+            app,
+            " Subsonic albums ",
+            " Enter: open album   r: refresh   Esc: close",
+            prepend,
+            rows,
+            if app.subsonic.albums_pending {
+                " loading albums\u{2026}"
+            } else {
+                "no albums \u{2014} run `gtm subsonic configure` to set up the server"
+            },
+        );
+    }
+
+    fn render_subsonic_album_tracks_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let mut rows = Vec::new();
+        for t in &app.subsonic.album_tracks {
+            rows.push(format!(
+                "\u{266b} {} - {} [{}]",
+                t.artist,
+                t.title,
+                format_duration_short(t.duration_secs as u64)
+            ));
+        }
+        let title = app
+            .subsonic
+            .selected_album
+            .as_ref()
+            .map(|a| format!(" {} ", a.title))
+            .unwrap_or_else(|| " Album tracks ".into());
+        Self::render_scroll_rows(
+            f,
+            area,
+            app,
+            &title,
+            " Enter: play   a: play album   Esc: close",
+            Vec::new(),
+            rows,
+            "album has no tracks",
+        );
+    }
+
+    fn render_subsonic_setup_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let block = Self::picker_panel(app, " Subsonic setup ", Some(" Enter: next   Esc: close"));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let mut lines = Vec::new();
+        let focus = app.subsonic.form_focus;
+        for (idx, label) in [" Server URL ", " Username ", " Password "].iter().enumerate() {
+            let value = match idx {
+                0 => app.subsonic.form_server.clone(),
+                1 => app.subsonic.form_user.clone(),
+                _ => "\u{2022}".repeat(app.subsonic.form_password.chars().count()),
+            };
+            let label_style = if idx == focus {
+                Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.fg_dim)
+            };
+            let value_style = if idx == focus {
+                Style::default().fg(app.theme.fg_bright).add_modifier(Modifier::UNDERLINED)
+            } else {
+                Style::default().fg(app.theme.fg)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(label.to_string(), label_style),
+                Span::styled(format!("[{value}]"), value_style),
+            ]));
+        }
+        match app.subsonic.status.as_ref() {
+            Some(st) if st.configured => {
+                lines.push(Line::from(Span::styled(
+                    "\u{2713} credentials saved \u{2014} Enter to update",
+                    Style::default().fg(app.theme.fg_dim),
+                )));
+            }
+            Some(_) => {
+                lines.push(Line::from(Span::styled(
+                    "\u{26a0} not configured \u{2014} Enter saves and validates",
+                    Style::default().fg(app.theme.fg_dim),
+                )));
+            }
+            None => {}
+        }
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+
+    fn render_podcast_feeds_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let mut rows = Vec::new();
+        for feed in &app.podcast.feeds {
+            rows.push(format!("\u{1f4e1} {} \u{2003}[{} episodes]", feed.title, feed.episodes));
+        }
+        let mut prepend = Vec::new();
+        if let Some(st) = app.podcast.status.as_ref() {
+            prepend.push(Line::from(Span::styled(
+                format!(" {} feeds, {} episodes", st.feeds, st.episodes),
+                Style::default().fg(app.theme.fg_dim),
+            )));
+        }
+        Self::render_scroll_rows(
+            f,
+            area,
+            app,
+            " Podcasts ",
+            " Enter: episodes   a: subscribe   r: refresh   Esc: close",
+            prepend,
+            rows,
+            if app.podcast.feeds_pending {
+                " loading feeds\u{2026}"
+            } else {
+                "no subscriptions \u{2014} press a to add a feed URL"
+            },
+        );
+    }
+
+    fn render_podcast_episodes_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let mut rows = Vec::new();
+        for ep in &app.podcast.episodes {
+            let dur = ep
+                .duration_secs
+                .map(format_duration_short)
+                .unwrap_or_else(|| "--:--".to_string());
+            rows.push(format!("\u{266b} [{dur}] {}", ep.title));
+        }
+        let title = app
+            .podcast
+            .episodes
+            .first()
+            .map(|e| format!(" {} ", e.feed_title))
+            .unwrap_or_else(|| " Episodes ".into());
+        Self::render_scroll_rows(
+            f,
+            area,
+            app,
+            &title,
+            " Enter: play   Backspace: back   Esc: close",
+            Vec::new(),
+            rows,
+            "no episodes \u{2014} press r in the feed list to refresh",
+        );
+    }
+
+    fn render_podcast_subscribe_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let block = Self::picker_panel(app, " Subscribe ", Some(" Enter: subscribe   Esc: close"));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let mut lines = vec![Line::from(Span::styled(
+            " Feed URL ",
+            Style::default().fg(app.theme.fg_dim),
+        ))];
+        lines.push(Line::from(vec![
+            Span::styled(" ", Style::default().fg(app.theme.fg)),
+            Span::styled(
+                app.podcast.subscribe_url.clone(),
+                Style::default().fg(app.theme.fg_bright).add_modifier(Modifier::UNDERLINED),
+            ),
+            match cursor_span_style(app) {
+                Some(style) => Span::styled(" ", style),
+                None => Span::raw(""),
+            },
+        ]));
+        lines.push(Line::from(Span::styled(
+            " expects an RSS or Atom feed URL (e.g. https://feeds.example.com/show.xml)",
+            Style::default().fg(app.theme.fg_dim),
+        )));
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+
+    fn render_radio_search_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let mut rows = Vec::new();
+        for s in &app.radio.search {
+            rows.push(Self::radio_row(s));
+        }
+        let mut prepend = vec![Self::picker_query_line(app)];
+        if app.radio.search_pending {
+            prepend.push(Line::from(Span::styled(
+                " searching\u{2026}",
+                Style::default().fg(app.theme.fg_dim),
+            )));
+        }
+        Self::render_scroll_rows(
+            f,
+            area,
+            app,
+            " Radio search ",
+            " Enter: search / play   Esc: close",
+            prepend,
+            rows,
+            "type a query, then Enter",
+        );
+    }
+
+    fn render_radio_top_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let mut rows = Vec::new();
+        for s in &app.radio.top {
+            rows.push(Self::radio_row(s));
+        }
+        Self::render_scroll_rows(
+            f,
+            area,
+            app,
+            " Top radio stations ",
+            " Enter: play   r: refresh   Esc: close",
+            Vec::new(),
+            rows,
+            if app.radio.top_pending {
+                " loading stations\u{2026}"
+            } else {
+                "no stations"
+            },
+        );
+    }
+
+    fn radio_row(s: &RadioStation) -> String {
+        format!(
+            "\u{1f3a7} {}\u{2003}{}{}{}{}",
+            s.name,
+            if s.country.is_empty() {
+                String::new()
+            } else {
+                format!(" \u{1f30d}{} ", s.country)
+            },
+            if s.language.is_empty() {
+                String::new()
+            } else {
+                format!("\u{1f3ac} {} ", s.language)
+            },
+            if s.codec.is_empty() {
+                String::new()
+            } else {
+                format!(" {} ", s.codec)
+            },
+            format!(" \u{2b50} {}", s.votes),
+        )
     }
 
     fn render_search_preview(
@@ -4565,6 +5048,8 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   .           Seek Forward"),
     ("", "   ,           Seek Backward"),
     ("", "   + / -       Volume Up / Down"),
+    ("", "   > / <       Speed Up / Down (pitch-preserving)"),
+    ("", "   z           Toggle Low-Power Mode"),
     ("", "   m           Mute Toggle"),
     ("", "   r           Repeat Mode"),
     ("", "   S           Shuffle Library"),
@@ -4577,6 +5062,9 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   Alt+/       Search Library"),
     ("", "   Alt+Y       YouTube Search"),
     ("", "   Alt+S       Spotify"),
+    ("", "   Alt+U       Subsonic Search"),
+    ("", "   Alt+P       Podcasts"),
+    ("", "   Alt+R       Top Radio Stations"),
     ("topic", "── View ──"),
     ("", "   ?           Toggle Help"),
     ("", "   Ctrl+H      Hide Help Bar"),
@@ -4725,6 +5213,35 @@ impl Pickers {
             )),
             Line::from(Span::styled(
                 format!("   Repeat:   {:?}", app.state.repeat),
+                Style::default().fg(app.theme.fg_bright),
+            )),
+            Line::from(Span::styled(
+                format!(
+                    "   Speed:    {:.2}x",
+                    app.state.audio.speed
+                ),
+                Style::default().fg(app.theme.fg_bright),
+            )),
+            Line::from(Span::styled(
+                format!(
+                    "   LowPower: {}",
+                    if app.state.low_power { "ON" } else { "OFF" }
+                ),
+                Style::default().fg(if app.state.low_power {
+                    app.theme.warning
+                } else {
+                    app.theme.fg_bright
+                }),
+            )),
+            Line::from(Span::styled(
+                format!(
+                    "   Device:   {}",
+                    app.state
+                        .audio
+                        .audio_device
+                        .clone()
+                        .unwrap_or_else(|| "Default".into())
+                ),
                 Style::default().fg(app.theme.fg_bright),
             )),
         ];

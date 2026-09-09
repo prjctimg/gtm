@@ -17,6 +17,7 @@ use gtm_core::global::{EQ_DEFAULT_Q, EQ_FREQUENCIES};
 
 use crate::buffer::{DecodeControl, SharedRingBuffer};
 use crate::eq::EqGains;
+use crate::stretch::{SpeedControl, TimeStretchSource};
 use crate::symphonia::SymphoniaSource;
 
 // ---------------------------------------------------------------------------
@@ -216,6 +217,7 @@ pub struct DecodeThread {
     eq_enabled: Arc<AtomicBool>,
     reverb_enabled: Arc<AtomicBool>,
     reverb_room_size: Arc<Mutex<f32>>,
+    speed: SpeedControl,
     spectrum: Arc<Mutex<Vec<f32>>>,
     prebuffer_samples: usize,
 }
@@ -230,6 +232,7 @@ impl DecodeThread {
         eq_enabled: Arc<AtomicBool>,
         reverb_enabled: Arc<AtomicBool>,
         reverb_room_size: Arc<Mutex<f32>>,
+        speed: SpeedControl,
         spectrum: Arc<Mutex<Vec<f32>>>,
         prebuffer_samples: usize,
     ) -> Self {
@@ -241,6 +244,7 @@ impl DecodeThread {
             eq_enabled,
             reverb_enabled,
             reverb_room_size,
+            speed,
             spectrum,
             prebuffer_samples,
         }
@@ -316,7 +320,7 @@ impl DecodeThread {
 
             // Decode loop: read from SymphoniaSource, process, write to ring buffer
             // Use an explicit loop over the iterator so we can check seek/running flags.
-            let mut source_iter = raw;
+            let mut source_iter = TimeStretchSource::new(raw, self.speed.clone());
 
             loop {
                 // Check for stop

@@ -43,6 +43,9 @@ pub enum KeyboardAction {
     Stop,
     VolumeUp,
     VolumeDown,
+    SpeedUp,
+    SpeedDown,
+    ToggleLowPower,
     SeekForward,
     SeekBackward,
     ToggleShuffle,
@@ -343,6 +346,29 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
+            // Speed up/down: > / < (pitch-preserving)
+            (
+                KeyCode::Char('>').into(),
+                BoundCommand {
+                    action: KeyboardAction::SpeedUp,
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
+            (
+                KeyCode::Char('<').into(),
+                BoundCommand {
+                    action: KeyboardAction::SpeedDown,
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
+            // Low-power mode: z
+            (
+                KeyCode::Char('z').into(),
+                BoundCommand {
+                    action: KeyboardAction::ToggleLowPower,
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
             // Mute: m
             (
                 KeyCode::Char('m').into(),
@@ -561,6 +587,27 @@ pub fn default_keybindings() -> Keybindings {
                 },
             ),
             (
+                KeyEvent::new(KeyCode::Char('u'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::OpenOverlay(PickerId::SubsonicSearch),
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::OpenOverlay(PickerId::PodcastFeeds),
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
+            (
+                KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::OpenOverlay(PickerId::RadioTop),
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
+            (
                 KeyEvent::new(KeyCode::Char('n'), KeyModifiers::ALT),
                 BoundCommand {
                     action: KeyboardAction::OpenOverlay(PickerId::Notifications),
@@ -754,6 +801,9 @@ impl KeyboardAction {
             "stop" => KeyboardAction::Stop,
             "volume_up" | "vol_up" => KeyboardAction::VolumeUp,
             "volume_down" | "vol_down" => KeyboardAction::VolumeDown,
+            "speed_up" => KeyboardAction::SpeedUp,
+            "speed_down" => KeyboardAction::SpeedDown,
+            "toggle_low_power" | "low_power" => KeyboardAction::ToggleLowPower,
             "seek_forward" | "seek_fwd" => KeyboardAction::SeekForward,
             "seek_backward" | "seek_back" => KeyboardAction::SeekBackward,
             "toggle_shuffle" | "shuffle" => KeyboardAction::ToggleShuffle,
@@ -795,6 +845,11 @@ impl KeyboardAction {
             "open_spotify_search" | "open_spotify" => {
                 KeyboardAction::OpenOverlay(PickerId::SpotifySearch)
             }
+            "open_subsonic_search" | "open_subsonic" => {
+                KeyboardAction::OpenOverlay(PickerId::SubsonicSearch)
+            }
+            "open_podcast" | "open_podcasts" => KeyboardAction::OpenOverlay(PickerId::PodcastFeeds),
+            "open_radio" | "open_radios" => KeyboardAction::OpenOverlay(PickerId::RadioTop),
             "open_notifications" | "notifications" => {
                 KeyboardAction::OpenOverlay(PickerId::Notifications)
             }

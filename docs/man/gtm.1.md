@@ -144,11 +144,20 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 **add-to-playlist** *playlist_id* *track_ids*...
 :   Add tracks to a playlist.
 
-**import-m3u** *path*
-:   Import an M3U playlist file into the library.
+**playlist-dedup** *playlist_id*
+:   Remove duplicate track entries from a playlist.
 
-**export-m3u** *playlist_id* *path*
-:   Export a playlist to an M3U file.
+**playlist-doctor** *playlist_id*
+:   Remove playlist entries whose audio file is missing on disk.
+
+**playlist-sort** *playlist_id* [`--field` *title|artist|album|date*]
+:   Reorder a playlist's tracks in place. Defaults to `title`.
+
+**import-playlist** *path* `--format` *m3u8|pls*
+:   Import a playlist file (M3U8 or PLS) into the library. Defaults to M3U8.
+
+**export-playlist** *playlist_id* *path* `--format` *m3u8|pls*
+:   Export a playlist to an M3U8 or PLS file. Defaults to M3U8.
 
 **recent** *count*
 :   Show recently added tracks.
@@ -222,6 +231,18 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 
 **cancel-sleep-timer**
 :   Cancel a running sleep timer.
+
+**low-power** [`--set` *on|off*]
+:   Toggle low-power mode (pauses playback and eases up on background work).
+    Use `--set on|off` to force a state instead of toggling. With no flag,
+    prints the current state.
+
+**audio-devices**
+:   List available audio output devices.
+
+**set-audio-device** *name*
+:   Switch the audio output device (use `default` for the system default).
+    Switching restarts the output and stops playback.
 
 **update-metadata** *track_id* *field* *value*
 :   Edit metadata of a library track. Fields: title, artist, album, genre,

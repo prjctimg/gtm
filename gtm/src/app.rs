@@ -12,7 +12,12 @@ use gtm_core::client::DaemonClient;
 use gtm_core::global::EqPreset;
 use gtm_core::global::{DaemonState, PlaybackStatus, RepeatMode};
 use gtm_core::ipc::DaemonRes;
+use gtm_core::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
+use gtm_core::radio::RadioStation;
 use gtm_core::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
+use gtm_core::subsonic::{
+    SubsonicAlbum, SubsonicSearchResults, SubsonicStatus, SubsonicTrack,
+};
 use gtm_core::track::{Playlist, TrackInfo, YTSearchResult};
 use ratatui::Terminal;
 use ratatui::layout::Alignment;
@@ -344,17 +349,23 @@ pub enum NotifType {
     Library,
     Downloads,
     Spotify,
+    Subsonic,
+    Podcast,
+    Radio,
     System,
 }
 
 impl NotifType {
-    pub const ALL: [NotifType; 7] = [
+    pub const ALL: [NotifType; 10] = [
         NotifType::Playback,
         NotifType::Prefs,
         NotifType::NowPlaying,
         NotifType::Library,
         NotifType::Downloads,
         NotifType::Spotify,
+        NotifType::Subsonic,
+        NotifType::Podcast,
+        NotifType::Radio,
         NotifType::System,
     ];
 
@@ -366,6 +377,9 @@ impl NotifType {
             NotifType::Library => "Library",
             NotifType::Downloads => "YouTube / Downloads",
             NotifType::Spotify => "Spotify",
+            NotifType::Subsonic => "Subsonic",
+            NotifType::Podcast => "Podcast",
+            NotifType::Radio => "Radio",
             NotifType::System => "System / Errors",
         }
     }
@@ -378,6 +392,9 @@ impl NotifType {
             NotifType::Library => "library",
             NotifType::Downloads => "downloads",
             NotifType::Spotify => "spotify",
+            NotifType::Subsonic => "subsonic",
+            NotifType::Podcast => "podcast",
+            NotifType::Radio => "radio",
             NotifType::System => "system",
         }
     }
@@ -390,6 +407,9 @@ impl NotifType {
             "library" => NotifType::Library,
             "downloads" => NotifType::Downloads,
             "spotify" => NotifType::Spotify,
+            "subsonic" => NotifType::Subsonic,
+            "podcast" => NotifType::Podcast,
+            "radio" => NotifType::Radio,
             _ => NotifType::System,
         }
     }
@@ -555,6 +575,93 @@ pub struct SpotifyView {
     pub last_preview_fetch_gen: Option<u64>,
 }
 
+/// Subsonic (Navidrome) picker state, grouped under `App::subsonic`.
+pub struct SubsonicView {
+    pub status: Option<SubsonicStatus>,
+    /// Results of the last server search (flattened into an ordered row list).
+    pub search_results: SubsonicSearchResults,
+    pub search_pending: bool,
+    pub albums: Vec<SubsonicAlbum>,
+    pub albums_pending: bool,
+    /// Track list of the album currently drilled into (`selected_album`).
+    pub album_tracks: Vec<SubsonicTrack>,
+    pub selected_album: Option<SubsonicAlbum>,
+    /// Cover base64 preview of the highlighted Subsonic track row.
+    pub cover_preview: Option<String>,
+    /// Track id whose cover was requested (in-flight marker: the daemon replies
+    /// with the base64 payload which replaces `cover_preview`).
+    pub cover_track_id: Option<String>,
+    /// Fields for the SubsonicSetup form.
+    pub form_server: String,
+    pub form_user: String,
+    pub form_password: String,
+    pub form_focus: usize,
+}
+
+impl Default for SubsonicView {
+    fn default() -> Self {
+        Self {
+            status: None,
+            search_results: SubsonicSearchResults::default(),
+            search_pending: false,
+            albums: Vec::new(),
+            albums_pending: false,
+            album_tracks: Vec::new(),
+            selected_album: None,
+            cover_preview: None,
+            cover_track_id: None,
+            form_server: String::new(),
+            form_user: String::new(),
+            form_password: String::new(),
+            form_focus: 0,
+        }
+    }
+}
+
+/// Podcast picker state, grouped under `App::podcast`.
+pub struct PodcastView {
+    pub status: Option<PodcastStatus>,
+    pub feeds: Vec<PodcastFeed>,
+    pub feeds_pending: bool,
+    /// Episode list of the feed currently drilled into.
+    pub episodes: Vec<PodcastEpisode>,
+    pub episodes_feed_id: Option<String>,
+    /// Draft feed URL for the PodcastSubscribe form.
+    pub subscribe_url: String,
+}
+
+impl Default for PodcastView {
+    fn default() -> Self {
+        Self {
+            status: None,
+            feeds: Vec::new(),
+            feeds_pending: false,
+            episodes: Vec::new(),
+            episodes_feed_id: None,
+            subscribe_url: String::new(),
+        }
+    }
+}
+
+/// Radio Browser picker state, grouped under `App::radio`.
+pub struct RadioView {
+    pub search: Vec<RadioStation>,
+    pub search_pending: bool,
+    pub top: Vec<RadioStation>,
+    pub top_pending: bool,
+}
+
+impl Default for RadioView {
+    fn default() -> Self {
+        Self {
+            search: Vec::new(),
+            search_pending: false,
+            top: Vec::new(),
+            top_pending: false,
+        }
+    }
+}
+
 /// Queue picker/view UI state, grouped under `App::queue`. Note this mirrors
 /// (but is distinct from) the daemon-side `DaemonState::queue`.
 pub struct QueueView {
@@ -644,6 +751,9 @@ pub struct App {
     pub playlist_cache: Vec<gtm_core::track::Playlist>,
     pub playlist_tracks_cache: Vec<TrackInfo>,
     pub spotify: SpotifyView,
+    pub subsonic: SubsonicView,
+    pub podcast: PodcastView,
+    pub radio: RadioView,
     pub cookie_file: Option<String>,
     pub notifications: Vec<Notification>,
     pub notification_history: Vec<NotificationRecord>,
@@ -801,6 +911,22 @@ enum IpcResult {
     SpotifyTracks(Vec<SpotifyTrack>),
     SpotifySearchWebResults(u64, Vec<SpotifyTrack>),
     ReactivePalette(Option<crate::reactive::ReactivePalette>),
+    SubsonicStatus(Option<SubsonicStatus>),
+    SubsonicSearch(SubsonicSearchResults),
+    SubsonicAlbums(Vec<SubsonicAlbum>),
+    SubsonicAlbumTracks(Vec<SubsonicTrack>),
+    SubsonicCover(Option<String>),
+    PodcastStatus(Option<PodcastStatus>),
+    PodcastFeeds(Vec<PodcastFeed>),
+    PodcastEpisodes(Vec<PodcastEpisode>),
+    RadioSearch(Vec<RadioStation>),
+    RadioTop(Vec<RadioStation>),
+}
+
+/// Send a background-task error into the TUI event stream as an Error
+/// (surfaced in the notification history).
+fn self_err(ipc_tx: &mpsc::UnboundedSender<IpcResult>, msg: String) {
+    let _ = ipc_tx.send(IpcResult::Error(msg));
 }
 
 /// Best-effort browser open for the OAuth authorize URL. Tries common
@@ -910,6 +1036,8 @@ pub enum TuiCommand {
     Prev,
     Seek(f64),
     SetVolume(u8),
+    SetSpeed(f32),
+    SetLowPower(bool),
     ToggleShuffle,
     CycleRepeat(RepeatMode),
     ToggleMute,
@@ -1101,6 +1229,9 @@ impl App {
                 last_preview_fetch: None,
                 last_preview_fetch_gen: None,
             },
+            subsonic: SubsonicView::default(),
+            podcast: PodcastView::default(),
+            radio: RadioView::default(),
             cookie_file: None,
             notifications: Vec::new(),
             notification_history: Vec::new(),
@@ -2055,6 +2186,35 @@ impl App {
                             self.reactive_palette = pal;
                             self.apply_reactive();
                         }
+                    }
+                    IpcResult::SubsonicStatus(st) => self.subsonic.status = st,
+                    IpcResult::SubsonicSearch(res) => {
+                        self.subsonic.search_results = res;
+                        self.subsonic.search_pending = false;
+                    }
+                    IpcResult::SubsonicAlbums(a) => {
+                        self.subsonic.albums = a;
+                        self.subsonic.albums_pending = false;
+                    }
+                    IpcResult::SubsonicAlbumTracks(t) => {
+                        self.subsonic.album_tracks = t;
+                    }
+                    IpcResult::SubsonicCover(data) => self.subsonic.cover_preview = data,
+                    IpcResult::PodcastStatus(st) => self.podcast.status = st,
+                    IpcResult::PodcastFeeds(feeds) => {
+                        self.podcast.feeds = feeds;
+                        self.podcast.feeds_pending = false;
+                    }
+                    IpcResult::PodcastEpisodes(eps) => {
+                        self.podcast.episodes = eps;
+                    }
+                    IpcResult::RadioSearch(stations) => {
+                        self.radio.search = stations;
+                        self.radio.search_pending = false;
+                    }
+                    IpcResult::RadioTop(stations) => {
+                        self.radio.top = stations;
+                        self.radio.top_pending = false;
                     }
                     IpcResult::LibraryTracks(tracks) => self.tracks_cache = tracks,
                     IpcResult::Playlists(playlists) => self.playlist_cache = playlists,
@@ -3075,6 +3235,191 @@ impl App {
         });
     }
 
+    /// Kick off data fetches right after a remote-service picker opens.
+    pub fn on_picker_opened(&mut self, id: PickerId) {
+        match id {
+            PickerId::SubsonicSearch => {
+                self.refresh_subsonic_status();
+                self.subsonic.search_results = SubsonicSearchResults::default();
+            }
+            PickerId::SubsonicAlbums => {
+                self.subsonic.albums.clear();
+                self.subsonic.albums_pending = true;
+                let c = self.client.clone();
+                let ipc_tx = self.ipc_tx.clone();
+                tokio::spawn(async move {
+                    match c.subsonic().albums(0, 200).await {
+                        Ok(a) => {
+                            let _ = ipc_tx.send(IpcResult::SubsonicAlbums(a));
+                        }
+                        Err(e) => {
+                            self_err(&ipc_tx, format!("subsonic albums failed: {e}"));
+                        }
+                    }
+                });
+            }
+            PickerId::SubsonicAlbumTracks => {
+                if let Some(album) = self.subsonic.selected_album.clone() {
+                    let album_id = album.id;
+                    let c = self.client.clone();
+                    let ipc_tx = self.ipc_tx.clone();
+                    let title = album.title;
+                    tokio::spawn(async move {
+                        match c.subsonic().album_tracks(&album_id).await {
+                            Ok(t) => {
+                                let _ = ipc_tx.send(IpcResult::SubsonicAlbumTracks(t));
+                            }
+                            Err(e) => {
+                                self_err(&ipc_tx, format!("subsonic album '{title}' failed: {e}"));
+                            }
+                        }
+                    });
+                }
+            }
+            PickerId::SubsonicSetup => {
+                if let Some(st) = self.subsonic.status.clone() {
+                    if st.configured {
+                        self.subsonic.form_server = st.server.unwrap_or_default();
+                        self.subsonic.form_user = st.user.unwrap_or_default();
+                    }
+                }
+                self.refresh_subsonic_status();
+            }
+            PickerId::PodcastFeeds => {
+                self.podcast.feeds_pending = true;
+                self.refresh_subsonic_status();
+                let c = self.client.clone();
+                let ipc_tx = self.ipc_tx.clone();
+                tokio::spawn(async move {
+                    match c.podcast().feeds().await {
+                        Ok(f) => {
+                            let _ = ipc_tx.send(IpcResult::PodcastFeeds(f));
+                            match c.podcast().status().await {
+                                Ok(s) => {
+                                    let _ = ipc_tx.send(IpcResult::PodcastStatus(Some(s)));
+                                }
+                                Err(e) => {
+                                    self_err(&ipc_tx, format!("podcast status failed: {e}"));
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            self_err(&ipc_tx, format!("podcast feeds failed: {e}"));
+                        }
+                    }
+                });
+            }
+            PickerId::PodcastEpisodes => {
+                if let Some(feed_id) = self.podcast.episodes_feed_id.clone() {
+                    self.fetch_podcast_episodes(feed_id);
+                }
+            }
+            PickerId::RadioTop => {
+                self.radio.top_pending = true;
+                let c = self.client.clone();
+                let ipc_tx = self.ipc_tx.clone();
+                tokio::spawn(async move {
+                    match c.radio().top(50).await {
+                        Ok(s) => {
+                            let _ = ipc_tx.send(IpcResult::RadioTop(s));
+                        }
+                        Err(e) => {
+                            self_err(&ipc_tx, format!("radio top failed: {e}"));
+                        }
+                    }
+                });
+            }
+            _ => {}
+        }
+    }
+
+    pub fn refresh_subsonic_status(&mut self) {
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            match c.subsonic().status().await {
+                Ok(st) => {
+                    let _ = ipc_tx.send(IpcResult::SubsonicStatus(Some(st)));
+                }
+                Err(e) => {
+                    self_err(&ipc_tx, format!("subsonic status failed: {e}"));
+                }
+            }
+        });
+    }
+
+    pub fn subsonic_search(&mut self, query: String) {
+        self.subsonic.search_results = SubsonicSearchResults::default();
+        self.subsonic.search_pending = true;
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            match c.subsonic().search(&query).await {
+                Ok(res) => {
+                    let _ = ipc_tx.send(IpcResult::SubsonicSearch(res));
+                }
+                Err(e) => {
+                    self_err(&ipc_tx, format!("subsonic search failed: {e}"));
+                }
+            }
+        });
+    }
+
+    pub fn fetch_subsonic_cover(&mut self, track_id: String) {
+        if self.subsonic.cover_track_id.as_deref() == Some(track_id.as_str()) {
+            return;
+        }
+        self.subsonic.cover_track_id = Some(track_id.clone());
+        self.subsonic.cover_preview = None;
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            match c.subsonic().cover(&track_id).await {
+                Ok(data) => {
+                    let _ = ipc_tx.send(IpcResult::SubsonicCover(data));
+                }
+                Err(e) => {
+                    self_err(&ipc_tx, format!("subsonic cover failed: {e}"));
+                }
+            }
+        });
+    }
+
+    pub fn fetch_podcast_episodes(&mut self, feed_id: String) {
+        self.podcast.episodes.clear();
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        let fid = feed_id.clone();
+        tokio::spawn(async move {
+            match c.podcast().episodes(&fid).await {
+                Ok((_title, eps)) => {
+                    let _ = ipc_tx.send(IpcResult::PodcastEpisodes(eps));
+                }
+                Err(e) => {
+                    self_err(&ipc_tx, format!("podcast episodes failed: {e}"));
+                }
+            }
+        });
+        self.podcast.episodes_feed_id = Some(feed_id);
+    }
+
+    pub fn search_radio(&mut self, query: String) {
+        self.radio.search.clear();
+        self.radio.search_pending = true;
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            match c.radio().search(&query, 50).await {
+                Ok(s) => {
+                    let _ = ipc_tx.send(IpcResult::RadioSearch(s));
+                }
+                Err(e) => {
+                    self_err(&ipc_tx, format!("radio search failed: {e}"));
+                }
+            }
+        });
+    }
+
     /// Filtered tracks for the current library view, respecting search query, browse_detail, and category.
     /// Selection index for the currently active library list (per-category,
     /// see the `scroll_offset` field).
@@ -3743,6 +4088,20 @@ impl App {
                     }
                 });
             }
+            TuiCommand::SetSpeed(r) => {
+                tokio::spawn(async move {
+                    if let Err(e) = client.set_speed(r).await {
+                        error_handler(e);
+                    }
+                });
+            }
+            TuiCommand::SetLowPower(enabled) => {
+                tokio::spawn(async move {
+                    if let Err(e) = client.set_low_power(enabled).await {
+                        error_handler(e);
+                    }
+                });
+            }
             TuiCommand::ToggleShuffle => {
                 tokio::spawn(async move {
                     if let Err(e) = client.toggle_shuffle().await {
@@ -4276,12 +4635,71 @@ impl App {
                         .count()
                 }
             }
+            PickerId::SubsonicSearch => {
+                let r = &self.subsonic.search_results;
+                r.artists.len() + r.albums.len() + r.tracks.len()
+            }
+            PickerId::SubsonicAlbums => self.subsonic.albums.len(),
+            PickerId::SubsonicAlbumTracks => self.subsonic.album_tracks.len(),
+            PickerId::SubsonicSetup => 3,
+            PickerId::PodcastFeeds => self.podcast.feeds.len(),
+            PickerId::PodcastEpisodes => self.podcast.episodes.len(),
+            PickerId::PodcastSubscribe => 1,
+            PickerId::RadioSearch => self.radio.search.len(),
+            PickerId::RadioTop => self.radio.top.len(),
             _ => 0,
         }
     }
 
     fn help_picker_total(&self) -> usize {
         crate::ui::HELP_LINES.len()
+    }
+
+    /// Move the top picker's selection by one (wrapping), clamped to the
+    /// current item count.
+    fn move_picker_selection(&mut self, down: bool) {
+        let count = self.picker_item_count();
+        if count == 0 {
+            return;
+        }
+        if let Some(top) = self.pickers.top_mut() {
+            if down {
+                top.selected = if top.selected >= count.saturating_sub(1) {
+                    0
+                } else {
+                    top.selected + 1
+                };
+            } else if top.selected == 0 {
+                top.selected = count - 1;
+            } else {
+                top.selected -= 1;
+            }
+        }
+    }
+
+    /// Track id of the Subsonic row currently highlighted in a Subsonic
+    /// picker (used for the cover-art preview).
+    fn current_subsonic_track_id(&self) -> Option<String> {
+        let top = self.pickers.top()?;
+        let rows_before_tracks = self.subsonic.search_results.artists.len()
+            + self.subsonic.search_results.albums.len();
+        match top.id {
+            PickerId::SubsonicSearch => {
+                if top.selected >= rows_before_tracks {
+                    self.subsonic
+                        .search_results
+                        .tracks
+                        .get(top.selected - rows_before_tracks)
+                        .map(|t| t.id.clone())
+                } else {
+                    None
+                }
+            }
+            PickerId::SubsonicAlbumTracks => {
+                self.subsonic.album_tracks.get(top.selected).map(|t| t.id.clone())
+            }
+            _ => None,
+        }
     }
 
     /// Resolve a left-click against the zones registered by `ui::render`
@@ -4559,6 +4977,7 @@ impl App {
                     Some(KeyboardAction::OpenOverlay(id)) => {
                         self.pickers.open(id);
                         self.dismiss_track_popup();
+                        self.on_picker_opened(id);
                     }
                     Some(KeyboardAction::ToggleHelp) => {
                         if self.pickers.top().is_some_and(|o| o.id == PickerId::Help) {
@@ -4653,6 +5072,32 @@ impl App {
                         let new_vol = self.state.volume.saturating_sub(5);
                         self.send_high(TuiCommand::SetVolume(new_vol));
                         self.notify_volume(new_vol);
+                    }
+                    Some(KeyboardAction::SpeedUp) => {
+                        // Round to nearest 0.25 so the step stays predictable.
+                        let new_speed = ((self.state.audio.speed + 0.25) * 4.0).ceil() / 4.0;
+                        let new_speed = new_speed.min(gtm_core::MAX_SPEED);
+                        self.set_last_action(&format!("Speed {:.2}x", new_speed));
+                        self.send_high(TuiCommand::SetSpeed(new_speed));
+                    }
+                    Some(KeyboardAction::SpeedDown) => {
+                        self.set_last_action("Speed Down");
+                        let new_speed = ((self.state.audio.speed - 0.25) * 4.0).ceil() / 4.0;
+                        let new_speed = new_speed.max(gtm_core::MIN_SPEED);
+                        self.send_high(TuiCommand::SetSpeed(new_speed));
+                    }
+                    Some(KeyboardAction::ToggleLowPower) => {
+                        self.set_last_action("Toggle Low-Power");
+                        self.send_high(TuiCommand::SetLowPower(!self.state.low_power));
+                        let msg = if self.state.low_power {
+                            "Leaving low-power mode"
+                        } else {
+                            "Low-power mode (playback paused)"
+                        };
+                        self.footer_notification = Some((
+                            msg.to_string(),
+                            std::time::Instant::now() + std::time::Duration::from_secs(2),
+                        ));
                     }
                     Some(KeyboardAction::SeekForward) => {
                         self.set_last_action("Seek Forward");
@@ -6353,6 +6798,421 @@ impl App {
                         }
                     }
                     return;
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ─── Subsonic search picker ───
+        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::SubsonicSearch)) {
+            match key.code {
+                KeyCode::Char(c) => {
+                    if !c.is_control() {
+                        if let Some(top) = self.pickers.top_mut() {
+                            top.query.push(c);
+                        }
+                        self.subsonic.search_results = SubsonicSearchResults::default();
+                        self.subsonic.cover_preview = None;
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let Some(top) = self.pickers.top_mut() {
+                        top.query.pop();
+                    }
+                    self.subsonic.search_results = SubsonicSearchResults::default();
+                }
+                KeyCode::Enter => {
+                    let r = &self.subsonic.search_results;
+                    let n_artists = r.artists.len();
+                    let n_albums = r.albums.len();
+                    let n_tracks = r.tracks.len();
+                    let has_results = n_artists + n_albums + n_tracks > 0;
+                    let q = self
+                        .pickers
+                        .top()
+                        .map_or(String::new(), |o| o.query.clone());
+                    let sel = self.pickers.top().map_or(0, |o| o.selected);
+                    if self.subsonic.search_pending {
+                        return;
+                    }
+                    if q.is_empty() && !has_results {
+                        return;
+                    }
+                    if !has_results {
+                        self.subsonic_search(q);
+                        return;
+                    }
+                    if sel >= n_artists && sel < n_artists + n_albums {
+                        if let Some(album) = self.subsonic.search_results.albums.get(sel - n_artists).cloned() {
+                            self.subsonic.selected_album = Some(album);
+                            self.subsonic.album_tracks.clear();
+                            self.pickers.open(PickerId::SubsonicAlbumTracks);
+                            let c = self.client.clone();
+                            let ipc_tx = self.ipc_tx.clone();
+                            let album_id = self
+                                .subsonic
+                                .selected_album
+                                .as_ref()
+                                .map(|a| a.id.clone())
+                                .unwrap_or_default();
+                            tokio::spawn(async move {
+                                match c.subsonic().album_tracks(&album_id).await {
+                                    Ok(t) => {
+                                        let _ = ipc_tx.send(IpcResult::SubsonicAlbumTracks(t));
+                                    }
+                                    Err(e) => {
+                                        self_err(&ipc_tx, format!("subsonic album failed: {e}"));
+                                    }
+                                }
+                            });
+                        }
+                        return;
+                    }
+                    if sel < n_artists + n_albums + n_tracks {
+                        let i = sel - n_artists - n_albums;
+                        if let Some(track) = self.subsonic.search_results.tracks.get(i).cloned() {
+                            let c = self.client.clone();
+                            self.pickers.close_top();
+                            tokio::spawn(async move {
+                                let _ = c.subsonic().play(&track).await;
+                            });
+                        }
+                    }
+                }
+                KeyCode::Up | KeyCode::Down => {
+                    self.move_picker_selection(key.code == KeyCode::Down);
+                    if let Some(track_id) = self.current_subsonic_track_id() {
+                        self.fetch_subsonic_cover(track_id);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ─── Subsonic album browser ───
+        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::SubsonicAlbums)) {
+            match key.code {
+                KeyCode::Enter => {
+                    let sel = self.pickers.top().map_or(0, |o| o.selected);
+                    if let Some(album) = self.subsonic.albums.get(sel).cloned() {
+                        let album_id = album.id.clone();
+                        self.subsonic.selected_album = Some(album);
+                        self.subsonic.album_tracks.clear();
+                        self.pickers.open(PickerId::SubsonicAlbumTracks);
+                        let c = self.client.clone();
+                        let ipc_tx = self.ipc_tx.clone();
+                        tokio::spawn(async move {
+                            match c.subsonic().album_tracks(&album_id).await {
+                                Ok(t) => {
+                                    let _ = ipc_tx.send(IpcResult::SubsonicAlbumTracks(t));
+                                }
+                                Err(e) => {
+                                    self_err(&ipc_tx, format!("subsonic album failed: {e}"));
+                                }
+                            }
+                        });
+                    }
+                }
+                KeyCode::Char('r') => {
+                    self.subsonic.albums.clear();
+                    self.subsonic.albums_pending = true;
+                    let c = self.client.clone();
+                    let ipc_tx = self.ipc_tx.clone();
+                    tokio::spawn(async move {
+                        match c.subsonic().albums(0, 200).await {
+                            Ok(a) => {
+                                let _ = ipc_tx.send(IpcResult::SubsonicAlbums(a));
+                            }
+                            Err(e) => {
+                                self_err(&ipc_tx, format!("subsonic albums failed: {e}"));
+                            }
+                        }
+                    });
+                }
+                KeyCode::Up | KeyCode::Down => {
+                    self.move_picker_selection(key.code == KeyCode::Down);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ─── Subsonic album track list ───
+        if matches!(
+            self.pickers.top().map(|o| o.id),
+            Some(PickerId::SubsonicAlbumTracks)
+        ) {
+            match key.code {
+                KeyCode::Enter => {
+                    let idx = self.pickers.top().map_or(0, |o| o.selected);
+                    if let Some(track) = self.subsonic.album_tracks.get(idx).cloned() {
+                        let c = self.client.clone();
+                        self.pickers.close_top();
+                        tokio::spawn(async move {
+                            let _ = c.subsonic().play(&track).await;
+                        });
+                    }
+                }
+                KeyCode::Char('a') => {
+                    if let Some(album_id) =
+                        self.subsonic.selected_album.as_ref().map(|a| a.id.clone())
+                    {
+                        let c = self.client.clone();
+                        self.pickers.close_top();
+                        tokio::spawn(async move {
+                            let _ = c.subsonic().play_album(&album_id).await;
+                        });
+                    }
+                }
+                KeyCode::Up | KeyCode::Down => {
+                    self.move_picker_selection(key.code == KeyCode::Down);
+                    if let Some(track_id) = self.current_subsonic_track_id() {
+                        self.fetch_subsonic_cover(track_id);
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ─── Subsonic setup form ───
+        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::SubsonicSetup)) {
+            match key.code {
+                KeyCode::Char(c) => {
+                    if !c.is_control() {
+                        match self.subsonic.form_focus {
+                            0 => self.subsonic.form_server.push(c),
+                            1 => self.subsonic.form_user.push(c),
+                            _ => self.subsonic.form_password.push(c),
+                        }
+                    }
+                }
+                KeyCode::Backspace => match self.subsonic.form_focus {
+                    0 => { self.subsonic.form_server.pop(); }
+                    1 => { self.subsonic.form_user.pop(); }
+                    _ => { self.subsonic.form_password.pop(); }
+                },
+                KeyCode::Tab => {
+                    self.subsonic.form_focus = (self.subsonic.form_focus + 1) % 3;
+                }
+                KeyCode::Enter => {
+                    let server = self.subsonic.form_server.clone();
+                    let user = self.subsonic.form_user.clone();
+                    let password = self.subsonic.form_password.clone();
+                    if server.is_empty() || user.is_empty() {
+                        self.notify_typed(
+                            "Subsonic",
+                            "Server URL and username are required",
+                            NotificationKind::Info,
+                            false,
+                            NotifType::Subsonic,
+                        );
+                        return;
+                    }
+                    if self.subsonic.form_focus < 2 {
+                        self.subsonic.form_focus += 1;
+                    } else {
+                        let c = self.client.clone();
+                        self.pickers.close_top();
+                        tokio::spawn(async move {
+                            let _ = c.subsonic().configure(&server, &user, &password).await;
+                        });
+                    }
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ─── Podcast feeds ───
+        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::PodcastFeeds)) {
+            match key.code {
+                KeyCode::Enter => {
+                    let sel = self.pickers.top().map_or(0, |o| o.selected);
+                    if let Some(feed) = self.podcast.feeds.get(sel).cloned() {
+                        self.podcast.episodes.clear();
+                        self.podcast.episodes_feed_id = Some(feed.id.clone());
+                        self.pickers.open(PickerId::PodcastEpisodes);
+                        self.fetch_podcast_episodes(feed.id);
+                    }
+                }
+                KeyCode::Char('a') => {
+                    self.podcast.subscribe_url.clear();
+                    self.pickers.open(PickerId::PodcastSubscribe);
+                }
+                KeyCode::Char('r') => {
+                    let c = self.client.clone();
+                    tokio::spawn(async move {
+                        let _ = c.podcast().refresh(None).await;
+                    });
+                    self.podcast.feeds.clear();
+                    self.podcast.feeds_pending = true;
+                    let c = self.client.clone();
+                    let ipc_tx = self.ipc_tx.clone();
+                    tokio::spawn(async move {
+                        match c.podcast().feeds().await {
+                            Ok(f) => {
+                                let _ = ipc_tx.send(IpcResult::PodcastFeeds(f));
+                            }
+                            Err(e) => {
+                                self_err(&ipc_tx, format!("podcast feeds failed: {e}"));
+                            }
+                        }
+                    });
+                }
+                KeyCode::Up | KeyCode::Down => {
+                    self.move_picker_selection(key.code == KeyCode::Down);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ─── Podcast episodes ───
+        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::PodcastEpisodes)) {
+            match key.code {
+                KeyCode::Enter => {
+                    let idx = self.pickers.top().map_or(0, |o| o.selected);
+                    let feed_id = self.podcast.episodes_feed_id.clone();
+                    if let (Some(feed_id), Some(_ep)) =
+                        (feed_id, self.podcast.episodes.get(idx))
+                    {
+                        let c = self.client.clone();
+                        self.pickers.close_top();
+                        tokio::spawn(async move {
+                            let _ = c.podcast().play(&feed_id, idx).await;
+                        });
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.podcast.episodes.clear();
+                    self.podcast.episodes_feed_id = None;
+                    self.pickers.close_top();
+                }
+                KeyCode::Up | KeyCode::Down => {
+                    self.move_picker_selection(key.code == KeyCode::Down);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ─── Podcast subscribe form ───
+        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::PodcastSubscribe)) {
+            match key.code {
+                KeyCode::Char(c) => {
+                    if !c.is_control() {
+                        self.podcast.subscribe_url.push(c);
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.podcast.subscribe_url.pop();
+                }
+                KeyCode::Enter => {
+                    let url = self.podcast.subscribe_url.clone();
+                    if url.is_empty() {
+                        return;
+                    }
+                    let c = self.client.clone();
+                    let ipc_tx = self.ipc_tx.clone();
+                    self.pickers.close_top();
+                    tokio::spawn(async move {
+                        match c.podcast().add_feed(&url).await {
+                            Ok(_) => {
+                                let _ = ipc_tx.send(IpcResult::Notification(
+                                    "Podcast".into(),
+                                    format!("Subscribed to {url}"),
+                                    NotificationKind::Success,
+                                    NotifType::Podcast,
+                                ));
+                            }
+                            Err(e) => {
+                                self_err(&ipc_tx, format!("subscribe failed: {e}"));
+                            }
+                        }
+                    });
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ─── Radio search ───
+        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::RadioSearch)) {
+            match key.code {
+                KeyCode::Char(c) => {
+                    if !c.is_control() {
+                        if let Some(top) = self.pickers.top_mut() {
+                            top.query.push(c);
+                        }
+                        self.radio.search.clear();
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let Some(top) = self.pickers.top_mut() {
+                        top.query.pop();
+                    }
+                    self.radio.search.clear();
+                }
+                KeyCode::Enter => {
+                    let q = self.pickers.top().map_or(String::new(), |o| o.query.clone());
+                    if self.radio.search_pending {
+                        return;
+                    }
+                    if self.radio.search.is_empty() {
+                        self.search_radio(q);
+                    } else {
+                        let sel = self.pickers.top().map_or(0, |o| o.selected);
+                        if let Some(station) = self.radio.search.get(sel).cloned() {
+                            let c = self.client.clone();
+                            self.pickers.close_top();
+                            tokio::spawn(async move {
+                                let _ = c.radio().play(&station.id, &station.name).await;
+                            });
+                        }
+                    }
+                }
+                KeyCode::Up | KeyCode::Down => {
+                    self.move_picker_selection(key.code == KeyCode::Down);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ─── Radio top stations ───
+        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::RadioTop)) {
+            match key.code {
+                KeyCode::Enter => {
+                    let sel = self.pickers.top().map_or(0, |o| o.selected);
+                    if let Some(station) = self.radio.top.get(sel).cloned() {
+                        let c = self.client.clone();
+                        self.pickers.close_top();
+                        tokio::spawn(async move {
+                            let _ = c.radio().play(&station.id, &station.name).await;
+                        });
+                    }
+                }
+                KeyCode::Char('r') => {
+                    self.radio.top.clear();
+                    self.radio.top_pending = true;
+                    let c = self.client.clone();
+                    let ipc_tx = self.ipc_tx.clone();
+                    tokio::spawn(async move {
+                        match c.radio().top(50).await {
+                            Ok(s) => {
+                                let _ = ipc_tx.send(IpcResult::RadioTop(s));
+                            }
+                            Err(e) => {
+                                self_err(&ipc_tx, format!("radio top failed: {e}"));
+                            }
+                        }
+                    });
+                }
+                KeyCode::Up | KeyCode::Down => {
+                    self.move_picker_selection(key.code == KeyCode::Down);
                 }
                 _ => {}
             }

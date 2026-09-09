@@ -5,7 +5,9 @@
 // This is free software released under the GPL-3.0 license.
 
 use std::fs::File;
+use std::io::{Read, SeekFrom};
 use std::num::{NonZeroU16, NonZeroU32};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use rodio::Source;
@@ -15,7 +17,7 @@ use symphonia::core::codecs::audio::{AudioDecoder, AudioDecoderOptions};
 use symphonia::core::codecs::registry::CodecRegistry;
 use symphonia::core::formats::probe::{Hint, Probe};
 use symphonia::core::formats::{FormatOptions, FormatReader, TrackType};
-use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions};
+use symphonia::core::io::{MediaSourceStream, MediaSourceStreamOptions, ReadOnlySource};
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::units::Timestamp;
 
@@ -34,6 +36,43 @@ fn build_probe() -> Probe {
     probe
 }
 
+/// Re-opens a streaming byte source from scratch. Used for seeking: a seek
+/// re-issues the transport (reconnect / Range request) and rebuilds the probe
+/// + decoder over the fresh reader.
+pub trait StreamingReopen: Send {
+    /// Produce a fresh reader positioned at the source start.
+    fn try_reopen(&self) -> Option<Box<dyn Read + Send>>;
+}
+
+/// Local-file re-opener retained for `SymphoniaSource`'s original seek path.
+struct FileReopen {
+    path: String,
+}
+
+impl StreamingReopen for FileReopen {
+    fn try_reopen(&self) -> Option<Box<dyn Read + Send>> {
+        File::open(&self.path)
+            .map(|f| Box::new(f) as Box<dyn Read + Send>)
+            .ok()
+    }
+}
+
+/// Wraps a boxed reader in interior mutability so a `Read + Send` stream also
+/// satisfies symphonia's `Send + Sync` `MediaSource` bound.
+struct SyncReader(Mutex<Box<dyn Read + Send>>);
+
+impl Read for SyncReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().read(buf)
+    }
+}
+
+impl std::io::Seek for SyncReader {
+    fn seek(&mut self, _pos: SeekFrom) -> std::io::Result<u64> {
+        Err(std::io::Error::other("streaming source does not support seeking"))
+    }
+}
+
 /// A `rodio::Source` backed by symphonia's own decoder pipeline.
 pub struct SymphoniaSource {
     reader: Box<dyn FormatReader>,
@@ -47,7 +86,9 @@ pub struct SymphoniaSource {
     sample_rate: NonZeroU32,
     eof: bool,
     duration: f64,
-    file_path: String,
+    /// Optional re-opener used by `try_seek`. `None` for one-shot sources
+    /// that cannot be reconnected.
+    reopen: Option<Box<dyn StreamingReopen>>,
     /// Number of leading samples to skip before producing output.
     seek_skip: u64,
 }
@@ -58,7 +99,27 @@ impl SymphoniaSource {
         start_pos: f64,
     ) -> AudioResult<Box<dyn Source<Item = f32> + Send>> {
         let file = File::open(path).map_err(|e| AudioError::OpenFailed(e.to_string()))?;
-        let mss = MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default());
+        let reopen: Box<dyn StreamingReopen> = Box::new(FileReopen {
+            path: path.to_string(),
+        });
+        Self::from_reader(file, Some(reopen), start_pos)
+            .map(|s| Box::new(s) as Box<dyn Source<Item = f32> + Send>)
+    }
+
+    /// Build a symphonia pipeline over an arbitrary byte stream. `reopen`
+    /// enables seeking by reconnecting; `None` makes seek report
+    /// `NotSupported` (appropriate for live, non-seekable transports).
+    pub fn from_reader(
+        reader: impl Read + Send + 'static,
+        reopen: Option<Box<dyn StreamingReopen>>,
+        start_pos: f64,
+    ) -> AudioResult<Self> {
+        let mss = MediaSourceStream::new(
+            Box::new(ReadOnlySource::new(SyncReader(Mutex::new(
+                Box::new(reader) as Box<dyn Read + Send>
+            )))),
+            MediaSourceStreamOptions::default(),
+        );
         let probe = build_probe();
         let hint = Hint::new();
         let fmt_opts = FormatOptions::default();
@@ -103,53 +164,32 @@ impl SymphoniaSource {
             0
         };
 
-        Self::new(
+        let s = Self {
             reader,
             track_id,
-            codec_params,
+            codec_params: codec_params.clone(),
             opts,
-            duration,
-            path,
-            seek_skip,
-        )
-        .map(|s| Box::new(s) as Box<dyn Source<Item = f32> + Send>)
-    }
-
-    fn new(
-        reader: Box<dyn FormatReader>,
-        track_id: u32,
-        codec_params: symphonia::core::codecs::audio::AudioCodecParameters,
-        opts: AudioDecoderOptions,
-        duration: f64,
-        file_path: &str,
-        seek_skip: u64,
-    ) -> AudioResult<Self> {
-        let sample_rate =
-            NonZeroU32::new(codec_params.sample_rate.unwrap_or(44100)).unwrap_or(NonZeroU32::MIN);
-        let channels = codec_params
-            .channels
-            .as_ref()
-            .map(|c| NonZeroU16::new(c.count() as u16).unwrap_or(NonZeroU16::MIN))
-            .unwrap_or(NonZeroU16::MIN);
-        let registry = build_codec_registry();
-        let decoder = registry
-            .make_audio_decoder(&codec_params, &opts)
-            .map_err(|e| AudioError::DecodeError(format!("decoder init failed: {e}")))?;
-        Ok(Self {
-            reader,
-            track_id,
-            codec_params,
-            opts,
-            decoder,
+            decoder: build_codec_registry()
+                .make_audio_decoder(&codec_params, &opts)
+                .map_err(|e| AudioError::DecodeError(format!("decoder init failed: {e}")))?,
             buffer: Vec::new(),
             buffer_pos: 0,
-            channels,
-            sample_rate,
+            channels: NonZeroU16::new(
+                codec_params
+                    .channels
+                    .as_ref()
+                    .map(|c| c.count() as u16)
+                    .unwrap_or(2),
+            )
+            .unwrap_or(NonZeroU16::MIN),
+            sample_rate: NonZeroU32::new(codec_params.sample_rate.unwrap_or(44100))
+                .unwrap_or(NonZeroU32::MIN),
             eof: false,
             duration,
-            file_path: file_path.to_string(),
+            reopen,
             seek_skip,
-        })
+        };
+        Ok(s)
     }
 }
 
@@ -278,11 +318,21 @@ impl Source for SymphoniaSource {
             });
         }
 
-        // Re-open the file and re-initialize the reader + decoder
-        let file = File::open(&self.file_path).map_err(|_| SeekError::NotSupported {
-            underlying_source: std::any::type_name::<Self>(),
-        })?;
-        let mss = MediaSourceStream::new(Box::new(file), MediaSourceStreamOptions::default());
+        // Re-open the transport and re-initialize the reader + decoder.
+        let fresh: Box<dyn Read + Send> = match self.reopen.as_ref() {
+            Some(reopen) => reopen.try_reopen().ok_or(SeekError::NotSupported {
+                underlying_source: std::any::type_name::<Self>(),
+            })?,
+            None => {
+                return Err(SeekError::NotSupported {
+                    underlying_source: std::any::type_name::<Self>(),
+                });
+            }
+        };
+        let mss = MediaSourceStream::new(
+            Box::new(ReadOnlySource::new(SyncReader(Mutex::new(fresh)))),
+            MediaSourceStreamOptions::default(),
+        );
         let probe = build_probe();
         let hint = Hint::new();
         let fmt_opts = FormatOptions::default();

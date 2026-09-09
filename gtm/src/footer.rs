@@ -44,6 +44,7 @@ pub enum FooterModule {
     Playback,
     Title,
     Volume,
+    Speed,
     Repeat,
     Shuffle,
     Progress,
@@ -53,6 +54,8 @@ pub enum FooterModule {
     System,
     EqPreset,
     SleepTimer,
+    LowPower,
+    Device,
     Notification,
     Time,
     Multiselect,
@@ -65,6 +68,7 @@ impl FooterModule {
             FooterModule::Playback => "Playback",
             FooterModule::Title => "Title",
             FooterModule::Volume => "Volume",
+            FooterModule::Speed => "Speed",
             FooterModule::Repeat => "Repeat",
             FooterModule::Shuffle => "Shuffle",
             FooterModule::Progress => "Progress",
@@ -74,6 +78,8 @@ impl FooterModule {
             FooterModule::System => "System",
             FooterModule::EqPreset => "EqPreset",
             FooterModule::SleepTimer => "SleepTimer",
+            FooterModule::LowPower => "LowPower",
+            FooterModule::Device => "Device",
             FooterModule::Notification => "Notification",
             FooterModule::Time => "Time",
             FooterModule::Multiselect => "Multiselect",
@@ -87,6 +93,7 @@ impl FooterModule {
             "Playback" => FooterModule::Playback,
             "Title" => FooterModule::Title,
             "Volume" => FooterModule::Volume,
+            "Speed" => FooterModule::Speed,
             "Repeat" => FooterModule::Repeat,
             "Shuffle" => FooterModule::Shuffle,
             "Progress" => FooterModule::Progress,
@@ -96,6 +103,8 @@ impl FooterModule {
             "System" => FooterModule::System,
             "EqPreset" => FooterModule::EqPreset,
             "SleepTimer" => FooterModule::SleepTimer,
+            "LowPower" => FooterModule::LowPower,
+            "Device" => FooterModule::Device,
             "Notification" => FooterModule::Notification,
             "Time" => FooterModule::Time,
             "Multiselect" => FooterModule::Multiselect,
@@ -126,6 +135,9 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::Repeat,
                 FooterModule::Shuffle,
                 FooterModule::Volume,
+                FooterModule::Speed,
+                FooterModule::LowPower,
+                FooterModule::Device,
                 FooterModule::EqPreset,
                 FooterModule::KeyAction,
                 FooterModule::Notification,
@@ -513,6 +525,33 @@ impl Footer {
         }
     }
 
+    fn speed(app: &App) -> Option<String> {
+        let s = app.state.audio.speed;
+        if (s - 1.0).abs() < f32::EPSILON {
+            None
+        } else {
+            Some(format!("{s:.2}x"))
+        }
+    }
+
+    fn low_power(app: &App) -> Option<String> {
+        if app.state.low_power {
+            Some("LowPower".into())
+        } else {
+            None
+        }
+    }
+
+    fn device(app: &App) -> Option<String> {
+        Some(
+            app.state
+                .audio
+                .audio_device
+                .clone()
+                .unwrap_or_else(|| "Default".into()),
+        )
+    }
+
     fn repeat(app: &App) -> Option<String> {
         match app.state.repeat {
             gtm_core::state::RepeatMode::Off => None,
@@ -640,6 +679,7 @@ fn module_color(m: FooterModule, theme: &crate::theme::AppTheme) -> Color {
         FooterModule::Playback => theme.accent,
         FooterModule::Title => theme.secondary_accent,
         FooterModule::Volume => theme.tertiary_accent,
+        FooterModule::Speed => theme.secondary_accent,
         FooterModule::Repeat => theme.accent,
         FooterModule::Shuffle => theme.tertiary_accent,
         FooterModule::Progress => theme.secondary_accent,
@@ -649,6 +689,8 @@ fn module_color(m: FooterModule, theme: &crate::theme::AppTheme) -> Color {
         FooterModule::System => theme.accent,
         FooterModule::EqPreset => theme.secondary_accent,
         FooterModule::SleepTimer => theme.accent,
+        FooterModule::LowPower => theme.warning,
+        FooterModule::Device => theme.secondary_accent,
         FooterModule::Notification => theme.fg_bright,
         FooterModule::Time => theme.tertiary_accent,
         FooterModule::Multiselect => theme.warning,
@@ -660,6 +702,7 @@ fn module_text(m: FooterModule, app: &App) -> Option<String> {
         FooterModule::Playback => Some(Footer::playback(app)),
         FooterModule::Title => Footer::title(app),
         FooterModule::Volume => Some(Footer::volume(app)),
+        FooterModule::Speed => Footer::speed(app),
         FooterModule::Repeat => Footer::repeat(app),
         FooterModule::Shuffle => Footer::shuffle(app),
         FooterModule::Progress => Footer::progress(app),
@@ -669,6 +712,8 @@ fn module_text(m: FooterModule, app: &App) -> Option<String> {
         FooterModule::System => Some(Footer::system(app)),
         FooterModule::EqPreset => Footer::eq_preset(app),
         FooterModule::SleepTimer => Footer::sleep_timer(app),
+        FooterModule::LowPower => Footer::low_power(app),
+        FooterModule::Device => Footer::device(app),
         FooterModule::Notification => Footer::footer_notification(app),
         FooterModule::Time => Footer::time(app),
         FooterModule::Multiselect => Footer::multiselect(app),

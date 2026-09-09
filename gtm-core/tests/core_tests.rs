@@ -192,6 +192,14 @@ fn daemon_req_cmd_name_roundtrip() {
         },
         DaemonReq::SetVolume { volume: 80 },
         DaemonReq::GetVolume,
+        DaemonReq::SetSpeed { rate: 1.5 },
+        DaemonReq::GetSpeed,
+        DaemonReq::SetLowPower { enabled: true },
+        DaemonReq::GetLowPower,
+        DaemonReq::ListAudioDevices,
+        DaemonReq::SetAudioDevice {
+            name: Some("Speakers".into()),
+        },
         DaemonReq::ToggleShuffle,
         DaemonReq::ToggleMute,
         DaemonReq::GetStatus,
@@ -445,6 +453,16 @@ wire_event_roundtrip!(
     wire_event_volume_changed,
     DaemonEvent::VolumeChanged { volume: 50 }
 );
+wire_event_roundtrip!(
+    wire_event_low_power_changed,
+    DaemonEvent::LowPowerChanged { enabled: true }
+);
+wire_event_roundtrip!(
+    wire_event_audio_device_changed,
+    DaemonEvent::AudioDeviceChanged {
+        name: Some("Speakers".into())
+    }
+);
 
 // ---------------------------------------------------------------------------
 // IPC: DaemonRes serde round-trips (internally tagged, JSON-only)
@@ -510,12 +528,14 @@ fn library_action_json_roundtrip() {
             playlist_id: 1,
             track_ids: vec![1, 2],
         },
-        LibraryAction::ImportM3u {
-            path: "/m.m3u".into(),
+        LibraryAction::ImportPlaylist {
+            path: "/m.m3u8".into(),
+            format: gtm_core::playlist_fmt::PlaylistFormatKind::M3u8,
         },
-        LibraryAction::ExportM3u {
+        LibraryAction::ExportPlaylist {
             playlist_id: 1,
-            path: "/out.m3u".into(),
+            path: "/out.pls".into(),
+            format: gtm_core::playlist_fmt::PlaylistFormatKind::Pls,
         },
         LibraryAction::SyncCovers,
         LibraryAction::SyncLyrics,
@@ -526,6 +546,12 @@ fn library_action_json_roundtrip() {
         LibraryAction::RemoveFromPlaylist {
             playlist_id: 1,
             track_id: 2,
+        },
+        LibraryAction::PlaylistDedup { playlist_id: 1 },
+        LibraryAction::PlaylistDoctor { playlist_id: 1 },
+        LibraryAction::PlaylistSort {
+            playlist_id: 1,
+            field: "artist".into(),
         },
         LibraryAction::RemoveTrack { id: 1 },
     ];

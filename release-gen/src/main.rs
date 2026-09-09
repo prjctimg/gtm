@@ -102,20 +102,35 @@ enum Command {
     DeletePlaylist {
         id: i64,
     },
+    PlaylistDedup {
+        playlist_id: i64,
+    },
+    PlaylistDoctor {
+        playlist_id: i64,
+    },
+    PlaylistSort {
+        playlist_id: i64,
+        #[arg(long, value_name = "FIELD", default_value = "title")]
+        field: String,
+    },
     AddToPlaylist {
         playlist_id: i64,
         track_ids: Vec<i64>,
     },
-    /// Import an M3U playlist file
-    ImportM3u {
+    /// Import a playlist file (M3U8 or PLS)
+    ImportPlaylist {
         #[arg(value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         path: String,
+        #[arg(long, value_name = "FORMAT", value_parser = ["m3u8", "pls"], default_value = "m3u8")]
+        format: String,
     },
-    /// Export a playlist to an M3U file
-    ExportM3u {
+    /// Export a playlist to a playlist file (M3U8 or PLS)
+    ExportPlaylist {
         playlist_id: i64,
         #[arg(value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         path: String,
+        #[arg(long, value_name = "FORMAT", value_parser = ["m3u8", "pls"], default_value = "m3u8")]
+        format: String,
     },
     Recent {
         count: u64,
@@ -169,6 +184,20 @@ enum Command {
     },
     /// Cancel a running sleep timer
     CancelSleepTimer,
+    /// Toggle low-power mode (pause playback, ease off background work)
+    LowPower {
+        /// Force on/off instead of toggling state
+        #[arg(long, value_name = "on|off")]
+        set: Option<bool>,
+    },
+    /// List available audio output devices
+    AudioDevices,
+    /// Switch audio output device ("default" restores the system default; switching stops playback)
+    SetAudioDevice {
+        /// Output device name
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
     /// Edit metadata of a library track
     UpdateMetadata {
         /// Library track id

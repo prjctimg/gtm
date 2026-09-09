@@ -92,9 +92,30 @@ impl DaemonState {
         Ok(())
     }
 
+    /// Set playback rate, clamped to [0.25, 2.0]; non-finite resets to 1.0.
+    pub fn set_speed(&mut self, rate: f32) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
+        let clamped = if rate.is_finite() {
+            rate.clamp(crate::global::MIN_SPEED, crate::global::MAX_SPEED)
+        } else {
+            1.0
+        };
+        self.audio.speed = clamped;
+        self.commit();
+        Ok(())
+    }
+
     pub fn toggle_shuffle(&mut self) -> Result<()> {
         tripwire::check(FailPoint::StateTransition)?;
         self.shuffle = !self.shuffle;
+        self.commit();
+        Ok(())
+    }
+
+    /// Enable or disable low-power mode.
+    pub fn set_low_power(&mut self, enabled: bool) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
+        self.low_power = enabled;
         self.commit();
         Ok(())
     }
@@ -282,6 +303,16 @@ impl DaemonState {
                     room_size: *room_size,
                 };
             }
+            DaemonEvent::SpeedChanged { rate } => {
+                let clamped = if rate.is_finite() {
+                    rate.clamp(crate::global::MIN_SPEED, crate::global::MAX_SPEED)
+                } else {
+                    1.0
+                };
+                self.audio.speed = clamped;
+            }
+            DaemonEvent::LowPowerChanged { enabled } => self.low_power = *enabled,
+            DaemonEvent::AudioDeviceChanged { name } => self.audio.audio_device = name.clone(),
             DaemonEvent::EqPresetChanged { preset } => {
                 self.audio.eq_preset = *preset;
             }

@@ -10,24 +10,34 @@ pub mod global;
 pub mod ipc;
 pub mod log;
 pub mod paths;
+pub mod playlist_fmt;
+pub mod podcast;
+pub mod radio;
 pub mod secret;
 pub mod spotify;
 pub mod state;
+pub mod subsonic;
 pub mod track;
 pub mod tripwire;
 pub mod validate;
 pub mod wire;
 
 pub use global::{
-    CoreError, CrossfadeConfig, DaemonState, EQ_FREQUENCIES, EqBand, MAX_VOLUME, ReverbConfig,
-    volume_from_ratio, volume_ratio,
+    CoreError, CrossfadeConfig, DaemonState, DEFAULT_SPEED, EQ_FREQUENCIES, EqBand, MAX_SPEED,
+    MAX_VOLUME, MIN_SPEED, ReverbConfig, volume_from_ratio, volume_ratio,
 };
 pub use ipc::MetadataPatch;
 pub use paths::{
     ensure_termux_pulseaudio, is_termux, resolve_command_socket, resolve_pid_file,
     resolve_pulse_socket, termux_music_dirs,
 };
+pub use playlist_fmt::{M3u8Format, PlsFormat, PlaylistFormat, PlaylistFormatKind};
+pub use podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
+pub use radio::RadioStation;
 pub use spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
+pub use subsonic::{
+    SubsonicAlbum, SubsonicArtist, SubsonicSearchResults, SubsonicStatus, SubsonicTrack,
+};
 pub use track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
 
 pub type Result<T> = std::result::Result<T, CoreError>;

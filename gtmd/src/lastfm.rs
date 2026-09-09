@@ -22,7 +22,7 @@ pub struct LastfmManager {
     api_key: Option<String>,
     api_secret: Option<String>,
     session_key: Arc<Mutex<Option<String>>>,
-    last_scrobble: Arc<Mutex<Option<Instant>>>,
+    last_scrobble: Arc<Mutex<Option<(String, Instant)>>>,
     last_now_playing: Arc<Mutex<Option<Instant>>>,
 }
 
@@ -184,7 +184,10 @@ impl LastfmManager {
     }
 
     /// Scrobble a track to Last.fm.
-    /// Only scrobbles if track meets minimum play criteria.
+    /// Only scrobbles if track meets minimum play criteria. Same-track
+    /// duplicate scrobbles within a short window are suppressed, but distinct
+    /// tracks are never dropped (a cross-track throttle would silently lose
+    /// legitimate scrobbles during quick skip-ahead).
     pub async fn scrobble(
         &self,
         track: &TrackInfo,
@@ -209,14 +212,17 @@ impl LastfmManager {
             return Ok(());
         }
 
-        // Throttle: avoid rapid successive scrobbles
+        // Deduplicate: skip only when the very same track was just scrobbled.
+        let key = format!("{}|{}|{}", track.artist, track.title, track.album);
         let mut last_scrobble = self.last_scrobble.lock().await;
-        if let Some(last) = *last_scrobble
-            && last.elapsed() < Duration::from_secs(5)
+        if let Some((last_key, last)) = last_scrobble.as_ref()
+            && *last_key == key
+            && last.elapsed() < Duration::from_secs(10)
         {
-            return Ok(()); // Skip if too recent
+            debug!("track already scrobbled recently, skipping duplicate");
+            return Ok(());
         }
-        *last_scrobble = Some(Instant::now());
+        *last_scrobble = Some((key, Instant::now()));
         drop(last_scrobble);
 
         let session_key = self

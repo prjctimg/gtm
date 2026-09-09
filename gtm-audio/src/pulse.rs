@@ -189,6 +189,7 @@ pub struct PulseAudioMixer {
     eq_enabled: Arc<AtomicBool>,
     reverb_enabled: Arc<AtomicBool>,
     reverb_room_size: Arc<Mutex<f32>>,
+    speed: crate::stretch::SpeedControl,
     spectrum: Arc<Mutex<Vec<f32>>>,
 }
 
@@ -223,6 +224,7 @@ impl PulseAudioMixer {
             eq_enabled: Arc::new(AtomicBool::new(true)),
             reverb_enabled: Arc::new(AtomicBool::new(false)),
             reverb_room_size: Arc::new(Mutex::new(0.3)),
+            speed: crate::stretch::SpeedControl::new(),
             spectrum: Arc::new(Mutex::new(Vec::new())),
         })
     }
@@ -276,6 +278,30 @@ impl PulseAudioMixer {
             .unwrap_or(0.0))
     }
 
+    fn wrap_source(
+        &self,
+        source: Box<dyn Source<Item = f32> + Send>,
+    ) -> Box<dyn Source<Item = f32> + Send> {
+        let source: Box<dyn Source<Item = f32> + Send> = Box::new(
+            crate::stretch::TimeStretchSource::new(source, self.speed.clone()),
+        );
+        let source = if self.eq_enabled.load(Ordering::Relaxed) {
+            Box::new(EqSource::new(source, self.eq_gains.clone())) as Box<dyn Source<Item = f32> + Send>
+        } else {
+            source
+        };
+        if self.reverb_enabled.load(Ordering::Relaxed) {
+            let room_size = *self.reverb_room_size.lock().unwrap();
+            Box::new(ReverbSource::new(
+                source,
+                room_size,
+                self.reverb_enabled.clone(),
+            )) as Box<dyn Source<Item = f32> + Send>
+        } else {
+            source
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn start_decode(
         path: &str,
@@ -284,6 +310,7 @@ impl PulseAudioMixer {
         eq_enabled: &Arc<AtomicBool>,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
+        speed: &crate::stretch::SpeedControl,
         spectrum: &Arc<Mutex<Vec<f32>>>,
         prebuffer_samples: usize,
     ) -> AudioResult<(Arc<DecodeControl>, std::thread::JoinHandle<()>)> {
@@ -296,6 +323,7 @@ impl PulseAudioMixer {
             eq_enabled.clone(),
             reverb_enabled.clone(),
             reverb_room_size.clone(),
+            speed.clone(),
             spectrum.clone(),
             prebuffer_samples,
         );
@@ -365,6 +393,7 @@ impl Mixer for PulseAudioMixer {
             &self.eq_enabled,
             &self.reverb_enabled,
             &self.reverb_room_size,
+            &self.speed,
             &self.spectrum,
             PREBUFFER_SAMPLES,
         )?;
@@ -398,21 +427,7 @@ impl Mixer for PulseAudioMixer {
             *self.duration.lock().unwrap() = dur.as_secs_f64();
         }
 
-        let source = if self.eq_enabled.load(Ordering::Relaxed) {
-            Box::new(EqSource::new(source, self.eq_gains.clone()))
-        } else {
-            source
-        };
-        let source = if self.reverb_enabled.load(Ordering::Relaxed) {
-            let room_size = *self.reverb_room_size.lock().unwrap();
-            Box::new(ReverbSource::new(
-                source,
-                room_size,
-                self.reverb_enabled.clone(),
-            ))
-        } else {
-            source
-        };
+        let source = self.wrap_source(source);
 
         let ring = self.active().ring.clone();
         let handle = std::thread::Builder::new()
@@ -457,6 +472,7 @@ impl Mixer for PulseAudioMixer {
             &self.eq_enabled,
             &self.reverb_enabled,
             &self.reverb_room_size,
+            &self.speed,
             &self.spectrum,
             PREBUFFER_SAMPLES,
         )?;
@@ -478,21 +494,7 @@ impl Mixer for PulseAudioMixer {
         self.standby().flush();
         Self::set_stream_volume(&self.standby(), 0);
 
-        let source = if self.eq_enabled.load(Ordering::Relaxed) {
-            Box::new(EqSource::new(source, self.eq_gains.clone()))
-        } else {
-            source
-        };
-        let source = if self.reverb_enabled.load(Ordering::Relaxed) {
-            let room_size = *self.reverb_room_size.lock().unwrap();
-            Box::new(ReverbSource::new(
-                source,
-                room_size,
-                self.reverb_enabled.clone(),
-            ))
-        } else {
-            source
-        };
+        let source = self.wrap_source(source);
 
         let ring = self.standby().ring.clone();
         let handle = std::thread::Builder::new()
@@ -761,6 +763,14 @@ impl Mixer for PulseAudioMixer {
     fn set_reverb(&self, config: &ReverbConfig) {
         self.reverb_enabled.store(config.enabled, Ordering::Relaxed);
         *self.reverb_room_size.lock().unwrap() = config.room_size;
+    }
+
+    fn set_speed(&self, rate: f32) {
+        self.speed.store(rate);
+    }
+
+    fn speed(&self) -> f32 {
+        self.speed.load()
     }
 
     fn current_peak_level(&self) -> f32 {

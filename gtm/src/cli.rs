@@ -10,8 +10,18 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand};
 use gtm_core::client::DaemonClient;
 use gtm_core::global::RepeatMode;
+use gtm_core::playlist_fmt::PlaylistFormatKind;
 
 use crate::footer::format_uptime;
+
+/// Parse a CLI `--format` value into a [`PlaylistFormatKind`].
+fn parse_format(s: &str) -> Result<PlaylistFormatKind, String> {
+    match s.to_ascii_lowercase().as_str() {
+        "m3u8" | "m3u" => Ok(PlaylistFormatKind::M3u8),
+        "pls" => Ok(PlaylistFormatKind::Pls),
+        _ => Err(format!("unknown playlist format: {s}")),
+    }
+}
 
 #[derive(Parser)]
 #[command(
@@ -68,6 +78,11 @@ pub enum CliCommand {
     },
     /// Toggle mute
     Mute,
+    /// Set pitch-preserving playback speed (0.25-2.0, empty/omitted shows the current rate)
+    Speed {
+        #[arg(value_name = "RATE", value_parser = clap::value_parser!(f32))]
+        rate: Option<f32>,
+    },
     /// Enable/disable crossfade with optional duration
     Crossfade {
         #[arg(
@@ -117,21 +132,35 @@ pub enum CliCommand {
     CreatePlaylist { name: String },
     /// Delete a playlist
     DeletePlaylist { id: i64 },
+    /// Remove duplicate tracks from a playlist
+    PlaylistDedup { playlist_id: i64 },
+    /// Remove playlist entries whose audio file is missing on disk
+    PlaylistDoctor { playlist_id: i64 },
+    /// Sort a playlist in place (field: title, artist, album, date)
+    PlaylistSort {
+        playlist_id: i64,
+        #[arg(long, value_name = "FIELD", default_value = "title")]
+        field: String,
+    },
     /// Add tracks to a playlist
     AddToPlaylist {
         playlist_id: i64,
         track_ids: Vec<i64>,
     },
-    /// Import an M3U playlist file
-    ImportM3u {
+    /// Import a playlist file (M3U8 or PLS)
+    ImportPlaylist {
         #[arg(value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         path: String,
+        #[arg(long, value_name = "FORMAT", value_parser = ["m3u8", "pls"], default_value = "m3u8")]
+        format: String,
     },
-    /// Export a playlist to M3U file
-    ExportM3u {
+    /// Export a playlist to a playlist file (M3U8 or PLS)
+    ExportPlaylist {
         playlist_id: i64,
         #[arg(value_name = "FILE", value_hint = clap::ValueHint::FilePath)]
         path: String,
+        #[arg(long, value_name = "FORMAT", value_parser = ["m3u8", "pls"], default_value = "m3u8")]
+        format: String,
     },
     /// Show recently played tracks
     Recent { count: u64 },
@@ -172,6 +201,18 @@ pub enum CliCommand {
     SleepTimer { minutes: u32 },
     /// Cancel the current sleep timer
     CancelSleepTimer,
+    /// Toggle low-power mode (pause playback, ease off background work)
+    LowPower {
+        #[arg(long, value_name = "on|off")]
+        set: Option<bool>,
+    },
+    /// List available audio output devices
+    AudioDevices,
+    /// Switch audio output device ("default" restores the system default; switching stops playback)
+    SetAudioDevice {
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
     /// Edit track metadata (field: title, artist, album, genre, year, track-number)
     UpdateMetadata {
         track_id: i64,
@@ -183,6 +224,15 @@ pub enum CliCommand {
     #[command(subcommand)]
     /// Spotify integration commands
     Spotify(SpotifyAction),
+    #[command(subcommand)]
+    /// Navidrome / Subsonic server integration
+    Subsonic(SubsonicAction),
+    #[command(subcommand)]
+    /// Podcast subscriptions (RSS/Atom)
+    Podcast(PodcastAction),
+    #[command(subcommand)]
+    /// Internet radio directory (Radio Browser)
+    Radio(RadioAction),
 }
 
 #[derive(Subcommand)]
@@ -202,6 +252,93 @@ pub enum SpotifyAction {
     Status,
     /// Sync Spotify playlists to the library
     Sync,
+}
+
+#[derive(Subcommand)]
+pub enum SubsonicAction {
+    /// Save server credentials and validate the connection
+    Configure {
+        #[arg(value_name = "SERVER_URL")]
+        server: String,
+        #[arg(value_name = "USERNAME")]
+        username: String,
+        #[arg(value_name = "PASSWORD")]
+        password: Option<String>,
+    },
+    /// Forget the saved server credentials
+    Clear,
+    /// Show connection status
+    Status,
+    /// Verify connectivity to the server
+    Ping,
+    /// Search artists, albums and songs
+    Search {
+        #[arg(value_name = "QUERY")]
+        query: String,
+    },
+    /// Play a track found by search
+    Play {
+        #[arg(value_name = "TRACK_ID")]
+        track_id: String,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum PodcastAction {
+    /// Subscribe to an RSS/Atom feed
+    Add {
+        #[arg(value_name = "URL")]
+        url: String,
+    },
+    /// Unsubscribe from a feed
+    Remove {
+        #[arg(value_name = "FEED_ID")]
+        feed_id: String,
+    },
+    /// List subscribed feeds
+    List,
+    /// Show episodes of a feed
+    Episodes {
+        #[arg(value_name = "FEED_ID")]
+        feed_id: String,
+    },
+    /// Refresh feeds (optionally one by id)
+    Refresh {
+        #[arg(value_name = "FEED_ID")]
+        feed_id: Option<String>,
+    },
+    /// Play an episode from a feed
+    Play {
+        #[arg(value_name = "FEED_ID")]
+        feed_id: String,
+        #[arg(value_name = "EPISODE_INDEX")]
+        episode_index: usize,
+    },
+    /// Show podcast plugin status
+    Status,
+}
+
+#[derive(Subcommand)]
+pub enum RadioAction {
+    /// Search the Radio Browser directory
+    Search {
+        #[arg(value_name = "QUERY")]
+        query: String,
+        #[arg(long, default_value_t = 25)]
+        limit: u16,
+    },
+    /// Show top-voted stations
+    Top {
+        #[arg(long, default_value_t = 25)]
+        limit: u16,
+    },
+    /// Play a station by its Radio Browser id
+    Play {
+        #[arg(value_name = "STATION_ID")]
+        station_id: String,
+        #[arg(value_name = "NAME", required = false)]
+        station_name: Option<String>,
+    },
 }
 
 pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) {
@@ -343,6 +480,19 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
+            CliCommand::Speed { rate } => {
+                match rate {
+                    Some(r) => client
+                        .set_speed(*r)
+                        .await
+                        .map(|()| format!("ok ({r:?}x)"))
+                        .map_err(|e| e.to_string()),
+                    None => {
+                        let speed = client.speed().await.map_err(|e| e.to_string())?;
+                        Ok(format!("speed: {speed:?}x"))
+                    }
+                }
+            }
             CliCommand::Crossfade {
                 enabled,
                 duration_secs,
@@ -434,6 +584,27 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
+            CliCommand::PlaylistDedup { playlist_id } => client
+                .library()
+                .playlist_dedup(*playlist_id)
+                .await
+                .map(|removed| format!("removed {removed} duplicate entries"))
+                .map_err(|e| e.to_string()),
+            CliCommand::PlaylistDoctor { playlist_id } => client
+                .library()
+                .playlist_doctor(*playlist_id)
+                .await
+                .map(|removed| format!("removed {removed} broken entries"))
+                .map_err(|e| e.to_string()),
+            CliCommand::PlaylistSort {
+                playlist_id,
+                field,
+            } => client
+                .library()
+                .playlist_sort(*playlist_id, field)
+                .await
+                .map(|()| "ok".to_string())
+                .map_err(|e| e.to_string()),
             CliCommand::AddToPlaylist {
                 playlist_id,
                 track_ids,
@@ -443,18 +614,28 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
-            CliCommand::ImportM3u { path } => client
-                .library()
-                .import_m3u(path)
-                .await
-                .map(|playlists| format!("imported {} playlist", playlists.len()))
-                .map_err(|e| e.to_string()),
-            CliCommand::ExportM3u { playlist_id, path } => client
-                .library()
-                .export_m3u(*playlist_id, path)
-                .await
-                .map(|()| "ok".to_string())
-                .map_err(|e| e.to_string()),
+            CliCommand::ImportPlaylist { path, format } => {
+                let format = parse_format(format)?;
+                client
+                    .library()
+                    .import_playlist(path, format)
+                    .await
+                    .map(|playlists| format!("imported {} playlist", playlists.len()))
+                    .map_err(|e| e.to_string())
+            }
+            CliCommand::ExportPlaylist {
+                playlist_id,
+                path,
+                format,
+            } => {
+                let format = parse_format(format)?;
+                client
+                    .library()
+                    .export_playlist(*playlist_id, path, format)
+                    .await
+                    .map(|()| "ok".to_string())
+                    .map_err(|e| e.to_string())
+            }
             CliCommand::Recent { count } => {
                 let res = client
                     .library()
@@ -750,6 +931,46 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .await
                 .map(|()| "sleep timer cancelled".to_string())
                 .map_err(|e| e.to_string()),
+            CliCommand::LowPower { set } => {
+                match set {
+                    Some(enabled) => {
+                        client
+                            .set_low_power(*enabled)
+                            .await
+                            .map(|()| format!("low-power {}", if *enabled { "on" } else { "off" }))
+                    }
+                    None => {
+                        client
+                            .low_power()
+                            .await
+                            .map(|on| format!("low-power {}", if on { "on" } else { "off" }))
+                    }
+                }
+                .map_err(|e| e.to_string())
+            }
+            CliCommand::AudioDevices => {
+                let devices = client.list_audio_devices().await.map_err(|e| e.to_string())?;
+                if devices.is_empty() {
+                    Ok("no output devices listed by this backend".to_string())
+                } else {
+                    Ok(devices.join("\n"))
+                }
+            }
+            CliCommand::SetAudioDevice { name } => {
+                if name == "default" {
+                    client
+                        .set_audio_device(None)
+                        .await
+                        .map(|()| "switched to default output device".to_string())
+                        .map_err(|e| e.to_string())
+                } else {
+                    client
+                        .set_audio_device(Some(name.clone()))
+                        .await
+                        .map(|()| format!("switched output device to '{name}'"))
+                        .map_err(|e| e.to_string())
+                }
+            }
             CliCommand::UpdateMetadata {
                 track_id,
                 field,
@@ -873,6 +1094,179 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     .map(|()| "spotify playlists synced".to_string())
                     .map_err(|e| e.to_string()),
             },
+            CliCommand::Subsonic(action) => match action {
+                SubsonicAction::Configure { server, username, password } => {
+                    let password = match password {
+                        Some(p) => p.to_string(),
+                        None => prompt("Password: ")?,
+                    };
+                    let st = client
+                        .subsonic()
+                        .configure(&server, &username, &password)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    Ok(format_subsonic_status(&st))
+                }
+                SubsonicAction::Clear => client
+                    .subsonic()
+                    .clear()
+                    .await
+                    .map(|()| "subsonic credentials cleared".to_string())
+                    .map_err(|e| e.to_string()),
+                SubsonicAction::Status => {
+                    let st = client.subsonic().status().await.map_err(|e| e.to_string())?;
+                    Ok(format_subsonic_status(&st))
+                }
+                SubsonicAction::Ping => client
+                    .subsonic()
+                    .ping()
+                    .await
+                    .map(|()| "subsonic ping ok".to_string())
+                    .map_err(|e| e.to_string()),
+                SubsonicAction::Search { query } => {
+                    let res = client
+                        .subsonic()
+                        .search(&query)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    for a in &res.artists {
+                        println!("artist  {}\t{}", a.id, a.name);
+                    }
+                    for a in &res.albums {
+                        println!(
+                            "album   {}\t{}\t{}",
+                            a.id,
+                            a.title,
+                            if a.artist.is_empty() { "unknown" } else { &a.artist }
+                        );
+                    }
+                    for t in &res.tracks {
+                        println!(
+                            "track   {}\t{} - {}",
+                            t.id, t.artist, t.title
+                        );
+                    }
+                    Ok(format!("{} artists, {} albums, {} songs", res.artists.len(), res.albums.len(), res.tracks.len()))
+                }
+                SubsonicAction::Play { track_id } => {
+                    let track = gtm_core::subsonic::SubsonicTrack {
+                        id: track_id.clone(),
+                        title: track_id.clone(),
+                        artist: String::new(),
+                        album: String::new(),
+                        duration_secs: 0,
+                        ..Default::default()
+                    };
+                    client.subsonic().play(&track).await.map_err(|e| e.to_string())?;
+                    Ok(format!("playing {track_id}"))
+                }
+            },
+            CliCommand::Podcast(action) => match action {
+                PodcastAction::Add { url } => {
+                    let feeds = client
+                        .podcast()
+                        .add_feed(&url)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    match feeds.first() {
+                        Some(f) => Ok(format!(
+                            "subscribed to {} ({})",
+                            f.title,
+                            f.episodes
+                        )),
+                        None => Err("feed returned no episodes".to_string()),
+                    }
+                }
+                PodcastAction::Remove { feed_id } => client
+                    .podcast()
+                    .remove_feed(&feed_id)
+                    .await
+                    .map(|()| format!("removed feed {feed_id}"))
+                    .map_err(|e| e.to_string()),
+                PodcastAction::List => {
+                    let feeds = client.podcast().feeds().await.map_err(|e| e.to_string())?;
+                    for f in &feeds {
+                        println!("{}\t{}\t{} episodes", f.id, f.title, f.episodes);
+                    }
+                    Ok(format!("{} feeds", feeds.len()))
+                }
+                PodcastAction::Episodes { feed_id } => {
+                    let (title, eps) = client
+                        .podcast()
+                        .episodes(&feed_id)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    for (i, e) in eps.iter().enumerate() {
+                        let dur = e
+                            .duration_secs
+                            .map(|d| format_duration(d))
+                            .unwrap_or_else(|| "-".into());
+                        println!("{i}\t{dur}\t{}", e.title);
+                    }
+                    Ok(format!("{title}: {} episodes", eps.len()))
+                }
+                PodcastAction::Refresh { feed_id } => {
+                    let n = client
+                        .podcast()
+                        .refresh(feed_id.as_deref())
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    Ok(format!("refreshed {n} feeds"))
+                }
+                PodcastAction::Play { feed_id, episode_index } => client
+                    .podcast()
+                    .play(&feed_id, *episode_index)
+                    .await
+                    .map(|()| format!("playing {feed_id}[/{episode_index}]"))
+                    .map_err(|e| e.to_string()),
+                PodcastAction::Status => {
+                    let st = client.podcast().status().await.map_err(|e| e.to_string())?;
+                    let err = st.error.as_deref().unwrap_or("none");
+                    Ok(format!(
+                        "podcast: {} feeds, {} episodes (last error: {err})",
+                        st.feeds, st.episodes
+                    ))
+                }
+            },
+            CliCommand::Radio(action) => match action {
+                RadioAction::Search { query, limit } => {
+                    let stations = client
+                        .radio()
+                        .search(&query, *limit)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    for s in &stations {
+                        println!(
+                            "{}\t{}\t{}\t{:.1} votes",
+                            s.id, s.name, s.url_resolved, s.votes
+                        );
+                    }
+                    Ok(format!("{} stations", stations.len()))
+                }
+                RadioAction::Top { limit } => {
+                    let stations = client
+                        .radio()
+                        .top(*limit)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    for s in &stations {
+                        println!(
+                            "{}\t{}\t{}\t{:.1} votes",
+                            s.id, s.name, s.url_resolved, s.votes
+                        );
+                    }
+                    Ok(format!("{} stations", stations.len()))
+                }
+                RadioAction::Play { station_id, station_name } => {
+                    let name = station_name.clone().unwrap_or_else(|| "Radio".to_string());
+                    client
+                        .radio()
+                        .play(&station_id, &name)
+                        .await
+                        .map(|()| format!("playing {name}"))
+                        .map_err(|e| e.to_string())
+                }
+            },
         }
     });
 
@@ -960,4 +1354,41 @@ fn format_spotify_status(st: &gtm_core::spotify::SpotifyStatus) -> String {
         out += &format!(" | error: {e}");
     }
     out
+}
+
+fn format_subsonic_status(st: &gtm_core::subsonic::SubsonicStatus) -> String {
+    let mut out = if st.configured {
+        format!(
+            "Configured for {}@{}",
+            st.user.as_deref().unwrap_or("?"),
+            st.server.as_deref().unwrap_or("?")
+        )
+    } else {
+        "Not configured".to_string()
+    };
+    if let Some(e) = st.error.as_deref() {
+        out += &format!(" | error: {e}");
+    }
+    out
+}
+
+fn format_duration(secs: u64) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
+}
+
+fn prompt(msg: &str) -> Result<String, String> {
+    let mut out = String::new();
+    print!("{msg}");
+    std::io::stdout().flush().map_err(|e| e.to_string())?;
+    std::io::stdin()
+        .read_line(&mut out)
+        .map_err(|e| e.to_string())?;
+    Ok(out.trim().to_string())
 }

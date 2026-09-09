@@ -43,6 +43,7 @@ impl DaemonState {
             time_pos: 0.0,
             duration: 0.0,
             sleep_timer: None,
+            low_power: false,
             audio: AudioSettings::default(),
             gapless: false,
             dynamic_mode: DynamicModeConfig::default(),

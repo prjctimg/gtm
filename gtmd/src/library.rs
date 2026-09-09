@@ -24,7 +24,6 @@ use gtm_core::MetadataPatch;
 use gtm_core::track::{Playlist, TrackInfo};
 
 const DB_NAME: &str = "library.db";
-
 /// Map a playlist name to a safe `.m3u8` file name in the data directory.
 fn m3u8_file_name(name: &str) -> String {
     let cleaned: String = name
@@ -38,6 +37,18 @@ fn m3u8_file_name(name: &str) -> String {
         })
         .collect();
     format!("{}.m3u8", cleaned.trim().replace(' ', "_"))
+}
+
+/// Build the format parser/serializer for a [`PlaylistFormatKind`].
+fn format_fmt(
+    kind: gtm_core::playlist_fmt::PlaylistFormatKind,
+) -> Box<dyn gtm_core::playlist_fmt::PlaylistFormat + Send + Sync> {
+    match kind {
+        gtm_core::playlist_fmt::PlaylistFormatKind::M3u8 => {
+            Box::new(gtm_core::playlist_fmt::M3u8Format)
+        }
+        gtm_core::playlist_fmt::PlaylistFormatKind::Pls => Box::new(gtm_core::playlist_fmt::PlsFormat),
+    }
 }
 
 pub struct Library {
@@ -385,6 +396,119 @@ impl Library {
         Ok(())
     }
 
+    /// Reassign contiguous `position` values (0..n) in playlist order, so gaps
+    /// left by removals disappear and sorting stays authoritative.
+    fn reposition(&self, playlist_id: i64) -> Result<(), String> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| format!("reposition tx: {e}"))?;
+        {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT track_id FROM playlist_tracks
+                     WHERE playlist_id = ?1 ORDER BY position ASC, rowid ASC",
+                )
+                .map_err(|e| format!("reposition prepare: {e}"))?;
+            let rows: Result<Vec<i64>, _> = stmt
+                .query_map(params![playlist_id], |r| r.get(0))
+                .map_err(|e| format!("reposition query: {e}"))?
+                .collect();
+            let rows = rows.map_err(|e| format!("reposition rows: {e}"))?;
+            for (pos, track_id) in rows.iter().enumerate() {
+                tx.execute(
+                    "UPDATE playlist_tracks SET position = ?1
+                     WHERE playlist_id = ?2 AND track_id = ?3",
+                    params![pos as i64, playlist_id, track_id],
+                )
+                .map_err(|e| format!("reposition update: {e}"))?;
+            }
+        }
+        tx.commit().map_err(|e| format!("reposition commit: {e}"))
+    }
+
+    /// Remove duplicate track entries from a playlist (keeping the earliest
+    /// `position`), returning how many rows were removed. With the
+    /// `(playlist_id, track_id)` primary key duplicates can only arise from
+    /// manual DB edits, but the repair doubles as a position repack.
+    pub fn playlist_dedup(&self, id: i64) -> Result<usize, String> {
+        let removed = self
+            .conn
+            .execute(
+                "DELETE FROM playlist_tracks
+                 WHERE playlist_id = ?1 AND rowid NOT IN (
+                     SELECT MIN(rowid) FROM playlist_tracks
+                     WHERE playlist_id = ?1 GROUP BY track_id
+                 )",
+                params![id, id],
+            )
+            .map_err(|e| format!("playlist dedup: {e}"))?;
+        self.reposition(id)?;
+        Ok(removed as usize)
+    }
+
+    /// Doctor a playlist: remove entries whose audio file no longer exists on
+    /// disk, returning how many broken entries were removed.
+    pub fn playlist_doctor(&self, id: i64) -> Result<usize, String> {
+        let tracks = self.get_playlist_tracks(id)?;
+        let mut removed = 0usize;
+        for track in tracks {
+            if !std::path::Path::new(&track.path).exists() {
+                self.remove_from_playlist(id, track.id)?;
+                removed += 1;
+            }
+        }
+        if removed > 0 {
+            self.reposition(id)?;
+        }
+        Ok(removed)
+    }
+
+    /// Sort a playlist's tracks in place by `field` (`title` | `artist` |
+    /// `album` | `date`), reassigning contiguous positions.
+    pub fn playlist_sort(&self, id: i64, field: &str) -> Result<(), String> {
+        let mut tracks = self.get_playlist_tracks(id)?;
+        let lt = |a: &TrackInfo, b: &TrackInfo| match field {
+            "artist" => {
+                (a.artist.as_str().to_lowercase(), a.title.to_lowercase().as_str())
+                    .cmp(&(b.artist.as_str().to_lowercase(), b.title.to_lowercase().as_str()))
+            }
+            "album" => (
+                a.album.as_str().to_lowercase(),
+                a.track_number,
+                a.title.to_lowercase().as_str(),
+            )
+                .cmp(&(
+                    b.album.as_str().to_lowercase(),
+                    b.track_number,
+                    b.title.to_lowercase().as_str(),
+                )),
+            "date" => (b.year, a.title.to_lowercase().as_str())
+                .cmp(&(a.year, b.title.to_lowercase().as_str())),
+            // "title" and default
+            _ => a
+                .title
+                .to_lowercase()
+                .cmp(&b.title.to_lowercase()),
+        };
+        tracks.sort_by(lt);
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| format!("playlist sort tx: {e}"))?;
+        {
+            for (pos, track) in tracks.iter().enumerate() {
+                tx.execute(
+                    "UPDATE playlist_tracks SET position = ?1
+                     WHERE playlist_id = ?2 AND track_id = ?3",
+                    params![pos as i64, id, track.id],
+                )
+                .map_err(|e| format!("playlist sort update: {e}"))?;
+            }
+        }
+        tx.commit().map_err(|e| format!("playlist sort commit: {e}"))
+    }
+
     pub fn get_playlist_tracks(&self, id: i64) -> Result<Vec<TrackInfo>, String> {
         let mut stmt = self
             .conn
@@ -468,8 +592,13 @@ impl Library {
         }
     }
 
-    pub fn import_m3u(&self, path: &str) -> Result<Playlist, String> {
-        let content = std::fs::read_to_string(path).map_err(|e| format!("read m3u: {e}"))?;
+    pub fn import_playlist(
+        &self,
+        path: &str,
+        format: gtm_core::playlist_fmt::PlaylistFormatKind,
+    ) -> Result<Playlist, String> {
+        let content =
+            std::fs::read_to_string(path).map_err(|e| format!("read playlist: {e}"))?;
 
         let name = std::path::Path::new(path)
             .file_stem()
@@ -479,18 +608,15 @@ impl Library {
 
         let playlist = self.create_playlist(&name)?;
 
-        for line in content.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let abs_path = if std::path::Path::new(line).is_absolute() {
-                line.to_string()
+        let fmt = format_fmt(format);
+        for line in fmt.parse_track_lines(&content) {
+            let abs_path = if std::path::Path::new(&line).is_absolute() {
+                line.clone()
             } else {
                 let base = std::path::Path::new(path)
                     .parent()
                     .unwrap_or(std::path::Path::new("."));
-                base.join(line).to_string_lossy().to_string()
+                base.join(&line).to_string_lossy().to_string()
             };
 
             match self.add_track(&abs_path, None) {
@@ -504,24 +630,19 @@ impl Library {
         Ok(playlist)
     }
 
-    pub fn export_m3u(&self, playlist_id: i64, path: &str) -> Result<(), String> {
+    pub fn export_playlist(
+        &self,
+        playlist_id: i64,
+        path: &str,
+        format: gtm_core::playlist_fmt::PlaylistFormatKind,
+    ) -> Result<(), String> {
         let playlist = self
             .get_playlist(playlist_id)?
             .ok_or("playlist not found")?;
-        let track_ids = self.get_playlist_tracks(playlist_id)?;
-        let mut lines = vec![
-            "#EXTM3U".to_string(),
-            format!("#PLAYLIST: {}", playlist.name),
-        ];
-        for track in &track_ids {
-            let dur_secs = track.duration as u64;
-            lines.push(format!(
-                "#EXTINF:{},{} - {}",
-                dur_secs, track.artist, track.title
-            ));
-            lines.push(track.path.clone());
-        }
-        std::fs::write(path, lines.join("\n")).map_err(|e| format!("write m3u: {e}"))?;
+        let tracks = self.get_playlist_tracks(playlist_id)?;
+        let fmt = format_fmt(format);
+        let content = fmt.render(&playlist, &tracks);
+        std::fs::write(path, content).map_err(|e| format!("write playlist: {e}"))?;
         Ok(())
     }
 

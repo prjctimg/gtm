@@ -30,6 +30,21 @@ pub enum PickerId {
     Settings,
     Notifications,
     NotificationSettings,
+    SubsonicSearch,
+    /// Album browser of the configured Subsonic server.
+    SubsonicAlbums,
+    /// Track list of a selected Subsonic album.
+    SubsonicAlbumTracks,
+    /// Subsonic server setup (URL, user, password).
+    SubsonicSetup,
+    PodcastFeeds,
+    /// Episode list of a selected podcast feed.
+    PodcastEpisodes,
+    /// Podcast feed subscribe form (URL input).
+    PodcastSubscribe,
+    RadioSearch,
+    /// Top-voted stations from the Radio Browser directory.
+    RadioTop,
 }
 
 /// Which list a fuzzy-finder picker searches. `Tab` cycles through these.

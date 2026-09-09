@@ -14,9 +14,13 @@ pub mod library;
 pub mod lyrics;
 pub mod musicbrainz;
 pub mod oauth;
+pub mod podcast;
 pub mod queue;
+pub mod radio;
+pub mod remote;
 pub mod spotify;
 pub mod stream;
+pub mod subsonic;
 pub mod tags;
 #[cfg(feature = "youtube")]
 pub mod youtube;

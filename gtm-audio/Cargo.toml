@@ -20,6 +20,7 @@ rodio = { version = "0.22", default-features = false, features = ["playback", "s
 symphonia = { version = "0.6", default-features = false, features = ["all-codecs", "all-formats", "all-meta"] }
 symphonia-adapter-libopus = "0.3"
 fundsp = { version = "0.23", default-features = false, features = ["std"] }
+timestretch = "0.15"
 rustfft = "6"
 thiserror = "2"
 log = "0.4"

@@ -149,6 +149,12 @@ impl Mixer for NullMixer {
     fn set_eq_preset(&self, _preset: &EqPreset) {}
     fn set_eq_enabled(&self, _enabled: bool) {}
     fn set_reverb(&self, _config: &ReverbConfig) {}
+
+    fn set_speed(&self, _rate: f32) {}
+    fn speed(&self) -> f32 {
+        1.0
+    }
+
     fn current_peak_level(&self) -> f32 {
         0.0
     }
