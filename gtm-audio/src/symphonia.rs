@@ -69,7 +69,9 @@ impl Read for SyncReader {
 
 impl std::io::Seek for SyncReader {
     fn seek(&mut self, _pos: SeekFrom) -> std::io::Result<u64> {
-        Err(std::io::Error::other("streaming source does not support seeking"))
+        Err(std::io::Error::other(
+            "streaming source does not support seeking",
+        ))
     }
 }
 
@@ -116,7 +118,7 @@ impl SymphoniaSource {
     ) -> AudioResult<Self> {
         let mss = MediaSourceStream::new(
             Box::new(ReadOnlySource::new(SyncReader(Mutex::new(
-                Box::new(reader) as Box<dyn Read + Send>
+                Box::new(reader) as Box<dyn Read + Send>,
             )))),
             MediaSourceStreamOptions::default(),
         );

@@ -93,7 +93,7 @@ pub struct TimeStretchSource<I> {
     /// Interleaved raw frames pending feed to the engine.
     raw: Vec<f32>,
     raw_pos: usize,
-    eof: bool,
+    _eof: bool,
     /// Rate currently applied to the engine (to avoid needless retargets).
     applied_rate: f32,
     /// Tracks whether the inner source has reported EOF.
@@ -141,7 +141,7 @@ where
             out_pos: 0,
             raw: Vec::new(),
             raw_pos: 0,
-            eof: false,
+            _eof: false,
             applied_rate: initial_rate,
             inner_eof: false,
         }

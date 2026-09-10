@@ -568,13 +568,54 @@ async fn test_lastfm_set_config_and_status() {
 
     let res = send_req(&mut reader, &mut writer, &DaemonReq::LastfmStatus).await;
     match res {
-        DaemonRes::LastfmStatusRes { enabled, api_key, session_token, ready } => {
+        DaemonRes::LastfmStatusRes {
+            enabled,
+            api_key,
+            session_token,
+            ready,
+        } => {
             assert!(enabled, "scrobbling should be enabled");
             assert_eq!(api_key.as_deref(), Some("k1"));
             assert_eq!(session_token.as_deref(), Some("sess"));
             assert!(ready, "manager should be ready once key+secret are set");
         }
         other => panic!("expected LastfmStatusRes, got {other:?}"),
+    }
+
+    handle.abort();
+    cleanup(&config);
+}
+
+#[tokio::test]
+async fn test_spotify_oauth_start_returns_authorize_url() {
+    let (handle, config) = daemon_handle().await;
+    let (mut reader, mut writer) = connect(&config.socket_path).await;
+
+    let res = send_req(
+        &mut reader,
+        &mut writer,
+        &DaemonReq::SpotifyOauthStart {
+            client_id: "test-client".into(),
+            port: 0,
+        },
+    )
+    .await;
+    match res {
+        DaemonRes::SpotifyOauthStarted { url } => {
+            assert!(
+                url.contains("client_id=test-client"),
+                "unexpected authorize url {url}"
+            );
+            assert!(
+                url.contains("accounts.spotify.com/authorize"),
+                "unexpected authorize url {url}"
+            );
+            assert!(
+                url.contains("code_challenge="),
+                "missing PKCE challenge in {url}"
+            );
+        }
+        other => panic!("expected SpotifyOauthStarted, got {other:?}"),
     }
 
     handle.abort();

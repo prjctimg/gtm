@@ -28,7 +28,11 @@ impl RadioBrowserManager {
     pub fn new() -> Self {
         Self {
             client: reqwest::Client::builder()
-                .user_agent(format!("gtm/{} ({})", env!("CARGO_PKG_VERSION"), CLIENT_NAME))
+                .user_agent(format!(
+                    "gtm/{} ({})",
+                    env!("CARGO_PKG_VERSION"),
+                    CLIENT_NAME
+                ))
                 .timeout(Duration::from_secs(20))
                 .redirect(reqwest::redirect::Policy::limited(10))
                 .build()
@@ -67,11 +71,16 @@ impl RadioBrowserManager {
     /// item can be re-resolved to a playable URL on replay / next.
     pub async fn by_uuid(&self, uuid: &str) -> Result<RadioStation, String> {
         let resp = self
-            .get(&format!("/json/stations/byuuid/{uuid}"), &[("hidebroken", "true")])
+            .get(
+                &format!("/json/stations/byuuid/{uuid}"),
+                &[("hidebroken", "true")],
+            )
             .await
             .map_err(|e| format!("lookup: {e}"))?;
         let mut stations = parse_stations(&resp);
-        stations.pop().ok_or_else(|| "station not found".to_string())
+        stations
+            .pop()
+            .ok_or_else(|| "station not found".to_string())
     }
 
     async fn get<'a>(
@@ -81,8 +90,8 @@ impl RadioBrowserManager {
     ) -> Result<Vec<serde_json::Value>, String> {
         let mut last_err = "no radio-browser server reachable".to_string();
         for host in HOSTS {
-            let mut url = reqwest::Url::parse(&format!("{host}{path}"))
-                .map_err(|e| format!("url: {e}"))?;
+            let mut url =
+                reqwest::Url::parse(&format!("{host}{path}")).map_err(|e| format!("url: {e}"))?;
             url.query_pairs_mut()
                 .extend_pairs(params.iter().map(|(k, v)| (*k, *v)));
             match self.client.get(url).send().await {
@@ -116,17 +125,53 @@ fn parse_stations(items: &[serde_json::Value]) -> Vec<RadioStation> {
             }
             Some(RadioStation {
                 id: id.to_string(),
-                name: s.get("name").and_then(|v| v.as_str()).unwrap_or("Unknown Station").to_string(),
-                homepage: s.get("homepage").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-                url: s.get("url").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-                url_resolved: s.get("url_resolved").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-                country: s.get("country").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-                language: s.get("language").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-                tags: s.get("tags").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
-                codec: s.get("codec").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                name: s
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Unknown Station")
+                    .to_string(),
+                homepage: s
+                    .get("homepage")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                url: s
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                url_resolved: s
+                    .get("url_resolved")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                country: s
+                    .get("country")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                language: s
+                    .get("language")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                tags: s
+                    .get("tags")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                codec: s
+                    .get("codec")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
                 bitrate_kbps: s.get("bitrate").and_then(|v| v.as_u64()),
                 votes: s.get("votes").and_then(|v| v.as_u64()).unwrap_or(0),
-                favicon: s.get("favicon").and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+                favicon: s
+                    .get("favicon")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
             })
         })
         .collect()

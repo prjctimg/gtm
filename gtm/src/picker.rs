@@ -45,6 +45,10 @@ pub enum PickerId {
     RadioSearch,
     /// Top-voted stations from the Radio Browser directory.
     RadioTop,
+    /// `gtm setup` entry: choose which service to configure.
+    Setup,
+    /// Last.fm setup form (API key/secret) plus the OAuth browser flow.
+    LastfmAuth,
 }
 
 /// Which list a fuzzy-finder picker searches. `Tab` cycles through these.

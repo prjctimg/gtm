@@ -90,18 +90,30 @@ sample_proc() {
 aggregate() {
   local file="$1"
   local peak=0 mean=0 rss5=0 cpu=0 n=0 sum=0 best_rss=0 best_dist=999999
+  local -a sorted_values=()
   while read -r t rss c; do
     n=$((n + 1))
     sum=$((sum + rss))
     [ "${rss}" -gt "${peak}" ] && peak="${rss}"
     [ "${c}" -gt "${cpu}" ] && cpu="${c}"
+    sorted_values+=("${rss}")
     # rss at ~5s: track the sample closest to t=5000ms
     local d=$(( (t>5000?t-5000:5000-t) ))
     if [ "${d}" -lt "${best_dist}" ]; then best_dist="${d}"; best_rss="${rss}"; fi
   done < "${file}"
   [ "${n}" -gt 0 ] && mean=$(( sum / n ))
   rss5="${best_rss:-0}"
-  eval "PEAK_RSS=${peak}; MEAN_RSS=${mean}; RSS_5S=${rss5}; CPU_MS=${cpu}"
+  local p50=0 p95=0
+  if [ "${#sorted_values[@]}" -gt 0 ]; then
+    IFS=$'\n' sorted_values=($(printf '%s\n' "${sorted_values[@]}" | sort -n)); unset IFS
+    local count=${#sorted_values[@]}
+    local p50_idx=$(( (count - 1) / 2 ))
+    local p95_idx=$(( count * 95 / 100 ))
+    [ "${p95_idx}" -ge "${count}" ] && p95_idx=$(( count - 1 ))
+    p50="${sorted_values[$p50_idx]}"
+    p95="${sorted_values[$p95_idx]}"
+  fi
+  eval "PEAK_RSS=${peak}; MEAN_RSS=${mean}; RSS_5S=${rss5}; CPU_MS=${cpu}; P50_LATENCY=${p50}; P95_LATENCY=${p95}"
 }
 
 wait_socket() {
@@ -191,14 +203,15 @@ if [ -n "${RESULT_JSON}" ]; then
 fi
 
 if [ -f "${SOCK_DIR}/samples" ] && [ -s "${SOCK_DIR}/samples" ]; then
-  PEAK_RSS=0; MEAN_RSS=0; RSS_5S=0; CPU_MS=0
+  PEAK_RSS=0; MEAN_RSS=0; RSS_5S=0; CPU_MS=0; P50_LATENCY=0; P95_LATENCY=0
   aggregate "${SOCK_DIR}/samples"
   FILE_SHA="$(sha256sum "${FILE}" | awk '{print $1}')"
   jq -nc --arg player "${PLAYER}" --arg file "${FILE}" --arg sha "${FILE_SHA}" \
     --argjson peak "${PEAK_RSS}" --argjson mean "${MEAN_RSS}" \
     --argjson rss5 "${RSS_5S}" --argjson cpu "${CPU_MS}" \
     --argjson ready "${t_ready_ms}" \
-    '{player:$player,file:$file,file_sha256:$sha,peak_rss_kb:$peak,mean_rss_kb:$mean,rss_5s_kb:$rss5,cpu_ms:$cpu,t_ready_ms:$ready}'
+    --argjson p50 "${P50_LATENCY}" --argjson p95 "${P95_LATENCY}" \
+    '{player:$player,file:$file,file_sha256:$sha,peak_rss_kb:$peak,mean_rss_kb:$mean,rss_5s_kb:$rss5,cpu_ms:$cpu,t_ready_ms:$ready,p50_latency_kb:$p50,p95_latency_kb:$p95}'
 else
   emit_error "no samples collected"
 fi

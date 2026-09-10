@@ -5,9 +5,11 @@
 // This is free software released under the GPL-3.0 license.
 
 use std::collections::HashMap;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use futures::StreamExt;
 use quick_xml::Reader;
 use quick_xml::events::Event;
 use tracing::{info, warn};
@@ -45,7 +47,11 @@ impl PodcastManager {
         Self {
             config_dir,
             client: reqwest::Client::builder()
-                .user_agent(concat!("gtm/", env!("CARGO_PKG_VERSION"), " (podcast-reader)"))
+                .user_agent(concat!(
+                    "gtm/",
+                    env!("CARGO_PKG_VERSION"),
+                    " (podcast-reader)"
+                ))
                 .timeout(FETCH_TIMEOUT)
                 .redirect(reqwest::redirect::Policy::limited(10))
                 .build()
@@ -75,7 +81,6 @@ impl PodcastManager {
     }
 
     fn save(&self) -> Result<(), String> {
-        use std::os::unix::fs::PermissionsExt;
         let raw = serde_json::to_string_pretty(&self.feeds).map_err(|e| e.to_string())?;
         std::fs::write(self.config_path(), raw).map_err(|e| format!("write: {e}"))?;
         let _ = std::fs::set_permissions(
@@ -166,7 +171,8 @@ impl PodcastManager {
             .find(|f| f.id == feed_id)
             .unwrap()
             .title = parsed.title.clone();
-        self.episodes.insert(feed_id.to_string(), parsed.episodes.clone());
+        self.episodes
+            .insert(feed_id.to_string(), parsed.episodes.clone());
         self.error = None;
         self.save()?;
         Ok(PodcastFeed {
@@ -241,7 +247,6 @@ async fn fetch_and_parse(client: &reqwest::Client, url: &str) -> Result<ParsedFe
     }
     let mut raw = String::with_capacity(64 * 1024);
     let mut chunks = resp.bytes_stream();
-    use futures::StreamExt;
     while let Some(chunk) = chunks.next().await {
         let chunk = chunk.map_err(|e| format!("stream: {e}"))?;
         raw.push_str(&String::from_utf8_lossy(&chunk));
@@ -284,9 +289,7 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
                 if !is_atom && name == "item" {
                     ep = Some(ParsedEpisode::default());
                 }
-                if ep.is_some()
-                    && name == "enclosure"
-                {
+                if ep.is_some() && name == "enclosure" {
                     if let Some(url) = attr_str(&e, "url") {
                         if let Some(p) = ep.as_mut() {
                             if p.url.is_empty() {
@@ -329,17 +332,22 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
                 {
                     p.url = url;
                 }
-                if name == "link" && is_atom
+                if name == "link"
+                    && is_atom
                     && let Some(p) = ep.as_mut()
                     && let Some(href) = attr_str(&e, "href")
                     && p.url.is_empty()
                 {
                     let rel = attr_str(&e, "rel").unwrap_or_default();
-                    if rel == "enclosure" || rel == "audio" || looks_audio(&attr_str(&e, "type").unwrap_or_default()) {
+                    if rel == "enclosure"
+                        || rel == "audio"
+                        || looks_audio(&attr_str(&e, "type").unwrap_or_default())
+                    {
                         p.url = href;
                     }
                 }
-                if name == "content" && is_atom
+                if name == "content"
+                    && is_atom
                     && let Some(p) = ep.as_mut()
                     && p.url.is_empty()
                     && let Some(url) = attr_str(&e, "url")
@@ -557,5 +565,9 @@ fn attr_str(e: &quick_xml::events::BytesStart<'_>, key: &str) -> Option<String> 
 
 fn looks_audio(mime: &str) -> bool {
     let m = mime.to_ascii_lowercase();
-    m.starts_with("audio/") || m.contains("mp3") || m.contains("mpeg") || m.contains("ogg") || m.is_empty()
+    m.starts_with("audio/")
+        || m.contains("mp3")
+        || m.contains("mpeg")
+        || m.contains("ogg")
+        || m.is_empty()
 }

@@ -24,7 +24,7 @@ pub mod validate;
 pub mod wire;
 
 pub use global::{
-    CoreError, CrossfadeConfig, DaemonState, DEFAULT_SPEED, EQ_FREQUENCIES, EqBand, MAX_SPEED,
+    CoreError, CrossfadeConfig, DEFAULT_SPEED, DaemonState, EQ_FREQUENCIES, EqBand, MAX_SPEED,
     MAX_VOLUME, MIN_SPEED, ReverbConfig, volume_from_ratio, volume_ratio,
 };
 pub use ipc::MetadataPatch;
@@ -32,7 +32,7 @@ pub use paths::{
     ensure_termux_pulseaudio, is_termux, resolve_command_socket, resolve_pid_file,
     resolve_pulse_socket, termux_music_dirs,
 };
-pub use playlist_fmt::{M3u8Format, PlsFormat, PlaylistFormat, PlaylistFormatKind};
+pub use playlist_fmt::{M3u8Format, PlaylistFormat, PlaylistFormatKind, PlsFormat};
 pub use podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 pub use radio::RadioStation;
 pub use spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};

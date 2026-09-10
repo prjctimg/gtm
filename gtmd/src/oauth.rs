@@ -13,6 +13,7 @@ use std::net::SocketAddr;
 
 use base64::Engine as _;
 use sha2::{Digest as _, Sha256};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 const SPOTIFY_AUTHORIZE_URL: &str = "https://accounts.spotify.com/authorize";
 const SPOTIFY_TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
@@ -178,7 +179,6 @@ async fn read_code_from_stream(
     stream: &mut tokio::net::TcpStream,
     expected_state: &str,
 ) -> Option<String> {
-    use tokio::io::{AsyncBufReadExt, BufReader};
     let mut reader = BufReader::new(stream);
     // The request head's first line is all we need.
     let mut line = String::new();
@@ -189,7 +189,6 @@ async fn read_code_from_stream(
 }
 
 async fn write_response(stream: &mut tokio::net::TcpStream, status: &str, body: &str) {
-    use tokio::io::AsyncWriteExt;
     let _ = stream
         .write_all(
             format!(

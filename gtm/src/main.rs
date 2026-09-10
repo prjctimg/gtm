@@ -40,7 +40,7 @@ fn main() {
         println!();
     } else {
         // No subcommand, no --cli → launch the TUI
-        let res = ui::run_tui(args.socket);
+        let res = ui::run_tui(args.socket, None);
         if let Err(e) = res {
             eprintln!("Error: {e}");
             std::process::exit(1);

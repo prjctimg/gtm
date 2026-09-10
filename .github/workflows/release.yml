@@ -75,6 +75,10 @@ on:
         default: "30"
         type: string
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   CARGO_TERM_COLOR: always
   # Never fall back to the deprecated Node 20 runtime: force every action
@@ -881,7 +885,7 @@ jobs:
           attempt=0
           while true; do
             if git diff --cached --quiet; then
-              git add bench-results/ BENCHMARK.md
+              git add -f bench-results/ BENCHMARK.md
             fi
             if git diff --cached --quiet; then
               echo "no benchmark changes to commit"

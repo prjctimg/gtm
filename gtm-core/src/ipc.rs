@@ -924,7 +924,9 @@ impl DaemonReq {
                     image_url: String,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SpotifyTrackImage { image_url: x.image_url }
+                DaemonReq::SpotifyTrackImage {
+                    image_url: x.image_url,
+                }
             }
             "lastfm_set_config" => {
                 #[derive(Deserialize)]
@@ -1035,7 +1037,9 @@ impl DaemonReq {
                     album_id: String,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SubsonicAlbumTracks { album_id: x.album_id }
+                DaemonReq::SubsonicAlbumTracks {
+                    album_id: x.album_id,
+                }
             }
             "subsonic_play" => {
                 #[derive(Deserialize)]
@@ -1063,7 +1067,9 @@ impl DaemonReq {
                     track_id: String,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SubsonicCover { track_id: x.track_id }
+                DaemonReq::SubsonicCover {
+                    track_id: x.track_id,
+                }
             }
             "subsonic_play_album" => {
                 #[derive(Deserialize)]
@@ -1071,7 +1077,9 @@ impl DaemonReq {
                     album_id: String,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SubsonicPlayAlbum { album_id: x.album_id }
+                DaemonReq::SubsonicPlayAlbum {
+                    album_id: x.album_id,
+                }
             }
             "podcast_add_feed" => {
                 #[derive(Deserialize)]
@@ -1492,6 +1500,10 @@ pub enum DaemonRes {
         status: String,
         error: Option<String>,
         file_path: Option<String>,
+        downloaded_bytes: Option<u64>,
+        total_bytes: Option<u64>,
+        rate_bytes_per_sec: Option<f64>,
+        eta_secs: Option<u64>,
     },
     YtDownloadResult {
         id: u64,
@@ -1535,11 +1547,21 @@ impl DaemonRes {
             DaemonRes::SpotifyOauthStarted { url } => Some(serde_json::json!({ "url": url })),
             DaemonRes::SpotifyTracksRes { tracks } => Some(serde_json::json!({ "tracks": tracks })),
             DaemonRes::SpotifyImageRes { data } => Some(serde_json::json!({ "data": data })),
-            DaemonRes::SubsonicStatusRes { status } => Some(serde_json::json!({ "status": status })),
-            DaemonRes::SubsonicSearchRes { results } => Some(serde_json::json!({ "results": results })),
-            DaemonRes::SubsonicAlbumsRes { albums } => Some(serde_json::json!({ "albums": albums })),
-            DaemonRes::SubsonicTracksRes { tracks } => Some(serde_json::json!({ "tracks": tracks })),
-            DaemonRes::SubsonicPingRes { message } => Some(serde_json::json!({ "message": message })),
+            DaemonRes::SubsonicStatusRes { status } => {
+                Some(serde_json::json!({ "status": status }))
+            }
+            DaemonRes::SubsonicSearchRes { results } => {
+                Some(serde_json::json!({ "results": results }))
+            }
+            DaemonRes::SubsonicAlbumsRes { albums } => {
+                Some(serde_json::json!({ "albums": albums }))
+            }
+            DaemonRes::SubsonicTracksRes { tracks } => {
+                Some(serde_json::json!({ "tracks": tracks }))
+            }
+            DaemonRes::SubsonicPingRes { message } => {
+                Some(serde_json::json!({ "message": message }))
+            }
             DaemonRes::PodcastFeedsRes { feeds } => Some(serde_json::json!({ "feeds": feeds })),
             DaemonRes::PodcastEpisodesRes {
                 feed_id,
@@ -1588,6 +1610,10 @@ impl DaemonRes {
                 status,
                 error,
                 file_path,
+                downloaded_bytes,
+                total_bytes,
+                rate_bytes_per_sec,
+                eta_secs,
             } => Some(serde_json::json!({
                 "id": id,
                 "url": url,
@@ -1596,6 +1622,10 @@ impl DaemonRes {
                 "status": status,
                 "error": error,
                 "file_path": file_path,
+                "downloaded_bytes": downloaded_bytes,
+                "total_bytes": total_bytes,
+                "rate_bytes_per_sec": rate_bytes_per_sec,
+                "eta_secs": eta_secs,
             })),
             DaemonRes::YtDownloadResult {
                 id,
@@ -1791,6 +1821,14 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
+            "spotify_oauth_start" => {
+                let url = data
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                DaemonRes::SpotifyOauthStarted { url }
+            }
             "subsonic_status" => {
                 let status = data.get("status").cloned().unwrap_or(Value::Null);
                 match serde_json::from_value::<SubsonicStatus>(status) {
@@ -1946,6 +1984,10 @@ impl DaemonRes {
                     status,
                     error,
                     file_path,
+                    downloaded_bytes: data.get("downloaded_bytes").and_then(|v| v.as_u64()),
+                    total_bytes: data.get("total_bytes").and_then(|v| v.as_u64()),
+                    rate_bytes_per_sec: data.get("rate_bytes_per_sec").and_then(|v| v.as_f64()),
+                    eta_secs: data.get("eta_secs").and_then(|v| v.as_u64()),
                 }
             }
             "yt_download_result" => {

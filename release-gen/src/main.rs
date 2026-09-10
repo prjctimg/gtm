@@ -234,6 +234,9 @@ enum Command {
         /// Service to configure: spotify | lastfm | subsonic
         #[arg(value_name = "SERVICE")]
         service: Option<String>,
+        /// Run the plain terminal wizard instead of the TUI
+        #[arg(long)]
+        cli: bool,
     },
 }
 
@@ -277,13 +280,9 @@ enum SubsonicAction {
     /// Ping the server
     Ping,
     /// Search the server's index
-    Search {
-        query: String,
-    },
+    Search { query: String },
     /// Play a track by its server-side id
-    Play {
-        track_id: String,
-    },
+    Play { track_id: String },
 }
 
 #[derive(Subcommand)]
@@ -294,19 +293,13 @@ enum PodcastAction {
         url: String,
     },
     /// Unsubscribe from a feed
-    Remove {
-        feed_id: String,
-    },
+    Remove { feed_id: String },
     /// List subscribed feeds
     List,
     /// List episodes of a feed
-    Episodes {
-        feed_id: String,
-    },
+    Episodes { feed_id: String },
     /// Refresh all feeds (or one) from the network
-    Refresh {
-        feed_id: Option<String>,
-    },
+    Refresh { feed_id: Option<String> },
     /// Play an episode from a feed
     Play {
         feed_id: String,
@@ -326,9 +319,7 @@ enum RadioAction {
         limit: u16,
     },
     /// List the top-rated stations
-    Top {
-        limit: u16,
-    },
+    Top { limit: u16 },
     /// Play a station by its radio-browser id
     Play {
         station_id: String,

@@ -15,9 +15,7 @@ use gtm_core::ipc::DaemonRes;
 use gtm_core::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 use gtm_core::radio::RadioStation;
 use gtm_core::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
-use gtm_core::subsonic::{
-    SubsonicAlbum, SubsonicSearchResults, SubsonicStatus, SubsonicTrack,
-};
+use gtm_core::subsonic::{SubsonicAlbum, SubsonicSearchResults, SubsonicStatus, SubsonicTrack};
 use gtm_core::track::{Playlist, TrackInfo, YTSearchResult};
 use ratatui::Terminal;
 use ratatui::layout::Alignment;
@@ -29,7 +27,7 @@ use tokio::sync::mpsc;
 
 use base64::Engine;
 
-use crate::keymap::{KeyContext, KeyboardAction};
+use crate::keymap::{BoundCommand, KeyContext, KeyboardAction};
 use crate::picker::{PickerId, PickerManager, PickerSource};
 use crate::theme::{AppTheme, ThemeEntry};
 use crate::ui;
@@ -247,8 +245,6 @@ fn save_prefs(prefs: &Prefs) {
 fn build_keybindings(
     overrides: &std::collections::HashMap<String, String>,
 ) -> crate::keymap::Keybindings {
-    use crate::keymap::{BoundCommand, KeyContext, KeyboardAction};
-
     let mut defaults = crate::keymap::default_keybindings();
 
     if overrides.is_empty() {
@@ -352,11 +348,12 @@ pub enum NotifType {
     Subsonic,
     Podcast,
     Radio,
+    Lastfm,
     System,
 }
 
 impl NotifType {
-    pub const ALL: [NotifType; 10] = [
+    pub const ALL: [NotifType; 11] = [
         NotifType::Playback,
         NotifType::Prefs,
         NotifType::NowPlaying,
@@ -366,6 +363,7 @@ impl NotifType {
         NotifType::Subsonic,
         NotifType::Podcast,
         NotifType::Radio,
+        NotifType::Lastfm,
         NotifType::System,
     ];
 
@@ -380,6 +378,7 @@ impl NotifType {
             NotifType::Subsonic => "Subsonic",
             NotifType::Podcast => "Podcast",
             NotifType::Radio => "Radio",
+            NotifType::Lastfm => "Last.fm",
             NotifType::System => "System / Errors",
         }
     }
@@ -395,6 +394,7 @@ impl NotifType {
             NotifType::Subsonic => "subsonic",
             NotifType::Podcast => "podcast",
             NotifType::Radio => "radio",
+            NotifType::Lastfm => "lastfm",
             NotifType::System => "system",
         }
     }
@@ -410,6 +410,7 @@ impl NotifType {
             "subsonic" => NotifType::Subsonic,
             "podcast" => NotifType::Podcast,
             "radio" => NotifType::Radio,
+            "lastfm" => NotifType::Lastfm,
             _ => NotifType::System,
         }
     }
@@ -477,6 +478,23 @@ pub struct NotificationRecord {
     pub message: String,
     pub kind: NotificationKind,
     pub at: std::time::Instant,
+}
+
+/// Live state of one daemon-side yt-dlp download, for the footer Download
+/// module. Percent is an EMA of the yt-dlp values so the bar glides instead of
+/// jittering between updates.
+#[derive(Debug, Clone)]
+pub struct DownloadProgressView {
+    pub url: String,
+    pub title: String,
+    pub status: String,
+    pub file_path: Option<String>,
+    pub percent: f64,
+    pub downloaded_bytes: Option<u64>,
+    pub total_bytes: Option<u64>,
+    pub rate_bytes_per_sec: Option<f64>,
+    pub eta_secs: Option<u64>,
+    pub updated_at: std::time::Instant,
 }
 
 pub struct UpNextNotif {
@@ -618,6 +636,44 @@ impl Default for SubsonicView {
     }
 }
 
+/// `gtm setup` wizard state, grouped under `App::setup`.
+pub struct SetupView {
+    /// Currently highlighted service in the Setup chooser (0..=2).
+    pub selection: usize,
+    /// Last.fm form fields (masked while typing) and flow state.
+    pub lastfm_api_key: String,
+    pub lastfm_api_secret: String,
+    pub lastfm_focus: usize,
+    /// True while waiting for the loopback callback after the browser opened.
+    pub lastfm_pending: bool,
+    pub lastfm_status: Option<gtm_core::client::LastfmStatus>,
+    /// Authorization URL for manual copy when no browser can be opened.
+    pub lastfm_auth_url: Option<String>,
+    pub lastfm_error: Option<String>,
+}
+
+impl Default for SetupView {
+    fn default() -> Self {
+        Self {
+            selection: 0,
+            lastfm_api_key: String::new(),
+            lastfm_api_secret: String::new(),
+            lastfm_focus: 0,
+            lastfm_pending: false,
+            lastfm_status: None,
+            lastfm_auth_url: None,
+            lastfm_error: None,
+        }
+    }
+}
+
+/// Selected row of the `gtm setup` service chooser.
+pub fn setup_selection(app: &App) -> (usize, &'static str) {
+    let names = ["spotify", "lastfm", "subsonic"];
+    let sel = app.setup.selection.min(2);
+    (sel, names[sel])
+}
+
 /// Podcast picker state, grouped under `App::podcast`.
 pub struct PodcastView {
     pub status: Option<PodcastStatus>,
@@ -752,6 +808,7 @@ pub struct App {
     pub playlist_tracks_cache: Vec<TrackInfo>,
     pub spotify: SpotifyView,
     pub subsonic: SubsonicView,
+    pub setup: SetupView,
     pub podcast: PodcastView,
     pub radio: RadioView,
     pub cookie_file: Option<String>,
@@ -772,6 +829,9 @@ pub struct App {
     pub yt_search_loading: bool,
     pub yt_search_debounce: Option<std::time::Instant>,
     pub yt_search_poll_deadline: Option<std::time::Instant>,
+    /// Live download progress (keyed by daemon download id), surfaced in the
+    /// footer Download module.
+    pub downloads: std::collections::HashMap<u64, DownloadProgressView>,
     pub pending_delete: Option<(i64, String)>,
     /// Pending prompt for confirmations that require user input
     pub pending_prompt: Option<PendingPrompt>,
@@ -903,6 +963,20 @@ enum IpcResult {
     PlaylistCreated(i64, String),
     Queue(Vec<TrackInfo>, usize),
     YtResults(String, Vec<YTSearchResult>),
+    /// Live yt-dlp download state, mirrored from the daemon's
+    /// `YtDownloadProgress` poll so the footer can show a live progress.
+    YtDownloadProgress {
+        id: u64,
+        url: String,
+        title: String,
+        progress: f64,
+        status: String,
+        file_path: Option<String>,
+        downloaded_bytes: Option<u64>,
+        total_bytes: Option<u64>,
+        rate_bytes_per_sec: Option<f64>,
+        eta_secs: Option<u64>,
+    },
     Notification(String, String, NotificationKind, NotifType),
     Error(String),
     HealthReport(gtm_core::ipc::HealthReport),
@@ -921,6 +995,12 @@ enum IpcResult {
     PodcastEpisodes(Vec<PodcastEpisode>),
     RadioSearch(Vec<RadioStation>),
     RadioTop(Vec<RadioStation>),
+    /// Last.fm link status refreshed after a setup action completes.
+    LastfmStatus(Option<gtm_core::client::LastfmStatus>),
+    /// Authorization URL produced by the daemon's Last.fm auth flow.
+    LastfmAuthUrl(String),
+    /// Hard failure of the Last.fm setup flow.
+    LastfmAuthError(String),
 }
 
 /// Send a background-task error into the TUI event stream as an Error
@@ -1138,7 +1218,10 @@ impl App {
         self.last_popup_cover_fetch_gen = None;
     }
 
-    pub async fn new(socket_path: &Path) -> Result<Self, Box<dyn std::error::Error>> {
+    pub async fn new(
+        socket_path: &Path,
+        setup_service: Option<String>,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         let client = DaemonClient::connect(socket_path).await?;
         let state = DaemonState::new();
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
@@ -1168,7 +1251,7 @@ impl App {
             .iter()
             .position(|p| p.name == prefs.footer_preset_name)
             .unwrap_or(0);
-        Ok(Self {
+        let mut app = Self {
             theme,
             themes,
             client,
@@ -1208,6 +1291,7 @@ impl App {
             },
             browse_detail: None,
             yt_results_cache: Vec::new(),
+            downloads: std::collections::HashMap::new(),
             playlist_cache: Vec::new(),
             playlist_tracks_cache: Vec::new(),
             spotify: SpotifyView {
@@ -1368,10 +1452,82 @@ impl App {
             hide_help_bar: true,
             hide_footer: false,
             pending_suspend: false,
+            setup: SetupView::default(),
             last_config_mtime: std::fs::metadata(prefs_path())
                 .ok()
                 .and_then(|m| m.modified().ok()),
-        })
+        };
+        if let Some(service) = setup_service {
+            app.open_setup_picker(Some(&service));
+        }
+        Ok(app)
+    }
+
+    /// Open the `gtm setup` walkthrough, either the service chooser or the
+    /// matching setup picker directly. Called from `gtm setup SERVICE`.
+    pub fn open_setup_picker(&mut self, service: Option<&str>) {
+        match service.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
+            Some("spotify") => {
+                self.setup.selection = 0;
+                self.pickers.open(PickerId::SpotifyLink);
+                self.open_spotify_link();
+            }
+            Some("lastfm" | "last.fm") => {
+                self.setup.selection = 1;
+                self.pickers.open(PickerId::LastfmAuth);
+                self.on_picker_opened(PickerId::LastfmAuth);
+            }
+            Some("subsonic") | Some("navidrome") => {
+                self.setup.selection = 2;
+                self.pickers.open(PickerId::SubsonicSetup);
+                self.on_picker_opened(PickerId::SubsonicSetup);
+            }
+            _ => self.pickers.open(PickerId::Setup),
+        }
+    }
+
+    /// Kick off the Spotify OAuth browser flow, opening the picker and
+    /// requesting the authorize URL from the daemon.
+    pub fn open_spotify_link(&mut self) {
+        let client_id = self.spotify.link_input.trim().to_string();
+        let client_id = if client_id.is_empty() {
+            gtm_core::spotify::LIBRESPOT_CLIENT_ID.to_string()
+        } else {
+            client_id
+        };
+        let port = self
+            .spotify
+            .oauth_port
+            .trim()
+            .parse::<u16>()
+            .unwrap_or(8990);
+        gtm_core::secret::set_secret(gtm_core::secret::SPOTIFY_CLIENT_ID_KEY, &client_id);
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        self.spotify.link_input.clear();
+        self.spotify.oauth_pending = true;
+        self.spotify.oauth_url = None;
+        self.spotify.oauth_error = None;
+        tokio::spawn(async move {
+            match c.spotify().oauth_start(&client_id, port).await {
+                Ok(url) => {
+                    let _ = ipc_tx.send(IpcResult::SpotifyOauthUrl(url.clone()));
+                    let _ = ipc_tx.send(IpcResult::Notification(
+                        "Spotify".to_string(),
+                        "Authorize gtm in your browser, then playlists sync automatically…"
+                            .to_string(),
+                        NotificationKind::Info,
+                        NotifType::Spotify,
+                    ));
+                    try_open_browser(&url, &ipc_tx);
+                }
+                Err(e) => {
+                    let _ = ipc_tx.send(IpcResult::SpotifyOauthError(format!(
+                        "Spotify link failed: {e}"
+                    )));
+                }
+            }
+        });
     }
 
     /// Check if config.toml was modified since last load; if so, re-parse
@@ -2216,6 +2372,74 @@ impl App {
                         self.radio.top = stations;
                         self.radio.top_pending = false;
                     }
+                    IpcResult::LastfmStatus(st) => {
+                        let was_ready = self.setup.lastfm_status.as_ref().is_some_and(|s| s.ready);
+                        self.setup.lastfm_status = st;
+                        let now_ready = self.setup.lastfm_status.as_ref().is_some_and(|s| s.ready);
+                        if now_ready
+                            && !was_ready
+                            && self
+                                .pickers
+                                .top()
+                                .is_some_and(|o| o.id == PickerId::LastfmAuth)
+                        {
+                            self.setup.lastfm_pending = false;
+                            self.setup.lastfm_auth_url = None;
+                            self.setup.lastfm_error = None;
+                            self.notify_titled(
+                                "Last.fm",
+                                "Last.fm linked — scrobbling is now active",
+                                NotificationKind::Success,
+                                false,
+                                NotifType::Lastfm,
+                            );
+                            self.close_top_picker_with_cleanup();
+                        }
+                    }
+                    IpcResult::LastfmAuthUrl(url) => {
+                        self.setup.lastfm_auth_url = Some(url);
+                        self.setup.lastfm_pending = true;
+                        let c = self.client.clone();
+                        let ipc_tx = self.ipc_tx.clone();
+                        tokio::spawn(async move {
+                            match crate::oauth_capture::capture_lastfm_token_loopback().await {
+                                Ok(token) if token.is_empty() => {
+                                    self_err(&ipc_tx, "no Last.fm token provided".to_string());
+                                }
+                                Ok(token) => match c.lastfm().authenticate(token.trim()).await {
+                                    Ok(()) => match c.lastfm().status().await {
+                                        Ok(st) => {
+                                            let _ = ipc_tx.send(IpcResult::LastfmStatus(Some(st)));
+                                        }
+                                        Err(e) => {
+                                            self_err(&ipc_tx, format!("last.fm status failed: {e}"))
+                                        }
+                                    },
+                                    Err(e) => {
+                                        let _ = ipc_tx.send(IpcResult::LastfmAuthError(format!(
+                                            "Last.fm authorize failed: {e}"
+                                        )));
+                                    }
+                                },
+                                Err(e) => {
+                                    let _ = ipc_tx.send(IpcResult::LastfmAuthError(format!(
+                                        "Last.fm callback failed: {e}"
+                                    )));
+                                }
+                            }
+                        });
+                    }
+                    IpcResult::LastfmAuthError(e) => {
+                        self.setup.lastfm_pending = false;
+                        self.setup.lastfm_error = Some(e.clone());
+                        self.notify_titled(
+                            "Last.fm",
+                            e,
+                            NotificationKind::Error,
+                            false,
+                            NotifType::Lastfm,
+                        );
+                    }
                     IpcResult::LibraryTracks(tracks) => self.tracks_cache = tracks,
                     IpcResult::Playlists(playlists) => self.playlist_cache = playlists,
                     IpcResult::PlaylistCreated(id, _name) => {
@@ -2266,6 +2490,51 @@ impl App {
                     }
                     IpcResult::Error(e) => {
                         self.notify(e, NotificationKind::Error);
+                    }
+                    IpcResult::YtDownloadProgress {
+                        id,
+                        url,
+                        title,
+                        progress,
+                        status,
+                        file_path,
+                        downloaded_bytes,
+                        total_bytes,
+                        rate_bytes_per_sec,
+                        eta_secs,
+                    } => {
+                        let terminal =
+                            matches!(status.as_str(), "completed" | "failed" | "cancelled");
+                        if terminal {
+                            self.downloads.remove(&id);
+                        } else {
+                            let last = self.downloads.get(&id).cloned();
+                            let smooth = if let Some(last) = last
+                                && last.percent > 0.0
+                                && progress > last.percent
+                            {
+                                // EMA with ~0.6 inertia per update (~250ms) so
+                                // the footer bar glides instead of jittering.
+                                last.percent + (progress - last.percent) * 0.4
+                            } else {
+                                progress
+                            };
+                            self.downloads.insert(
+                                id,
+                                DownloadProgressView {
+                                    url,
+                                    title,
+                                    status,
+                                    file_path,
+                                    percent: smooth,
+                                    downloaded_bytes,
+                                    total_bytes,
+                                    rate_bytes_per_sec,
+                                    eta_secs,
+                                    updated_at: std::time::Instant::now(),
+                                },
+                            );
+                        }
                     }
                     IpcResult::PopupCoverArt(cover, track_id, fetch_gen) => {
                         if !no_image_protocol()
@@ -3329,8 +3598,48 @@ impl App {
                     }
                 });
             }
+            PickerId::Setup => {
+                self.refresh_subsonic_status();
+                let c = self.client.clone();
+                let ipc_tx = self.ipc_tx.clone();
+                tokio::spawn(async move {
+                    match c.lastfm().status().await {
+                        Ok(st) => {
+                            let _ = ipc_tx.send(IpcResult::LastfmStatus(Some(st)));
+                        }
+                        Err(e) => {
+                            self_err(&ipc_tx, format!("last.fm status failed: {e}"));
+                        }
+                    }
+                    match c.spotify().status().await {
+                        Ok(st) => {
+                            let _ = ipc_tx.send(IpcResult::SpotifyStatus(st));
+                        }
+                        Err(e) => {
+                            self_err(&ipc_tx, format!("spotify status failed: {e}"));
+                        }
+                    }
+                });
+            }
+            PickerId::LastfmAuth => self.refresh_lastfm_status(),
             _ => {}
         }
+    }
+
+    /// Re-pull the Last.fm link status into the setup view.
+    pub fn refresh_lastfm_status(&mut self) {
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            match c.lastfm().status().await {
+                Ok(st) => {
+                    let _ = ipc_tx.send(IpcResult::LastfmStatus(Some(st)));
+                }
+                Err(e) => {
+                    self_err(&ipc_tx, format!("last.fm status failed: {e}"));
+                }
+            }
+        });
     }
 
     pub fn refresh_subsonic_status(&mut self) {
@@ -3611,9 +3920,10 @@ impl App {
         if !self.in_spotify_playlist() {
             return None;
         }
-        self.spotify
-            .playlist_tracks_cache
-            .get(self.list_pos().saturating_sub(Self::SPOTIFY_PLAYLIST_ACTION_ROWS))
+        self.spotify.playlist_tracks_cache.get(
+            self.list_pos()
+                .saturating_sub(Self::SPOTIFY_PLAYLIST_ACTION_ROWS),
+        )
     }
 
     /// Track ids owned by the list position `pos` (when that row maps to a
@@ -3731,6 +4041,16 @@ impl App {
         };
         let tid = track.id;
         let track_path = track.path.clone();
+        // Any cached cover bytes must belong to the track currently shown as
+        // up-next. A cursor jump, queue replacement, or thumbnail clear can
+        // reset the fetch guard without invalidating the bytes; dropping them
+        // here guarantees the preview can never show art for the previous
+        // track (rendered from a stale `cover_block` fallback).
+        if self.queue.preview_cover.is_some() && self.queue.last_preview_cover_fetch_id != Some(tid)
+        {
+            self.queue.preview_cover = None;
+            self.queue.preview_cover_stateful = None;
+        }
         // A failed lookup clears the gen guard so a later preview can retry;
         // this throttle prevents the per-frame render from re-fetching a
         // cover that isn't there, at most once per 30s per track.
@@ -4193,20 +4513,42 @@ impl App {
                                 Ok(res) => res,
                                 Err(e) => return format!("Download error: {e}"),
                             };
-                            match res {
+                            match &res {
                                 DaemonRes::YtDownloadProgress {
+                                    id,
+                                    url,
+                                    title,
+                                    progress,
                                     status,
                                     error,
                                     file_path: fp,
-                                    ..
+                                    downloaded_bytes,
+                                    total_bytes,
+                                    rate_bytes_per_sec,
+                                    eta_secs,
                                 } => {
+                                    // Mirror live progress to the TUI footer so
+                                    // the user sees the download moving.
+                                    let _ = ipc.send(IpcResult::YtDownloadProgress {
+                                        id: *id,
+                                        url: url.clone(),
+                                        title: title.clone(),
+                                        progress: *progress,
+                                        status: status.clone(),
+                                        file_path: fp.clone(),
+                                        downloaded_bytes: *downloaded_bytes,
+                                        total_bytes: *total_bytes,
+                                        rate_bytes_per_sec: *rate_bytes_per_sec,
+                                        eta_secs: *eta_secs,
+                                    });
                                     if let Some(fp) = fp {
                                         if status == "completed" {
-                                            break fp;
+                                            break fp.clone();
                                         }
                                     }
                                     if status == "failed" || status == "cancelled" {
                                         return error
+                                            .clone()
                                             .unwrap_or_else(|| format!("Download {status}"));
                                     }
                                 }
@@ -4215,7 +4557,7 @@ impl App {
                                 }
                                 DaemonRes::Value { .. } => {}
                                 _ => {
-                                    return "Download error: unexpected daemon response".to_string()
+                                    return "Download error: unexpected daemon response".to_string();
                                 }
                             }
                             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -4223,9 +4565,7 @@ impl App {
                         let audio_dir = std::path::PathBuf::from(&file_path)
                             .parent()
                             .map(|p| p.to_path_buf())
-                            .unwrap_or_else(|| {
-                                std::path::PathBuf::from(".")
-                            });
+                            .unwrap_or_else(|| std::path::PathBuf::from("."));
 
                         let _ = client2
                             .library()
@@ -4681,8 +5021,8 @@ impl App {
     /// picker (used for the cover-art preview).
     fn current_subsonic_track_id(&self) -> Option<String> {
         let top = self.pickers.top()?;
-        let rows_before_tracks = self.subsonic.search_results.artists.len()
-            + self.subsonic.search_results.albums.len();
+        let rows_before_tracks =
+            self.subsonic.search_results.artists.len() + self.subsonic.search_results.albums.len();
         match top.id {
             PickerId::SubsonicSearch => {
                 if top.selected >= rows_before_tracks {
@@ -4695,9 +5035,11 @@ impl App {
                     None
                 }
             }
-            PickerId::SubsonicAlbumTracks => {
-                self.subsonic.album_tracks.get(top.selected).map(|t| t.id.clone())
-            }
+            PickerId::SubsonicAlbumTracks => self
+                .subsonic
+                .album_tracks
+                .get(top.selected)
+                .map(|t| t.id.clone()),
             _ => None,
         }
     }
@@ -5134,8 +5476,7 @@ impl App {
                         // "shuffle play this playlist" instead of toggling the
                         // global queue shuffle.
                         if self.in_spotify_playlist() && !self.library_pane_focus {
-                            let playlist_id =
-                                self.browse_detail.clone().unwrap_or_default();
+                            let playlist_id = self.browse_detail.clone().unwrap_or_default();
                             let c = self.client.clone();
                             let ipc_tx2 = self.ipc_tx.clone();
                             self.footer_notification = Some((
@@ -5502,24 +5843,19 @@ impl App {
                                         let c = self.client.clone();
                                         let ipc_tx2 = self.ipc_tx.clone();
                                         tokio::spawn(async move {
-                                            match c
-                                                .spotify()
-                                                .play_all(&playlist_id, shuffle)
-                                                .await
+                                            match c.spotify().play_all(&playlist_id, shuffle).await
                                             {
                                                 Ok(()) => {
-                                                    let _ = ipc_tx2.send(
-                                                        IpcResult::Notification(
-                                                            "Spotify".to_string(),
-                                                            if shuffle {
-                                                                "Shuffling playlist".to_string()
-                                                            } else {
-                                                                "Playing playlist".to_string()
-                                                            },
-                                                            NotificationKind::Success,
-                                                            NotifType::Spotify,
-                                                        ),
-                                                    );
+                                                    let _ = ipc_tx2.send(IpcResult::Notification(
+                                                        "Spotify".to_string(),
+                                                        if shuffle {
+                                                            "Shuffling playlist".to_string()
+                                                        } else {
+                                                            "Playing playlist".to_string()
+                                                        },
+                                                        NotificationKind::Success,
+                                                        NotifType::Spotify,
+                                                    ));
                                                 }
                                                 Err(e) => {
                                                     let _ = ipc_tx2.send(IpcResult::Error(
@@ -6013,9 +6349,7 @@ impl App {
                             )
                             .await
                     } else {
-                        c.spotify()
-                            .resolve(&playlist_id, track_index)
-                            .await
+                        c.spotify().resolve(&playlist_id, track_index).await
                     };
                     match res {
                         Ok(()) => {
@@ -6805,7 +7139,10 @@ impl App {
         }
 
         // ─── Subsonic search picker ───
-        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::SubsonicSearch)) {
+        if matches!(
+            self.pickers.top().map(|o| o.id),
+            Some(PickerId::SubsonicSearch)
+        ) {
             match key.code {
                 KeyCode::Char(c) => {
                     if !c.is_control() {
@@ -6844,7 +7181,13 @@ impl App {
                         return;
                     }
                     if sel >= n_artists && sel < n_artists + n_albums {
-                        if let Some(album) = self.subsonic.search_results.albums.get(sel - n_artists).cloned() {
+                        if let Some(album) = self
+                            .subsonic
+                            .search_results
+                            .albums
+                            .get(sel - n_artists)
+                            .cloned()
+                        {
                             self.subsonic.selected_album = Some(album);
                             self.subsonic.album_tracks.clear();
                             self.pickers.open(PickerId::SubsonicAlbumTracks);
@@ -6892,7 +7235,10 @@ impl App {
         }
 
         // ─── Subsonic album browser ───
-        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::SubsonicAlbums)) {
+        if matches!(
+            self.pickers.top().map(|o| o.id),
+            Some(PickerId::SubsonicAlbums)
+        ) {
             match key.code {
                 KeyCode::Enter => {
                     let sel = self.pickers.top().map_or(0, |o| o.selected);
@@ -6977,8 +7323,94 @@ impl App {
             return;
         }
 
+        // ─── gtm setup service chooser ───
+        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::Setup)) {
+            match key.code {
+                KeyCode::Up | KeyCode::Down => {
+                    let n = 3;
+                    self.setup.selection = (self.setup.selection as i32
+                        + if key.code == KeyCode::Down { 1 } else { -1 })
+                    .rem_euclid(n) as usize;
+                }
+                KeyCode::Enter => {
+                    let (sel, service) = crate::app::setup_selection(self);
+                    let _ = sel;
+                    self.pickers.close_top();
+                    self.open_setup_picker(Some(service));
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ─── Last.fm setup form ───
+        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::LastfmAuth)) {
+            match key.code {
+                KeyCode::Char(c) => {
+                    if !c.is_control() {
+                        match self.setup.lastfm_focus {
+                            0 => self.setup.lastfm_api_key.push(c),
+                            _ => self.setup.lastfm_api_secret.push(c),
+                        }
+                    }
+                }
+                KeyCode::Backspace => match self.setup.lastfm_focus {
+                    0 => {
+                        self.setup.lastfm_api_key.pop();
+                    }
+                    _ => {
+                        self.setup.lastfm_api_secret.pop();
+                    }
+                },
+                KeyCode::Tab => {
+                    self.setup.lastfm_focus = (self.setup.lastfm_focus + 1) % 2;
+                }
+                KeyCode::Enter => {
+                    let api_key = self.setup.lastfm_api_key.clone();
+                    let api_secret = self.setup.lastfm_api_secret.clone();
+                    if api_key.trim().is_empty() || api_secret.trim().is_empty() {
+                        self.setup.lastfm_error = Some("API key and secret are required".into());
+                        return;
+                    }
+                    let c = self.client.clone();
+                    let ipc_tx = self.ipc_tx.clone();
+                    self.setup.lastfm_pending = true;
+                    self.setup.lastfm_error = None;
+                    tokio::spawn(async move {
+                        match c
+                            .lastfm()
+                            .set_config(true, Some(api_key), Some(api_secret), None, None, None)
+                            .await
+                        {
+                            Ok(()) => match c.lastfm().auth_url().await {
+                                Ok(url) => {
+                                    let _ = webbrowser::open(&url);
+                                    let _ = ipc_tx.send(IpcResult::LastfmAuthUrl(url));
+                                }
+                                Err(e) => {
+                                    let _ = ipc_tx.send(IpcResult::LastfmAuthError(format!(
+                                        "Last.fm auth URL failed: {e}"
+                                    )));
+                                }
+                            },
+                            Err(e) => {
+                                let _ = ipc_tx.send(IpcResult::LastfmAuthError(format!(
+                                    "saving Last.fm config failed: {e}"
+                                )));
+                            }
+                        }
+                    });
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // ─── Subsonic setup form ───
-        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::SubsonicSetup)) {
+        if matches!(
+            self.pickers.top().map(|o| o.id),
+            Some(PickerId::SubsonicSetup)
+        ) {
             match key.code {
                 KeyCode::Char(c) => {
                     if !c.is_control() {
@@ -6990,9 +7422,15 @@ impl App {
                     }
                 }
                 KeyCode::Backspace => match self.subsonic.form_focus {
-                    0 => { self.subsonic.form_server.pop(); }
-                    1 => { self.subsonic.form_user.pop(); }
-                    _ => { self.subsonic.form_password.pop(); }
+                    0 => {
+                        self.subsonic.form_server.pop();
+                    }
+                    1 => {
+                        self.subsonic.form_user.pop();
+                    }
+                    _ => {
+                        self.subsonic.form_password.pop();
+                    }
                 },
                 KeyCode::Tab => {
                     self.subsonic.form_focus = (self.subsonic.form_focus + 1) % 3;
@@ -7027,7 +7465,10 @@ impl App {
         }
 
         // ─── Podcast feeds ───
-        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::PodcastFeeds)) {
+        if matches!(
+            self.pickers.top().map(|o| o.id),
+            Some(PickerId::PodcastFeeds)
+        ) {
             match key.code {
                 KeyCode::Enter => {
                     let sel = self.pickers.top().map_or(0, |o| o.selected);
@@ -7071,14 +7512,15 @@ impl App {
         }
 
         // ─── Podcast episodes ───
-        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::PodcastEpisodes)) {
+        if matches!(
+            self.pickers.top().map(|o| o.id),
+            Some(PickerId::PodcastEpisodes)
+        ) {
             match key.code {
                 KeyCode::Enter => {
                     let idx = self.pickers.top().map_or(0, |o| o.selected);
                     let feed_id = self.podcast.episodes_feed_id.clone();
-                    if let (Some(feed_id), Some(_ep)) =
-                        (feed_id, self.podcast.episodes.get(idx))
-                    {
+                    if let (Some(feed_id), Some(_ep)) = (feed_id, self.podcast.episodes.get(idx)) {
                         let c = self.client.clone();
                         self.pickers.close_top();
                         tokio::spawn(async move {
@@ -7100,7 +7542,10 @@ impl App {
         }
 
         // ─── Podcast subscribe form ───
-        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::PodcastSubscribe)) {
+        if matches!(
+            self.pickers.top().map(|o| o.id),
+            Some(PickerId::PodcastSubscribe)
+        ) {
             match key.code {
                 KeyCode::Char(c) => {
                     if !c.is_control() {
@@ -7140,7 +7585,10 @@ impl App {
         }
 
         // ─── Radio search ───
-        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::RadioSearch)) {
+        if matches!(
+            self.pickers.top().map(|o| o.id),
+            Some(PickerId::RadioSearch)
+        ) {
             match key.code {
                 KeyCode::Char(c) => {
                     if !c.is_control() {
@@ -7157,7 +7605,10 @@ impl App {
                     self.radio.search.clear();
                 }
                 KeyCode::Enter => {
-                    let q = self.pickers.top().map_or(String::new(), |o| o.query.clone());
+                    let q = self
+                        .pickers
+                        .top()
+                        .map_or(String::new(), |o| o.query.clone());
                     if self.radio.search_pending {
                         return;
                     }

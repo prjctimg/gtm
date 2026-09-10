@@ -271,11 +271,8 @@ fn daemon_req_parse_cmd_lastfm() {
         assert_eq!(req.cmd_name(), cmd);
     }
 
-    let req = DaemonReq::parse_cmd(
-        "lastfm_authenticate",
-        serde_json::json!({ "token": "t1" }),
-    )
-    .unwrap();
+    let req =
+        DaemonReq::parse_cmd("lastfm_authenticate", serde_json::json!({ "token": "t1" })).unwrap();
     match req {
         DaemonReq::LastfmAuthenticate { token } => assert_eq!(token, "t1"),
         other => panic!("expected LastfmAuthenticate, got {other:?}"),
@@ -492,6 +489,24 @@ fn daemon_res_lastfm_wire_roundtrip() {
             format!("{:?}", back),
             "round-trip failed for {cmd}"
         );
+    }
+}
+
+#[test]
+fn daemon_res_spotify_oauth_wire_roundtrip() {
+    for res in [
+        DaemonRes::SpotifyOauthStarted {
+            url: "https://accounts.spotify.com/authorize?response_type=code&client_id=c1".into(),
+        },
+        DaemonRes::SpotifyOauthStarted {
+            url: "https://accounts.spotify.com/authorize?client_id=c2&scope=playlist-read-private"
+                .into(),
+        },
+    ] {
+        let expected = format!("{:?}", res);
+        let wire = res.to_wire(1);
+        let back = DaemonRes::from_wire("spotify_oauth_start", &wire);
+        assert_eq!(expected, format!("{:?}", back));
     }
 }
 

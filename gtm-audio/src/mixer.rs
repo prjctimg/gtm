@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
 use rodio::cpal::traits::{DeviceTrait, HostTrait};
+use rodio::{Decoder, DeviceSinkBuilder, Player, Source};
 
 use crate::backend::{AudioError, AudioEvent, AudioResult};
 use crate::buffer::{
@@ -219,7 +219,10 @@ impl Mixer for AudioMixer {
     fn list_devices(&self) -> Vec<String> {
         rodio::cpal::default_host()
             .output_devices()
-            .map(|devs| devs.filter_map(|d| d.name().ok()).collect())
+            .map(|devs| {
+                devs.filter_map(|d| d.id().map(|id| id.to_string()).ok())
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -237,10 +240,12 @@ impl Mixer for AudioMixer {
         self.player_b.stop();
 
         let mut fresh = Self::open_for_device(name)?;
-        fresh.set_volume(volume);
+        let _ = fresh.set_volume(volume);
         fresh.eq_enabled.store(eq_enabled, Ordering::Relaxed);
         fresh.eq_gains = eq_gains;
-        fresh.reverb_enabled.store(reverb_enabled, Ordering::Relaxed);
+        fresh
+            .reverb_enabled
+            .store(reverb_enabled, Ordering::Relaxed);
         *fresh.reverb_room_size.lock().unwrap() = reverb_room;
         fresh.speed.store(speed);
         *self = fresh;
@@ -278,11 +283,7 @@ impl AudioMixer {
                 .output_devices()
                 .map_err(|e| AudioError::OutputError(e.to_string()))?;
             let device = devices
-                .filter_map(|d| {
-                    d.name()
-                        .map(|name| (name, d))
-                        .ok()
-                })
+                .filter_map(|d| d.id().map(|id| (id.to_string(), d)).ok())
                 .find(|(name, _)| *name == dev_name)
                 .map(|(_, d)| d)
                 .ok_or_else(|| {

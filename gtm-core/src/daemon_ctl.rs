@@ -7,6 +7,8 @@
 
 use std::path::Path;
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
 use crate::ipc::{DaemonReq, WireReq};
 
 /// Locate the `gtmd` daemon binary: next to the current executable, on
@@ -41,8 +43,6 @@ pub fn find_gtmd_binary() -> Result<std::path::PathBuf, String> {
 /// Send a `ping` wire frame and wait briefly for a reply. Returns `true` when
 /// a live daemon answers.
 async fn ping_socket(socket_path: &Path, timeout: std::time::Duration) -> bool {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
     let Ok(mut stream) = tokio::net::UnixStream::connect(socket_path).await else {
         return false;
     };
@@ -54,7 +54,11 @@ async fn ping_socket(socket_path: &Path, timeout: std::time::Duration) -> bool {
         return false;
     };
     let mut buf = [0u8; 256];
-    if stream.write_all(format!("{ping}\n").as_bytes()).await.is_err() {
+    if stream
+        .write_all(format!("{ping}\n").as_bytes())
+        .await
+        .is_err()
+    {
         return false;
     }
     matches!(

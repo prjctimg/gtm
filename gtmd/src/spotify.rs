@@ -133,7 +133,6 @@ impl SpotifyManager {
 
     /// Current OAuth access token, if a client is linked.
     pub async fn access_token(&self) -> Option<String> {
-        use rspotify::clients::BaseClient;
         let client = self.client.as_ref()?;
         let arc = client.get_token();
         let guard = arc.lock().await.ok()?;

@@ -22,7 +22,7 @@ pub use decoder::{SPECTRUM_BINS, SpectrumAnalyzer};
 pub use eq::{EqGains, EqSource, ReverbSource};
 pub use mixer::{AudioMixer, Mixer};
 pub use silent::NullMixer;
-pub use stretch::{SpeedControl, TimeStretchSource, DEFAULT_SPEED, MAX_SPEED, MIN_SPEED};
+pub use stretch::{DEFAULT_SPEED, MAX_SPEED, MIN_SPEED, SpeedControl, TimeStretchSource};
 
 #[cfg(feature = "pulseaudio")]
 pub use pulse::PulseAudioMixer;

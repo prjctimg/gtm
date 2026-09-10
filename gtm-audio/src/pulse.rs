@@ -286,7 +286,8 @@ impl PulseAudioMixer {
             crate::stretch::TimeStretchSource::new(source, self.speed.clone()),
         );
         let source = if self.eq_enabled.load(Ordering::Relaxed) {
-            Box::new(EqSource::new(source, self.eq_gains.clone())) as Box<dyn Source<Item = f32> + Send>
+            Box::new(EqSource::new(source, self.eq_gains.clone()))
+                as Box<dyn Source<Item = f32> + Send>
         } else {
             source
         };

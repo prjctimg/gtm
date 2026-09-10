@@ -4,6 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -69,7 +70,10 @@ impl SubsonicManager {
         match serde_json::from_str::<SubsonicConfig>(&raw) {
             Ok(cfg) => {
                 self.config = Some(cfg);
-                info!("loaded subsonic config for {}", self.config.as_ref().unwrap().server);
+                info!(
+                    "loaded subsonic config for {}",
+                    self.config.as_ref().unwrap().server
+                );
             }
             Err(e) => warn!("ignoring corrupt subsonic config: {e}"),
         }
@@ -87,7 +91,8 @@ impl SubsonicManager {
             username: username.trim().to_string(),
             password,
         };
-        if cfg.server.trim().is_empty() || cfg.username.trim().is_empty() || cfg.password.is_empty() {
+        if cfg.server.trim().is_empty() || cfg.username.trim().is_empty() || cfg.password.is_empty()
+        {
             return Err("server, username, and password are all required".into());
         }
         let probe = self.request(&cfg, "ping", &[]).await?;
@@ -96,15 +101,20 @@ impl SubsonicManager {
         }
         self.config = Some(cfg.clone());
         self.error = None;
-        gtm_core::secret::set_secret(gtm_core::secret::SUBSONIC_KEY, &serde_json::to_string(&cfg).unwrap_or_default());
+        gtm_core::secret::set_secret(
+            gtm_core::secret::SUBSONIC_KEY,
+            &serde_json::to_string(&cfg).unwrap_or_default(),
+        );
         self.save_config(&cfg)
     }
 
     fn save_config(&self, cfg: &SubsonicConfig) -> Result<(), String> {
-        use std::os::unix::fs::PermissionsExt;
         let raw = serde_json::to_string_pretty(cfg).map_err(|e| e.to_string())?;
         std::fs::write(self.config_path(), raw).map_err(|e| format!("write: {e}"))?;
-        let _ = std::fs::set_permissions(self.config_path(), std::fs::Permissions::from_mode(CONFIG_PERMS));
+        let _ = std::fs::set_permissions(
+            self.config_path(),
+            std::fs::Permissions::from_mode(CONFIG_PERMS),
+        );
         Ok(())
     }
 
@@ -137,7 +147,18 @@ impl SubsonicManager {
 
     pub async fn search(&mut self, query: &str) -> Result<SubsonicSearchResults, String> {
         let cfg = self.require()?;
-        let resp = self.request(cfg, "search3", &[("query", query), ("artistCount", "20"), ("albumCount", "20"), ("songCount", "40")]).await?;
+        let resp = self
+            .request(
+                cfg,
+                "search3",
+                &[
+                    ("query", query),
+                    ("artistCount", "20"),
+                    ("albumCount", "20"),
+                    ("songCount", "40"),
+                ],
+            )
+            .await?;
         let body = resp
             .get("searchResult3")
             .cloned()
@@ -189,7 +210,11 @@ impl SubsonicManager {
         let mut params = self.auth_params(cfg);
         params.push(("id".to_string(), track_id.to_string()));
         params.push(("maxBitRate".to_string(), "0".to_string()));
-        Ok(format!("{}/rest/stream?{}", cfg.server, encode_params(&params)))
+        Ok(format!(
+            "{}/rest/stream?{}",
+            cfg.server,
+            encode_params(&params)
+        ))
     }
 
     /// Fetch cover art bytes for a track/album, base64-encoded.
@@ -199,7 +224,15 @@ impl SubsonicManager {
         params.push(("id".to_string(), track_id.to_string()));
         params.push(("size".to_string(), size.to_string()));
         let url = format!("{}/rest/getCoverArt?{}", cfg.server, encode_params(&params));
-        let bytes = self.client.get(&url).send().await.ok()?.bytes().await.ok()?;
+        let bytes = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .ok()?
+            .bytes()
+            .await
+            .ok()?;
         (!bytes.is_empty()).then(|| base64::engine::general_purpose::STANDARD.encode(&bytes))
     }
 
@@ -251,7 +284,11 @@ impl SubsonicManager {
         let sr = json
             .get("subsonic-response")
             .ok_or_else(|| format!("{method}: missing subsonic-response"))?;
-        if let Some(code) = sr.get("error").and_then(|e| e.get("code")).and_then(|c| c.as_i64()) {
+        if let Some(code) = sr
+            .get("error")
+            .and_then(|e| e.get("code"))
+            .and_then(|c| c.as_i64())
+        {
             let msg = sr
                 .get("error")
                 .and_then(|e| e.get("message"))
@@ -274,7 +311,11 @@ fn parse_artists(v: Option<&serde_json::Value>) -> Vec<SubsonicArtist> {
         .filter_map(|a| {
             Some(SubsonicArtist {
                 id: a.get("id")?.as_str()?.to_string(),
-                name: a.get("name").and_then(|n| n.as_str()).unwrap_or("Unknown").to_string(),
+                name: a
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("Unknown")
+                    .to_string(),
             })
         })
         .collect()
@@ -286,12 +327,27 @@ fn parse_albums(v: Option<&serde_json::Value>) -> Vec<SubsonicAlbum> {
         .filter_map(|a| {
             Some(SubsonicAlbum {
                 id: a.get("id")?.as_str()?.to_string(),
-                title: a.get("title").and_then(|n| n.as_str()).unwrap_or("Unknown").to_string(),
-                artist: a.get("artist").and_then(|n| n.as_str()).unwrap_or_default().to_string(),
-                artist_id: a.get("artistId").and_then(|n| n.as_str()).unwrap_or_default().to_string(),
+                title: a
+                    .get("title")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("Unknown")
+                    .to_string(),
+                artist: a
+                    .get("artist")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                artist_id: a
+                    .get("artistId")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
                 year: a.get("year").and_then(|y| y.as_i64()),
                 track_count: a.get("trackCount").and_then(|c| c.as_u64()).unwrap_or(0),
-                cover_id: a.get("coverArt").and_then(|c| c.as_str()).map(|s| s.to_string()),
+                cover_id: a
+                    .get("coverArt")
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.to_string()),
             })
         })
         .collect()
@@ -303,15 +359,42 @@ fn parse_tracks(v: Option<&serde_json::Value>) -> Vec<SubsonicTrack> {
         .filter_map(|t| {
             Some(SubsonicTrack {
                 id: t.get("id")?.as_str()?.to_string(),
-                title: t.get("title").and_then(|n| n.as_str()).unwrap_or("Unknown").to_string(),
-                artist: t.get("artist").and_then(|n| n.as_str()).unwrap_or_default().to_string(),
-                album: t.get("album").and_then(|n| n.as_str()).unwrap_or_default().to_string(),
-                album_id: t.get("albumId").and_then(|n| n.as_str()).unwrap_or_default().to_string(),
-                artist_id: t.get("artistId").and_then(|n| n.as_str()).unwrap_or_default().to_string(),
+                title: t
+                    .get("title")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or("Unknown")
+                    .to_string(),
+                artist: t
+                    .get("artist")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                album: t
+                    .get("album")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                album_id: t
+                    .get("albumId")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                artist_id: t
+                    .get("artistId")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
                 duration_secs: t.get("duration").and_then(|d| d.as_u64()).unwrap_or(0),
                 year: t.get("year").and_then(|y| y.as_i64()),
-                cover_id: t.get("coverArt").and_then(|c| c.as_str()).map(|s| s.to_string()),
-                suffix: t.get("suffix").and_then(|c| c.as_str()).unwrap_or_default().to_string(),
+                cover_id: t
+                    .get("coverArt")
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.to_string()),
+                suffix: t
+                    .get("suffix")
+                    .and_then(|c| c.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
                 bit_rate: t.get("bitRate").and_then(|b| b.as_u64()),
             })
         })

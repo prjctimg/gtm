@@ -59,6 +59,7 @@ pub enum FooterModule {
     Notification,
     Time,
     Multiselect,
+    Download,
 }
 
 impl FooterModule {
@@ -83,6 +84,7 @@ impl FooterModule {
             FooterModule::Notification => "Notification",
             FooterModule::Time => "Time",
             FooterModule::Multiselect => "Multiselect",
+            FooterModule::Download => "Download",
         }
     }
 
@@ -108,6 +110,7 @@ impl FooterModule {
             "Notification" => FooterModule::Notification,
             "Time" => FooterModule::Time,
             "Multiselect" => FooterModule::Multiselect,
+            "Download" => FooterModule::Download,
             _ => return None,
         })
     }
@@ -142,6 +145,7 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::KeyAction,
                 FooterModule::Notification,
                 FooterModule::SleepTimer,
+                FooterModule::Download,
             ],
             right: vec![
                 FooterModule::Queue,
@@ -457,6 +461,42 @@ impl Footer {
         Some(msg.clone())
     }
 
+    fn download(app: &App) -> Option<String> {
+        // Prefer the most recently updated in-flight download.
+        let dl = app.downloads.values().max_by_key(|d| d.updated_at)?;
+        if !matches!(dl.status.as_str(), "downloading" | "pending") {
+            return None;
+        }
+        let icon = if crate::ui::use_nerd_fonts() {
+            "\u{f019} " // nf-fa-download
+        } else {
+            "\u{2193} " // ↓
+        };
+        let mut out = format!("{icon}{:.0}%", dl.percent.clamp(0.0, 100.0));
+        if let Some(rate) = dl.rate_bytes_per_sec {
+            out.push_str(&format!(" {}", Footer::format_rate(rate)));
+        }
+        if let Some(eta) = dl.eta_secs {
+            out.push_str(&format!(" ETA {}", format_duration(eta)));
+        }
+        Some(out)
+    }
+
+    fn format_rate(bytes_per_sec: f64) -> String {
+        const KB: f64 = 1024.0;
+        const MB: f64 = KB * 1024.0;
+        const GB: f64 = MB * 1024.0;
+        if bytes_per_sec >= GB {
+            format!("{:.1}GiB/s", bytes_per_sec / GB)
+        } else if bytes_per_sec >= MB {
+            format!("{:.1}MiB/s", bytes_per_sec / MB)
+        } else if bytes_per_sec >= KB {
+            format!("{:.0}KiB/s", bytes_per_sec / KB)
+        } else {
+            format!("{:.0}B/s", bytes_per_sec)
+        }
+    }
+
     fn playback(app: &App) -> String {
         match app.state.status {
             PlaybackStatus::Playing => {
@@ -694,6 +734,7 @@ fn module_color(m: FooterModule, theme: &crate::theme::AppTheme) -> Color {
         FooterModule::Notification => theme.fg_bright,
         FooterModule::Time => theme.tertiary_accent,
         FooterModule::Multiselect => theme.warning,
+        FooterModule::Download => theme.secondary_accent,
     }
 }
 
@@ -717,6 +758,7 @@ fn module_text(m: FooterModule, app: &App) -> Option<String> {
         FooterModule::Notification => Footer::footer_notification(app),
         FooterModule::Time => Footer::time(app),
         FooterModule::Multiselect => Footer::multiselect(app),
+        FooterModule::Download => Footer::download(app),
     }
 }
 
@@ -809,6 +851,7 @@ mod tests {
             FooterModule::EqPreset,
             FooterModule::SleepTimer,
             FooterModule::Notification,
+            FooterModule::Download,
         ] {
             let s = m.as_str();
             assert_eq!(FooterModule::from_str_lossy(s), Some(m));

@@ -11,6 +11,10 @@ on:
     branches: [main, dev]
   workflow_dispatch:
 
+concurrency:
+  group: clippy-fix-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
   pull-requests: write
@@ -37,11 +41,15 @@ jobs:
         run: cargo check --workspace
       - name: Commit and auto-merge fixes
         if: success()
+        shell: bash
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add -A
-          git diff --cached --quiet && echo "nothing to commit" && exit 0
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+            exit 0
+          fi
           git commit -m "style: auto-fix clippy lints"
           git push
       - name: Open PR if verification failed

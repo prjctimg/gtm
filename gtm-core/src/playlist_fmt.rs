@@ -163,9 +163,18 @@ mod tests {
 
     #[test]
     fn kind_from_path_and_extension() {
-        assert_eq!(PlaylistFormatKind::from_path("mix.pls"), PlaylistFormatKind::Pls);
-        assert_eq!(PlaylistFormatKind::from_path("mix.m3u8"), PlaylistFormatKind::M3u8);
-        assert_eq!(PlaylistFormatKind::from_path("mix.txt"), PlaylistFormatKind::M3u8);
+        assert_eq!(
+            PlaylistFormatKind::from_path("mix.pls"),
+            PlaylistFormatKind::Pls
+        );
+        assert_eq!(
+            PlaylistFormatKind::from_path("mix.m3u8"),
+            PlaylistFormatKind::M3u8
+        );
+        assert_eq!(
+            PlaylistFormatKind::from_path("mix.txt"),
+            PlaylistFormatKind::M3u8
+        );
         assert_eq!(PlaylistFormatKind::M3u8.extension(), "m3u8");
         assert_eq!(PlaylistFormatKind::Pls.extension(), "pls");
     }
@@ -185,7 +194,10 @@ mod tests {
         ];
         let content = fmt.render(&playlist, &tracks);
         let paths = fmt.parse_track_lines(&content);
-        assert_eq!(paths, vec!["/a/one.mp3".to_string(), "/b/two.flac".to_string()]);
+        assert_eq!(
+            paths,
+            vec!["/a/one.mp3".to_string(), "/b/two.flac".to_string()]
+        );
         assert!(content.starts_with("#EXTM3U"));
         assert!(content.contains("#EXTINF:180,Artist - Title 1"));
     }
@@ -206,7 +218,10 @@ mod tests {
         let content = fmt.render(&playlist, &tracks);
         println!("{content}");
         let paths = fmt.parse_track_lines(&content);
-        assert_eq!(paths, vec!["/a/one.mp3".to_string(), "/b/two.flac".to_string()]);
+        assert_eq!(
+            paths,
+            vec!["/a/one.mp3".to_string(), "/b/two.flac".to_string()]
+        );
         assert!(content.contains("[playlist]"));
         assert!(content.contains("NumberOfEntries=2"));
     }

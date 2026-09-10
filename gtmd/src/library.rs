@@ -47,7 +47,9 @@ fn format_fmt(
         gtm_core::playlist_fmt::PlaylistFormatKind::M3u8 => {
             Box::new(gtm_core::playlist_fmt::M3u8Format)
         }
-        gtm_core::playlist_fmt::PlaylistFormatKind::Pls => Box::new(gtm_core::playlist_fmt::PlsFormat),
+        gtm_core::playlist_fmt::PlaylistFormatKind::Pls => {
+            Box::new(gtm_core::playlist_fmt::PlsFormat)
+        }
     }
 }
 
@@ -469,10 +471,14 @@ impl Library {
     pub fn playlist_sort(&self, id: i64, field: &str) -> Result<(), String> {
         let mut tracks = self.get_playlist_tracks(id)?;
         let lt = |a: &TrackInfo, b: &TrackInfo| match field {
-            "artist" => {
-                (a.artist.as_str().to_lowercase(), a.title.to_lowercase().as_str())
-                    .cmp(&(b.artist.as_str().to_lowercase(), b.title.to_lowercase().as_str()))
-            }
+            "artist" => (
+                a.artist.as_str().to_lowercase(),
+                a.title.to_lowercase().as_str(),
+            )
+                .cmp(&(
+                    b.artist.as_str().to_lowercase(),
+                    b.title.to_lowercase().as_str(),
+                )),
             "album" => (
                 a.album.as_str().to_lowercase(),
                 a.track_number,
@@ -486,10 +492,7 @@ impl Library {
             "date" => (b.year, a.title.to_lowercase().as_str())
                 .cmp(&(a.year, b.title.to_lowercase().as_str())),
             // "title" and default
-            _ => a
-                .title
-                .to_lowercase()
-                .cmp(&b.title.to_lowercase()),
+            _ => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
         };
         tracks.sort_by(lt);
         let tx = self
@@ -506,7 +509,8 @@ impl Library {
                 .map_err(|e| format!("playlist sort update: {e}"))?;
             }
         }
-        tx.commit().map_err(|e| format!("playlist sort commit: {e}"))
+        tx.commit()
+            .map_err(|e| format!("playlist sort commit: {e}"))
     }
 
     pub fn get_playlist_tracks(&self, id: i64) -> Result<Vec<TrackInfo>, String> {
@@ -597,8 +601,7 @@ impl Library {
         path: &str,
         format: gtm_core::playlist_fmt::PlaylistFormatKind,
     ) -> Result<Playlist, String> {
-        let content =
-            std::fs::read_to_string(path).map_err(|e| format!("read playlist: {e}"))?;
+        let content = std::fs::read_to_string(path).map_err(|e| format!("read playlist: {e}"))?;
 
         let name = std::path::Path::new(path)
             .file_stem()

@@ -277,12 +277,14 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 
 ## Setup
 
-**setup** [*service*]
+**setup** [*service*] [**\--cli**]
 :   Interactive source setup. Without a *service* argument (`spotify`,
-    `lastfm`, or `subsonic`), every unconfigured source is walked through in
-    turn. OAuth steps (Spotify, Last.fm) open your browser and capture the
-    callback response; Last.fm falls back to pasting the token on stdin.
-    The daemon is started automatically if it is not already running.
+    `lastfm`, or `subsonic`), a picker opens and every unconfigured source is
+    walked through in turn. OAuth steps (Spotify, Last.fm) open your browser
+    and capture the callback response automatically; Last.fm's loopback
+    capture falls back to pasting the token on stdin. With **\--cli**, run the
+    plain terminal wizard instead of the TUI. The daemon is started
+    automatically if it is not already running.
 
 ## Daemon
 

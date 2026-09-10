@@ -24,10 +24,7 @@ pub struct HttpReader {
 impl HttpReader {
     /// Issue a GET for `url`, failing fast on non-2xx responses.
     pub fn open(url: &str) -> std::io::Result<Self> {
-        let response = build_client()?
-            .get(url)
-            .send()
-            .map_err(io_other)?;
+        let response = build_client()?.get(url).send().map_err(io_other)?;
         if !response.status().is_success() {
             return Err(std::io::Error::other(format!(
                 "stream request failed: HTTP {}",
@@ -51,7 +48,9 @@ impl Read for HttpReader {
 
 impl Seek for HttpReader {
     fn seek(&mut self, _pos: SeekFrom) -> std::io::Result<u64> {
-        Err(std::io::Error::other("streaming source does not support seeking"))
+        Err(std::io::Error::other(
+            "streaming source does not support seeking",
+        ))
     }
 }
 

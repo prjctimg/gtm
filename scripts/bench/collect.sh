@@ -53,7 +53,7 @@ for player in "${PLAYERS[@]}"; do
       echo "  ${key}: SKIPPED (no parseable result)" >&2
       continue
     fi
-    echo "  ${key}: $(printf '%s' "${line}" | jq -c '[.peak_rss_kb,.mean_rss_kb,.cpu_ms]')" >&2
+    echo "  ${key}: $(printf '%s' "${line}" | jq -c '[.peak_rss_kb,.mean_rss_kb,.cpu_ms,.p50_latency_kb,.p95_latency_kb]')" >&2
     RUNS="$(printf '%s' "${RUNS}" | jq --arg key "${key}" --argjson v "$(printf '%s' "${line}" | jq 'del(.player,.file,.error)')" '.[$key] = $v')"
   done
 done

@@ -21,10 +21,10 @@ use crate::ipc::{
     CacheKind, DaemonEvent, DaemonReq, DaemonRes, LibraryAction, MetadataPatch, PROTOCOL_VERSION,
     QueueAction, SyncKind, WireReq, WireRes,
 };
-use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
-use crate::subsonic::{SubsonicAlbum, SubsonicSearchResults, SubsonicStatus, SubsonicTrack};
 use crate::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 use crate::radio::RadioStation;
+use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
+use crate::subsonic::{SubsonicAlbum, SubsonicSearchResults, SubsonicStatus, SubsonicTrack};
 use crate::track;
 use crate::wire;
 
@@ -348,7 +348,9 @@ impl DaemonClient {
     /// Current pitch-preserving playback rate.
     pub async fn speed(&self) -> Result<f32> {
         match self.send_raw(DaemonReq::GetSpeed).await? {
-            DaemonRes::Value { value } => Ok(value.get("speed").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32),
+            DaemonRes::Value { value } => {
+                Ok(value.get("speed").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32)
+            }
             _ => Err(CoreError::Daemon("unexpected response to get_speed".into())),
         }
     }
@@ -356,8 +358,13 @@ impl DaemonClient {
     /// Current low-power mode flag.
     pub async fn low_power(&self) -> Result<bool> {
         match self.send_raw(DaemonReq::GetLowPower).await? {
-            DaemonRes::Value { value } => Ok(value.get("low_power").and_then(|v| v.as_bool()).unwrap_or(false)),
-            _ => Err(CoreError::Daemon("unexpected response to get_low_power".into())),
+            DaemonRes::Value { value } => Ok(value
+                .get("low_power")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)),
+            _ => Err(CoreError::Daemon(
+                "unexpected response to get_low_power".into(),
+            )),
         }
     }
 
@@ -367,9 +374,15 @@ impl DaemonClient {
             DaemonRes::Value { value } => Ok(value
                 .get("devices")
                 .and_then(|v| v.as_array())
-                .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|x| x.as_str().map(String::from))
+                        .collect()
+                })
                 .unwrap_or_default()),
-            _ => Err(CoreError::Daemon("unexpected response to list_audio_devices".into())),
+            _ => Err(CoreError::Daemon(
+                "unexpected response to list_audio_devices".into(),
+            )),
         }
     }
 
@@ -698,7 +711,10 @@ impl<'a> Library<'a> {
     ) -> Result<Vec<track::Playlist>> {
         self.client
             .send_playlists(DaemonReq::Library {
-                action: LibraryAction::ImportPlaylist { path: path.into(), format },
+                action: LibraryAction::ImportPlaylist {
+                    path: path.into(),
+                    format,
+                },
             })
             .await
     }
@@ -818,10 +834,9 @@ impl<'a> Library<'a> {
     /// extracting `n`.
     async fn library_removed_count(&self, action: LibraryAction) -> Result<u64> {
         match self.client.send_raw(DaemonReq::Library { action }).await? {
-            DaemonRes::Value { value } => Ok(value
-                .get("removed")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0)),
+            DaemonRes::Value { value } => {
+                Ok(value.get("removed").and_then(|v| v.as_u64()).unwrap_or(0))
+            }
             other => Err(CoreError::Daemon(format!(
                 "unexpected response to playlist action: {other:?}"
             ))),
@@ -1108,7 +1123,12 @@ pub struct Subsonic<'a> {
 
 impl<'a> Subsonic<'a> {
     /// Validate and persist the server configuration. Returns the new status.
-    pub async fn configure(&self, server: &str, username: &str, password: &str) -> Result<SubsonicStatus> {
+    pub async fn configure(
+        &self,
+        server: &str,
+        username: &str,
+        password: &str,
+    ) -> Result<SubsonicStatus> {
         let res = self
             .client
             .send_raw(DaemonReq::SubsonicConfigure {
@@ -1149,7 +1169,9 @@ impl<'a> Subsonic<'a> {
     pub async fn search(&self, query: &str) -> Result<SubsonicSearchResults> {
         let res = self
             .client
-            .send_raw(DaemonReq::SubsonicSearch { query: query.into() })
+            .send_raw(DaemonReq::SubsonicSearch {
+                query: query.into(),
+            })
             .await?;
         match res {
             DaemonRes::SubsonicSearchRes { results, .. } => Ok(results),
@@ -1266,7 +1288,9 @@ impl<'a> Podcast<'a> {
             .await?;
         match res {
             DaemonRes::PodcastEpisodesRes {
-                feed_title, episodes, ..
+                feed_title,
+                episodes,
+                ..
             } => Ok((feed_title, episodes)),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
             _ => Err(unexpected(&res)),
@@ -1282,10 +1306,9 @@ impl<'a> Podcast<'a> {
             .await?;
         match res {
             DaemonRes::PodcastFeedsRes { feeds, .. } => Ok(feeds.len()),
-            DaemonRes::Value { value } => Ok(value
-                .get("refreshed")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0) as usize),
+            DaemonRes::Value { value } => {
+                Ok(value.get("refreshed").and_then(|v| v.as_u64()).unwrap_or(0) as usize)
+            }
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
             _ => Err(unexpected(&res)),
         }
@@ -1332,10 +1355,7 @@ impl<'a> Radio<'a> {
     }
 
     pub async fn top(&self, limit: u16) -> Result<Vec<RadioStation>> {
-        let res = self
-            .client
-            .send_raw(DaemonReq::RadioTop { limit })
-            .await?;
+        let res = self.client.send_raw(DaemonReq::RadioTop { limit }).await?;
         match res {
             DaemonRes::RadioStationsRes { stations, .. } => Ok(stations),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),

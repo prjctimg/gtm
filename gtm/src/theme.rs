@@ -4,6 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use gtm_core::state::ThemeMode;
 use ratatui::style::Color;
 use std::borrow::Cow;
 
@@ -881,7 +882,6 @@ pub fn merged_themes() -> Vec<ThemeEntry> {
 /// Returns `None` when every probe is unavailable so the caller keeps its
 /// existing (persisted) choice instead of flipping the theme.
 pub fn detect_os_theme() -> Option<gtm_core::state::ThemeMode> {
-    use gtm_core::state::ThemeMode;
     // Explicit override always wins.
     if let Ok(v) = std::env::var("GTM_THEME_MODE") {
         match v.to_ascii_lowercase().as_str() {

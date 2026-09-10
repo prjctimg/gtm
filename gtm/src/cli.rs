@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 use gtm_core::client::DaemonClient;
 use gtm_core::global::RepeatMode;
 use gtm_core::playlist_fmt::PlaylistFormatKind;
+use tokio::io::AsyncBufReadExt;
 
 use crate::footer::format_uptime;
 
@@ -241,6 +242,9 @@ pub enum CliCommand {
         /// Service to configure: spotify | lastfm | subsonic (default: all)
         #[arg(value_name = "SERVICE")]
         service: Option<String>,
+        /// Keep the headless prompt-driven wizard instead of launching the TUI
+        #[arg(long)]
+        cli: bool,
     },
 }
 
@@ -383,7 +387,8 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let result: Result<String, String> = rt.block_on(async {
-        let socket_path = socket.clone()
+        let socket_path = socket
+            .clone()
             .map(PathBuf::from)
             .unwrap_or_else(gtm_core::resolve_command_socket);
 
@@ -495,19 +500,17 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
-            CliCommand::Speed { rate } => {
-                match rate {
-                    Some(r) => client
-                        .set_speed(*r)
-                        .await
-                        .map(|()| format!("ok ({r:?}x)"))
-                        .map_err(|e| e.to_string()),
-                    None => {
-                        let speed = client.speed().await.map_err(|e| e.to_string())?;
-                        Ok(format!("speed: {speed:?}x"))
-                    }
+            CliCommand::Speed { rate } => match rate {
+                Some(r) => client
+                    .set_speed(*r)
+                    .await
+                    .map(|()| format!("ok ({r:?}x)"))
+                    .map_err(|e| e.to_string()),
+                None => {
+                    let speed = client.speed().await.map_err(|e| e.to_string())?;
+                    Ok(format!("speed: {speed:?}x"))
                 }
-            }
+            },
             CliCommand::Crossfade {
                 enabled,
                 duration_secs,
@@ -611,10 +614,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .await
                 .map(|removed| format!("removed {removed} broken entries"))
                 .map_err(|e| e.to_string()),
-            CliCommand::PlaylistSort {
-                playlist_id,
-                field,
-            } => client
+            CliCommand::PlaylistSort { playlist_id, field } => client
                 .library()
                 .playlist_sort(*playlist_id, field)
                 .await
@@ -946,25 +946,22 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .await
                 .map(|()| "sleep timer cancelled".to_string())
                 .map_err(|e| e.to_string()),
-            CliCommand::LowPower { set } => {
-                match set {
-                    Some(enabled) => {
-                        client
-                            .set_low_power(*enabled)
-                            .await
-                            .map(|()| format!("low-power {}", if *enabled { "on" } else { "off" }))
-                    }
-                    None => {
-                        client
-                            .low_power()
-                            .await
-                            .map(|on| format!("low-power {}", if on { "on" } else { "off" }))
-                    }
-                }
-                .map_err(|e| e.to_string())
+            CliCommand::LowPower { set } => match set {
+                Some(enabled) => client
+                    .set_low_power(*enabled)
+                    .await
+                    .map(|()| format!("low-power {}", if *enabled { "on" } else { "off" })),
+                None => client
+                    .low_power()
+                    .await
+                    .map(|on| format!("low-power {}", if on { "on" } else { "off" })),
             }
+            .map_err(|e| e.to_string()),
             CliCommand::AudioDevices => {
-                let devices = client.list_audio_devices().await.map_err(|e| e.to_string())?;
+                let devices = client
+                    .list_audio_devices()
+                    .await
+                    .map_err(|e| e.to_string())?;
                 if devices.is_empty() {
                     Ok("no output devices listed by this backend".to_string())
                 } else {
@@ -1039,7 +1036,9 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         .map_err(|e| e.to_string())?;
                     Ok(format_spotify_status(&st))
                 }
-                SpotifyAction::Login { client_id, port } => spotify_login(&client, client_id.clone(), *port).await,
+                SpotifyAction::Login { client_id, port } => {
+                    spotify_login(&client, client_id.clone(), *port).await
+                }
                 SpotifyAction::Disconnect => {
                     let st = client.spotify().clear().await.map_err(|e| e.to_string())?;
                     Ok(format_spotify_status(&st))
@@ -1056,7 +1055,11 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     .map_err(|e| e.to_string()),
             },
             CliCommand::Subsonic(action) => match action {
-                SubsonicAction::Configure { server, username, password } => {
+                SubsonicAction::Configure {
+                    server,
+                    username,
+                    password,
+                } => {
                     let password = match password {
                         Some(p) => p.to_string(),
                         None => prompt("Password: ")?,
@@ -1075,7 +1078,11 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     .map(|()| "subsonic credentials cleared".to_string())
                     .map_err(|e| e.to_string()),
                 SubsonicAction::Status => {
-                    let st = client.subsonic().status().await.map_err(|e| e.to_string())?;
+                    let st = client
+                        .subsonic()
+                        .status()
+                        .await
+                        .map_err(|e| e.to_string())?;
                     Ok(format_subsonic_status(&st))
                 }
                 SubsonicAction::Ping => client
@@ -1098,16 +1105,22 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                             "album   {}\t{}\t{}",
                             a.id,
                             a.title,
-                            if a.artist.is_empty() { "unknown" } else { &a.artist }
+                            if a.artist.is_empty() {
+                                "unknown"
+                            } else {
+                                &a.artist
+                            }
                         );
                     }
                     for t in &res.tracks {
-                        println!(
-                            "track   {}\t{} - {}",
-                            t.id, t.artist, t.title
-                        );
+                        println!("track   {}\t{} - {}", t.id, t.artist, t.title);
                     }
-                    Ok(format!("{} artists, {} albums, {} songs", res.artists.len(), res.albums.len(), res.tracks.len()))
+                    Ok(format!(
+                        "{} artists, {} albums, {} songs",
+                        res.artists.len(),
+                        res.albums.len(),
+                        res.tracks.len()
+                    ))
                 }
                 SubsonicAction::Play { track_id } => {
                     let track = gtm_core::subsonic::SubsonicTrack {
@@ -1118,7 +1131,11 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         duration_secs: 0,
                         ..Default::default()
                     };
-                    client.subsonic().play(&track).await.map_err(|e| e.to_string())?;
+                    client
+                        .subsonic()
+                        .play(&track)
+                        .await
+                        .map_err(|e| e.to_string())?;
                     Ok(format!("playing {track_id}"))
                 }
             },
@@ -1130,11 +1147,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         .await
                         .map_err(|e| e.to_string())?;
                     match feeds.first() {
-                        Some(f) => Ok(format!(
-                            "subscribed to {} ({})",
-                            f.title,
-                            f.episodes
-                        )),
+                        Some(f) => Ok(format!("subscribed to {} ({})", f.title, f.episodes)),
                         None => Err("feed returned no episodes".to_string()),
                     }
                 }
@@ -1174,7 +1187,10 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         .map_err(|e| e.to_string())?;
                     Ok(format!("refreshed {n} feeds"))
                 }
-                PodcastAction::Play { feed_id, episode_index } => client
+                PodcastAction::Play {
+                    feed_id,
+                    episode_index,
+                } => client
                     .podcast()
                     .play(&feed_id, *episode_index)
                     .await
@@ -1218,7 +1234,10 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     }
                     Ok(format!("{} stations", stations.len()))
                 }
-                RadioAction::Play { station_id, station_name } => {
+                RadioAction::Play {
+                    station_id,
+                    station_name,
+                } => {
                     let name = station_name.clone().unwrap_or_else(|| "Radio".to_string());
                     client
                         .radio()
@@ -1228,7 +1247,19 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         .map_err(|e| e.to_string())
                 }
             },
-            CliCommand::Setup { service } => setup_wizard(&client, service.as_deref()).await,
+            CliCommand::Setup { service, cli } => {
+                if *cli {
+                    setup_wizard(&client, service.as_deref()).await
+                } else {
+                    // Default: open the interactive TUI and drop straight into
+                    // the service chooser. `--cli` keeps the headless wizard
+                    // for scripting / SSH.
+                    let socket_arg = socket_path.to_string_lossy().to_string();
+                    crate::ui::run_tui(Some(socket_arg), service.clone())
+                        .map_err(|e| e.to_string())?;
+                    Ok("setup finished".to_string())
+                }
+            }
         }
     });
 
@@ -1355,10 +1386,7 @@ fn prompt(msg: &str) -> Result<String, String> {
     Ok(out.trim().to_string())
 }
 
-// ─── Source setup wizard (gtm setup) ───
-
-/// Default loopback port used to capture the Last.fm authorization token.
-const LASTFM_CALLBACK_PORT: u16 = 8991;
+// ─── Source setup wizard (gtm setup --cli) ───
 
 /// Walk through every (or one) source that needs credentials, running OAuth
 /// browser steps where applicable. Returns a human-readable summary.
@@ -1424,11 +1452,7 @@ fn masked_or_default(label: &str, stored: Option<String>) -> Result<String, Stri
         Some(_) => {
             println!("{label}: (stored; leave blank to keep)");
             let v = masked_prompt("> ")?;
-            Ok(if v.is_empty() {
-                stored.unwrap()
-            } else {
-                v
-            })
+            Ok(if v.is_empty() { stored.unwrap() } else { v })
         }
         None => masked_prompt(&format!("{label}: ")),
     }
@@ -1526,11 +1550,15 @@ async fn setup_lastfm(client: &DaemonClient) -> Result<String, String> {
         .await
         .map_err(|e| e.to_string())?;
 
-    let url = client.lastfm().auth_url().await.map_err(|e| e.to_string())?;
+    let url = client
+        .lastfm()
+        .auth_url()
+        .await
+        .map_err(|e| e.to_string())?;
     println!("Open this URL in your browser to authorize gtm:\n{url}\n");
     let _ = webbrowser::open(&url);
 
-    let token = capture_callback_token("Last.fm").await?;
+    let token = capture_callback_token().await?;
     if token.trim().is_empty() {
         return Err("no Last.fm token provided — authorization not completed".into());
     }
@@ -1546,7 +1574,11 @@ async fn setup_lastfm(client: &DaemonClient) -> Result<String, String> {
 
 /// Subsonic/Navidrome integration: collect server credentials and validate.
 async fn setup_subsonic(client: &DaemonClient) -> Result<String, String> {
-    let st = client.subsonic().status().await.map_err(|e| e.to_string())?;
+    let st = client
+        .subsonic()
+        .status()
+        .await
+        .map_err(|e| e.to_string())?;
     if st.configured {
         let msg = format_subsonic_status(&st);
         if !confirm(&format!("{msg}. Reconfigure Subsonic? [y/N] "))? {
@@ -1567,82 +1599,24 @@ async fn setup_subsonic(client: &DaemonClient) -> Result<String, String> {
     Ok(format_subsonic_status(&st))
 }
 
-/// Wait for an OAuth token on a loopback callback port (`$GTM_LASTFM_PORT`,
-/// default 8991) or accept a manual paste on stdin. Times out after 5 minutes.
-async fn capture_callback_token(service: &str) -> Result<String, String> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
-
-    let port = std::env::var("GTM_LASTFM_PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(LASTFM_CALLBACK_PORT);
+/// Wait for an OAuth token on the loopback callback port or accept a manual
+/// paste on stdin (whichever finishes first). Times out after 5 minutes.
+async fn capture_callback_token() -> Result<String, String> {
+    let port = crate::oauth_capture::lastfm_callback_port();
     let addr = format!("127.0.0.1:{port}");
-    let listener = tokio::net::TcpListener::bind(&addr)
-        .await
-        .map_err(|e| format!("bind {service} callback server to {addr}: {e}"))?;
     println!(
-        "Waiting for the {service} authorization callback on http://{addr} (5-minute timeout).\n\
+        "Waiting for the Last.fm authorization callback on http://{addr} (5-minute timeout).\n\
          If your browser doesn't redirect there, paste the token from the address bar and press Enter."
     );
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
     let mut stdin_line = String::new();
     let mut stdin_reader = tokio::io::BufReader::new(tokio::io::stdin());
-    loop {
-        stdin_line.clear();
-        tokio::select! {
-            accept = listener.accept() => {
-                let (mut stream, _) = match accept {
-                    Ok(pair) => pair,
-                    Err(e) => return Err(format!("{service} callback accept: {e}")),
-                };
-                let line = {
-                    let mut reader = tokio::io::BufReader::new(&mut stream);
-                    let mut line = String::new();
-                    let _ = reader.read_line(&mut line).await;
-                    line
-                };
-                if let Some(token) = query_param(&line, "token") {
-                    let body = format!("gtm {service} authorized. You can close this tab.");
-                    let _ = stream
-                        .write_all(
-                            format!(
-                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{body}",
-                                body.len()
-                            )
-                            .as_bytes(),
-                        )
-                        .await;
-                    let _ = stream.flush().await;
-                    return Ok(token);
-                }
-                let _ = stream
-                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-                    .await;
-                let _ = stream.flush().await;
-            }
-            pasted = stdin_reader.read_line(&mut stdin_line) => {
-                let _ = pasted;
-                return Ok(stdin_line.trim().to_string());
-            }
-            _ = tokio::time::sleep_until(deadline) => {
-                return Err(format!("timed out waiting for {service} authorization"));
-            }
+    tokio::select! {
+        token = crate::oauth_capture::capture_lastfm_token_loopback() => token,
+        pasted = stdin_reader.read_line(&mut stdin_line) => {
+            let _ = pasted;
+            Ok(stdin_line.trim().to_string())
         }
     }
-}
-
-/// Extract a named query parameter from the first line of an HTTP request, a
-/// bare path, or a URL, e.g. `"/login?token=abc&api_key=k"`.
-fn query_param(line: &str, name: &str) -> Option<String> {
-    let query = line.split_whitespace().find_map(|tok| tok.split_once('?').map(|(_, q)| q))?;
-    for pair in query.split('&') {
-        if let Some((k, v)) = pair.split_once('=') {
-            if k == name && !v.is_empty() {
-                return Some(v.to_string());
-            }
-        }
-    }
-    None
 }
 
 fn format_lastfm_status(st: &gtm_core::client::LastfmStatus) -> String {
@@ -1658,46 +1632,7 @@ fn format_lastfm_status(st: &gtm_core::client::LastfmStatus) -> String {
         "Not configured".to_string()
     };
     if let Some(sk) = st.session_token.as_deref().filter(|s| !s.is_empty()) {
-        out += &format!(" | session {}", mask_credential(sk));
+        out += &format!(" | session {}", crate::oauth_capture::mask_credential(sk));
     }
     out
-}
-
-/// Keep a credential short: show only the first and last two characters.
-fn mask_credential(s: &str) -> String {
-    if s.chars().count() <= 6 {
-        "****".to_string()
-    } else {
-        format!("{}…{}", &s[..2], &s[s.len() - 2..])
-    }
-}
-
-#[cfg(test)]
-mod cli_tests {
-    use super::*;
-
-    #[test]
-    fn query_param_extracts_named_field() {
-        assert_eq!(
-            query_param("GET /?token=abc123&api_key=k2 HTTP/1.1", "token"),
-            Some("abc123".to_string())
-        );
-        assert_eq!(
-            query_param("GET /lastfm?api_key=k2&token=xyz HTTP/1.1", "token"),
-            Some("xyz".to_string())
-        );
-        assert_eq!(
-            query_param("http://127.0.0.1:8991/lastfm?token=qwe", "token"),
-            Some("qwe".to_string())
-        );
-        assert_eq!(query_param("GET / HTTP/1.1", "token"), None);
-        assert_eq!(query_param("GET /?code=abc HTTP/1.1", "token"), None);
-        assert_eq!(query_param("", "token"), None);
-    }
-
-    #[test]
-    fn mask_credential_hides_value() {
-        assert_ne!(mask_credential("aVeryLongSecretValue"), "aVeryLongSecretValue");
-        assert_eq!(mask_credential("abc"), "****");
-    }
 }

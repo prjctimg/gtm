@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use crate::app::{
     App, InputMode, LIBRARY_CATEGORIES, LibraryPick, NotifMode, NotifType, NotificationKind,
-    TrackInfoKind, no_image_protocol,
+    TrackInfoKind, no_image_protocol, setup_selection,
 };
 use crate::footer::format_duration;
 use crate::picker::{Picker, PickerId, PickerSource};
@@ -120,17 +120,31 @@ impl Render {
                 height: cover_h,
             };
             if has_cover {
-                if let Some(protocol) = app.upnext.as_mut().and_then(|u| u.cover_stateful.as_mut())
-                {
-                    let image = StatefulImage::new();
-                    f.render_stateful_widget(image, cover_area, protocol);
-                } else if let Some(bytes) = app.upnext.as_ref().and_then(|u| u.cover.as_ref()) {
-                    Render::cover_block(f, cover_area, bytes);
-                } else {
-                    Render::cover(f, cover_area, None, None, app.theme.fg_dim);
+                if let Some(u) = app.upnext.as_mut() {
+                    let (stateful, bytes): (Option<&mut StatefulProtocol>, Option<&[u8]>) =
+                        if u.cover_stateful.is_some() {
+                            (u.cover_stateful.as_mut(), None)
+                        } else {
+                            (None, u.cover.as_deref())
+                        };
+                    Render::cover(
+                        f,
+                        cover_area,
+                        stateful,
+                        bytes,
+                        app.theme.fg_dim,
+                        Some("\u{266b}"),
+                    );
                 }
             } else {
-                Render::cover(f, cover_area, None, None, app.theme.fg_dim);
+                Render::cover(
+                    f,
+                    cover_area,
+                    None,
+                    None,
+                    app.theme.fg_dim,
+                    Some("\u{266b}"),
+                );
             }
         }
 
@@ -397,6 +411,7 @@ impl Render {
         cover_stateful: Option<&mut StatefulProtocol>,
         current_cover: Option<&[u8]>,
         placeholder_fg: Color,
+        placeholder: Option<&str>,
     ) {
         if std::env::var("NVIM").is_ok() || std::env::var("ZELLIJ").is_ok() {
             let placeholder = Paragraph::new(Span::styled(
@@ -406,16 +421,20 @@ impl Render {
             f.render_widget(placeholder, area);
             return;
         }
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
         if let Some(protocol) = cover_stateful {
             let image = StatefulImage::new();
             f.render_stateful_widget(image, area, protocol);
         } else if let Some(cover_bytes) = current_cover {
             Render::cover_block(f, area, cover_bytes);
-        } else {
-            let placeholder = Paragraph::new(Span::styled(
-                " \u{266b} ",
+        } else if let Some(glyph) = placeholder {
+            let placeholder = Paragraph::new(Line::from(Span::styled(
+                format!("{:^width$}", glyph, width = area.width as usize),
                 Style::default().fg(placeholder_fg),
-            ));
+            )))
+            .alignment(Alignment::Center);
             f.render_widget(placeholder, area);
         }
     }
@@ -737,6 +756,7 @@ impl Render {
                         app.np_cover.stateful.as_mut(),
                         app.np_cover.image.as_deref(),
                         app.theme.fg_dim,
+                        Some(" \u{266b} "),
                     );
 
                     let info_area = hchunks[2];
@@ -847,6 +867,7 @@ impl Render {
                         app.np_cover.stateful.as_mut(),
                         app.np_cover.image.as_deref(),
                         app.theme.fg_dim,
+                        Some(" \u{266b} "),
                     );
                     let info_area = hchunks[2];
                     let title_text = display_title.to_string();
@@ -1058,10 +1079,7 @@ impl Render {
             let mut lines = vec![Line::from("")];
             const ACTION_ROWS: usize = App::SPOTIFY_PLAYLIST_ACTION_ROWS;
             // Rows 0/1: virtual actions (Play All / Shuffle), then the tracks.
-            let action_help = [
-                ("▶  Play All", "  Enter"),
-                ("🔀  Shuffle", "  Enter / S"),
-            ];
+            let action_help = [("▶  Play All", "  Enter"), ("🔀  Shuffle", "  Enter / S")];
             for (ai, (action, key_hint)) in action_help.iter().enumerate() {
                 let real_i = ai;
                 let is_sel = real_i == sel && !left_focus;
@@ -1095,7 +1113,10 @@ impl Render {
                 lib_total_rows = total_len;
                 (lines, st_line)
             } else {
-                let start = app.list_scroll.saturating_sub(ACTION_ROWS).min(tracks.len());
+                let start = app
+                    .list_scroll
+                    .saturating_sub(ACTION_ROWS)
+                    .min(tracks.len());
                 let stop = end.saturating_sub(ACTION_ROWS).min(tracks.len());
                 for (i, tr) in tracks[start..stop].iter().enumerate() {
                     let real_i = app.list_scroll + i;
@@ -1873,12 +1894,14 @@ impl Render {
                 height: cover_h_eff,
             };
             if has_cover {
-                if let Some(ref mut protocol) = app.popup_cover_stateful {
-                    let image = StatefulImage::new();
-                    f.render_stateful_widget(image, cover_area, protocol);
-                } else if let Some(ref cover_bytes) = app.track_popup_cover {
-                    Render::cover_block(f, cover_area, cover_bytes);
-                }
+                Render::cover(
+                    f,
+                    cover_area,
+                    app.popup_cover_stateful.as_mut(),
+                    app.track_popup_cover.as_deref(),
+                    app.theme.fg_dim,
+                    None,
+                );
             }
 
             let text_area = split[2];
@@ -2045,7 +2068,10 @@ impl Render {
     }
 }
 
-pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>> {
+pub fn run_tui(
+    socket: Option<String>,
+    setup_service: Option<String>,
+) -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = socket
         .map(PathBuf::from)
         .unwrap_or_else(gtm_core::resolve_command_socket);
@@ -2083,7 +2109,7 @@ pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>>
         }));
 
         let res = async {
-            let app = App::new(&socket_path).await?;
+            let app = App::new(&socket_path, setup_service).await?;
             app.run(&mut terminal).await
         }
         .await;
@@ -2460,9 +2486,14 @@ impl Pickers {
                     .max()
                     .unwrap_or(60)
                     .clamp(52, 84);
-                (w, (app.subsonic.album_tracks.len() as u16 + 6).clamp(18, 30))
+                (
+                    w,
+                    (app.subsonic.album_tracks.len() as u16 + 6).clamp(18, 30),
+                )
             }
             PickerId::SubsonicSetup => (56, 12),
+            PickerId::Setup => (56, 14),
+            PickerId::LastfmAuth => (60, 16),
             PickerId::PodcastFeeds => {
                 let w = app
                     .podcast
@@ -2609,6 +2640,8 @@ impl Pickers {
             }
             PickerId::RadioSearch => Self::render_radio_search_picker(f, picker_area, app),
             PickerId::RadioTop => Self::render_radio_top_picker(f, picker_area, app),
+            PickerId::Setup => Self::render_setup_picker(f, picker_area, app),
+            PickerId::LastfmAuth => Self::render_lastfm_setup_picker(f, picker_area, app),
             PickerId::SpotifyLink => {
                 let block = Self::picker_panel(
                     app,
@@ -2859,38 +2892,35 @@ impl Pickers {
                         };
                         let (_, _, track) = &app.spotify.search_results[sel.min(total - 1)];
                         let cover_w = 20u16.min(body.width.saturating_sub(24).max(8));
-                        let (cover_area, meta_area) = if (app.spotify.preview_cover_stateful.is_some()
-                            || app.spotify.preview_cover.is_some())
-                            && body.width >= cover_w + 8
-                        {
-                            let hchunks = Layout::default()
-                                .direction(Direction::Horizontal)
-                                .constraints([Constraint::Length(cover_w), Constraint::Min(0)])
-                                .split(body);
-                            (
-                                Rect {
-                                    x: hchunks[0].x + 1,
-                                    y: hchunks[0].y,
-                                    width: hchunks[0].width.saturating_sub(1),
-                                    height: hchunks[0].height,
-                                },
-                                hchunks[1],
-                            )
-                        } else {
-                            (body, body)
-                        };
-                        if let Some(protocol) = app.spotify.preview_cover_stateful.as_mut() {
-                            let image = StatefulImage::new();
-                            f.render_stateful_widget(image, cover_area, protocol);
-                        } else if let Some(bytes) = app.spotify.preview_cover.as_deref() {
-                            Render::cover_block(f, cover_area, bytes);
-                        } else {
-                            let placeholder = Paragraph::new(Line::from(Span::styled(
-                                format!("{:^width$}", "\u{1f3b5}", width = cover_w as usize),
-                                Style::default().fg(app.theme.fg_dim),
-                            )));
-                            f.render_widget(placeholder, cover_area);
-                        }
+                        let (cover_area, meta_area) =
+                            if (app.spotify.preview_cover_stateful.is_some()
+                                || app.spotify.preview_cover.is_some())
+                                && body.width >= cover_w + 8
+                            {
+                                let hchunks = Layout::default()
+                                    .direction(Direction::Horizontal)
+                                    .constraints([Constraint::Length(cover_w), Constraint::Min(0)])
+                                    .split(body);
+                                (
+                                    Rect {
+                                        x: hchunks[0].x + 1,
+                                        y: hchunks[0].y,
+                                        width: hchunks[0].width.saturating_sub(1),
+                                        height: hchunks[0].height,
+                                    },
+                                    hchunks[1],
+                                )
+                            } else {
+                                (body, body)
+                            };
+                        Render::cover(
+                            f,
+                            cover_area,
+                            app.spotify.preview_cover_stateful.as_mut(),
+                            app.spotify.preview_cover.as_deref(),
+                            app.theme.fg_dim,
+                            Some("\u{1f3b5}"),
+                        );
                         if meta_area != body {
                             f.render_widget(
                                 Paragraph::new(Line::from(Span::styled(
@@ -2945,7 +2975,12 @@ impl Pickers {
                     .fg(app.theme.accent)
                     .add_modifier(Modifier::BOLD),
             )))
-            .padding(Padding::horizontal(1))
+            .padding(Padding {
+                left: 1,
+                right: 1,
+                top: 1,
+                bottom: 1,
+            })
             .style(Style::default().bg(if app.transparent_pickers {
                 ratatui::style::Color::Reset
             } else {
@@ -3140,19 +3175,23 @@ impl Pickers {
                         height: cover_h,
                     };
                     if has_cover {
-                        if let Some(ref mut protocol) = app.queue.preview_cover_stateful {
-                            let image = StatefulImage::new();
-                            f.render_stateful_widget(image, cover_area, protocol);
-                        } else if let Some(ref bytes) = app.queue.preview_cover {
-                            Render::cover_block(f, cover_area, bytes);
-                        }
+                        Render::cover(
+                            f,
+                            cover_area,
+                            app.queue.preview_cover_stateful.as_mut(),
+                            app.queue.preview_cover.as_deref(),
+                            app.theme.fg_dim,
+                            Some("\u{266b}"),
+                        );
                     } else {
-                        let glyph = Paragraph::new(Line::from(Span::styled(
-                            "\u{266b}",
-                            Style::default().fg(app.theme.fg_dim),
-                        )))
-                        .alignment(Alignment::Center);
-                        f.render_widget(glyph, cover_area);
+                        Render::cover(
+                            f,
+                            cover_area,
+                            None,
+                            None,
+                            app.theme.fg_dim,
+                            Some("\u{266b}"),
+                        );
                     }
                 }
                 let text_area = Rect {
@@ -3590,19 +3629,26 @@ impl Pickers {
 
         let mut lines = Vec::new();
         let focus = app.subsonic.form_focus;
-        for (idx, label) in [" Server URL ", " Username ", " Password "].iter().enumerate() {
+        for (idx, label) in [" Server URL ", " Username ", " Password "]
+            .iter()
+            .enumerate()
+        {
             let value = match idx {
                 0 => app.subsonic.form_server.clone(),
                 1 => app.subsonic.form_user.clone(),
                 _ => "\u{2022}".repeat(app.subsonic.form_password.chars().count()),
             };
             let label_style = if idx == focus {
-                Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(app.theme.fg_dim)
             };
             let value_style = if idx == focus {
-                Style::default().fg(app.theme.fg_bright).add_modifier(Modifier::UNDERLINED)
+                Style::default()
+                    .fg(app.theme.fg_bright)
+                    .add_modifier(Modifier::UNDERLINED)
             } else {
                 Style::default().fg(app.theme.fg)
             };
@@ -3629,10 +3675,141 @@ impl Pickers {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
+    /// `gtm setup` service chooser. Enter opens the matching setup flow.
+    fn render_setup_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let block = Self::picker_panel(
+            app,
+            " setup ",
+            Some(" j/k: move   Enter: configure   Esc: close"),
+        );
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let services: [(&str, &str, &str); 3] = [
+            ("Spotify", "OAuth link", "↦"),
+            ("Last.fm", "API key + OAuth", "↦"),
+            ("Subsonic/Navidrome", "server + credentials", "↦"),
+        ];
+        let (sel, _) = setup_selection(app);
+        let mut lines = Vec::new();
+        lines.push(Line::from(Span::styled(
+            "Which service do you want to set up?",
+            Style::default().fg(app.theme.fg_dim),
+        )));
+        lines.push(Line::from(""));
+        for (i, (name, desc, _)) in services.iter().enumerate() {
+            let style = if i == sel {
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.fg)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(if i == sel { "▸ " } else { "  " }, style),
+                Span::styled(format!("{name:<24}"), style),
+                Span::styled(*desc, Style::default().fg(app.theme.fg_dim)),
+            ]));
+        }
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+
+    /// Last.fm setup: API key/secret form, then the OAuth browser flow with a
+    /// loopback callback (or a manual token paste).
+    fn render_lastfm_setup_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let status_line = match app.setup.lastfm_status.as_ref() {
+            Some(st) if st.ready => {
+                if st.enabled {
+                    "✓ authorized — scrobbling enabled".to_string()
+                } else {
+                    "✓ authorized — scrobbling disabled".to_string()
+                }
+            }
+            Some(st) if st.api_key.is_some() => "API key set, not yet authorized".to_string(),
+            Some(_) | None if app.setup.lastfm_error.is_some() => {
+                format!("⚠ {}", app.setup.lastfm_error.as_deref().unwrap_or(""))
+            }
+            _ => "Enter API key and secret, then authorize in the browser".to_string(),
+        };
+        let block = Self::picker_panel(
+            app,
+            " Last.fm setup ",
+            Some(" Enter: authorize   Tab: field   Esc: close"),
+        );
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let mut lines = Vec::new();
+        let focus = app.setup.lastfm_focus;
+        let fields: [(&str, String); 2] = [
+            (
+                " API key    ",
+                if app.setup.lastfm_api_key.is_empty() {
+                    "[ api key ]".into()
+                } else {
+                    "•".repeat(app.setup.lastfm_api_key.chars().count())
+                },
+            ),
+            (
+                " API secret ",
+                if app.setup.lastfm_api_secret.is_empty() {
+                    "[ api secret ]".into()
+                } else {
+                    "•".repeat(app.setup.lastfm_api_secret.chars().count())
+                },
+            ),
+        ];
+        for (idx, (label, value)) in fields.iter().enumerate() {
+            let label_style = if idx == focus {
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.fg_dim)
+            };
+            let value_style = if idx == focus {
+                Style::default()
+                    .fg(app.theme.fg_bright)
+                    .add_modifier(Modifier::UNDERLINED)
+            } else {
+                Style::default().fg(app.theme.fg)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(label.to_string(), label_style),
+                Span::styled(format!("[{value}]"), value_style),
+            ]));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            status_line,
+            Style::default().fg(app.theme.fg_dim),
+        )));
+        if let Some(url) = app.setup.lastfm_auth_url.as_deref() {
+            lines.push(Line::from(Span::styled(
+                "Open in browser:",
+                Style::default().fg(app.theme.fg_dim),
+            )));
+            lines.push(Line::from(Span::styled(
+                url,
+                Style::default().fg(app.theme.accent),
+            )));
+            if app.setup.lastfm_pending {
+                lines.push(Line::from(Span::styled(
+                    "Waiting for the callback… (or press p to paste a token)",
+                    Style::default().fg(app.theme.fg_dim),
+                )));
+            }
+        }
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+
     fn render_podcast_feeds_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let mut rows = Vec::new();
         for feed in &app.podcast.feeds {
-            rows.push(format!("\u{1f4e1} {} \u{2003}[{} episodes]", feed.title, feed.episodes));
+            rows.push(format!(
+                "\u{1f4e1} {} \u{2003}[{} episodes]",
+                feed.title, feed.episodes
+            ));
         }
         let mut prepend = Vec::new();
         if let Some(st) = app.podcast.status.as_ref() {
@@ -3696,7 +3873,9 @@ impl Pickers {
             Span::styled(" ", Style::default().fg(app.theme.fg)),
             Span::styled(
                 app.podcast.subscribe_url.clone(),
-                Style::default().fg(app.theme.fg_bright).add_modifier(Modifier::UNDERLINED),
+                Style::default()
+                    .fg(app.theme.fg_bright)
+                    .add_modifier(Modifier::UNDERLINED),
             ),
             match cursor_span_style(app) {
                 Some(style) => Span::styled(" ", style),
@@ -3813,27 +3992,23 @@ impl Pickers {
             .get(sel)
             .is_some_and(|p| matches!(p, LibraryPick::Artist(_)));
         if is_artist {
-            if let Some(protocol) = app.artist_cover_stateful.as_mut() {
-                let image = StatefulImage::new();
-                f.render_stateful_widget(image, cover_area, protocol);
-            } else {
-                let placeholder = Paragraph::new(Line::from(Span::styled(
-                    format!("{:^width$}", "\u{1f465}", width = cover_w as usize),
-                    Style::default().fg(app.theme.fg_dim),
-                )));
-                f.render_widget(placeholder, cover_area);
-            }
-        } else if let Some(protocol) = app.picker_preview_stateful.as_mut() {
-            let image = StatefulImage::new();
-            f.render_stateful_widget(image, cover_area, protocol);
-        } else if let Some(bytes) = app.picker_preview_cover.as_deref() {
-            Render::cover_block(f, cover_area, bytes);
+            Render::cover(
+                f,
+                cover_area,
+                app.artist_cover_stateful.as_mut(),
+                None,
+                app.theme.fg_dim,
+                Some("\u{1f465}"),
+            );
         } else {
-            let placeholder = Paragraph::new(Line::from(Span::styled(
-                format!("{:^width$}", "\u{266b}", width = cover_w as usize),
-                Style::default().fg(app.theme.fg_dim),
-            )));
-            f.render_widget(placeholder, cover_area);
+            Render::cover(
+                f,
+                cover_area,
+                app.picker_preview_stateful.as_mut(),
+                app.picker_preview_cover.as_deref(),
+                app.theme.fg_dim,
+                Some("\u{266b}"),
+            );
         }
 
         let meta_area = hchunks[1];
@@ -4264,7 +4439,11 @@ fn library_stats_line(app: &App) -> String {
     if app.browse_detail.is_some() {
         if app.library_category == 5 {
             let n = app.spotify.playlist_tracks_cache.len();
-            return format!(" {} {} (+ play all / shuffle) ", n, plural(n, "track", "tracks"));
+            return format!(
+                " {} {} (+ play all / shuffle) ",
+                n,
+                plural(n, "track", "tracks")
+            );
         }
         let f = app.filtered_tracks();
         let total_dur: u64 = f.iter().map(|t| t.duration as u64).sum();
@@ -5129,10 +5308,7 @@ impl Pickers {
                 Style::default().fg(app.theme.fg_bright),
             )),
             Line::from(Span::styled(
-                format!(
-                    "   Speed:    {:.2}x",
-                    app.state.audio.speed
-                ),
+                format!("   Speed:    {:.2}x", app.state.audio.speed),
                 Style::default().fg(app.theme.fg_bright),
             )),
             Line::from(Span::styled(
@@ -5647,7 +5823,7 @@ impl Pickers {
             if let Some(gname) = header {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
-                    format!("  \u{2500}\u{2500} {} \u{2500}\u{2500}", gname),
+                    format!("  {}", gname),
                     Style::default()
                         .fg(app.theme.accent)
                         .add_modifier(Modifier::BOLD),
@@ -6043,11 +6219,7 @@ impl Pickers {
             .top()
             .map_or(0, |o| o.selected.min(total.saturating_sub(1)));
 
-        let block = Self::picker_panel(
-            app,
-            " Theme ",
-            Some("type: filter   \u{2191}/\u{2193}: preview   Enter: apply   Esc: close"),
-        );
+        let block = Self::picker_panel(app, " Theme ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -6917,19 +7089,14 @@ impl Pickers {
                 width: cover_area.width,
                 height: cover_h,
             };
-            if let Some(ref mut protocol) = app.metadata.cover_stateful {
-                let image = StatefulImage::new();
-                f.render_stateful_widget(image, c_area, protocol);
-            } else if let Some(ref cover_bytes) = app.metadata.cover {
-                Render::cover_block(f, c_area, cover_bytes);
-            } else {
-                let placeholder = Paragraph::new(Line::from(Span::styled(
-                    " \u{266b} no cover ",
-                    Style::default().fg(app.theme.fg_dim),
-                )))
-                .alignment(Alignment::Center);
-                f.render_widget(placeholder, c_area);
-            }
+            Render::cover(
+                f,
+                c_area,
+                app.metadata.cover_stateful.as_mut(),
+                app.metadata.cover.as_deref(),
+                app.theme.fg_dim,
+                Some(" \u{266b} no cover "),
+            );
         }
     }
 }
