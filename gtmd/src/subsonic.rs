@@ -11,6 +11,7 @@ use std::time::Duration;
 use base64::Engine;
 use tracing::{info, warn};
 
+use gtm_core::secret::{SUBSONIC_KEY, delete_secret, set_secret};
 use gtm_core::subsonic::{
     SubsonicAlbum, SubsonicArtist, SubsonicSearchResults, SubsonicStatus, SubsonicTrack,
 };
@@ -101,8 +102,8 @@ impl SubsonicManager {
         }
         self.config = Some(cfg.clone());
         self.error = None;
-        gtm_core::secret::set_secret(
-            gtm_core::secret::SUBSONIC_KEY,
+        set_secret(
+            SUBSONIC_KEY,
             &serde_json::to_string(&cfg).unwrap_or_default(),
         );
         self.save_config(&cfg)
@@ -123,7 +124,7 @@ impl SubsonicManager {
         self.config = None;
         self.error = None;
         let _ = std::fs::remove_file(self.config_path());
-        gtm_core::secret::delete_secret(gtm_core::secret::SUBSONIC_KEY);
+        delete_secret(SUBSONIC_KEY);
     }
 
     pub fn status(&self) -> SubsonicStatus {

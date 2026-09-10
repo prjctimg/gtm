@@ -22,18 +22,27 @@ use base64::Engine;
 #[cfg(feature = "pulseaudio")]
 use gtm_audio::PulseAudioMixer;
 use gtm_audio::symphonia::StreamingReopen;
-use gtm_audio::{AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
-use gtm_core::CoreError;
+use gtm_audio::{AudioError, AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
 use gtm_core::global::{
-    DaemonState, EqPreset, PlaybackStatus, RepeatMode, ReverbConfig, SavedState,
+    DaemonState, EQ_PRESETS, EqPreset, LoudnessMode, PlaybackStatus, RepeatMode, ReverbConfig,
+    SavedState, YTFilter,
 };
 use gtm_core::ipc::{
     CacheKind, ComponentHealth, DaemonEvent, DaemonReq, DaemonRes, HealthReport, HealthStatus,
     LibraryAction, PROTOCOL_VERSION, QueueAction, SyncKind, WireReq,
 };
+use gtm_core::secret::{
+    LASTFM_API_KEY_KEY, LASTFM_API_SECRET_KEY, SPOTIFY_CLIENT_ID_KEY, delete_secret, get_secret,
+    set_secret,
+};
 use gtm_core::spotify::SpotifyTrack;
 use gtm_core::track::TrackInfo;
 use gtm_core::wire;
+use gtm_core::{CoreError, MetadataPatch};
+#[cfg(feature = "pulseaudio")]
+use gtm_core::{ensure_termux_pulseaudio, is_termux};
+#[cfg(feature = "mpris")]
+use gtm_mpris::{MprisHandle, start};
 
 use crate::cleaner::{
     clean_filename_stem, clean_youtube_title, is_filename_like, sanitize_text, tags_need_enrichment,
@@ -55,8 +64,6 @@ use crate::subsonic::SubsonicManager;
 use crate::tags::{MetadataToWrite, write_tags};
 #[cfg(feature = "youtube")]
 use crate::youtube::{YoutubeManager, download_into};
-#[cfg(feature = "mpris")]
-use gtm_mpris::MprisHandle;
 
 type ClientId = u64;
 type ReplyTx = mpsc::UnboundedSender<(u64, DaemonRes)>;
@@ -168,15 +175,14 @@ fn decode_remote_reader(
     let resp = remote::client()
         .get(&url)
         .send()
-        .map_err(|e| gtm_audio::AudioError::DecodeError(format!("stream {url}: {e}")))?;
+        .map_err(|e| AudioError::DecodeError(format!("stream {url}: {e}")))?;
     if !resp.status().is_success() {
-        return Err(gtm_audio::AudioError::DecodeError(format!(
+        return Err(AudioError::DecodeError(format!(
             "stream HTTP {}",
             resp.status()
         )));
     }
-    let reader: Box<dyn std::io::Read + Send> =
-        Box::new(remote::HttpReader::from_response(resp));
+    let reader: Box<dyn std::io::Read + Send> = Box::new(remote::HttpReader::from_response(resp));
     let reopen: Option<Box<dyn StreamingReopen>> = if live {
         None
     } else {
@@ -945,7 +951,7 @@ impl Cmd {
     }
 
     pub async fn list_eq_presets(_inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let presets = gtm_core::global::EQ_PRESETS
+        let presets = EQ_PRESETS
             .iter()
             .map(|p| p.to_string())
             .collect::<Vec<String>>();
@@ -970,7 +976,7 @@ impl Cmd {
 
     pub async fn set_repeat_mode(
         inner: &DaemonInner,
-        mode: gtm_core::global::RepeatMode,
+        mode: RepeatMode,
     ) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
         state.set_repeat_mode(mode)?;
@@ -1017,7 +1023,7 @@ impl Cmd {
 
     pub async fn set_loudness_mode(
         inner: &DaemonInner,
-        mode: gtm_core::global::LoudnessMode,
+        mode: LoudnessMode,
     ) -> Result<DaemonRes, CoreError> {
         let mut state = inner.state.write().await;
         state.set_loudness_mode(mode)?;
@@ -1448,7 +1454,7 @@ impl Yt {
     pub async fn search(
         inner: &DaemonInner,
         query: &str,
-        filter: Option<gtm_core::global::YTFilter>,
+        filter: Option<YTFilter>,
     ) -> Result<DaemonRes, CoreError> {
         inner.health.yt.count.fetch_add(1, Ordering::Relaxed);
         let _ = inner.youtube.lock().await.start_search(query, filter).await;
@@ -1552,7 +1558,7 @@ impl Spotify {
         }
         // Persist the client id in the OS keychain so future links can reuse it
         // without the user pasting it again.
-        gtm_core::secret::set_secret(gtm_core::secret::SPOTIFY_CLIENT_ID_KEY, cid);
+        set_secret(SPOTIFY_CLIENT_ID_KEY, cid);
         let flow = OauthFlow::new(cid, port);
         let url = flow.authorize_url();
 
@@ -2391,10 +2397,10 @@ impl Lastfm {
         // Persist any new credentials in the OS keychain so they survive daemon
         // restarts; blank values mean "keep what is already stored".
         if let Some(key) = api_key.as_ref().filter(|k| !k.trim().is_empty()) {
-            gtm_core::secret::set_secret(gtm_core::secret::LASTFM_API_KEY_KEY, key.trim());
+            set_secret(LASTFM_API_KEY_KEY, key.trim());
         }
         if let Some(secret) = api_secret.as_ref().filter(|s| !s.trim().is_empty()) {
-            gtm_core::secret::set_secret(gtm_core::secret::LASTFM_API_SECRET_KEY, secret.trim());
+            set_secret(LASTFM_API_SECRET_KEY, secret.trim());
         }
 
         let current_session = inner.state.read().await.scrobble.session_token.clone();
@@ -2405,14 +2411,14 @@ impl Lastfm {
         let effective_key = if enabled {
             api_key
                 .filter(|k| !k.trim().is_empty())
-                .or_else(|| gtm_core::secret::get_secret(gtm_core::secret::LASTFM_API_KEY_KEY))
+                .or_else(|| get_secret(LASTFM_API_KEY_KEY))
         } else {
             None
         };
         let effective_secret = if enabled {
             api_secret
                 .filter(|s| !s.trim().is_empty())
-                .or_else(|| gtm_core::secret::get_secret(gtm_core::secret::LASTFM_API_SECRET_KEY))
+                .or_else(|| get_secret(LASTFM_API_SECRET_KEY))
         } else {
             None
         };
@@ -2441,8 +2447,8 @@ impl Lastfm {
     /// and the saved session token, so scrobbling survives a daemon restart
     /// without re-running the setup wizard.
     pub async fn restore_credentials(inner: &DaemonInner) {
-        let api_key = gtm_core::secret::get_secret(gtm_core::secret::LASTFM_API_KEY_KEY);
-        let api_secret = gtm_core::secret::get_secret(gtm_core::secret::LASTFM_API_SECRET_KEY);
+        let api_key = get_secret(LASTFM_API_KEY_KEY);
+        let api_secret = get_secret(LASTFM_API_SECRET_KEY);
         let session = inner.state.read().await.scrobble.session_token.clone();
         if let (Some(api_key), Some(api_secret)) = (api_key, api_secret) {
             let mut lastfm = inner.lastfm.lock().await;
@@ -2486,7 +2492,7 @@ impl Lastfm {
             .scrobble
             .api_key
             .clone()
-            .or_else(|| gtm_core::secret::get_secret(gtm_core::secret::LASTFM_API_KEY_KEY));
+            .or_else(|| get_secret(LASTFM_API_KEY_KEY));
         let session_token = state.scrobble.session_token.clone();
         drop(state);
         let ready = lastfm.is_ready();
@@ -2501,8 +2507,8 @@ impl Lastfm {
     pub async fn clear(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let mut lastfm = inner.lastfm.lock().await;
         lastfm.clear_session().await;
-        gtm_core::secret::delete_secret(gtm_core::secret::LASTFM_API_KEY_KEY);
-        gtm_core::secret::delete_secret(gtm_core::secret::LASTFM_API_SECRET_KEY);
+        delete_secret(LASTFM_API_KEY_KEY);
+        delete_secret(LASTFM_API_SECRET_KEY);
         let mut state = inner.state.write().await;
         state.scrobble.enabled = false;
         state.scrobble.api_key = None;
@@ -2597,10 +2603,10 @@ struct LibraryHandler;
 impl LibraryHandler {
     pub async fn handle(
         inner: &DaemonInner,
-        action: &gtm_core::ipc::LibraryAction,
+        action: &LibraryAction,
     ) -> Result<DaemonRes, CoreError> {
         let res = match action {
-            gtm_core::ipc::LibraryAction::Scan { path } => {
+            LibraryAction::Scan { path } => {
                 let audio_dir = path.clone();
                 let data_dir = inner.config.data_dir.clone();
                 let cache_dir = inner.config.cache_dir.to_string_lossy().to_string();
@@ -2615,7 +2621,7 @@ impl LibraryHandler {
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
-            gtm_core::ipc::LibraryAction::GetTracks { filter: _, sort: _ } => {
+            LibraryAction::GetTracks { filter: _, sort: _ } => {
                 let data_dir = inner.config.data_dir.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
@@ -2628,7 +2634,7 @@ impl LibraryHandler {
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
-            gtm_core::ipc::LibraryAction::GetPlaylists => {
+            LibraryAction::GetPlaylists => {
                 let data_dir = inner.config.data_dir.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
@@ -2641,7 +2647,7 @@ impl LibraryHandler {
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
-            gtm_core::ipc::LibraryAction::GetPlaylistTracks { id } => {
+            LibraryAction::GetPlaylistTracks { id } => {
                 let data_dir = inner.config.data_dir.clone();
                 let pid = *id;
                 let result = tokio::task::spawn_blocking(move || {
@@ -2655,7 +2661,7 @@ impl LibraryHandler {
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
-            gtm_core::ipc::LibraryAction::CreatePlaylist { name } => {
+            LibraryAction::CreatePlaylist { name } => {
                 let name = name.clone();
                 let data_dir = inner.config.data_dir.clone();
                 let result = tokio::task::spawn_blocking(move || {
@@ -2672,7 +2678,7 @@ impl LibraryHandler {
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
-            gtm_core::ipc::LibraryAction::DeletePlaylist { id } => {
+            LibraryAction::DeletePlaylist { id } => {
                 let id = *id;
                 let data_dir = inner.config.data_dir.clone();
                 let result = tokio::task::spawn_blocking(move || {
@@ -2686,7 +2692,7 @@ impl LibraryHandler {
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
-            gtm_core::ipc::LibraryAction::AddToPlaylist {
+            LibraryAction::AddToPlaylist {
                 playlist_id,
                 track_ids,
             } => {
@@ -2707,7 +2713,7 @@ impl LibraryHandler {
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
-            gtm_core::ipc::LibraryAction::ImportPlaylist { path, format } => {
+            LibraryAction::ImportPlaylist { path, format } => {
                 let path = path.clone();
                 let format = *format;
                 let data_dir = inner.config.data_dir.clone();
@@ -2725,7 +2731,7 @@ impl LibraryHandler {
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
-            gtm_core::ipc::LibraryAction::GetRecent { count } => {
+            LibraryAction::GetRecent { count } => {
                 let count = *count;
                 let data_dir = inner.config.data_dir.clone();
                 let result = tokio::task::spawn_blocking(move || {
@@ -2739,17 +2745,17 @@ impl LibraryHandler {
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
-            gtm_core::ipc::LibraryAction::SyncCovers => {
+            LibraryAction::SyncCovers => {
                 LibraryHandler::sync_start(inner, SyncKind::Covers, None).await?
             }
-            gtm_core::ipc::LibraryAction::SyncLyrics => {
+            LibraryAction::SyncLyrics => {
                 LibraryHandler::sync_start(inner, SyncKind::Lyrics, None).await?
             }
-            gtm_core::ipc::LibraryAction::SyncMetadata { path } => {
+            LibraryAction::SyncMetadata { path } => {
                 LibraryHandler::sync_start(inner, SyncKind::Metadata, path.clone()).await?
             }
-            gtm_core::ipc::LibraryAction::SyncStatus => LibraryHandler::sync_status(inner).await?,
-            gtm_core::ipc::LibraryAction::ExportPlaylist {
+            LibraryAction::SyncStatus => LibraryHandler::sync_status(inner).await?,
+            LibraryAction::ExportPlaylist {
                 playlist_id,
                 path,
                 format,
@@ -2769,7 +2775,7 @@ impl LibraryHandler {
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
-            gtm_core::ipc::LibraryAction::RemoveFromPlaylist {
+            LibraryAction::RemoveFromPlaylist {
                 playlist_id,
                 track_id,
             } => {
@@ -2787,7 +2793,7 @@ impl LibraryHandler {
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
-            gtm_core::ipc::LibraryAction::PlaylistDedup { playlist_id } => {
+            LibraryAction::PlaylistDedup { playlist_id } => {
                 let playlist_id = *playlist_id;
                 let data_dir = inner.config.data_dir.clone();
                 let result = tokio::task::spawn_blocking(move || {
@@ -2803,7 +2809,7 @@ impl LibraryHandler {
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
-            gtm_core::ipc::LibraryAction::PlaylistDoctor { playlist_id } => {
+            LibraryAction::PlaylistDoctor { playlist_id } => {
                 let playlist_id = *playlist_id;
                 let data_dir = inner.config.data_dir.clone();
                 let result = tokio::task::spawn_blocking(move || {
@@ -2819,7 +2825,7 @@ impl LibraryHandler {
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
-            gtm_core::ipc::LibraryAction::PlaylistSort { playlist_id, field } => {
+            LibraryAction::PlaylistSort { playlist_id, field } => {
                 let playlist_id = *playlist_id;
                 let field = field.clone();
                 let data_dir = inner.config.data_dir.clone();
@@ -2834,7 +2840,7 @@ impl LibraryHandler {
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
-            gtm_core::ipc::LibraryAction::RemoveTrack { id } => {
+            LibraryAction::RemoveTrack { id } => {
                 let id = *id;
                 let data_dir = inner.config.data_dir.clone();
                 let library_dirs = inner.config.library_paths.clone();
@@ -2874,7 +2880,7 @@ impl LibraryHandler {
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
-            gtm_core::ipc::LibraryAction::UpdateMetadata { track_id, patch } => {
+            LibraryAction::UpdateMetadata { track_id, patch } => {
                 let track_id = *track_id;
                 let patch = patch.clone();
                 let data_dir = inner.config.data_dir.clone();
@@ -3101,10 +3107,8 @@ impl Cover {
             // With Auto (the default) or an explicit Spotify preference, a
             // linked account supplies original 640x640 artwork ahead of the
             // network fallbacks below.
-            let spotify_first = matches!(
-                provider,
-                CoverProvider::Auto | CoverProvider::Spotify
-            ) && inner.spotify.lock().await.linked();
+            let spotify_first = matches!(provider, CoverProvider::Auto | CoverProvider::Spotify)
+                && inner.spotify.lock().await.linked();
 
             let mut guard = inner.cover_cache().await;
             if let Some(ref mut cache) = *guard {
@@ -3544,9 +3548,7 @@ impl Daemon {
             #[cfg(feature = "youtube")]
             youtube: Arc::new(tokio::sync::Mutex::new(YoutubeManager::new())),
             spotify: tokio::sync::Mutex::new(SpotifyManager::new(config_dir.clone())),
-            subsonic: tokio::sync::Mutex::new(SubsonicManager::new(
-                config_dir.clone(),
-            )),
+            subsonic: tokio::sync::Mutex::new(SubsonicManager::new(config_dir.clone())),
             podcast: tokio::sync::Mutex::new(PodcastManager::new(config_dir)),
             radio: tokio::sync::Mutex::new(RadioBrowserManager::new()),
             stream: tokio::sync::Mutex::new(StreamManager::new()),
@@ -3585,11 +3587,11 @@ impl Daemon {
             match PulseAudioMixer::new() {
                 Ok(m) => Ok(Box::new(m)),
                 Err(e) => {
-                    if gtm_core::is_termux() {
+                    if is_termux() {
                         // "All the user has to do is run gtm": try to launch the
                         // PulseAudio server before giving up, so no manual
                         // `pulseaudio --start` is required.
-                        gtm_core::ensure_termux_pulseaudio();
+                        ensure_termux_pulseaudio();
                         match PulseAudioMixer::new() {
                             Ok(m) => Ok(Box::new(m)),
                             Err(retry) => Err(CoreError::Daemon(format!(
@@ -3661,7 +3663,7 @@ impl Daemon {
             let mpris_state = self.inner.state.clone();
             let mpris_event_rx = self.inner.event_tx.subscribe();
             let mpris_req_tx = self.inner.internal_req_tx.clone();
-            match gtm_mpris::start(mpris_state, mpris_event_rx, mpris_req_tx).await {
+            match start(mpris_state, mpris_event_rx, mpris_req_tx).await {
                 Ok(handle) => self.mpris = Some(handle),
                 Err(e) => warn!("mpris: failed to start D-Bus server: {e}"),
             }
@@ -4791,9 +4793,8 @@ impl Daemon {
             }
 
             let cache_dir = inner.config.cache_dir.to_string_lossy().into_owned();
-            if let Ok((meta, hash)) = extract_metadata(&path_str, Some(&cache_dir))
-            {
-                return gtm_core::track::TrackInfo {
+            if let Ok((meta, hash)) = extract_metadata(&path_str, Some(&cache_dir)) {
+                return TrackInfo {
                     id: 0,
                     path: path_str,
                     title: if meta.title.is_empty() {
@@ -4832,7 +4833,7 @@ impl Daemon {
             cleaned_title
         };
         let artist = cleaned_artist.unwrap_or_else(|| "Unknown Artist".to_string());
-        gtm_core::track::TrackInfo {
+        TrackInfo {
             id: 0,
             path: path_str,
             title,
@@ -5117,9 +5118,7 @@ impl Daemon {
                 }
             }
         }
-        let path =
-            download_into(url, &dir, prefix, cookie_file.as_deref().map(Path::new))
-                .await?;
+        let path = download_into(url, &dir, prefix, cookie_file.as_deref().map(Path::new)).await?;
         Ok(path.to_string_lossy().into_owned())
     }
 }
@@ -5349,7 +5348,7 @@ fn run_metadata_sync(
             }
             if let Err(e) = lib.update_metadata(
                 track.id,
-                &gtm_core::MetadataPatch {
+                &MetadataPatch {
                     title: Some(hit.title),
                     artist: Some(hit.artist),
                     album: Some(hit.album),
@@ -5365,9 +5364,8 @@ fn run_metadata_sync(
         } else {
             let (cleaned_artist, cleaned_title) = clean_filename_stem(stem);
             if !cleaned_title.is_empty() || cleaned_artist.is_some() {
-                let patch = gtm_core::MetadataPatch {
-                    title: (!cleaned_title.is_empty())
-                        .then(|| sanitize_text(&cleaned_title)),
+                let patch = MetadataPatch {
+                    title: (!cleaned_title.is_empty()).then(|| sanitize_text(&cleaned_title)),
                     artist: cleaned_artist.map(|a| sanitize_text(&a)),
                     ..Default::default()
                 };

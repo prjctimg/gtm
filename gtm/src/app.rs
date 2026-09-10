@@ -8,15 +8,17 @@ use std::path::Path;
 use std::time::Duration;
 
 use crossterm::event::{self, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
-use gtm_core::client::DaemonClient;
-use gtm_core::global::EqPreset;
-use gtm_core::global::{DaemonState, PlaybackStatus, RepeatMode};
-use gtm_core::ipc::DaemonRes;
+use gtm_core::client::{DaemonClient, LastfmStatus};
+use gtm_core::global::{DaemonState, EqPreset, PlaybackStatus, RepeatMode};
+use gtm_core::ipc::{CacheKind, DaemonEvent, DaemonRes, HealthReport, SyncKind};
 use gtm_core::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 use gtm_core::radio::RadioStation;
-use gtm_core::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
+use gtm_core::secret::{SPOTIFY_CLIENT_ID_KEY, get_secret, set_secret};
+use gtm_core::spotify::{LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
+use gtm_core::state::{ThemeMode, TrackSort};
 use gtm_core::subsonic::{SubsonicAlbum, SubsonicSearchResults, SubsonicStatus, SubsonicTrack};
-use gtm_core::track::{Playlist, TrackInfo, YTSearchResult};
+use gtm_core::track::{LrcData, LrcLine, Playlist, TrackInfo, YTSearchResult};
+use gtm_core::{CoreError, MAX_SPEED, MAX_VOLUME, MIN_SPEED, MetadataPatch};
 use ratatui::Terminal;
 use ratatui::layout::Alignment;
 use ratatui::widgets::Paragraph;
@@ -29,7 +31,7 @@ use base64::Engine;
 
 use crate::footer::{FooterCache, FooterPreset, merged_presets};
 use crate::keymap::{
-    BoundCommand, KeyContext, KeyboardAction, Keybindings, default_keybindings, detect_clashes,
+    BoundCommand, KeyContext, Keybindings, KeyboardAction, default_keybindings, detect_clashes,
     parse_key_event,
 };
 use crate::mouse::{MouseMap, MouseZone};
@@ -40,7 +42,7 @@ use crate::reactive::{ReactivePalette, derive_theme, extract_palette};
 use crate::theme::{AppTheme, ThemeEntry, blend_colors, chadrula, detect_os_theme, merged_themes};
 use crate::ui;
 use crate::ui::{
-    Command, CommandPalette, CROSSFADE_DURATIONS, HELP_LINES, cover_provider_label,
+    CROSSFADE_DURATIONS, Command, CommandPalette, HELP_LINES, cover_provider_label,
     theme_mode_label,
 };
 use crate::visualizer::{AudioVisualizer, VisualizerPreset};
@@ -121,7 +123,7 @@ pub struct Prefs {
     #[serde(default = "default_theme_mode")]
     theme_mode: String,
     #[serde(default = "default_track_sort")]
-    track_sort: gtm_core::state::TrackSort,
+    track_sort: TrackSort,
     #[serde(default)]
     keybindings: std::collections::HashMap<String, String>,
     #[serde(default = "default_notification_modes")]
@@ -150,8 +152,8 @@ fn default_reactive_intensity() -> f32 {
     0.34
 }
 
-fn default_track_sort() -> gtm_core::state::TrackSort {
-    gtm_core::state::TrackSort::Recents
+fn default_track_sort() -> TrackSort {
+    TrackSort::Recents
 }
 
 fn default_time_format() -> String {
@@ -176,13 +178,13 @@ fn resolve_theme_index(themes: &[ThemeEntry], theme_name: &str, mode: &str) -> u
         detect_os_theme()
     } else {
         match mode {
-            "dark" => Some(gtm_core::state::ThemeMode::Dark),
-            "light" => Some(gtm_core::state::ThemeMode::Light),
+            "dark" => Some(ThemeMode::Dark),
+            "light" => Some(ThemeMode::Light),
             _ => None,
         }
     };
     if let Some(os) = os {
-        let os_light = os == gtm_core::state::ThemeMode::Light;
+        let os_light = os == ThemeMode::Light;
         // Prefer an exact match on the persisted name if it agrees with the OS.
         if let Some(idx) = themes.iter().position(|t| t.name == theme_name)
             && themes[idx].light == os_light
@@ -255,9 +257,7 @@ fn save_prefs(prefs: &Prefs) {
     }
 }
 
-fn build_keybindings(
-    overrides: &std::collections::HashMap<String, String>,
-) -> Keybindings {
+fn build_keybindings(overrides: &std::collections::HashMap<String, String>) -> Keybindings {
     let mut defaults = default_keybindings();
 
     if overrides.is_empty() {
@@ -511,7 +511,7 @@ pub struct DownloadProgressView {
 }
 
 pub struct UpNextNotif {
-    pub track: gtm_core::track::TrackInfo,
+    pub track: TrackInfo,
     pub cover: Option<Vec<u8>>,
     pub cover_stateful: Option<StatefulProtocol>,
     pub started_at: std::time::Instant,
@@ -659,7 +659,7 @@ pub struct SetupView {
     pub lastfm_focus: usize,
     /// True while waiting for the loopback callback after the browser opened.
     pub lastfm_pending: bool,
-    pub lastfm_status: Option<gtm_core::client::LastfmStatus>,
+    pub lastfm_status: Option<LastfmStatus>,
     /// Authorization URL for manual copy when no browser can be opened.
     pub lastfm_auth_url: Option<String>,
     pub lastfm_error: Option<String>,
@@ -752,7 +752,7 @@ pub struct QueueView {
 
 /// Lyrics pane UI state, grouped under `App::lyrics`.
 pub struct LyricsView {
-    pub current: Option<gtm_core::track::LrcData>,
+    pub current: Option<LrcData>,
     pub scroll: usize,
     pub fetching: bool,
     /// Gen of the in-flight lyrics fetch; stale responses (track changed while
@@ -816,8 +816,8 @@ pub struct App {
     pub tracks_cache: Vec<TrackInfo>,
     pub queue: QueueView,
     pub browse_detail: Option<String>,
-    pub yt_results_cache: Vec<gtm_core::track::YTSearchResult>,
-    pub playlist_cache: Vec<gtm_core::track::Playlist>,
+    pub yt_results_cache: Vec<YTSearchResult>,
+    pub playlist_cache: Vec<Playlist>,
     pub playlist_tracks_cache: Vec<TrackInfo>,
     pub spotify: SpotifyView,
     pub subsonic: SubsonicView,
@@ -876,7 +876,7 @@ pub struct App {
     /// OS-theme compliance mode: "auto" (detect dark/light), "dark", "light".
     pub theme_mode: String,
     /// How the library track list is sorted.
-    pub track_sort: gtm_core::state::TrackSort,
+    pub track_sort: TrackSort,
     pub is_ready: bool,
     last_queue_cursor: u64,
     /// Set when the user manually triggers Next/Prev so the "Up next"
@@ -889,7 +889,7 @@ pub struct App {
     pub auto_track_advance: bool,
     last_track_path_display: Option<String>,
     prev_track_id: Option<i64>,
-    prev_status: gtm_core::global::PlaybackStatus,
+    prev_status: PlaybackStatus,
     prev_volume: u8,
     prev_cover_id: Option<i64>,
     cover_art_dirty: bool,
@@ -944,7 +944,7 @@ pub struct App {
     pub lyrics: LyricsView,
     pub show_health_panel: bool,
     pub show_health_on_report: bool,
-    pub health_report: Option<gtm_core::ipc::HealthReport>,
+    pub health_report: Option<HealthReport>,
     pub hide_help_bar: bool,
     pub hide_footer: bool,
     pub pending_suspend: bool,
@@ -962,7 +962,7 @@ enum IpcResult {
     ArtistCoverArt(Option<Vec<u8>>, String, u64),
     SpotifyPreviewCover(Option<Vec<u8>>, String, u64),
     CoverPicker(Option<Picker>),
-    Lyrics(Option<gtm_core::track::LrcData>, u64),
+    Lyrics(Option<LrcData>, u64),
     /// Authorize URL produced by the daemon's OAuth flow. Kept separate from
     /// `Notification` so the SpotifyLink picker can render it inline.
     SpotifyOauthUrl(String),
@@ -992,7 +992,7 @@ enum IpcResult {
     },
     Notification(String, String, NotificationKind, NotifType),
     Error(String),
-    HealthReport(gtm_core::ipc::HealthReport),
+    HealthReport(HealthReport),
     SpotifyStatus(SpotifyStatus),
     SpotifyPlaylists(Vec<SpotifyPlaylist>),
     SpotifyTracks(Vec<SpotifyTrack>),
@@ -1009,7 +1009,7 @@ enum IpcResult {
     RadioSearch(Vec<RadioStation>),
     RadioTop(Vec<RadioStation>),
     /// Last.fm link status refreshed after a setup action completes.
-    LastfmStatus(Option<gtm_core::client::LastfmStatus>),
+    LastfmStatus(Option<LastfmStatus>),
     /// Authorization URL produced by the daemon's Last.fm auth flow.
     LastfmAuthUrl(String),
     /// Hard failure of the Last.fm setup flow.
@@ -1073,15 +1073,15 @@ fn try_open_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResult>) {
 
 fn spawn_sync_and_wait(
     c: DaemonClient,
-    kind: gtm_core::ipc::SyncKind,
+    kind: SyncKind,
     label: &'static str,
     ipc_tx: mpsc::UnboundedSender<IpcResult>,
 ) {
     tokio::spawn(async move {
         let kick = match kind {
-            gtm_core::ipc::SyncKind::Covers => c.library().sync_covers().await,
-            gtm_core::ipc::SyncKind::Lyrics => c.library().sync_lyrics().await,
-            gtm_core::ipc::SyncKind::Metadata => c.library().sync_metadata(None).await,
+            SyncKind::Covers => c.library().sync_covers().await,
+            SyncKind::Lyrics => c.library().sync_lyrics().await,
+            SyncKind::Metadata => c.library().sync_metadata(None).await,
         };
         if let Err(e) = kick {
             let _ = ipc_tx.send(IpcResult::Error(format!("{label} sync failed: {e}")));
@@ -1398,7 +1398,7 @@ impl App {
             auto_track_advance: false,
             last_track_path_display: None,
             prev_track_id: None,
-            prev_status: gtm_core::global::PlaybackStatus::Stopped,
+            prev_status: PlaybackStatus::Stopped,
             prev_volume: 100,
             prev_cover_id: None,
             cover_art_dirty: false,
@@ -1504,7 +1504,7 @@ impl App {
     pub fn open_spotify_link(&mut self) {
         let client_id = self.spotify.link_input.trim().to_string();
         let client_id = if client_id.is_empty() {
-            gtm_core::spotify::LIBRESPOT_CLIENT_ID.to_string()
+            LIBRESPOT_CLIENT_ID.to_string()
         } else {
             client_id
         };
@@ -1514,7 +1514,7 @@ impl App {
             .trim()
             .parse::<u16>()
             .unwrap_or(8990);
-        gtm_core::secret::set_secret(gtm_core::secret::SPOTIFY_CLIENT_ID_KEY, &client_id);
+        set_secret(SPOTIFY_CLIENT_ID_KEY, &client_id);
         let c = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         self.spotify.link_input.clear();
@@ -1700,10 +1700,7 @@ impl App {
         save_prefs(&self.current_prefs());
         self.notify_typed(
             "Theme",
-            format!(
-                "Theme mode: {}",
-                theme_mode_label(&self.theme_mode)
-            ),
+            format!("Theme mode: {}", theme_mode_label(&self.theme_mode)),
             NotificationKind::Info,
             true,
             NotifType::Prefs,
@@ -1752,9 +1749,7 @@ impl App {
         let light = entry.light;
         let base = entry.theme;
         self.theme = match (self.reactive_theme, self.reactive_palette) {
-            (true, Some(pal)) => {
-                derive_theme(&base, &pal, light, self.reactive_theme_intensity)
-            }
+            (true, Some(pal)) => derive_theme(&base, &pal, light, self.reactive_theme_intensity),
             _ => base,
         };
     }
@@ -1991,7 +1986,7 @@ impl App {
             let mut had_sync_done = false;
             let mut had_spotify_change = false;
             for ev in self.client.drain().await {
-                if let gtm_core::ipc::DaemonEvent::PlaybackStarted { .. } = &ev {
+                if let DaemonEvent::PlaybackStarted { .. } = &ev {
                     // The crossfade has begun: drop the Up Next countdown.
                     self.upnext = None;
                     // Was this change an automatic advance (not a manual
@@ -2001,16 +1996,16 @@ impl App {
                     // Any PlaybackStarted consumes the manual-advance flag.
                     self.manual_track_advance = false;
                 }
-                if matches!(ev, gtm_core::ipc::DaemonEvent::PlaybackStarted { .. }) {
+                if matches!(ev, DaemonEvent::PlaybackStarted { .. }) {
                     had_track_change = true;
                 }
-                if matches!(ev, gtm_core::ipc::DaemonEvent::TrackEnded) {
+                if matches!(ev, DaemonEvent::TrackEnded) {
                     self.upnext = None;
                 }
-                if matches!(ev, gtm_core::ipc::DaemonEvent::SleepTimerExpired) {
+                if matches!(ev, DaemonEvent::SleepTimerExpired) {
                     had_sleep_expired = true;
                 }
-                if let gtm_core::ipc::DaemonEvent::CrossfadeCountdown { track } = &ev
+                if let DaemonEvent::CrossfadeCountdown { track } = &ev
                     // Only surface the crossfade/Up Next card on a genuine
                     // auto-advance; a manual Next/Prev shouldn't announce it.
                     && !self.manual_track_advance
@@ -2019,12 +2014,12 @@ impl App {
                 }
                 // The daemon finished an OAuth link flow: pull the fresh
                 // status + playlists so they appear without a restart.
-                if matches!(ev, gtm_core::ipc::DaemonEvent::SpotifyStatusChanged) {
+                if matches!(ev, DaemonEvent::SpotifyStatusChanged) {
                     had_spotify_change = true;
                 }
                 // After a background metadata sync finishes, re-pull the
                 // library so scrubbed tags / fetched covers show up live.
-                if let gtm_core::ipc::DaemonEvent::Custom { name, data } = &ev
+                if let DaemonEvent::Custom { name, data } = &ev
                     && name == "sync_done"
                     && data.get("kind").is_some_and(|k| k == "metadata")
                 {
@@ -2089,7 +2084,7 @@ impl App {
                 self.client.seed_clock_from_state(&self.state).await;
             }
             if had_sync_done
-                && let Ok(gtm_core::ipc::DaemonRes::Tracks { tracks, .. }) =
+                && let Ok(DaemonRes::Tracks { tracks, .. }) =
                     self.client.library().get_tracks(None, None).await
             {
                 self.tracks_cache = tracks;
@@ -2664,11 +2659,11 @@ impl App {
                             self.lyrics.scroll = self.current_lyric_index();
                             // Show "No lyrics found" if lyrics fetch returned None
                             if self.lyrics.current.is_none() {
-                                self.lyrics.current = Some(gtm_core::track::LrcData {
+                                self.lyrics.current = Some(LrcData {
                                     title: None,
                                     artist: None,
                                     album: None,
-                                    lines: vec![gtm_core::track::LrcLine {
+                                    lines: vec![LrcLine {
                                         timestamp: 0.0,
                                         text: "No lyrics found".to_string(),
                                     }],
@@ -3118,7 +3113,7 @@ impl App {
         });
     }
 
-    pub fn start_upnext(&mut self, track: gtm_core::track::TrackInfo) {
+    pub fn start_upnext(&mut self, track: TrackInfo) {
         let total_secs = self.crossfade_duration as f64 + 3.0;
         let fetch_gen = if no_image_protocol() {
             None
@@ -3822,13 +3817,13 @@ impl App {
         // album/artist drill-downs). Playlist and Spotify views sort upstream.
         if self.browse_detail.is_none() && self.library_category <= 1 {
             match self.track_sort {
-                gtm_core::state::TrackSort::Recents => {
+                TrackSort::Recents => {
                     tracks.sort_by(|a, b| b.year.cmp(&a.year).then_with(|| a.title.cmp(&b.title)));
                 }
-                gtm_core::state::TrackSort::RecentlyAdded => {
+                TrackSort::RecentlyAdded => {
                     tracks.sort_by_key(|a| std::cmp::Reverse(a.id));
                 }
-                gtm_core::state::TrackSort::Alphabetical => {
+                TrackSort::Alphabetical => {
                     tracks.sort_by(|a, b| {
                         a.title
                             .to_lowercase()
@@ -3836,7 +3831,7 @@ impl App {
                             .then_with(|| a.artist.to_lowercase().cmp(&b.artist.to_lowercase()))
                     });
                 }
-                gtm_core::state::TrackSort::Artist => {
+                TrackSort::Artist => {
                     tracks.sort_by(|a, b| {
                         a.artist
                             .to_lowercase()
@@ -3844,7 +3839,7 @@ impl App {
                             .then_with(|| a.title.to_lowercase().cmp(&b.title.to_lowercase()))
                     });
                 }
-                gtm_core::state::TrackSort::Album => {
+                TrackSort::Album => {
                     tracks.sort_by(|a, b| {
                         a.album
                             .to_lowercase()
@@ -4344,11 +4339,11 @@ impl App {
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         let err_tx = ipc_tx.clone();
-        let error_handler = move |e: gtm_core::CoreError| {
+        let error_handler = move |e: CoreError| {
             let _ = err_tx.send(IpcResult::Error(e.to_string()));
         };
         let err_tx2 = ipc_tx.clone();
-        let error_handler2 = move |e: gtm_core::CoreError| {
+        let error_handler2 = move |e: CoreError| {
             let _ = err_tx2.send(IpcResult::Error(e.to_string()));
         };
 
@@ -4570,7 +4565,8 @@ impl App {
                                 }
                                 DaemonRes::Value { .. } => {}
                                 _ => {
-                                    return "Download error: unexpected daemon response".to_string();
+                                    return "Download error: unexpected daemon response"
+                                        .to_string();
                                 }
                             }
                             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -4866,13 +4862,9 @@ impl App {
             PickerId::Equalizer => EQ_PRESETS.len().saturating_sub(1),
             PickerId::SleepTimer => 6,
             PickerId::Crossfade => 13,
-            PickerId::VisualizerPreset => VisualizerPreset::all()
-                .len()
-                .saturating_sub(1),
+            PickerId::VisualizerPreset => VisualizerPreset::all().len().saturating_sub(1),
             PickerId::FooterPreset => self.footer_presets.len().saturating_sub(1),
-            PickerId::ProgressStyle => ProgressStyle::all()
-                .len()
-                .saturating_sub(1),
+            PickerId::ProgressStyle => ProgressStyle::all().len().saturating_sub(1),
             PickerId::Notifications => self.notification_history.len().saturating_sub(1),
             PickerId::NotificationSettings => NotifType::ALL.len().saturating_sub(1),
             PickerId::PlaylistSelect => self.playlist_cache.len(),
@@ -5418,7 +5410,7 @@ impl App {
                         self.send_high(TuiCommand::Stop);
                     }
                     Some(KeyboardAction::VolumeUp) => {
-                        let new_vol = (self.state.volume + 5).min(gtm_core::MAX_VOLUME);
+                        let new_vol = (self.state.volume + 5).min(MAX_VOLUME);
                         self.send_high(TuiCommand::SetVolume(new_vol));
                         self.notify_volume(new_vol);
                     }
@@ -5431,14 +5423,14 @@ impl App {
                     Some(KeyboardAction::SpeedUp) => {
                         // Round to nearest 0.25 so the step stays predictable.
                         let new_speed = ((self.state.audio.speed + 0.25) * 4.0).ceil() / 4.0;
-                        let new_speed = new_speed.min(gtm_core::MAX_SPEED);
+                        let new_speed = new_speed.min(MAX_SPEED);
                         self.set_last_action(&format!("Speed {:.2}x", new_speed));
                         self.send_high(TuiCommand::SetSpeed(new_speed));
                     }
                     Some(KeyboardAction::SpeedDown) => {
                         self.set_last_action("Speed Down");
                         let new_speed = ((self.state.audio.speed - 0.25) * 4.0).ceil() / 4.0;
-                        let new_speed = new_speed.max(gtm_core::MIN_SPEED);
+                        let new_speed = new_speed.max(MIN_SPEED);
                         self.send_high(TuiCommand::SetSpeed(new_speed));
                     }
                     Some(KeyboardAction::ToggleLowPower) => {
@@ -6220,7 +6212,7 @@ impl App {
                                 );
                                 spawn_sync_and_wait(
                                     self.client.clone(),
-                                    gtm_core::ipc::SyncKind::Covers,
+                                    SyncKind::Covers,
                                     "Covers",
                                     self.ipc_tx.clone(),
                                 );
@@ -6641,15 +6633,9 @@ impl App {
                             1 => match self.settings_option {
                                 0 => {
                                     let next = match self.state.repeat {
-                                        gtm_core::global::RepeatMode::Off => {
-                                            gtm_core::global::RepeatMode::One
-                                        }
-                                        gtm_core::global::RepeatMode::One => {
-                                            gtm_core::global::RepeatMode::All
-                                        }
-                                        gtm_core::global::RepeatMode::All => {
-                                            gtm_core::global::RepeatMode::Off
-                                        }
+                                        RepeatMode::Off => RepeatMode::One,
+                                        RepeatMode::One => RepeatMode::All,
+                                        RepeatMode::All => RepeatMode::Off,
                                     };
                                     let c = self.client.clone();
                                     tokio::spawn(async move {
@@ -6743,15 +6729,9 @@ impl App {
                             1 => match self.settings_option {
                                 0 => {
                                     let next = match self.state.repeat {
-                                        gtm_core::global::RepeatMode::Off => {
-                                            gtm_core::global::RepeatMode::One
-                                        }
-                                        gtm_core::global::RepeatMode::One => {
-                                            gtm_core::global::RepeatMode::All
-                                        }
-                                        gtm_core::global::RepeatMode::All => {
-                                            gtm_core::global::RepeatMode::Off
-                                        }
+                                        RepeatMode::Off => RepeatMode::One,
+                                        RepeatMode::One => RepeatMode::All,
+                                        RepeatMode::All => RepeatMode::Off,
                                     };
                                     let c = self.client.clone();
                                     tokio::spawn(async move {
@@ -6892,15 +6872,9 @@ impl App {
                             1 => match opt {
                                 0 => {
                                     let next = match self.state.repeat {
-                                        gtm_core::global::RepeatMode::Off => {
-                                            gtm_core::global::RepeatMode::One
-                                        }
-                                        gtm_core::global::RepeatMode::One => {
-                                            gtm_core::global::RepeatMode::All
-                                        }
-                                        gtm_core::global::RepeatMode::All => {
-                                            gtm_core::global::RepeatMode::Off
-                                        }
+                                        RepeatMode::Off => RepeatMode::One,
+                                        RepeatMode::One => RepeatMode::All,
+                                        RepeatMode::All => RepeatMode::Off,
                                     };
                                     let c = self.client.clone();
                                     tokio::spawn(async move {
@@ -6955,7 +6929,7 @@ impl App {
                                 3 => {
                                     spawn_sync_and_wait(
                                         self.client.clone(),
-                                        gtm_core::ipc::SyncKind::Covers,
+                                        SyncKind::Covers,
                                         "Covers",
                                         self.ipc_tx.clone(),
                                     );
@@ -6963,7 +6937,7 @@ impl App {
                                 4 => {
                                     spawn_sync_and_wait(
                                         self.client.clone(),
-                                        gtm_core::ipc::SyncKind::Lyrics,
+                                        SyncKind::Lyrics,
                                         "Lyrics",
                                         self.ipc_tx.clone(),
                                     );
@@ -6971,7 +6945,7 @@ impl App {
                                 5 => {
                                     spawn_sync_and_wait(
                                         self.client.clone(),
-                                        gtm_core::ipc::SyncKind::Metadata,
+                                        SyncKind::Metadata,
                                         "Metadata",
                                         self.ipc_tx.clone(),
                                     );
@@ -7018,9 +6992,9 @@ impl App {
                                 }
                                 10 | 11 => {
                                     let what = if opt == 10 {
-                                        gtm_core::ipc::CacheKind::Lyrics
+                                        CacheKind::Lyrics
                                     } else {
-                                        gtm_core::ipc::CacheKind::Covers
+                                        CacheKind::Covers
                                     };
                                     let label = if opt == 10 { "lyrics" } else { "cover art" };
                                     let c = self.client.clone();
@@ -7073,9 +7047,7 @@ impl App {
                                     self.spotify.link_input.clear();
                                     self.spotify.oauth_port = "8990".to_string();
                                     self.spotify.link_field = 0;
-                                    if let Some(cid) = gtm_core::secret::get_secret(
-                                        gtm_core::secret::SPOTIFY_CLIENT_ID_KEY,
-                                    ) {
+                                    if let Some(cid) = get_secret(SPOTIFY_CLIENT_ID_KEY) {
                                         self.spotify.link_input = cid;
                                     }
                                     self.pickers.open(PickerId::SpotifyLink);
@@ -7128,9 +7100,7 @@ impl App {
                                     self.spotify.link_input.clear();
                                     self.spotify.oauth_port = "8990".to_string();
                                     self.spotify.link_field = 0;
-                                    if let Some(cid) = gtm_core::secret::get_secret(
-                                        gtm_core::secret::SPOTIFY_CLIENT_ID_KEY,
-                                    ) {
+                                    if let Some(cid) = get_secret(SPOTIFY_CLIENT_ID_KEY) {
                                         self.spotify.link_input = cid;
                                     }
                                     self.pickers.open(PickerId::SpotifyLink);
@@ -7913,7 +7883,7 @@ impl App {
                         let client = self.client.clone();
                         let ipc_tx = self.ipc_tx.clone();
                         tokio::spawn(async move {
-                            let patch = gtm_core::MetadataPatch {
+                            let patch = MetadataPatch {
                                 title: Some(title),
                                 artist: Some(artist),
                                 album: Some(album),
@@ -8069,7 +8039,7 @@ impl App {
                             // desktop client id so no dashboard app is needed.
                             let client_id = self.spotify.link_input.trim().to_string();
                             let client_id = if client_id.is_empty() {
-                                gtm_core::spotify::LIBRESPOT_CLIENT_ID.to_string()
+                                LIBRESPOT_CLIENT_ID.to_string()
                             } else {
                                 client_id
                             };
@@ -8080,10 +8050,7 @@ impl App {
                                 .parse::<u16>()
                                 .unwrap_or(8990);
                             // Persist the client id so future links reuse it.
-                            gtm_core::secret::set_secret(
-                                gtm_core::secret::SPOTIFY_CLIENT_ID_KEY,
-                                &client_id,
-                            );
+                            set_secret(SPOTIFY_CLIENT_ID_KEY, &client_id);
                             let c = self.client.clone();
                             let ipc_tx = self.ipc_tx.clone();
                             self.spotify.link_input.clear();
@@ -8266,7 +8233,7 @@ impl App {
                                 } else if action == "prev track" {
                                     self.send_high(TuiCommand::Prev);
                                 } else if action == "volume up" {
-                                    let new_vol = (self.state.volume + 5).min(gtm_core::MAX_VOLUME);
+                                    let new_vol = (self.state.volume + 5).min(MAX_VOLUME);
                                     self.send_high(TuiCommand::SetVolume(new_vol));
                                 } else if action == "volume down" {
                                     let new_vol = self.state.volume.saturating_sub(5);
@@ -8714,7 +8681,7 @@ impl App {
                                     let client = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
-                                        let patch = gtm_core::MetadataPatch {
+                                        let patch = MetadataPatch {
                                             title: Some(title),
                                             artist: Some(artist),
                                             album: Some(album),
@@ -8791,7 +8758,7 @@ impl App {
                     let client = self.client.clone();
                     let ipc_tx = self.ipc_tx.clone();
                     tokio::spawn(async move {
-                        let patch = gtm_core::MetadataPatch {
+                        let patch = MetadataPatch {
                             title: Some(title),
                             artist: Some(artist),
                             album: Some(album),
@@ -9017,9 +8984,7 @@ impl App {
     }
 
     /// Interleave YT search results: insert one playlist entry after every 3 track entries.
-    fn interleave_yt_results(
-        mut results: Vec<gtm_core::track::YTSearchResult>,
-    ) -> Vec<gtm_core::track::YTSearchResult> {
+    fn interleave_yt_results(mut results: Vec<YTSearchResult>) -> Vec<YTSearchResult> {
         let tracks: Vec<_> = results.drain(..).filter(|r| !r.is_playlist).collect();
         let playlists: Vec<_> = results; // remaining are playlists
         let mut out = Vec::with_capacity(tracks.len() + playlists.len());
@@ -9044,7 +9009,7 @@ impl App {
 /// Untimed lines (timestamp < 0) are skipped for matching but keep their
 /// index so the highlight tracks timed lines correctly. Uses
 /// rposition semantics over sorted timed entries.
-fn lyric_index_at(lines: &[gtm_core::track::LrcLine], position: f64) -> usize {
+fn lyric_index_at(lines: &[LrcLine], position: f64) -> usize {
     if lines.is_empty() {
         return 0;
     }
@@ -9062,7 +9027,7 @@ fn lyric_index_at(lines: &[gtm_core::track::LrcLine], position: f64) -> usize {
 
 /// Whether the current lyrics have any time-synced lines. Plain lyrics
 /// (`timestamp < 0` for all lines) should not highlight an active line.
-pub fn lyrics_are_synced(lines: &[gtm_core::track::LrcLine]) -> bool {
+pub fn lyrics_are_synced(lines: &[LrcLine]) -> bool {
     lines.iter().any(|l| l.timestamp >= 0.0)
 }
 
@@ -9098,19 +9063,19 @@ mod tests {
     #[test]
     fn lyric_index_tracks_position_through_timed_lines() {
         let lines = vec![
-            gtm_core::track::LrcLine {
+            LrcLine {
                 timestamp: -1.0,
                 text: "intro (untimed)".into(),
             },
-            gtm_core::track::LrcLine {
+            LrcLine {
                 timestamp: 0.0,
                 text: "first".into(),
             },
-            gtm_core::track::LrcLine {
+            LrcLine {
                 timestamp: 5.0,
                 text: "second".into(),
             },
-            gtm_core::track::LrcLine {
+            LrcLine {
                 timestamp: 10.0,
                 text: "third".into(),
             },

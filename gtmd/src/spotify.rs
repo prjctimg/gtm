@@ -16,7 +16,10 @@ use rspotify::model::{AdditionalType, PlayableItem, SearchType, Token};
 use rspotify::{CallbackError, Config, Credentials, OAuth, TokenCallback};
 use tracing::{debug, info, warn};
 
-use gtm_core::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
+use gtm_core::secret::{
+    SPOTIFY_CLIENT_ID_KEY, SPOTIFY_TOKEN_KEY, delete_secret, get_secret, set_secret,
+};
+use gtm_core::spotify::{LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 
 const TOKEN_FILE: &str = "spotify.json";
 const TOKEN_ACCESS_PERMS: u32 = 0o600;
@@ -86,7 +89,7 @@ impl SpotifyManager {
         self.save_token(&token)?;
         // Mirror the token into the OS keychain so it survives the file-based
         // token being cleared and can be restored without a re-login.
-        gtm_core::secret::set_secret(gtm_core::secret::SPOTIFY_TOKEN_KEY, raw);
+        set_secret(SPOTIFY_TOKEN_KEY, raw);
         self.init_client(token).await
     }
 
@@ -105,8 +108,8 @@ impl SpotifyManager {
             Err(e) => warn!("failed to remove spotify token file: {e}"),
         }
         // Drop any keychain-stored credentials too.
-        gtm_core::secret::delete_secret(gtm_core::secret::SPOTIFY_TOKEN_KEY);
-        gtm_core::secret::delete_secret(gtm_core::secret::SPOTIFY_CLIENT_ID_KEY);
+        delete_secret(SPOTIFY_TOKEN_KEY);
+        delete_secret(SPOTIFY_CLIENT_ID_KEY);
     }
 
     /// Snapshot of the current link state for the Settings UI.
@@ -288,15 +291,14 @@ impl SpotifyManager {
 
     async fn init_client(&mut self, token: Token) -> Result<(), String> {
         let refreshable = token.refresh_token.is_some();
-        let client_id = gtm_core::secret::get_secret(gtm_core::secret::SPOTIFY_CLIENT_ID_KEY)
-            .unwrap_or_default();
+        let client_id = get_secret(SPOTIFY_CLIENT_ID_KEY).unwrap_or_default();
         // Fall back to librespot's public desktop client id when the user
         // linked with a plain pasted access token (which never stores a
         // client id). `Credentials::default()` is a dead end: rspotify's
         // bundled demo id cannot refresh, so such tokens silently expire and
         // every later Web API call fails with a 401.
         let creds = if client_id.is_empty() {
-            Credentials::new_pkce(gtm_core::spotify::LIBRESPOT_CLIENT_ID)
+            Credentials::new_pkce(LIBRESPOT_CLIENT_ID)
         } else {
             Credentials::new_pkce(&client_id)
         };

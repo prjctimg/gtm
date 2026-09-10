@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use gtm_audio::AudioMixer;
+use gtm_audio::{AudioEvent, AudioMixer};
 
 static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -80,7 +80,7 @@ fn test_mixer_load_play_pause_stop() {
     std::thread::sleep(Duration::from_millis(200));
     let ev = mixer.poll().unwrap();
     assert!(ev.is_some(), "expected a Position event after playing");
-    if let Some(gtm_audio::AudioEvent::Position(pos)) = ev {
+    if let Some(AudioEvent::Position(pos)) = ev {
         assert!(pos > 0.0, "position should advance after playing");
         assert!(pos <= mixer.duration());
     }

@@ -21,6 +21,7 @@ use symphonia::core::units::Timestamp;
 use tracing::warn;
 
 use gtm_core::MetadataPatch;
+use gtm_core::playlist_fmt::{M3u8Format, PlaylistFormat, PlaylistFormatKind, PlsFormat};
 use gtm_core::track::{Playlist, TrackInfo};
 
 use crate::cleaner::{clean_filename_stem, sanitize_text};
@@ -42,16 +43,10 @@ fn m3u8_file_name(name: &str) -> String {
 }
 
 /// Build the format parser/serializer for a [`PlaylistFormatKind`].
-fn format_fmt(
-    kind: gtm_core::playlist_fmt::PlaylistFormatKind,
-) -> Box<dyn gtm_core::playlist_fmt::PlaylistFormat + Send + Sync> {
+fn format_fmt(kind: PlaylistFormatKind) -> Box<dyn PlaylistFormat + Send + Sync> {
     match kind {
-        gtm_core::playlist_fmt::PlaylistFormatKind::M3u8 => {
-            Box::new(gtm_core::playlist_fmt::M3u8Format)
-        }
-        gtm_core::playlist_fmt::PlaylistFormatKind::Pls => {
-            Box::new(gtm_core::playlist_fmt::PlsFormat)
-        }
+        PlaylistFormatKind::M3u8 => Box::new(M3u8Format),
+        PlaylistFormatKind::Pls => Box::new(PlsFormat),
     }
 }
 
@@ -601,7 +596,7 @@ impl Library {
     pub fn import_playlist(
         &self,
         path: &str,
-        format: gtm_core::playlist_fmt::PlaylistFormatKind,
+        format: PlaylistFormatKind,
     ) -> Result<Playlist, String> {
         let content = std::fs::read_to_string(path).map_err(|e| format!("read playlist: {e}"))?;
 
@@ -639,7 +634,7 @@ impl Library {
         &self,
         playlist_id: i64,
         path: &str,
-        format: gtm_core::playlist_fmt::PlaylistFormatKind,
+        format: PlaylistFormatKind,
     ) -> Result<(), String> {
         let playlist = self
             .get_playlist(playlist_id)?

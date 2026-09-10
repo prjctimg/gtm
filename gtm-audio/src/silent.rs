@@ -11,6 +11,7 @@ use rodio::Source;
 
 use crate::backend::{AudioEvent, AudioResult};
 use crate::mixer::Mixer;
+use gtm_core::MAX_VOLUME;
 use gtm_core::global::{EqPreset, ReverbConfig};
 
 /// A silent no-op mixer for environments without audio hardware (CI, testing).
@@ -33,7 +34,7 @@ impl NullMixer {
     pub fn new() -> Self {
         Self {
             playing: AtomicBool::new(false),
-            volume: AtomicU8::new(gtm_core::MAX_VOLUME),
+            volume: AtomicU8::new(MAX_VOLUME),
             position: Mutex::new(0.0),
             duration: Mutex::new(0.0),
             crossfading: Mutex::new(false),
@@ -100,8 +101,7 @@ impl Mixer for NullMixer {
     }
 
     fn set_volume(&mut self, volume: u8) -> AudioResult<()> {
-        self.volume
-            .store(volume.min(gtm_core::MAX_VOLUME), Ordering::SeqCst);
+        self.volume.store(volume.min(MAX_VOLUME), Ordering::SeqCst);
         Ok(())
     }
 

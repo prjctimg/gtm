@@ -8,9 +8,20 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use gtm_core::client::DaemonClient;
-use gtm_core::global::RepeatMode;
+use gtm_core::client::{DaemonClient, LastfmStatus};
+use gtm_core::daemon_ctl::ensure_daemon_running;
+use gtm_core::global::{PlaybackStatus, RepeatMode};
+use gtm_core::ipc::HealthStatus;
+use gtm_core::ipc::MetadataPatch;
 use gtm_core::playlist_fmt::PlaylistFormatKind;
+use gtm_core::resolve_command_socket;
+use gtm_core::secret::{
+    LASTFM_API_KEY_KEY, LASTFM_API_SECRET_KEY, SPOTIFY_CLIENT_ID_KEY, get_secret, set_secret,
+};
+use gtm_core::spotify::SpotifyStatus;
+use gtm_core::subsonic::SubsonicStatus;
+use gtm_core::subsonic::SubsonicTrack;
+use gtm_core::track::LrcData;
 use tokio::io::AsyncBufReadExt;
 
 use crate::app::{Prefs, ensure_prefs_file};
@@ -393,12 +404,12 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
         let socket_path = socket
             .clone()
             .map(PathBuf::from)
-            .unwrap_or_else(gtm_core::resolve_command_socket);
+            .unwrap_or_else(resolve_command_socket);
 
         // The setup wizard auto-starts the daemon so a fresh install can
         // register services without a separate daemon launch step.
         if let CliCommand::Setup { .. } = cmd {
-            gtm_core::daemon_ctl::ensure_daemon_running(&socket_path).await?;
+            ensure_daemon_running(&socket_path).await?;
         }
 
         let client = DaemonClient::connect(&socket_path)
@@ -782,7 +793,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
             CliCommand::Status { stream } => {
                 if *stream {
                     let mut last_track: Option<String> = None;
-                    let mut lyrics: Option<gtm_core::track::LrcData> = None;
+                    let mut lyrics: Option<LrcData> = None;
                     let mut first = true;
                     loop {
                         let state = client.get_status().await.map_err(|e| e.to_string())?;
@@ -841,9 +852,9 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         serde_json::to_string_pretty(&state).map_err(|e| e.to_string())
                     } else {
                         let status_str = match state.status {
-                            gtm_core::global::PlaybackStatus::Playing => "\x1b[32m▶ Playing\x1b[0m",
-                            gtm_core::global::PlaybackStatus::Paused => "\x1b[33m⏸ Paused\x1b[0m",
-                            gtm_core::global::PlaybackStatus::Stopped => "\x1b[31m⏹ Stopped\x1b[0m",
+                            PlaybackStatus::Playing => "\x1b[32m▶ Playing\x1b[0m",
+                            PlaybackStatus::Paused => "\x1b[33m⏸ Paused\x1b[0m",
+                            PlaybackStatus::Stopped => "\x1b[31m⏹ Stopped\x1b[0m",
                         };
                         let track_str = state
                             .current_track
@@ -917,9 +928,9 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     );
                     for c in &report.components {
                         let icon = match c.status {
-                            gtm_core::ipc::HealthStatus::Ok => "\x1b[32m✓\x1b[0m",
-                            gtm_core::ipc::HealthStatus::Degraded => "\x1b[33m⚠\x1b[0m",
-                            gtm_core::ipc::HealthStatus::Error => "\x1b[31m✗\x1b[0m",
+                            HealthStatus::Ok => "\x1b[32m✓\x1b[0m",
+                            HealthStatus::Degraded => "\x1b[33m⚠\x1b[0m",
+                            HealthStatus::Error => "\x1b[31m✗\x1b[0m",
                         };
                         out += &format!("  {icon} \x1b[1m{}\x1b[0m", c.name);
                         if let Some(ref msg) = c.message {
@@ -991,7 +1002,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 field,
                 value,
             } => {
-                let mut patch = gtm_core::ipc::MetadataPatch::default();
+                let mut patch = MetadataPatch::default();
                 match field.as_str() {
                     "title" => patch.title = Some(value.clone()),
                     "artist" => patch.artist = Some(value.clone()),
@@ -1020,7 +1031,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         ));
                     }
                 }
-                if patch == gtm_core::ipc::MetadataPatch::default() {
+                if patch == MetadataPatch::default() {
                     return Err("no field to update: pass a supported FIELD".to_string());
                 }
                 client
@@ -1126,7 +1137,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     ))
                 }
                 SubsonicAction::Play { track_id } => {
-                    let track = gtm_core::subsonic::SubsonicTrack {
+                    let track = SubsonicTrack {
                         id: track_id.clone(),
                         title: track_id.clone(),
                         artist: String::new(),
@@ -1258,8 +1269,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     // the service chooser. `--cli` keeps the headless wizard
                     // for scripting / SSH.
                     let socket_arg = socket_path.to_string_lossy().to_string();
-                    run_tui(Some(socket_arg), service.clone())
-                        .map_err(|e| e.to_string())?;
+                    run_tui(Some(socket_arg), service.clone()).map_err(|e| e.to_string())?;
                     Ok("setup finished".to_string())
                 }
             }
@@ -1325,7 +1335,7 @@ fn command_exists(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn format_spotify_status(st: &gtm_core::spotify::SpotifyStatus) -> String {
+fn format_spotify_status(st: &SpotifyStatus) -> String {
     let mut out = if st.linked {
         format!("Linked as {}", st.user.as_deref().unwrap_or("(unknown)"))
     } else {
@@ -1352,7 +1362,7 @@ fn format_spotify_status(st: &gtm_core::spotify::SpotifyStatus) -> String {
     out
 }
 
-fn format_subsonic_status(st: &gtm_core::subsonic::SubsonicStatus) -> String {
+fn format_subsonic_status(st: &SubsonicStatus) -> String {
     let mut out = if st.configured {
         format!(
             "Configured for {}@{}",
@@ -1492,7 +1502,7 @@ async fn spotify_login(
     // locked keychain still lets the user log in).
     let client_id = match client_id {
         Some(c) => c,
-        None => match gtm_core::secret::get_secret(gtm_core::secret::SPOTIFY_CLIENT_ID_KEY) {
+        None => match get_secret(SPOTIFY_CLIENT_ID_KEY) {
             Some(c) => c,
             None => masked_prompt("Spotify Client ID: ")?,
         },
@@ -1500,7 +1510,7 @@ async fn spotify_login(
     if client_id.trim().is_empty() {
         return Err("no Spotify client id provided".into());
     }
-    gtm_core::secret::set_secret(gtm_core::secret::SPOTIFY_CLIENT_ID_KEY, &client_id);
+    set_secret(SPOTIFY_CLIENT_ID_KEY, &client_id);
 
     let url = client
         .spotify()
@@ -1535,14 +1545,8 @@ async fn setup_lastfm(client: &DaemonClient) -> Result<String, String> {
 
     println!("Create an API application (API key, secret, and callback URL) at:");
     println!("  https://www.last.fm/api/account/create");
-    let api_key = value_or_default(
-        "Last.fm API key",
-        gtm_core::secret::get_secret(gtm_core::secret::LASTFM_API_KEY_KEY),
-    )?;
-    let api_secret = masked_or_default(
-        "Last.fm API secret",
-        gtm_core::secret::get_secret(gtm_core::secret::LASTFM_API_SECRET_KEY),
-    )?;
+    let api_key = value_or_default("Last.fm API key", get_secret(LASTFM_API_KEY_KEY))?;
+    let api_secret = masked_or_default("Last.fm API secret", get_secret(LASTFM_API_SECRET_KEY))?;
     if api_key.trim().is_empty() || api_secret.trim().is_empty() {
         return Err("Last.fm API key and secret are required".into());
     }
@@ -1622,7 +1626,7 @@ async fn capture_callback_token() -> Result<String, String> {
     }
 }
 
-fn format_lastfm_status(st: &gtm_core::client::LastfmStatus) -> String {
+fn format_lastfm_status(st: &LastfmStatus) -> String {
     let mut out = if st.ready {
         if st.enabled {
             "Ready (scrobbling enabled)".to_string()

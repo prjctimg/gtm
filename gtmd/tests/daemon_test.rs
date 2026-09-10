@@ -5,7 +5,10 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
-use gtm_core::ipc::{DaemonReq, DaemonRes, PROTOCOL_VERSION, QueueAction, WireReq, WireRes};
+use gtm_core::global::PlaybackStatus;
+use gtm_core::ipc::{
+    DaemonReq, DaemonRes, LibraryAction, PROTOCOL_VERSION, QueueAction, WireReq, WireRes,
+};
 
 use gtmd::config::{DaemonArgs, DaemonConfig};
 use gtmd::daemon::Daemon;
@@ -459,7 +462,7 @@ async fn test_delete_playing_track() {
         &mut reader,
         &mut writer,
         &DaemonReq::Library {
-            action: gtm_core::ipc::LibraryAction::Scan {
+            action: LibraryAction::Scan {
                 path: audio_dir.to_string_lossy().to_string(),
             },
         },
@@ -507,19 +510,19 @@ async fn test_delete_playing_track() {
         &mut reader,
         &mut writer,
         &DaemonReq::Library {
-            action: gtm_core::ipc::LibraryAction::RemoveTrack { id: track_id },
+            action: LibraryAction::RemoveTrack { id: track_id },
         },
     )
     .await;
     assert!(matches!(res, DaemonRes::Ok));
 
-    let mut status = gtm_core::global::PlaybackStatus::Playing;
+    let mut status = PlaybackStatus::Playing;
     for _ in 0..50 {
         let res = send_req(&mut reader, &mut writer, &DaemonReq::GetStatus).await;
         let DaemonRes::Status { state } = res else {
             panic!("expected Status, got {res:?}");
         };
-        if state.status == gtm_core::global::PlaybackStatus::Stopped {
+        if state.status == PlaybackStatus::Stopped {
             status = state.status;
             break;
         }
@@ -529,7 +532,7 @@ async fn test_delete_playing_track() {
     let DaemonRes::Status { state } = res else {
         panic!("expected Status, got {res:?}");
     };
-    assert_eq!(status, gtm_core::global::PlaybackStatus::Stopped);
+    assert_eq!(status, PlaybackStatus::Stopped);
     assert!(state.current_track.is_none());
     assert!(state.queue.is_empty());
 

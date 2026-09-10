@@ -12,7 +12,7 @@ use ratatui::widgets::Paragraph;
 use std::borrow::Cow;
 
 use chrono::Local;
-use gtm_core::state::PlaybackStatus;
+use gtm_core::state::{PlaybackStatus, RepeatMode};
 
 use crate::app::App;
 use crate::theme::{AppTheme, readable_fg};
@@ -596,13 +596,13 @@ impl Footer {
 
     fn repeat(app: &App) -> Option<String> {
         match app.state.repeat {
-            gtm_core::state::RepeatMode::Off => None,
-            gtm_core::state::RepeatMode::One => Some(if use_nerd_fonts() {
+            RepeatMode::Off => None,
+            RepeatMode::One => Some(if use_nerd_fonts() {
                 "\u{f0458}".into()
             } else {
                 "1".into()
             }),
-            gtm_core::state::RepeatMode::All => Some(if use_nerd_fonts() {
+            RepeatMode::All => Some(if use_nerd_fonts() {
                 "\u{f0456}".into()
             } else {
                 "A".into()

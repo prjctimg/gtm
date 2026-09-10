@@ -9,6 +9,7 @@ use gtm_core::global::{
     CrossfadeConfig, DaemonState, Image, PlaybackStatus, RepeatMode, ThemeMode, UIMode, YTFilter,
 };
 use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction};
+use gtm_core::playlist_fmt::PlaylistFormatKind;
 use gtm_core::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use gtm_core::track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
 use gtm_core::wire::{decode, encode};
@@ -623,12 +624,12 @@ fn library_action_json_roundtrip() {
         },
         LibraryAction::ImportPlaylist {
             path: "/m.m3u8".into(),
-            format: gtm_core::playlist_fmt::PlaylistFormatKind::M3u8,
+            format: PlaylistFormatKind::M3u8,
         },
         LibraryAction::ExportPlaylist {
             playlist_id: 1,
             path: "/out.pls".into(),
-            format: gtm_core::playlist_fmt::PlaylistFormatKind::Pls,
+            format: PlaylistFormatKind::Pls,
         },
         LibraryAction::SyncCovers,
         LibraryAction::SyncLyrics,

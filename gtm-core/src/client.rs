@@ -1696,9 +1696,7 @@ impl IpcWorker {
                     log(&format!("IPC worker reconnected after {attempt} attempts"));
                     self.authenticated.store(false, Ordering::Release);
                     if let Err(e) = self.post_reconnect_handshake().await {
-                        log(&format!(
-                            "IPC worker post-reconnect handshake failed: {e}"
-                        ));
+                        log(&format!("IPC worker post-reconnect handshake failed: {e}"));
                     }
                     return;
                 }

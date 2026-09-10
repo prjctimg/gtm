@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use clap::Parser;
 
 use crate::cover::CoverProvider;
+use gtm_core::{is_termux, resolve_command_socket, resolve_pulse_socket, termux_music_dirs};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -105,7 +106,7 @@ impl DaemonConfig {
         let socket_path = if let Some(ref s) = args.socket {
             PathBuf::from(s)
         } else {
-            gtm_core::resolve_command_socket()
+            resolve_command_socket()
         };
 
         let socket_pulse_path = if let Some(ref s) = args.socket {
@@ -117,7 +118,7 @@ impl DaemonConfig {
             p.set_file_name(format!("{name}.pulse"));
             p
         } else {
-            gtm_core::resolve_pulse_socket()
+            resolve_pulse_socket()
         };
 
         let library_path = if let Some(ref l) = args.library {
@@ -139,7 +140,7 @@ impl DaemonConfig {
             // No explicit backend: on Termux, rodio/cpal cannot open an audio
             // device, so default to PulseAudio when it is compiled in.
             #[cfg(feature = "pulseaudio")]
-            _ if gtm_core::is_termux() => {
+            _ if is_termux() => {
                 eprintln!(
                     "gtmd: Termux detected: using the PulseAudio backend. \
                      The server will be started automatically if needed."
@@ -147,7 +148,7 @@ impl DaemonConfig {
                 AudioBackendKind::PulseAudio
             }
             #[cfg(not(feature = "pulseaudio"))]
-            _ if gtm_core::is_termux() => {
+            _ if is_termux() => {
                 eprintln!(
                     "gtmd: Termux detected but this build lacks the `pulseaudio` feature. \
                      Rebuild with `--features pulseaudio` so audio can be output on Termux."
@@ -166,7 +167,7 @@ impl DaemonConfig {
             }
         }
         // Termux: also scan shared storage (/sdcard/Music)
-        library_paths.extend(gtm_core::termux_music_dirs());
+        library_paths.extend(termux_music_dirs());
 
         let state_file = data_dir.join("state.json");
 

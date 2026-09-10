@@ -19,6 +19,7 @@ use zvariant::{ObjectPath, Value};
 
 use gtm_core::ipc::{DaemonEvent, DaemonReq};
 use gtm_core::state::{DaemonState, PlaybackStatus, RepeatMode};
+use gtm_core::{volume_from_ratio, volume_ratio};
 
 const BUS_NAME: &str = "org.mpris.MediaPlayer2.gtm";
 const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";
@@ -264,7 +265,7 @@ impl Player {
     #[zbus(property)]
     async fn volume(&self) -> f64 {
         let state = self.state.read().await;
-        gtm_core::volume_ratio(state.volume) as f64
+        volume_ratio(state.volume) as f64
     }
 
     #[zbus(property)]
@@ -401,7 +402,7 @@ pub async fn start(
                         let _ = cmd_req_tx.send(DaemonReq::CycleRepeat { mode });
                     }
                     UserCommand::SetVolume(volume) => {
-                        let vol = gtm_core::volume_from_ratio(volume.clamp(0.0, 1.0) as f32);
+                        let vol = volume_from_ratio(volume.clamp(0.0, 1.0) as f32);
                         let _ = cmd_req_tx.send(DaemonReq::SetVolume { volume: vol });
                     }
                     UserCommand::SetShuffle(enabled) => {

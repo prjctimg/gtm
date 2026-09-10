@@ -22,6 +22,7 @@ use crate::mixer::Mixer;
 use crate::stretch::{SpeedControl, TimeStretchSource};
 use crate::symphonia::SymphoniaSource;
 use gtm_core::global::{EqPreset, ReverbConfig};
+use gtm_core::{MAX_VOLUME, volume_from_ratio, volume_ratio};
 use rodio::Source;
 
 struct PaPlaybackSource {
@@ -36,7 +37,7 @@ struct PaPlaybackSource {
 impl PlaybackSource for PaPlaybackSource {
     fn poll_read(self: Pin<&mut Self>, _cx: &mut Context<'_>, buf: &mut [u8]) -> Poll<usize> {
         let self_ = self.get_mut();
-        let vol = gtm_core::volume_ratio(self_.volume.load(Ordering::Relaxed));
+        let vol = volume_ratio(self_.volume.load(Ordering::Relaxed));
         let float_count = buf.len() / 4;
         let mut written = 0usize;
 
@@ -199,7 +200,7 @@ impl PulseAudioMixer {
         let client = Client::from_env(c"gtm")
             .map_err(|e| AudioError::OutputError(format!("PulseAudio client: {e}")))?;
 
-        let mixer_volume = Arc::new(AtomicU8::new(gtm_core::MAX_VOLUME));
+        let mixer_volume = Arc::new(AtomicU8::new(MAX_VOLUME));
 
         let stream_a = PaStreamState::new(&client, "gtm-a", &mixer_volume)?;
         let stream_b = PaStreamState::new(&client, "gtm-b", &mixer_volume)?;
@@ -219,8 +220,8 @@ impl PulseAudioMixer {
             crossfade_duration: 0.0,
             pending_pause: false,
             pause_fade_start: None,
-            stored_volume: gtm_core::MAX_VOLUME,
-            user_volume: Arc::new(AtomicU8::new(gtm_core::MAX_VOLUME)),
+            stored_volume: MAX_VOLUME,
+            user_volume: Arc::new(AtomicU8::new(MAX_VOLUME)),
             eq_gains: EqGains::new_flat(),
             eq_enabled: Arc::new(AtomicBool::new(true)),
             reverb_enabled: Arc::new(AtomicBool::new(false)),
@@ -283,9 +284,8 @@ impl PulseAudioMixer {
         &self,
         source: Box<dyn Source<Item = f32> + Send>,
     ) -> Box<dyn Source<Item = f32> + Send> {
-        let source: Box<dyn Source<Item = f32> + Send> = Box::new(
-            TimeStretchSource::new(source, self.speed.clone()),
-        );
+        let source: Box<dyn Source<Item = f32> + Send> =
+            Box::new(TimeStretchSource::new(source, self.speed.clone()));
         let source = if self.eq_enabled.load(Ordering::Relaxed) {
             Box::new(EqSource::new(source, self.eq_gains.clone()))
                 as Box<dyn Source<Item = f32> + Send>
@@ -584,7 +584,7 @@ impl Mixer for PulseAudioMixer {
     }
 
     fn set_volume(&mut self, volume: u8) -> AudioResult<()> {
-        let vol = volume.min(gtm_core::MAX_VOLUME);
+        let vol = volume.min(MAX_VOLUME);
         self.user_volume.store(vol, Ordering::SeqCst);
         if !self.pending_pause {
             Self::set_stream_volume(&self.active(), vol);
@@ -715,9 +715,9 @@ impl Mixer for PulseAudioMixer {
                 self.playing.store(false, Ordering::SeqCst);
             } else {
                 let progress = elapsed / FADE_MS;
-                let target = gtm_core::volume_ratio(self.stored_volume.min(gtm_core::MAX_VOLUME))
-                    * (1.0 - progress as f32);
-                Self::set_stream_volume(&self.active(), gtm_core::volume_from_ratio(target));
+                let target =
+                    volume_ratio(self.stored_volume.min(MAX_VOLUME)) * (1.0 - progress as f32);
+                Self::set_stream_volume(&self.active(), volume_from_ratio(target));
             }
         }
 
@@ -779,7 +779,7 @@ impl Mixer for PulseAudioMixer {
         if !self.playing.load(Ordering::SeqCst) {
             return 0.0;
         }
-        let vol = gtm_core::volume_ratio(self.user_volume.load(Ordering::SeqCst));
+        let vol = volume_ratio(self.user_volume.load(Ordering::SeqCst));
         vol
     }
     fn current_spectrum(&self) -> Vec<f32> {
@@ -809,8 +809,8 @@ impl PulseAudioMixer {
             eased_out
         };
 
-        Self::set_stream_volume(&self.stream_a, gtm_core::volume_from_ratio(a_vol as f32));
-        Self::set_stream_volume(&self.stream_b, gtm_core::volume_from_ratio(b_vol as f32));
+        Self::set_stream_volume(&self.stream_a, volume_from_ratio(a_vol as f32));
+        Self::set_stream_volume(&self.stream_b, volume_from_ratio(b_vol as f32));
 
         if progress >= 1.0 {
             self.swap_active_standby();

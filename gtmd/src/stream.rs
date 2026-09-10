@@ -8,6 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gtm_audio::{SPECTRUM_BINS, SpectrumAnalyzer};
+use gtm_core::spotify::LIBRESPOT_CLIENT_ID;
 use librespot_core::SessionConfig;
 use librespot_core::authentication::Credentials;
 use librespot_core::cache::Cache;
@@ -270,7 +271,7 @@ impl StreamManager {
         .map_err(|e| format!("spotify cache: {e}"))?;
 
         let session_config = SessionConfig {
-            client_id: gtm_core::spotify::LIBRESPOT_CLIENT_ID.to_string(),
+            client_id: LIBRESPOT_CLIENT_ID.to_string(),
             device_id: "gtm-rs-stream".to_string(),
             ..Default::default()
         };

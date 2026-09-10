@@ -27,8 +27,13 @@ use crossterm::event::{
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use gtm_core::global::EqPreset;
+use gtm_core::daemon_ctl::ensure_daemon_running;
+use gtm_core::global::{EqPreset, PlaybackStatus};
+use gtm_core::ipc::HealthStatus;
+use gtm_core::log::redirect_stderr_to_log;
 use gtm_core::radio::RadioStation;
+use gtm_core::resolve_command_socket;
+use gtm_core::track::TrackInfo;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
@@ -829,11 +834,8 @@ impl Render {
                         let bar_w =
                             (info_chunks[info_row].width / 3).saturating_sub(2).max(4) as usize;
                         let progress_str = Render::progress_variant(ratio, bar_w, app);
-                        let time_str = format!(
-                            " {} / {}",
-                            format_duration(pos),
-                            format_duration(dur)
-                        );
+                        let time_str =
+                            format!(" {} / {}", format_duration(pos), format_duration(dur));
                         // Progress bar on first line
                         let prog_para = Paragraph::new(Line::from(vec![Span::styled(
                             progress_str,
@@ -947,7 +949,7 @@ impl Render {
             && vis_a.height >= 3
         {
             app.visualizer.tick(
-                app.state.status == gtm_core::global::PlaybackStatus::Playing,
+                app.state.status == PlaybackStatus::Playing,
                 vis_a.width,
                 &app.state.audio_levels,
             );
@@ -1594,8 +1596,7 @@ impl Render {
     }
 
     pub fn progress_variant(ratio: f64, width: usize, app: &App) -> String {
-        let ratio =
-            render_ratio(app.progress_style, ratio, app.progress_smoother.value());
+        let ratio = render_ratio(app.progress_style, ratio, app.progress_smoother.value());
         render_progress(ratio, width, app.progress_style)
     }
 
@@ -1604,8 +1605,7 @@ impl Render {
         width: usize,
         app: &App,
     ) -> Vec<ratatui::text::Span<'a>> {
-        let ratio =
-            render_ratio(app.progress_style, ratio, app.progress_smoother.value());
+        let ratio = render_ratio(app.progress_style, ratio, app.progress_smoother.value());
         render_progress_styled(
             ratio,
             width,
@@ -1799,7 +1799,7 @@ impl Render {
     /// usable while lyrics take the main area. This replaces the now-playing
     /// track-info card ("l" swaps it back when lyrics are dismissed).
     fn highlighted_list_in_info(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let rows: Vec<&gtm_core::track::TrackInfo> = app.filtered_tracks();
+        let rows: Vec<&TrackInfo> = app.filtered_tracks();
         let total = rows.len();
         let sel = app.list_pos().min(total.saturating_sub(1));
         let visible = area.height.saturating_sub(2);
@@ -2024,10 +2024,7 @@ impl Render {
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!(
-                        "  uptime {}",
-                        format_uptime(report.daemon_uptime_secs)
-                    ),
+                    format!("  uptime {}", format_uptime(report.daemon_uptime_secs)),
                     Style::default().fg(app.theme.fg_dim),
                 ),
             ]));
@@ -2035,9 +2032,9 @@ impl Render {
 
             for c in &report.components {
                 let (icon, color) = match c.status {
-                    gtm_core::ipc::HealthStatus::Ok => ("✓", app.theme.success),
-                    gtm_core::ipc::HealthStatus::Degraded => ("⚠", app.theme.warning),
-                    gtm_core::ipc::HealthStatus::Error => ("✗", app.theme.error),
+                    HealthStatus::Ok => ("✓", app.theme.success),
+                    HealthStatus::Degraded => ("⚠", app.theme.warning),
+                    HealthStatus::Error => ("✗", app.theme.error),
                 };
                 let mut spans = vec![
                     Span::styled(format!(" {icon} "), Style::default().fg(color)),
@@ -2082,9 +2079,9 @@ pub fn run_tui(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let socket_path = socket
         .map(PathBuf::from)
-        .unwrap_or_else(gtm_core::resolve_command_socket);
+        .unwrap_or_else(resolve_command_socket);
 
-    let _original_stderr = gtm_core::log::redirect_stderr_to_log();
+    let _original_stderr = redirect_stderr_to_log();
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
@@ -2133,14 +2130,6 @@ pub fn run_tui(
 
         res
     })
-}
-
-async fn ensure_daemon_running(
-    socket_path: &std::path::Path,
-) -> Result<(), Box<dyn std::error::Error>> {
-    gtm_core::daemon_ctl::ensure_daemon_running(socket_path)
-        .await
-        .map_err(|e| e.into())
 }
 
 // ─── Layout ───
@@ -3107,8 +3096,7 @@ impl Pickers {
                 width: inner.width,
                 height: 1,
             };
-            app.mouse_map
-                .register(row_rect, MouseZone::PickerItem(i));
+            app.mouse_map.register(row_rect, MouseZone::PickerItem(i));
         }
 
         let para = Paragraph::new(lines);
@@ -3324,8 +3312,7 @@ impl Pickers {
                 width: inner.width,
                 height: 1,
             };
-            app.mouse_map
-                .register(row_rect, MouseZone::PickerItem(i));
+            app.mouse_map.register(row_rect, MouseZone::PickerItem(i));
         }
 
         let para = Paragraph::new(lines);
@@ -3430,8 +3417,7 @@ impl Pickers {
                 width: results_area.width,
                 height: 1,
             };
-            app.mouse_map
-                .register(row_rect, MouseZone::PickerItem(i));
+            app.mouse_map.register(row_rect, MouseZone::PickerItem(i));
         }
 
         let para = Paragraph::new(lines);
@@ -3525,8 +3511,7 @@ impl Pickers {
                 width: inner.width,
                 height: 1,
             };
-            app.mouse_map
-                .register(row_rect, MouseZone::PickerItem(i));
+            app.mouse_map.register(row_rect, MouseZone::PickerItem(i));
         }
         f.render_widget(Paragraph::new(lines), inner);
     }
@@ -5503,8 +5488,7 @@ impl Pickers {
                 width: list_area.width,
                 height: 1,
             };
-            app.mouse_map
-                .register(row_rect, MouseZone::PickerItem(i));
+            app.mouse_map.register(row_rect, MouseZone::PickerItem(i));
         }
 
         let para = Paragraph::new(lines);
@@ -5871,8 +5855,7 @@ impl Pickers {
                     width: inner.width,
                     height: 1,
                 };
-                app.mouse_map
-                    .register(row_rect, MouseZone::PickerItem(*ci));
+                app.mouse_map.register(row_rect, MouseZone::PickerItem(*ci));
             }
             row_line += 1;
         }
@@ -6049,8 +6032,7 @@ impl Pickers {
         const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
         const BRAILLE: [char; 8] = ['⠁', '⠃', '⠇', '⡇', '⣇', '⣧', '⣷', '⣿'];
         let chars: &[char; 8] = match app.visualizer.preset {
-            VisualizerPreset::Braille
-            | VisualizerPreset::Gradient => &BRAILLE,
+            VisualizerPreset::Braille | VisualizerPreset::Gradient => &BRAILLE,
             _ => &BLOCKS,
         };
         let mut spans = vec![Span::raw("  ")];
@@ -6118,8 +6100,7 @@ impl Pickers {
                     lines.push(Line::from(spans));
                 }
             }
-            VisualizerPreset::Blocks
-            | VisualizerPreset::Mirror => {
+            VisualizerPreset::Blocks | VisualizerPreset::Mirror => {
                 let levels = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
                 for row in 0..2 {
                     let mut spans = Vec::with_capacity(w);
@@ -6314,8 +6295,7 @@ impl Pickers {
                 width: inner.width,
                 height: 1,
             };
-            app.mouse_map
-                .register(row_rect, MouseZone::PickerItem(i));
+            app.mouse_map.register(row_rect, MouseZone::PickerItem(i));
         }
 
         let list = List::new(list_items);
@@ -7011,8 +6991,7 @@ impl Pickers {
                 width: inner.width,
                 height: 1,
             };
-            app.mouse_map
-                .register(row_rect, MouseZone::PickerItem(i));
+            app.mouse_map.register(row_rect, MouseZone::PickerItem(i));
             items.push(ListItem::new(content).style(style));
         }
 
