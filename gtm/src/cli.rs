@@ -233,6 +233,15 @@ pub enum CliCommand {
     #[command(subcommand)]
     /// Internet radio directory (Radio Browser)
     Radio(RadioAction),
+    /// Walk through setting up integration sources that need credentials
+    /// (Spotify, Last.fm, Subsonic/Navidrome). With no SERVICE argument every
+    /// unconfigured source is visited; OAuth steps launch your browser and
+    /// capture the response.
+    Setup {
+        /// Service to configure: spotify | lastfm | subsonic (default: all)
+        #[arg(value_name = "SERVICE")]
+        service: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -374,9 +383,15 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
 
     let rt = tokio::runtime::Runtime::new().unwrap();
     let result: Result<String, String> = rt.block_on(async {
-        let socket_path = socket
+        let socket_path = socket.clone()
             .map(PathBuf::from)
             .unwrap_or_else(gtm_core::resolve_command_socket);
+
+        // The setup wizard auto-starts the daemon so a fresh install can
+        // register services without a separate daemon launch step.
+        if let CliCommand::Setup { .. } = cmd {
+            gtm_core::daemon_ctl::ensure_daemon_running(&socket_path).await?;
+        }
 
         let client = DaemonClient::connect(&socket_path)
             .await
@@ -1024,61 +1039,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         .map_err(|e| e.to_string())?;
                     Ok(format_spotify_status(&st))
                 }
-                SpotifyAction::Login { client_id, port } => {
-                    let port = port
-                        .or_else(|| {
-                            std::env::var("GTM_SPOTIFY_PORT")
-                                .ok()
-                                .and_then(|v| v.parse().ok())
-                        })
-                        .unwrap_or(8990);
-                    // Resolve the client id: explicit arg > keychain > masked prompt
-                    // (so a locked keychain still lets the user log in).
-                    let client_id = match client_id.clone() {
-                        Some(c) => c,
-                        None => match gtm_core::secret::get_secret(
-                            gtm_core::secret::SPOTIFY_CLIENT_ID_KEY,
-                        ) {
-                            Some(c) => c,
-                            None => {
-                                use std::io::Write;
-                                print!("Spotify Client ID: ");
-                                let _ = std::io::stdout().flush();
-                                match rpassword::read_password() {
-                                    Ok(s) => s.trim().to_string(),
-                                    Err(_) => {
-                                        return Err("could not read client id from terminal".into());
-                                    }
-                                }
-                            }
-                        },
-                    };
-                    if client_id.trim().is_empty() {
-                        return Err("no Spotify client id provided".into());
-                    }
-                    gtm_core::secret::set_secret(
-                        gtm_core::secret::SPOTIFY_CLIENT_ID_KEY,
-                        &client_id,
-                    );
-                    let url = client
-                        .spotify()
-                        .oauth_start(&client_id, port)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    println!("Open this URL in your browser to authorize gtm:\n{url}\n");
-                    let _ = webbrowser::open(&url);
-                    println!("Waiting for you to finish login in your browser…");
-                    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-                        match client.spotify().status().await {
-                            Ok(st) if st.linked => return Ok(format_spotify_status(&st)),
-                            Ok(_) if std::time::Instant::now() < deadline => continue,
-                            Ok(_) => return Err("timed out waiting for Spotify login".to_string()),
-                            Err(e) => return Err(e.to_string()),
-                        }
-                    }
-                }
+                SpotifyAction::Login { client_id, port } => spotify_login(&client, client_id.clone(), *port).await,
                 SpotifyAction::Disconnect => {
                     let st = client.spotify().clear().await.map_err(|e| e.to_string())?;
                     Ok(format_spotify_status(&st))
@@ -1267,6 +1228,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         .map_err(|e| e.to_string())
                 }
             },
+            CliCommand::Setup { service } => setup_wizard(&client, service.as_deref()).await,
         }
     });
 
@@ -1391,4 +1353,351 @@ fn prompt(msg: &str) -> Result<String, String> {
         .read_line(&mut out)
         .map_err(|e| e.to_string())?;
     Ok(out.trim().to_string())
+}
+
+// ─── Source setup wizard (gtm setup) ───
+
+/// Default loopback port used to capture the Last.fm authorization token.
+const LASTFM_CALLBACK_PORT: u16 = 8991;
+
+/// Walk through every (or one) source that needs credentials, running OAuth
+/// browser steps where applicable. Returns a human-readable summary.
+async fn setup_wizard(client: &DaemonClient, service: Option<&str>) -> Result<String, String> {
+    let single = service.map(|s| s.trim().to_ascii_lowercase());
+    match single.as_deref() {
+        Some("spotify") => setup_spotify(client).await,
+        Some("lastfm" | "last.fm") => setup_lastfm(client).await,
+        Some("subsonic" | "navidrome") => setup_subsonic(client).await,
+        Some(other) => Err(format!(
+            "unknown service '{other}' (expected spotify, lastfm, or subsonic)"
+        )),
+        None => {
+            let steps = [
+                ("Spotify", setup_spotify(client).await),
+                ("Last.fm", setup_lastfm(client).await),
+                ("Subsonic/Navidrome", setup_subsonic(client).await),
+            ];
+            let mut lines = Vec::new();
+            for (name, result) in steps {
+                match result {
+                    Ok(msg) => lines.push(format!("{name}: {msg}")),
+                    Err(e) => lines.push(format!("{name}: error: {e}")),
+                }
+            }
+            Ok(lines.join("\n"))
+        }
+    }
+}
+
+/// Weekly prompt → `true` for a yes-like answer.
+fn confirm(msg: &str) -> Result<bool, String> {
+    let ans = prompt(msg)?;
+    Ok(matches!(
+        ans.as_str(),
+        "y" | "Y" | "yes" | "Yes" | "YES" | "true" | "1"
+    ))
+}
+
+/// Masked input (falls back to a plain read when no tty is available).
+fn masked_prompt(msg: &str) -> Result<String, String> {
+    match rpassword::prompt_password(msg) {
+        Ok(s) => Ok(s.trim().to_string()),
+        Err(_) => prompt(msg),
+    }
+}
+
+/// Collect a value, prefilled with the stored one; empty input keeps it.
+fn value_or_default(label: &str, stored: Option<String>) -> Result<String, String> {
+    match stored {
+        Some(cur) => {
+            println!("{label}: {cur} (stored; leave blank to keep)");
+            let v = prompt("> ")?;
+            Ok(if v.is_empty() { cur } else { v })
+        }
+        None => prompt(&format!("{label}: ")),
+    }
+}
+
+/// Like [`value_or_default`] but the stored value is never echoed.
+fn masked_or_default(label: &str, stored: Option<String>) -> Result<String, String> {
+    match stored {
+        Some(_) => {
+            println!("{label}: (stored; leave blank to keep)");
+            let v = masked_prompt("> ")?;
+            Ok(if v.is_empty() {
+                stored.unwrap()
+            } else {
+                v
+            })
+        }
+        None => masked_prompt(&format!("{label}: ")),
+    }
+}
+
+/// Spot integration: skipped when a Spotify account is already linked.
+async fn setup_spotify(client: &DaemonClient) -> Result<String, String> {
+    let st = client.spotify().status().await.map_err(|e| e.to_string())?;
+    if st.linked {
+        return Ok(format_spotify_status(&st));
+    }
+    if !confirm("Spotify is not linked. Link it now? [y/N] ")? {
+        return Ok("not configured".to_string());
+    }
+    spotify_login(client, None, None).await
+}
+
+/// Run the Spotify OAuth PKCE link flow: resolve the client id (explicit arg >
+/// keychain > masked prompt), open the authorize URL in the browser, and poll
+/// the daemon until its loopback callback has captured the token.
+async fn spotify_login(
+    client: &DaemonClient,
+    client_id: Option<String>,
+    port: Option<u16>,
+) -> Result<String, String> {
+    let port = port
+        .or_else(|| {
+            std::env::var("GTM_SPOTIFY_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok())
+        })
+        .unwrap_or(8990);
+    // Resolve the client id: explicit arg > keychain > masked prompt (so a
+    // locked keychain still lets the user log in).
+    let client_id = match client_id {
+        Some(c) => c,
+        None => match gtm_core::secret::get_secret(gtm_core::secret::SPOTIFY_CLIENT_ID_KEY) {
+            Some(c) => c,
+            None => masked_prompt("Spotify Client ID: ")?,
+        },
+    };
+    if client_id.trim().is_empty() {
+        return Err("no Spotify client id provided".into());
+    }
+    gtm_core::secret::set_secret(gtm_core::secret::SPOTIFY_CLIENT_ID_KEY, &client_id);
+
+    let url = client
+        .spotify()
+        .oauth_start(&client_id, port)
+        .await
+        .map_err(|e| e.to_string())?;
+    println!("Open this URL in your browser to authorize gtm:\n{url}\n");
+    let _ = webbrowser::open(&url);
+    println!("Waiting for you to finish login in your browser…");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    loop {
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+        match client.spotify().status().await {
+            Ok(st) if st.linked => return Ok(format_spotify_status(&st)),
+            Ok(_) if std::time::Instant::now() < deadline => continue,
+            Ok(_) => return Err("timed out waiting for Spotify login".to_string()),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+}
+
+/// Last.fm integration: collect API credentials, open the web-auth URL, and
+/// capture the token via a loopback callback (or a manual paste).
+async fn setup_lastfm(client: &DaemonClient) -> Result<String, String> {
+    let st = client.lastfm().status().await.map_err(|e| e.to_string())?;
+    if st.ready {
+        return Ok(format_lastfm_status(&st));
+    }
+    if !confirm("Last.fm is not linked. Set it up now? [y/N] ")? {
+        return Ok("not configured".to_string());
+    }
+
+    println!("Create an API application (API key, secret, and callback URL) at:");
+    println!("  https://www.last.fm/api/account/create");
+    let api_key = value_or_default(
+        "Last.fm API key",
+        gtm_core::secret::get_secret(gtm_core::secret::LASTFM_API_KEY_KEY),
+    )?;
+    let api_secret = masked_or_default(
+        "Last.fm API secret",
+        gtm_core::secret::get_secret(gtm_core::secret::LASTFM_API_SECRET_KEY),
+    )?;
+    if api_key.trim().is_empty() || api_secret.trim().is_empty() {
+        return Err("Last.fm API key and secret are required".into());
+    }
+
+    client
+        .lastfm()
+        .set_config(true, Some(api_key), Some(api_secret), None, None, None)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let url = client.lastfm().auth_url().await.map_err(|e| e.to_string())?;
+    println!("Open this URL in your browser to authorize gtm:\n{url}\n");
+    let _ = webbrowser::open(&url);
+
+    let token = capture_callback_token("Last.fm").await?;
+    if token.trim().is_empty() {
+        return Err("no Last.fm token provided — authorization not completed".into());
+    }
+    client
+        .lastfm()
+        .authenticate(token.trim())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let st = client.lastfm().status().await.map_err(|e| e.to_string())?;
+    Ok(format_lastfm_status(&st))
+}
+
+/// Subsonic/Navidrome integration: collect server credentials and validate.
+async fn setup_subsonic(client: &DaemonClient) -> Result<String, String> {
+    let st = client.subsonic().status().await.map_err(|e| e.to_string())?;
+    if st.configured {
+        let msg = format_subsonic_status(&st);
+        if !confirm(&format!("{msg}. Reconfigure Subsonic? [y/N] "))? {
+            return Ok(msg);
+        }
+    }
+    let server = prompt("Subsonic/Navidrome server URL (https://host[:port]/rest): ")?;
+    if server.trim().is_empty() {
+        return Err("server URL is required".into());
+    }
+    let username = prompt("Username: ")?;
+    let password = masked_prompt("Password: ")?;
+    let st = client
+        .subsonic()
+        .configure(server.trim(), username.trim(), &password)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(format_subsonic_status(&st))
+}
+
+/// Wait for an OAuth token on a loopback callback port (`$GTM_LASTFM_PORT`,
+/// default 8991) or accept a manual paste on stdin. Times out after 5 minutes.
+async fn capture_callback_token(service: &str) -> Result<String, String> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt};
+
+    let port = std::env::var("GTM_LASTFM_PORT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(LASTFM_CALLBACK_PORT);
+    let addr = format!("127.0.0.1:{port}");
+    let listener = tokio::net::TcpListener::bind(&addr)
+        .await
+        .map_err(|e| format!("bind {service} callback server to {addr}: {e}"))?;
+    println!(
+        "Waiting for the {service} authorization callback on http://{addr} (5-minute timeout).\n\
+         If your browser doesn't redirect there, paste the token from the address bar and press Enter."
+    );
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+    let mut stdin_line = String::new();
+    let mut stdin_reader = tokio::io::BufReader::new(tokio::io::stdin());
+    loop {
+        stdin_line.clear();
+        tokio::select! {
+            accept = listener.accept() => {
+                let (mut stream, _) = match accept {
+                    Ok(pair) => pair,
+                    Err(e) => return Err(format!("{service} callback accept: {e}")),
+                };
+                let line = {
+                    let mut reader = tokio::io::BufReader::new(&mut stream);
+                    let mut line = String::new();
+                    let _ = reader.read_line(&mut line).await;
+                    line
+                };
+                if let Some(token) = query_param(&line, "token") {
+                    let body = format!("gtm {service} authorized. You can close this tab.");
+                    let _ = stream
+                        .write_all(
+                            format!(
+                                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{body}",
+                                body.len()
+                            )
+                            .as_bytes(),
+                        )
+                        .await;
+                    let _ = stream.flush().await;
+                    return Ok(token);
+                }
+                let _ = stream
+                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                    .await;
+                let _ = stream.flush().await;
+            }
+            pasted = stdin_reader.read_line(&mut stdin_line) => {
+                let _ = pasted;
+                return Ok(stdin_line.trim().to_string());
+            }
+            _ = tokio::time::sleep_until(deadline) => {
+                return Err(format!("timed out waiting for {service} authorization"));
+            }
+        }
+    }
+}
+
+/// Extract a named query parameter from the first line of an HTTP request, a
+/// bare path, or a URL, e.g. `"/login?token=abc&api_key=k"`.
+fn query_param(line: &str, name: &str) -> Option<String> {
+    let query = line.split_whitespace().find_map(|tok| tok.split_once('?').map(|(_, q)| q))?;
+    for pair in query.split('&') {
+        if let Some((k, v)) = pair.split_once('=') {
+            if k == name && !v.is_empty() {
+                return Some(v.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn format_lastfm_status(st: &gtm_core::client::LastfmStatus) -> String {
+    let mut out = if st.ready {
+        if st.enabled {
+            "Ready (scrobbling enabled)".to_string()
+        } else {
+            "Ready (scrobbling disabled)".to_string()
+        }
+    } else if st.api_key.is_some() {
+        "API key set, not yet authorized".to_string()
+    } else {
+        "Not configured".to_string()
+    };
+    if let Some(sk) = st.session_token.as_deref().filter(|s| !s.is_empty()) {
+        out += &format!(" | session {}", mask_credential(sk));
+    }
+    out
+}
+
+/// Keep a credential short: show only the first and last two characters.
+fn mask_credential(s: &str) -> String {
+    if s.chars().count() <= 6 {
+        "****".to_string()
+    } else {
+        format!("{}…{}", &s[..2], &s[s.len() - 2..])
+    }
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn query_param_extracts_named_field() {
+        assert_eq!(
+            query_param("GET /?token=abc123&api_key=k2 HTTP/1.1", "token"),
+            Some("abc123".to_string())
+        );
+        assert_eq!(
+            query_param("GET /lastfm?api_key=k2&token=xyz HTTP/1.1", "token"),
+            Some("xyz".to_string())
+        );
+        assert_eq!(
+            query_param("http://127.0.0.1:8991/lastfm?token=qwe", "token"),
+            Some("qwe".to_string())
+        );
+        assert_eq!(query_param("GET / HTTP/1.1", "token"), None);
+        assert_eq!(query_param("GET /?code=abc HTTP/1.1", "token"), None);
+        assert_eq!(query_param("", "token"), None);
+    }
+
+    #[test]
+    fn mask_credential_hides_value() {
+        assert_ne!(mask_credential("aVeryLongSecretValue"), "aVeryLongSecretValue");
+        assert_eq!(mask_credential("abc"), "****");
+    }
 }

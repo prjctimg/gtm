@@ -537,3 +537,46 @@ async fn test_delete_playing_track() {
     let _ = std::fs::remove_file(&wav_path);
     cleanup(&config);
 }
+
+#[tokio::test]
+async fn test_lastfm_set_config_and_status() {
+    let (handle, config) = daemon_handle().await;
+    let (mut reader, mut writer) = connect(&config.socket_path).await;
+
+    let res = send_req(
+        &mut reader,
+        &mut writer,
+        &DaemonReq::LastfmSetConfig {
+            enabled: true,
+            api_key: Some("k1".into()),
+            api_secret: Some("s1".into()),
+            session_key: Some("sess".into()),
+            min_play_secs: None,
+            min_play_pct: None,
+        },
+    )
+    .await;
+    assert!(matches!(res, DaemonRes::Ok), "got {res:?}");
+
+    let res = send_req(&mut reader, &mut writer, &DaemonReq::LastfmAuthUrl).await;
+    match res {
+        DaemonRes::LastfmAuthUrlRes { url } => {
+            assert!(url.contains("api_key=k1"), "unexpected url {url}");
+        }
+        other => panic!("expected LastfmAuthUrlRes, got {other:?}"),
+    }
+
+    let res = send_req(&mut reader, &mut writer, &DaemonReq::LastfmStatus).await;
+    match res {
+        DaemonRes::LastfmStatusRes { enabled, api_key, session_token, ready } => {
+            assert!(enabled, "scrobbling should be enabled");
+            assert_eq!(api_key.as_deref(), Some("k1"));
+            assert_eq!(session_token.as_deref(), Some("sess"));
+            assert!(ready, "manager should be ready once key+secret are set");
+        }
+        other => panic!("expected LastfmStatusRes, got {other:?}"),
+    }
+
+    handle.abort();
+    cleanup(&config);
+}

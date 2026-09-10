@@ -5,6 +5,7 @@
 // This is free software released under the GPL-3.0 license.
 
 pub mod client;
+pub mod daemon_ctl;
 pub mod fsm;
 pub mod global;
 pub mod ipc;

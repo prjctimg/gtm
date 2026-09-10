@@ -19,6 +19,10 @@ pub const SPOTIFY_CLIENT_ID_KEY: &str = "spotify_client_id";
 pub const SPOTIFY_TOKEN_KEY: &str = "spotify_token";
 /// Keychain/username for the Subsonic (Navidrome) server credentials.
 pub const SUBSONIC_KEY: &str = "subsonic_credentials";
+/// Keychain/username for the Last.fm API key.
+pub const LASTFM_API_KEY_KEY: &str = "lastfm_api_key";
+/// Keychain/username for the Last.fm API secret.
+pub const LASTFM_API_SECRET_KEY: &str = "lastfm_api_secret";
 
 fn fallback_dir() -> PathBuf {
     let base = dirs::config_dir().unwrap_or_else(|| {

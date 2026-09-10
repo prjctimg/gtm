@@ -2368,16 +2368,54 @@ impl Lastfm {
         min_play_secs: Option<u32>,
         min_play_pct: Option<f32>,
     ) -> Result<DaemonRes, CoreError> {
-        let mut lastfm = inner.lastfm.lock().await;
-        if enabled && let (Some(api_key), Some(api_secret)) = (api_key, api_secret) {
-            lastfm.init(api_key, api_secret, session_key).await;
+        // Persist any new credentials in the OS keychain so they survive daemon
+        // restarts; blank values mean "keep what is already stored".
+        if let Some(key) = api_key.as_ref().filter(|k| !k.trim().is_empty()) {
+            gtm_core::secret::set_secret(gtm_core::secret::LASTFM_API_KEY_KEY, key.trim());
         }
+        if let Some(secret) = api_secret.as_ref().filter(|s| !s.trim().is_empty()) {
+            gtm_core::secret::set_secret(gtm_core::secret::LASTFM_API_SECRET_KEY, secret.trim());
+        }
+
+        let current_session = inner.state.read().await.scrobble.session_token.clone();
+
+        let mut effective_key = None;
+        let mut effective_secret = None;
+        let mut effective_session = session_key.filter(|s| !s.trim().is_empty()).or(current_session);
+        if enabled {
+            effective_key = api_key
+                .filter(|k| !k.trim().is_empty())
+                .or_else(|| gtm_core::secret::get_secret(gtm_core::secret::LASTFM_API_KEY_KEY));
+            effective_secret = api_secret
+                .filter(|s| !s.trim().is_empty())
+                .or_else(|| gtm_core::secret::get_secret(gtm_core::secret::LASTFM_API_SECRET_KEY));
+            if let (Some(key), Some(secret)) = (&effective_key, &effective_secret) {
+                let mut lastfm = inner.lastfm.lock().await;
+                lastfm
+                    .init(key.clone(), secret.clone(), effective_session.clone())
+                    .await;
+            }
+        }
+
         let mut state = inner.state.write().await;
-        state.set_scrobble(enabled, None, None, min_play_secs, min_play_pct)?;
+        state.set_scrobble(enabled, effective_key, effective_session, min_play_secs, min_play_pct)?;
         drop(state);
         Daemon::push_event(inner, DaemonEvent::ScrobbleConfigChanged { enabled });
         Daemon::save_state(inner);
         Ok(DaemonRes::Ok)
+    }
+
+    /// Re-initialize the Last.fm manager from the stored keyring credentials
+    /// and the saved session token, so scrobbling survives a daemon restart
+    /// without re-running the setup wizard.
+    pub async fn restore_credentials(inner: &DaemonInner) {
+        let api_key = gtm_core::secret::get_secret(gtm_core::secret::LASTFM_API_KEY_KEY);
+        let api_secret = gtm_core::secret::get_secret(gtm_core::secret::LASTFM_API_SECRET_KEY);
+        let session = inner.state.read().await.scrobble.session_token.clone();
+        if let (Some(api_key), Some(api_secret)) = (api_key, api_secret) {
+            let mut lastfm = inner.lastfm.lock().await;
+            lastfm.init(api_key, api_secret, session).await;
+        }
     }
 
     pub async fn auth_url(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
@@ -2412,7 +2450,11 @@ impl Lastfm {
         let lastfm = inner.lastfm.lock().await;
         let state = inner.state.read().await;
         let enabled = state.scrobble.enabled;
-        let api_key = state.scrobble.api_key.clone();
+        let api_key = state
+            .scrobble
+            .api_key
+            .clone()
+            .or_else(|| gtm_core::secret::get_secret(gtm_core::secret::LASTFM_API_KEY_KEY));
         let session_token = state.scrobble.session_token.clone();
         drop(state);
         let ready = lastfm.is_ready();
@@ -2427,6 +2469,8 @@ impl Lastfm {
     pub async fn clear(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let mut lastfm = inner.lastfm.lock().await;
         lastfm.clear_session().await;
+        gtm_core::secret::delete_secret(gtm_core::secret::LASTFM_API_KEY_KEY);
+        gtm_core::secret::delete_secret(gtm_core::secret::LASTFM_API_SECRET_KEY);
         let mut state = inner.state.write().await;
         state.scrobble.enabled = false;
         state.scrobble.api_key = None;
@@ -3337,27 +3381,29 @@ impl Daemon {
             saved.apply_to(&mut initial_state);
         }
 
-        let state = Arc::new(RwLock::new(initial_state));
-
+        // Re-apply a persisted output device before the state is shared (this
+        // happens before `Daemon::new` returns, while `initial_state` is still
+        // owned exclusively, so it must not take the tokio RwLock). A device
+        // that disappeared while the daemon was off falls back to the system
+        // default and is cleared from the saved settings.
         let mut mixer: Box<dyn Mixer> = if config.test_mode {
             Box::new(NullMixer::new())
         } else {
             Self::init_mixer(&config)?
         };
-        // Re-apply a persisted output device before accepting connections. A
-        // device that disappeared while the daemon was off falls back to the
-        // system default and is cleared from the saved settings.
         if !config.test_mode
-            && let Some(dev) = state.blocking_read().audio.audio_device.clone()
+            && let Some(dev) = initial_state.audio.audio_device.clone()
         {
             match mixer.set_device(Some(dev.clone())) {
                 Ok(()) => {}
                 Err(e) => {
                     warn!("saved audio device '{dev}' unavailable ({e}); using default");
-                    state.blocking_write().audio.audio_device = None;
+                    initial_state.audio.audio_device = None;
                 }
             }
         }
+
+        let state = Arc::new(RwLock::new(initial_state));
 
         let socket_path = Path::new(&config.socket_path);
         if let Some(parent) = socket_path.parent() {
@@ -3565,6 +3611,9 @@ impl Daemon {
             subsonic.load();
             let mut podcast = provider_inner.podcast.lock().await;
             podcast.load();
+            drop(subsonic);
+            drop(podcast);
+            Lastfm::restore_credentials(&provider_inner).await;
         });
 
         let mut poll_interval = tokio::time::interval(Duration::from_millis(16));

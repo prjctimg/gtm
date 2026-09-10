@@ -92,6 +92,10 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 **mute**
 :   Toggle mute.
 
+**speed** [*rate*]
+:   Set the playback speed (1.0 = normal). Without an argument, prints the
+    current speed.
+
 **shuffle**
 :   Toggle shuffle mode for the queue.
 
@@ -201,6 +205,12 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 **spotify** *connect* *token*
 :   Link the account with an access token (metadata/playlist APIs).
 
+**spotify** *login* [*client_id*] [*port*]
+:   Run the OAuth PKCE browser flow to link the account. The client id is
+    taken from the argument, the keychain, or an interactive prompt. The
+    callback is served on a loopback port (default 8990,
+    `$GTM_SPOTIFY_PORT`).
+
 **spotify** *disconnect*
 :   Unlink the account and delete the stored token.
 
@@ -209,6 +219,70 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 
 **spotify** *sync*
 :   Re-sync all playlists from the Web API.
+
+## Subsonic / Navidrome
+
+**subsonic** *configure* *server* *username* [*password*]
+:   Save server credentials and verify the connection. Omit *password* for
+    an interactive prompt.
+
+**subsonic** *clear*
+:   Forget stored Subsonic credentials.
+
+**subsonic** *status*
+:   Show the current Subsonic configuration state.
+
+**subsonic** *ping*
+:   Ping the server.
+
+**subsonic** *search* *query*
+:   Search the server's index.
+
+**subsonic** *play* *track_id*
+:   Play a track by its server-side id.
+
+## Podcast
+
+**podcast** *add* *url*
+:   Subscribe to a podcast feed (RSS/Atom URL).
+
+**podcast** *remove* *feed_id*
+:   Unsubscribe from a feed.
+
+**podcast** *list*
+:   List subscribed feeds.
+
+**podcast** *episodes* *feed_id*
+:   List episodes of a feed.
+
+**podcast** *refresh* [*feed_id*]
+:   Refresh all feeds (or a single one) from the network.
+
+**podcast** *play* *feed_id* *episode_index*
+:   Play an episode by its zero-based index in the feed.
+
+**podcast** *status*
+:   Show podcast state.
+
+## Radio
+
+**radio** *search* *query* *limit*
+:   Search radio-browser.info for stations by name or tag.
+
+**radio** *top* *limit*
+:   List the top-rated stations.
+
+**radio** *play* *station_id* [*station_name*]
+:   Play a station by its radio-browser id, optionally with a display name.
+
+## Setup
+
+**setup** [*service*]
+:   Interactive source setup. Without a *service* argument (`spotify`,
+    `lastfm`, or `subsonic`), every unconfigured source is walked through in
+    turn. OAuth steps (Spotify, Last.fm) open your browser and capture the
+    callback response; Last.fm falls back to pasting the token on stdin.
+    The daemon is started automatically if it is not already running.
 
 ## Daemon
 

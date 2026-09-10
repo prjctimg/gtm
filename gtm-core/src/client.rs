@@ -504,6 +504,10 @@ impl DaemonClient {
         Radio { client: self }
     }
 
+    pub fn lastfm(&self) -> Lastfm<'_> {
+        Lastfm { client: self }
+    }
+
     pub fn favourites(&self) -> Favourites<'_> {
         Favourites { client: self }
     }
@@ -1347,6 +1351,89 @@ impl<'a> Radio<'a> {
             })
             .await
     }
+}
+
+/// Last.fm scrobbling configuration and web-auth flow.
+pub struct Lastfm<'a> {
+    client: &'a DaemonClient,
+}
+
+impl<'a> Lastfm<'a> {
+    /// Persist API credentials, optionally enable scrobbling, and (re)initialize
+    /// the daemon-side manager. Blank key/secret/session values keep whatever
+    /// is already configured or stored in the keychain.
+    pub async fn set_config(
+        &self,
+        enabled: bool,
+        api_key: Option<String>,
+        api_secret: Option<String>,
+        session_key: Option<String>,
+        min_play_secs: Option<u32>,
+        min_play_pct: Option<f32>,
+    ) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::LastfmSetConfig {
+                enabled,
+                api_key,
+                api_secret,
+                session_key,
+                min_play_secs,
+                min_play_pct,
+            })
+            .await
+    }
+
+    /// Authorization URL the user opens to grant gtm access to their account.
+    pub async fn auth_url(&self) -> Result<String> {
+        let res = self.client.send_raw(DaemonReq::LastfmAuthUrl).await?;
+        match res {
+            DaemonRes::LastfmAuthUrlRes { url } => Ok(url),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
+    /// Exchange a web-auth token for a (persisted) session key.
+    pub async fn authenticate(&self, token: &str) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::LastfmAuthenticate {
+                token: token.into(),
+            })
+            .await
+    }
+
+    pub async fn status(&self) -> Result<LastfmStatus> {
+        let res = self.client.send_raw(DaemonReq::LastfmStatus).await?;
+        match res {
+            DaemonRes::LastfmStatusRes {
+                enabled,
+                api_key,
+                session_token,
+                ready,
+            } => Ok(LastfmStatus {
+                enabled,
+                api_key,
+                session_token,
+                ready,
+            }),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
+    /// Unlink the account: clear the session and stored API credentials.
+    pub async fn clear(&self) -> Result<()> {
+        self.client.send_ok(DaemonReq::LastfmClear).await
+    }
+}
+
+/// Last.fm configuration and link state.
+#[derive(Debug, Clone)]
+pub struct LastfmStatus {
+    pub enabled: bool,
+    pub api_key: Option<String>,
+    pub session_token: Option<String>,
+    pub ready: bool,
 }
 
 pub struct Favourites<'a> {

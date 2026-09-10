@@ -236,6 +236,53 @@ fn daemon_req_parse_cmd_play() {
 }
 
 #[test]
+fn daemon_req_parse_cmd_lastfm() {
+    let params = serde_json::json!({
+        "enabled": true,
+        "api_key": "k1",
+        "api_secret": "s1",
+        "session_key": null,
+        "min_play_secs": null,
+        "min_play_pct": 0.5
+    });
+    let req = DaemonReq::parse_cmd("lastfm_set_config", params).unwrap();
+    assert_eq!(req.cmd_name(), "lastfm_set_config");
+    match req {
+        DaemonReq::LastfmSetConfig {
+            enabled,
+            api_key,
+            api_secret,
+            session_key,
+            min_play_secs,
+            min_play_pct,
+        } => {
+            assert!(enabled);
+            assert_eq!(api_key.as_deref(), Some("k1"));
+            assert_eq!(api_secret.as_deref(), Some("s1"));
+            assert!(session_key.is_none());
+            assert!(min_play_secs.is_none());
+            assert_eq!(min_play_pct, Some(0.5));
+        }
+        other => panic!("expected LastfmSetConfig, got {other:?}"),
+    }
+
+    for cmd in ["lastfm_auth_url", "lastfm_status", "lastfm_clear"] {
+        let req = DaemonReq::parse_cmd(cmd, serde_json::json!({})).unwrap();
+        assert_eq!(req.cmd_name(), cmd);
+    }
+
+    let req = DaemonReq::parse_cmd(
+        "lastfm_authenticate",
+        serde_json::json!({ "token": "t1" }),
+    )
+    .unwrap();
+    match req {
+        DaemonReq::LastfmAuthenticate { token } => assert_eq!(token, "t1"),
+        other => panic!("expected LastfmAuthenticate, got {other:?}"),
+    }
+}
+
+#[test]
 fn daemon_req_parse_cmd_unit_variants() {
     for (cmd, expected) in [
         ("play_pause", "play_pause"),
@@ -402,6 +449,37 @@ fn daemon_res_spotify_wire_roundtrip() {
             "spotify_track_image",
             DaemonRes::SpotifyImageRes {
                 data: Some("AAECAw==".into()),
+            },
+        ),
+    ];
+    for (cmd, res) in cases {
+        let expected = format!("{:?}", res);
+        let wire = res.to_wire(1);
+        let back = DaemonRes::from_wire(cmd, &wire);
+        assert_eq!(
+            expected,
+            format!("{:?}", back),
+            "round-trip failed for {cmd}"
+        );
+    }
+}
+
+#[test]
+fn daemon_res_lastfm_wire_roundtrip() {
+    let cases: Vec<(&str, DaemonRes)> = vec![
+        (
+            "lastfm_auth_url",
+            DaemonRes::LastfmAuthUrlRes {
+                url: "https://www.last.fm/api/auth/?api_key=k1".into(),
+            },
+        ),
+        (
+            "lastfm_status",
+            DaemonRes::LastfmStatusRes {
+                enabled: true,
+                api_key: Some("k1".into()),
+                session_token: Some("sess".into()),
+                ready: true,
             },
         ),
     ];

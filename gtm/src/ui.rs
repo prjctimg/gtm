@@ -7,8 +7,6 @@
 use std::borrow::Cow;
 use std::path::PathBuf;
 
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
 use crate::app::{
     App, InputMode, LIBRARY_CATEGORIES, LibraryPick, NotifMode, NotifType, NotificationKind,
     TrackInfoKind, no_image_protocol,
@@ -2106,94 +2104,9 @@ pub fn run_tui(socket: Option<String>) -> Result<(), Box<dyn std::error::Error>>
 async fn ensure_daemon_running(
     socket_path: &std::path::Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if socket_path.exists() {
-        if let Ok(mut stream) = tokio::net::UnixStream::connect(socket_path).await {
-            let ping = serde_json::to_string(&gtm_core::ipc::WireReq {
-                id: 0,
-                cmd: "ping".to_string(),
-                params: serde_json::to_value(gtm_core::ipc::DaemonReq::Ping).unwrap(),
-            })? + "\n";
-            let _ = stream.write_all(ping.as_bytes()).await;
-            let mut buf = [0u8; 256];
-            if let Ok(Ok(n)) =
-                tokio::time::timeout(std::time::Duration::from_millis(100), stream.read(&mut buf))
-                    .await
-                && n > 0
-            {
-                return Ok(());
-            }
-        }
-        let _ = std::fs::remove_file(socket_path);
-    }
-
-    if let Some(parent) = socket_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-
-    let gtmd_path = find_gtmd_binary()?;
-    let socket_arg = format!("--socket={}", socket_path.display());
-
-    let mut child = std::process::Command::new(&gtmd_path)
-        .arg(&socket_arg)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| format!("Failed to start gtmd at {gtmd_path:?}: {e}"))?;
-
-    std::thread::spawn(move || {
-        let _ = child.wait();
-    });
-
-    for _ in 0..120 {
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        if socket_path.exists()
-            && let Ok(mut stream) = tokio::net::UnixStream::connect(socket_path).await
-        {
-            let ping = serde_json::to_string(&gtm_core::ipc::WireReq {
-                id: 0,
-                cmd: "ping".to_string(),
-                params: serde_json::to_value(gtm_core::ipc::DaemonReq::Ping).unwrap(),
-            })? + "\n";
-            let _ = stream.write_all(ping.as_bytes()).await;
-            let mut buf = [0u8; 256];
-            if let Ok(Ok(n)) =
-                tokio::time::timeout(std::time::Duration::from_millis(500), stream.read(&mut buf))
-                    .await
-                && n > 0
-            {
-                return Ok(());
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn find_gtmd_binary() -> Result<std::path::PathBuf, Box<dyn std::error::Error>> {
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(parent) = exe.parent()
-    {
-        let candidate = parent.join("gtmd");
-        if candidate.exists() {
-            return Ok(candidate);
-        }
-    }
-
-    if let Ok(paths) = std::env::var("PATH") {
-        for dir in std::env::split_paths(&paths) {
-            let candidate = dir.join("gtmd");
-            if candidate.exists() {
-                return Ok(candidate);
-            }
-        }
-    }
-
-    let candidate = std::path::PathBuf::from("/usr/bin/gtmd");
-    if candidate.exists() {
-        return Ok(candidate);
-    }
-
-    Err("gtmd binary not found".into())
+    gtm_core::daemon_ctl::ensure_daemon_running(socket_path)
+        .await
+        .map_err(|e| e.into())
 }
 
 // ─── Layout ───
