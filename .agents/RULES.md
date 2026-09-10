@@ -1,3 +1,8 @@
+# Coding
+
+- Never inline-import symbols with `crate::my_crate::SomeSymbol` paths inside expressions or function bodies; that is a code smell. Always resolve symbols via `use` statements at the top of the module.
+- Avoid verbose or long variable and function names; rely on language features such as type inference, iterators, pattern matching, and RAII to keep names terse.
+
 # Rules
 
 - Use terse commit message and never add any long explanations to the message. Respect the style used in the codebase.
