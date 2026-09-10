@@ -15,6 +15,8 @@ use chrono::Local;
 use gtm_core::state::PlaybackStatus;
 
 use crate::app::App;
+use crate::theme::{AppTheme, readable_fg};
+use crate::ui::{Render, use_nerd_fonts};
 
 /// Namespace for per-module footer rendering.
 pub struct Footer;
@@ -311,7 +313,7 @@ pub fn render(app: &App) -> Option<FooterRenderOutput> {
         // Brand-badge styling: a solid per-module accent background with the
         // readable foreground and a bold weight, exactly like the "gtm" badge.
         let bg = module_color(m, &app.theme);
-        let fg = crate::theme::readable_fg(app.theme.fg, bg);
+        let fg = readable_fg(app.theme.fg, bg);
         let span = Span::styled(
             format!(" {} ", text),
             Style::default().fg(fg).add_modifier(Modifier::BOLD),
@@ -335,7 +337,7 @@ pub fn render(app: &App) -> Option<FooterRenderOutput> {
         let span = Span::styled(
             " SEL ",
             Style::default()
-                .fg(crate::theme::readable_fg(app.theme.fg, bg))
+                .fg(readable_fg(app.theme.fg, bg))
                 .bg(bg)
                 .add_modifier(Modifier::BOLD),
         );
@@ -467,7 +469,7 @@ impl Footer {
         if !matches!(dl.status.as_str(), "downloading" | "pending") {
             return None;
         }
-        let icon = if crate::ui::use_nerd_fonts() {
+        let icon = if use_nerd_fonts() {
             "\u{f019} " // nf-fa-download
         } else {
             "\u{2193} " // ↓
@@ -500,21 +502,21 @@ impl Footer {
     fn playback(app: &App) -> String {
         match app.state.status {
             PlaybackStatus::Playing => {
-                if crate::ui::use_nerd_fonts() {
+                if use_nerd_fonts() {
                     "\u{f040a}".into()
                 } else {
                     "\u{25b6}".into()
                 }
             }
             PlaybackStatus::Paused => {
-                if crate::ui::use_nerd_fonts() {
+                if use_nerd_fonts() {
                     "\u{f03e4}".into()
                 } else {
                     "\u{23f8}".into()
                 }
             }
             PlaybackStatus::Stopped => {
-                if crate::ui::use_nerd_fonts() {
+                if use_nerd_fonts() {
                     "\u{f04db}".into()
                 } else {
                     "\u{25a0}".into()
@@ -595,12 +597,12 @@ impl Footer {
     fn repeat(app: &App) -> Option<String> {
         match app.state.repeat {
             gtm_core::state::RepeatMode::Off => None,
-            gtm_core::state::RepeatMode::One => Some(if crate::ui::use_nerd_fonts() {
+            gtm_core::state::RepeatMode::One => Some(if use_nerd_fonts() {
                 "\u{f0458}".into()
             } else {
                 "1".into()
             }),
-            gtm_core::state::RepeatMode::All => Some(if crate::ui::use_nerd_fonts() {
+            gtm_core::state::RepeatMode::All => Some(if use_nerd_fonts() {
                 "\u{f0456}".into()
             } else {
                 "A".into()
@@ -610,7 +612,7 @@ impl Footer {
 
     fn shuffle(app: &App) -> Option<String> {
         if app.state.shuffle {
-            Some(if crate::ui::use_nerd_fonts() {
+            Some(if use_nerd_fonts() {
                 "\u{f049d}".into()
             } else {
                 "S".into()
@@ -622,7 +624,7 @@ impl Footer {
 
     fn eq_preset(app: &App) -> Option<String> {
         if app.state.audio.eq_enabled {
-            let icon = if crate::ui::use_nerd_fonts() {
+            let icon = if use_nerd_fonts() {
                 "\u{f062e} "
             } else {
                 "EQ:"
@@ -637,7 +639,7 @@ impl Footer {
         if let Some(secs) = app.state.sleep_timer {
             let m = secs / 60;
             let s = secs % 60;
-            let icon = if crate::ui::use_nerd_fonts() {
+            let icon = if use_nerd_fonts() {
                 "\u{f04b2} "
             } else {
                 "zzz "
@@ -662,7 +664,7 @@ impl Footer {
         let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
         let time_str = format!("{} / {}", format_duration(pos), format_duration(dur));
         let bar_w = 12;
-        let progress = crate::ui::Render::progress_variant(ratio, bar_w, app);
+        let progress = Render::progress_variant(ratio, bar_w, app);
         Some(format!("{} {}", progress, time_str))
     }
 
@@ -714,7 +716,7 @@ impl Footer {
 // ─── Module dispatch ───────────────────────────────────────────────────
 
 /// Per-module accent colour used as the group background (brand-badge style).
-fn module_color(m: FooterModule, theme: &crate::theme::AppTheme) -> Color {
+fn module_color(m: FooterModule, theme: &AppTheme) -> Color {
     match m {
         FooterModule::Playback => theme.accent,
         FooterModule::Title => theme.secondary_accent,
@@ -793,7 +795,7 @@ pub fn format_uptime(secs: f64) -> String {
 /// Get platform mascot/icon for the current OS.
 fn platform_icon() -> &'static str {
     // Use nerd font icons when available, fallback to emoji
-    if crate::ui::use_nerd_fonts() {
+    if use_nerd_fonts() {
         match std::env::consts::OS {
             "linux" => "\u{f17c}",   // Linux (Tux)
             "macos" => "\u{f302}",   // Apple
@@ -824,6 +826,8 @@ pub(crate) fn read_process_memory_kb() -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::theme::assert_unique_names;
 
     #[test]
     fn format_duration_hours() {
@@ -861,7 +865,7 @@ mod tests {
 
     #[test]
     fn presets_have_unique_names() {
-        crate::theme::assert_unique_names(presets().iter().map(|p| p.name.as_ref()), "preset");
+        assert_unique_names(presets().iter().map(|p| p.name.as_ref()), "preset");
     }
 
     #[test]

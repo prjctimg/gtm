@@ -9,6 +9,8 @@ use std::path::Path;
 use gtm_core::global::DaemonState;
 use gtm_core::track::TrackInfo;
 
+use crate::library::extract_metadata;
+
 /// Build a TrackInfo from a file path.  The title is derived from
 /// the file stem; all other fields are left empty/default.  The path is
 /// canonicalised so path-equality checks against `daemon::resolve_track_meta`
@@ -26,7 +28,7 @@ pub fn resolve_track(path: &str) -> TrackInfo {
         .unwrap_or("")
         .to_string();
 
-    if let Ok((meta, hash)) = crate::library::extract_metadata(&path_str, None) {
+    if let Ok((meta, hash)) = extract_metadata(&path_str, None) {
         return TrackInfo {
             id: 0,
             path: path_str,

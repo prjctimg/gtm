@@ -27,10 +27,23 @@ use tokio::sync::mpsc;
 
 use base64::Engine;
 
-use crate::keymap::{BoundCommand, KeyContext, KeyboardAction};
+use crate::footer::{FooterCache, FooterPreset, merged_presets};
+use crate::keymap::{
+    BoundCommand, KeyContext, KeyboardAction, Keybindings, default_keybindings, detect_clashes,
+    parse_key_event,
+};
+use crate::mouse::{MouseMap, MouseZone};
+use crate::oauth_capture::capture_lastfm_token_loopback;
 use crate::picker::{PickerId, PickerManager, PickerSource};
-use crate::theme::{AppTheme, ThemeEntry};
+use crate::progress::{ProgressSmoother, ProgressStyle};
+use crate::reactive::{ReactivePalette, derive_theme, extract_palette};
+use crate::theme::{AppTheme, ThemeEntry, blend_colors, chadrula, detect_os_theme, merged_themes};
 use crate::ui;
+use crate::ui::{
+    Command, CommandPalette, CROSSFADE_DURATIONS, HELP_LINES, cover_provider_label,
+    theme_mode_label,
+};
+use crate::visualizer::{AudioVisualizer, VisualizerPreset};
 
 fn prefs_path() -> std::path::PathBuf {
     let config = std::env::var("XDG_CONFIG_HOME")
@@ -100,9 +113,9 @@ pub struct Prefs {
     #[serde(default = "default_footer_preset_name")]
     footer_preset_name: String,
     #[serde(default)]
-    progress_style: crate::progress::ProgressStyle,
+    progress_style: ProgressStyle,
     #[serde(default)]
-    visualizer_preset: crate::visualizer::VisualizerPreset,
+    visualizer_preset: VisualizerPreset,
     #[serde(default = "default_time_format")]
     time_format: String,
     #[serde(default = "default_theme_mode")]
@@ -154,13 +167,13 @@ fn default_theme_mode() -> String {
 /// queried for its dark/light preference — in which case a theme matching the
 /// OS preference is chosen over the saved name. A saved name still wins when
 /// it already agrees with the OS preference.
-fn resolve_theme_index(themes: &[crate::theme::ThemeEntry], theme_name: &str, mode: &str) -> usize {
+fn resolve_theme_index(themes: &[ThemeEntry], theme_name: &str, mode: &str) -> usize {
     if themes.is_empty() {
         return 0;
     }
     // Only override with the OS preference when in auto mode.
     let os = if mode == "auto" {
-        crate::theme::detect_os_theme()
+        detect_os_theme()
     } else {
         match mode {
             "dark" => Some(gtm_core::state::ThemeMode::Dark),
@@ -213,8 +226,8 @@ impl Default for Prefs {
             reactive_theme: false,
             reactive_theme_intensity: default_reactive_intensity(),
             footer_preset_name: default_footer_preset_name(),
-            progress_style: crate::progress::ProgressStyle::default(),
-            visualizer_preset: crate::visualizer::VisualizerPreset::default(),
+            progress_style: ProgressStyle::default(),
+            visualizer_preset: VisualizerPreset::default(),
             time_format: default_time_format(),
             theme_mode: default_theme_mode(),
             track_sort: default_track_sort(),
@@ -244,8 +257,8 @@ fn save_prefs(prefs: &Prefs) {
 
 fn build_keybindings(
     overrides: &std::collections::HashMap<String, String>,
-) -> crate::keymap::Keybindings {
-    let mut defaults = crate::keymap::default_keybindings();
+) -> Keybindings {
+    let mut defaults = default_keybindings();
 
     if overrides.is_empty() {
         return defaults;
@@ -254,7 +267,7 @@ fn build_keybindings(
     // Parse user overrides into (KeyEvent, action_name, contexts) triples.
     let mut user_bindings: Vec<(crossterm::event::KeyEvent, String, Vec<KeyContext>)> = Vec::new();
     for (key_str, action_str) in overrides {
-        let key = match crate::keymap::parse_key_event(key_str) {
+        let key = match parse_key_event(key_str) {
             Some(k) => k,
             None => {
                 eprintln!("gtm: unknown key \"{}\" in config keybindings", key_str);
@@ -283,7 +296,7 @@ fn build_keybindings(
         ));
     }
 
-    let warnings = crate::keymap::detect_clashes(&user_bindings);
+    let warnings = detect_clashes(&user_bindings);
     for w in &warnings {
         eprintln!("gtm: keybinding clash: {}", w);
     }
@@ -778,7 +791,7 @@ pub struct App {
     /// which is what surfaced errors on long-press seeking.
     seek_cmd_accum: Option<f64>,
     last_seek_press: Option<std::time::Instant>,
-    pub progress_smoother: crate::progress::ProgressSmoother,
+    pub progress_smoother: ProgressSmoother,
     last_frame: std::time::Instant,
     pub frame_count: u64,
     /// Progress whip scanner position (Knight Rider style).
@@ -846,7 +859,7 @@ pub struct App {
     high_pri_cmd_tx: mpsc::UnboundedSender<TuiCommand>,
     ipc_rx: mpsc::UnboundedReceiver<IpcResult>,
     ipc_tx: mpsc::UnboundedSender<IpcResult>,
-    keybindings: crate::keymap::Keybindings,
+    keybindings: Keybindings,
     prefs_keybindings: std::collections::HashMap<String, String>,
     pub theme_index: usize,
     pub list_scroll: usize,
@@ -855,7 +868,7 @@ pub struct App {
     pub transparent_pickers: bool,
     pub reactive_theme: bool,
     pub reactive_theme_intensity: f32,
-    reactive_palette: Option<crate::reactive::ReactivePalette>,
+    reactive_palette: Option<ReactivePalette>,
     pub last_action_name: Option<(String, std::time::Instant)>,
     pub footer_title_scroll: usize,
     /// strftime-style format string for the footer `Time` module.
@@ -880,13 +893,13 @@ pub struct App {
     prev_volume: u8,
     prev_cover_id: Option<i64>,
     cover_art_dirty: bool,
-    pub footer_cache: crate::footer::FooterCache,
-    pub footer_presets: Vec<crate::footer::FooterPreset>,
+    pub footer_cache: FooterCache,
+    pub footer_presets: Vec<FooterPreset>,
     pub footer_preset: usize,
     last_event_time: std::time::Instant,
     pub multiselect_mode: bool,
-    pub progress_style: crate::progress::ProgressStyle,
-    pub visualizer: crate::visualizer::AudioVisualizer,
+    pub progress_style: ProgressStyle,
+    pub visualizer: AudioVisualizer,
     pub selected_indices: std::collections::HashSet<usize>,
     pending_motion: Option<char>,
     pub pending_playlist_track_ids: Vec<i64>,
@@ -899,7 +912,7 @@ pub struct App {
     pub pending_quit: bool,
     /// Clickable row rectangles rebuilt every frame by `ui::render`
     ///.
-    pub mouse_map: crate::mouse::MouseMap,
+    pub mouse_map: MouseMap,
     pub np_title_scroll: usize,
     /// Set on the first frame and on each track change; the render layer
     /// (re)starts the library/Now-Playing evolve animation once per trigger.
@@ -984,7 +997,7 @@ enum IpcResult {
     SpotifyPlaylists(Vec<SpotifyPlaylist>),
     SpotifyTracks(Vec<SpotifyTrack>),
     SpotifySearchWebResults(u64, Vec<SpotifyTrack>),
-    ReactivePalette(Option<crate::reactive::ReactivePalette>),
+    ReactivePalette(Option<ReactivePalette>),
     SubsonicStatus(Option<SubsonicStatus>),
     SubsonicSearch(SubsonicSearchResults),
     SubsonicAlbums(Vec<SubsonicAlbum>),
@@ -1166,7 +1179,7 @@ impl App {
 
     pub fn float_bg(&self) -> ratatui::style::Color {
         if self.transparent_bg {
-            crate::theme::blend_colors(self.theme.elevated_bg, self.theme.bg, 0.5)
+            blend_colors(self.theme.elevated_bg, self.theme.bg, 0.5)
         } else {
             self.theme.elevated_bg
         }
@@ -1237,16 +1250,16 @@ impl App {
         // by user-supplied files under ~/.config/gtm/). Resolve the persisted
         // prefs by name so adding/removing a built-in never shifts the saved
         // theme off its slot.
-        let themes = crate::theme::merged_themes();
+        let themes = merged_themes();
         let theme_index = resolve_theme_index(&themes, &prefs.theme_name, &prefs.theme_mode);
         let theme = if themes.is_empty() {
-            crate::theme::chadrula()
+            chadrula()
         } else {
             themes[theme_index].theme
         };
         // Similar to themes: resolve the footer preset by name so adding or
         // removing built-in presets never shifts a saved slot.
-        let footer_presets = crate::footer::merged_presets();
+        let footer_presets = merged_presets();
         let footer_preset = footer_presets
             .iter()
             .position(|p| p.name == prefs.footer_preset_name)
@@ -1262,7 +1275,7 @@ impl App {
             seek_pending: None,
             seek_cmd_accum: None,
             last_seek_press: None,
-            progress_smoother: crate::progress::ProgressSmoother::new(),
+            progress_smoother: ProgressSmoother::new(),
             last_frame: std::time::Instant::now(),
             frame_count: 0,
             scanner_pos: 0,
@@ -1389,14 +1402,14 @@ impl App {
             prev_volume: 100,
             prev_cover_id: None,
             cover_art_dirty: false,
-            footer_cache: crate::footer::FooterCache::default(),
+            footer_cache: FooterCache::default(),
             footer_presets,
             footer_preset,
             last_event_time: std::time::Instant::now(),
             multiselect_mode: false,
             progress_style: prefs.progress_style,
             visualizer: {
-                let mut v = crate::visualizer::AudioVisualizer::new();
+                let mut v = AudioVisualizer::new();
                 v.preset = prefs.visualizer_preset;
                 v
             },
@@ -1416,7 +1429,7 @@ impl App {
                 cover_fetch_gen: None,
             },
             pending_quit: false,
-            mouse_map: crate::mouse::MouseMap::default(),
+            mouse_map: MouseMap::default(),
             np_title_scroll: 0,
             track_anim_trigger: false,
             anim_fx: EffectManager::default(),
@@ -1689,7 +1702,7 @@ impl App {
             "Theme",
             format!(
                 "Theme mode: {}",
-                crate::ui::theme_mode_label(&self.theme_mode)
+                theme_mode_label(&self.theme_mode)
             ),
             NotificationKind::Info,
             true,
@@ -1708,7 +1721,7 @@ impl App {
         }
         .to_string();
         self.cover_provider = next.clone();
-        let label = crate::ui::cover_provider_label(&next);
+        let label = cover_provider_label(&next);
         let c = self.client.clone();
         tokio::spawn(async move {
             let _ = c.set_cover_provider(&next).await;
@@ -1740,7 +1753,7 @@ impl App {
         let base = entry.theme;
         self.theme = match (self.reactive_theme, self.reactive_palette) {
             (true, Some(pal)) => {
-                crate::reactive::derive_theme(&base, &pal, light, self.reactive_theme_intensity)
+                derive_theme(&base, &pal, light, self.reactive_theme_intensity)
             }
             _ => base,
         };
@@ -1784,7 +1797,7 @@ impl App {
     ) {
         let bytes = cover_bytes.to_vec();
         tokio::task::spawn_blocking(move || {
-            let pal = crate::reactive::extract_palette(&bytes);
+            let pal = extract_palette(&bytes);
             let _ = ipc_tx.send(IpcResult::ReactivePalette(pal));
         });
     }
@@ -2402,7 +2415,7 @@ impl App {
                         let c = self.client.clone();
                         let ipc_tx = self.ipc_tx.clone();
                         tokio::spawn(async move {
-                            match crate::oauth_capture::capture_lastfm_token_loopback().await {
+                            match capture_lastfm_token_loopback().await {
                                 Ok(token) if token.is_empty() => {
                                     self_err(&ipc_tx, "no Last.fm token provided".to_string());
                                 }
@@ -4641,9 +4654,9 @@ impl App {
                     }
                     .await;
                     let kind = if msg.starts_with("Downloaded") {
-                        crate::app::NotificationKind::Success
+                        NotificationKind::Success
                     } else {
-                        crate::app::NotificationKind::Error
+                        NotificationKind::Error
                     };
                     let _ = ipc.send(IpcResult::Notification(
                         "YouTube".to_string(),
@@ -4853,11 +4866,11 @@ impl App {
             PickerId::Equalizer => EQ_PRESETS.len().saturating_sub(1),
             PickerId::SleepTimer => 6,
             PickerId::Crossfade => 13,
-            PickerId::VisualizerPreset => crate::visualizer::VisualizerPreset::all()
+            PickerId::VisualizerPreset => VisualizerPreset::all()
                 .len()
                 .saturating_sub(1),
             PickerId::FooterPreset => self.footer_presets.len().saturating_sub(1),
-            PickerId::ProgressStyle => crate::progress::ProgressStyle::all()
+            PickerId::ProgressStyle => ProgressStyle::all()
                 .len()
                 .saturating_sub(1),
             PickerId::Notifications => self.notification_history.len().saturating_sub(1),
@@ -4886,7 +4899,7 @@ impl App {
                 .saturating_sub(1)
             }
             PickerId::CommandPalette => {
-                let commands = crate::ui::CommandPalette::commands(&self.icon_style);
+                let commands = CommandPalette::commands(&self.icon_style);
                 let q = query.to_lowercase();
                 if q.is_empty() {
                     commands.len()
@@ -4927,9 +4940,9 @@ impl App {
             PickerId::Equalizer => EQ_PRESETS.len(),
             PickerId::SleepTimer => 7,
             PickerId::Crossfade => 14,
-            PickerId::VisualizerPreset => crate::visualizer::VisualizerPreset::all().len(),
+            PickerId::VisualizerPreset => VisualizerPreset::all().len(),
             PickerId::FooterPreset => self.footer_presets.len(),
-            PickerId::ProgressStyle => crate::progress::ProgressStyle::all().len(),
+            PickerId::ProgressStyle => ProgressStyle::all().len(),
             PickerId::Notifications => self.notification_history.len(),
             PickerId::NotificationSettings => NotifType::ALL.len(),
             PickerId::PlaylistSelect => self.playlist_cache.len() + 1,
@@ -4955,7 +4968,7 @@ impl App {
                 }
             }
             PickerId::CommandPalette => {
-                let commands = crate::ui::CommandPalette::commands(&self.icon_style);
+                let commands = CommandPalette::commands(&self.icon_style);
                 let q = query.to_lowercase();
                 if q.is_empty() {
                     commands.len()
@@ -4992,7 +5005,7 @@ impl App {
     }
 
     fn help_picker_total(&self) -> usize {
-        crate::ui::HELP_LINES.len()
+        HELP_LINES.len()
     }
 
     /// Move the top picker's selection by one (wrapping), clamped to the
@@ -5064,7 +5077,7 @@ impl App {
         };
 
         match zone {
-            crate::mouse::MouseZone::PickerItem(i) => {
+            MouseZone::PickerItem(i) => {
                 if self.mouse_map.is_double_click(zone) {
                     let key = event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
                     self.handle_key(key).await;
@@ -5073,7 +5086,7 @@ impl App {
                     top.viewport_offset = top.viewport_offset.min(i);
                 }
             }
-            crate::mouse::MouseZone::ListItem(i) => {
+            MouseZone::ListItem(i) => {
                 let double = self.mouse_map.is_double_click(zone);
                 self.library_pane_focus = false;
                 self.set_list_pos(i);
@@ -7333,7 +7346,7 @@ impl App {
                     .rem_euclid(n) as usize;
                 }
                 KeyCode::Enter => {
-                    let (sel, service) = crate::app::setup_selection(self);
+                    let (sel, service) = setup_selection(self);
                     let _ = sel;
                     self.pickers.close_top();
                     self.open_setup_picker(Some(service));
@@ -8149,7 +8162,7 @@ impl App {
                             let sel = top.selected;
                             // Rows: [0] "Duration" header, [1..=5] durations.
                             if (1..=5).contains(&sel) {
-                                let dur = crate::ui::CROSSFADE_DURATIONS[sel - 1];
+                                let dur = CROSSFADE_DURATIONS[sel - 1];
                                 let enabled = self
                                     .state
                                     .crossfade
@@ -8165,7 +8178,7 @@ impl App {
                             }
                         }
                         PickerId::VisualizerPreset => {
-                            let presets = crate::visualizer::VisualizerPreset::all();
+                            let presets = VisualizerPreset::all();
                             if let Some(top) = self.pickers.top() {
                                 let idx = top.selected.min(presets.len() - 1);
                                 self.visualizer.preset = presets[idx];
@@ -8178,7 +8191,7 @@ impl App {
                             self.pickers.close_top();
                         }
                         PickerId::ProgressStyle => {
-                            let styles = crate::progress::ProgressStyle::all();
+                            let styles = ProgressStyle::all();
                             if let Some(top) = self.pickers.top() {
                                 let idx = top.selected.min(styles.len() - 1);
                                 self.progress_style = styles[idx];
@@ -8218,9 +8231,9 @@ impl App {
                             self.cycle_notification_mode(1);
                         }
                         PickerId::CommandPalette => {
-                            let commands = crate::ui::CommandPalette::commands(&self.icon_style);
+                            let commands = CommandPalette::commands(&self.icon_style);
                             let query = top.query.to_lowercase();
-                            let filtered: Vec<&crate::ui::Command> = if query.is_empty() {
+                            let filtered: Vec<&Command> = if query.is_empty() {
                                 commands.iter().collect()
                             } else {
                                 commands
@@ -8322,7 +8335,7 @@ impl App {
                                     self.notify_typed(
                                         "System",
                                         format!("Visualizer: {}", state),
-                                        crate::app::NotificationKind::Info,
+                                        NotificationKind::Info,
                                         false,
                                         NotifType::Playback,
                                     );
@@ -8982,12 +8995,12 @@ impl App {
         if let Some(top) = self.pickers.top() {
             match top.id {
                 PickerId::VisualizerPreset => {
-                    let presets = crate::visualizer::VisualizerPreset::all();
+                    let presets = VisualizerPreset::all();
                     let idx = top.selected.min(presets.len() - 1);
                     self.visualizer.preset = presets[idx];
                 }
                 PickerId::ProgressStyle => {
-                    let styles = crate::progress::ProgressStyle::all();
+                    let styles = ProgressStyle::all();
                     let idx = top.selected.min(styles.len() - 1);
                     self.progress_style = styles[idx];
                 }

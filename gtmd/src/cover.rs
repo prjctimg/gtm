@@ -17,6 +17,9 @@ use std::num::NonZeroUsize;
 use tokio::sync::Mutex;
 use tracing::warn;
 
+use crate::deezer::DeezerSearch;
+use crate::musicbrainz::MusicBrainz;
+
 const CACHE_SIZE: usize = 500;
 const ARTIST_CACHE_SIZE: usize = 200;
 const DEEZER_API: &str = "https://api.deezer.com/search";
@@ -301,7 +304,7 @@ impl CoverCache {
         album: &str,
         key: &str,
     ) -> Option<CoverData> {
-        let mb = crate::musicbrainz::MusicBrainz::new();
+        let mb = MusicBrainz::new();
         let found = mb.find_album(artist, album).await.ok().flatten()?;
         let bytes = mb.download_cover(&found.release_group_id).await?;
         let bytes = Self::normalize(&bytes).unwrap_or(bytes);
@@ -338,7 +341,7 @@ impl CoverCache {
             mem.put(key, cd.clone());
             return Some(cd);
         }
-        let deezer = crate::deezer::DeezerSearch::new();
+        let deezer = DeezerSearch::new();
         let img_bytes = deezer.artist_image(artist).await?;
         let cd = CoverData {
             data: img_bytes.clone(),

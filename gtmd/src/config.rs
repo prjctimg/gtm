@@ -7,6 +7,8 @@
 use std::path::PathBuf;
 
 use clap::Parser;
+
+use crate::cover::CoverProvider;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -37,7 +39,7 @@ pub struct DaemonConfig {
     /// Defaults to allowing deletion (matches pre-flag behaviour).
     pub allow_delete_files: bool,
     /// Artwork source preference, read from the TUI's config.toml.
-    pub cover_provider: crate::cover::CoverProvider,
+    pub cover_provider: CoverProvider,
 }
 
 #[derive(Parser, Debug)]
@@ -176,7 +178,7 @@ impl DaemonConfig {
             .and_then(|v| {
                 v.get("cover_provider")
                     .and_then(|p| p.as_str())
-                    .map(crate::cover::CoverProvider::from_str_lossy)
+                    .map(CoverProvider::from_str_lossy)
             })
             .unwrap_or_default();
 

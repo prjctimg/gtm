@@ -17,7 +17,6 @@ use tracing::{error, info, warn};
 
 use gtm_core::paths::resolve_pid_file;
 
-#[cfg(feature = "pulseaudio")]
 use crate::config::AudioBackendKind;
 use base64::Engine;
 #[cfg(feature = "pulseaudio")]
@@ -36,16 +35,26 @@ use gtm_core::spotify::SpotifyTrack;
 use gtm_core::track::TrackInfo;
 use gtm_core::wire;
 
+use crate::cleaner::{
+    clean_filename_stem, clean_youtube_title, is_filename_like, sanitize_text, tags_need_enrichment,
+};
 use crate::config::DaemonConfig;
-use crate::cover::CoverCache;
+use crate::cover::{CoverCache, CoverProvider};
+use crate::deezer::DeezerSearch;
 use crate::lastfm::LastfmManager;
-use crate::library::Library;
-use crate::lyrics::LyricsManager;
+use crate::library::{Library, extract_metadata};
+use crate::lyrics::{LyricsManager, lrc_to_text, meta_from_filename};
+use crate::oauth::OauthFlow;
+use crate::podcast::PodcastManager;
 use crate::queue;
+use crate::radio::RadioBrowserManager;
+use crate::remote;
 use crate::spotify::SpotifyManager;
 use crate::stream::StreamManager;
+use crate::subsonic::SubsonicManager;
+use crate::tags::{MetadataToWrite, write_tags};
 #[cfg(feature = "youtube")]
-use crate::youtube::YoutubeManager;
+use crate::youtube::{YoutubeManager, download_into};
 #[cfg(feature = "mpris")]
 use gtm_mpris::MprisHandle;
 
@@ -156,7 +165,7 @@ fn decode_remote_reader(
     live: bool,
     start_pos: f64,
 ) -> AudioResult<Box<dyn rodio::Source<Item = f32> + Send>> {
-    let resp = crate::remote::client()
+    let resp = remote::client()
         .get(&url)
         .send()
         .map_err(|e| gtm_audio::AudioError::DecodeError(format!("stream {url}: {e}")))?;
@@ -167,11 +176,11 @@ fn decode_remote_reader(
         )));
     }
     let reader: Box<dyn std::io::Read + Send> =
-        Box::new(crate::remote::HttpReader::from_response(resp));
+        Box::new(remote::HttpReader::from_response(resp));
     let reopen: Option<Box<dyn StreamingReopen>> = if live {
         None
     } else {
-        Some(Box::new(crate::remote::HttpReopen::new(url)))
+        Some(Box::new(remote::HttpReopen::new(url)))
     };
     AudioMixer::decode_reader(reader, reopen, start_pos)
 }
@@ -1544,7 +1553,7 @@ impl Spotify {
         // Persist the client id in the OS keychain so future links can reuse it
         // without the user pasting it again.
         gtm_core::secret::set_secret(gtm_core::secret::SPOTIFY_CLIENT_ID_KEY, cid);
-        let flow = crate::oauth::OauthFlow::new(cid, port);
+        let flow = OauthFlow::new(cid, port);
         let url = flow.authorize_url();
 
         let inner2 = Arc::clone(inner);
@@ -3042,7 +3051,7 @@ impl Cover {
         {
             if let Some(ref path) = track.cover_path
                 && let Ok(data) = tokio::fs::read(path).await
-                && !crate::cover::CoverCache::too_small(&data)
+                && !CoverCache::too_small(&data)
             {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
                 return Ok(DaemonRes::CoverArt { data: Some(b64) });
@@ -3053,7 +3062,7 @@ impl Cover {
             for ext in ["jpg", "jpeg", "png", "webp"] {
                 let sidecar = parent.join(format!("{}.{}", stem.to_string_lossy(), ext));
                 if let Ok(data) = tokio::fs::read(&sidecar).await
-                    && !crate::cover::CoverCache::too_small(&data)
+                    && !CoverCache::too_small(&data)
                 {
                     let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
                     return Ok(DaemonRes::CoverArt { data: Some(b64) });
@@ -3094,7 +3103,7 @@ impl Cover {
             // network fallbacks below.
             let spotify_first = matches!(
                 provider,
-                crate::cover::CoverProvider::Auto | crate::cover::CoverProvider::Spotify
+                CoverProvider::Auto | CoverProvider::Spotify
             ) && inner.spotify.lock().await.linked();
 
             let mut guard = inner.cover_cache().await;
@@ -3203,7 +3212,7 @@ impl Lyrics {
                 } else {
                     None
                 };
-                match resolved.or_else(|| path.map(|p| crate::queue::resolve_track(&p))) {
+                match resolved.or_else(|| path.map(|p| queue::resolve_track(&p))) {
                     Some(t) => t,
                     None => return Ok(DaemonRes::Lyrics { lyrics: None }),
                 }
@@ -3212,7 +3221,7 @@ impl Lyrics {
 
         let mut track = track;
         if track.artist.is_empty() || track.title.is_empty() {
-            let (artist, title) = crate::lyrics::meta_from_filename(&track.path);
+            let (artist, title) = meta_from_filename(&track.path);
             if track.artist.is_empty() {
                 track.artist = artist;
             }
@@ -3257,7 +3266,7 @@ struct DaemonInner {
     /// Runtime cover-provider override. `None` means the value baked into
     /// `config` (from config.toml at startup) applies; the TUI switches it
     /// live via `DaemonReq::SetCoverProvider` without a restart.
-    cover_provider_override: tokio::sync::Mutex<Option<crate::cover::CoverProvider>>,
+    cover_provider_override: tokio::sync::Mutex<Option<CoverProvider>>,
     event_tx: broadcast::Sender<DaemonEvent>,
     cover_cache: tokio::sync::Mutex<Option<CoverCache>>,
     lyrics_manager: tokio::sync::Mutex<Option<LyricsManager>>,
@@ -3265,9 +3274,9 @@ struct DaemonInner {
     #[cfg(feature = "youtube")]
     youtube: Arc<tokio::sync::Mutex<YoutubeManager>>,
     spotify: tokio::sync::Mutex<SpotifyManager>,
-    subsonic: tokio::sync::Mutex<crate::subsonic::SubsonicManager>,
-    podcast: tokio::sync::Mutex<crate::podcast::PodcastManager>,
-    radio: tokio::sync::Mutex<crate::radio::RadioBrowserManager>,
+    subsonic: tokio::sync::Mutex<SubsonicManager>,
+    podcast: tokio::sync::Mutex<PodcastManager>,
+    radio: tokio::sync::Mutex<RadioBrowserManager>,
     /// librespot streaming bridge for Premium Spotify playback.
     stream: tokio::sync::Mutex<StreamManager>,
     /// Pending OAuth link flow task; aborted when a new flow starts or the
@@ -3319,7 +3328,7 @@ impl DaemonInner {
 
     /// Cover provider in effect right now: the runtime override wins over the
     /// value parsed from config.toml at startup.
-    async fn effective_cover_provider(&self) -> crate::cover::CoverProvider {
+    async fn effective_cover_provider(&self) -> CoverProvider {
         (*self.cover_provider_override.lock().await).unwrap_or(self.config.cover_provider)
     }
 
@@ -3519,8 +3528,8 @@ impl Daemon {
         let config_dir = config.config_dir.clone();
         let audio_backend_name = match config.audio_backend {
             #[cfg(feature = "pulseaudio")]
-            crate::config::AudioBackendKind::PulseAudio => "pulseaudio",
-            crate::config::AudioBackendKind::Rodio => "rodio",
+            AudioBackendKind::PulseAudio => "pulseaudio",
+            AudioBackendKind::Rodio => "rodio",
         };
 
         let inner = Arc::new(DaemonInner {
@@ -3535,11 +3544,11 @@ impl Daemon {
             #[cfg(feature = "youtube")]
             youtube: Arc::new(tokio::sync::Mutex::new(YoutubeManager::new())),
             spotify: tokio::sync::Mutex::new(SpotifyManager::new(config_dir.clone())),
-            subsonic: tokio::sync::Mutex::new(crate::subsonic::SubsonicManager::new(
+            subsonic: tokio::sync::Mutex::new(SubsonicManager::new(
                 config_dir.clone(),
             )),
-            podcast: tokio::sync::Mutex::new(crate::podcast::PodcastManager::new(config_dir)),
-            radio: tokio::sync::Mutex::new(crate::radio::RadioBrowserManager::new()),
+            podcast: tokio::sync::Mutex::new(PodcastManager::new(config_dir)),
+            radio: tokio::sync::Mutex::new(RadioBrowserManager::new()),
             stream: tokio::sync::Mutex::new(StreamManager::new()),
             oauth_task: tokio::sync::Mutex::new(None),
             crossfade_loaded_for: tokio::sync::Mutex::new(None),
@@ -4292,7 +4301,7 @@ impl Daemon {
             DaemonReq::GetArtistCoverArt { artist } => Cover::artist(inner, artist).await,
             DaemonReq::SetCoverProvider { provider } => {
                 *inner.cover_provider_override.lock().await =
-                    Some(crate::cover::CoverProvider::from_str_lossy(provider));
+                    Some(CoverProvider::from_str_lossy(provider));
                 Ok(DaemonRes::Ok)
             }
             DaemonReq::GetLyrics { track_id, path } => {
@@ -4782,7 +4791,7 @@ impl Daemon {
             }
 
             let cache_dir = inner.config.cache_dir.to_string_lossy().into_owned();
-            if let Ok((meta, hash)) = crate::library::extract_metadata(&path_str, Some(&cache_dir))
+            if let Ok((meta, hash)) = extract_metadata(&path_str, Some(&cache_dir))
             {
                 return gtm_core::track::TrackInfo {
                     id: 0,
@@ -4816,7 +4825,7 @@ impl Daemon {
             }
         }
 
-        let (cleaned_artist, cleaned_title) = crate::cleaner::clean_filename_stem(&stem);
+        let (cleaned_artist, cleaned_title) = clean_filename_stem(&stem);
         let title = if cleaned_title.is_empty() {
             stem
         } else {
@@ -5109,7 +5118,7 @@ impl Daemon {
             }
         }
         let path =
-            crate::youtube::download_into(url, &dir, prefix, cookie_file.as_deref().map(Path::new))
+            download_into(url, &dir, prefix, cookie_file.as_deref().map(Path::new))
                 .await?;
         Ok(path.to_string_lossy().into_owned())
     }
@@ -5120,14 +5129,14 @@ fn metadata_query_for(track: &TrackInfo) -> (String, String) {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("");
-    let (cleaned_artist, cleaned_title) = crate::cleaner::clean_filename_stem(stem);
+    let (cleaned_artist, cleaned_title) = clean_filename_stem(stem);
 
     // A freshly YouTube-downloaded track carries the raw video title and the
     // uploader as the artist, neither of which Deezer can match (e.g. artist
     // "DrakeVEVO"). When the title carries YouTube clutter or the artist looks
     // like a channel, query with the cleaned values so the cover art and metadata
     // are fetched immediately after the download.
-    let (yt_artist, yt_title) = crate::cleaner::clean_youtube_title(&track.title);
+    let (yt_artist, yt_title) = clean_youtube_title(&track.title);
     let youtube_harvest = yt_title != track.title || is_channel_artist(&track.artist);
     if youtube_harvest {
         let artist = yt_artist
@@ -5141,7 +5150,7 @@ fn metadata_query_for(track: &TrackInfo) -> (String, String) {
         return (artist, title);
     }
 
-    let title_unreliable = crate::cleaner::is_filename_like(stem, &track.title);
+    let title_unreliable = is_filename_like(stem, &track.title);
     let query_artist = if track.artist.is_empty() {
         cleaned_artist.unwrap_or_default()
     } else {
@@ -5165,7 +5174,7 @@ fn is_channel_artist(artist: &str) -> bool {
 fn run_covers_sync(
     data_dir: PathBuf,
     cache_dir: PathBuf,
-    provider: crate::cover::CoverProvider,
+    provider: CoverProvider,
     progress: &SyncProgress,
 ) -> Result<(usize, usize), String> {
     let lib =
@@ -5174,7 +5183,7 @@ fn run_covers_sync(
     let total = tracks.len();
     progress.total.store(total, Ordering::Relaxed);
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("runtime: {e}"))?;
-    let mut cache = crate::cover::CoverCache::new(cache_dir.clone());
+    let mut cache = CoverCache::new(cache_dir.clone());
     let mut synced = 0usize;
     for track in &tracks {
         let missing_cover = track.cover_path.is_none()
@@ -5204,7 +5213,7 @@ fn run_covers_sync(
             .flatten()
             .is_some()
         {
-            let key = crate::cover::CoverCache::cache_key(artist, album);
+            let key = CoverCache::cache_key(artist, album);
             let cover_file = cache_dir.join("covers").join(format!("{key}.jpg"));
             if cover_file.exists() {
                 let path_str = cover_file.to_string_lossy().to_string();
@@ -5245,7 +5254,7 @@ fn run_lyrics_sync(
             .flatten()
             && !lyrics.lines.is_empty()
         {
-            let lrc_content = crate::lyrics::lrc_to_text(&lyrics);
+            let lrc_content = lrc_to_text(&lyrics);
             if std::fs::write(&lrc_path, &lrc_content).is_ok() {
                 synced += 1;
                 progress.synced.store(synced, Ordering::Relaxed);
@@ -5268,7 +5277,7 @@ fn run_metadata_sync(
     let total = tracks.len();
     progress.total.store(total, Ordering::Relaxed);
     let rt = tokio::runtime::Runtime::new().map_err(|e| format!("runtime: {e}"))?;
-    let deezer = crate::deezer::DeezerSearch::new();
+    let deezer = DeezerSearch::new();
     let mut synced = 0usize;
     for track in &tracks {
         let stem = Path::new(&track.path)
@@ -5279,7 +5288,7 @@ fn run_metadata_sync(
             if track.path != *only {
                 continue;
             }
-        } else if !crate::cleaner::tags_need_enrichment(
+        } else if !tags_need_enrichment(
             stem,
             &track.title,
             &track.artist,
@@ -5318,7 +5327,7 @@ fn run_metadata_sync(
                 cover = rt.block_on(deezer.download_cover(url));
             }
             let cover_mime = cover.as_ref().map(|_| "image/jpeg".to_string());
-            let meta = crate::tags::MetadataToWrite {
+            let meta = MetadataToWrite {
                 title: hit.title.clone(),
                 artist: hit.artist.clone(),
                 album: hit.album.clone(),
@@ -5326,7 +5335,7 @@ fn run_metadata_sync(
                 year: hit.year,
                 track_number: hit.track_number,
             };
-            if crate::tags::write_tags(&track.path, &meta, cover.clone().zip(cover_mime)).is_err() {
+            if write_tags(&track.path, &meta, cover.clone().zip(cover_mime)).is_err() {
                 warn!("metadata sync: failed to write tags for {}", track.path);
                 continue;
             }
@@ -5354,12 +5363,12 @@ fn run_metadata_sync(
             }
             synced += 1;
         } else {
-            let (cleaned_artist, cleaned_title) = crate::cleaner::clean_filename_stem(stem);
+            let (cleaned_artist, cleaned_title) = clean_filename_stem(stem);
             if !cleaned_title.is_empty() || cleaned_artist.is_some() {
                 let patch = gtm_core::MetadataPatch {
                     title: (!cleaned_title.is_empty())
-                        .then(|| crate::cleaner::sanitize_text(&cleaned_title)),
-                    artist: cleaned_artist.map(|a| crate::cleaner::sanitize_text(&a)),
+                        .then(|| sanitize_text(&cleaned_title)),
+                    artist: cleaned_artist.map(|a| sanitize_text(&a)),
                     ..Default::default()
                 };
                 if patch.title.is_some() || patch.artist.is_some() {

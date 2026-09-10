@@ -19,8 +19,12 @@
 //  `check_invariants()` (debug-only) asserts safety properties.
 // ```
 
+use crate::MAX_VOLUME;
 use crate::Result;
-use crate::global::{CoreError, CrossfadeConfig, DaemonState, PlaybackStatus};
+use crate::global::{
+    CoreError, CrossfadeConfig, DaemonState, LoudnessMode, MAX_SPEED, MIN_SPEED, PlaybackStatus,
+    RepeatMode, ReverbConfig,
+};
 use crate::ipc::DaemonEvent;
 use crate::track::TrackInfo;
 use crate::tripwire::{self, FailPoint};
@@ -86,7 +90,7 @@ impl DaemonState {
     /// Set volume, clamped to [0, MAX_VOLUME].
     pub fn set_volume(&mut self, vol: u8) -> Result<()> {
         tripwire::check(FailPoint::VolumeChange)?;
-        self.volume = vol.min(crate::MAX_VOLUME);
+        self.volume = vol.min(MAX_VOLUME);
         self.mute = false;
         self.commit();
         Ok(())
@@ -96,7 +100,7 @@ impl DaemonState {
     pub fn set_speed(&mut self, rate: f32) -> Result<()> {
         tripwire::check(FailPoint::StateTransition)?;
         let clamped = if rate.is_finite() {
-            rate.clamp(crate::global::MIN_SPEED, crate::global::MAX_SPEED)
+            rate.clamp(MIN_SPEED, MAX_SPEED)
         } else {
             1.0
         };
@@ -120,7 +124,7 @@ impl DaemonState {
         Ok(())
     }
 
-    pub fn set_repeat_mode(&mut self, mode: crate::global::RepeatMode) -> Result<()> {
+    pub fn set_repeat_mode(&mut self, mode: RepeatMode) -> Result<()> {
         tripwire::check(FailPoint::StateTransition)?;
         self.repeat = mode;
         self.commit();
@@ -149,7 +153,7 @@ impl DaemonState {
     }
 
     /// Set loudness mode (Off, Track, Album, Auto).
-    pub fn set_loudness_mode(&mut self, mode: crate::global::LoudnessMode) -> Result<()> {
+    pub fn set_loudness_mode(&mut self, mode: LoudnessMode) -> Result<()> {
         tripwire::check(FailPoint::StateTransition)?;
         self.audio.loudness_mode = mode;
         self.commit();
@@ -298,14 +302,14 @@ impl DaemonState {
                 };
             }
             DaemonEvent::ReverbChanged { enabled, room_size } => {
-                self.audio.reverb = crate::global::ReverbConfig {
+                self.audio.reverb = ReverbConfig {
                     enabled: *enabled,
                     room_size: *room_size,
                 };
             }
             DaemonEvent::SpeedChanged { rate } => {
                 let clamped = if rate.is_finite() {
-                    rate.clamp(crate::global::MIN_SPEED, crate::global::MAX_SPEED)
+                    rate.clamp(MIN_SPEED, MAX_SPEED)
                 } else {
                     1.0
                 };
@@ -361,10 +365,10 @@ impl DaemonState {
     /// Assert all internal invariants. Only compiled in debug/test builds.
     pub fn check_invariants(&self) {
         assert!(
-            self.volume <= crate::MAX_VOLUME,
+            self.volume <= MAX_VOLUME,
             "volume {} exceeds {}",
             self.volume,
-            crate::MAX_VOLUME
+            MAX_VOLUME
         );
         assert!(
             self.queue.is_empty() || self.queue_cursor < self.queue.len() as u64,

@@ -21,6 +21,8 @@ use tracing::debug;
 use gtm_core::global::YTFilter;
 use gtm_core::track::{StreamInfo, YTSearchResult};
 
+use crate::cleaner::clean_youtube_title;
+
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONCURRENT: usize = 2;
 
@@ -827,7 +829,7 @@ fn priority(title: &str) -> u32 {
 
 fn parse_video(v: &innertube_rs::SearchVideoItem) -> Option<YTSearchResult> {
     let raw_title = v.title.clone();
-    let (artist, title) = crate::cleaner::clean_youtube_title(&raw_title);
+    let (artist, title) = clean_youtube_title(&raw_title);
     Some(YTSearchResult {
         id: v.video_id.clone(),
         title,

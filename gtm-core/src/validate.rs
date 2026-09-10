@@ -35,7 +35,7 @@ impl DaemonState {
             repeat: RepeatMode::Off,
             shuffle: false,
             mute: false,
-            crossfade: Some(crate::global::CrossfadeConfig {
+            crossfade: Some(CrossfadeConfig {
                 enabled: true,
                 duration_secs: 6,
             }),

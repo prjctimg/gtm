@@ -20,6 +20,7 @@ use crate::buffer::{
 };
 use crate::decoder::DecodeThread;
 use crate::eq::{EqGains, EqSource, ReverbSource};
+use crate::stretch::{SpeedControl, TimeStretchSource};
 use crate::symphonia::{StreamingReopen, SymphoniaSource};
 use gtm_core::global::{EqPreset, ReverbConfig};
 
@@ -109,7 +110,7 @@ pub struct AudioMixer {
     eq_enabled: Arc<AtomicBool>,
     reverb_enabled: Arc<AtomicBool>,
     reverb_room_size: Arc<Mutex<f32>>,
-    speed: crate::stretch::SpeedControl,
+    speed: SpeedControl,
     // ─── Decode thread / Ring buffer ───
     active_control: Option<Arc<DecodeControl>>,
     active_decode_handle: Option<std::thread::JoinHandle<()>>,
@@ -328,7 +329,7 @@ impl AudioMixer {
             eq_enabled: Arc::new(AtomicBool::new(true)),
             reverb_enabled: Arc::new(AtomicBool::new(false)),
             reverb_room_size: Arc::new(Mutex::new(0.3)),
-            speed: crate::stretch::SpeedControl::new(),
+            speed: SpeedControl::new(),
             active_control: None,
             active_decode_handle: None,
             standby_control: None,
@@ -412,7 +413,7 @@ impl AudioMixer {
         source: Box<dyn Source<Item = f32> + Send>,
     ) -> Box<dyn Source<Item = f32> + Send> {
         let source: Box<dyn Source<Item = f32> + Send> = Box::new(
-            crate::stretch::TimeStretchSource::new(source, self.speed.clone()),
+            TimeStretchSource::new(source, self.speed.clone()),
         );
         let boxed: Box<dyn Source<Item = f32> + Send> = if self.eq_enabled.load(Ordering::Relaxed) {
             Box::new(EqSource::new(source, self.eq_gains.clone()))
@@ -437,7 +438,7 @@ impl AudioMixer {
         eq_enabled: &Arc<AtomicBool>,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
-        speed: &crate::stretch::SpeedControl,
+        speed: &SpeedControl,
         spectrum: &Arc<Mutex<Vec<f32>>>,
         prebuffer_samples: usize,
     ) -> AudioResult<(

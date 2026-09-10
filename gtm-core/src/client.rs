@@ -16,11 +16,13 @@ use tokio::sync::{Mutex, mpsc, oneshot};
 
 use crate::CoreError;
 use crate::Result;
-use crate::global::{DaemonState, EqPreset, PlaybackStatus, RepeatMode, YTFilter};
+use crate::global::{DaemonState, EqPreset, LoudnessMode, PlaybackStatus, RepeatMode, YTFilter};
 use crate::ipc::{
-    CacheKind, DaemonEvent, DaemonReq, DaemonRes, LibraryAction, MetadataPatch, PROTOCOL_VERSION,
-    QueueAction, SyncKind, WireReq, WireRes,
+    CacheKind, DaemonEvent, DaemonReq, DaemonRes, HealthReport, LibraryAction, MetadataPatch,
+    PROTOCOL_VERSION, QueueAction, SyncKind, WireReq, WireRes,
 };
+use crate::log::log;
+use crate::playlist_fmt::PlaylistFormatKind;
 use crate::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 use crate::radio::RadioStation;
 use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
@@ -409,7 +411,7 @@ impl DaemonClient {
         .await
     }
 
-    pub async fn set_loudness_mode(&self, mode: crate::global::LoudnessMode) -> Result<()> {
+    pub async fn set_loudness_mode(&self, mode: LoudnessMode) -> Result<()> {
         self.send_ok(DaemonReq::SetLoudnessMode { mode }).await
     }
 
@@ -557,7 +559,7 @@ impl DaemonClient {
         self.send_ok(DaemonReq::Quit).await
     }
 
-    pub async fn check_health(&self) -> Result<crate::ipc::HealthReport> {
+    pub async fn check_health(&self) -> Result<HealthReport> {
         let res = self.send_raw(DaemonReq::CheckHealth).await?;
         match res {
             DaemonRes::HealthReport { report, .. } => Ok(*report),
@@ -707,7 +709,7 @@ impl<'a> Library<'a> {
     pub async fn import_playlist(
         &self,
         path: &str,
-        format: crate::playlist_fmt::PlaylistFormatKind,
+        format: PlaylistFormatKind,
     ) -> Result<Vec<track::Playlist>> {
         self.client
             .send_playlists(DaemonReq::Library {
@@ -723,7 +725,7 @@ impl<'a> Library<'a> {
         &self,
         playlist_id: i64,
         path: &str,
-        format: crate::playlist_fmt::PlaylistFormatKind,
+        format: PlaylistFormatKind,
     ) -> Result<()> {
         self.client
             .send_ok(DaemonReq::Library {
@@ -1583,7 +1585,7 @@ impl IpcWorker {
             if self.last_heartbeat_at.lock().unwrap().elapsed()
                 > Duration::from_secs(HEARTBEAT_TIMEOUT_SECS)
             {
-                crate::log::log(&format!(
+                log(&format!(
                     "IPC worker: no heartbeat for {}s, forcing reconnect",
                     HEARTBEAT_TIMEOUT_SECS,
                 ));
@@ -1599,7 +1601,7 @@ impl IpcWorker {
             if self.last_event_time.elapsed() > Duration::from_secs(30) {
                 self.consecutive_failures += 1;
                 if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                    crate::log::log(&format!(
+                    log(&format!(
                         "IPC worker: no events for 30s ({} consecutive), forcing reconnect",
                         self.consecutive_failures
                     ));
@@ -1607,7 +1609,7 @@ impl IpcWorker {
                     self.reconnect().await;
                     self.consecutive_failures = 0;
                 } else {
-                    crate::log::log(&format!(
+                    log(&format!(
                         "IPC worker: no events for 30s ({}/{} failures), waiting",
                         self.consecutive_failures, MAX_CONSECUTIVE_FAILURES
                     ));
@@ -1625,7 +1627,7 @@ impl IpcWorker {
                 let id = self.next_id;
                 self.next_id = self.next_id.wrapping_add(1);
                 if let Err(e) = self.send_request_by_id(id, &pending).await {
-                    crate::log::log(&format!("IPC worker send error: {e}"));
+                    log(&format!("IPC worker send error: {e}"));
                     if let Some(tx) = pending.response_tx {
                         let _ = tx.send(Err(CoreError::Daemon("send failed".into())));
                     }
@@ -1644,7 +1646,7 @@ impl IpcWorker {
                 && let Err(e) =
                     tokio::time::timeout(Duration::from_secs(5), self.writer.flush()).await
             {
-                crate::log::log(&format!("IPC worker flush error: {e}"));
+                log(&format!("IPC worker flush error: {e}"));
                 self.fail_all_pending("flush failed");
                 self.reconnect().await;
                 continue;
@@ -1661,7 +1663,7 @@ impl IpcWorker {
                 }
                 Ok(false) => {} // timeout, loop back to check for requests
                 Err(e) => {
-                    crate::log::log(&format!("IPC worker read error: {e}"));
+                    log(&format!("IPC worker read error: {e}"));
                     self.fail_all_pending("read error");
                     self.reconnect().await;
                     continue;
@@ -1691,10 +1693,10 @@ impl IpcWorker {
                     self.pending.clear();
                     self.next_id = 0;
                     self.connected.store(true, Ordering::Release);
-                    crate::log::log(&format!("IPC worker reconnected after {attempt} attempts"));
+                    log(&format!("IPC worker reconnected after {attempt} attempts"));
                     self.authenticated.store(false, Ordering::Release);
                     if let Err(e) = self.post_reconnect_handshake().await {
-                        crate::log::log(&format!(
+                        log(&format!(
                             "IPC worker post-reconnect handshake failed: {e}"
                         ));
                     }
@@ -1703,7 +1705,7 @@ impl IpcWorker {
                 Err(e) => {
                     attempt += 1;
                     if attempt.is_multiple_of(10) {
-                        crate::log::log(&format!(
+                        log(&format!(
                             "IPC worker reconnect attempt {attempt} failed: {e}"
                         ));
                     }
@@ -1765,7 +1767,7 @@ impl IpcWorker {
             Some(true) => {
                 self.authenticated.store(true, Ordering::Release);
                 *self.last_heartbeat_at.lock().unwrap() = Instant::now();
-                crate::log::log("IPC worker post-reconnect handshake OK");
+                log("IPC worker post-reconnect handshake OK");
                 Ok(())
             }
             Some(false) => Err(CoreError::Daemon(format!(
@@ -1795,7 +1797,7 @@ impl IpcWorker {
                             self.buf.clear();
                             return Err(CoreError::Daemon("buffer exceeded 16MB".into()));
                         }
-                        crate::log::log("IPC read buffer exceeded 16MB; dropped oldest lines");
+                        log("IPC read buffer exceeded 16MB; dropped oldest lines");
                     }
                     Ok(true)
                 }
@@ -1858,12 +1860,12 @@ async fn pulse_reader(
             Err(e) => {
                 attempt += 1;
                 if attempt > 30 {
-                    crate::log::log(&format!(
+                    log(&format!(
                         "pulse: giving up after {attempt} reconnect attempts"
                     ));
                     return;
                 }
-                crate::log::log(&format!("pulse connect attempt {attempt} failed: {e}"));
+                log(&format!("pulse connect attempt {attempt} failed: {e}"));
                 tokio::time::sleep(Duration::from_millis((200 * attempt.min(30)) as u64)).await;
                 continue;
             }
@@ -1875,12 +1877,12 @@ async fn pulse_reader(
             let mut tmp = [0u8; 4096];
             let n = match reader.read(&mut tmp).await {
                 Ok(0) => {
-                    crate::log::log("pulse: connection closed, reconnecting");
+                    log("pulse: connection closed, reconnecting");
                     break;
                 }
                 Ok(n) => n,
                 Err(e) => {
-                    crate::log::log(&format!("pulse read error: {e}, reconnecting"));
+                    log(&format!("pulse read error: {e}, reconnecting"));
                     break;
                 }
             };
@@ -1890,7 +1892,7 @@ async fn pulse_reader(
                     Ok(Some((e, c))) => (e, c),
                     Ok(None) => break,
                     Err(e) => {
-                        crate::log::log(&format!("pulse decode error: {e}"));
+                        log(&format!("pulse decode error: {e}"));
                         buf.clear();
                         break;
                     }

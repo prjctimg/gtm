@@ -13,7 +13,10 @@ use gtm_core::global::RepeatMode;
 use gtm_core::playlist_fmt::PlaylistFormatKind;
 use tokio::io::AsyncBufReadExt;
 
+use crate::app::{Prefs, ensure_prefs_file};
 use crate::footer::format_uptime;
+use crate::oauth_capture::{capture_lastfm_token_loopback, lastfm_callback_port, mask_credential};
+use crate::ui::run_tui;
 
 /// Parse a CLI `--format` value into a [`PlaylistFormatKind`].
 fn parse_format(s: &str) -> Result<PlaylistFormatKind, String> {
@@ -357,14 +360,14 @@ pub enum RadioAction {
 pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) {
     if let CliCommand::Config { reset, validate } = cmd {
         if *reset {
-            let path = crate::app::ensure_prefs_file();
+            let path = ensure_prefs_file();
             let _ = std::fs::remove_file(&path);
-            let path = crate::app::ensure_prefs_file();
+            let path = ensure_prefs_file();
             println!("config reset to defaults at {}", path.display());
         } else if *validate {
-            let path = crate::app::ensure_prefs_file();
+            let path = ensure_prefs_file();
             match std::fs::read_to_string(&path) {
-                Ok(contents) => match toml::from_str::<crate::app::Prefs>(&contents) {
+                Ok(contents) => match toml::from_str::<Prefs>(&contents) {
                     Ok(_) => println!("config is valid"),
                     Err(e) => {
                         eprintln!("config error: {e}");
@@ -1255,7 +1258,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     // the service chooser. `--cli` keeps the headless wizard
                     // for scripting / SSH.
                     let socket_arg = socket_path.to_string_lossy().to_string();
-                    crate::ui::run_tui(Some(socket_arg), service.clone())
+                    run_tui(Some(socket_arg), service.clone())
                         .map_err(|e| e.to_string())?;
                     Ok("setup finished".to_string())
                 }
@@ -1273,7 +1276,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
 }
 
 fn open_config_in_editor() -> Result<(), String> {
-    let path = crate::app::ensure_prefs_file();
+    let path = ensure_prefs_file();
     let editor = pick_editor().ok_or_else(|| {
         format!(
             "no editor found: set $VISUAL or $EDITOR to open {}",
@@ -1602,7 +1605,7 @@ async fn setup_subsonic(client: &DaemonClient) -> Result<String, String> {
 /// Wait for an OAuth token on the loopback callback port or accept a manual
 /// paste on stdin (whichever finishes first). Times out after 5 minutes.
 async fn capture_callback_token() -> Result<String, String> {
-    let port = crate::oauth_capture::lastfm_callback_port();
+    let port = lastfm_callback_port();
     let addr = format!("127.0.0.1:{port}");
     println!(
         "Waiting for the Last.fm authorization callback on http://{addr} (5-minute timeout).\n\
@@ -1611,7 +1614,7 @@ async fn capture_callback_token() -> Result<String, String> {
     let mut stdin_line = String::new();
     let mut stdin_reader = tokio::io::BufReader::new(tokio::io::stdin());
     tokio::select! {
-        token = crate::oauth_capture::capture_lastfm_token_loopback() => token,
+        token = capture_lastfm_token_loopback() => token,
         pasted = stdin_reader.read_line(&mut stdin_line) => {
             let _ = pasted;
             Ok(stdin_line.trim().to_string())
@@ -1632,7 +1635,7 @@ fn format_lastfm_status(st: &gtm_core::client::LastfmStatus) -> String {
         "Not configured".to_string()
     };
     if let Some(sk) = st.session_token.as_deref().filter(|s| !s.is_empty()) {
-        out += &format!(" | session {}", crate::oauth_capture::mask_credential(sk));
+        out += &format!(" | session {}", mask_credential(sk));
     }
     out
 }

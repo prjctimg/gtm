@@ -11,6 +11,8 @@ use urlencoding::encode;
 
 use gtm_core::track::{LrcData, LrcLine, TrackInfo};
 
+use crate::cleaner::clean_filename_stem;
+
 const LRCLIB_API: &str = "https://lrclib.net/api";
 
 /// Similarity threshold for fuzzy matching artist/title against search results.
@@ -459,14 +461,14 @@ impl LyricsManager {
 
 /// Derive `(artist, title)` from a file path when track tags are missing.
 /// Parses "Artist - Title" from the file stem and strips common filler tags
-/// via [`crate::cleaner::clean_filename_stem`].
+/// via [`clean_filename_stem`].
 pub fn meta_from_filename(path: &str) -> (String, String) {
     let stem = Path::new(path)
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("")
         .to_string();
-    let (artist, title) = crate::cleaner::clean_filename_stem(&stem);
+    let (artist, title) = clean_filename_stem(&stem);
     (artist.unwrap_or_default(), title)
 }
 

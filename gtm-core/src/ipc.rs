@@ -4,7 +4,8 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use crate::global::{DaemonState, EqPreset, RepeatMode, YTFilter};
+use crate::global::{DaemonState, EqPreset, LoudnessMode, RepeatMode, YTFilter};
+use crate::playlist_fmt::PlaylistFormatKind;
 use crate::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 use crate::radio::RadioStation;
 use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
@@ -75,12 +76,12 @@ pub enum LibraryAction {
     },
     ImportPlaylist {
         path: String,
-        format: crate::playlist_fmt::PlaylistFormatKind,
+        format: PlaylistFormatKind,
     },
     ExportPlaylist {
         playlist_id: i64,
         path: String,
-        format: crate::playlist_fmt::PlaylistFormatKind,
+        format: PlaylistFormatKind,
     },
     GetRecent {
         count: u64,
@@ -198,7 +199,7 @@ pub enum DaemonReq {
         duration_secs: u8,
     },
     SetLoudnessMode {
-        mode: crate::global::LoudnessMode,
+        mode: LoudnessMode,
     },
     ScanLoudness {
         track_ids: Option<Vec<i64>>,
@@ -1165,7 +1166,7 @@ impl DaemonReq {
             "set_loudness_mode" => {
                 #[derive(Deserialize)]
                 struct Params {
-                    mode: crate::global::LoudnessMode,
+                    mode: LoudnessMode,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SetLoudnessMode { mode: x.mode }
@@ -1339,7 +1340,7 @@ pub enum DaemonEvent {
     #[serde(rename = "crossfade_countdown")]
     CrossfadeCountdown { track: TrackInfo },
     #[serde(rename = "loudness_mode_changed")]
-    LoudnessModeChanged { mode: crate::global::LoudnessMode },
+    LoudnessModeChanged { mode: LoudnessMode },
     #[serde(rename = "loudness_scan_progress")]
     LoudnessScanProgress {
         tracks_remaining: u32,

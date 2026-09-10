@@ -23,6 +23,8 @@ use tracing::warn;
 use gtm_core::MetadataPatch;
 use gtm_core::track::{Playlist, TrackInfo};
 
+use crate::cleaner::{clean_filename_stem, sanitize_text};
+
 const DB_NAME: &str = "library.db";
 /// Map a playlist name to a safe `.m3u8` file name in the data directory.
 fn m3u8_file_name(name: &str) -> String {
@@ -891,14 +893,14 @@ pub(crate) fn extract_metadata(
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("");
-        let (cleaned_artist, cleaned_title) = crate::cleaner::clean_filename_stem(stem);
-        let cleaned_title = crate::cleaner::sanitize_text(&cleaned_title);
+        let (cleaned_artist, cleaned_title) = clean_filename_stem(stem);
+        let cleaned_title = sanitize_text(&cleaned_title);
         if title.is_empty() && !cleaned_title.is_empty() {
             title = cleaned_title;
         }
         if artist.is_empty() {
             if let Some(a) = cleaned_artist {
-                artist = crate::cleaner::sanitize_text(&a);
+                artist = sanitize_text(&a);
             } else if let Some(dash_idx) = stem.find(" - ") {
                 if dash_idx > 0 {
                     artist = stem[..dash_idx].trim().to_string();

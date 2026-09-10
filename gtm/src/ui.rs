@@ -9,10 +9,18 @@ use std::path::PathBuf;
 
 use crate::app::{
     App, InputMode, LIBRARY_CATEGORIES, LibraryPick, NotifMode, NotifType, NotificationKind,
-    TrackInfoKind, no_image_protocol, setup_selection,
+    TrackInfoKind, lyrics_are_synced, no_image_protocol, setup_selection,
 };
-use crate::footer::format_duration;
+use crate::footer::{
+    draw as footer_draw, format_duration, format_uptime, read_process_memory_kb,
+    render as footer_render,
+};
+use crate::mouse::MouseZone;
 use crate::picker::{Picker, PickerId, PickerSource};
+use crate::progress::{ProgressStyle, render_progress, render_progress_styled, render_ratio};
+use crate::theme::blend_colors;
+pub use crate::theme::readable_fg;
+use crate::visualizer::VisualizerPreset;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
 };
@@ -820,11 +828,11 @@ impl Render {
                         let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
                         let bar_w =
                             (info_chunks[info_row].width / 3).saturating_sub(2).max(4) as usize;
-                        let progress_str = crate::ui::Render::progress_variant(ratio, bar_w, app);
+                        let progress_str = Render::progress_variant(ratio, bar_w, app);
                         let time_str = format!(
                             " {} / {}",
-                            crate::footer::format_duration(pos),
-                            crate::footer::format_duration(dur)
+                            format_duration(pos),
+                            format_duration(dur)
                         );
                         // Progress bar on first line
                         let prog_para = Paragraph::new(Line::from(vec![Span::styled(
@@ -1501,7 +1509,7 @@ impl Render {
                         height: 1,
                     };
                     app.mouse_map
-                        .register(rect, crate::mouse::MouseZone::ListItem(app.list_scroll + v));
+                        .register(rect, MouseZone::ListItem(app.list_scroll + v));
                 }
             }
         }
@@ -1559,13 +1567,13 @@ impl Render {
                 if app.footer_cache.suppress_refresh
                     && let Some(ref cached) = app.footer_cache.last
                 {
-                    crate::footer::draw(f, area, cached);
+                    footer_draw(f, area, cached);
                     Render::footer_help(f, area, app);
                     return;
                 }
-                let rendered = crate::footer::render(app);
+                let rendered = footer_render(app);
                 if let Some(ref out) = rendered {
-                    crate::footer::draw(f, area, out);
+                    footer_draw(f, area, out);
                 } else {
                     f.render_widget(
                         Paragraph::new("").style(Style::default().bg(app.chrome_bg())),
@@ -1587,8 +1595,8 @@ impl Render {
 
     pub fn progress_variant(ratio: f64, width: usize, app: &App) -> String {
         let ratio =
-            crate::progress::render_ratio(app.progress_style, ratio, app.progress_smoother.value());
-        crate::progress::render_progress(ratio, width, app.progress_style)
+            render_ratio(app.progress_style, ratio, app.progress_smoother.value());
+        render_progress(ratio, width, app.progress_style)
     }
 
     pub fn progress_variant_styled<'a>(
@@ -1597,8 +1605,8 @@ impl Render {
         app: &App,
     ) -> Vec<ratatui::text::Span<'a>> {
         let ratio =
-            crate::progress::render_ratio(app.progress_style, ratio, app.progress_smoother.value());
-        crate::progress::render_progress_styled(
+            render_ratio(app.progress_style, ratio, app.progress_smoother.value());
+        render_progress_styled(
             ratio,
             width,
             app.progress_style,
@@ -1713,7 +1721,7 @@ impl Render {
 
         let total = lyrics.lines.len();
         let width = lyrics_inner.width.max(1) as usize;
-        let synced = crate::app::lyrics_are_synced(&lyrics.lines);
+        let synced = lyrics_are_synced(&lyrics.lines);
         let anchor = app.lyrics.scroll.min(total.saturating_sub(1));
         let mut row_offsets = Vec::with_capacity(total);
         let mut text = Vec::with_capacity(total);
@@ -2018,7 +2026,7 @@ impl Render {
                 Span::styled(
                     format!(
                         "  uptime {}",
-                        crate::footer::format_uptime(report.daemon_uptime_secs)
+                        format_uptime(report.daemon_uptime_secs)
                     ),
                     Style::default().fg(app.theme.fg_dim),
                 ),
@@ -2169,7 +2177,7 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
     let brand = Paragraph::new(Span::styled(
         "  gtm  ",
         Style::default()
-            .fg(crate::theme::readable_fg(app.theme.fg, app.theme.accent))
+            .fg(readable_fg(app.theme.fg, app.theme.accent))
             .bg(app.theme.accent)
             .add_modifier(Modifier::BOLD),
     ));
@@ -2234,7 +2242,7 @@ fn dim_background(f: &mut ratatui::Frame, area: Rect) {
     }
 }
 
-fn render_pending_prompt(f: &mut ratatui::Frame, area: Rect, app: &crate::app::App) {
+fn render_pending_prompt(f: &mut ratatui::Frame, area: Rect, app: &App) {
     let Some(prompt) = &app.pending_prompt else {
         return;
     };
@@ -2360,7 +2368,7 @@ fn row_pad(content: &str, width: u16) -> usize {
 fn cursor_span_style(app: &App) -> Option<Style> {
     let phase = (app.frame_count % 64) as f32 / 64.0;
     let t = (1.0 - (phase * std::f32::consts::TAU).cos()) * 0.5;
-    let bg = crate::theme::blend_colors(app.theme.selection_bg, app.float_bg(), (t * 0.85) as f64);
+    let bg = blend_colors(app.theme.selection_bg, app.float_bg(), (t * 0.85) as f64);
     Some(
         Style::default()
             .fg(app.theme.selection_fg_readable())
@@ -3100,7 +3108,7 @@ impl Pickers {
                 height: 1,
             };
             app.mouse_map
-                .register(row_rect, crate::mouse::MouseZone::PickerItem(i));
+                .register(row_rect, MouseZone::PickerItem(i));
         }
 
         let para = Paragraph::new(lines);
@@ -3317,7 +3325,7 @@ impl Pickers {
                 height: 1,
             };
             app.mouse_map
-                .register(row_rect, crate::mouse::MouseZone::PickerItem(i));
+                .register(row_rect, MouseZone::PickerItem(i));
         }
 
         let para = Paragraph::new(lines);
@@ -3423,7 +3431,7 @@ impl Pickers {
                 height: 1,
             };
             app.mouse_map
-                .register(row_rect, crate::mouse::MouseZone::PickerItem(i));
+                .register(row_rect, MouseZone::PickerItem(i));
         }
 
         let para = Paragraph::new(lines);
@@ -3518,7 +3526,7 @@ impl Pickers {
                 height: 1,
             };
             app.mouse_map
-                .register(row_rect, crate::mouse::MouseZone::PickerItem(i));
+                .register(row_rect, MouseZone::PickerItem(i));
         }
         f.render_widget(Paragraph::new(lines), inner);
     }
@@ -3961,7 +3969,7 @@ impl Pickers {
         f: &mut ratatui::Frame,
         area: Rect,
         app: &mut App,
-        picks: &[crate::app::LibraryPick],
+        picks: &[LibraryPick],
         sel: usize,
     ) {
         let rule = Line::from(Span::styled(
@@ -5202,7 +5210,7 @@ impl Pickers {
         let cpus = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        let mem_kb = crate::footer::read_process_memory_kb();
+        let mem_kb = read_process_memory_kb();
         let mem_str = mem_kb
             .map(|kb| {
                 if kb > 1024 * 1024 {
@@ -5496,7 +5504,7 @@ impl Pickers {
                 height: 1,
             };
             app.mouse_map
-                .register(row_rect, crate::mouse::MouseZone::PickerItem(i));
+                .register(row_rect, MouseZone::PickerItem(i));
         }
 
         let para = Paragraph::new(lines);
@@ -5725,7 +5733,7 @@ impl Pickers {
     }
 
     fn command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let commands = crate::ui::CommandPalette::commands(&app.icon_style);
+        let commands = CommandPalette::commands(&app.icon_style);
 
         let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
         let q = query.to_lowercase();
@@ -5767,7 +5775,7 @@ impl Pickers {
         let mut rows: Vec<(Option<&'static str>, Option<usize>)> = Vec::new();
         if show_groups {
             let mut acc = 0usize;
-            for (gname, gcount) in crate::ui::COMMAND_GROUPS {
+            for (gname, gcount) in COMMAND_GROUPS {
                 if acc >= commands.len() {
                     break;
                 }
@@ -5864,7 +5872,7 @@ impl Pickers {
                     height: 1,
                 };
                 app.mouse_map
-                    .register(row_rect, crate::mouse::MouseZone::PickerItem(*ci));
+                    .register(row_rect, MouseZone::PickerItem(*ci));
             }
             row_line += 1;
         }
@@ -6041,8 +6049,8 @@ impl Pickers {
         const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
         const BRAILLE: [char; 8] = ['⠁', '⠃', '⠇', '⡇', '⣇', '⣧', '⣷', '⣿'];
         let chars: &[char; 8] = match app.visualizer.preset {
-            crate::visualizer::VisualizerPreset::Braille
-            | crate::visualizer::VisualizerPreset::Gradient => &BRAILLE,
+            VisualizerPreset::Braille
+            | VisualizerPreset::Gradient => &BRAILLE,
             _ => &BLOCKS,
         };
         let mut spans = vec![Span::raw("  ")];
@@ -6064,7 +6072,7 @@ impl Pickers {
     }
 
     fn visualizer_preview_lines(
-        preset: crate::visualizer::VisualizerPreset,
+        preset: VisualizerPreset,
         bars: &[f32],
         width: u16,
         app: &App,
@@ -6073,7 +6081,7 @@ impl Pickers {
         let mut lines = Vec::new();
 
         match preset {
-            crate::visualizer::VisualizerPreset::Braille => {
+            VisualizerPreset::Braille => {
                 for row in 0..2 {
                     let mut spans = Vec::with_capacity(w);
                     for &b in bars.iter().take(w) {
@@ -6110,8 +6118,8 @@ impl Pickers {
                     lines.push(Line::from(spans));
                 }
             }
-            crate::visualizer::VisualizerPreset::Blocks
-            | crate::visualizer::VisualizerPreset::Mirror => {
+            VisualizerPreset::Blocks
+            | VisualizerPreset::Mirror => {
                 let levels = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
                 for row in 0..2 {
                     let mut spans = Vec::with_capacity(w);
@@ -6132,7 +6140,7 @@ impl Pickers {
                     lines.push(Line::from(spans));
                 }
             }
-            crate::visualizer::VisualizerPreset::Gradient => {
+            VisualizerPreset::Gradient => {
                 for row in 0..2 {
                     let mut spans = Vec::with_capacity(w);
                     for (i, &b) in bars.iter().take(w).enumerate() {
@@ -6166,7 +6174,7 @@ impl Pickers {
                     lines.push(Line::from(spans));
                 }
             }
-            crate::visualizer::VisualizerPreset::Spectrum => {
+            VisualizerPreset::Spectrum => {
                 for row in 0..2 {
                     let mut spans = Vec::with_capacity(w);
                     for &b in bars.iter().take(w) {
@@ -6307,7 +6315,7 @@ impl Pickers {
                 height: 1,
             };
             app.mouse_map
-                .register(row_rect, crate::mouse::MouseZone::PickerItem(i));
+                .register(row_rect, MouseZone::PickerItem(i));
         }
 
         let list = List::new(list_items);
@@ -6393,7 +6401,7 @@ impl Pickers {
         f.render_widget(block, area);
 
         let current = app.visualizer.preset;
-        let presets = crate::visualizer::VisualizerPreset::all();
+        let presets = VisualizerPreset::all();
 
         let sel = app
             .pickers
@@ -6526,7 +6534,7 @@ impl Pickers {
         f.render_widget(block, area);
 
         let current = app.progress_style;
-        let styles = crate::progress::ProgressStyle::all();
+        let styles = ProgressStyle::all();
 
         let sel = app
             .pickers
@@ -6622,7 +6630,7 @@ impl Pickers {
 
             let sel_style = styles.get(sel).copied().unwrap_or(current);
             let preview_w = preview_area.width.saturating_sub(2) as usize;
-            let spans = crate::progress::render_progress_styled(
+            let spans = render_progress_styled(
                 0.6,
                 preview_w,
                 sel_style,
@@ -6815,8 +6823,6 @@ fn opencode_spinner(frame: usize) -> &'static str {
     LOADER_BRAILLE[(frame / 2) % LOADER_BRAILLE.len()]
 }
 
-pub use crate::theme::readable_fg;
-
 /// Frames (at ~60 fps) spent stationary after each full marquee loop before
 /// the title starts animating again.
 const SCROLL_HOLD_FRAMES: usize = 300;
@@ -7006,7 +7012,7 @@ impl Pickers {
                 height: 1,
             };
             app.mouse_map
-                .register(row_rect, crate::mouse::MouseZone::PickerItem(i));
+                .register(row_rect, MouseZone::PickerItem(i));
             items.push(ListItem::new(content).style(style));
         }
 
