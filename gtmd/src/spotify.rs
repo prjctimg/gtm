@@ -228,12 +228,28 @@ impl SpotifyManager {
     /// Refresh the account profile and every playlist from the Web API.
     pub async fn sync(&mut self) -> Result<(), String> {
         let client = self
-            .client
-            .as_ref()
+            .sync_client()
             .ok_or_else(|| "spotify not linked".to_string())?;
+        let (user, playlists) = Self::run_sync(client).await?;
+        self.commit_sync(user, playlists);
+        Ok(())
+    }
 
+    /// Clone the underlying Web API client so a sync can paginate without
+    /// holding the manager mutex. `None` when not linked.
+    pub fn sync_client(&self) -> Option<AuthCodePkceSpotify> {
+        self.client.clone()
+    }
+
+    /// Paginate the full account profile, every playlist, and every playlist's
+    /// tracks on a cloned client so the caller never holds the manager mutex
+    /// across the network pass. Returns the snapshot to commit via
+    /// [`Self::commit_sync`].
+    pub async fn run_sync(
+        client: AuthCodePkceSpotify,
+    ) -> Result<(Option<String>, Vec<SpotifyPlaylist>), String> {
         let me = client.me().await.map_err(|e| format!("me: {e}"))?;
-        self.user = me.display_name.or_else(|| Some(me.id.as_ref().to_string()));
+        let user = me.display_name.or_else(|| Some(me.id.as_ref().to_string()));
         // NOTE: rspotify's `me().product` was removed upstream (Spotify no
         // longer exposes the plan); Premium is instead probed via the
         // playback endpoint in `refresh_playback()`.
@@ -249,12 +265,12 @@ impl SpotifyManager {
         debug!(
             "fetched {} spotify playlists for {:?}",
             metas.len(),
-            self.user
+            user
         );
 
         let mut playlists = Vec::new();
         for meta in &metas {
-            let tracks = self.fetch_playlist_tracks(client, meta.id.clone()).await;
+            let tracks = Self::fetch_playlist_tracks(&client, meta.id.clone()).await;
             playlists.push(SpotifyPlaylist {
                 id: meta.id.as_ref().to_string(),
                 name: meta.name.clone(),
@@ -262,12 +278,19 @@ impl SpotifyManager {
                 tracks,
             });
         }
+        Ok((user, playlists))
+    }
+
+    /// Swap a completed sync snapshot into the manager. `status()` and
+    /// `playlists()` only ever contend for this brief swap, never for the
+    /// minutes of network pagination that preceded it.
+    pub fn commit_sync(&mut self, user: Option<String>, playlists: Vec<SpotifyPlaylist>) {
+        self.error = None;
+        self.user = user;
         self.playlists = playlists;
-        Ok(())
     }
 
     async fn fetch_playlist_tracks(
-        &self,
         client: &AuthCodePkceSpotify,
         playlist_id: rspotify::model::PlaylistId<'static>,
     ) -> Vec<SpotifyTrack> {

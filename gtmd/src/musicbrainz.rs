@@ -19,7 +19,8 @@ pub struct MusicBrainzResult {
     pub release_group_id: String,
     /// Front cover URL from the Cover Art Archive, if any.
     pub cover_url: Option<String>,
-    /// Artist image placeholder (not currently populated by MusicBrainz).
+    /// Artist image URL from the Cover Art Archive, resolved from the matched
+    /// release's artist.
     pub artist_image_url: Option<String>,
 }
 
@@ -96,10 +97,11 @@ impl MusicBrainz {
                 continue;
             }
             // Prefer the sound-track/album primary type, skip compilations/fan made
+            let artist_image_url = self.artist_image_url(artist).await;
             return Ok(Some(MusicBrainzResult {
                 release_group_id: rg_id,
                 cover_url: None,
-                artist_image_url: None,
+                artist_image_url,
             }));
         }
         Ok(None)
@@ -110,6 +112,48 @@ impl MusicBrainz {
     pub async fn download_cover(&self, release_group_id: &str) -> Option<Vec<u8>> {
         let url = format!("{CAA_URL}/release-group/{release_group_id}/front");
         self.fetch_bytes(&url).await
+    }
+
+    /// Resolve a Cover Art Archive artist-image URL for `artist`, or `None`
+    /// when the artist cannot be matched or has no image. MusicBrainz enforces
+    /// 1 s between requests, so this is the slowest provider in the chain and
+    /// is intentionally called last.
+    async fn artist_image_url(&self, artist: &str) -> Option<String> {
+        let artist = artist.trim();
+        if artist.is_empty() {
+            return None;
+        }
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        let resp = self
+            .client
+            .get(format!("{MB_API}/artist"))
+            .query(&[("query", format!("artist:\"{artist}\""))])
+            .query(&[("fmt", "json"), ("limit", "1")])
+            .header("User-Agent", &self.user_agent)
+            .send()
+            .await
+            .ok()?;
+        let json: Value = resp.json().await.ok()?;
+        let mbid = json
+            .get("artists")
+            .and_then(|v| v.as_array())
+            .and_then(|a| a.first())
+            .and_then(|a| a.get("id"))
+            .and_then(|v| v.as_str())
+            .filter(|id| !id.is_empty())?;
+
+        let url = format!("{CAA_URL}/artist/{mbid}/front-250");
+        match self
+            .client
+            .get(&url)
+            .header("User-Agent", &self.user_agent)
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => Some(url),
+            Ok(_) | Err(_) => None,
+        }
     }
 
     async fn fetch_bytes(&self, url: &str) -> Option<Vec<u8>> {

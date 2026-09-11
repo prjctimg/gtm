@@ -928,6 +928,21 @@ impl<'a> Yt<'a> {
             .await
     }
 
+    /// Start a daemon-side yt-dlp flat-playlist fetch of `url`. Entries are
+    /// collected with [`Yt::fetch_playlist_poll`].
+    pub async fn fetch_playlist(&self, url: &str) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::YtFetchPlaylist { url: url.into() })
+            .await
+    }
+
+    /// Poll for a finished playlist fetch.
+    pub async fn fetch_playlist_poll(&self) -> Result<DaemonRes> {
+        self.client
+            .send_raw(DaemonReq::YtFetchPlaylistPoll)
+            .await
+    }
+
     pub async fn set_config(
         &self,
         cookie_source: Option<String>,

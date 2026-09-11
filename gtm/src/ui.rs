@@ -2664,6 +2664,17 @@ impl Pickers {
                             "Once you approve, playlists sync automatically.",
                             Style::default().fg(app.theme.fg_dim),
                         )));
+                        lines.push(Line::from(Span::styled(
+                            "Still stuck? Your app must list this exact Redirect URI:",
+                            Style::default().fg(app.theme.fg_dim),
+                        )));
+                        lines.push(Line::from(Span::styled(
+                            format!(
+                                "http://127.0.0.1:{}/login   (127.0.0.1, not localhost)",
+                                app.spotify.oauth_port.parse::<u16>().unwrap_or(8990)
+                            ),
+                            Style::default().fg(app.theme.accent),
+                        )));
                         lines.push(Line::from(""));
                     }
                     if let Some(err) = app.spotify.oauth_error.as_deref() {
@@ -2744,6 +2755,22 @@ impl Pickers {
                         port_spans.push(Span::styled(" ", cur));
                     }
                     lines.push(Line::from(port_spans));
+                    lines.push(Line::from(""));
+                    lines.push(Line::from(Span::styled(
+                        format!(
+                            "Redirect URI to register: http://127.0.0.1:{}/login",
+                            app.spotify.oauth_port.parse::<u16>().unwrap_or(8990)
+                        ),
+                        Style::default().fg(app.theme.fg_bright),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "Use 127.0.0.1 (not localhost). Client ID = 32 hex chars from",
+                        Style::default().fg(app.theme.fg_dim),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "your Spotify app dashboard (https://developer.spotify.com/dashboard).",
+                        Style::default().fg(app.theme.fg_dim),
+                    )));
 
                     let p = Paragraph::new(lines);
                     f.render_widget(p, inner);

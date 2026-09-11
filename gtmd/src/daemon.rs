@@ -331,7 +331,7 @@ impl Cmd {
             .await
             .listened_for(&track.path, fallback_pos);
         let lastfm = inner.lastfm.lock().await;
-        if lastfm.is_ready() {
+        if lastfm.is_ready().await {
             let _ = tokio::time::timeout(
                 Duration::from_secs(10),
                 lastfm.scrobble(track, played_secs.max(0.0), min_secs, min_pct),
@@ -381,6 +381,12 @@ impl Cmd {
             mixer.duration()
         };
 
+        // Resolve the track's metadata (library lookup + tag read) before
+        // taking the state write lock: the lookup runs on a blocking thread
+        // so a slow disk/library read never freezes the command loop.
+        let track =
+            Daemon::resolve_track_meta(inner, std::path::Path::new(&path_owned), dur).await;
+
         // Scrobble previous track before switching. The state guard is taken
         // and dropped in a single scoped block so it is always released (a
         // second write() below would otherwise deadlock when there was no
@@ -398,7 +404,6 @@ impl Cmd {
         }
 
         let mut state = inner.state.write().await;
-        let track = Daemon::resolve_track_meta(inner, std::path::Path::new(&path_owned), dur);
         if let Some(pos) = state.queue.iter().position(|t| t.path == track.path)
             && pos > 0
         {
@@ -414,7 +419,7 @@ impl Cmd {
         inner.scrobble.lock().await.start(&track.path, start_pos);
 
         // Update Last.fm now playing
-        if inner.lastfm.lock().await.is_ready() {
+        if inner.lastfm.lock().await.is_ready().await {
             let track_for_np = {
                 let state = inner.state.read().await;
                 if state.scrobble.enabled {
@@ -656,7 +661,7 @@ impl Cmd {
         inner.scrobble.lock().await.start(&track.path, start_pos);
 
         let lastfm = inner.lastfm.lock().await;
-        if lastfm.is_ready() {
+        if lastfm.is_ready().await {
             let track_for_np = inner.state.read().await.current_track.clone();
             if let Some(ref track) = track_for_np {
                 let _ =
@@ -1504,9 +1509,9 @@ async fn spotify_yt_fallback(
             Ok(Some((_, mut results))) if !results.is_empty() => results.remove(0),
             _ => return Err("no youtube results for track".to_string()),
         };
-        let cookie = yt.cookie_file();
+        let auth = yt.auth_args();
         drop(yt);
-        Daemon::download_audio_to_cache(&inner.config.cache_dir, cache_key, &top.url, cookie).await
+        Daemon::download_audio_to_cache(&inner.config.cache_dir, cache_key, &top.url, auth).await
     };
     top_url
 }
@@ -1555,6 +1560,16 @@ impl Spotify {
         let cid = client_id.trim();
         if cid.is_empty() {
             return Err(CoreError::Daemon("empty spotify client id".into()));
+        }
+        if cid.len() != 32 || !cid.chars().all(|c| c.is_ascii_hexdigit()) {
+            return Err(CoreError::Daemon(
+                format!(
+                    "invalid spotify client id (expected 32 hex chars) — your app must also \
+                     list http://127.0.0.1:{port}/login as a Redirect URI \
+                     (127.0.0.1, not localhost) or the link fails silently in the browser"
+                )
+                .into(),
+            ));
         }
         // Persist the client id in the OS keychain so future links can reuse it
         // without the user pasting it again.
@@ -1635,9 +1650,24 @@ impl Spotify {
     }
 
     pub async fn sync(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let mut spotify = inner.spotify.lock().await;
-        match tokio::time::timeout(Duration::from_secs(60), spotify.sync()).await {
-            Ok(Ok(())) => Ok(DaemonRes::Ok),
+        // Clone the Web API client out of the manager, then paginate without
+        // holding `inner.spotify`: a concurrent `SpotifyStatus`/
+        // `SpotifyPlaylists` keeps working against the previous snapshot.
+        let client = match inner.spotify.lock().await.sync_client() {
+            Some(client) => client,
+            None => {
+                return Ok(DaemonRes::Error {
+                    message: "spotify not linked".into(),
+                })
+            }
+        };
+        let res =
+            tokio::time::timeout(Duration::from_secs(60), SpotifyManager::run_sync(client)).await;
+        match res {
+            Ok(Ok((user, playlists))) => {
+                inner.spotify.lock().await.commit_sync(user, playlists);
+                Ok(DaemonRes::Ok)
+            }
             Ok(Err(e)) => Ok(DaemonRes::Error { message: e }),
             Err(_) => Ok(DaemonRes::Error {
                 message: "spotify sync timed out".into(),
@@ -2495,7 +2525,7 @@ impl Lastfm {
             .or_else(|| get_secret(LASTFM_API_KEY_KEY));
         let session_token = state.scrobble.session_token.clone();
         drop(state);
-        let ready = lastfm.is_ready();
+        let ready = lastfm.is_ready().await;
         Ok(DaemonRes::LastfmStatusRes {
             enabled,
             api_key,
@@ -2559,21 +2589,34 @@ impl Queue {
                 Ok(DaemonRes::Ok)
             }
             QueueAction::Add { paths, position } => {
-                let expanded = match queue::expand_paths(paths) {
-                    Ok(files) => files,
+                // Directory walk + per-file tag reads all happen on a
+                // blocking thread so adding a huge folder never stalls the
+                // command loop; the state write below only inserts entries.
+                let base = paths.clone();
+                let prepared = tokio::task::spawn_blocking(move || {
+                    let expanded = queue::expand_paths(&base)?;
+                    if expanded.is_empty() {
+                        return Err::<Vec<TrackInfo>, String>("no audio files found".into());
+                    }
+                    Ok(expanded
+                        .iter()
+                        .map(|p| queue::resolve_track(p))
+                        .collect::<Vec<_>>())
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                let tracks = match prepared {
+                    Ok(t) => t,
                     Err(e) => return Ok(DaemonRes::Error { message: e }),
                 };
-                if expanded.is_empty() {
-                    return Ok(DaemonRes::Error {
-                        message: "no audio files found".into(),
-                    });
-                }
-                let first_path = expanded[0].clone();
+                let first_path = tracks[0].path.clone();
                 let was_empty = {
                     let mut state = inner.state.write().await;
                     state.fallback_disabled = false;
                     let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
-                    queue::add_many(&mut state, &expanded, *position);
+                    for track in tracks {
+                        queue::add_resolved(&mut state, track, *position);
+                    }
                     drop(state);
                     w
                 };
@@ -2584,11 +2627,17 @@ impl Queue {
                 Daemon::save_state(inner);
                 Ok(DaemonRes::Ok)
             }
-            QueueAction::Set { paths, start_idx } => {
+            QueueAction::Set { paths, start_idx: _ } => {
                 Daemon::clear_history(inner).await;
+                let base = paths.clone();
+                let tracks = tokio::task::spawn_blocking(move || {
+                    base.iter().map(|p| queue::resolve_track(p)).collect::<Vec<_>>()
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 {
                     let mut state = inner.state.write().await;
-                    queue::set(&mut state, paths, *start_idx);
+                    queue::set_resolved(&mut state, tracks);
                 }
                 Daemon::push_queue_state(inner).await;
                 Daemon::save_state(inner);
@@ -3047,21 +3096,30 @@ impl Cover {
         let mut discovered_artist = String::new();
         let mut discovered_album = String::new();
 
-        let lib = if !inner.config.test_mode {
-            Library::new(inner.config.data_dir.to_str().unwrap_or("")).ok()
-        } else {
+        // The SQLite library lookup runs on a blocking thread so a busy db
+        // never stalls the command loop. The current cover art is picked
+        // directly from the stored cover path or an audio sidecar.
+        let library_track = if inner.config.test_mode {
             None
+        } else {
+            let data_dir = inner.config.data_dir.clone();
+            tokio::task::spawn_blocking(move || {
+                Library::new(data_dir.to_str().unwrap_or(""))
+                    .ok()
+                    .and_then(|lib| lib.get_track(track_id).ok().flatten())
+            })
+            .await
+            .map_err(|e| CoreError::Daemon(e.to_string()))?
         };
-        if let Some(ref library) = lib
-            && let Ok(Some(track)) = library.get_track(track_id)
+        if let Some(ref track) = library_track
+            && let Some(ref path) = track.cover_path
+            && let Ok(data) = tokio::fs::read(path).await
+            && !CoverCache::too_small(&data)
         {
-            if let Some(ref path) = track.cover_path
-                && let Ok(data) = tokio::fs::read(path).await
-                && !CoverCache::too_small(&data)
-            {
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                return Ok(DaemonRes::CoverArt { data: Some(b64) });
-            }
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+            return Ok(DaemonRes::CoverArt { data: Some(b64) });
+        }
+        if let Some(ref track) = library_track {
             let audio_path = std::path::Path::new(&track.path);
             let parent = audio_path.parent().unwrap_or(std::path::Path::new(""));
             let stem = audio_path.file_stem().unwrap_or_default();
@@ -3074,8 +3132,8 @@ impl Cover {
                     return Ok(DaemonRes::CoverArt { data: Some(b64) });
                 }
             }
-            discovered_artist = track.artist;
-            discovered_album = track.album;
+            discovered_artist = track.artist.clone();
+            discovered_album = track.album.clone();
         }
 
         if discovered_artist.is_empty() {
@@ -3210,9 +3268,14 @@ impl Lyrics {
             Some(t) => t,
             None => {
                 let resolved = if !inner.config.test_mode {
-                    Library::new(inner.config.data_dir.to_str().unwrap_or(""))
-                        .ok()
-                        .and_then(|lib| lib.get_track(track_id).ok().flatten())
+                    let data_dir = inner.config.data_dir.clone();
+                    tokio::task::spawn_blocking(move || {
+                        Library::new(data_dir.to_str().unwrap_or(""))
+                            .ok()
+                            .and_then(|lib| lib.get_track(track_id).ok().flatten())
+                    })
+                    .await
+                    .map_err(|e| CoreError::Daemon(e.to_string()))?
                 } else {
                     None
                 };
@@ -3313,6 +3376,11 @@ struct DaemonInner {
     /// track. Long-running jobs and playback commands can then interleave: the
     /// underlying `DaemonState` keeps each individual mutation safe.
     play_lock: tokio::sync::RwLock<()>,
+    /// Serializes slow network commands (Spotify sync, Spotify resolve,
+    /// YouTube download) without blocking fast reads: `GetStatus`/`Ping`
+    /// never take this lock, so they stay responsive even when a multi-
+    /// minute Spotify sync is in progress.
+    slow_lock: tokio::sync::Mutex<()>,
     play_history: tokio::sync::Mutex<Vec<HistoryEntry>>,
     scrobble: tokio::sync::Mutex<ScrobbleTracker>,
     sync_progress: Arc<SyncProgress>,
@@ -3446,6 +3514,23 @@ fn request_is_playback(req: &DaemonReq) -> bool {
     )
 }
 
+/// Commands that touch remote APIs and can take many seconds (Spotify sync,
+/// Spotify resolve, YouTube search/download). They serialize on `slow_lock`
+/// instead of `cmd_lock.write()` so fast reads (`GetStatus`/`Ping`) never
+/// get stuck behind a multi-minute network stall.
+fn request_is_slow_network(req: &DaemonReq) -> bool {
+    matches!(
+        req,
+        DaemonReq::SpotifySync
+            | DaemonReq::SpotifyResolve { .. }
+            | DaemonReq::SpotifyResolveTrack { .. }
+            | DaemonReq::YtSearch { .. }
+            | DaemonReq::YtResolveStream { .. }
+            | DaemonReq::YtDownload { .. }
+            | DaemonReq::YtFetchPlaylist { .. }
+    )
+}
+
 impl Daemon {
     pub fn new(config: DaemonConfig) -> Result<Self, CoreError> {
         let mut initial_state = DaemonState::new();
@@ -3563,6 +3648,7 @@ impl Daemon {
             internal_req_tx,
             cmd_lock: tokio::sync::RwLock::new(()),
             play_lock: tokio::sync::RwLock::new(()),
+            slow_lock: tokio::sync::Mutex::new(()),
             play_history: tokio::sync::Mutex::new(Vec::new()),
             scrobble: tokio::sync::Mutex::new(ScrobbleTracker::default()),
             sync_progress: Arc::new(SyncProgress::default()),
@@ -4070,12 +4156,17 @@ impl Daemon {
         // `get_status` / `ping` from timing out while a long command holds the
         // exclusive lock. Playback transport commands run on their own
         // dedicated lock so they are never queued behind a slow background
-        // job either.
+        // job either. Network-bound commands (Spotify sync/resolve, YouTube
+        // search/download) run on their own serialized lock: they can block a
+        // caller for many seconds, but never `GetStatus`/`Ping`.
         let res = if request_is_read_only(&req) {
             let _guard = inner.cmd_lock.read().await;
             Self::handle_request(&inner, &req, client_id, authenticated).await
         } else if request_is_playback(&req) {
             let _guard = inner.play_lock.write().await;
+            Self::handle_request(&inner, &req, client_id, authenticated).await
+        } else if request_is_slow_network(&req) {
+            let _guard = inner.slow_lock.lock().await;
             Self::handle_request(&inner, &req, client_id, authenticated).await
         } else {
             let _guard = inner.cmd_lock.write().await;
@@ -4265,12 +4356,42 @@ impl Daemon {
                     ))
                 }
             }
-            DaemonReq::YtFetchPlaylist { .. } => Err(CoreError::Daemon(
-                "yt_fetch_playlist not yet implemented".into(),
-            )),
-            DaemonReq::YtFetchPlaylistPoll => Err(CoreError::Daemon(
-                "yt_fetch_playlist_poll not yet implemented".into(),
-            )),
+            DaemonReq::YtFetchPlaylist { url } => {
+                #[cfg(feature = "youtube")]
+                {
+                    let mut yt = inner.youtube.lock().await;
+                    match yt.start_fetch_playlist(url.clone()) {
+                        Ok(()) => Ok(DaemonRes::Ok),
+                        Err(e) => Err(CoreError::Daemon(e)),
+                    }
+                }
+                #[cfg(not(feature = "youtube"))]
+                {
+                    Err(CoreError::Daemon(
+                        "youtube support is disabled in this build".into(),
+                    ))
+                }
+            }
+            DaemonReq::YtFetchPlaylistPoll => {
+                #[cfg(feature = "youtube")]
+                {
+                    let mut yt = inner.youtube.lock().await;
+                    match yt.poll_playlist() {
+                        Ok(Some((query, results))) => Ok(DaemonRes::YtSearchResults {
+                            query,
+                            results,
+                        }),
+                        Ok(None) => Ok(DaemonRes::Ok),
+                        Err(e) => Err(CoreError::Daemon(e)),
+                    }
+                }
+                #[cfg(not(feature = "youtube"))]
+                {
+                    Err(CoreError::Daemon(
+                        "youtube support is disabled in this build".into(),
+                    ))
+                }
+            }
             #[cfg(feature = "youtube")]
             DaemonReq::YtSetConfig {
                 cookie_source,
@@ -4281,12 +4402,8 @@ impl Daemon {
             } => {
                 let mut yt = inner.youtube.lock().await;
                 yt.set_cookie_file(cookie_file.clone());
-                if let Some(cs) = cookie_source {
-                    _ = cs;
-                }
-                if let Some(js) = js_runtime {
-                    _ = js;
-                }
+                yt.set_cookie_source(cookie_source.clone());
+                yt.set_js_runtime(js_runtime.clone());
                 yt.set_download_dir(download_dir.clone());
                 if let Some(mc) = max_concurrent {
                     yt.set_max_concurrent_downloads(*mc as usize);
@@ -4766,82 +4883,41 @@ impl Daemon {
         true
     }
 
-    fn resolve_track_meta(inner: &DaemonInner, path: &std::path::Path, dur: f64) -> TrackInfo {
-        let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-        let path_str = path.to_string_lossy().into_owned();
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("Unknown")
-            .to_string();
-
-        if !inner.config.test_mode {
-            if let Ok(lib) = Library::new(inner.config.data_dir.to_str().unwrap_or("")) {
-                if let Ok(Some(mut t)) = lib.track_by_path(&path_str) {
-                    t.duration = dur;
-                    return t;
-                }
-                if let Ok(tracks) = lib.list_tracks()
-                    && let Some(matched) = tracks
-                        .iter()
-                        .find(|t| path_str.contains(&t.path) || t.path.contains(&path_str))
-                {
-                    let mut t = matched.clone();
-                    t.duration = dur;
-                    return t;
-                }
-            }
-
-            let cache_dir = inner.config.cache_dir.to_string_lossy().into_owned();
-            if let Ok((meta, hash)) = extract_metadata(&path_str, Some(&cache_dir)) {
-                return TrackInfo {
-                    id: 0,
-                    path: path_str,
-                    title: if meta.title.is_empty() {
-                        stem.clone()
-                    } else {
-                        meta.title
-                    },
-                    artist: if meta.artist.is_empty() {
-                        "Unknown Artist".to_string()
-                    } else {
-                        meta.artist
-                    },
-                    album: if meta.album.is_empty() {
-                        "Unknown Album".to_string()
-                    } else {
-                        meta.album
-                    },
-                    duration: if dur > 0.0 { dur } else { meta.duration },
-                    track_number: meta.track_number,
-                    genre: meta.genre,
-                    year: meta.year,
-                    bitrate: meta.bitrate,
-                    samplerate: meta.samplerate,
-                    hash,
-                    cover_path: meta.cover_path,
-                    favourite: false,
-                    ..Default::default()
-                };
-            }
-        }
-
-        let (cleaned_artist, cleaned_title) = clean_filename_stem(&stem);
-        let title = if cleaned_title.is_empty() {
-            stem
-        } else {
-            cleaned_title
+    /// Resolve a local file's metadata (library lookup, then tag read) without
+    /// blocking the async worker thread: the SQLite open and lofty tag parse
+    /// run inside `spawn_blocking`. Returns the tag-derived `TrackInfo`, or a
+    /// filename-derived fallback if the metadata gather panics.
+    async fn resolve_track_meta(inner: &DaemonInner, path: &std::path::Path, dur: f64) -> TrackInfo {
+        let ctx = MetaCtx {
+            data_dir: inner.config.data_dir.to_string_lossy().into_owned(),
+            cache_dir: inner.config.cache_dir.to_string_lossy().into_owned(),
+            test_mode: inner.config.test_mode,
         };
-        let artist = cleaned_artist.unwrap_or_else(|| "Unknown Artist".to_string());
-        TrackInfo {
-            id: 0,
-            path: path_str,
-            title,
-            artist,
-            album: "Unknown Album".to_string(),
-            duration: dur,
-            ..Default::default()
-        }
+        let path = path.to_path_buf();
+        let path_for_blocking = path.clone();
+        tokio::task::spawn_blocking(move || resolve_track_meta_sync(&ctx, &path_for_blocking, dur))
+            .await
+            .unwrap_or_else(|_| {
+                let stem = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("Unknown")
+                    .to_string();
+                let (cleaned_artist, cleaned_title) = clean_filename_stem(&stem);
+                TrackInfo {
+                    id: 0,
+                    path: path.to_string_lossy().into_owned(),
+                    title: if cleaned_title.is_empty() {
+                        stem
+                    } else {
+                        cleaned_title
+                    },
+                    artist: cleaned_artist.unwrap_or_else(|| "Unknown Artist".to_string()),
+                    album: "Unknown Album".to_string(),
+                    duration: dur,
+                    ..Default::default()
+                }
+            })
     }
 
     async fn finish_crossfade(inner: &DaemonInner) {
@@ -4864,7 +4940,7 @@ impl Daemon {
                 // Remote queue entries keep their client-supplied metadata
                 // (provider name/album); only local files are re-metadata'd.
                 if parse_remote_path(&next.path).is_none() && !next.path.starts_with("spotify:") {
-                    next = Self::resolve_track_meta(inner, std::path::Path::new(&next.path), dur);
+                    next = Self::resolve_track_meta(inner, std::path::Path::new(&next.path), dur).await;
                 } else if dur > 0.0 {
                     next.duration = dur;
                 }
@@ -4879,7 +4955,7 @@ impl Daemon {
                 // Update Last.fm now playing for the new track
                 if let Some(ref track) = inner.state.read().await.current_track {
                     let lastfm = inner.lastfm.lock().await;
-                    if lastfm.is_ready() {
+                    if lastfm.is_ready().await {
                         let _ = tokio::time::timeout(
                             Duration::from_secs(10),
                             lastfm.update_now_playing(track),
@@ -5054,7 +5130,8 @@ impl Daemon {
 
     async fn report_promoted(inner: &DaemonInner, path: &str) {
         let dur = inner.mixer.lock().await.duration();
-        let track = Self::resolve_track_meta(inner, std::path::Path::new(path), dur);
+        let track =
+            Self::resolve_track_meta(inner, std::path::Path::new(path), dur).await;
         {
             let mut state = inner.state.write().await;
             state.status = PlaybackStatus::Playing;
@@ -5081,14 +5158,12 @@ impl Daemon {
         cache_dir: &Path,
         prefix: &str,
         url: &str,
-        cookie_file: Option<String>,
+        auth: Vec<std::ffi::OsString>,
     ) -> Result<String, String> {
         let max_retries = 3u32;
         let mut last_err = String::new();
         for attempt in 1..=max_retries {
-            match Self::try_download_audio_to_cache(cache_dir, prefix, url, cookie_file.clone())
-                .await
-            {
+            match Self::try_download_audio_to_cache(cache_dir, prefix, url, auth.clone()).await {
                 Ok(path) => return Ok(path),
                 Err(e) => {
                     last_err = e;
@@ -5106,7 +5181,7 @@ impl Daemon {
         cache_dir: &Path,
         prefix: &str,
         url: &str,
-        cookie_file: Option<String>,
+        auth: Vec<std::ffi::OsString>,
     ) -> Result<String, String> {
         let dir = cache_dir.join("spotify");
         std::fs::create_dir_all(&dir).map_err(|e| format!("create spotify cache: {e}"))?;
@@ -5118,8 +5193,95 @@ impl Daemon {
                 }
             }
         }
-        let path = download_into(url, &dir, prefix, cookie_file.as_deref().map(Path::new)).await?;
+        let path = download_into(url, &dir, prefix, &auth).await?;
         Ok(path.to_string_lossy().into_owned())
+    }
+}
+
+/// View of the daemon config needed to resolve track metadata off the async
+/// runtime; owned so it can be moved into `spawn_blocking`.
+struct MetaCtx {
+    data_dir: String,
+    cache_dir: String,
+    test_mode: bool,
+}
+
+/// Blocking metadata resolution for a local file: SQLite library lookup
+/// followed by a lofty tag read, then a filename-stem fallback.
+fn resolve_track_meta_sync(ctx: &MetaCtx, path: &std::path::Path, dur: f64) -> TrackInfo {
+    let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let path_str = path.to_string_lossy().into_owned();
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Unknown")
+        .to_string();
+
+    if !ctx.test_mode {
+        if let Ok(lib) = Library::new(&ctx.data_dir) {
+            if let Ok(Some(mut t)) = lib.track_by_path(&path_str) {
+                t.duration = dur;
+                return t;
+            }
+            if let Ok(tracks) = lib.list_tracks()
+                && let Some(matched) = tracks
+                    .iter()
+                    .find(|t| path_str.contains(&t.path) || t.path.contains(&path_str))
+            {
+                let mut t = matched.clone();
+                t.duration = dur;
+                return t;
+            }
+        }
+
+        if let Ok((meta, hash)) = extract_metadata(&path_str, Some(&ctx.cache_dir)) {
+            return TrackInfo {
+                id: 0,
+                path: path_str,
+                title: if meta.title.is_empty() {
+                    stem.clone()
+                } else {
+                    meta.title
+                },
+                artist: if meta.artist.is_empty() {
+                    "Unknown Artist".to_string()
+                } else {
+                    meta.artist
+                },
+                album: if meta.album.is_empty() {
+                    "Unknown Album".to_string()
+                } else {
+                    meta.album
+                },
+                duration: if dur > 0.0 { dur } else { meta.duration },
+                track_number: meta.track_number,
+                genre: meta.genre,
+                year: meta.year,
+                bitrate: meta.bitrate,
+                samplerate: meta.samplerate,
+                hash,
+                cover_path: meta.cover_path,
+                favourite: false,
+                ..Default::default()
+            };
+        }
+    }
+
+    let (cleaned_artist, cleaned_title) = clean_filename_stem(&stem);
+    let title = if cleaned_title.is_empty() {
+        stem
+    } else {
+        cleaned_title
+    };
+    let artist = cleaned_artist.unwrap_or_else(|| "Unknown Artist".to_string());
+    TrackInfo {
+        id: 0,
+        path: path_str,
+        title,
+        artist,
+        album: "Unknown Album".to_string(),
+        duration: dur,
+        ..Default::default()
     }
 }
 

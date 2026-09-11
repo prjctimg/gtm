@@ -20,6 +20,11 @@ const SPOTIFY_TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 
 /// Default local redirect port served by [`OauthFlow::wait_for_access_token`].
 pub const DEFAULT_OAUTH_PORT: u16 = 8990;
+
+/// How long an OAuth link flow waits for the browser redirect before giving
+/// up. Kept short enough that a forgotten flow fails fast and the Settings UI
+/// reports it, instead of stalling silently for minutes.
+pub const OAUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 /// Default redirect URI used when no port override is supplied.
 pub const DEFAULT_REDIRECT_URI: &str = "http://127.0.0.1:8990/login";
 
@@ -90,9 +95,9 @@ impl OauthFlow {
     }
 
     /// Serve one redirect on the local callback port, exchange the code for
-    /// an access token, and return it. Cancels itself after 5 minutes. The
-    /// redirect's `state` must match the value this flow issued, or the flow
-    /// is rejected as a cross-site request forgery attempt.
+    /// an access token, and return it. Cancels itself after [`OAUTH_TIMEOUT`].
+    /// The redirect's `state` must match the value this flow issued, or the
+    /// flow is rejected as a cross-site request forgery attempt.
     pub async fn wait_for_access_token(&self) -> Result<String, String> {
         let code = listen_for_auth_code(self.redirect_addr, &self.state).await?;
         exchange_code_for_token(
@@ -148,15 +153,15 @@ async fn listen_for_auth_code(addr: SocketAddr, expected_state: &str) -> Result<
         .map_err(|e| format!("bind OAuth callback server to {addr}: {e}"))?;
 
     // Accept connections until one carries a `?code=` query with a matching
-    // `state`, or the 5 minute deadline elapses so a forgotten flow does not
-    // hold the socket forever.
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+    // `state`, or [`OAUTH_TIMEOUT`] elapses so a forgotten flow does not hold
+    // the socket forever.
+    let deadline = tokio::time::Instant::now() + OAUTH_TIMEOUT;
     loop {
         let accept = tokio::time::timeout_at(deadline, listener.accept()).await;
         let (mut stream, _) = match accept {
             Ok(Ok(pair)) => pair,
             Ok(Err(e)) => return Err(format!("accept: {e}")),
-            Err(_) => return Err("OAuth link timed out after 5 minutes".into()),
+            Err(_) => return Err("OAuth link timed out waiting for the browser".into()),
         };
         match read_code_from_stream(&mut stream, expected_state).await {
             Some(code) => {

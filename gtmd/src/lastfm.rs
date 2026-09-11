@@ -53,11 +53,13 @@ impl LastfmManager {
         }
     }
 
-    /// Check if Last.fm is configured and authenticated.
-    pub fn is_ready(&self) -> bool {
+    /// Check if Last.fm is configured and authenticated. Async so the
+    /// session-key guard never needs a blocking lock inside the daemon's
+    /// async command loop.
+    pub async fn is_ready(&self) -> bool {
         self.api_key.is_some()
             && self.api_secret.is_some()
-            && self.session_key.blocking_lock().is_some()
+            && self.session_key.lock().await.is_some()
     }
 
     /// Get the authorization URL for the user to grant permission.
@@ -116,7 +118,7 @@ impl LastfmManager {
     /// Update "now playing" status on Last.fm.
     /// Throttled to once per minute per Last.fm API guidelines.
     pub async fn update_now_playing(&self, track: &TrackInfo) -> Result<(), String> {
-        if !self.is_ready() {
+        if !self.is_ready().await {
             return Err("Last.fm not configured".into());
         }
 
@@ -195,7 +197,7 @@ impl LastfmManager {
         min_secs: u32,
         min_pct: f32,
     ) -> Result<(), String> {
-        if !self.is_ready() {
+        if !self.is_ready().await {
             return Err("Last.fm not configured".into());
         }
 
@@ -310,7 +312,7 @@ impl LastfmManager {
         self.api_key.clone()
     }
 
-    pub fn get_session_key(&self) -> Option<String> {
-        self.session_key.blocking_lock().clone()
+    pub async fn get_session_key(&self) -> Option<String> {
+        self.session_key.lock().await.clone()
     }
 }

@@ -1071,6 +1071,22 @@ fn try_open_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResult>) {
     });
 }
 
+/// Validate a typed Spotify client id before starting the PKCE flow, and
+/// remind the user of the redirect-URI requirement: when the URI is missing
+/// from the app dashboard the flow fails silently inside the browser (see
+/// `docs/spec/spotify-linking.md`). The empty-input fallback (librespot's
+/// public desktop id) always passes this check.
+fn spotify_client_id_error(client_id: &str, port: u16) -> Option<String> {
+    if client_id.len() != 32 || !client_id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Some(format!(
+            "This doesn't look like a valid Spotify Client ID (32 hex chars).\n\
+             Also make sure your app lists http://127.0.0.1:{port}/login as a\n\
+             Redirect URI (127.0.0.1, not localhost) or the link fails silently."
+        ));
+    }
+    None
+}
+
 fn spawn_sync_and_wait(
     c: DaemonClient,
     kind: SyncKind,
@@ -1514,6 +1530,21 @@ impl App {
             .trim()
             .parse::<u16>()
             .unwrap_or(8990);
+        self.start_spotify_oauth(client_id, port);
+    }
+
+    /// Start the Spotify OAuth PKCE flow for `client_id` on `port` and watch it
+    /// in the background. Validates the client id first (the empty-input
+    /// fallback id always passes); an invalid id or a missing redirect-URI
+    /// registration is reported inline instead of silently dying in the
+    /// browser.
+    fn start_spotify_oauth(&mut self, client_id: String, port: u16) {
+        if let Some(err) = spotify_client_id_error(&client_id, port) {
+            self.spotify.oauth_error = Some(err);
+            self.spotify.oauth_pending = false;
+            self.spotify.link_input.clear();
+            return;
+        }
         set_secret(SPOTIFY_CLIENT_ID_KEY, &client_id);
         let c = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
@@ -8049,44 +8080,9 @@ impl App {
                                 .trim()
                                 .parse::<u16>()
                                 .unwrap_or(8990);
-                            // Persist the client id so future links reuse it.
-                            set_secret(SPOTIFY_CLIENT_ID_KEY, &client_id);
-                            let c = self.client.clone();
-                            let ipc_tx = self.ipc_tx.clone();
-                            self.spotify.link_input.clear();
                             // Keep the picker open and show a waiting state until
                             // the daemon reports the link completed.
-                            self.spotify.oauth_pending = true;
-                            self.spotify.oauth_url = None;
-                            self.spotify.oauth_error = None;
-                            tokio::spawn(async move {
-                                match c.spotify().oauth_start(&client_id, port).await {
-                                    Ok(url) => {
-                                        let _ =
-                                            ipc_tx.send(IpcResult::SpotifyOauthUrl(url.clone()));
-                                        // Surfaced inline in the picker; the toast
-                                        // keeps the message visible after the picker
-                                        // closes for copy/record.
-                                        let _ = ipc_tx.send(IpcResult::Notification(
-                                            "Spotify".to_string(),
-                                            "Authorize gtm in your browser, then playlists sync \
-                                             automatically…"
-                                                .to_string(),
-                                            NotificationKind::Info,
-                                            NotifType::Spotify,
-                                        ));
-                                        try_open_browser(&url, &ipc_tx);
-                                    }
-                                    Err(e) => {
-                                        // Show the failure inside the picker: plain
-                                        // floating toasts are hidden while a picker
-                                        // is open, so the user would see nothing.
-                                        let _ = ipc_tx.send(IpcResult::SpotifyOauthError(format!(
-                                            "Spotify link failed: {e}"
-                                        )));
-                                    }
-                                }
-                            });
+                            self.start_spotify_oauth(client_id, port);
                         }
                         PickerId::Queue => {
                             if !self.queue.cache.is_empty() {

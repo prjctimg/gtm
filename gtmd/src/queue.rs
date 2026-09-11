@@ -158,6 +158,34 @@ pub fn add_many(
     added
 }
 
+/// Insert a pre-resolved track using the same merged-view placement as
+/// [`add_many`]. Metadata gathering happens before the `DaemonState` write
+/// lock is taken, so the insert itself stays free of disk I/O and tag reads.
+pub fn add_resolved(state: &mut DaemonState, track: TrackInfo, position: Option<u64>) {
+    let len = state.queue.len() + state.default_list.len();
+    let insert_pos = match position {
+        Some(p) => (p as usize).min(len),
+        None => {
+            if state.queue.is_empty() {
+                0
+            } else {
+                1
+            }
+        }
+    };
+    insert_at(state, track, insert_pos);
+}
+
+/// Replace the user queue with pre-resolved tracks and drop the default-list
+/// session, mirroring [`set`] without re-reading tags.
+pub fn set_resolved(state: &mut DaemonState, tracks: Vec<TrackInfo>) {
+    state.queue = tracks;
+    state.queue_cursor = 0;
+    state.default_list.clear();
+    state.default_cursor = 0;
+    state.fallback_disabled = false;
+}
+
 /// Remove the entry at a merged-view index.  Returns the removed track, or
 /// None if the index is out of range.
 pub fn remove(state: &mut DaemonState, index: u64) -> Option<TrackInfo> {

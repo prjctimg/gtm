@@ -11,6 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use innertube_rs::{Innertube, SessionOptions};
+use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
@@ -39,6 +40,11 @@ pub struct YoutubeManager {
     active_task: Option<JoinHandle<()>>,
     semaphore: Arc<Semaphore>,
     cookie_file: Option<PathBuf>,
+    /// Browser cookies source forwarded to yt-dlp as `--cookies-from-browser`
+    /// (e.g. `chrome`, `firefox`, `brave`). Takes precedence over `cookie_file`.
+    cookie_source: Option<String>,
+    /// JS interpreter forwarded to yt-dlp as `--js-runtime`.
+    js_runtime: Option<String>,
     generation: Arc<AtomicU64>,
     current_gen: u64,
     last_query: String,
@@ -48,6 +54,10 @@ pub struct YoutubeManager {
     download_cancel: Option<oneshot::Sender<()>>,
     download_progress_tx: mpsc::UnboundedSender<DownloadProgress>,
     download_progress_rx: mpsc::UnboundedReceiver<DownloadProgress>,
+    playlist_task: Option<JoinHandle<()>>,
+    playlist_cancel: Option<oneshot::Sender<()>>,
+    playlist_tx: mpsc::UnboundedSender<(String, Vec<YTSearchResult>)>,
+    playlist_rx: mpsc::UnboundedReceiver<(String, Vec<YTSearchResult>)>,
     download_dir: PathBuf,
     max_concurrent_downloads: usize,
     /// Mtime of the cookie file the current InnerTube client was built with,
@@ -94,6 +104,7 @@ impl YoutubeManager {
     pub fn new() -> Self {
         let (results_tx, results_rx) = mpsc::unbounded_channel();
         let (download_progress_tx, download_progress_rx) = mpsc::unbounded_channel();
+        let (playlist_tx, playlist_rx) = mpsc::unbounded_channel();
         let download_dir = dirs::audio_dir()
             .unwrap_or_else(|| dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
             .join("gtm")
@@ -105,6 +116,8 @@ impl YoutubeManager {
             active_task: None,
             semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT)),
             cookie_file: None,
+            cookie_source: None,
+            js_runtime: None,
             generation: Arc::new(AtomicU64::new(0)),
             current_gen: 0,
             last_query: String::new(),
@@ -114,6 +127,10 @@ impl YoutubeManager {
             download_cancel: None,
             download_progress_tx,
             download_progress_rx,
+            playlist_task: None,
+            playlist_cancel: None,
+            playlist_tx,
+            playlist_rx,
             download_dir,
             max_concurrent_downloads: 2,
             client_cookie_mtime: None,
@@ -166,6 +183,42 @@ impl YoutubeManager {
         self.cookie_file
             .as_ref()
             .map(|p| p.to_string_lossy().into_owned())
+    }
+
+    pub fn set_cookie_source(&mut self, source: Option<String>) {
+        self.cookie_source = source;
+    }
+
+    pub fn set_js_runtime(&mut self, runtime: Option<String>) {
+        self.js_runtime = runtime;
+    }
+
+    /// Extra `yt-dlp` arguments for the configured auth/cookie setup:
+    /// `--cookies-from-browser <source>` when a browser source is set (it takes
+    /// precedence over a cookie file), otherwise `--cookies <file>`, plus
+    /// `--js-runtime` when configured. yt-dlp refuses both `--cookies` forms at
+    /// the same time, so at most one cookie flag is emitted.
+    fn ytdlp_auth_args(&self) -> Vec<std::ffi::OsString> {
+        let mut args: Vec<std::ffi::OsString> = Vec::new();
+        if let Some(source) = &self.cookie_source {
+            args.push("--cookies-from-browser".into());
+            args.push(source.as_str().into());
+        } else if let Some(path) = &self.cookie_file {
+            args.push("--cookies".into());
+            args.push(path.as_os_str().into());
+        }
+        if let Some(runtime) = &self.js_runtime {
+            args.push("--js-runtime".into());
+            args.push(runtime.as_str().into());
+        }
+        args
+    }
+
+    /// Copy of [`Self::ytdlp_auth_args`] for callers that need the flags while
+    /// no longer holding the manager lock (e.g. the Spotify YouTube fallback
+    /// which downloads audio into its own cache).
+    pub fn auth_args(&self) -> Vec<std::ffi::OsString> {
+        self.ytdlp_auth_args()
     }
 
     async fn start_impl(&mut self, query: &str, _filter: Option<YTFilter>) -> Result<u64, String> {
@@ -261,7 +314,7 @@ impl YoutubeManager {
         let (cancel_tx, cancel_rx) = oneshot::channel();
         self.download_cancel = Some(cancel_tx);
 
-        let cookie_file = self.cookie_file.clone();
+        let auth_args = self.ytdlp_auth_args();
         let download_dir = self.download_dir.clone();
         let progress_tx = self.download_progress_tx.clone();
 
@@ -299,10 +352,7 @@ impl YoutubeManager {
                 "-o".into(),
                 output_template.into(),
             ];
-            if let Some(cookie_path) = cookie_file {
-                args.push("--cookies".into());
-                args.push(cookie_path.as_os_str().into());
-            }
+            args.extend(auth_args.iter().cloned());
             args.push(url_for_spawn.clone().into());
 
             let mut child = match Command::new("yt-dlp")
@@ -457,6 +507,54 @@ impl YoutubeManager {
         &self.download_dir
     }
 
+    /// Fire-and-forget playlist entry fetch via `yt-dlp --flat-playlist
+    /// --dump-json`. Results are collected with
+    /// [`YoutubeManager::poll_playlist`]; a new fetch cancels any in-flight
+    /// one. Runs under the shared semaphore so it never competes unfairly with
+    /// stream resolution.
+    pub fn start_fetch_playlist(&mut self, url: String) -> Result<(), String> {
+        self.cancel_playlist_fetch();
+
+        let (cancel_tx, cancel_rx) = oneshot::channel();
+        self.playlist_cancel = Some(cancel_tx);
+
+        let auth_args = self.ytdlp_auth_args();
+        let semaphore = self.semaphore.clone();
+        let res_tx = self.playlist_tx.clone();
+        let handle = tokio::spawn(async move {
+            let permit = match semaphore.acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => return,
+            };
+            let results = run_playlist_fetch(&url, auth_args, cancel_rx, permit).await;
+            let _ = res_tx.send((url, results));
+        });
+        self.playlist_task = Some(handle);
+        Ok(())
+    }
+
+    /// Drain any finished playlist fetch, returning the source URL and the
+    /// entries published since the last poll.
+    pub fn poll_playlist(&mut self) -> Result<Option<(String, Vec<YTSearchResult>)>, String> {
+        match self.playlist_rx.try_recv() {
+            Ok(entry) => Ok(Some(entry)),
+            Err(mpsc::error::TryRecvError::Empty) => Ok(None),
+            Err(mpsc::error::TryRecvError::Disconnected) => {
+                Err("playlist channel disconnected".to_string())
+            }
+        }
+    }
+
+    fn cancel_playlist_fetch(&mut self) {
+        if let Some(tx) = self.playlist_cancel.take() {
+            let _ = tx.send(());
+        }
+        if let Some(handle) = self.playlist_task.take() {
+            handle.abort();
+        }
+        while self.playlist_rx.try_recv().is_ok() {}
+    }
+
     /// Resolve a YouTube watch URL into a playable direct audio stream using
     /// yt-dlp's maintained extractor (fresh PO tokens and signature handling),
     /// so the returned CDN URL is not a stale, HTTP-403'd one.
@@ -472,12 +570,7 @@ impl YoutubeManager {
             "-f".into(),
             "bestaudio[ext=m4a]/bestaudio".into(),
         ];
-        if let Some(cookie_path) = &self.cookie_file
-            && cookie_path.is_file()
-        {
-            args.push("--cookies".into());
-            args.push(cookie_path.as_os_str().into());
-        }
+        args.extend(self.ytdlp_auth_args());
         args.push(url.to_string().into());
 
         let output = timeout(SEARCH_TIMEOUT, Command::new("yt-dlp").args(&args).output())
@@ -521,7 +614,7 @@ pub(crate) async fn download_into(
     url: &str,
     dest_dir: &Path,
     prefix: &str,
-    cookie_file: Option<&Path>,
+    auth: &[std::ffi::OsString],
 ) -> Result<PathBuf, String> {
     std::fs::create_dir_all(dest_dir).map_err(|e| format!("create download dir: {e}"))?;
     let template = dest_dir
@@ -536,10 +629,7 @@ pub(crate) async fn download_into(
         "-o".into(),
         template.into(),
     ];
-    if let Some(cookie_path) = cookie_file {
-        args.push("--cookies".into());
-        args.push(cookie_path.as_os_str().into());
-    }
+    args.extend(auth.iter().cloned());
     args.push(url.to_string().into());
 
     let output = timeout(
@@ -803,6 +893,112 @@ async fn run_search(
     }
     out.sort_by(|a, b| b.priority.cmp(&a.priority).then(b.views.cmp(&a.views)));
     out
+}
+
+/// Collect the entries of a YouTube playlist/URL via `yt-dlp --flat-playlist
+/// --dump-json`, mapping each JSON-lines record into a [`YTSearchResult`]
+/// until the caller cancels via `cancel_rx` or [`SEARCH_TIMEOUT`] elapses.
+async fn run_playlist_fetch(
+    url: &str,
+    auth_args: Vec<std::ffi::OsString>,
+    cancel_rx: oneshot::Receiver<()>,
+    _permit: OwnedSemaphorePermit,
+) -> Vec<YTSearchResult> {
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "--flat-playlist".into(),
+        "--dump-json".into(),
+        "--no-warnings".into(),
+    ];
+    args.extend(auth_args);
+    args.push(url.to_string().into());
+
+    let fetch = async {
+        let output = match timeout(SEARCH_TIMEOUT, Command::new("yt-dlp").args(&args).output()).await
+        {
+            Ok(res) => res.map_err(|e| format!("yt-dlp: {e}"))?,
+            Err(_) => return Err("playlist fetch timeout".to_string()),
+        };
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let detail = stderr
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("unknown error");
+            Err(format!("yt-dlp playlist fetch: {detail}"))
+        }
+    };
+
+    let stdout = match tokio::select! {
+        res = fetch => res,
+        _ = cancel_rx => return Vec::new(),
+    } {
+        Ok(out) => out,
+        Err(e) => {
+            debug!("{e}");
+            return Vec::new();
+        }
+    };
+
+    let mut results = Vec::new();
+    for line in stdout.split(|&b| b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(entry) = serde_json::from_slice::<Value>(line)
+            && let Some(r) = parse_flat_entry(&entry)
+        {
+            results.push(r);
+        }
+    }
+    results
+}
+
+/// Map a `yt-dlp --flat-playlist --dump-json` record into a
+/// [`YTSearchResult`]. Flat entries carry `id`/`title`/`channel` but usually
+/// no duration; the URL is reconstructed from the id so playback goes through
+/// the normal resolve path.
+fn parse_flat_entry(v: &Value) -> Option<YTSearchResult> {
+    let id = v.get("id").and_then(|i| i.as_str())?.to_string();
+    if id.is_empty() {
+        return None;
+    }
+    let title = v
+        .get("title")
+        .and_then(|t| t.as_str())
+        .unwrap_or("")
+        .to_string();
+    if title.is_empty() {
+        return None;
+    }
+    let channel = ["channel", "uploader", "playlist_uploader"]
+        .iter()
+        .find_map(|k| v.get(k).and_then(|x| x.as_str()))
+        .unwrap_or("")
+        .to_string();
+    let thumbnail = v
+        .get("thumbnails")
+        .and_then(|t| t.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|t| t.get("url"))
+        .and_then(|u| u.as_str())
+        .map(|s| s.to_string());
+    let duration = v.get("duration").and_then(|d| d.as_f64()).unwrap_or(0.0);
+    let url = format!("https://www.youtube.com/watch?v={id}");
+    Some(YTSearchResult {
+        id,
+        title,
+        url,
+        channel,
+        duration,
+        views: 0,
+        thumbnail,
+        is_playlist: false,
+        artist: None,
+        priority: 0,
+    })
 }
 
 /// Returns a priority score for a YouTube result title.
