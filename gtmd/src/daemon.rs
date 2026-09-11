@@ -384,8 +384,7 @@ impl Cmd {
         // Resolve the track's metadata (library lookup + tag read) before
         // taking the state write lock: the lookup runs on a blocking thread
         // so a slow disk/library read never freezes the command loop.
-        let track =
-            Daemon::resolve_track_meta(inner, std::path::Path::new(&path_owned), dur).await;
+        let track = Daemon::resolve_track_meta(inner, std::path::Path::new(&path_owned), dur).await;
 
         // Scrobble previous track before switching. The state guard is taken
         // and dropped in a single scoped block so it is always released (a
@@ -1658,7 +1657,7 @@ impl Spotify {
             None => {
                 return Ok(DaemonRes::Error {
                     message: "spotify not linked".into(),
-                })
+                });
             }
         };
         let res =
@@ -2627,11 +2626,16 @@ impl Queue {
                 Daemon::save_state(inner);
                 Ok(DaemonRes::Ok)
             }
-            QueueAction::Set { paths, start_idx: _ } => {
+            QueueAction::Set {
+                paths,
+                start_idx: _,
+            } => {
                 Daemon::clear_history(inner).await;
                 let base = paths.clone();
                 let tracks = tokio::task::spawn_blocking(move || {
-                    base.iter().map(|p| queue::resolve_track(p)).collect::<Vec<_>>()
+                    base.iter()
+                        .map(|p| queue::resolve_track(p))
+                        .collect::<Vec<_>>()
                 })
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
@@ -4377,10 +4381,9 @@ impl Daemon {
                 {
                     let mut yt = inner.youtube.lock().await;
                     match yt.poll_playlist() {
-                        Ok(Some((query, results))) => Ok(DaemonRes::YtSearchResults {
-                            query,
-                            results,
-                        }),
+                        Ok(Some((query, results))) => {
+                            Ok(DaemonRes::YtSearchResults { query, results })
+                        }
                         Ok(None) => Ok(DaemonRes::Ok),
                         Err(e) => Err(CoreError::Daemon(e)),
                     }
@@ -4887,7 +4890,11 @@ impl Daemon {
     /// blocking the async worker thread: the SQLite open and lofty tag parse
     /// run inside `spawn_blocking`. Returns the tag-derived `TrackInfo`, or a
     /// filename-derived fallback if the metadata gather panics.
-    async fn resolve_track_meta(inner: &DaemonInner, path: &std::path::Path, dur: f64) -> TrackInfo {
+    async fn resolve_track_meta(
+        inner: &DaemonInner,
+        path: &std::path::Path,
+        dur: f64,
+    ) -> TrackInfo {
         let ctx = MetaCtx {
             data_dir: inner.config.data_dir.to_string_lossy().into_owned(),
             cache_dir: inner.config.cache_dir.to_string_lossy().into_owned(),
@@ -4940,7 +4947,8 @@ impl Daemon {
                 // Remote queue entries keep their client-supplied metadata
                 // (provider name/album); only local files are re-metadata'd.
                 if parse_remote_path(&next.path).is_none() && !next.path.starts_with("spotify:") {
-                    next = Self::resolve_track_meta(inner, std::path::Path::new(&next.path), dur).await;
+                    next = Self::resolve_track_meta(inner, std::path::Path::new(&next.path), dur)
+                        .await;
                 } else if dur > 0.0 {
                     next.duration = dur;
                 }
@@ -5130,8 +5138,7 @@ impl Daemon {
 
     async fn report_promoted(inner: &DaemonInner, path: &str) {
         let dur = inner.mixer.lock().await.duration();
-        let track =
-            Self::resolve_track_meta(inner, std::path::Path::new(path), dur).await;
+        let track = Self::resolve_track_meta(inner, std::path::Path::new(path), dur).await;
         {
             let mut state = inner.state.write().await;
             state.status = PlaybackStatus::Playing;

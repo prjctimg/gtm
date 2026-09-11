@@ -913,11 +913,11 @@ async fn run_playlist_fetch(
     args.push(url.to_string().into());
 
     let fetch = async {
-        let output = match timeout(SEARCH_TIMEOUT, Command::new("yt-dlp").args(&args).output()).await
-        {
-            Ok(res) => res.map_err(|e| format!("yt-dlp: {e}"))?,
-            Err(_) => return Err("playlist fetch timeout".to_string()),
-        };
+        let output =
+            match timeout(SEARCH_TIMEOUT, Command::new("yt-dlp").args(&args).output()).await {
+                Ok(res) => res.map_err(|e| format!("yt-dlp: {e}"))?,
+                Err(_) => return Err("playlist fetch timeout".to_string()),
+            };
         if output.status.success() {
             Ok(output.stdout)
         } else {

@@ -262,11 +262,7 @@ impl SpotifyManager {
             let pl = item.map_err(|e| format!("playlists: {e}"))?;
             metas.push(pl);
         }
-        debug!(
-            "fetched {} spotify playlists for {:?}",
-            metas.len(),
-            user
-        );
+        debug!("fetched {} spotify playlists for {:?}", metas.len(), user);
 
         let mut playlists = Vec::new();
         for meta in &metas {

@@ -938,9 +938,7 @@ impl<'a> Yt<'a> {
 
     /// Poll for a finished playlist fetch.
     pub async fn fetch_playlist_poll(&self) -> Result<DaemonRes> {
-        self.client
-            .send_raw(DaemonReq::YtFetchPlaylistPoll)
-            .await
+        self.client.send_raw(DaemonReq::YtFetchPlaylistPoll).await
     }
 
     pub async fn set_config(
