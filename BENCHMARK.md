@@ -4,20 +4,20 @@ Automated measurements of gtm's resource usage during playback, compared
 release-over-release and against the reference CLI player **cliamp**
 ([bjarneo/cliamp](https://github.com/bjarneo/cliamp)).
 
-> **This run**: release `0.2.83+3a0a726+nightly` (commit `3a0a726f42d9a04bcdd63739cff54b4bf958ab32`, 2026-09-11T19:36:34Z).
+> **This run**: release `0.2.83+487b302+nightly` (commit `487b302341a10de5ed97b62fe4c34e057e1461f1`, 2026-09-11T20:00:04Z).
 
 ## Headline — diff vs the last published release (`0.2.83+0ba44c5+nightly`)
 
 | Fixture (player) | Metric | Prev (`0.2.83+0ba44c5+nightly`) | This | Δ |
 |------------------|--------|------:|-----:|---:|
-| bench.flac (gtm) | peak RSS (kB) | 19512 | 20328 | **+816** |
-| bench.flac (gtm) | mean RSS (kB) | 19469 | 20293 | **+824** |
+| bench.flac (gtm) | peak RSS (kB) | 19512 | 20268 | **+756** |
+| bench.flac (gtm) | mean RSS (kB) | 19469 | 20233 | **+764** |
 | bench.flac (gtm) | CPU (ms) | 110 | 100 | **−10** |
-| bench.flac (gtm) | RSS @5s (kB) | 19384 | 20224 | **+840** |
-| bench.mp3 (gtm) | peak RSS (kB) | 19540 | 20924 | **+1384** |
-| bench.mp3 (gtm) | mean RSS (kB) | 19522 | 20906 | **+1384** |
-| bench.mp3 (gtm) | CPU (ms) | 210 | 180 | **−30** |
-| bench.mp3 (gtm) | RSS @5s (kB) | 19432 | 20820 | **+1388** |
+| bench.flac (gtm) | RSS @5s (kB) | 19384 | 20164 | **+780** |
+| bench.mp3 (gtm) | peak RSS (kB) | 19540 | 20524 | **+984** |
+| bench.mp3 (gtm) | mean RSS (kB) | 19522 | 20506 | **+984** |
+| bench.mp3 (gtm) | CPU (ms) | 210 | 170 | **−40** |
+| bench.mp3 (gtm) | RSS @5s (kB) | 19432 | 20420 | **+988** |
 
 
 
@@ -28,8 +28,8 @@ xychart-beta
   title "Peak RSS by release (gtm vs cliamp, kB)"
   x-axis ["prev", "this"]
   y-axis "peak RSS (kB)" 0 --> 120000
-  bar [19512, 20328]
-  bar [19540, 20924]
+  bar [19512, 20268]
+  bar [19540, 20524]
 ```
 
 ## Mean RSS trend across releases (gtm, kB)
@@ -37,19 +37,19 @@ xychart-beta
 ```mermaid
 xychart-beta
   title "Mean RSS trend across releases (gtm, kB)"
-  x-axis [0.2.83+0ba44c5+nightly, 0.2.83+3364103+nightly, 0.2.83+3a0a726+nightly]
+  x-axis [0.2.83+0ba44c5+nightly, 0.2.83+3364103+nightly, 0.2.83+487b302+nightly]
   y-axis "mean RSS (kB)" 0 --> 60000
-  line [19469,19817,20293]
+  line [19469,19817,20233]
 ```
 ## Latency trend across releases (p50 / p95, ms)
 
 ```mermaid
 xychart-beta
   title "Latency trend (p50 / p95, ms)"
-  x-axis [0.2.83+3a0a726+nightly, 0.2.83+0ba44c5+nightly, 0.2.83+3364103+nightly, 0.2.83+581b9eb+nightly, 0.2.83+7b6746d+nightly, 0.2.83+ab3350d+nightly, 0.2.83+cf44858+nightly, 0.2.83+cfe43fb+nightly, 0.2.83+0305f9a+nightly]
+  x-axis [0.2.83+487b302+nightly, 0.2.83+0ba44c5+nightly, 0.2.83+3364103+nightly, 0.2.83+3a0a726+nightly, 0.2.83+581b9eb+nightly, 0.2.83+7b6746d+nightly, 0.2.83+ab3350d+nightly, 0.2.83+cf44858+nightly, 0.2.83+cfe43fb+nightly, 0.2.83+0305f9a+nightly]
   y-axis "latency (ms)" 0 --> 30000
-  line [20328,0,0,0,0,20532,20640,0,20376]
-  line [20328,0,0,0,0,20532,20640,0,20376]
+  line [20268,0,0,20328,0,0,20532,20640,0,20376]
+  line [20268,0,0,20328,0,0,20532,20640,0,20376]
 ```
 
 
@@ -57,9 +57,10 @@ xychart-beta
 
 | Release | Date | gtm peak RSS (kB) (FLAC) |
 |---------|------|-----:|
-| 0.2.83+3a0a726+nightly | 2026-09-11 | 20328 |
+| 0.2.83+487b302+nightly | 2026-09-11 | 20268 |
 | 0.2.83+0ba44c5+nightly | 2026-09-09 | 19512 |
 | 0.2.83+3364103+nightly | 2026-09-08 | 19860 |
+| 0.2.83+3a0a726+nightly | 2026-09-11 | 20328 |
 | 0.2.83+581b9eb+nightly | 2026-09-09 | 20140 |
 | 0.2.83+7b6746d+nightly | 2026-09-10 | 20036 |
 | 0.2.83+ab3350d+nightly | 2026-09-10 | 20532 |
