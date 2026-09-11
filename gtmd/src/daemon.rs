@@ -1561,14 +1561,11 @@ impl Spotify {
             return Err(CoreError::Daemon("empty spotify client id".into()));
         }
         if cid.len() != 32 || !cid.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(CoreError::Daemon(
-                format!(
-                    "invalid spotify client id (expected 32 hex chars) — your app must also \
-                     list http://127.0.0.1:{port}/login as a Redirect URI \
-                     (127.0.0.1, not localhost) or the link fails silently in the browser"
-                )
-                .into(),
-            ));
+            return Err(CoreError::Daemon(format!(
+                "invalid spotify client id (expected 32 hex chars) — your app must also \
+                 list http://127.0.0.1:{port}/login as a Redirect URI \
+                 (127.0.0.1, not localhost) or the link fails silently in the browser"
+            )));
         }
         // Persist the client id in the OS keychain so future links can reuse it
         // without the user pasting it again.

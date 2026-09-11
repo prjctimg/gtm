@@ -432,6 +432,7 @@ impl AudioMixer {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn start_decode_thread(
         path: &str,
         eq_gains: &EqGains,

@@ -152,13 +152,14 @@ mod tests {
     use super::*;
 
     fn sample_track(i: i64, path: &str) -> TrackInfo {
-        let mut t = TrackInfo::default();
-        t.id = i;
-        t.path = path.to_string();
-        t.title = format!("Title {i}");
-        t.artist = "Artist".to_string();
-        t.duration = 180.0;
-        t
+        TrackInfo {
+            id: i,
+            path: path.to_string(),
+            title: format!("Title {i}"),
+            artist: "Artist".to_string(),
+            duration: 180.0,
+            ..Default::default()
+        }
     }
 
     #[test]
