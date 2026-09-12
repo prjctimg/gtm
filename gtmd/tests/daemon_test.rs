@@ -598,7 +598,7 @@ async fn test_spotify_oauth_start_returns_authorize_url() {
         &mut reader,
         &mut writer,
         &DaemonReq::SpotifyOauthStart {
-            client_id: "test-client".into(),
+            client_id: "0123456789abcdef0123456789abcdef".into(),
             port: 0,
         },
     )
@@ -606,7 +606,7 @@ async fn test_spotify_oauth_start_returns_authorize_url() {
     match res {
         DaemonRes::SpotifyOauthStarted { url } => {
             assert!(
-                url.contains("client_id=test-client"),
+                url.contains("client_id=0123456789abcdef0123456789abcdef"),
                 "unexpected authorize url {url}"
             );
             assert!(
