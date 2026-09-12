@@ -614,6 +614,13 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
+            (
+                KeyEvent::new(KeyCode::Char('x'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::OpenOverlay(PickerId::Setup),
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
             // Library motions: vim-style
             // v: toggle multiselect mode
             (
@@ -864,6 +871,7 @@ impl KeyboardAction {
             "open_command_palette" | "commands" => {
                 KeyboardAction::OpenOverlay(PickerId::CommandPalette)
             }
+            "open_setup" | "setup" => KeyboardAction::OpenOverlay(PickerId::Setup),
             _ => return None,
         })
     }

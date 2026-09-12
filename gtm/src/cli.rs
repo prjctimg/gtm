@@ -249,13 +249,16 @@ pub enum CliCommand {
     /// Internet radio directory (Radio Browser)
     Radio(RadioAction),
     /// Walk through setting up integration sources that need credentials
-    /// (Spotify, Last.fm, Subsonic/Navidrome). With no SERVICE argument every
-    /// unconfigured source is visited; OAuth steps launch your browser and
-    /// capture the response.
+    /// (Spotify, Last.fm, Subsonic/Navidrome). With no SERVICE argument the
+    /// TUI service chooser opens; OAuth steps launch your browser and capture
+    /// the response.
     Setup {
-        /// Service to configure: spotify | lastfm | subsonic (default: all)
+        /// Service to configure: spotify | lastfm | subsonic | navidrome
         #[arg(value_name = "SERVICE")]
         service: Option<String>,
+        /// Service to configure (long form of the positional SERVICE)
+        #[arg(long, value_name = "SERVICE")]
+        api: Option<String>,
         /// Keep the headless prompt-driven wizard instead of launching the TUI
         #[arg(long)]
         cli: bool,
@@ -396,6 +399,24 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 std::process::exit(1);
             }
         }
+        return;
+    }
+
+    // `gtm setup` (without --cli) drops into the interactive TUI service
+    // chooser. Run it directly on the main thread: launching a tokio runtime
+    // here and then `block_on`-ing another one inside the TUI would panic.
+    if let CliCommand::Setup {
+        service,
+        api,
+        cli: false,
+    } = cmd
+    {
+        let service_arg = service.clone().or_else(|| api.clone());
+        if let Err(e) = run_tui(socket, service_arg) {
+            eprintln!("error: {e}");
+            std::process::exit(1);
+        }
+        println!("setup finished");
         return;
     }
 
@@ -1261,18 +1282,15 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         .map_err(|e| e.to_string())
                 }
             },
-            CliCommand::Setup { service, cli } => {
-                if *cli {
-                    setup_wizard(&client, service.as_deref()).await
-                } else {
-                    // Default: open the interactive TUI and drop straight into
-                    // the service chooser. `--cli` keeps the headless wizard
-                    // for scripting / SSH.
-                    let socket_arg = socket_path.to_string_lossy().to_string();
-                    run_tui(Some(socket_arg), service.clone()).map_err(|e| e.to_string())?;
-                    Ok("setup finished".to_string())
-                }
+            CliCommand::Setup {
+                service,
+                api,
+                cli: true,
+            } => {
+                let service = service.clone().or_else(|| api.clone());
+                setup_wizard(&client, service.as_deref()).await
             }
+            CliCommand::Setup { cli: false, .. } => Ok("setup finished".to_string()),
         }
     });
 

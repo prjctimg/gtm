@@ -1431,9 +1431,7 @@ impl App {
                 .ok()
                 .and_then(|m| m.modified().ok()),
         };
-        if let Some(service) = setup_service {
-            app.open_setup_picker(Some(&service));
-        }
+        app.open_setup_picker(setup_service.as_deref());
         Ok(app)
     }
 
@@ -1456,7 +1454,10 @@ impl App {
                 self.pickers.open(PickerId::SubsonicSetup);
                 self.on_picker_opened(PickerId::SubsonicSetup);
             }
-            _ => self.pickers.open(PickerId::Setup),
+            _ => {
+                self.pickers.open(PickerId::Setup);
+                self.on_picker_opened(PickerId::Setup);
+            }
         }
     }
 
@@ -4523,7 +4524,7 @@ impl App {
                                         rate_bytes_per_sec: *rate_bytes_per_sec,
                                         eta_secs: *eta_secs,
                                     });
-                                    if let Some(fp) = fp.filter(|_| status == "completed") {
+                                    if let Some(fp) = fp.clone().filter(|_| status == "completed") {
                                         break fp.clone();
                                     }
                                     if status == "failed" || status == "cancelled" {
@@ -8452,6 +8453,8 @@ impl App {
                                     self.hide_help_bar = !self.hide_help_bar;
                                 } else if action == "health check" {
                                     self.send_high(TuiCommand::CheckHealth);
+                                } else if action == "setup" {
+                                    self.open_setup_picker(None);
                                 }
                             }
                             // If the action opened a sub-picker it was stacked on

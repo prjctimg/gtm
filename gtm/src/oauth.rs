@@ -28,7 +28,7 @@ pub fn query_param(line: &str, name: &str) -> Option<String> {
         .split_whitespace()
         .find_map(|tok| tok.split_once('?').map(|(_, q)| q))?;
     for pair in query.split('&') {
-        if let Some((k, v)) = pair
+        if let Some((_k, v)) = pair
             .split_once('=')
             .filter(|(k, v)| *k == name && !v.is_empty())
         {

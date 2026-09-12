@@ -2393,6 +2393,20 @@ const SETTINGS_CATEGORIES: &[&str] = &["YouTube", "Playback", "System", "Spotify
 
 // ─── Overlay Rendering ───
 
+/// Inline icon glyph for a `gtm setup` service, matching the configured icon
+/// style (mdi brand/monochrome glyphs vs. emoji).
+fn service_icon_glyph(icon_style: &str, service: &str) -> &'static str {
+    match (icon_style, service) {
+        ("mdi", "Spotify") => "\u{f1bc}",             // spotify
+        ("mdi", "Last.fm") => "\u{f0387}",            // music-note
+        ("mdi", "Subsonic/Navidrome") => "\u{f048b}", // server
+        (_, "Spotify") => "\u{1f3a7}",
+        (_, "Last.fm") => "\u{1f3b5}",
+        (_, "Subsonic/Navidrome") => "\u{1f5a5}\u{fe0f}",
+        _ => "",
+    }
+}
+
 pub(crate) struct Pickers;
 
 impl Pickers {
@@ -3706,10 +3720,10 @@ impl Pickers {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let services: [(&str, &str, &str); 3] = [
-            ("Spotify", "OAuth link", "↦"),
-            ("Last.fm", "API key + OAuth", "↦"),
-            ("Subsonic/Navidrome", "server + credentials", "↦"),
+        let services: [(&str, &str); 3] = [
+            ("Spotify", "OAuth link"),
+            ("Last.fm", "API key + OAuth"),
+            ("Subsonic/Navidrome", "server + credentials"),
         ];
         let (sel, _) = setup_selection(app);
         let mut lines = Vec::new();
@@ -3718,7 +3732,7 @@ impl Pickers {
             Style::default().fg(app.theme.fg_dim),
         )));
         lines.push(Line::from(""));
-        for (i, (name, desc, _)) in services.iter().enumerate() {
+        for (i, (name, desc)) in services.iter().enumerate() {
             let style = if i == sel {
                 Style::default()
                     .fg(app.theme.accent)
@@ -3728,7 +3742,10 @@ impl Pickers {
             };
             lines.push(Line::from(vec![
                 Span::styled(if i == sel { "▸ " } else { "  " }, style),
-                Span::styled(format!("{name:<24}"), style),
+                Span::styled(
+                    format!("{} {name:<22}", service_icon_glyph(&app.icon_style, name)),
+                    style,
+                ),
                 Span::styled(*desc, Style::default().fg(app.theme.fg_dim)),
             ]));
         }
@@ -4913,6 +4930,11 @@ impl CommandPalette {
                 keys: "Alt+H",
                 hint: "health check",
             },
+            Command {
+                icon: "\u{f0493} Setup Services",
+                keys: "Alt+X",
+                hint: "setup",
+            },
         ]
     }
 
@@ -5133,6 +5155,11 @@ impl CommandPalette {
                 keys: "Alt+H",
                 hint: "health check",
             },
+            Command {
+                icon: "\u{2699}\u{fe0f} Setup Services",
+                keys: "Alt+X",
+                hint: "setup",
+            },
         ]
     }
 }
@@ -5141,7 +5168,7 @@ pub const COMMAND_GROUPS: &[(&str, usize)] = &[
     ("Playback", 12),
     ("Library & Queue", 15),
     ("View & Overlays", 11),
-    ("System", 5),
+    ("System", 6),
 ];
 
 pub const HELP_LINES: &[(&str, &str)] = &[
@@ -5194,6 +5221,7 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   q           Quit"),
     ("", "   Q / Ctrl+Q  Quit Daemon"),
     ("", "   Alt+H       Health Check"),
+    ("", "   Alt+X       Setup Services"),
     ("", "   Alt+,       Settings"),
 ];
 
