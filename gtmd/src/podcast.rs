@@ -289,14 +289,12 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
                 if !is_atom && name == "item" {
                     ep = Some(ParsedEpisode::default());
                 }
-                if ep.is_some() && name == "enclosure" {
-                    if let Some(url) = attr_str(&e, "url") {
-                        if let Some(p) = ep.as_mut() {
-                            if p.url.is_empty() {
-                                p.url = url;
-                            }
-                        }
-                    }
+                if name == "enclosure"
+                    && let Some(url) = attr_str(&e, "url")
+                    && let Some(p) = ep.as_mut()
+                    && p.url.is_empty()
+                {
+                    p.url = url;
                 }
                 if ep.is_some() && name == "link" && is_atom {
                     // Atom enclosure/alternate links carry the URL in href.
@@ -359,12 +357,10 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
                 // Treat self-closing leaf as immediately closed.
                 if let Some(p) = ep.as_mut()
                     && name == "duration"
+                    && let Some(d) = attr_str(&e, "seconds")
+                    && p.duration_secs.is_none()
                 {
-                    if let Some(d) = attr_str(&e, "seconds") {
-                        if p.duration_secs.is_none() {
-                            p.duration_secs = d.parse::<u64>().ok();
-                        }
-                    }
+                    p.duration_secs = d.parse::<u64>().ok();
                 }
                 stack.pop();
             }
@@ -501,10 +497,8 @@ fn apply_field(ep: &mut ParsedEpisode, field: &str, text: &str) {
                 ep.published = Some(normalize_date(text));
             }
         }
-        "description" | "summary" | "subtitle" => {
-            if ep.description.is_empty() {
-                ep.description = text.to_string();
-            }
+        "description" | "summary" | "subtitle" if ep.description.is_empty() => {
+            ep.description = text.to_string();
         }
         _ => {}
     }

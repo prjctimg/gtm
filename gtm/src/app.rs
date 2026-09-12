@@ -607,6 +607,7 @@ pub struct SpotifyView {
 }
 
 /// Subsonic (Navidrome) picker state, grouped under `App::subsonic`.
+#[derive(Default)]
 pub struct SubsonicView {
     pub status: Option<SubsonicStatus>,
     /// Results of the last server search (flattened into an ordered row list).
@@ -629,27 +630,8 @@ pub struct SubsonicView {
     pub form_focus: usize,
 }
 
-impl Default for SubsonicView {
-    fn default() -> Self {
-        Self {
-            status: None,
-            search_results: SubsonicSearchResults::default(),
-            search_pending: false,
-            albums: Vec::new(),
-            albums_pending: false,
-            album_tracks: Vec::new(),
-            selected_album: None,
-            cover_preview: None,
-            cover_track_id: None,
-            form_server: String::new(),
-            form_user: String::new(),
-            form_password: String::new(),
-            form_focus: 0,
-        }
-    }
-}
-
 /// `gtm setup` wizard state, grouped under `App::setup`.
+#[derive(Default)]
 pub struct SetupView {
     /// Currently highlighted service in the Setup chooser (0..=2).
     pub selection: usize,
@@ -665,21 +647,6 @@ pub struct SetupView {
     pub lastfm_error: Option<String>,
 }
 
-impl Default for SetupView {
-    fn default() -> Self {
-        Self {
-            selection: 0,
-            lastfm_api_key: String::new(),
-            lastfm_api_secret: String::new(),
-            lastfm_focus: 0,
-            lastfm_pending: false,
-            lastfm_status: None,
-            lastfm_auth_url: None,
-            lastfm_error: None,
-        }
-    }
-}
-
 /// Selected row of the `gtm setup` service chooser.
 pub fn setup_selection(app: &App) -> (usize, &'static str) {
     let names = ["spotify", "lastfm", "subsonic"];
@@ -688,6 +655,7 @@ pub fn setup_selection(app: &App) -> (usize, &'static str) {
 }
 
 /// Podcast picker state, grouped under `App::podcast`.
+#[derive(Default)]
 pub struct PodcastView {
     pub status: Option<PodcastStatus>,
     pub feeds: Vec<PodcastFeed>,
@@ -699,36 +667,13 @@ pub struct PodcastView {
     pub subscribe_url: String,
 }
 
-impl Default for PodcastView {
-    fn default() -> Self {
-        Self {
-            status: None,
-            feeds: Vec::new(),
-            feeds_pending: false,
-            episodes: Vec::new(),
-            episodes_feed_id: None,
-            subscribe_url: String::new(),
-        }
-    }
-}
-
 /// Radio Browser picker state, grouped under `App::radio`.
+#[derive(Default)]
 pub struct RadioView {
     pub search: Vec<RadioStation>,
     pub search_pending: bool,
     pub top: Vec<RadioStation>,
     pub top_pending: bool,
-}
-
-impl Default for RadioView {
-    fn default() -> Self {
-        Self {
-            search: Vec::new(),
-            search_pending: false,
-            top: Vec::new(),
-            top_pending: false,
-        }
-    }
 }
 
 /// Queue picker/view UI state, grouped under `App::queue`. Note this mirrors
@@ -3585,11 +3530,9 @@ impl App {
                 }
             }
             PickerId::SubsonicSetup => {
-                if let Some(st) = self.subsonic.status.clone() {
-                    if st.configured {
-                        self.subsonic.form_server = st.server.unwrap_or_default();
-                        self.subsonic.form_user = st.user.unwrap_or_default();
-                    }
+                if let Some(st) = self.subsonic.status.clone().filter(|st| st.configured) {
+                    self.subsonic.form_server = st.server.unwrap_or_default();
+                    self.subsonic.form_user = st.user.unwrap_or_default();
                 }
                 self.refresh_subsonic_status();
             }
@@ -4580,10 +4523,8 @@ impl App {
                                         rate_bytes_per_sec: *rate_bytes_per_sec,
                                         eta_secs: *eta_secs,
                                     });
-                                    if let Some(fp) = fp {
-                                        if status == "completed" {
-                                            break fp.clone();
-                                        }
+                                    if let Some(fp) = fp.filter(|_| status == "completed") {
+                                        break fp.clone();
                                     }
                                     if status == "failed" || status == "cancelled" {
                                         return error

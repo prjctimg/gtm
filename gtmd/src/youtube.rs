@@ -457,8 +457,8 @@ impl YoutubeManager {
                 } else {
                     None
                 },
-                downloaded_bytes: (maybe_file.is_some()).then(|| 0u64),
-                total_bytes: (maybe_file.is_some()).then(|| 0u64),
+                downloaded_bytes: maybe_file.is_some().then_some(0u64),
+                total_bytes: maybe_file.is_some().then_some(0u64),
                 rate_bytes_per_sec: None,
                 eta_secs: None,
                 file_path: maybe_file.map(|p| p.to_string_lossy().into_owned()),

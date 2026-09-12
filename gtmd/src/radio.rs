@@ -83,7 +83,7 @@ impl RadioBrowserManager {
             .ok_or_else(|| "station not found".to_string())
     }
 
-    async fn get<'a>(
+    async fn get(
         &self,
         path: &str,
         params: &[(&str, &str)],
@@ -111,6 +111,12 @@ impl RadioBrowserManager {
     }
 }
 
+impl Default for RadioBrowserManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 fn parse_stations(items: &[serde_json::Value]) -> Vec<RadioStation> {
     items
         .iter()
@@ -118,10 +124,12 @@ fn parse_stations(items: &[serde_json::Value]) -> Vec<RadioStation> {
             let id = s.get("stationuuid").and_then(|v| v.as_str())?;
             // Only offer streams that recently passed a working check when the
             // directory classifies them.
-            if let Some(ok) = s.get("lastcheckok").and_then(|v| v.as_i64()) {
-                if ok != 1 {
-                    return None;
-                }
+            if let Some(ok) = s
+                .get("lastcheckok")
+                .and_then(|v| v.as_i64())
+                .filter(|&ok| ok != 1)
+            {
+                return None;
             }
             Some(RadioStation {
                 id: id.to_string(),

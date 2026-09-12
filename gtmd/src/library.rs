@@ -443,7 +443,7 @@ impl Library {
             )
             .map_err(|e| format!("playlist dedup: {e}"))?;
         self.reposition(id)?;
-        Ok(removed as usize)
+        Ok(removed)
     }
 
     /// Doctor a playlist: remove entries whose audio file no longer exists on

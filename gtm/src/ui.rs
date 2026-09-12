@@ -3476,6 +3476,7 @@ impl Pickers {
 
     /// Shared row list for the remote-service pickers: a stackable panel with
     /// optional leading lines, a scrollable row region and row mouse zones.
+    #[allow(clippy::too_many_arguments)]
     fn render_scroll_rows(
         f: &mut ratatui::Frame,
         area: Rect,
@@ -3516,8 +3517,8 @@ impl Pickers {
                 Style::default().fg(app.theme.fg_dim),
             )));
         }
-        for i in s..e {
-            let text = &rows[i];
+        for (k, text) in rows[s..e].iter().enumerate() {
+            let i = s + k;
             let prefix = if i == sel { " > " } else { "   " };
             let style = if i == sel {
                 Style::default()
@@ -3527,14 +3528,14 @@ impl Pickers {
                 Style::default()
             };
             let row = if i == sel {
-                format!("{prefix}{text}{}", " ".repeat(row_pad(&text, inner.width)))
+                format!("{prefix}{text}{}", " ".repeat(row_pad(text, inner.width)))
             } else {
                 format!("{prefix}{text}")
             };
             lines.push(Line::from(Span::styled(row, style)));
             let row_rect = Rect {
                 x: inner.x,
-                y: inner.y + (i - s) as u16,
+                y: inner.y + k as u16,
                 width: inner.width,
                 height: 1,
             };
@@ -3557,7 +3558,7 @@ impl Pickers {
                 "\u{266b} {} - {} [{}]",
                 t.artist,
                 t.title,
-                format_duration_short(t.duration_secs as u64)
+                format_duration_short(t.duration_secs)
             ));
         }
         let mut prepend = vec![Self::picker_query_line(app)];
@@ -3621,7 +3622,7 @@ impl Pickers {
                 "\u{266b} {} - {} [{}]",
                 t.artist,
                 t.title,
-                format_duration_short(t.duration_secs as u64)
+                format_duration_short(t.duration_secs)
             ));
         }
         let title = app
@@ -3955,26 +3956,18 @@ impl Pickers {
     }
 
     fn radio_row(s: &RadioStation) -> String {
-        format!(
-            "\u{1f3a7} {}\u{2003}{}{}{}{}",
-            s.name,
-            if s.country.is_empty() {
-                String::new()
-            } else {
-                format!(" \u{1f30d}{} ", s.country)
-            },
-            if s.language.is_empty() {
-                String::new()
-            } else {
-                format!("\u{1f3ac} {} ", s.language)
-            },
-            if s.codec.is_empty() {
-                String::new()
-            } else {
-                format!(" {} ", s.codec)
-            },
-            format!(" \u{2b50} {}", s.votes),
-        )
+        let mut row = format!("\u{1f3a7} {}\u{2003}", s.name);
+        if !s.country.is_empty() {
+            row.push_str(&format!(" \u{1f30d}{} ", s.country));
+        }
+        if !s.language.is_empty() {
+            row.push_str(&format!("\u{1f3ac} {} ", s.language));
+        }
+        if !s.codec.is_empty() {
+            row.push_str(&format!(" {} ", s.codec));
+        }
+        row.push_str(&format!(" \u{2b50} {}", s.votes));
+        row
     }
 
     fn render_search_preview(

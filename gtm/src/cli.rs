@@ -1080,7 +1080,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     };
                     let st = client
                         .subsonic()
-                        .configure(&server, &username, &password)
+                        .configure(server, username, &password)
                         .await
                         .map_err(|e| e.to_string())?;
                     Ok(format_subsonic_status(&st))
@@ -1108,7 +1108,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 SubsonicAction::Search { query } => {
                     let res = client
                         .subsonic()
-                        .search(&query)
+                        .search(query)
                         .await
                         .map_err(|e| e.to_string())?;
                     for a in &res.artists {
@@ -1157,7 +1157,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 PodcastAction::Add { url } => {
                     let feeds = client
                         .podcast()
-                        .add_feed(&url)
+                        .add_feed(url)
                         .await
                         .map_err(|e| e.to_string())?;
                     match feeds.first() {
@@ -1167,7 +1167,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 }
                 PodcastAction::Remove { feed_id } => client
                     .podcast()
-                    .remove_feed(&feed_id)
+                    .remove_feed(feed_id)
                     .await
                     .map(|()| format!("removed feed {feed_id}"))
                     .map_err(|e| e.to_string()),
@@ -1181,13 +1181,13 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 PodcastAction::Episodes { feed_id } => {
                     let (title, eps) = client
                         .podcast()
-                        .episodes(&feed_id)
+                        .episodes(feed_id)
                         .await
                         .map_err(|e| e.to_string())?;
                     for (i, e) in eps.iter().enumerate() {
                         let dur = e
                             .duration_secs
-                            .map(|d| format_duration(d))
+                            .map(format_duration)
                             .unwrap_or_else(|| "-".into());
                         println!("{i}\t{dur}\t{}", e.title);
                     }
@@ -1206,7 +1206,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     episode_index,
                 } => client
                     .podcast()
-                    .play(&feed_id, *episode_index)
+                    .play(feed_id, *episode_index)
                     .await
                     .map(|()| format!("playing {feed_id}[/{episode_index}]"))
                     .map_err(|e| e.to_string()),
@@ -1223,7 +1223,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 RadioAction::Search { query, limit } => {
                     let stations = client
                         .radio()
-                        .search(&query, *limit)
+                        .search(query, *limit)
                         .await
                         .map_err(|e| e.to_string())?;
                     for s in &stations {
@@ -1255,7 +1255,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     let name = station_name.clone().unwrap_or_else(|| "Radio".to_string());
                     client
                         .radio()
-                        .play(&station_id, &name)
+                        .play(station_id, &name)
                         .await
                         .map(|()| format!("playing {name}"))
                         .map_err(|e| e.to_string())

@@ -1501,7 +1501,7 @@ async fn spotify_yt_fallback(
     cache_key: &str,
     query: &str,
 ) -> Result<String, String> {
-    let top_url = {
+    {
         let mut yt = inner.youtube.lock().await;
         yt.search(query, None).await?;
         let top = match yt.poll_results().await {
@@ -1511,8 +1511,7 @@ async fn spotify_yt_fallback(
         let auth = yt.auth_args();
         drop(yt);
         Daemon::download_audio_to_cache(&inner.config.cache_dir, cache_key, &top.url, auth).await
-    };
-    top_url
+    }
 }
 
 #[cfg(not(feature = "youtube"))]
