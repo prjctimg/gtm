@@ -51,6 +51,9 @@ Adjust playback settings and open overlays. Left pane selects category
 | `S` | Toggle shuffle |
 | `s` | Stop |
 | `.` / `,` | Seek forward / backward |
+| `Alt+R` | Top radio stations |
+| `Alt+T` | Radio Browser (browse tags / countries) |
+| `Alt+O` | Play an HTTP(S) stream URL |
 | `l` | Fetch lyrics for current track |
 | `:` | Command mode |
 | `?` | Toggle help |
@@ -65,7 +68,14 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 
 **play** *path* [*start_pos*]
 :   Play a track by filesystem path or URL. Optionally start at a given
-    position in seconds.
+    position in seconds. An `http://` or `https://` URL is treated as an
+    internet stream.
+
+**stream** *url*
+:   Play an HTTP(S) stream. The URL may also point to an M3U/PLS playlist,
+    which is fetched and resolved server-side; remaining playlist entries are
+    queued behind the first so **next** rotates through them. Live stream
+    titles (ICMP/Shoutcast `StreamTitle`) appear in the playing view.
 
 **play-pause**
 :   Toggle between play and pause (smart: stopped → play, playing → pause,
@@ -272,8 +282,31 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 **radio** *top* *limit*
 :   List the top-rated stations.
 
+**radio** *tags* *limit*
+:   List the most-used station tags on radio-browser.info.
+
+**radio** *tag* *tag* *limit*
+:   List stations carrying a tag.
+
+**radio** *countries* *limit*
+:   List the available station countries.
+
+**radio** *country* *country* *limit*
+:   List stations from a country.
+
 **radio** *play* *station_id* [*station_name*]
 :   Play a station by its radio-browser id, optionally with a display name.
+
+**radio** *list*
+:   List locally stored custom stations (see *add* below). Each is referenced
+    by a `custom:N` id where *N* is its 1-based index.
+
+**radio** *add* *name* *url*
+:   Store a custom station URL so **radio play** `custom:N` and the TUI can
+    open it from any machine. Stations live in `$XDG_CONFIG_HOME/gtm/radios.toml`.
+
+**radio** *rm* *selector*
+:   Remove a custom station by `custom:N` index or by exact name.
 
 ## Setup
 
@@ -362,6 +395,10 @@ $TMPDIR/gtm/gtmd.sock
 
 $HOME/.gtm/gtm/gtmd.sock
 :   Final fallback.
+
+$XDG_CONFIG_HOME/gtm/radios.toml
+:   Custom radio stations added with **radio add** (defaults to
+    `~/.config/gtm/radios.toml`).
 
 # SEE ALSO
 

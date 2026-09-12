@@ -141,13 +141,29 @@ The daemon responds with:
 
 ## play
 
-Load a track by path and begin playback.
+Load a track by path and begin playback. `path` may be a local file, a
+`radio://`/`podcast://`/`subsonic://` provider path, or an `http(s)://` stream
+URL (played as a live, non-seekable stream).
 
 ```json
 {"id": 1, "cmd": "play", "path": "/path/to/file.opus", "start_pos": 0.0}
 ```
 
 Response: `{"id": 1, "ok": true}`. Emits: `playback_started` event.
+
+## play_stream
+
+Play an HTTP(S) stream URL. If the fetched body is an M3U or PLS playlist it is
+parsed server-side; playlist entries are queued and the first is played.
+Relative entry paths are resolved against the playlist's base URL. Emits
+`playback_started`, and `radio_title_changed` when the stream advertises
+Shoutcast/Icecast `icy-metaint` metadata.
+
+```json
+{"id": 1, "cmd": "play_stream", "url": "https://icecast.example.com/radio.mp3"}
+```
+
+Response: `{"id": 1, "ok": true}`.
 
 ## play_pause
 
@@ -424,6 +440,73 @@ Runs asynchronously. Emits `metadata_changed` event on completion.
 
 Response: `{"id": 42, "ok": true, "report": {"running": false, "kind": "covers", "synced": 15, "total": 15}}`.
 
+# RADIO COMMANDS
+
+Radio Browser (radio-browser.info) directory lookups. Stations are played by
+their directory id; locally stored custom stations are referenced as
+`custom:N` (1-based index into `$XDG_CONFIG_HOME/gtm/radios.toml`, maintained
+by the `gtm` client — not via IPC).
+
+## radio_search
+
+```json
+{"id": 80, "cmd": "radio_search", "query": "jazz", "limit": 25}
+```
+
+Response: `{"id": 80, "ok": true, "stations": [{"id": "abc", "name": "...", "url_resolved": "...", "votes": 12}]}`.
+
+## radio_top
+
+```json
+{"id": 81, "cmd": "radio_top", "limit": 50}
+```
+
+Response: `{"id": 81, "ok": true, "stations": [...]}`.
+
+## radio_tags
+
+```json
+{"id": 82, "cmd": "radio_tags", "limit": 50}
+```
+
+Response: `{"id": 82, "ok": true, "tags": [{"name": "...", "station_count": 120}]}`.
+
+## radio_bytag
+
+```json
+{"id": 83, "cmd": "radio_bytag", "tag": "jazz", "limit": 50}
+```
+
+Response: `{"id": 83, "ok": true, "stations": [...]}`.
+
+## radio_countries
+
+```json
+{"id": 84, "cmd": "radio_countries", "limit": 50}
+```
+
+Response: `{"id": 84, "ok": true, "countries": [{"code": "US", "name": "United States", "station_count": 2000}]}`.
+
+## radio_bycountry
+
+```json
+{"id": 85, "cmd": "radio_bycountry", "country": "US", "limit": 50}
+```
+
+Response: `{"id": 85, "ok": true, "stations": [...]}`.
+
+## radio_play
+
+```json
+{"id": 86, "cmd": "radio_play", "station_id": "abc123", "station_name": "Jazz FM"}
+```
+
+Plays the station as a live stream (non-seekable). `station_id` may be a
+radio-browser id or `custom:N` for a locally stored station. Emits
+`playback_started` and `radio_title_changed`.
+
+Response: `{"id": 86, "ok": true}`.
+
 # SEARCH AND FAVOURITES
 
 ## search
@@ -654,6 +737,8 @@ frames on the pulse socket.
 - `playback_paused`: playback paused. Fields: `time_pos`.
 - `playback_stopped`: playback explicitly stopped.
 - `track_ended`: track reached end of file naturally.
+- `radio_title_changed`: live stream/radio song title updated. Fields:
+  `title` (string or null, cleared when a track transition resets it).
 
 ## Position and Duration
 
