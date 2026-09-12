@@ -31,6 +31,7 @@ use gtm_core::ipc::{
     CacheKind, ComponentHealth, DaemonEvent, DaemonReq, DaemonRes, HealthReport, HealthStatus,
     LibraryAction, PROTOCOL_VERSION, QueueAction, SyncKind, WireReq,
 };
+use gtm_core::playlist::{M3u8Format, PlaylistFormat, PlsFormat};
 use gtm_core::secret::{
     LASTFM_API_KEY_KEY, LASTFM_API_SECRET_KEY, SPOTIFY_CLIENT_ID_KEY, delete_secret, get_secret,
     set_secret,
@@ -86,6 +87,9 @@ enum RemoteKind {
         station_id: String,
         station_name: String,
     },
+    Stream {
+        url: String,
+    },
 }
 
 fn parse_remote_path(path: &str) -> Option<RemoteKind> {
@@ -111,6 +115,9 @@ fn parse_remote_path(path: &str) -> Option<RemoteKind> {
             station_id,
             station_name,
         });
+    }
+    if path.starts_with("http://") || path.starts_with("https://") {
+        return Some(RemoteKind::Stream { url: path.into() });
     }
     None
 }
@@ -166,8 +173,9 @@ async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<(String, bool
                     .url_resolved
             }
         }
+        RemoteKind::Stream { url } => url.clone(),
     };
-    let live = matches!(kind, RemoteKind::Radio { .. });
+    let live = matches!(kind, RemoteKind::Radio { .. } | RemoteKind::Stream { .. });
     Ok((url, live))
 }
 
@@ -670,6 +678,7 @@ impl Cmd {
                     RemoteKind::Radio {
                         station_name: name, ..
                     } => (name.as_str(), "Radio", "Radio"),
+                    RemoteKind::Stream { .. } => ("Stream", "Internet Radio", "Stream"),
                 };
                 TrackInfo {
                     path: path.to_string(),
@@ -712,6 +721,104 @@ impl Cmd {
             },
         );
         Ok(DaemonRes::Ok)
+    }
+}
+
+/// Derive a display title from a stream URL (host name or path segment).
+fn stream_title_from_url(url: &str) -> String {
+    url.split("://")
+        .nth(1)
+        .and_then(|r| r.split(['/', '?']).next())
+        .unwrap_or("Stream")
+        .to_string()
+}
+
+/// Sniff whether `body` (fetched from `url`) is a playlist, and return the
+/// raw path lines if so.
+fn sniff_stream_playlist(url: &str, body: &str) -> Vec<String> {
+    let trimmed = body.trim_start_matches('\u{feff}').trim();
+    let ext_lower = std::path::Path::new(url)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    let looks_pls = trimmed.starts_with("[playlist]");
+    let looks_m3u = trimmed.starts_with("#EXTM3U") || trimmed.starts_with("#EXTINF");
+    match ext_lower.as_deref() {
+        Some("pls") => PlsFormat.parse_track_lines(body),
+        Some("m3u") | Some("m3u8") => M3u8Format.parse_track_lines(body),
+        _ if looks_pls => PlsFormat.parse_track_lines(body),
+        _ if looks_m3u => M3u8Format.parse_track_lines(body),
+        _ => Vec::new(),
+    }
+}
+
+/// Resolve an M3U/PLS entry line against the playlist's base URL.
+fn resolve_stream_entry(base: &str, entry: &str) -> Option<String> {
+    let e = entry.trim();
+    if e.is_empty() || e.starts_with('#') {
+        return None;
+    }
+    if e.starts_with("http://") || e.starts_with("https://") {
+        return Some(e.to_string());
+    }
+    let (scheme, rest) = base.split_once("://")?;
+    let parent = rest.rfind('/').map(|i| &rest[..i]).unwrap_or("");
+    Some(format!("{scheme}://{parent}/{}", e.trim_start_matches('/')))
+}
+
+impl Cmd {
+    /// Play a raw HTTP(S) stream URL, transparently resolving M3U/PLS
+    /// playlists fetched from the URL. Remaining playlist entries stay in the
+    /// queue so `next` rotates through them.
+    pub async fn play_url_stream(inner: &DaemonInner, url: &str) -> Result<DaemonRes, CoreError> {
+        let url_owned = url.to_string();
+        let fetched =
+            tokio::task::spawn_blocking(move || -> Result<(String, Vec<String>), String> {
+                let resp = remote::client()
+                    .get(&url_owned)
+                    .send()
+                    .map_err(|e| format!("stream fetch: {e}"))?;
+                if !resp.status().is_success() {
+                    return Err(format!("stream HTTP {}", resp.status()));
+                }
+                let body = resp.text().map_err(|e| format!("stream read: {e}"))?;
+                let parsed = sniff_stream_playlist(&url_owned, &body);
+                Ok((url_owned, parsed))
+            })
+            .await
+            .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
+            .map_err(CoreError::Daemon)?;
+
+        let (base, mut entries) = fetched;
+        if entries.is_empty() {
+            entries.push(base.clone());
+        } else {
+            entries = entries
+                .iter()
+                .filter_map(|e| resolve_stream_entry(&base, e))
+                .collect();
+            if entries.is_empty() {
+                entries.push(base);
+            }
+        }
+
+        let first = entries.remove(0);
+        let remainder: Vec<TrackInfo> = entries
+            .iter()
+            .map(|u| TrackInfo {
+                path: u.clone(),
+                title: stream_title_from_url(u),
+                artist: "Stream".into(),
+                album: "Stream".into(),
+                ..Default::default()
+            })
+            .collect();
+        if !remainder.is_empty() {
+            let mut state = inner.state.write().await;
+            state.queue.extend(remainder);
+            drop(state);
+        }
+        Cmd::play(inner, &first, 0.0, false).await
     }
 
     pub async fn play_pause(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
@@ -4311,6 +4418,11 @@ impl Daemon {
                 Self::clear_history(inner).await;
                 Self::enable_fallback(inner).await;
                 Cmd::play(inner, path, *start_pos, false).await
+            }
+            DaemonReq::PlayStream { url } => {
+                Self::clear_history(inner).await;
+                Self::enable_fallback(inner).await;
+                Cmd::play_url_stream(inner, url).await
             }
             DaemonReq::PlayPause => Cmd::play_pause(inner).await,
             DaemonReq::Pause => Cmd::pause(inner).await,

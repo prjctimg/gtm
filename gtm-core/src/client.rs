@@ -287,6 +287,11 @@ impl DaemonClient {
         .await
     }
 
+    pub async fn play_stream(&self, url: &str) -> Result<()> {
+        self.send_ok(DaemonReq::PlayStream { url: url.into() })
+            .await
+    }
+
     pub async fn play_pause(&self) -> Result<()> {
         self.send_ok(DaemonReq::PlayPause).await
     }

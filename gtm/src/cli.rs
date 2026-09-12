@@ -70,6 +70,11 @@ pub enum CliCommand {
         #[arg(value_name = "SECONDS")]
         start_pos: Option<f64>,
     },
+    /// Play an HTTP(S) stream URL (M3U/PLS playlists are auto-resolved)
+    Stream {
+        #[arg(value_name = "URL")]
+        url: String,
+    },
     /// Toggle play/pause
     PlayPause,
     /// Pause playback
@@ -484,6 +489,11 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     .map(|()| "ok".to_string())
                     .map_err(|e| e.to_string())
             }
+            CliCommand::Stream { url } => client
+                .play_stream(url)
+                .await
+                .map(|()| "ok".to_string())
+                .map_err(|e| e.to_string()),
             CliCommand::PlayPause => client
                 .play_pause()
                 .await

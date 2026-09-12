@@ -594,6 +594,13 @@ pub fn default_keybindings() -> Keybindings {
                 },
             ),
             (
+                KeyEvent::new(KeyCode::Char('o'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::OpenOverlay(PickerId::LoadStream),
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
+            (
                 KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT),
                 BoundCommand {
                     action: KeyboardAction::OpenOverlay(PickerId::PodcastFeeds),

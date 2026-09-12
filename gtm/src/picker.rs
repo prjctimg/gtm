@@ -52,6 +52,8 @@ pub enum PickerId {
     /// Stations carrying the tag / from the country selected at
     /// `RadioBrowseList`.
     RadioBrowseStations,
+    /// Play an arbitrary HTTP(S) stream URL (Alt+O).
+    LoadStream,
     /// `gtm setup` entry: choose which service to configure.
     Setup,
     /// Last.fm setup form (API key/secret) plus the OAuth browser flow.

@@ -2528,6 +2528,7 @@ impl Pickers {
                 (w, (app.podcast.episodes.len() as u16 + 6).clamp(18, 30))
             }
             PickerId::PodcastSubscribe => (56, 8),
+            PickerId::LoadStream => (56, 8),
             PickerId::RadioSearch => {
                 let n = app.radio.search.len();
                 let w = app
@@ -2672,6 +2673,7 @@ impl Pickers {
             PickerId::PodcastSubscribe => {
                 Self::render_podcast_subscribe_picker(f, picker_area, app)
             }
+            PickerId::LoadStream => Self::render_load_stream_picker(f, picker_area, app),
             PickerId::RadioSearch => Self::render_radio_search_picker(f, picker_area, app),
             PickerId::RadioTop => Self::render_radio_top_picker(f, picker_area, app),
             PickerId::RadioBrowse => Self::render_radio_browse_picker(f, picker_area, app),
@@ -3955,6 +3957,39 @@ impl Pickers {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
+    fn render_load_stream_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let block = Self::picker_panel(app, " Stream ", Some(" Enter: play   Esc: close"));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let url = app
+            .pickers
+            .top()
+            .map(|p| p.query.clone())
+            .unwrap_or_default();
+        let mut lines = vec![Line::from(Span::styled(
+            " Stream URL ",
+            Style::default().fg(app.theme.fg_dim),
+        ))];
+        lines.push(Line::from(vec![
+            Span::styled(" ", Style::default().fg(app.theme.fg)),
+            Span::styled(
+                url,
+                Style::default()
+                    .fg(app.theme.fg_bright)
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
+            match cursor_span_style(app) {
+                Some(style) => Span::styled(" ", style),
+                None => Span::raw(""),
+            },
+        ]));
+        lines.push(Line::from(Span::styled(
+            " accepts an http(s):// stream URL; M3U/PLS playlists are resolved server-side",
+            Style::default().fg(app.theme.fg_dim),
+        )));
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+
     fn render_radio_search_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let mut rows = Vec::new();
         for s in &app.radio.search {
@@ -5054,6 +5089,11 @@ impl CommandPalette {
                 keys: "Alt+T",
                 hint: "radio browse",
             },
+            Command {
+                icon: "\u{f056d} Play Stream URL",
+                keys: "Alt+O",
+                hint: "play stream url",
+            },
         ]
     }
 
@@ -5322,6 +5362,7 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   Alt+P       Podcasts"),
     ("", "   Alt+R       Top Radio Stations"),
     ("", "   Alt+T       Radio Browse"),
+    ("", "   Alt+O       Play Stream URL"),
     ("topic", "── View ──"),
     ("", "   ?           Toggle Help"),
     ("", "   Ctrl+H      Hide Help Bar"),

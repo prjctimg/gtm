@@ -5061,6 +5061,7 @@ impl App {
             PickerId::PodcastFeeds => self.podcast.feeds.len(),
             PickerId::PodcastEpisodes => self.podcast.episodes.len(),
             PickerId::PodcastSubscribe => 1,
+            PickerId::LoadStream => 1,
             PickerId::RadioSearch => self.radio.search.len(),
             PickerId::RadioTop => self.radio.top.len(),
             PickerId::RadioBrowse => 2,
@@ -7644,6 +7645,48 @@ impl App {
             return;
         }
 
+        // ─── Load stream picker (Alt+O) ───
+        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::LoadStream)) {
+            match key.code {
+                KeyCode::Char(c) => {
+                    if !c.is_control()
+                        && matches!(
+                            self.pickers.top().map(|o| o.query.len()),
+                            Some(len) if len < 2048
+                        )
+                    {
+                        if let Some(top) = self.pickers.top_mut() {
+                            top.query.push(c);
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let Some(top) = self.pickers.top_mut() {
+                        top.query.pop();
+                    }
+                }
+                KeyCode::Enter => {
+                    let url = self
+                        .pickers
+                        .top()
+                        .map_or(String::new(), |o| o.query.clone());
+                    if url.trim().is_empty() {
+                        return;
+                    }
+                    let c = self.client.clone();
+                    let ipc_tx = self.ipc_tx.clone();
+                    self.pickers.close_top();
+                    tokio::spawn(async move {
+                        if let Err(e) = c.play_stream(url.trim()).await {
+                            self_err(&ipc_tx, format!("stream failed: {e}"));
+                        }
+                    });
+                }
+                _ => {}
+            }
+            return;
+        }
+
         // ─── Radio search ───
         if matches!(
             self.pickers.top().map(|o| o.id),
@@ -8657,6 +8700,8 @@ impl App {
                                 } else if action == "radio browse" {
                                     self.pickers.open(PickerId::RadioBrowse);
                                     self.on_picker_opened(PickerId::RadioBrowse);
+                                } else if action == "play stream url" {
+                                    self.pickers.open(PickerId::LoadStream);
                                 }
                             }
                             // If the action opened a sub-picker it was stacked on

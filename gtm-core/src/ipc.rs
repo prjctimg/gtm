@@ -177,6 +177,9 @@ pub enum DaemonReq {
         path: String,
         start_pos: f64,
     },
+    PlayStream {
+        url: String,
+    },
     PlayPause,
     Pause,
     Stop,
@@ -473,6 +476,7 @@ impl DaemonReq {
         match self {
             DaemonReq::Handshake { .. } => "handshake",
             DaemonReq::Play { .. } => "play",
+            DaemonReq::PlayStream { .. } => "play_stream",
             DaemonReq::PlayPause => "play_pause",
             DaemonReq::Pause => "pause",
             DaemonReq::Stop => "stop",
@@ -609,6 +613,14 @@ impl DaemonReq {
                     path: x.path,
                     start_pos: x.start_pos,
                 }
+            }
+            "play_stream" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    url: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::PlayStream { url: x.url }
             }
             "play_pause" => DaemonReq::PlayPause,
             "pause" => DaemonReq::Pause,
