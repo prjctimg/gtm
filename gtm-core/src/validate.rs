@@ -42,6 +42,7 @@ impl DaemonState {
             current_track: None,
             time_pos: 0.0,
             duration: 0.0,
+            radio_title: None,
             sleep_timer: None,
             low_power: false,
             audio: AudioSettings::default(),

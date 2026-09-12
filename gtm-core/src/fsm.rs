@@ -242,6 +242,7 @@ impl DaemonState {
                 self.status = PlaybackStatus::Playing;
                 self.time_pos = *time_pos;
                 self.duration = *duration;
+                self.radio_title = None;
             }
             DaemonEvent::PlaybackPaused { time_pos } => {
                 self.status = PlaybackStatus::Paused;
@@ -251,6 +252,7 @@ impl DaemonState {
                 self.status = PlaybackStatus::Stopped;
                 self.current_track = None;
                 self.time_pos = 0.0;
+                self.radio_title = None;
             }
             DaemonEvent::PositionChanged { time_pos } => {
                 self.time_pos = *time_pos;
@@ -281,9 +283,13 @@ impl DaemonState {
                 self.status = PlaybackStatus::Stopped;
                 self.current_track = None;
                 self.time_pos = 0.0;
+                self.radio_title = None;
                 // Note: do NOT clear the queue here: the daemon owns queue
                 // consumption and mirrors every change via QueueChanged.  Wiping
                 // it here previously erased pending entries on every track end.
+            }
+            DaemonEvent::RadioTitleChanged { title } => {
+                self.radio_title = title.clone();
             }
             DaemonEvent::EqEnabledChanged { enabled } => {
                 self.audio.eq_enabled = *enabled;

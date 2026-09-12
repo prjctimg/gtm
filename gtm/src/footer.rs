@@ -21,6 +21,26 @@ use crate::ui::{Render, use_nerd_fonts};
 /// Namespace for per-module footer rendering.
 pub struct Footer;
 
+/// Scrolling marquee for footer text: if it fits in `MAX` chars, return it
+/// verbatim; otherwise cycle one full loop then hold still before repeating.
+fn scroll_text(raw: String, scroll: u64) -> String {
+    const MAX: usize = 30;
+    const SPEED: usize = 6;
+    const HOLD_STEPS: usize = 50; // ~5s hold at 60fps / SPEED
+    let char_count = raw.chars().count();
+    if char_count > MAX {
+        // Char-based modulo so multibyte UTF-8 never splits mid-sequence.
+        let chars: Vec<char> = raw.chars().collect();
+        let step = scroll / SPEED;
+        let pos = step % (char_count + HOLD_STEPS);
+        let offset = if pos < char_count { pos } else { 0 };
+        let s: String = chars.iter().cycle().skip(offset).take(MAX).collect();
+        format!("{s} \u{2026}")
+    } else {
+        raw
+    }
+}
+
 fn darken(c: Color, factor: f64) -> Color {
     match c {
         Color::Rgb(r, g, b) => Color::Rgb(
@@ -526,6 +546,13 @@ impl Footer {
     }
 
     fn title(app: &App) -> Option<String> {
+        // A live stream's ICY `StreamTitle` (when present) overrides the
+        // track title, which for radio is just the station name.
+        if let Some(live) = &app.state.radio_title
+            && !live.is_empty()
+        {
+            return Some(scroll_text(live.clone(), app.footer_title_scroll));
+        }
         let raw = app
             .state
             .current_track
@@ -541,22 +568,7 @@ impl Footer {
         if raw.is_empty() {
             return None;
         }
-        const MAX: usize = 30;
-        const SPEED: usize = 6;
-        const HOLD_STEPS: usize = 50; // ~5s hold at 60fps / SPEED
-        let char_count = raw.chars().count();
-        if char_count > MAX {
-            // Char-based modulo so multibyte UTF-8 never splits mid-sequence.
-            // Scroll one full loop, then hold still before animating again.
-            let chars: Vec<char> = raw.chars().collect();
-            let step = app.footer_title_scroll / SPEED;
-            let pos = step % (char_count + HOLD_STEPS);
-            let offset = if pos < char_count { pos } else { 0 };
-            let s: String = chars.iter().cycle().skip(offset).take(MAX).collect();
-            Some(format!("{} \u{2026}", s))
-        } else {
-            Some(raw)
-        }
+        Some(scroll_text(raw, app.footer_title_scroll))
     }
 
     fn volume(app: &App) -> String {

@@ -4,7 +4,9 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use std::collections::VecDeque;
 use std::io::{Read, Seek, SeekFrom};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gtm_audio::symphonia::StreamingReopen;
@@ -12,6 +14,15 @@ use tracing::warn;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Shared slot that receives the latest ICY `StreamTitle` parsed off a live
+/// stream. Written on the decode thread; polled at ~1 Hz by the daemon.
+pub type IcySlot = Arc<Mutex<Option<String>>>;
+
+/// Shoutcast/ICEcast transparently tag a request with `Icy-MetaData: 1` so it
+/// advertises metadata mode.
+pub(crate) const ICY_META_HEADER: &str = "Icy-MetaData";
+pub(crate) const ICY_META_INT_HEADER: &str = "icy-metaint";
 
 /// A blocking HTTP(S) transport exposed as a `std::io::Read` so symphonia's
 /// decoder can stream radio, podcast, and Subsonic audio natively. Reads block
@@ -51,6 +62,102 @@ impl Seek for HttpReader {
         Err(std::io::Error::other(
             "streaming source does not support seeking",
         ))
+    }
+}
+
+/// Read wrapper for ICY (Shoutcast/ICEcast) live streams. The body interleaves
+/// audio with periodic metadata blocks: every `icy-metaint` bytes of audio a
+/// one-byte block-length header (`len * 16` bytes of metadata) follows. This
+/// reader strips those blocks while publishing any `StreamTitle='...'` it
+/// finds into the shared [`IcySlot`], so the byte stream handed to the decoder
+/// remains pure audio.
+pub struct IcyReader {
+    response: reqwest::blocking::Response,
+    metaint: usize,
+    /// Audio bytes still to emit before the next metadata block.
+    audio_remaining: usize,
+    slot: IcySlot,
+    /// Single leftover byte held between `read` calls.
+    stash: Option<u8>,
+}
+
+impl IcyReader {
+    /// Consume a successful response under ICY metadata mode, with audio
+    /// interleaved every `metaint` bytes.
+    pub fn new(response: reqwest::blocking::Response, metaint: usize, slot: IcySlot) -> Self {
+        Self {
+            response,
+            metaint,
+            audio_remaining: metaint,
+            slot,
+            stash: None,
+        }
+    }
+
+    /// Pull the `StreamTitle='...'` value out of a metadata block body.
+    fn capture_title(meta: &[u8]) -> Option<String> {
+        let text = String::from_utf8_lossy(meta);
+        let key = "StreamTitle='";
+        let start = text.find(key)? + key.len();
+        let title = text[start..]
+            .split('\'')
+            .next()
+            .unwrap_or_default()
+            .trim_matches('\0')
+            .trim();
+        (!title.is_empty()).then(|| title.to_string())
+    }
+
+    /// Read exactly `buf.len()` bytes when make them available; returns the
+    /// actual count, which is short at end of stream.
+    fn read_exact(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut got = 0;
+        while got < buf.len() {
+            match self.response.read(&mut buf[got..]) {
+                Ok(0) => break,
+                Ok(n) => got += n,
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(got)
+    }
+}
+
+impl Read for IcyReader {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let mut filled = 0;
+        while filled < buf.len() {
+            if let Some(b) = self.stash.take() {
+                buf[filled] = b;
+                filled += 1;
+                continue;
+            }
+            if self.audio_remaining > 0 {
+                let want = (buf.len() - filled).min(self.audio_remaining);
+                let n = self.response.read(&mut buf[filled..filled + want])?;
+                if n == 0 {
+                    return Ok(filled);
+                }
+                self.audio_remaining -= n;
+                filled += n;
+                continue;
+            }
+            // Audio interval exhausted: consume the metadata block, then reset.
+            let mut header = [0u8; 1];
+            if self.read_exact(&mut header)? == 0 {
+                return Ok(filled);
+            }
+            let block_len = header[0] as usize * 16;
+            if block_len > 0 {
+                let mut meta = vec![0u8; block_len];
+                self.read_exact(&mut meta)?;
+                if let Some(title) = Self::capture_title(&meta) {
+                    *self.slot.lock().unwrap() = Some(title);
+                }
+            }
+            self.audio_remaining = self.metaint;
+        }
+        Ok(filled)
     }
 }
 

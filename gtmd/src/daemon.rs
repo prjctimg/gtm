@@ -178,9 +178,13 @@ fn decode_remote_reader(
     url: String,
     live: bool,
     start_pos: f64,
+    title_slot: Option<remote::IcySlot>,
 ) -> AudioResult<Box<dyn rodio::Source<Item = f32> + Send>> {
-    let resp = remote::client()
-        .get(&url)
+    let mut req = remote::client().get(&url);
+    if live && title_slot.is_some() {
+        req = req.header(remote::ICY_META_HEADER, "1");
+    }
+    let resp = req
         .send()
         .map_err(|e| AudioError::DecodeError(format!("stream {url}: {e}")))?;
     if !resp.status().is_success() {
@@ -189,7 +193,21 @@ fn decode_remote_reader(
             resp.status()
         )));
     }
-    let reader: Box<dyn std::io::Read + Send> = Box::new(remote::HttpReader::from_response(resp));
+    let reader: Box<dyn std::io::Read + Send> = if let Some(slot) = title_slot.filter(|_| live) {
+        if let Some(metaint) = resp
+            .headers()
+            .get(remote::ICY_META_INT_HEADER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|s| s.trim().parse::<usize>().ok())
+            .filter(|&n| n > 0)
+        {
+            Box::new(remote::IcyReader::new(resp, metaint, slot))
+        } else {
+            Box::new(remote::HttpReader::from_response(resp))
+        }
+    } else {
+        Box::new(remote::HttpReader::from_response(resp))
+    };
     let reopen: Option<Box<dyn StreamingReopen>> = if live {
         None
     } else {
@@ -611,12 +629,21 @@ impl Cmd {
         }
 
         // Fetch + probe the provider's stream off the async thread. Live radio
-        // does not reconnect for seeks; podcast/Subsonic streams do.
+        // does not reconnect for seeks; podcast/Subsonic streams do. Reset any
+        // stale live title before (re)connecting.
+        *inner.icy_title.lock().unwrap() = None;
+        {
+            let mut state = inner.state.write().await;
+            state.radio_title = None;
+        }
         let start = start_pos.max(0.0);
-        let decoded = tokio::task::spawn_blocking(move || decode_remote_reader(url, live, start))
-            .await
-            .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
-            .map_err(|e| CoreError::Daemon(format!("decode: {e}")))?;
+        let icy_slot = inner.icy_title.clone();
+        let decoded = tokio::task::spawn_blocking(move || {
+            decode_remote_reader(url, live, start, Some(icy_slot))
+        })
+        .await
+        .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
+        .map_err(|e| CoreError::Daemon(format!("decode: {e}")))?;
 
         let dur = {
             let mut mixer = inner.mixer.lock().await;
@@ -770,8 +797,10 @@ impl Cmd {
         if state.status != PlaybackStatus::Stopped {
             state.stop()?;
         }
+        state.radio_title = None;
         drop(state);
         Daemon::push_event(inner, DaemonEvent::PlaybackStopped);
+        Daemon::push_event(inner, DaemonEvent::RadioTitleChanged { title: None });
         Ok(DaemonRes::Ok)
     }
 
@@ -3409,6 +3438,10 @@ struct DaemonInner {
     /// broadcast at most this often. Clients extrapolate smoothly between
     /// broadcasts, keeping the lyric highlight and progress bar tight.
     last_pos_broadcast: tokio::sync::Mutex<Option<std::time::Instant>>,
+    /// Latest ICY `StreamTitle` seen on the active live stream. Written by
+    /// the decode thread inside the ICY reader; the position tick mirrors it
+    /// into `state.radio_title` and broadcasts on change.
+    icy_title: remote::IcySlot,
     /// Monotonic generation counter for the sleep timer. `set_sleep_timer`
     /// bumps it so any previously scheduled timer observes the mismatch and
     /// backs out without racing the new one; `cancel_sleep_timer` also bumps.
@@ -3697,6 +3730,7 @@ impl Daemon {
             crossfade_loaded_for: tokio::sync::Mutex::new(None),
             countdown_notified_for: tokio::sync::Mutex::new(None),
             last_pos_broadcast: tokio::sync::Mutex::new(None),
+            icy_title: Arc::new(std::sync::Mutex::new(None)),
             sleep_gen: Arc::new(AtomicU64::new(0)),
             health: Arc::new(HealthTracker::new(audio_backend_name)),
             client_auth: tokio::sync::Mutex::new(HashMap::new()),
@@ -4918,8 +4952,10 @@ impl Daemon {
             match resolve_remote(inner, &path).await {
                 Ok((url, live)) => {
                     let start = 0.0;
-                    tokio::task::spawn_blocking(move || decode_remote_reader(url, live, start))
-                        .await
+                    tokio::task::spawn_blocking(move || {
+                        decode_remote_reader(url, live, start, None)
+                    })
+                    .await
                 }
                 Err(e) => {
                     warn!("crossfade resolve failed: {e}");
@@ -5050,6 +5086,37 @@ impl Daemon {
         }
     }
 
+    /// Mirror the active live stream's ICY `StreamTitle` into `state` and
+    /// broadcast a `RadioTitleChanged` event when it changes. Non-live
+    /// playback clears any stale title so it never leaks onto a local track.
+    /// Called from the ~1 Hz position tick.
+    async fn sync_radio_title(inner: &Arc<DaemonInner>) {
+        let slot_title = inner.icy_title.lock().unwrap().clone();
+        let mut state = inner.state.write().await;
+        let is_live = state
+            .current_track
+            .as_ref()
+            .map(|t| {
+                t.path.starts_with("radio://")
+                    || t.path.starts_with("http://")
+                    || t.path.starts_with("https://")
+            })
+            .unwrap_or(false);
+        if is_live {
+            if state.radio_title.as_deref() == slot_title.as_deref() {
+                return;
+            }
+            state.radio_title = slot_title;
+        } else if state.radio_title.is_none() {
+            return;
+        } else {
+            state.radio_title = None;
+        }
+        let title = state.radio_title.clone();
+        drop(state);
+        Self::push_event(inner, DaemonEvent::RadioTitleChanged { title });
+    }
+
     async fn handle_audio_event(inner: &Arc<DaemonInner>, result: AudioResult<Option<AudioEvent>>) {
         let ev = match result {
             Ok(Some(e)) => e,
@@ -5114,6 +5181,7 @@ impl Daemon {
                     if due {
                         *last = Some(std::time::Instant::now());
                         Self::push_event(inner, DaemonEvent::PositionChanged { time_pos: pos });
+                        Self::sync_radio_title(inner).await;
                     }
                 }
 

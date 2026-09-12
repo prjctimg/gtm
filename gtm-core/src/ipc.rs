@@ -1446,6 +1446,10 @@ pub enum DaemonEvent {
     SpotifyStatusChanged,
     #[serde(rename = "spectrum_changed")]
     SpectrumChanged { levels: Vec<f32> },
+    /// A live ICY/Shoutcast stream published a new `StreamTitle` (or cleared
+    /// it, `None`).
+    #[serde(rename = "radio_title_changed")]
+    RadioTitleChanged { title: Option<String> },
     #[serde(rename = "heartbeat")]
     Heartbeat,
 }

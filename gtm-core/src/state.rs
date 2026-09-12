@@ -189,6 +189,11 @@ pub struct DaemonState {
     pub current_track: Option<TrackInfo>,
     pub time_pos: f64,
     pub duration: f64,
+    /// Live `StreamTitle` reported by the current ICY/Shoutcast stream via
+    /// `radio://` (or a direct `http(s)://`) playback. `None` while a local
+    /// file, podcast, or non-metadata stream is active.
+    #[serde(default)]
+    pub radio_title: Option<String>,
     pub sleep_timer: Option<u32>,
     /// Low-power mode: pauses playback and suspends background work.
     #[serde(default)]
