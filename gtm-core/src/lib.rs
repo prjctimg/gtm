@@ -5,6 +5,7 @@
 // This is free software released under the GPL-3.0 license.
 
 pub mod client;
+pub mod custom;
 pub mod daemon;
 pub mod fsm;
 pub mod global;
@@ -23,6 +24,7 @@ pub mod tripwire;
 pub mod validate;
 pub mod wire;
 
+pub use crate::custom::CustomRadioStation;
 pub use global::{
     CoreError, CrossfadeConfig, DEFAULT_SPEED, DaemonState, EQ_FREQUENCIES, EqBand, MAX_SPEED,
     MAX_VOLUME, MIN_SPEED, ReverbConfig, volume_from_ratio, volume_ratio,

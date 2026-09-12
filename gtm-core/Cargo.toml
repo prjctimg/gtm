@@ -26,6 +26,7 @@ tracing = "0.1"
 rustc-hash = { version = "2", optional = true }
 keyring = "3"
 dirs = "5"
+toml = "0.8"
 
 [dev-dependencies]
 bincode = "1"

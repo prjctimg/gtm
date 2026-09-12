@@ -152,12 +152,19 @@ async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<(String, bool
             }
         }
         RemoteKind::Radio { station_id, .. } => {
-            let radio = inner.radio.lock().await;
-            radio
-                .by_uuid(station_id)
-                .await
-                .map_err(|e| CoreError::Daemon(format!("radio lookup: {e}")))?
-                .url_resolved
+            if let Some(index) = gtm_core::custom::parse_custom_id(station_id) {
+                gtm_core::custom::custom_station_by_index(index)
+                    .map_err(CoreError::Daemon)?
+                    .ok_or_else(|| CoreError::Daemon(format!("no custom station {index}")))?
+                    .url
+            } else {
+                let radio = inner.radio.lock().await;
+                radio
+                    .by_uuid(station_id)
+                    .await
+                    .map_err(|e| CoreError::Daemon(format!("radio lookup: {e}")))?
+                    .url_resolved
+            }
         }
     };
     let live = matches!(kind, RemoteKind::Radio { .. });
@@ -2420,10 +2427,17 @@ impl Radio {
         // Fresh name from the directory (authoritative); the caller-provided
         // name is only a fallback for the queue display.
         let name = {
-            let radio = inner.radio.lock().await;
-            match radio.by_uuid(station_id).await {
-                Ok(st) => st.name,
-                Err(_) => station_name.to_string(),
+            if let Some(index) = gtm_core::custom::parse_custom_id(station_id) {
+                match gtm_core::custom::custom_station_by_index(index) {
+                    Ok(Some(st)) => st.name,
+                    _ => station_name.to_string(),
+                }
+            } else {
+                let radio = inner.radio.lock().await;
+                match radio.by_uuid(station_id).await {
+                    Ok(st) => st.name,
+                    Err(_) => station_name.to_string(),
+                }
             }
         };
         let path = format!("radio://{station_id}");

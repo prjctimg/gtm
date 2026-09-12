@@ -393,6 +393,20 @@ pub enum RadioAction {
         #[arg(long, default_value_t = 25)]
         limit: u16,
     },
+    /// List custom stations from radios.toml
+    List,
+    /// Add a custom station to radios.toml
+    Add {
+        #[arg(value_name = "NAME")]
+        name: String,
+        #[arg(value_name = "URL")]
+        url: String,
+    },
+    /// Remove a custom station by index or name
+    Rm {
+        #[arg(value_name = "INDEX_OR_NAME")]
+        selector: String,
+    },
 }
 
 pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) {
@@ -1354,6 +1368,21 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         );
                     }
                     Ok(format!("{} stations", stations.len()))
+                }
+                RadioAction::List => {
+                    let stations = gtm_core::custom::list_custom_stations()?;
+                    for (i, s) in stations.iter().enumerate() {
+                        println!("custom:{}\t{}\t{}", i + 1, s.name, s.url);
+                    }
+                    Ok(format!("{} custom stations", stations.len()))
+                }
+                RadioAction::Add { name, url } => {
+                    let index = gtm_core::custom::add_custom_station(name, url)?;
+                    Ok(format!("added custom:{index} {name}"))
+                }
+                RadioAction::Rm { selector } => {
+                    let removed = gtm_core::custom::remove_custom_station(selector)?;
+                    Ok(format!("removed custom:{}", removed.name))
                 }
             },
             CliCommand::Setup {
