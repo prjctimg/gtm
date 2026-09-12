@@ -24,7 +24,7 @@ use crate::ipc::{
 use crate::log::log;
 use crate::playlist::PlaylistFormatKind;
 use crate::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
-use crate::radio::RadioStation;
+use crate::radio::{RadioCountry, RadioStation, RadioTag};
 use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::subsonic::{SubsonicAlbum, SubsonicSearchResults, SubsonicStatus, SubsonicTrack};
 use crate::track;
@@ -1385,6 +1385,61 @@ impl<'a> Radio<'a> {
                 station_name: station_name.into(),
             })
             .await
+    }
+
+    pub async fn tags(&self, limit: u16) -> Result<Vec<RadioTag>> {
+        let res = self.client.send_raw(DaemonReq::RadioTags { limit }).await?;
+        match res {
+            DaemonRes::RadioTagsRes { tags, .. } => Ok(tags),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
+    pub async fn countries(&self, limit: u16) -> Result<Vec<RadioCountry>> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::RadioCountries { limit })
+            .await?;
+        match res {
+            DaemonRes::RadioCountriesRes { countries, .. } => Ok(countries),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
+    pub async fn stations_by_tag(&self, tag: &str, limit: u16) -> Result<Vec<RadioStation>> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::RadioByTag {
+                tag: tag.into(),
+                limit,
+            })
+            .await?;
+        match res {
+            DaemonRes::RadioStationsRes { stations, .. } => Ok(stations),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
+    pub async fn stations_by_country(
+        &self,
+        country: &str,
+        limit: u16,
+    ) -> Result<Vec<RadioStation>> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::RadioByCountry {
+                country: country.into(),
+                limit,
+            })
+            .await?;
+        match res {
+            DaemonRes::RadioStationsRes { stations, .. } => Ok(stations),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
     }
 }
 

@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use crate::app::{
     App, InputMode, LIBRARY_CATEGORIES, LibraryPick, NotifMode, NotifType, NotificationKind,
-    TrackInfoKind, lyrics_are_synced, no_image_protocol, setup_selection,
+    RadioBrowseKind, TrackInfoKind, lyrics_are_synced, no_image_protocol, setup_selection,
 };
 use crate::footer::{
     draw as footer_draw, format_duration, format_uptime, read_process_memory_kb,
@@ -2552,6 +2552,26 @@ impl Pickers {
                     .clamp(54, 88);
                 (w, (n as u16 + 6).clamp(18, 30))
             }
+            PickerId::RadioBrowse => (40, 10),
+            PickerId::RadioBrowseList => {
+                let n = match app.radio.browse_kind {
+                    RadioBrowseKind::Tags => app.radio.browse_tags.len(),
+                    RadioBrowseKind::Countries => app.radio.browse_countries.len(),
+                };
+                (60, (n as u16 + 6).clamp(12, 30))
+            }
+            PickerId::RadioBrowseStations => {
+                let n = app.radio.browse_stations.len();
+                let w = app
+                    .radio
+                    .browse_stations
+                    .iter()
+                    .map(|s| s.name.len() as u16 + 40)
+                    .max()
+                    .unwrap_or(60)
+                    .clamp(54, 88);
+                (w, (n as u16 + 6).clamp(18, 30))
+            }
             _ => (56, 22),
         }
     }
@@ -2591,6 +2611,9 @@ impl Pickers {
                     | PickerId::PodcastEpisodes
                     | PickerId::RadioSearch
                     | PickerId::RadioTop
+                    | PickerId::RadioBrowse
+                    | PickerId::RadioBrowseList
+                    | PickerId::RadioBrowseStations
             );
             let picker_height = if scrolling {
                 let height_cap = (area.height.saturating_sub(2) / 2).max(10);
@@ -2651,6 +2674,11 @@ impl Pickers {
             }
             PickerId::RadioSearch => Self::render_radio_search_picker(f, picker_area, app),
             PickerId::RadioTop => Self::render_radio_top_picker(f, picker_area, app),
+            PickerId::RadioBrowse => Self::render_radio_browse_picker(f, picker_area, app),
+            PickerId::RadioBrowseList => Self::render_radio_browse_list_picker(f, picker_area, app),
+            PickerId::RadioBrowseStations => {
+                Self::render_radio_browse_stations_picker(f, picker_area, app)
+            }
             PickerId::Setup => Self::render_setup_picker(f, picker_area, app),
             PickerId::LastfmAuth => Self::render_lastfm_setup_picker(f, picker_area, app),
             PickerId::SpotifyLink => {
@@ -3972,6 +4000,92 @@ impl Pickers {
         );
     }
 
+    fn render_radio_browse_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let rows = vec![
+            format!("\u{1f3f7}\u{fe0f} Tags\u{2003}\u{2139}\u{fe0f} browse a genre"),
+            format!("\u{1f30f} Countries\u{2003}\u{2139}\u{fe0f} browse by country"),
+        ];
+        Self::render_scroll_rows(
+            f,
+            area,
+            app,
+            " Radio browse ",
+            " Enter: choose list   Esc: close",
+            Vec::new(),
+            rows,
+            "",
+        );
+    }
+
+    fn render_radio_browse_list_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let kind = app.radio.browse_kind;
+        let mut rows = Vec::new();
+        match kind {
+            RadioBrowseKind::Tags => {
+                for t in &app.radio.browse_tags {
+                    rows.push(format!(
+                        "\u{1f3f7}\u{fe0f} {}\u{2003}\u{2139}\u{fe0f} {} stations",
+                        t.name, t.station_count
+                    ));
+                }
+            }
+            RadioBrowseKind::Countries => {
+                for c in &app.radio.browse_countries {
+                    rows.push(format!(
+                        "\u{1f30f} {}\u{2003}\u{2139}\u{fe0f} {} stations",
+                        c.name, c.station_count
+                    ));
+                }
+            }
+        }
+        let (title, hint) = match kind {
+            RadioBrowseKind::Tags => (
+                " Radio browse: tags ",
+                " Enter: stations   r: refresh   Esc: close",
+            ),
+            RadioBrowseKind::Countries => (
+                " Radio browse: countries ",
+                " Enter: stations   r: refresh   Esc: close",
+            ),
+        };
+        Self::render_scroll_rows(
+            f,
+            area,
+            app,
+            title,
+            hint,
+            Vec::new(),
+            rows,
+            if app.radio.browse_pending {
+                " loading\u{2026}"
+            } else {
+                "empty"
+            },
+        );
+    }
+
+    fn render_radio_browse_stations_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let mut rows = Vec::new();
+        for s in &app.radio.browse_stations {
+            rows.push(Self::radio_row(s));
+        }
+        let title = format!(" Radio: {} ", app.radio.browse_topic);
+        Self::render_scroll_rows(
+            f,
+            area,
+            app,
+            &title,
+            " Enter: play   r: refresh   Esc: close",
+            Vec::new(),
+            rows,
+            if app.radio.browse_stations_pending {
+                " loading stations\u{2026}"
+            } else {
+                "no stations"
+            },
+        );
+    }
+
     fn radio_row(s: &RadioStation) -> String {
         let mut row = format!("\u{1f3a7} {}\u{2003}", s.name);
         if !s.country.is_empty() {
@@ -4935,6 +5049,11 @@ impl CommandPalette {
                 keys: "Alt+X",
                 hint: "setup",
             },
+            Command {
+                icon: "\u{f043b} Radio Browse",
+                keys: "Alt+T",
+                hint: "radio browse",
+            },
         ]
     }
 
@@ -5160,6 +5279,11 @@ impl CommandPalette {
                 keys: "Alt+X",
                 hint: "setup",
             },
+            Command {
+                icon: "\u{1f3f7}\u{fe0f} Radio Browse",
+                keys: "Alt+T",
+                hint: "radio browse",
+            },
         ]
     }
 }
@@ -5168,7 +5292,7 @@ pub const COMMAND_GROUPS: &[(&str, usize)] = &[
     ("Playback", 12),
     ("Library & Queue", 15),
     ("View & Overlays", 11),
-    ("System", 6),
+    ("System", 7),
 ];
 
 pub const HELP_LINES: &[(&str, &str)] = &[
@@ -5197,6 +5321,7 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   Alt+U       Subsonic Search"),
     ("", "   Alt+P       Podcasts"),
     ("", "   Alt+R       Top Radio Stations"),
+    ("", "   Alt+T       Radio Browse"),
     ("topic", "── View ──"),
     ("", "   ?           Toggle Help"),
     ("", "   Ctrl+H      Hide Help Bar"),

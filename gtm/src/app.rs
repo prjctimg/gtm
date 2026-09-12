@@ -12,7 +12,7 @@ use gtm_core::client::{DaemonClient, LastfmStatus};
 use gtm_core::global::{DaemonState, EqPreset, PlaybackStatus, RepeatMode};
 use gtm_core::ipc::{CacheKind, DaemonEvent, DaemonRes, HealthReport, SyncKind};
 use gtm_core::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
-use gtm_core::radio::RadioStation;
+use gtm_core::radio::{RadioCountry, RadioStation, RadioTag};
 use gtm_core::secret::{SPOTIFY_CLIENT_ID_KEY, get_secret, set_secret};
 use gtm_core::spotify::{LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use gtm_core::state::{ThemeMode, TrackSort};
@@ -667,6 +667,14 @@ pub struct PodcastView {
     pub subscribe_url: String,
 }
 
+/// Which directory list the Radio Browse picker is showing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RadioBrowseKind {
+    #[default]
+    Tags,
+    Countries,
+}
+
 /// Radio Browser picker state, grouped under `App::radio`.
 #[derive(Default)]
 pub struct RadioView {
@@ -674,6 +682,18 @@ pub struct RadioView {
     pub search_pending: bool,
     pub top: Vec<RadioStation>,
     pub top_pending: bool,
+    /// Tag list (RadioBrowseList in `Tags` kind).
+    pub browse_tags: Vec<RadioTag>,
+    /// Country list (RadioBrowseList in `Countries` kind).
+    pub browse_countries: Vec<RadioCountry>,
+    pub browse_pending: bool,
+    /// Which list `RadioBrowseList` is showing.
+    pub browse_kind: RadioBrowseKind,
+    /// Tag/country selected at `RadioBrowseList`; stations live in
+    /// `browse_stations`.
+    pub browse_topic: String,
+    pub browse_stations: Vec<RadioStation>,
+    pub browse_stations_pending: bool,
 }
 
 /// Queue picker/view UI state, grouped under `App::queue`. Note this mirrors
@@ -953,6 +973,9 @@ enum IpcResult {
     PodcastEpisodes(Vec<PodcastEpisode>),
     RadioSearch(Vec<RadioStation>),
     RadioTop(Vec<RadioStation>),
+    RadioTags(Vec<RadioTag>),
+    RadioCountries(Vec<RadioCountry>),
+    RadioBrowseStations(Vec<RadioStation>),
     /// Last.fm link status refreshed after a setup action completes.
     LastfmStatus(Option<LastfmStatus>),
     /// Authorization URL produced by the daemon's Last.fm auth flow.
@@ -2357,6 +2380,18 @@ impl App {
                         self.radio.top = stations;
                         self.radio.top_pending = false;
                     }
+                    IpcResult::RadioTags(tags) => {
+                        self.radio.browse_tags = tags;
+                        self.radio.browse_pending = false;
+                    }
+                    IpcResult::RadioCountries(countries) => {
+                        self.radio.browse_countries = countries;
+                        self.radio.browse_pending = false;
+                    }
+                    IpcResult::RadioBrowseStations(stations) => {
+                        self.radio.browse_stations = stations;
+                        self.radio.browse_stations_pending = false;
+                    }
                     IpcResult::LastfmStatus(st) => {
                         let was_ready = self.setup.lastfm_status.as_ref().is_some_and(|s| s.ready);
                         self.setup.lastfm_status = st;
@@ -3581,6 +3616,13 @@ impl App {
                     }
                 });
             }
+            PickerId::RadioBrowse => {}
+            PickerId::RadioBrowseList => {
+                self.fetch_radio_browse_list();
+            }
+            PickerId::RadioBrowseStations => {
+                self.fetch_radio_browse_stations();
+            }
             PickerId::Setup => {
                 self.refresh_subsonic_status();
                 let c = self.client.clone();
@@ -3707,6 +3749,62 @@ impl App {
                 }
                 Err(e) => {
                     self_err(&ipc_tx, format!("radio search failed: {e}"));
+                }
+            }
+        });
+    }
+
+    /// (Re)load the tag or country list for the RadioBrowseList picker.
+    pub fn fetch_radio_browse_list(&mut self) {
+        self.radio.browse_pending = true;
+        let (c, ipc_tx) = (self.client.clone(), self.ipc_tx.clone());
+        let kind = self.radio.browse_kind;
+        tokio::spawn(async move {
+            let r = match kind {
+                RadioBrowseKind::Tags => c.radio().tags(200).await.map(|t| IpcResult::RadioTags(t)),
+                RadioBrowseKind::Countries => c
+                    .radio()
+                    .countries(200)
+                    .await
+                    .map(|c| IpcResult::RadioCountries(c)),
+            };
+            match r {
+                Ok(ipc) => {
+                    let _ = ipc_tx.send(ipc);
+                }
+                Err(e) => {
+                    self_err(&ipc_tx, format!("radio browse failed: {e}"));
+                }
+            }
+        });
+    }
+
+    /// (Re)load the stations for the tag/country selected at RadioBrowseList.
+    pub fn fetch_radio_browse_stations(&mut self) {
+        self.radio.browse_stations.clear();
+        self.radio.browse_stations_pending = true;
+        let (c, ipc_tx) = (self.client.clone(), self.ipc_tx.clone());
+        let topic = self.radio.browse_topic.clone();
+        let kind = self.radio.browse_kind;
+        tokio::spawn(async move {
+            let r = match kind {
+                RadioBrowseKind::Tags => c
+                    .radio()
+                    .stations_by_tag(&topic, 50)
+                    .await
+                    .map(|s| IpcResult::RadioBrowseStations(s)),
+                RadioBrowseKind::Countries => c
+                    .radio()
+                    .stations_by_country(&topic, 50)
+                    .await
+                    .map(|s| IpcResult::RadioBrowseStations(s)),
+            };
+            match r {
+                Ok(ipc) => {
+                    let _ = ipc_tx.send(ipc);
+                }
+                Err(e) => {
+                    self_err(&ipc_tx, format!("radio stations failed: {e}"));
                 }
             }
         });
@@ -4965,6 +5063,12 @@ impl App {
             PickerId::PodcastSubscribe => 1,
             PickerId::RadioSearch => self.radio.search.len(),
             PickerId::RadioTop => self.radio.top.len(),
+            PickerId::RadioBrowse => 2,
+            PickerId::RadioBrowseList => match self.radio.browse_kind {
+                RadioBrowseKind::Tags => self.radio.browse_tags.len(),
+                RadioBrowseKind::Countries => self.radio.browse_countries.len(),
+            },
+            PickerId::RadioBrowseStations => self.radio.browse_stations.len(),
             _ => 0,
         }
     }
@@ -7626,6 +7730,101 @@ impl App {
             return;
         }
 
+        // ─── Radio browse ───
+        // Root picker: choose Tags or Countries, then drill into the list.
+        if matches!(
+            self.pickers.top().map(|o| o.id),
+            Some(PickerId::RadioBrowse)
+        ) {
+            match key.code {
+                KeyCode::Enter => {
+                    let sel = self.pickers.top().map_or(0, |o| o.selected);
+                    self.radio.browse_kind = match sel {
+                        0 => RadioBrowseKind::Tags,
+                        _ => RadioBrowseKind::Countries,
+                    };
+                    self.radio.browse_topic.clear();
+                    self.radio.browse_tags.clear();
+                    self.radio.browse_countries.clear();
+                    self.radio.browse_stations.clear();
+                    self.pickers.open(PickerId::RadioBrowseList);
+                    self.on_picker_opened(PickerId::RadioBrowseList);
+                }
+                KeyCode::Up | KeyCode::Down => {
+                    self.move_picker_selection(key.code == KeyCode::Down);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ─── Radio browse list (tags / countries) ───
+        if matches!(
+            self.pickers.top().map(|o| o.id),
+            Some(PickerId::RadioBrowseList)
+        ) {
+            match key.code {
+                KeyCode::Enter => {
+                    if self.radio.browse_pending {
+                        return;
+                    }
+                    let sel = self.pickers.top().map_or(0, |o| o.selected);
+                    let picked = match self.radio.browse_kind {
+                        RadioBrowseKind::Tags => self
+                            .radio
+                            .browse_tags
+                            .get(sel)
+                            .map(|t| (t.name.clone(), t.station_count)),
+                        RadioBrowseKind::Countries => self
+                            .radio
+                            .browse_countries
+                            .get(sel)
+                            .map(|c| (c.name.clone(), c.station_count)),
+                    };
+                    if let Some((topic, _count)) = picked {
+                        self.radio.browse_topic = topic;
+                        self.pickers.open(PickerId::RadioBrowseStations);
+                        self.on_picker_opened(PickerId::RadioBrowseStations);
+                    }
+                }
+                KeyCode::Char('r') => {
+                    self.fetch_radio_browse_list();
+                }
+                KeyCode::Up | KeyCode::Down => {
+                    self.move_picker_selection(key.code == KeyCode::Down);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ─── Radio browse stations ───
+        if matches!(
+            self.pickers.top().map(|o| o.id),
+            Some(PickerId::RadioBrowseStations)
+        ) {
+            match key.code {
+                KeyCode::Enter => {
+                    let sel = self.pickers.top().map_or(0, |o| o.selected);
+                    if let Some(station) = self.radio.browse_stations.get(sel).cloned() {
+                        let c = self.client.clone();
+                        self.pickers.close_top();
+                        tokio::spawn(async move {
+                            let _ = c.radio().play(&station.id, &station.name).await;
+                        });
+                    }
+                }
+                KeyCode::Char('r') => {
+                    self.fetch_radio_browse_stations();
+                }
+                KeyCode::Up | KeyCode::Down => {
+                    self.move_picker_selection(key.code == KeyCode::Down);
+                }
+                _ => {}
+            }
+            return;
+        }
+
         let top_id = self.pickers.top().map(|o| o.id);
         let is_help = top_id == Some(PickerId::Help);
         let ctrl_or_alt = key
@@ -8455,6 +8654,9 @@ impl App {
                                     self.send_high(TuiCommand::CheckHealth);
                                 } else if action == "setup" {
                                     self.open_setup_picker(None);
+                                } else if action == "radio browse" {
+                                    self.pickers.open(PickerId::RadioBrowse);
+                                    self.on_picker_opened(PickerId::RadioBrowse);
                                 }
                             }
                             // If the action opened a sub-picker it was stacked on

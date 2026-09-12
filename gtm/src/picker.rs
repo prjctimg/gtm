@@ -45,6 +45,13 @@ pub enum PickerId {
     RadioSearch,
     /// Top-voted stations from the Radio Browser directory.
     RadioTop,
+    /// Radio Browser browse entry: browse by tag or by country.
+    RadioBrowse,
+    /// Tag or country list picked at `RadioBrowse`.
+    RadioBrowseList,
+    /// Stations carrying the tag / from the country selected at
+    /// `RadioBrowseList`.
+    RadioBrowseStations,
     /// `gtm setup` entry: choose which service to configure.
     Setup,
     /// Last.fm setup form (API key/secret) plus the OAuth browser flow.

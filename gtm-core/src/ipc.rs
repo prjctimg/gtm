@@ -7,7 +7,7 @@
 use crate::global::{DaemonState, EqPreset, LoudnessMode, RepeatMode, YTFilter};
 use crate::playlist::PlaylistFormatKind;
 use crate::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
-use crate::radio::RadioStation;
+use crate::radio::{RadioCountry, RadioStation, RadioTag};
 use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::subsonic::{SubsonicAlbum, SubsonicSearchResults, SubsonicStatus, SubsonicTrack};
 use crate::track::{LrcData, Playlist, StreamInfo, TrackInfo, YTSearchResult};
@@ -447,6 +447,20 @@ pub enum DaemonReq {
         station_id: String,
         station_name: String,
     },
+    RadioTags {
+        limit: u16,
+    },
+    RadioByTag {
+        tag: String,
+        limit: u16,
+    },
+    RadioCountries {
+        limit: u16,
+    },
+    RadioByCountry {
+        country: String,
+        limit: u16,
+    },
     GetStatus,
     CheckHealth,
     Ping,
@@ -550,6 +564,10 @@ impl DaemonReq {
             DaemonReq::RadioSearch { .. } => "radio_search",
             DaemonReq::RadioTop { .. } => "radio_top",
             DaemonReq::RadioPlay { .. } => "radio_play",
+            DaemonReq::RadioTags { .. } => "radio_tags",
+            DaemonReq::RadioByTag { .. } => "radio_bytag",
+            DaemonReq::RadioCountries { .. } => "radio_countries",
+            DaemonReq::RadioByCountry { .. } => "radio_bycountry",
             DaemonReq::GetStatus => "get_status",
             DaemonReq::CheckHealth => "check_health",
             DaemonReq::Ping => "ping",
@@ -1160,6 +1178,46 @@ impl DaemonReq {
                     station_name: x.station_name,
                 }
             }
+            "radio_tags" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    limit: u16,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::RadioTags { limit: x.limit }
+            }
+            "radio_bytag" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    tag: String,
+                    limit: u16,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::RadioByTag {
+                    tag: x.tag,
+                    limit: x.limit,
+                }
+            }
+            "radio_countries" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    limit: u16,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::RadioCountries { limit: x.limit }
+            }
+            "radio_bycountry" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    country: String,
+                    limit: u16,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::RadioByCountry {
+                    country: x.country,
+                    limit: x.limit,
+                }
+            }
             "get_status" => DaemonReq::GetStatus,
             "check_health" => DaemonReq::CheckHealth,
             "ping" => DaemonReq::Ping,
@@ -1468,6 +1526,12 @@ pub enum DaemonRes {
     RadioStationsRes {
         stations: Vec<RadioStation>,
     },
+    RadioTagsRes {
+        tags: Vec<RadioTag>,
+    },
+    RadioCountriesRes {
+        countries: Vec<RadioCountry>,
+    },
     CoverArt {
         data: Option<String>,
     },
@@ -1576,6 +1640,10 @@ impl DaemonRes {
             DaemonRes::PodcastStatusRes { status } => Some(serde_json::json!({ "status": status })),
             DaemonRes::RadioStationsRes { stations } => {
                 Some(serde_json::json!({ "stations": stations }))
+            }
+            DaemonRes::RadioTagsRes { tags } => Some(serde_json::json!({ "tags": tags })),
+            DaemonRes::RadioCountriesRes { countries } => {
+                Some(serde_json::json!({ "countries": countries }))
             }
             DaemonRes::CoverArt { data } => Some(serde_json::json!({ "data": data })),
             DaemonRes::SyncStatus {
@@ -1908,10 +1976,24 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "radio_search" | "radio_top" => {
+            "radio_search" | "radio_top" | "radio_bytag" | "radio_bycountry" => {
                 let stations = data.get("stations").cloned().unwrap_or(Value::Null);
                 match serde_json::from_value::<Vec<RadioStation>>(stations) {
                     Ok(stations) => DaemonRes::RadioStationsRes { stations },
+                    Err(_) => DaemonRes::Value { value: data },
+                }
+            }
+            "radio_tags" => {
+                let tags = data.get("tags").cloned().unwrap_or(Value::Null);
+                match serde_json::from_value::<Vec<RadioTag>>(tags) {
+                    Ok(tags) => DaemonRes::RadioTagsRes { tags },
+                    Err(_) => DaemonRes::Value { value: data },
+                }
+            }
+            "radio_countries" => {
+                let countries = data.get("countries").cloned().unwrap_or(Value::Null);
+                match serde_json::from_value::<Vec<RadioCountry>>(countries) {
+                    Ok(countries) => DaemonRes::RadioCountriesRes { countries },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }

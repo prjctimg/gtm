@@ -49,3 +49,19 @@ impl RadioStation {
         }
     }
 }
+
+/// A Radio Browser directory tag (`/json/tags`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RadioTag {
+    pub name: String,
+    #[serde(default, rename = "stationcount")]
+    pub station_count: u64,
+}
+
+/// A Radio Browser directory country (`/json/countries`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RadioCountry {
+    pub name: String,
+    #[serde(default, rename = "stationcount")]
+    pub station_count: u64,
+}

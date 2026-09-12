@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use gtm_core::radio::RadioStation;
+use gtm_core::radio::{RadioCountry, RadioStation, RadioTag};
 
 /// Radio Browser API mirrors. `all.api.radio-browser.info` round-robins across
 /// the public servers; the per-region mirrors are used as fallback hosts.
@@ -81,6 +81,71 @@ impl RadioBrowserManager {
         stations
             .pop()
             .ok_or_else(|| "station not found".to_string())
+    }
+
+    /// The most-used directory tags (`/json/tags`).
+    pub async fn tags(&self, limit: u16) -> Result<Vec<RadioTag>, String> {
+        let resp = self
+            .get(
+                "/json/tags",
+                &[("limit", &limit.to_string()), ("hidebroken", "true")],
+            )
+            .await
+            .map_err(|e| format!("tags: {e}"))?;
+        Ok(parse_tags(&resp))
+    }
+
+    /// The most-used directory countries (`/json/countries`).
+    pub async fn countries(&self, limit: u16) -> Result<Vec<RadioCountry>, String> {
+        let resp = self
+            .get(
+                "/json/countries",
+                &[("limit", &limit.to_string()), ("hidebroken", "true")],
+            )
+            .await
+            .map_err(|e| format!("countries: {e}"))?;
+        Ok(parse_countries(&resp))
+    }
+
+    /// Stations carrying a given directory tag. `tag` is URL-encoded by the
+    /// query builder, so values like "80s" or "latin jazz" are safe here.
+    pub async fn stations_by_tag(
+        &self,
+        tag: &str,
+        limit: u16,
+    ) -> Result<Vec<RadioStation>, String> {
+        let resp = self
+            .get(
+                "/json/stations/search",
+                &[
+                    ("tag", tag),
+                    ("limit", &limit.to_string()),
+                    ("hidebroken", "true"),
+                ],
+            )
+            .await
+            .map_err(|e| format!("by-tag: {e}"))?;
+        Ok(parse_stations(&resp))
+    }
+
+    /// Stations from a given directory country.
+    pub async fn stations_by_country(
+        &self,
+        country: &str,
+        limit: u16,
+    ) -> Result<Vec<RadioStation>, String> {
+        let resp = self
+            .get(
+                "/json/stations/search",
+                &[
+                    ("country", country),
+                    ("limit", &limit.to_string()),
+                    ("hidebroken", "true"),
+                ],
+            )
+            .await
+            .map_err(|e| format!("by-country: {e}"))?;
+        Ok(parse_stations(&resp))
     }
 
     async fn get(
@@ -180,6 +245,32 @@ fn parse_stations(items: &[serde_json::Value]) -> Vec<RadioStation> {
                     .and_then(|v| v.as_str())
                     .unwrap_or_default()
                     .to_string(),
+            })
+        })
+        .collect()
+}
+
+fn parse_tags(items: &[serde_json::Value]) -> Vec<RadioTag> {
+    items
+        .iter()
+        .filter_map(|s| {
+            let name = s.get("name").and_then(|v| v.as_str())?;
+            Some(RadioTag {
+                name: name.to_string(),
+                station_count: s.get("stationcount").and_then(|v| v.as_u64()).unwrap_or(0),
+            })
+        })
+        .collect()
+}
+
+fn parse_countries(items: &[serde_json::Value]) -> Vec<RadioCountry> {
+    items
+        .iter()
+        .filter_map(|s| {
+            let name = s.get("name").and_then(|v| v.as_str())?;
+            Some(RadioCountry {
+                name: name.to_string(),
+                station_count: s.get("stationcount").and_then(|v| v.as_u64()).unwrap_or(0),
             })
         })
         .collect()

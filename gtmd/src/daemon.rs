@@ -2374,6 +2374,44 @@ impl Radio {
         Ok(DaemonRes::RadioStationsRes { stations })
     }
 
+    pub async fn tags(inner: &DaemonInner, limit: u16) -> Result<DaemonRes, CoreError> {
+        let radio = inner.radio.lock().await;
+        let tags = radio.tags(limit).await.map_err(CoreError::Daemon)?;
+        Ok(DaemonRes::RadioTagsRes { tags })
+    }
+
+    pub async fn by_tag(
+        inner: &DaemonInner,
+        tag: &str,
+        limit: u16,
+    ) -> Result<DaemonRes, CoreError> {
+        let radio = inner.radio.lock().await;
+        let stations = radio
+            .stations_by_tag(tag, limit)
+            .await
+            .map_err(CoreError::Daemon)?;
+        Ok(DaemonRes::RadioStationsRes { stations })
+    }
+
+    pub async fn countries(inner: &DaemonInner, limit: u16) -> Result<DaemonRes, CoreError> {
+        let radio = inner.radio.lock().await;
+        let countries = radio.countries(limit).await.map_err(CoreError::Daemon)?;
+        Ok(DaemonRes::RadioCountriesRes { countries })
+    }
+
+    pub async fn by_country(
+        inner: &DaemonInner,
+        country: &str,
+        limit: u16,
+    ) -> Result<DaemonRes, CoreError> {
+        let radio = inner.radio.lock().await;
+        let stations = radio
+            .stations_by_country(country, limit)
+            .await
+            .map_err(CoreError::Daemon)?;
+        Ok(DaemonRes::RadioStationsRes { stations })
+    }
+
     pub async fn play(
         inner: &DaemonInner,
         station_id: &str,
@@ -3465,6 +3503,10 @@ fn request_is_read_only(req: &DaemonReq) -> bool {
             | DaemonReq::PodcastStatus
             | DaemonReq::RadioSearch { .. }
             | DaemonReq::RadioTop { .. }
+            | DaemonReq::RadioTags { .. }
+            | DaemonReq::RadioByTag { .. }
+            | DaemonReq::RadioCountries { .. }
+            | DaemonReq::RadioByCountry { .. }
             | DaemonReq::Search { .. }
             | DaemonReq::Queue {
                 action: QueueAction::List,
@@ -4534,6 +4576,12 @@ impl Daemon {
                 station_id,
                 station_name,
             } => Radio::play(inner, station_id, station_name).await,
+            DaemonReq::RadioTags { limit } => Radio::tags(inner, *limit).await,
+            DaemonReq::RadioByTag { tag, limit } => Radio::by_tag(inner, tag, *limit).await,
+            DaemonReq::RadioCountries { limit } => Radio::countries(inner, *limit).await,
+            DaemonReq::RadioByCountry { country, limit } => {
+                Radio::by_country(inner, country, *limit).await
+            }
             DaemonReq::SetSleepTimer { minutes } => Cmd::set_sleep_timer(inner, *minutes).await,
             DaemonReq::CancelSleepTimer => Cmd::cancel_sleep_timer(inner).await,
             DaemonReq::SetLowPower { enabled } => Cmd::set_low_power(inner, *enabled).await,

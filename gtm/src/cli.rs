@@ -369,6 +369,30 @@ pub enum RadioAction {
         #[arg(value_name = "NAME", required = false)]
         station_name: Option<String>,
     },
+    /// Show the most-used directory tags
+    Tags {
+        #[arg(long, default_value_t = 25)]
+        limit: u16,
+    },
+    /// Show the most-used directory countries
+    Countries {
+        #[arg(long, default_value_t = 25)]
+        limit: u16,
+    },
+    /// List stations carrying a tag
+    Tag {
+        #[arg(value_name = "TAG")]
+        tag: String,
+        #[arg(long, default_value_t = 25)]
+        limit: u16,
+    },
+    /// List stations from a country
+    Country {
+        #[arg(value_name = "COUNTRY")]
+        country: String,
+        #[arg(long, default_value_t = 25)]
+        limit: u16,
+    },
 }
 
 pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) {
@@ -1280,6 +1304,56 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         .await
                         .map(|()| format!("playing {name}"))
                         .map_err(|e| e.to_string())
+                }
+                RadioAction::Tags { limit } => {
+                    let tags = client
+                        .radio()
+                        .tags(*limit)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    for t in &tags {
+                        println!("{}\t{} stations", t.name, t.station_count);
+                    }
+                    Ok(format!("{} tags", tags.len()))
+                }
+                RadioAction::Countries { limit } => {
+                    let countries = client
+                        .radio()
+                        .countries(*limit)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    for c in &countries {
+                        println!("{}\t{} stations", c.name, c.station_count);
+                    }
+                    Ok(format!("{} countries", countries.len()))
+                }
+                RadioAction::Tag { tag, limit } => {
+                    let stations = client
+                        .radio()
+                        .stations_by_tag(tag, *limit)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    for s in &stations {
+                        println!(
+                            "{}\t{}\t{}\t{:.1} votes",
+                            s.id, s.name, s.url_resolved, s.votes
+                        );
+                    }
+                    Ok(format!("{} stations", stations.len()))
+                }
+                RadioAction::Country { country, limit } => {
+                    let stations = client
+                        .radio()
+                        .stations_by_country(country, *limit)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    for s in &stations {
+                        println!(
+                            "{}\t{}\t{}\t{:.1} votes",
+                            s.id, s.name, s.url_resolved, s.votes
+                        );
+                    }
+                    Ok(format!("{} stations", stations.len()))
                 }
             },
             CliCommand::Setup {
