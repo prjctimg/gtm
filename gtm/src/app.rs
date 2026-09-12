@@ -7649,15 +7649,11 @@ impl App {
         if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::LoadStream)) {
             match key.code {
                 KeyCode::Char(c) => {
-                    if !c.is_control()
-                        && matches!(
-                            self.pickers.top().map(|o| o.query.len()),
-                            Some(len) if len < 2048
-                        )
+                    if let Some(top) = self.pickers.top_mut()
+                        && !c.is_control()
+                        && top.query.len() < 2048
                     {
-                        if let Some(top) = self.pickers.top_mut() {
-                            top.query.push(c);
-                        }
+                        top.query.push(c);
                     }
                 }
                 KeyCode::Backspace => {
