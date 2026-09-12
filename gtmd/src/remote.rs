@@ -4,7 +4,6 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use std::collections::VecDeque;
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

@@ -23,7 +23,7 @@ pub struct Footer;
 
 /// Scrolling marquee for footer text: if it fits in `MAX` chars, return it
 /// verbatim; otherwise cycle one full loop then hold still before repeating.
-fn scroll_text(raw: String, scroll: u64) -> String {
+fn scroll_text(raw: String, scroll: usize) -> String {
     const MAX: usize = 30;
     const SPEED: usize = 6;
     const HOLD_STEPS: usize = 50; // ~5s hold at 60fps / SPEED
