@@ -4002,8 +4002,8 @@ impl Pickers {
 
     fn render_radio_browse_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let rows = vec![
-            format!("\u{1f3f7}\u{fe0f} Tags\u{2003}\u{2139}\u{fe0f} browse a genre"),
-            format!("\u{1f30f} Countries\u{2003}\u{2139}\u{fe0f} browse by country"),
+            "\u{1f3f7}\u{fe0f} Tags\u{2003}\u{2139}\u{fe0f} browse a genre".to_string(),
+            "\u{1f30f} Countries\u{2003}\u{2139}\u{fe0f} browse by country".to_string(),
         ];
         Self::render_scroll_rows(
             f,

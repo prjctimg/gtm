@@ -3761,12 +3761,12 @@ impl App {
         let kind = self.radio.browse_kind;
         tokio::spawn(async move {
             let r = match kind {
-                RadioBrowseKind::Tags => c.radio().tags(200).await.map(|t| IpcResult::RadioTags(t)),
+                RadioBrowseKind::Tags => c.radio().tags(200).await.map(IpcResult::RadioTags),
                 RadioBrowseKind::Countries => c
                     .radio()
                     .countries(200)
                     .await
-                    .map(|c| IpcResult::RadioCountries(c)),
+                    .map(IpcResult::RadioCountries),
             };
             match r {
                 Ok(ipc) => {
@@ -3792,12 +3792,12 @@ impl App {
                     .radio()
                     .stations_by_tag(&topic, 50)
                     .await
-                    .map(|s| IpcResult::RadioBrowseStations(s)),
+                    .map(IpcResult::RadioBrowseStations),
                 RadioBrowseKind::Countries => c
                     .radio()
                     .stations_by_country(&topic, 50)
                     .await
-                    .map(|s| IpcResult::RadioBrowseStations(s)),
+                    .map(IpcResult::RadioBrowseStations),
             };
             match r {
                 Ok(ipc) => {
