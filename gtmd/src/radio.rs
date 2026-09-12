@@ -124,7 +124,7 @@ fn parse_stations(items: &[serde_json::Value]) -> Vec<RadioStation> {
             let id = s.get("stationuuid").and_then(|v| v.as_str())?;
             // Only offer streams that recently passed a working check when the
             // directory classifies them.
-            if let Some(ok) = s
+            if let Some(_ok) = s
                 .get("lastcheckok")
                 .and_then(|v| v.as_i64())
                 .filter(|&ok| ok != 1)
