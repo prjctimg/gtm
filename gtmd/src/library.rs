@@ -21,7 +21,7 @@ use symphonia::core::units::Timestamp;
 use tracing::warn;
 
 use gtm_core::MetadataPatch;
-use gtm_core::playlist_fmt::{M3u8Format, PlaylistFormat, PlaylistFormatKind, PlsFormat};
+use gtm_core::playlist::{M3u8Format, PlaylistFormat, PlaylistFormatKind, PlsFormat};
 use gtm_core::track::{Playlist, TrackInfo};
 
 use crate::cleaner::{clean_filename_stem, sanitize_text};

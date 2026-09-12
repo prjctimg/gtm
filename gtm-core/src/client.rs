@@ -22,7 +22,7 @@ use crate::ipc::{
     PROTOCOL_VERSION, QueueAction, SyncKind, WireReq, WireRes,
 };
 use crate::log::log;
-use crate::playlist_fmt::PlaylistFormatKind;
+use crate::playlist::PlaylistFormatKind;
 use crate::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 use crate::radio::RadioStation;
 use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};

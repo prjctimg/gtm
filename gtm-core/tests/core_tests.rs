@@ -9,7 +9,7 @@ use gtm_core::global::{
     CrossfadeConfig, DaemonState, Image, PlaybackStatus, RepeatMode, ThemeMode, UIMode, YTFilter,
 };
 use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction};
-use gtm_core::playlist_fmt::PlaylistFormatKind;
+use gtm_core::playlist::PlaylistFormatKind;
 use gtm_core::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use gtm_core::track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
 use gtm_core::wire::{decode, encode};

@@ -35,7 +35,7 @@ use crate::keymap::{
     parse_key_event,
 };
 use crate::mouse::{MouseMap, MouseZone};
-use crate::oauth_capture::capture_lastfm_token_loopback;
+use crate::oauth::capture_lastfm_token_loopback;
 use crate::picker::{PickerId, PickerManager, PickerSource};
 use crate::progress::{ProgressSmoother, ProgressStyle};
 use crate::reactive::{ReactivePalette, derive_theme, extract_palette};

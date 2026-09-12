@@ -5,13 +5,13 @@
 // This is free software released under the GPL-3.0 license.
 
 pub mod client;
-pub mod daemon_ctl;
+pub mod daemon;
 pub mod fsm;
 pub mod global;
 pub mod ipc;
 pub mod log;
 pub mod paths;
-pub mod playlist_fmt;
+pub mod playlist;
 pub mod podcast;
 pub mod radio;
 pub mod secret;
@@ -32,7 +32,7 @@ pub use paths::{
     ensure_termux_pulseaudio, is_termux, resolve_command_socket, resolve_pid_file,
     resolve_pulse_socket, termux_music_dirs,
 };
-pub use playlist_fmt::{M3u8Format, PlaylistFormat, PlaylistFormatKind, PlsFormat};
+pub use playlist::{M3u8Format, PlaylistFormat, PlaylistFormatKind, PlsFormat};
 pub use podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 pub use radio::RadioStation;
 pub use spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};

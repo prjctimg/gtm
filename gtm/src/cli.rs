@@ -9,11 +9,11 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 use gtm_core::client::{DaemonClient, LastfmStatus};
-use gtm_core::daemon_ctl::ensure_daemon_running;
+use gtm_core::daemon::ensure_daemon_running;
 use gtm_core::global::{PlaybackStatus, RepeatMode};
 use gtm_core::ipc::HealthStatus;
 use gtm_core::ipc::MetadataPatch;
-use gtm_core::playlist_fmt::PlaylistFormatKind;
+use gtm_core::playlist::PlaylistFormatKind;
 use gtm_core::resolve_command_socket;
 use gtm_core::secret::{
     LASTFM_API_KEY_KEY, LASTFM_API_SECRET_KEY, SPOTIFY_CLIENT_ID_KEY, get_secret, set_secret,
@@ -26,7 +26,7 @@ use tokio::io::AsyncBufReadExt;
 
 use crate::app::{Prefs, ensure_prefs_file};
 use crate::footer::format_uptime;
-use crate::oauth_capture::{capture_lastfm_token_loopback, lastfm_callback_port, mask_credential};
+use crate::oauth::{capture_lastfm_token_loopback, lastfm_callback_port, mask_credential};
 use crate::ui::run_tui;
 
 /// Parse a CLI `--format` value into a [`PlaylistFormatKind`].

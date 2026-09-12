@@ -102,7 +102,7 @@ pub async fn capture_lastfm_token_loopback() -> Result<String, String> {
 }
 
 #[cfg(test)]
-mod oauth_capture_tests {
+mod tests {
     use super::*;
 
     #[test]

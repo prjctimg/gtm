@@ -5,7 +5,7 @@
 // This is free software released under the GPL-3.0 license.
 
 use crate::global::{DaemonState, EqPreset, LoudnessMode, RepeatMode, YTFilter};
-use crate::playlist_fmt::PlaylistFormatKind;
+use crate::playlist::PlaylistFormatKind;
 use crate::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 use crate::radio::RadioStation;
 use crate::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};

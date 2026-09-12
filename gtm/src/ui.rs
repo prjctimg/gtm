@@ -27,7 +27,7 @@ use crossterm::event::{
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use gtm_core::daemon_ctl::ensure_daemon_running;
+use gtm_core::daemon::ensure_daemon_running;
 use gtm_core::global::{EqPreset, PlaybackStatus};
 use gtm_core::ipc::HealthStatus;
 use gtm_core::log::redirect_stderr_to_log;
