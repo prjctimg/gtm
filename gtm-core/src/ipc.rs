@@ -1830,6 +1830,12 @@ impl DaemonRes {
                         },
                         Err(_) => DaemonRes::Value { value: data },
                     }
+                } else if data.get("playlists").is_some() {
+                    let playlists = data.get("playlists").cloned().unwrap_or(Value::Null);
+                    match serde_json::from_value::<Vec<Playlist>>(playlists) {
+                        Ok(playlists) => DaemonRes::Playlists { playlists },
+                        Err(_) => DaemonRes::Value { value: data },
+                    }
                 } else {
                     let tracks = data.get("tracks").cloned().unwrap_or(Value::Null);
                     match serde_json::from_value::<Vec<TrackInfo>>(tracks) {

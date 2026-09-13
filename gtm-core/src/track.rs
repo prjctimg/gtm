@@ -48,6 +48,18 @@ pub struct Playlist {
 pub struct LrcLine {
     pub timestamp: f64,
     pub text: String,
+    /// Karaoke word-level timings from enhanced-LRC sources(e.g.
+    /// `<00:12.50>Hello`). Empty when the source only carries line-level
+    /// timing.
+    #[serde(default)]
+    pub words: Vec<LrcWord>,
+}
+
+/// A single word of a timed lyric line with its own inline start time.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LrcWord {
+    pub time: f64,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

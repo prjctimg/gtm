@@ -890,7 +890,7 @@ jobs:
           attempt=0
           while true; do
             if git diff --cached --quiet; then
-              git add -f bench-results/ BENCHMARK.md
+              git add -f BENCHMARK.md assets/fixtures
             fi
             if git diff --cached --quiet; then
               echo "no benchmark changes to commit"
@@ -913,7 +913,6 @@ jobs:
         with:
           name: bench-results
           path: |
-            bench-results/*.json
             BENCHMARK.md
           if-no-files-found: error
 

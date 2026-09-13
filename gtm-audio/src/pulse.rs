@@ -95,50 +95,107 @@ struct PaStreamState {
     stream_volume: Arc<AtomicU8>,
     control: Option<Arc<DecodeControl>>,
     decode_handle: Option<std::thread::JoinHandle<()>>,
+    name: String,
+    sample_rate: u32,
+    channels: u8,
 }
 
 impl PaStreamState {
-    fn new(client: &Client, name: &str, _mixer_volume: &Arc<AtomicU8>) -> AudioResult<Self> {
-        let ring = Arc::new(RingBufferInner::new(BUFFER_CAPACITY_SAMPLES));
-        let stream_volume = Arc::new(AtomicU8::new(0));
+    fn stream_params(sample_rate: u32, channels: u8) -> protocol::PlaybackStreamParams {
+        let sample_rate = sample_rate.clamp(22050, 192000);
+        let channels = if channels == 1 { 1 } else { 2 };
+        protocol::PlaybackStreamParams {
+            sample_spec: protocol::SampleSpec {
+                format: protocol::SampleFormat::Float32Le,
+                channels,
+                sample_rate,
+            },
+            channel_map: if channels == 1 {
+                protocol::ChannelMap::mono()
+            } else {
+                protocol::ChannelMap::stereo()
+            },
+            cvolume: Some(protocol::ChannelVolume::muted(channels)),
+            buffer_attr: protocol::stream::BufferAttr {
+                max_length: u32::MAX,
+                // ~2s buffer and ~1.5s pre-buffer, scaled to the track rate so
+                // the timing stays constant regardless of the source rate.
+                target_length: (sample_rate * channels as u32 * 4 * 2) as u32,
+                pre_buffering: (sample_rate * channels as u32 * 4 * 3 / 2) as u32,
+                minimum_request_length: 1024,
+                fragment_size: u32::MAX,
+            },
+            ..Default::default()
+        }
+    }
 
+    fn create_stream(
+        client: &Client,
+        name: &str,
+        ring: &SharedRingBuffer,
+        stream_volume: &Arc<AtomicU8>,
+        sample_rate: u32,
+        channels: u8,
+    ) -> AudioResult<pulseaudio::PlaybackStream> {
         let source = PaPlaybackSource {
             ring: ring.clone(),
             volume: stream_volume.clone(),
             underrun_burst: 0,
         };
-
-        let params = protocol::PlaybackStreamParams {
-            sample_spec: protocol::SampleSpec {
-                format: protocol::SampleFormat::Float32Le,
-                channels: 2,
-                sample_rate: 44100,
-            },
-            channel_map: protocol::ChannelMap::stereo(),
-            cvolume: Some(protocol::ChannelVolume::muted(2)),
-            buffer_attr: protocol::stream::BufferAttr {
-                max_length: u32::MAX,
-                target_length: (44100 * 2 * 4 * 2) as u32, // ~2s buffer
-                pre_buffering: (PREBUFFER_SAMPLES * 4) as u32,
-                minimum_request_length: 1024,
-                fragment_size: u32::MAX,
-            },
-            ..Default::default()
-        };
-
+        let params = Self::stream_params(sample_rate, channels);
         let stream = tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current()
                 .block_on(client.create_playback_stream(params, source))
         })
         .map_err(|e| AudioError::OutputError(format!("PA create stream '{name}': {e}")))?;
+        Ok(stream)
+    }
 
+    fn new(client: &Client, name: &str, _mixer_volume: &Arc<AtomicU8>) -> AudioResult<Self> {
+        let ring = Arc::new(RingBufferInner::new(BUFFER_CAPACITY_SAMPLES));
+        let stream_volume = Arc::new(AtomicU8::new(0));
+        let stream = Self::create_stream(client, name, &ring, &stream_volume, 44100, 2)?;
         Ok(Self {
             stream,
             ring,
             stream_volume,
             control: None,
             decode_handle: None,
+            name: name.to_string(),
+            sample_rate: 44100,
+            channels: 2,
         })
+    }
+
+    /// Re-opens the playback stream when the source rate or channel count
+    /// differs from what is currently configured. PulseAudio mixes formats on
+    /// the server, so a close-to-native rate avoids extra resampling and,
+    /// crucially, fixes playback speed drift when a track's rate is not 44.1k
+    /// (previously every stream was hard-coded to 44100 Hz).
+    fn reconfigure(&mut self, client: &Client, sample_rate: u32, channels: u8) -> AudioResult<()> {
+        let sample_rate = sample_rate.clamp(22050, 192000);
+        let channels = if channels == 1 { 1 } else { 2 };
+        if sample_rate == self.sample_rate && channels == self.channels {
+            return Ok(());
+        }
+        let stream = Self::create_stream(
+            client,
+            &self.name,
+            &self.ring,
+            &self.stream_volume,
+            sample_rate,
+            channels,
+        )?;
+        self.stream = stream;
+        self.sample_rate = sample_rate;
+        self.channels = channels;
+        log::info!(
+            "pa: stream '{}' reopened at {} Hz / {} ch",
+            self.name,
+            sample_rate,
+            channels
+        );
+        Ok(())
     }
 
     fn stop_decode(&mut self) {
@@ -460,6 +517,12 @@ impl Mixer for PulseAudioMixer {
             PREBUFFER_SAMPLES,
         )?;
 
+        let client = self._client.clone();
+        self.active_mut().reconfigure(
+            &client,
+            control.sample_rate.load(Ordering::Relaxed),
+            control.channels.load(Ordering::Relaxed),
+        )?;
         self.active_mut().control = Some(control);
         self.active_mut().decode_handle = Some(handle);
 
@@ -489,6 +552,10 @@ impl Mixer for PulseAudioMixer {
             *self.duration.lock().unwrap() = dur.as_secs_f64();
         }
 
+        let rate = source.sample_rate().get();
+        let channels = source.channels().get();
+        let client = self._client.clone();
+        self.active_mut().reconfigure(&client, rate, channels)?;
         let source = self.wrap_source(source);
 
         let ring = self.active().ring.clone();
@@ -542,6 +609,12 @@ impl Mixer for PulseAudioMixer {
             &self.spectrum,
         )?;
 
+        let client = self._client.clone();
+        self.active_mut().reconfigure(
+            &client,
+            control.sample_rate.load(Ordering::Relaxed),
+            control.channels.load(Ordering::Relaxed),
+        )?;
         self.active_mut().control = Some(control);
         self.active_mut().decode_handle = Some(handle);
 
@@ -579,6 +652,12 @@ impl Mixer for PulseAudioMixer {
             PREBUFFER_SAMPLES,
         )?;
 
+        let client = self._client.clone();
+        self.standby_mut().reconfigure(
+            &client,
+            control.sample_rate.load(Ordering::Relaxed),
+            control.channels.load(Ordering::Relaxed),
+        )?;
         self.standby_mut().control = Some(control);
         self.standby_mut().decode_handle = Some(handle);
 
@@ -596,6 +675,10 @@ impl Mixer for PulseAudioMixer {
         self.standby().flush();
         Self::set_stream_volume(&self.standby(), 0);
 
+        let rate = source.sample_rate().get();
+        let channels = source.channels().get();
+        let client = self._client.clone();
+        self.standby_mut().reconfigure(&client, rate, channels)?;
         let source = self.wrap_source(source);
 
         let ring = self.standby().ring.clone();

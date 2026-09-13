@@ -753,6 +753,10 @@ pub struct LyricsView {
     /// time-sync driver until focus is released.
     pub pane_focus: bool,
     pub manual_scroll: bool,
+    /// User-applied time offset in seconds (added to the playback position for
+    /// lyric matching and timestamp display). Adjusted with `[` / `]` while the
+    /// lyrics pane holds focus and reset to zero on every track change.
+    pub offset_secs: f64,
 }
 
 pub struct App {
@@ -765,7 +769,7 @@ pub struct App {
     /// Raw (guarded, un-smoothed) daemon playback position used for
     /// time-synced lyric matching so the active verse updates without the
     /// EMA lag that smooths the progress bar.
-    raw_position: f64,
+    pub(crate) raw_position: f64,
     /// Set when a seek is issued so the monotonic position guard is skipped
     /// (a backward seek would otherwise be clamped and never re-sync the lyric
     /// highlight). Cleared shortly after the seek lands.
@@ -1463,6 +1467,7 @@ impl App {
                 show: false,
                 pane_focus: false,
                 manual_scroll: false,
+                offset_secs: 0.0,
             },
             show_health_panel: false,
             report_health: false,
@@ -1956,6 +1961,17 @@ impl App {
                 }
             });
         }
+        {
+            let c = self.client.clone();
+            let ipc_tx = self.ipc_tx.clone();
+            tokio::spawn(async move {
+                if let Ok(DaemonRes::Playlists { playlists, .. }) =
+                    c.library().get_playlists().await
+                {
+                    let _ = ipc_tx.send(IpcResult::Playlists(playlists));
+                }
+            });
+        }
 
         // Initialize cover image picker in background (blocking terminal query).
         {
@@ -2253,6 +2269,7 @@ impl App {
                     self.lyrics.pending_gen = Some(fetch_gen);
                     self.lyrics.fetching = true;
                     self.lyrics.scroll = 0;
+                    self.lyrics.offset_secs = 0.0;
                     let client = self.client.clone();
                     let ipc_tx = self.ipc_tx.clone();
                     let tpath = self.state.current_track.as_ref().map(|t| t.path.clone());
@@ -2676,6 +2693,7 @@ impl App {
                                     lines: vec![LrcLine {
                                         timestamp: 0.0,
                                         text: "No lyrics found".to_string(),
+                                        words: Vec::new(),
                                     }],
                                 });
                             }
@@ -2986,7 +3004,31 @@ impl App {
         let Some(ref lyrics) = self.lyrics.current else {
             return 0;
         };
-        lyric_index_at(&lyrics.lines, self.raw_position)
+        lyric_index_at(&lyrics.lines, self.raw_position + self.lyrics.offset_secs)
+    }
+
+    /// Shift the lyric time baseline by `delta` seconds so lines whose timing
+    /// is early or late line up with the audio. Only meaningful while a track
+    /// with synced lyrics is loaded. Re-engages auto-follow and clears the
+    /// in-flight offset adjustment once the user stops nudging.
+    pub fn nudge_lyrics_offset(&mut self, delta: f64) {
+        if self.lyrics.current.is_none() {
+            return;
+        }
+        let mut offset = self.lyrics.offset_secs + delta;
+        if !offset.is_finite() {
+            offset = 0.0;
+        }
+        offset = offset.clamp(-120.0, 120.0);
+        self.lyrics.offset_secs = offset;
+        self.lyrics.manual_scroll = false;
+        self.notify_typed(
+            "Lyrics",
+            format!("offset {:+.2}s — press [ / ] to adjust", offset),
+            NotificationKind::Info,
+            true,
+            NotifType::NowPlaying,
+        );
     }
 
     /// Cycle pane focus with Tab/Shift-Tab.  With lyrics open this walks
@@ -5402,7 +5444,45 @@ impl App {
                                     self.pickers.open(PickerId::PlaylistSelect);
                                 }
                             }
-                            PromptType::MultiselectDelete(_) | PromptType::None => {}
+                            PromptType::MultiselectDelete(_) => {
+                                let tracks = self.filtered_tracks();
+                                let pos = self.list_pos();
+                                let indices: Vec<usize> = self
+                                    .selected_indices
+                                    .iter()
+                                    .copied()
+                                    .filter(|&i| i != pos)
+                                    .collect();
+                                let client = self.client.clone();
+                                let ipc_tx = self.ipc_tx.clone();
+                                let mut deleted = 0;
+                                for idx in indices {
+                                    if let Some(t) = tracks.get(idx) {
+                                        if client.library().remove_track(t.id).await.is_ok() {
+                                            deleted += 1;
+                                        }
+                                    }
+                                }
+                                if deleted > 0 {
+                                    if let Ok(DaemonRes::Tracks { tracks, .. }) =
+                                        client.library().get_tracks(None, None).await
+                                    {
+                                        let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
+                                    }
+                                }
+                                self.selected_indices.clear();
+                                self.multiselect_mode = false;
+                                let msg = if deleted == 1 {
+                                    "Deleted 1 track".to_string()
+                                } else {
+                                    format!("Deleted {deleted} track(s)")
+                                };
+                                self.footer_notification = Some((
+                                    msg,
+                                    std::time::Instant::now() + std::time::Duration::from_secs(2),
+                                ));
+                            }
+                            PromptType::None => {}
                         }
                     } else if is_cancel {
                         // Just drop the prompt
@@ -5737,9 +5817,26 @@ impl App {
                                 }
                             }
                             _ => {
-                                // Track row (flat list / detail / Liked): toggle the highlighted track
+                                // Track row (flat list / detail / Liked): toggle the
+                                // highlighted track, or the whole selection in
+                                // multiselect mode (excluding the highlighted row).
                                 let filtered = self.filtered_tracks();
-                                if let Some(t) = filtered.get(self.list_pos()) {
+                                if self.multiselect_mode && !self.selected_indices.is_empty() {
+                                    let pos = self.list_pos();
+                                    let ids: Vec<i64> = self
+                                        .selected_indices
+                                        .iter()
+                                        .copied()
+                                        .filter(|&i| i != pos)
+                                        .filter_map(|i| filtered.get(i).map(|t| t.id))
+                                        .collect();
+                                    if ids.is_empty() {
+                                        (Vec::new(), String::new())
+                                    } else {
+                                        let count = ids.len();
+                                        (ids, format!("{count} tracks"))
+                                    }
+                                } else if let Some(t) = filtered.get(self.list_pos()) {
                                     (vec![t.id], t.title.clone())
                                 } else {
                                     (Vec::new(), String::new())
@@ -5812,21 +5909,23 @@ impl App {
                         self.send_high(TuiCommand::CheckHealth);
                     }
                     Some(KeyboardAction::FocusLeft) => {
-                        if self.lyrics.show {
-                            if self.lyrics.pane_focus {
-                                // lyrics → right (track) pane
-                                self.lyrics.pane_focus = false;
-                                self.lyrics.manual_scroll = false;
-                                self.library_pane_focus = false;
-                            } else {
-                                self.library_pane_focus = true;
-                            }
+                        if self.lyrics.show && self.lyrics.pane_focus {
+                            // `[` trims lyrics highlights earlier while the
+                            // lyrics pane holds focus (exit focus with Back/Tab).
+                            self.nudge_lyrics_offset(-0.1);
+                        } else if self.lyrics.show {
+                            // `[` with lyrics open but not focused returns focus
+                            // to the library pane.
+                            self.library_pane_focus = true;
                         } else {
                             self.library_pane_focus = true;
                         }
                     }
                     Some(KeyboardAction::FocusRight) => {
-                        if self.lyrics.show {
+                        if self.lyrics.show && self.lyrics.pane_focus {
+                            // `]` delays lyrics highlights later.
+                            self.nudge_lyrics_offset(0.1);
+                        } else if self.lyrics.show {
                             if self.library_pane_focus {
                                 // left → right (track) pane
                                 self.library_pane_focus = false;
@@ -6145,13 +6244,22 @@ impl App {
                     }
                     Some(KeyboardAction::Delete) => {
                         if !self.library_pane_focus {
-                            let track_data = self
-                                .filtered_tracks()
-                                .get(self.list_pos())
-                                .map(|t| (t.id, t.title.clone()));
-                            if let Some((track_id, track_name)) = track_data {
+                            let tracks = self.filtered_tracks();
+                            let pos = self.list_pos();
+                            let selected: Vec<usize> =
+                                if self.multiselect_mode && !self.selected_indices.is_empty() {
+                                    self.selected_indices
+                                        .iter()
+                                        .copied()
+                                        .filter(|&i| i != pos)
+                                        .collect()
+                                } else {
+                                    Vec::new()
+                                };
+                            if self.multiselect_mode && !selected.is_empty() {
+                                let count = selected.len();
                                 self.pending_prompt = Some(PendingPrompt {
-                                    message: format!("Delete \"{track_name}\"? [y/N]"),
+                                    message: format!("Delete {count} track(s)? [y/N]"),
                                     confirm_keys: vec![
                                         KeyCode::Char('y'),
                                         KeyCode::Char('Y'),
@@ -6163,8 +6271,27 @@ impl App {
                                         KeyCode::Esc,
                                         KeyCode::Char('q'),
                                     ],
-                                    prompt_type: PromptType::DeleteTrack(track_id),
+                                    prompt_type: PromptType::MultiselectDelete(count),
                                 });
+                            } else {
+                                let track_data = tracks.get(pos).map(|t| (t.id, t.title.clone()));
+                                if let Some((track_id, track_name)) = track_data {
+                                    self.pending_prompt = Some(PendingPrompt {
+                                        message: format!("Delete \"{track_name}\"? [y/N]"),
+                                        confirm_keys: vec![
+                                            KeyCode::Char('y'),
+                                            KeyCode::Char('Y'),
+                                            KeyCode::Enter,
+                                        ],
+                                        cancel_keys: vec![
+                                            KeyCode::Char('n'),
+                                            KeyCode::Char('N'),
+                                            KeyCode::Esc,
+                                            KeyCode::Char('q'),
+                                        ],
+                                        prompt_type: PromptType::DeleteTrack(track_id),
+                                    });
+                                }
                             }
                         }
                     }
@@ -6273,26 +6400,67 @@ impl App {
                     Some(KeyboardAction::DeleteFromList) => {
                         if !self.library_pane_focus {
                             if self.library_category == 4 && self.browse_detail.is_some() {
-                                // In playlist view: remove selected track from playlist
+                                // In playlist view: remove the highlighted track (or the
+                                // multiselect batch, excluding the highlighted row) from
+                                // the playlist in one round trip, notifying once.
                                 let filtered = self.filtered_tracks();
-                                if let Some(track) = filtered.get(self.list_pos()) {
-                                    let track_id = track.id;
-                                    if let Some(pl) = self
-                                        .playlist_cache
-                                        .iter()
-                                        .find(|p| self.browse_detail.as_deref() == Some(&p.name))
+                                if let Some(pl) = self
+                                    .playlist_cache
+                                    .iter()
+                                    .find(|p| self.browse_detail.as_deref() == Some(&p.name))
+                                {
+                                    let playlist_id = pl.id;
+                                    let client = self.client.clone();
+                                    let ipc_tx = self.ipc_tx.clone();
+                                    let pos = self.list_pos();
+                                    let indices: Vec<usize> = if self.multiselect_mode
+                                        && !self.selected_indices.is_empty()
                                     {
-                                        let playlist_id = pl.id;
-                                        let tx = self.cmd_tx();
-                                        let _ = tx
-                                            .send(TuiCommand::RemoveFromPlaylist(
-                                                playlist_id,
-                                                track_id,
-                                            ))
-                                            .await;
+                                        self.selected_indices
+                                            .iter()
+                                            .copied()
+                                            .filter(|&i| i != pos)
+                                            .collect()
+                                    } else {
+                                        vec![pos]
+                                    };
+                                    if indices.is_empty() {
+                                        return true;
+                                    }
+                                    let mut removed = 0;
+                                    for idx in indices {
+                                        if let Some(t) = filtered.get(idx) {
+                                            if client
+                                                .library()
+                                                .remove_from_playlist(playlist_id, t.id)
+                                                .await
+                                                .is_ok()
+                                            {
+                                                removed += 1;
+                                            }
+                                        }
+                                    }
+                                    if removed > 0 {
+                                        if let Ok(DaemonRes::Playlists { playlists, .. }) =
+                                            client.library().get_playlists().await
+                                        {
+                                            let _ = ipc_tx.send(IpcResult::Playlists(playlists));
+                                        }
+                                        if let Ok(DaemonRes::Tracks { tracks, .. }) =
+                                            client.library().get_playlist_tracks(playlist_id).await
+                                        {
+                                            let _ = ipc_tx.send(IpcResult::PlaylistTracks(tracks));
+                                        }
+                                        self.selected_indices.clear();
+                                        self.multiselect_mode = false;
+                                        let msg = if removed == 1 {
+                                            "Removed from playlist".to_string()
+                                        } else {
+                                            format!("Removed {removed} from playlist")
+                                        };
                                         self.notify_typed(
                                             "System",
-                                            "Removed from playlist",
+                                            msg,
                                             NotificationKind::Info,
                                             false,
                                             NotifType::NowPlaying,
@@ -9474,18 +9642,22 @@ mod tests {
             LrcLine {
                 timestamp: -1.0,
                 text: "intro (untimed)".into(),
+                words: Vec::new(),
             },
             LrcLine {
                 timestamp: 0.0,
                 text: "first".into(),
+                words: Vec::new(),
             },
             LrcLine {
                 timestamp: 5.0,
                 text: "second".into(),
+                words: Vec::new(),
             },
             LrcLine {
                 timestamp: 10.0,
                 text: "third".into(),
+                words: Vec::new(),
             },
         ];
         assert_eq!(lyric_index_at(&lines, -1.0), 0);

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Generate the sealed benchmark fixtures (bench-results/fixtures/).
+# Generate the sealed benchmark fixtures (assets/fixtures/).
 #
 # A single representative FLAC and one MP3, committed only by hash: the files
 # are deterministic outputs of ffmpeg (same seed → byte-identical), so the
@@ -9,7 +9,7 @@
 # full 30 s so a 30 s measurement window covers the entire playback.
 #
 # Usage:
-#   scripts/bench/gen-fixtures.sh          # (re)generate into bench-results/fixtures
+#   scripts/bench/gen-fixtures.sh          # (re)generate into assets/fixtures
 #   scripts/bench/gen-fixtures.sh -c       # verify existing fixtures match the pinned hashes
 #
 # Requires: ffmpeg
@@ -17,7 +17,7 @@
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-FIXTURES_DIR="${REPO_DIR}/bench-results/fixtures"
+FIXTURES_DIR="${REPO_DIR}/assets/fixtures"
 
 # Pinned sha256 of the generated fixtures (see below). Change these together
 # whenever the generator is intentionally changed.

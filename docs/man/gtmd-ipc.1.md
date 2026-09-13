@@ -619,7 +619,7 @@ Response: `{"id": 55, "ok": true, "data": "<base64-encoded PNG>"}`.
 {"id": 56, "cmd": "get_lyrics", "track_id": 42}
 ```
 
-Response: `{"id": 56, "ok": true, "lyrics": {"synced": true, "lines": [{"time": 0.0, "text": "..."}]}}`.
+Response: `{"id": 56, "ok": true, "lyrics": {"title": null, "artist": null, "album": null, "lines": [{"timestamp": 0.0, "text": "...", "words": []}]}}`. Each `timestamp` is in seconds; untimed (plain) lines use a sentinel `timestamp` of `-1.0`; `words` carries enhanced-LRC karaoke timings when available. `lyrics` is `null` when nothing was found.
 
 # AUDIO EFFECTS
 

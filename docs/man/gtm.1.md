@@ -31,6 +31,17 @@ Browse tracks by category: All Tracks, Playlists, Favourites, Recent. Left
 pane selects category, right pane lists tracks. Keys: **Tab** (toggle pane),
 **j**/**k** or **Up**/**Down** (navigate), **Enter** (play), **/** (filter).
 
+### Lyrics view
+
+Press **l** to fetch lyrics for the current track (LRCLIB, an `.lrc`/`.srt`/
+timed `.json` sidecar next to the audio file, or the offline cache). When
+timestamps are available the active line is highlighted and auto-follows the
+playback position; enhanced-LRC sources light up per word. **Tab** moves focus
+into the lyrics pane, where **j**/**k**, **PageUp**/**PageDown**, **Home**/
+**End** scroll manually. While focused, **[** and **]** shift the lyric timing
+by ±0.1 s so early/late sync is corrected (reset on each track change);
+untimed lyrics show a "no timing available" hint instead of a highlight.
+
 ## Settings (2)
 
 Adjust playback settings and open overlays. Left pane selects category

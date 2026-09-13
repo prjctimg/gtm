@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use reqwest::Client;
 use urlencoding::encode;
 
-use gtm_core::track::{LrcData, LrcLine, TrackInfo};
+use gtm_core::track::{LrcData, LrcLine, LrcWord, TrackInfo};
 
 use crate::cleaner::clean_filename_stem;
 
@@ -213,11 +213,12 @@ impl LyricsManager {
                     }
                 }
                 if !timestamps.is_empty() {
-                    let text = rest.trim().to_string();
+                    let (text, words) = strip_word_timings(rest.trim());
                     for ts in timestamps {
                         lines.push(LrcLine {
                             timestamp: ts,
                             text: text.clone(),
+                            words: words.clone(),
                         });
                     }
                     continue;
@@ -235,6 +236,7 @@ impl LyricsManager {
                 lines.push(LrcLine {
                     timestamp: -1.0,
                     text: line.to_string(),
+                    words: Vec::new(),
                 });
             }
         }
@@ -271,6 +273,21 @@ impl LyricsManager {
             album,
             lines: timed,
         }
+    }
+
+    /// Render a `.srt` subtitle file into timed lyric lines (one `LrcLine` per
+    /// cue, using the cue start time). Returns `None` when the content has no
+    /// parseable cues.
+    pub fn parse_srt(content: &str) -> Option<LrcData> {
+        parse_srt(content)
+    }
+
+    /// Parse a timed JSON lyrics file: either a full `LrcData`-shaped object
+    /// (`{"title": ..., "lines": [{"time": 12.5, "text": "..."}]}`) or a bare
+    /// line list under `lines` / `lyrics`. `time` (or `start`) entries are in
+    /// seconds.
+    pub fn parse_json_timed(content: &str) -> Option<LrcData> {
+        parse_json_timed(content)
     }
 
     pub async fn get_lyrics(&self, track: &TrackInfo) -> Option<LrcData> {
@@ -360,20 +377,31 @@ impl LyricsManager {
 
     async fn read_sidecar(&self, track: &TrackInfo) -> Option<LrcData> {
         let path = Path::new(&track.path);
-        let lrc_path = path.with_extension("lrc");
-        if !lrc_path.exists() {
-            return None;
+        // Try an `.lrc` sidecar first, then `.srt` / timed `.json` sources.
+        for ext in ["lrc", "srt", "json"] {
+            let sidecar = path.with_extension(ext);
+            let Ok(content) = std::fs::read_to_string(&sidecar) else {
+                continue;
+            };
+            let lrc = match ext {
+                "lrc" => Self::parse_lrc(&content),
+                "srt" => match parse_srt(&content) {
+                    Some(lrc) => lrc,
+                    None => continue,
+                },
+                _ => match parse_json_timed(&content) {
+                    Some(lrc) => lrc,
+                    None => continue,
+                },
+            };
+            // An empty or malformed sidecar must not shadow the offline cache
+            // or the network fetch, otherwise a stray/empty sidecar file would
+            // make a track permanently lyric-less.
+            if !lrc.lines.is_empty() {
+                return Some(lrc);
+            }
         }
-        let content = std::fs::read_to_string(&lrc_path).ok()?;
-        let lrc = Self::parse_lrc(&content);
-        // An empty or malformed sidecar must not shadow the offline cache or
-        // the network fetch, otherwise a stray/empty `.lrc` file would make a
-        // track permanently lyric-less.
-        if lrc.lines.is_empty() {
-            None
-        } else {
-            Some(lrc)
-        }
+        None
     }
 
     /// Resolve the cached `.lrc` file for a key. Cache entries are keyed by
@@ -560,13 +588,31 @@ pub fn lrc_to_text(lrc: &LrcData) -> String {
         if line.timestamp < 0.0 {
             content.push_str(&line.text);
             content.push('\n');
+        } else if !line.words.is_empty() {
+            // Enhanced-LRC line: keep per-word timings so cached copies
+            // round-trip through [`LyricsManager::parse_lrc`] with karaoke
+            // timing intact.
+            let (mins, secs) = lrc_minutes_seconds(line.timestamp);
+            content.push_str(&format!("[{:02}:{:05.2}]", mins, secs));
+            for w in &line.words {
+                let (wm, ws) = lrc_minutes_seconds(w.time);
+                content.push_str(&format!("<{:02}:{:05.2}>{}", wm, ws, w.text));
+            }
+            content.push('\n');
         } else {
-            let mins = (line.timestamp / 60.0) as u64;
-            let secs = line.timestamp - (mins as f64 * 60.0);
+            let (mins, secs) = lrc_minutes_seconds(line.timestamp);
             content.push_str(&format!("[{:02}:{:05.2}]{}\n", mins, secs, line.text));
         }
     }
     content
+}
+
+/// Split a floating seconds value into `(minutes, remaining_seconds)` for LRC
+/// timestamp formatting.
+fn lrc_minutes_seconds(seconds: f64) -> (u64, f64) {
+    let mins = (seconds / 60.0) as u64;
+    let secs = seconds - (mins as f64 * 60.0);
+    (mins, secs)
 }
 
 fn parse_lrclib_response(json: &serde_json::Value) -> Option<LrcData> {
@@ -645,6 +691,185 @@ fn parse_lrc_timestamp(ts: &str) -> Option<f64> {
     }
 }
 
+/// Extract inline word timings from an enhanced-LRC lyric body
+/// (`<00:12.50>Hel<00:12.90>lo ...`) into `(plain_text, words)`. The final
+/// terminating token (e.g. `<00:13.00>` with nothing after it) is dropped.
+/// If the body contains no `<mm:ss.xx>` word tokens the whole body is kept
+/// as plain line text with no words.
+fn strip_word_timings(body: &str) -> (String, Vec<LrcWord>) {
+    let mut text = String::new();
+    let mut words: Vec<LrcWord> = Vec::new();
+
+    if !body.contains('<') {
+        return (body.to_string(), words);
+    }
+
+    let mut rest = body;
+    while let Some(open) = rest.find('<') {
+        text.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let Some(close) = after.find('>') else {
+            text.push_str(&rest[open..]);
+            break;
+        };
+        let ts_str = &after[..close];
+        rest = &after[close + 1..];
+        let Some(ts) = parse_lrc_timestamp(ts_str) else {
+            // Not a word-timing token: keep as literal text.
+            text.push('<');
+            text.push_str(ts_str);
+            text.push('>');
+            continue;
+        };
+        let end = rest.find('<').unwrap_or(rest.len());
+        let word = rest[..end].trim().to_string();
+        if !word.is_empty() {
+            words.push(LrcWord {
+                time: ts,
+                text: word.clone(),
+            });
+            text.push_str(&word);
+        }
+        if end < rest.len() {
+            rest = &rest[end..];
+        } else {
+            break;
+        }
+    }
+
+    if words.is_empty() {
+        return (body.to_string(), Vec::new());
+    }
+    (text, words)
+}
+
+/// Parse a SubRip (`.srt`) subtitle stream into timed lyric lines. Each cue
+/// becomes one `LrcLine` stamped with its start time; multi-line cue text is
+/// joined with newlines. Returns `None` when no cues parse.
+fn parse_srt(content: &str) -> Option<LrcData> {
+    let mut lines: Vec<LrcLine> = Vec::new();
+    let mut pending_start: Option<f64> = None;
+    let mut pending_text: Vec<String> = Vec::new();
+
+    let flush = |lines: &mut Vec<LrcLine>, start: &mut Option<f64>, text: &mut Vec<String>| {
+        if let Some(ts) = start.take() {
+            let body = text.join("\n");
+            if !body.is_empty() {
+                lines.push(LrcLine {
+                    timestamp: ts,
+                    text: body,
+                    words: Vec::new(),
+                });
+            }
+            text.clear();
+        }
+    };
+
+    for raw in content.lines() {
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            flush(&mut lines, &mut pending_start, &mut pending_text);
+            continue;
+        }
+        if pending_start.is_none() {
+            // Timing line (the cue index line is skipped).
+            if let Some(arrow) = trimmed.find("-->") {
+                if let Some(ts) = parse_srt_timestamp(trimmed[..arrow].trim()) {
+                    pending_start = Some(ts);
+                }
+            }
+            continue;
+        }
+        pending_text.push(raw.trim_end().to_string());
+    }
+    flush(&mut lines, &mut pending_start, &mut pending_text);
+
+    if lines.is_empty() {
+        return None;
+    }
+    lines.sort_by(|a, b| {
+        a.timestamp
+            .partial_cmp(&b.timestamp)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    Some(LrcData {
+        title: None,
+        artist: None,
+        album: None,
+        lines,
+    })
+}
+
+fn parse_srt_timestamp(ts: &str) -> Option<f64> {
+    let parts: Vec<&str> = ts.split(':').collect();
+    if parts.len() != 3 {
+        return None;
+    }
+    let h: f64 = parts[0].trim().parse().ok()?;
+    let m: f64 = parts[1].trim().parse().ok()?;
+    let s: f64 = parts[2].trim().replace(',', ".").parse().ok()?;
+    let total = h * 3600.0 + m * 60.0 + s;
+    (total.is_finite() && total >= 0.0 && total < 200000.0).then_some(total)
+}
+
+/// Parse a timed JSON lyrics document. Accepts a full `LrcData`-shaped object
+/// or a bare line list under `lines` / `lyrics`; each entry needs a numeric
+/// `time` (or `start`) in seconds and a `text` string. Returns `None` when the
+/// document is malformed or has no timed lines.
+fn parse_json_timed(content: &str) -> Option<LrcData> {
+    let value: serde_json::Value = serde_json::from_str(content).ok()?;
+    let title = value
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let artist = value
+        .get("artist")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let album = value
+        .get("album")
+        .and_then(|v| v.as_str())
+        .map(String::from);
+    let entries = value
+        .get("lines")
+        .or_else(|| value.get("lyrics"))
+        .and_then(|v| v.as_array())?;
+
+    let mut lines: Vec<LrcLine> = Vec::new();
+    for entry in entries {
+        let time = entry
+            .get("time")
+            .or_else(|| entry.get("start"))
+            .and_then(|v| v.as_f64())?;
+        let text = entry.get("text").and_then(|v| v.as_str())?.to_string();
+        if time.is_finite() && time >= 0.0 {
+            lines.push(LrcLine {
+                timestamp: time,
+                text,
+                words: Vec::new(),
+            });
+        }
+    }
+    sort_lyric_lines(&mut lines);
+    if lines.is_empty() {
+        return None;
+    }
+    Some(LrcData {
+        title,
+        artist,
+        album,
+        lines,
+    })
+}
+
+fn sort_lyric_lines(lines: &mut [LrcLine]) {
+    lines.sort_by(|a, b| {
+        a.timestamp
+            .partial_cmp(&b.timestamp)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -653,6 +878,7 @@ mod tests {
         LrcLine {
             timestamp,
             text: text.to_string(),
+            words: Vec::new(),
         }
     }
 
@@ -688,6 +914,64 @@ mod tests {
         assert_eq!(lrc.lines[1].text, "Line one");
         assert!(lrc.lines[1].timestamp < 0.0);
         assert_eq!(lrc.lines[2].text, "Line two");
+        assert!(lrc.lines[0].words.is_empty());
+    }
+
+    #[test]
+    fn lrc_enhanced_words() {
+        let lrc = LyricsManager::parse_lrc(
+            "[00:12.00]<00:12.00>Hello <00:12.60>world <00:13.20>tonight<00:13.80>",
+        );
+        assert_eq!(lrc.lines.len(), 1);
+        let line = &lrc.lines[0];
+        assert_eq!(line.timestamp, 12.0);
+        assert_eq!(line.text, "Hello world tonight");
+        assert_eq!(line.words.len(), 3);
+        assert_eq!(line.words[0].time, 12.0);
+        assert_eq!(line.words[0].text, "Hello");
+        assert_eq!(line.words[1].time, 12.6);
+        assert_eq!(line.words[2].time, 13.2);
+        // The trailing `<00:13.80>` terminator must be dropped.
+        assert_eq!(line.words[2].text, "tonight");
+
+        // Enhanced lines round-trip through the cache text writer.
+        let text = lrc_to_text(&lrc);
+        let parsed = LyricsManager::parse_lrc(&text);
+        assert_eq!(parsed.lines[0].text, line.text);
+        assert_eq!(parsed.lines[0].words.len(), 3);
+        assert_eq!(parsed.lines[0].words[1].time, 12.6);
+    }
+
+    #[test]
+    fn srt_parses_cues() {
+        let srt = "1\n00:00:00,500 --> 00:00:02,000\nHello there\n\n\
+                   2\n00:00:03,000 --> 00:00:05,000\nSecond line\n  Third line\n";
+        let lrc = LyricsManager::parse_srt(srt).expect("srt should parse");
+        assert_eq!(lrc.lines.len(), 2);
+        assert_eq!(lrc.lines[0].timestamp, 0.5);
+        assert_eq!(lrc.lines[0].text, "Hello there");
+        assert_eq!(lrc.lines[1].timestamp, 3.0);
+        assert_eq!(lrc.lines[1].text, "Second line\nThird line");
+
+        assert!(LyricsManager::parse_srt("not a subtitle").is_none());
+    }
+
+    #[test]
+    fn json_timed_parses() {
+        let json =
+            r#"{"title":"Song","lines":[{"time":1.5,"text":"first"},{"start":3,"text":"second"}]}"#;
+        let lrc = LyricsManager::parse_json_timed(json).expect("json should parse");
+        assert_eq!(lrc.title.as_deref(), Some("Song"));
+        assert_eq!(lrc.lines[0].timestamp, 1.5);
+        assert_eq!(lrc.lines[0].text, "first");
+        assert_eq!(lrc.lines[1].timestamp, 3.0);
+        assert_eq!(lrc.lines[1].text, "second");
+
+        let lyrics_key = r#"{"lyrics":[{"time":7.0,"text":"x"}]}"#;
+        let lrc = LyricsManager::parse_json_timed(lyrics_key).expect("lyrics key should work");
+        assert_eq!(lrc.lines[0].timestamp, 7.0);
+
+        assert!(LyricsManager::parse_json_timed("not json").is_none());
     }
 
     #[test]

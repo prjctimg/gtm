@@ -470,9 +470,11 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
             .map(PathBuf::from)
             .unwrap_or_else(resolve_command_socket);
 
-        // The setup wizard auto-starts the daemon so a fresh install can
-        // register services without a separate daemon launch step.
-        if let CliCommand::Setup { .. } = cmd {
+        // Auto-start the daemon so a fresh install can run any command
+        // (play, device list, etc.) without a separate daemon launch step.
+        // `ping` is the health check itself and `quit` must not spawn the
+        // daemon it is meant to stop, so those two skip the ensure step.
+        if !matches!(cmd, CliCommand::Ping | CliCommand::Quit) {
             ensure_daemon_running(&socket_path).await?;
         }
 

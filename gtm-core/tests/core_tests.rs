@@ -111,6 +111,10 @@ roundtrip!(
     LrcLine {
         timestamp: 12.5,
         text: "hello".into(),
+        words: vec![gtm_core::track::LrcWord {
+            time: 12.5,
+            text: "hello".into(),
+        }],
     }
 );
 roundtrip!(
@@ -123,6 +127,7 @@ roundtrip!(
         lines: vec![LrcLine {
             timestamp: 0.0,
             text: "intro".into(),
+            words: Vec::new(),
         }],
     }
 );

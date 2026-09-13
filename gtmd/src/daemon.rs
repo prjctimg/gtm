@@ -3496,9 +3496,10 @@ impl Cover {
     async fn radio_favicon_cover(inner: &DaemonInner, uuid: &str) -> Option<Vec<u8>> {
         {
             let mut guard = inner.cover_cache().await;
-            let hit = guard
-                .as_mut()
-                .and_then(|c| c.get("radio", uuid, CoverProvider::Auto).await);
+            let hit = match guard.as_mut() {
+                Some(c) => c.get("radio", uuid, CoverProvider::Auto).await,
+                None => None,
+            };
             if let Some(cover) = hit {
                 return Some(cover.data);
             }
@@ -3525,8 +3526,7 @@ impl Cover {
                 .map(|b| b.to_vec())
         })
         .await
-        .ok()?
-        .flatten()?;
+        .ok()??;
         if CoverCache::too_small(&bytes) {
             return None;
         }

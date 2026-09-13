@@ -5,12 +5,13 @@
 #   scripts/bench/run-bench.sh <player> <file> <seconds>
 #
 #   player   gtm | cliamp
-#   file     path to an audio file (fixture under bench-results/fixtures)
+#   file     path to an audio file (fixture under assets/fixtures)
 #   seconds  sampling window length
 #
 # Emits to stdout:
 #   {"player":..,"file":..,"file_sha256":..,"peak_rss_kb":..,"mean_rss_kb":..,
-#    "rss_5s_kb":..,"cpu_ms":..,"t_ready_ms":..,"error":..}
+#    "rss_5s_kb":..,"rss_p50_kb":..,"rss_p95_kb":..,"cpu_ms":..,"t_ready_ms":..,
+#    "error":..}
 #
 # gtm is measured through its headless daemon (gtmd --test-mode => NullMixer,
 # no real audio device, so the harness records CPU/RSS without an audio sink
@@ -211,7 +212,7 @@ if [ -f "${SOCK_DIR}/samples" ] && [ -s "${SOCK_DIR}/samples" ]; then
     --argjson rss5 "${RSS_5S}" --argjson cpu "${CPU_MS}" \
     --argjson ready "${t_ready_ms}" \
     --argjson p50 "${P50_LATENCY}" --argjson p95 "${P95_LATENCY}" \
-    '{player:$player,file:$file,file_sha256:$sha,peak_rss_kb:$peak,mean_rss_kb:$mean,rss_5s_kb:$rss5,cpu_ms:$cpu,t_ready_ms:$ready,p50_latency_kb:$p50,p95_latency_kb:$p95}'
+    '{player:$player,file:$file,file_sha256:$sha,peak_rss_kb:$peak,mean_rss_kb:$mean,rss_5s_kb:$rss5,cpu_ms:$cpu,t_ready_ms:$ready,rss_p50_kb:$p50,rss_p95_kb:$p95}'
 else
   emit_error "no samples collected"
 fi

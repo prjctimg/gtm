@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Collect benchmark results for one release tag into bench-results/<tag>.json
-# and refresh bench-results/latest.json.
+# Collect benchmark results for one release tag into .bench/<tag>.json
+# (a gitignored, ephemeral store) and then render them into BENCHMARK.md.
+# Previous releases are reconstructed from machine-readable comments embedded
+# in BENCHMARK.md by render-bench.sh, so the committed doc is the single
+# permanent store — no JSON files are tracked.
 #
 #   scripts/bench/collect.sh <tag> [seconds]
 #
@@ -19,8 +22,8 @@ SECONDS="${2:-30}"
 case "${SECONDS}" in '' | *[!0-9]*) echo "seconds must be an integer" >&2; exit 2 ;; esac
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BENCH_DIR="${REPO_DIR}/bench-results"
-FIXTURES_DIR="${BENCH_DIR}/fixtures"
+BENCH_DIR="${REPO_DIR}/.bench"
+FIXTURES_DIR="${REPO_DIR}/assets/fixtures"
 RUN_BENCH="${REPO_DIR}/scripts/bench/run-bench.sh"
 
 mkdir -p "${BENCH_DIR}"
@@ -53,7 +56,7 @@ for player in "${PLAYERS[@]}"; do
       echo "  ${key}: SKIPPED (no parseable result)" >&2
       continue
     fi
-    echo "  ${key}: $(printf '%s' "${line}" | jq -c '[.peak_rss_kb,.mean_rss_kb,.cpu_ms,.p50_latency_kb,.p95_latency_kb]')" >&2
+    echo "  ${key}: $(printf '%s' "${line}" | jq -c '[.peak_rss_kb,.mean_rss_kb,.cpu_ms,.t_ready_ms]')" >&2
     RUNS="$(printf '%s' "${RUNS}" | jq --arg key "${key}" --argjson v "$(printf '%s' "${line}" | jq 'del(.player,.file,.error)')" '.[$key] = $v')"
   done
 done
@@ -77,5 +80,4 @@ jq -n \
   '{tag:$tag,date:$date,commit:$commit,seconds:$seconds,runs:$runs}' \
   > "${RESULT_FILE}"
 
-cp "${RESULT_FILE}" "${BENCH_DIR}/latest.json"
-echo "wrote ${RESULT_FILE}"
+echo "wrote ${RESULT_FILE} (ephemeral; render-bench.sh embeds it in BENCHMARK.md)"

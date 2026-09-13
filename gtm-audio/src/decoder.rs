@@ -304,7 +304,7 @@ impl DecodeThread {
 }
 
 impl DecodeThread {
-    fn run(self) {
+    fn run(mut self) {
         let mut start_pos = 0.0_f64;
 
         loop {

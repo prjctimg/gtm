@@ -57,8 +57,8 @@ run loudly:
 
 | Fixture | Purpose |
 |---------|---------|
-| `fixtures/sample.flac` | lossless decode path |
-| `fixtures/sample.mp3` | lossy decode path |
+| `assets/fixtures/bench.flac` | lossless decode path |
+| `assets/fixtures/bench.mp3` | lossy decode path |
 
 Each played for 30 s, sampled every 100 ms, then SIGTERM.
 

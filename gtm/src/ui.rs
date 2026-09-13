@@ -80,11 +80,10 @@ impl Render {
             } else {
                 "Local"
             };
-            let source_label = if use_nerd_fonts() {
-                match source {
-                    "Spotify" => " \u{f1bc} Spotify",
-                    "YouTube" => " \u{f167} YouTube",
-                    _ => " \u{f3b5} Local",
+            let source_label: String = if use_nerd_fonts() {
+                match provider_icon(source) {
+                    Some(g) => format!(" {g} {source}"),
+                    None => " ♪ Local".to_string(),
                 }
             } else {
                 match source {
@@ -92,6 +91,7 @@ impl Render {
                     "YouTube" => " ▶ YouTube",
                     _ => " ♪ Local",
                 }
+                .to_string()
             };
             (
                 display_title,
@@ -99,7 +99,7 @@ impl Render {
                 album,
                 has_album,
                 has_cover,
-                source_label.to_string(),
+                source_label,
             )
         };
 
@@ -1768,6 +1768,8 @@ impl Render {
         let total = lyrics.lines.len();
         let width = lyrics_inner.width.max(1) as usize;
         let synced = lyrics_are_synced(&lyrics.lines);
+        // User-adjustable offset applied to matching and the timestamp gutter.
+        let offset = app.lyrics.offset_secs;
         let anchor = app.lyrics.scroll.min(total.saturating_sub(1));
         let mut row_offsets = Vec::with_capacity(total);
         let mut text = Vec::with_capacity(total);
@@ -1794,10 +1796,13 @@ impl Render {
             // Right-aligned timestamp range gutter on synced lines so the
             // actively playing verse is clearly time-bounded.
             let ts_prefix = if synced && line.timestamp >= 0.0 {
-                let ts = format_duration(line.timestamp as u64);
+                let ts = format_duration((line.timestamp + offset).max(0.0) as u64);
                 let range = match lyrics.lines.get(i + 1) {
                     Some(next) if next.timestamp >= 0.0 => {
-                        format!("{ts}-{}", format_duration(next.timestamp as u64))
+                        format!(
+                            "{ts}-{}",
+                            format_duration((next.timestamp + offset).max(0.0) as u64)
+                        )
                     }
                     _ => ts,
                 };
@@ -1813,13 +1818,56 @@ impl Render {
             } else {
                 Style::default().fg(app.theme.fg_dim)
             };
-            text.push(Line::from(vec![
-                Span::styled(line.text.clone(), text_style),
-                Span::styled(ts_prefix, ts_style),
-            ]));
+            // Karaoke: the active line lights up word-by-word when the source
+            // carries per-word timings (enhanced LRC). Future words stay dim.
+            if i == anchor && synced && !line.words.is_empty() {
+                let pos = app.raw_position + offset;
+                let mut spans: Vec<Span> = Vec::with_capacity(line.words.len() + 1);
+                for w in &line.words {
+                    let lit = pos >= w.time;
+                    spans.push(Span::styled(
+                        w.text.clone(),
+                        if lit {
+                            Style::default()
+                                .fg(app.theme.accent)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(app.theme.fg_dim)
+                        },
+                    ));
+                }
+                spans.push(Span::styled(ts_prefix, ts_style));
+                text.push(Line::from(spans));
+            } else {
+                text.push(Line::from(vec![
+                    Span::styled(line.text.clone(), text_style),
+                    Span::styled(ts_prefix, ts_style),
+                ]));
+            }
         }
         let total_rows = cumulative;
-        let visible = lyrics_inner.height as usize;
+        // Untimed lyrics can't highlight: reserve the bottom row for a hint
+        // instead of faking emphasis.
+        let hint_area = if !synced && lyrics_inner.height > 1 {
+            Some(Rect {
+                x: lyrics_inner.x,
+                y: lyrics_inner.y + lyrics_inner.height - 1,
+                width: lyrics_inner.width,
+                height: 1,
+            })
+        } else {
+            None
+        };
+        let scroll_view = if hint_area.is_some() {
+            Rect {
+                y: lyrics_inner.y,
+                height: lyrics_inner.height - 1,
+                ..lyrics_inner
+            }
+        } else {
+            lyrics_inner
+        };
+        let visible = scroll_view.height as usize;
         let bottom = total_rows.saturating_sub(visible);
         let scroll_display = if total_rows <= visible {
             0
@@ -1837,7 +1885,16 @@ impl Render {
         let para = Paragraph::new(text)
             .wrap(Wrap { trim: false })
             .scroll((scroll_display as u16, 0));
-        f.render_widget(para, lyrics_inner);
+        f.render_widget(para, scroll_view);
+        if let Some(h) = hint_area {
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    "no timing available — focus lyrics, then [ / ] to offset",
+                    Style::default().fg(app.theme.fg_dim),
+                ))),
+                h,
+            );
+        }
     }
 
     /// Narrow + lyrics: show the currently highlighted list row and its
@@ -2364,13 +2421,36 @@ fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
 // ─── Content Area ───
 
 const LIBRARY_ICONS_NERD: &[&str] = &[
-    "\u{f001}", "\u{f004}", "\u{f025}", "\u{f007}", "\u{f03a}", "\u{f1bc}", "\u{f43e}",
+    "\u{f001}",
+    "\u{f004}",
+    "\u{f025}",
+    "\u{f007}",
+    "\u{f03a}",
+    "\u{f04c7}",
+    "\u{f43e}",
 ];
 
 const LIBRARY_ICONS_ASCII: &[&str] = &["♫", "♥", "▤", "♪", "≡", "☊", "◉"];
 
 pub(crate) fn use_nerd_fonts() -> bool {
     !matches!(std::env::var("GTM_NERD_FONTS"), Ok(v) if v == "0" || v == "false" || v == "no")
+}
+
+/// Brand/source glyph for a provider name, verified against the glyphs present
+/// in the pinned JetBrainsMono Nerd Font (no tofu). Returns `None` for
+/// providers without a distinct glyph so callers can keep their own
+/// ASCII/emoji fallback.
+pub(crate) fn provider_icon(name: &str) -> Option<&'static str> {
+    match name {
+        "Spotify" => Some("\u{f04c7}"),            // nf-md-spotify
+        "YouTube" => Some("\u{f167}"),             // nf-fa-youtube
+        "Podcast" => Some("\u{f0994}"),            // nf-md-podcast
+        "Radio" => Some("\u{f0439}"),              // nf-md-radio
+        "Subsonic/Navidrome" => Some("\u{f048b}"), // nf-md-server
+        "Last.fm" => Some("\u{f001}"),             // nf-md-music (no brand glyph in font)
+        "Local" => Some("\u{f0a0}"),               // nf-fa-hdd
+        _ => None,
+    }
 }
 
 /// Human-readable label for the persisted cover-art provider string.
@@ -2433,7 +2513,7 @@ fn fill_pane(f: &mut ratatui::Frame, area: Rect, app: &App) {
     );
 }
 
-const SETTINGS_ICONS_NERD: &[&str] = &["\u{f16a}", "\u{f04b}", "\u{f013}", "\u{f1bc}"];
+const SETTINGS_ICONS_NERD: &[&str] = &["\u{f16a}", "\u{f04b}", "\u{f013}", "\u{f04c7}"];
 const SETTINGS_ICONS_ASCII: &[&str] = &["YT", "▶", "⚙", "★"];
 const SETTINGS_CATEGORIES: &[&str] = &["YouTube", "Playback", "System", "Spotify"];
 
@@ -2442,13 +2522,13 @@ const SETTINGS_CATEGORIES: &[&str] = &["YouTube", "Playback", "System", "Spotify
 /// Inline icon glyph for a `gtm setup` service, matching the configured icon
 /// style (mdi brand/monochrome glyphs vs. emoji).
 fn service_icon_glyph(icon_style: &str, service: &str) -> &'static str {
-    match (icon_style, service) {
-        ("mdi", "Spotify") => "\u{f1bc}",             // spotify
-        ("mdi", "Last.fm") => "\u{f0387}",            // music-note
-        ("mdi", "Subsonic/Navidrome") => "\u{f048b}", // server
-        (_, "Spotify") => "\u{1f3a7}",
-        (_, "Last.fm") => "\u{1f3b5}",
-        (_, "Subsonic/Navidrome") => "\u{1f5a5}\u{fe0f}",
+    if icon_style == "mdi" {
+        return provider_icon(service).unwrap_or("\u{f001}");
+    }
+    match service {
+        "Spotify" => "\u{1f3a7}",
+        "Last.fm" => "\u{1f3b5}",
+        "Subsonic/Navidrome" => "\u{1f5a5}\u{fe0f}",
         _ => "",
     }
 }
@@ -2858,7 +2938,7 @@ impl Pickers {
                 } else {
                     Some(" Enter: play   Ctrl+D: download   Esc: close")
                 };
-                let block = Self::picker_panel(app, " \u{f1bc} Search ", help);
+                let block = Self::picker_panel(app, " \u{f04c7} Search ", help);
                 let inner = block.inner(picker_area);
                 f.render_widget(block, picker_area);
 
@@ -4744,17 +4824,17 @@ fn library_stats_line(app: &App) -> String {
 
 fn source_label(use_nerd: bool, source: &str) -> String {
     if use_nerd {
-        match source {
-            "Spotify" => " \u{f1bc} Spotify".to_string(),
-            "YouTube" => " \u{f167} YouTube".to_string(),
-            _ => " \u{f3b5} Local".to_string(),
+        match provider_icon(source) {
+            Some(g) => format!(" {g} {source}"),
+            None => " ♪ Local".to_string(),
         }
     } else {
         match source {
-            "Spotify" => " ♫ Spotify".to_string(),
-            "YouTube" => " ▶ YouTube".to_string(),
-            _ => " ♪ Local".to_string(),
+            "Spotify" => " ♫ Spotify",
+            "YouTube" => " ▶ YouTube",
+            _ => " ♪ Local",
         }
+        .into()
     }
 }
 
@@ -5026,7 +5106,7 @@ impl CommandPalette {
                 hint: "youtube",
             },
             Command {
-                icon: "\u{f1bc} Spotify",
+                icon: "\u{f04c7} Spotify",
                 keys: "Alt+S",
                 hint: "spotify",
             },
