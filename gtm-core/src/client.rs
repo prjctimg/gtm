@@ -242,7 +242,7 @@ impl DaemonClient {
                 response_tx: Some(tx),
             })
             .map_err(|_| CoreError::Daemon("IPC worker died".into()))?;
-        tokio::time::timeout(Duration::from_secs(5), rx)
+        tokio::time::timeout(Duration::from_secs(IPC_COMMAND_TIMEOUT_SECS), rx)
             .await
             .map_err(|_| CoreError::Daemon("IPC response timeout".into()))?
             .map_err(|_| CoreError::Daemon("IPC worker response dropped".into()))?
@@ -1648,6 +1648,12 @@ struct IpcWorker {
 
 const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 const HEARTBEAT_TIMEOUT_SECS: u64 = 60;
+/// Upper bound on how long a single IPC command may take before the client
+/// reports the daemon as unresponsive. Connection liveness is handled by the
+/// heartbeat/health checks above, so this only needs to cover legitimate heavy
+/// operations (playlist rotation, playback startup, metadata resolution) which
+/// can exceed a few seconds on large libraries.
+const IPC_COMMAND_TIMEOUT_SECS: u64 = 30;
 
 impl IpcWorker {
     async fn run(mut self) {

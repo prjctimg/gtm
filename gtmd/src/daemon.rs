@@ -418,10 +418,31 @@ impl Cmd {
             mixer.duration()
         };
 
-        // Resolve the track's metadata (library lookup + tag read) before
-        // taking the state write lock: the lookup runs on a blocking thread
-        // so a slow disk/library read never freezes the command loop.
-        let track = Daemon::resolve_track_meta(inner, std::path::Path::new(&path_owned), dur).await;
+        // Reuse metadata already held by the queue or the current track instead
+        // of re-resolving from disk/library on every play. Stepping through a
+        // queue (next/prev/auto-advance) regenerates identical metadata, and
+        // the full resolution path (SQLite open, a potential full-library scan,
+        // plus a whole-file hash and a second probe) is the dominant cost here.
+        // Only fall back to a complete resolve when no matching entry exists.
+        let queued = {
+            let state = inner.state.read().await;
+            state
+                .queue
+                .iter()
+                .find(|t| t.path == path)
+                .cloned()
+                .or_else(|| {
+                    state
+                        .current_track
+                        .as_ref()
+                        .filter(|t| t.path == path)
+                        .cloned()
+                })
+        };
+        let track = match queued {
+            Some(t) if t.duration > 0.0 || dur <= 0.0 => t,
+            _ => Daemon::resolve_track_meta(inner, std::path::Path::new(&path_owned), dur).await,
+        };
 
         // Scrobble previous track before switching. The state guard is taken
         // and dropped in a single scoped block so it is always released (a
@@ -3131,12 +3152,32 @@ impl LibraryHandler {
                 let data_dir = inner.config.data_dir.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
-                    lib.update_metadata(track_id, &patch)
+                    lib.update_metadata(track_id, &patch)?;
+                    // Re-read the row so any queue/current tracker holding the
+                    // edited path can be refreshed (Cmd::play reuses queue
+                    // metadata instead of re-resolving it from disk).
+                    let path = lib.track_path(track_id)?;
+                    Ok::<_, String>((path.clone(), lib.track_by_path(&path)?))
                 })
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(_) => DaemonRes::Ok,
+                    Ok((path, Some(refreshed))) => {
+                        let mut state = inner.state.write().await;
+                        for t in state.queue.iter_mut() {
+                            if t.path == path {
+                                *t = refreshed.clone();
+                            }
+                        }
+                        if let Some(cur) = state.current_track.as_mut()
+                            && cur.path == path
+                        {
+                            *cur = refreshed.clone();
+                        }
+                        drop(state);
+                        DaemonRes::Ok
+                    }
+                    Ok((_, None)) => DaemonRes::Ok,
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
@@ -3494,7 +3535,7 @@ impl Lyrics {
         }
 
         if let Some(manager) = inner.lyrics_manager().await {
-            let lyrics = tokio::time::timeout(Duration::from_secs(4), manager.get_lyrics(&track))
+            let lyrics = tokio::time::timeout(Duration::from_secs(10), manager.get_lyrics(&track))
                 .await
                 .ok()
                 .flatten();
@@ -3511,7 +3552,7 @@ impl Lyrics {
     ) -> Result<DaemonRes, CoreError> {
         if let Some(manager) = inner.lyrics_manager().await {
             let lyrics =
-                tokio::time::timeout(Duration::from_secs(4), manager.search(artist, title))
+                tokio::time::timeout(Duration::from_secs(10), manager.search(artist, title))
                     .await
                     .ok()
                     .flatten();

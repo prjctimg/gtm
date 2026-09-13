@@ -990,41 +990,49 @@ fn self_err(ipc_tx: &mpsc::UnboundedSender<IpcResult>, msg: String) {
     let _ = ipc_tx.send(IpcResult::Error(msg));
 }
 
-/// Best-effort browser open for the OAuth authorize URL. Tries common
-/// openers until one succeeds; when all fail, the URL is sent back through the
-/// TUI as a notification so the user can open it manually (and copy it from
-/// the notification history).
+/// Best-effort browser open for an OAuth authorize URL. Tries the OS default
+/// opener (via `webbrowser`) then common launchers, each timeout-guarded so a
+/// wedged launcher never blocks a runtime worker or the UI.
+async fn open_browser_with_fallbacks(url: &str) -> bool {
+    // Prefer the OS default browser opener, which is cross-platform. Guard
+    // it with a timeout: a wedged `xdg-open`-style launcher must not leave
+    // the flow looking dead.
+    let opened = tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::task::spawn_blocking({
+            let url = url.to_string();
+            move || webbrowser::open(&url)
+        })
+        .await
+    })
+    .await;
+    if let Ok(Ok(Ok(_))) = opened {
+        return true;
+    }
+    // Fallback to common launchers when the `webbrowser` crate can't
+    // resolve one (e.g. minimal containers / WSL).
+    for prog in ["xdg-open", "open", "start"] {
+        match tokio::process::Command::new(prog)
+            .arg(url)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+        {
+            Ok(st) if st.success() => return true,
+            _ => continue,
+        }
+    }
+    false
+}
+
+/// Open the OAuth URL in a browser, and surface it as a Spotify notification
+/// plus an error if no opener worked. Non-blocking.
 fn try_open_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResult>) {
     let url = url.to_string();
     let ipc_tx = ipc_tx.clone();
     tokio::spawn(async move {
-        // Prefer the OS default browser opener, which is cross-platform. Guard
-        // it with a timeout: a wedged `xdg-open`-style launcher must not leave
-        // the flow looking dead.
-        let opened = tokio::time::timeout(Duration::from_secs(3), async {
-            tokio::task::spawn_blocking({
-                let url = url.clone();
-                move || webbrowser::open(&url)
-            })
-            .await
-        })
-        .await;
-        if let Ok(Ok(Ok(_))) = opened {
+        if open_browser_with_fallbacks(&url).await {
             return;
-        }
-        // Fallback to common launchers when the `webbrowser` crate can't
-        // resolve one (e.g. minimal containers / WSL).
-        for prog in ["xdg-open", "open", "start"] {
-            match tokio::process::Command::new(prog)
-                .arg(&url)
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .await
-            {
-                Ok(st) if st.success() => return,
-                _ => continue,
-            }
         }
         // All openers failed: surface the URL in the TUI so it can be copied.
         let _ = ipc_tx.send(IpcResult::Notification(
@@ -4882,7 +4890,7 @@ impl App {
                 let ipc_tx2 = self.ipc_tx.clone();
                 tokio::spawn(async move {
                     let result = tokio::time::timeout(
-                        Duration::from_secs(5),
+                        Duration::from_secs(12),
                         client2.lyrics().get(track_id, track_path.as_deref()),
                     )
                     .await;
@@ -7465,7 +7473,15 @@ impl App {
                         {
                             Ok(()) => match c.lastfm().auth_url().await {
                                 Ok(url) => {
-                                    let _ = webbrowser::open(&url);
+                                    let ipc_url = ipc_tx.clone();
+                                    let open_url = url.clone();
+                                    tokio::spawn(async move {
+                                        if !open_browser_with_fallbacks(&open_url).await {
+                                            let _ = ipc_url.send(IpcResult::LastfmAuthError(
+                                                "Could not open a browser automatically — copy the URL from the last.fm setup screen".into(),
+                                            ));
+                                        }
+                                    });
                                     let _ = ipc_tx.send(IpcResult::LastfmAuthUrl(url));
                                 }
                                 Err(e) => {

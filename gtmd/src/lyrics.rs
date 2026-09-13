@@ -92,9 +92,21 @@ fn jaro_winkler_similarity(a: &str, b: &str) -> f64 {
     jaro + (0.1 * prefix_len as f64 * (1.0 - jaro))
 }
 
-/// Check if two strings match fuzzily above threshold.
+/// Strip clutter that should not participate in similarity matching: case,
+/// punctuation and non-alphanumerics. This lets variants like "Song (feat. X)"
+/// or "Sömeone – Rêmix" fuzzy-match a plain "Song"/"Remix" result instead of
+/// being rejected at the threshold.
+fn normalize_for_match(s: &str) -> String {
+    s.to_lowercase()
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect()
+}
+
+/// Check if two strings match fuzzily above the configured threshold,
+/// comparing normalized forms.
 fn fuzzy_match(a: &str, b: &str) -> bool {
-    jaro_winkler_similarity(a, b) >= FUZZY_THRESHOLD
+    jaro_winkler_similarity(&normalize_for_match(a), &normalize_for_match(b)) >= FUZZY_THRESHOLD
 }
 
 #[derive(Clone)]
@@ -279,8 +291,14 @@ impl LyricsManager {
             self.fetch_lrclib_search_title(&track.title).await
         } else if let Some(lrc) = self.fetch_lrclib_exact(track).await {
             Some(lrc)
+        } else if let Some(lrc) = self.fetch_lrclib_search(track).await {
+            Some(lrc)
         } else {
-            self.fetch_lrclib_search(track).await
+            // Strict artist+title matching failed (e.g. the artist tag is
+            // spelled differently or carries a featuring/remix credit). Drop
+            // to a title-only search so a correct song is still recovered;
+            // the tight title threshold keeps an unrelated song's lyrics out.
+            self.fetch_lrclib_search_title(&track.title).await
         };
 
         if let Some(lrc) = fetched {
@@ -296,6 +314,13 @@ impl LyricsManager {
     /// Search lrclib for a free-form "Artist - Title" pair, returning the best
     /// match without touching sidecar files. Used by the `gtm lyrics` CLI.
     pub async fn search(&self, artist: &str, title: &str) -> Option<LrcData> {
+        let key = format!("{} - {}", artist, title);
+        // Serve from the disk cache first: this path is used by the CLI and by
+        // `status --stream`, which would otherwise hit the network on every run.
+        if let Some(lrc) = self.read_cache_key(&key) {
+            return Some(lrc);
+        }
+
         let query = format!("{} {}", artist, title);
         let url = format!("{}/search?q={}", LRCLIB_API, encode(&query));
 
@@ -304,12 +329,22 @@ impl LyricsManager {
                 && resp.status().is_success()
                 && let Ok(results) = resp.json::<Vec<serde_json::Value>>().await
             {
-                // Try fuzzy match first
+                // Try fuzzy match first; malformed entries are skipped so a
+                // single bad hit can't abort the whole list.
                 for result in &results {
-                    let artist_name = result.get("artistName")?.as_str()?;
-                    let track_name = result.get("trackName")?.as_str()?;
-                    if fuzzy_match(artist_name, artist) && fuzzy_match(track_name, title) {
-                        return parse_lrclib_response(result);
+                    let Some(artist_name) = result.get("artistName").and_then(|v| v.as_str())
+                    else {
+                        continue;
+                    };
+                    let Some(track_name) = result.get("trackName").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
+                    if fuzzy_match(artist_name, artist)
+                        && fuzzy_match(track_name, title)
+                        && let Some(lrc) = parse_lrclib_response(result)
+                    {
+                        self.write_cache_key(&key, &lrc);
+                        return Some(lrc);
                     }
                 }
                 // No fuzzy match on artist+title: prefer no lyrics over a
@@ -330,22 +365,22 @@ impl LyricsManager {
             return None;
         }
         let content = std::fs::read_to_string(&lrc_path).ok()?;
-        Some(Self::parse_lrc(&content))
+        let lrc = Self::parse_lrc(&content);
+        // An empty or malformed sidecar must not shadow the offline cache or
+        // the network fetch, otherwise a stray/empty `.lrc` file would make a
+        // track permanently lyric-less.
+        if lrc.lines.is_empty() {
+            None
+        } else {
+            Some(lrc)
+        }
     }
 
-    /// Resolve the cached `.lrc` file for a track. Cache entries are keyed by
+    /// Resolve the cached `.lrc` file for a key. Cache entries are keyed by
     /// a sanitized "Artist - Title" (plus a short content hash) so the same
     /// song shares one entry regardless of where the file lives.
-    fn cache_path(&self, track: &TrackInfo) -> Option<PathBuf> {
+    fn cache_path(&self, key: &str) -> Option<PathBuf> {
         let dir = self.cache_dir.as_ref()?;
-        let key = if !track.artist.is_empty() || !track.title.is_empty() {
-            format!("{} - {}", track.artist, track.title)
-        } else {
-            Path::new(&track.path)
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default()
-        };
         let sanitized: String = key
             .chars()
             .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
@@ -364,8 +399,26 @@ impl LyricsManager {
         Some(dir.join(name))
     }
 
+    /// Build the cache key for a track: "Artist - Title", falling back to the
+    /// file stem when no tags are present.
+    fn track_cache_key(&self, track: &TrackInfo) -> Option<String> {
+        if !track.artist.is_empty() || !track.title.is_empty() {
+            Some(format!("{} - {}", track.artist, track.title))
+        } else {
+            Path::new(&track.path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .filter(|k| !k.is_empty())
+        }
+    }
+
     fn read_cache(&self, track: &TrackInfo) -> Option<LrcData> {
-        let path = self.cache_path(track)?;
+        let key = self.track_cache_key(track)?;
+        self.read_cache_key(&key)
+    }
+
+    fn read_cache_key(&self, key: &str) -> Option<LrcData> {
+        let path = self.cache_path(key)?;
         if !path.exists() {
             return None;
         }
@@ -379,8 +432,18 @@ impl LyricsManager {
     }
 
     fn write_cache(&self, track: &TrackInfo, lrc: &LrcData) {
-        if let Some(path) = self.cache_path(track) {
-            let _ = std::fs::write(&path, lrc_to_text(lrc));
+        if let Some(key) = self.track_cache_key(track)
+            && let Some(path) = self.cache_path(&key)
+        {
+            let _ = std::fs::write(path, lrc_to_text(lrc));
+        }
+    }
+
+    /// Persist a fetched result under an explicit "Artist - Title" key (used by
+    /// the CLI `search` path, which has no `TrackInfo`).
+    fn write_cache_key(&self, key: &str, lrc: &LrcData) {
+        if let Some(path) = self.cache_path(key) {
+            let _ = std::fs::write(path, lrc_to_text(lrc));
         }
     }
 
@@ -416,8 +479,13 @@ impl LyricsManager {
             {
                 // Try fuzzy match first
                 for result in &results {
-                    let artist_name = result.get("artistName")?.as_str()?;
-                    let track_name = result.get("trackName")?.as_str()?;
+                    let Some(artist_name) = result.get("artistName").and_then(|v| v.as_str())
+                    else {
+                        continue;
+                    };
+                    let Some(track_name) = result.get("trackName").and_then(|v| v.as_str()) else {
+                        continue;
+                    };
                     if fuzzy_match(artist_name, &track.artist)
                         && fuzzy_match(track_name, &track.title)
                     {
@@ -449,7 +517,9 @@ impl LyricsManager {
         let results: Vec<serde_json::Value> = resp.json().await.ok()?;
         // Try fuzzy match against title
         for result in &results {
-            let track_name = result.get("trackName")?.as_str()?;
+            let Some(track_name) = result.get("trackName").and_then(|v| v.as_str()) else {
+                continue;
+            };
             if fuzzy_match(track_name, title) {
                 return parse_lrclib_response(result);
             }
