@@ -11,6 +11,8 @@ env:
   # Never fall back to the deprecated Node 20 runtime: force every action
   # onto the current Node (24+).
   ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: 'false'
+  # Bake the commit into binaries built by this pipeline (build.rs reads it).
+  VERGEN_GIT_SHA: ${{ github.sha }}
 jobs:
   check:
     runs-on: ${{ matrix.os }}

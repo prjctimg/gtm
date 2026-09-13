@@ -1454,7 +1454,9 @@ impl App {
                 .ok()
                 .and_then(|m| m.modified().ok()),
         };
-        app.open_setup_picker(setup_service.as_deref());
+        if let Some(service) = setup_service.as_deref() {
+            app.open_setup_picker(Some(service));
+        }
         Ok(app)
     }
 
@@ -3752,6 +3754,28 @@ impl App {
                 }
             }
         });
+    }
+
+    /// Filter radio search results based on the picker query (fuzzy substring search).
+    pub fn radio_search_picks(&self) -> Vec<RadioStation> {
+        let Some(top) = self.pickers.top() else {
+            return Vec::new();
+        };
+        let q = top.query.to_lowercase();
+        if q.is_empty() {
+            return self.radio.search.clone();
+        }
+        self.radio
+            .search
+            .iter()
+            .filter(|s| {
+                s.name.to_lowercase().contains(&q)
+                    || s.country.to_lowercase().contains(&q)
+                    || s.language.to_lowercase().contains(&q)
+                    || s.tags.to_lowercase().contains(&q)
+            })
+            .cloned()
+            .collect()
     }
 
     /// (Re)load the tag or country list for the RadioBrowseList picker.
@@ -6602,6 +6626,14 @@ impl App {
                     KeyCode::Backspace => {
                         self.sleep_timer.input_buf.pop();
                     }
+                    KeyCode::Up | KeyCode::Char('j') => {
+                        self.sleep_timer.minutes = (self.sleep_timer.minutes + 1).min(180);
+                        self.sleep_timer.input_buf.clear();
+                    }
+                    KeyCode::Down | KeyCode::Char('k') => {
+                        self.sleep_timer.minutes = self.sleep_timer.minutes.saturating_sub(1);
+                        self.sleep_timer.input_buf.clear();
+                    }
                     KeyCode::Char(c) if c.is_ascii_digit() => {
                         self.sleep_timer.input_buf.push(c);
                     }
@@ -6618,14 +6650,22 @@ impl App {
                     self.pickers.close_top();
                     return;
                 }
-                // Arrows are navigation only: Left/Right leave the picker like
-                // Esc. Minute stepping stays on h/l and +/-.
+                // Arrows adjust the sleep time: Up/Down step ±5 min, Left/Right
+                // leave the picker like Esc.
                 KeyCode::Left | KeyCode::Right => {
                     self.sleep_timer.remaining = None;
                     self.sleep_timer.minutes = 30;
                     self.sleep_timer.input_mode = false;
                     self.sleep_timer.input_buf.clear();
                     self.pickers.close_top();
+                    return;
+                }
+                KeyCode::Up | KeyCode::Char('j') => {
+                    self.sleep_timer.minutes = (self.sleep_timer.minutes + 5).min(180);
+                    return;
+                }
+                KeyCode::Down | KeyCode::Char('k') => {
+                    self.sleep_timer.minutes = self.sleep_timer.minutes.saturating_sub(5);
                     return;
                 }
                 KeyCode::Char('h') => {
@@ -6667,26 +6707,6 @@ impl App {
                         "Sleep timer cancelled".to_string(),
                         std::time::Instant::now() + std::time::Duration::from_secs(2),
                     ));
-                    return;
-                }
-                KeyCode::Up | KeyCode::Char('j') => {
-                    let quick_opts = [5u32, 10, 15, 30, 60, 90, 120];
-                    if let Some(top) = self.pickers.top_mut() {
-                        top.selected = (top.selected + 1) % quick_opts.len();
-                        self.sleep_timer.minutes = quick_opts[top.selected];
-                    }
-                    return;
-                }
-                KeyCode::Down | KeyCode::Char('k') => {
-                    let quick_opts = [5u32, 10, 15, 30, 60, 90, 120];
-                    if let Some(top) = self.pickers.top_mut() {
-                        top.selected = if top.selected == 0 {
-                            quick_opts.len() - 1
-                        } else {
-                            top.selected - 1
-                        };
-                        self.sleep_timer.minutes = quick_opts[top.selected];
-                    }
                     return;
                 }
                 _ => {}
@@ -7770,24 +7790,60 @@ impl App {
         }
 
         // ─── Radio browse ───
-        // Root picker: choose Tags or Countries, then drill into the list.
+        // Root picker: type a query to search, or choose Tags / Countries to
+        // drill into the list.
         if matches!(
             self.pickers.top().map(|o| o.id),
             Some(PickerId::RadioBrowse)
         ) {
             match key.code {
+                KeyCode::Char(c) => {
+                    if !c.is_control()
+                        && let Some(top) = self.pickers.top_mut()
+                    {
+                        top.query.push(c);
+                    }
+                }
+                KeyCode::Backspace => {
+                    if let Some(top) = self.pickers.top_mut() {
+                        top.query.pop();
+                    }
+                }
                 KeyCode::Enter => {
-                    let sel = self.pickers.top().map_or(0, |o| o.selected);
-                    self.radio.browse_kind = match sel {
-                        0 => RadioBrowseKind::Tags,
-                        _ => RadioBrowseKind::Countries,
-                    };
-                    self.radio.browse_topic.clear();
-                    self.radio.browse_tags.clear();
-                    self.radio.browse_countries.clear();
-                    self.radio.browse_stations.clear();
-                    self.pickers.open(PickerId::RadioBrowseList);
-                    self.on_picker_opened(PickerId::RadioBrowseList);
+                    let query = self
+                        .pickers
+                        .top()
+                        .map_or(String::new(), |o| o.query.clone());
+                    let q = query.trim().to_string();
+                    if q.is_empty() {
+                        let sel = self.pickers.top().map_or(0, |o| o.selected);
+                        self.radio.browse_kind = match sel {
+                            0 => RadioBrowseKind::Tags,
+                            _ => RadioBrowseKind::Countries,
+                        };
+                        self.radio.browse_topic.clear();
+                        self.radio.browse_tags.clear();
+                        self.radio.browse_countries.clear();
+                        self.radio.browse_stations.clear();
+                        self.pickers.open(PickerId::RadioBrowseList);
+                        self.on_picker_opened(PickerId::RadioBrowseList);
+                    } else if self.radio.search_pending {
+                        return;
+                    } else if self.radio.search.is_empty() {
+                        self.search_radio(q);
+                    } else {
+                        let picks = self.radio_search_picks();
+                        let sel = self.pickers.top().map_or(0, |o| o.selected);
+                        if let Some(station) = picks.get(sel).cloned() {
+                            let c = self.client.clone();
+                            self.pickers.close_top();
+                            tokio::spawn(async move {
+                                let _ = c.radio().play(&station.id, &station.name).await;
+                            });
+                        } else {
+                            self.search_radio(q);
+                        }
+                    }
                 }
                 KeyCode::Up | KeyCode::Down => {
                     self.move_picker_selection(key.code == KeyCode::Down);

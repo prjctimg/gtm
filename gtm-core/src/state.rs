@@ -194,6 +194,10 @@ pub struct DaemonState {
     /// file, podcast, or non-metadata stream is active.
     #[serde(default)]
     pub radio_title: Option<String>,
+    /// Radio stations that have been played, in order, for Next/Prev cycling.
+    /// Each entry corresponds to a radio station that was removed from the queue.
+    #[serde(default)]
+    pub radio_history: Vec<TrackInfo>,
     pub sleep_timer: Option<u32>,
     /// Low-power mode: pauses playback and suspends background work.
     #[serde(default)]

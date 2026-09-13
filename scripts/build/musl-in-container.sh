@@ -10,7 +10,7 @@ cd /work
 export RUSTFLAGS="-C target-feature=-crt-static -C linker=gcc -C link-arg=-fuse-ld=mold"
 
 apk add --no-cache \
-  ca-certificates curl cmake musl-dev \
+  ca-certificates curl cmake musl-dev git \
   pkgconfig alsa-lib-dev pandoc \
   gcc g++ binutils build-base clang lld mold
 

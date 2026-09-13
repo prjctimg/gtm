@@ -390,6 +390,10 @@ impl Cmd {
         {
             let mut mixer = inner.mixer.lock().await;
             mixer.stop()?;
+            // Ensure the mixer's speed matches the persisted state before loading
+            // the next track. This guards against any drift between state and mixer.
+            let speed = inner.state.read().await.audio.speed;
+            mixer.set_speed(speed);
         }
         *inner.crossfade_loaded_for.lock().await = None;
         {
@@ -1350,7 +1354,9 @@ impl Cmd {
     ) -> Result<DaemonRes, CoreError> {
         {
             let mut mixer = inner.mixer.lock().await;
-            mixer.set_device(name.clone())?;
+            mixer.stop()?;
+            let speed = inner.state.read().await.audio.speed;
+            mixer.set_speed(speed);
         }
         {
             let mut state = inner.state.write().await;
@@ -1407,6 +1413,8 @@ impl Cmd {
             {
                 let mut mixer = inner.mixer.lock().await;
                 let _ = mixer.stop();
+                let speed = inner.state.read().await.audio.speed;
+                mixer.set_speed(speed);
             }
             inner.stream.lock().await.reset();
             *inner.crossfade_loaded_for.lock().await = None;
@@ -3759,6 +3767,14 @@ impl Daemon {
                 }
             }
         }
+        // Apply persisted playback speed to the mixer so it's effective from the
+        // first track. The mixer defaults to 1.0 but the saved state may differ.
+        if !config.test_mode {
+            let speed = initial_state.audio.speed;
+            if (speed - 1.0).abs() > f32::EPSILON {
+                mixer.set_speed(speed);
+            }
+        }
 
         let state = Arc::new(RwLock::new(initial_state));
 
@@ -4930,6 +4946,9 @@ impl Daemon {
                 if cur_is_queued {
                     let cur = state.queue.remove(0);
                     resume_key = Some(cur.title.clone());
+                    if cur.path.starts_with("radio://") {
+                        state.radio_history.push(cur.clone());
+                    }
                     history.push(HistoryEntry::User(cur));
                     if !state.queue.is_empty() {
                         let next = state.queue[0].clone();
@@ -4943,6 +4962,18 @@ impl Daemon {
                     drop(history);
                     return Ok(Some(next));
                 }
+            }
+            // If the current track was a radio station, cycle through radio history
+            if state
+                .current_track
+                .as_ref()
+                .is_some_and(|t| t.path.starts_with("radio://"))
+                && !state.radio_history.is_empty()
+            {
+                let next = state.radio_history.remove(0);
+                drop(state);
+                drop(history);
+                return Ok(Some(next));
             }
             if !state.default_list.is_empty() {
                 let len = state.default_list.len();

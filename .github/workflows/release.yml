@@ -192,6 +192,9 @@ jobs:
     # dynamically against the container's musl libc and libasound.so.2
     # (the .apk and archives declare an alsa-lib runtime dependency).
     env:
+      # Bake the exact commit into the binary so About shows a real SHA
+      # instead of "unknown" (build.rs prefers this var over git rev-parse).
+      VERGEN_GIT_SHA: ${{ github.sha }}
       # Link release binaries with clang + mold for faster, reproducible links.
       # Android builds link via cargo-ndk's injected NDK clang and do not use
       # mold, so they suppress both overrides. musl targets additionally need
@@ -336,6 +339,7 @@ jobs:
             -v "$PWD":/work \
             -w /work \
             -e HOME=/root \
+            -e VERGEN_GIT_SHA="$VERGEN_GIT_SHA" \
             alpine:3.22 \
             /bin/sh -c "apk add --no-cache bash && /bin/bash /work/scripts/build/musl-in-container.sh \
               aarch64-linux-musl ${{ needs.tag.outputs.version }} aarch64"
@@ -353,6 +357,7 @@ jobs:
             -v "$PWD":/work \
             -w /work \
             -e HOME=/root \
+            -e VERGEN_GIT_SHA="$VERGEN_GIT_SHA" \
             lfdevs/archlinuxarm:base-devel \
             /bin/bash -c "
               echo 'DisableSandboxFilesystem' >> /etc/pacman.conf &&

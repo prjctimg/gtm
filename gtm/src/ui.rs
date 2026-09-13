@@ -2637,52 +2637,48 @@ impl Pickers {
         app.mouse_map.set_picker_area(picker_area);
 
         match top_id {
-            PickerId::Queue => Self::render_queue_picker(f, picker_area, app),
-            PickerId::YTSearch => Self::render_yt_search_picker(f, picker_area, app),
-            PickerId::SearchLibrary => Self::render_search_library_picker(f, picker_area, app),
-            PickerId::About => Self::render_about_picker(f, picker_area, app),
-            PickerId::SleepTimer => Self::render_sleep_timer_picker(f, picker_area, app),
-            PickerId::CommandPalette => Self::command_palette_picker(f, picker_area, app),
-            PickerId::Equalizer => Self::render_equalizer_picker(f, picker_area, app),
-            PickerId::ThemePicker => Self::render_theme_picker_picker(f, picker_area, app),
-            PickerId::Help => Self::render_help_picker(f, picker_area, app),
-            PickerId::PlaylistSelect => Self::render_playlist_select_picker(f, picker_area, app),
+            PickerId::Queue => Self::render_queue(f, picker_area, app),
+            PickerId::YTSearch => Self::render_yt_search(f, picker_area, app),
+            PickerId::SearchLibrary => Self::render_search_library(f, picker_area, app),
+            PickerId::About => Self::render_about(f, picker_area, app),
+            PickerId::SleepTimer => Self::render_sleep_timer(f, picker_area, app),
+            PickerId::CommandPalette => Self::command_palette(f, picker_area, app),
+            PickerId::Equalizer => Self::render_equalizer(f, picker_area, app),
+            PickerId::ThemePicker => Self::render_theme(f, picker_area, app),
+            PickerId::Help => Self::render_help(f, picker_area, app),
+            PickerId::PlaylistSelect => Self::render_playlist_select(f, picker_area, app),
             PickerId::PlaylistTrackSelect => {
-                Self::render_playlist_track_select_picker(f, picker_area, app)
+                Self::render_playlist_track_select(f, picker_area, app)
             }
-            PickerId::EditMetadata => Self::render_edit_metadata_picker(f, picker_area, app),
-            PickerId::Crossfade => Self::render_crossfade_picker(f, picker_area, app),
-            PickerId::VisualizerPreset => {
-                Self::render_visualizer_preset_picker(f, picker_area, app)
-            }
-            PickerId::FooterPreset => Self::render_footer_preset_picker(f, picker_area, app),
-            PickerId::ProgressStyle => Self::render_progress_style_picker(f, picker_area, app),
-            PickerId::Settings => Self::render_settings_picker(f, picker_area, app),
-            PickerId::Notifications => Self::render_notifications_picker(f, picker_area, app),
+            PickerId::EditMetadata => Self::render_edit_metadata(f, picker_area, app),
+            PickerId::Crossfade => Self::render_crossfade(f, picker_area, app),
+            PickerId::VisualizerPreset => Self::render_visualizer_preset(f, picker_area, app),
+            PickerId::FooterPreset => Self::render_footer_preset(f, picker_area, app),
+            PickerId::ProgressStyle => Self::render_progress_style(f, picker_area, app),
+            PickerId::Settings => Self::render_settings(f, picker_area, app),
+            PickerId::Notifications => Self::render_notifications(f, picker_area, app),
             PickerId::NotificationSettings => {
-                Self::render_notification_settings_picker(f, picker_area, app)
+                Self::render_notification_settings(f, picker_area, app)
             }
-            PickerId::SubsonicSearch => Self::render_subsonic_search_picker(f, picker_area, app),
-            PickerId::SubsonicAlbums => Self::render_subsonic_albums_picker(f, picker_area, app),
+            PickerId::SubsonicSearch => Self::render_subsonic_search(f, picker_area, app),
+            PickerId::SubsonicAlbums => Self::render_subsonic_albums(f, picker_area, app),
             PickerId::SubsonicAlbumTracks => {
-                Self::render_subsonic_album_tracks_picker(f, picker_area, app)
+                Self::render_subsonic_album_tracks(f, picker_area, app)
             }
-            PickerId::SubsonicSetup => Self::render_subsonic_setup_picker(f, picker_area, app),
-            PickerId::PodcastFeeds => Self::render_podcast_feeds_picker(f, picker_area, app),
-            PickerId::PodcastEpisodes => Self::render_podcast_episodes_picker(f, picker_area, app),
-            PickerId::PodcastSubscribe => {
-                Self::render_podcast_subscribe_picker(f, picker_area, app)
-            }
-            PickerId::LoadStream => Self::render_load_stream_picker(f, picker_area, app),
-            PickerId::RadioSearch => Self::render_radio_search_picker(f, picker_area, app),
-            PickerId::RadioTop => Self::render_radio_top_picker(f, picker_area, app),
-            PickerId::RadioBrowse => Self::render_radio_browse_picker(f, picker_area, app),
-            PickerId::RadioBrowseList => Self::render_radio_browse_list_picker(f, picker_area, app),
+            PickerId::SubsonicSetup => Self::render_subsonic_setup(f, picker_area, app),
+            PickerId::PodcastFeeds => Self::render_podcast_feeds(f, picker_area, app),
+            PickerId::PodcastEpisodes => Self::render_podcast_episodes(f, picker_area, app),
+            PickerId::PodcastSubscribe => Self::render_podcast_subscribe(f, picker_area, app),
+            PickerId::LoadStream => Self::render_load_stream(f, picker_area, app),
+            PickerId::RadioSearch => Self::render_radio_search(f, picker_area, app),
+            PickerId::RadioTop => Self::render_radio_top(f, picker_area, app),
+            PickerId::RadioBrowse => Self::render_radio_browse(f, picker_area, app),
+            PickerId::RadioBrowseList => Self::render_radio_browse_list(f, picker_area, app),
             PickerId::RadioBrowseStations => {
-                Self::render_radio_browse_stations_picker(f, picker_area, app)
+                Self::render_radio_browse_stations(f, picker_area, app)
             }
-            PickerId::Setup => Self::render_setup_picker(f, picker_area, app),
-            PickerId::LastfmAuth => Self::render_lastfm_setup_picker(f, picker_area, app),
+            PickerId::Setup => Self::render_setup(f, picker_area, app),
+            PickerId::LastfmAuth => Self::render_lastfm_setup(f, picker_area, app),
             PickerId::SpotifyLink => {
                 let block = Self::picker_panel(
                     app,
@@ -3074,7 +3070,7 @@ impl Pickers {
         block
     }
 
-    fn render_queue_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_queue(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let sel = app.pickers.top().map_or(0, |o| o.selected);
 
         let (title, hint) = if app.queue.move_index.is_some() {
@@ -3295,7 +3291,7 @@ impl Pickers {
         }
     }
 
-    fn render_yt_search_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_yt_search(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let block = Self::picker_panel(
             app,
             " \u{f167} Search ",
@@ -3390,11 +3386,10 @@ impl Pickers {
         f.render_widget(para, inner);
     }
 
-    fn render_search_library_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_search_library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let source = app.pickers.top().map_or(PickerSource::All, |o| o.source);
         let title = format!(" Search: {} ", source.label());
-        let block =
-            Self::picker_panel(app, &title, Some(" Tab: filter   Enter: open   Esc: close"));
+        let block = Self::picker_panel(app, &title, None);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -3588,7 +3583,7 @@ impl Pickers {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
-    fn render_subsonic_search_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_subsonic_search(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let r = &app.subsonic.search_results;
         let mut rows = Vec::new();
         for a in &r.artists {
@@ -3616,7 +3611,7 @@ impl Pickers {
             f,
             area,
             app,
-            " Subsonic search ",
+            "Subsonic Search",
             " Enter: search / play   Esc: close",
             prepend,
             rows,
@@ -3624,7 +3619,7 @@ impl Pickers {
         );
     }
 
-    fn render_subsonic_albums_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_subsonic_albums(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let mut rows = Vec::new();
         for a in &app.subsonic.albums {
             rows.push(format!(
@@ -3647,7 +3642,7 @@ impl Pickers {
             f,
             area,
             app,
-            " Subsonic albums ",
+            "Subsonic Albums",
             " Enter: open album   r: refresh   Esc: close",
             prepend,
             rows,
@@ -3659,7 +3654,7 @@ impl Pickers {
         );
     }
 
-    fn render_subsonic_album_tracks_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_subsonic_album_tracks(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let mut rows = Vec::new();
         for t in &app.subsonic.album_tracks {
             rows.push(format!(
@@ -3687,8 +3682,8 @@ impl Pickers {
         );
     }
 
-    fn render_subsonic_setup_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Subsonic setup ", Some(" Enter: next   Esc: close"));
+    fn render_subsonic_setup(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let block = Self::picker_panel(app, " Subsonic setup ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -3741,10 +3736,10 @@ impl Pickers {
     }
 
     /// `gtm setup` service chooser. Enter opens the matching setup flow.
-    fn render_setup_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_setup(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let block = Self::picker_panel(
             app,
-            " setup ",
+            "Setup",
             Some(" j/k: move   Enter: configure   Esc: close"),
         );
         let inner = block.inner(area);
@@ -3784,7 +3779,7 @@ impl Pickers {
 
     /// Last.fm setup: API key/secret form, then the OAuth browser flow with a
     /// loopback callback (or a manual token paste).
-    fn render_lastfm_setup_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_lastfm_setup(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let status_line = match app.setup.lastfm_status.as_ref() {
             Some(st) if st.ready => {
                 if st.enabled {
@@ -3801,7 +3796,7 @@ impl Pickers {
         };
         let block = Self::picker_panel(
             app,
-            " Last.fm setup ",
+            "Last.fm Setup",
             Some(" Enter: authorize   Tab: field   Esc: close"),
         );
         let inner = block.inner(area);
@@ -3871,7 +3866,7 @@ impl Pickers {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
-    fn render_podcast_feeds_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_podcast_feeds(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let mut rows = Vec::new();
         for feed in &app.podcast.feeds {
             rows.push(format!(
@@ -3902,7 +3897,7 @@ impl Pickers {
         );
     }
 
-    fn render_podcast_episodes_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_podcast_episodes(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let mut rows = Vec::new();
         for ep in &app.podcast.episodes {
             let dur = ep
@@ -3929,8 +3924,8 @@ impl Pickers {
         );
     }
 
-    fn render_podcast_subscribe_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Subscribe ", Some(" Enter: subscribe   Esc: close"));
+    fn render_podcast_subscribe(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let block = Self::picker_panel(app, " Subscribe ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
         let mut lines = vec![Line::from(Span::styled(
@@ -3957,8 +3952,8 @@ impl Pickers {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
-    fn render_load_stream_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Stream ", Some(" Enter: play   Esc: close"));
+    fn render_load_stream(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let block = Self::picker_panel(app, " Stream ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
         let url = app
@@ -3990,9 +3985,9 @@ impl Pickers {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
-    fn render_radio_search_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_radio_search(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let mut rows = Vec::new();
-        for s in &app.radio.search {
+        for s in &app.radio_search_picks() {
             rows.push(Self::radio_row(s));
         }
         let mut prepend = vec![Self::picker_query_line(app)];
@@ -4014,7 +4009,7 @@ impl Pickers {
         );
     }
 
-    fn render_radio_top_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_radio_top(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let mut rows = Vec::new();
         for s in &app.radio.top {
             rows.push(Self::radio_row(s));
@@ -4023,7 +4018,7 @@ impl Pickers {
             f,
             area,
             app,
-            " Top radio stations ",
+            "Top Radio Stations",
             " Enter: play   r: refresh   Esc: close",
             Vec::new(),
             rows,
@@ -4035,24 +4030,56 @@ impl Pickers {
         );
     }
 
-    fn render_radio_browse_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let rows = vec![
-            "\u{1f3f7}\u{fe0f} Tags\u{2003}\u{2139}\u{fe0f} browse a genre".to_string(),
-            "\u{1f30f} Countries\u{2003}\u{2139}\u{fe0f} browse by country".to_string(),
-        ];
+    fn render_radio_browse(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
+        let q = query.to_lowercase();
+
+        let mut rows = Vec::new();
+        if !q.is_empty() {
+            let filtered: Vec<_> = app
+                .radio
+                .search
+                .iter()
+                .filter(|s| {
+                    s.name.to_lowercase().contains(&q)
+                        || s.country.to_lowercase().contains(&q)
+                        || s.tags.to_lowercase().contains(&q)
+                })
+                .collect();
+            for s in &filtered {
+                rows.push(Self::radio_row(s));
+            }
+        } else {
+            rows.push("\u{1f3f7}\u{fe0f} Tags\u{2003}\u{2139}\u{fe0f} browse a genre".to_string());
+            rows.push("\u{1f30f} Countries\u{2003}\u{2139}\u{fe0f} browse by country".to_string());
+            for t in &app.radio.browse_tags {
+                rows.push(format!("\u{1f3f7}\u{fe0f} {} stations", t.name));
+            }
+            for c in &app.radio.browse_countries {
+                rows.push(format!("\u{1f30f} {} stations", c.name));
+            }
+        }
+
+        let mut prepend = vec![Self::picker_query_line(app)];
+        if app.radio.search_pending {
+            prepend.push(Line::from(Span::styled(
+                " searching\u{2026}",
+                Style::default().fg(app.theme.fg_dim),
+            )));
+        }
         Self::render_scroll_rows(
             f,
             area,
             app,
-            " Radio browse ",
-            " Enter: choose list   Esc: close",
-            Vec::new(),
-            rows,
+            " Radio ",
             "",
+            prepend,
+            rows,
+            "type a query or browse tags",
         );
     }
 
-    fn render_radio_browse_list_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_radio_browse_list(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let kind = app.radio.browse_kind;
         let mut rows = Vec::new();
         match kind {
@@ -4099,7 +4126,7 @@ impl Pickers {
         );
     }
 
-    fn render_radio_browse_stations_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_radio_browse_stations(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let mut rows = Vec::new();
         for s in &app.radio.browse_stations {
             rows.push(Self::radio_row(s));
@@ -4133,6 +4160,9 @@ impl Pickers {
             row.push_str(&format!(" {} ", s.codec));
         }
         row.push_str(&format!(" \u{2b50} {}", s.votes));
+        if !s.favicon.is_empty() {
+            row.push_str(" \u{1f310}");
+        }
         row
     }
 
@@ -4259,7 +4289,7 @@ impl Pickers {
         f.render_widget(Paragraph::new(meta_lines), meta_area);
     }
 
-    fn render_settings_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let block = Self::picker_panel(
             app,
             " Settings ",
@@ -5394,8 +5424,8 @@ pub const HELP_LINES: &[(&str, &str)] = &[
 pub const CROSSFADE_DURATIONS: [u8; 5] = [3, 5, 10, 15, 30];
 
 impl Pickers {
-    fn render_about_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
-        let block = Self::picker_panel(app, " About ", Some("Esc: close"));
+    fn render_about(f: &mut ratatui::Frame, area: Rect, app: &App) {
+        let block = Self::picker_panel(app, " About ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -5546,7 +5576,7 @@ impl Pickers {
         f.render_widget(p, inner);
     }
 
-    fn render_help_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_help(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let block = Self::picker_panel(
             app,
             " Keybindings ",
@@ -5603,7 +5633,7 @@ impl Pickers {
         f.render_widget(para, inner);
     }
 
-    fn render_notifications_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_notifications(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let block = Self::picker_panel(
             app,
             " Notifications ",
@@ -5764,7 +5794,7 @@ impl Pickers {
         }
     }
 
-    fn render_notification_settings_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_notification_settings(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let block = Self::picker_panel(
             app,
             " Notification Settings ",
@@ -5818,7 +5848,7 @@ impl Pickers {
         }
     }
 
-    fn render_sleep_timer_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    fn render_sleep_timer(f: &mut ratatui::Frame, area: Rect, app: &App) {
         if app.sleep_timer.input_mode {
             let block = Self::picker_panel(
                 app,
@@ -5844,9 +5874,9 @@ impl Pickers {
 
         let is_active = app.sleep_timer.remaining.is_some();
         let help = if is_active {
-            "h/-: decrease   l/+: increase   i: input   Enter: set   c: cancel   Esc: close"
+            "↑/j: +5   ↓/k: -5   h/-: -1   l/+: +1   i: input   Enter: set   c: cancel   Esc: close"
         } else {
-            "h/-: decrease   l/+: increase   i: input   Enter: set   Esc: close"
+            "↑/j: +5   ↓/k: -5   h/-: -1   l/+: +1   i: input   Enter: set   Esc: close"
         };
         let block = Self::picker_panel(app, " Sleep Timer ", Some(help));
         let inner = block.inner(area);
@@ -5893,19 +5923,13 @@ impl Pickers {
         lines.push(Line::from(""));
 
         let quick_opts = [5u32, 10, 15, 30, 60, 90, 120];
-        let sel = app
-            .pickers
-            .top()
-            .map_or(0, |o| o.selected.min(quick_opts.len() - 1));
         let mut spans: Vec<Span> = vec![Span::styled("  ", Style::default())];
-        for (i, &m) in quick_opts.iter().enumerate() {
-            let style = if i == sel {
+        for &m in quick_opts.iter() {
+            let style = if m == mins {
                 Style::default()
                     .fg(app.theme.selection_fg_readable())
                     .bg(app.theme.selection_bg)
                     .add_modifier(Modifier::BOLD)
-            } else if m == mins {
-                Style::default().fg(app.theme.accent)
             } else {
                 Style::default().fg(app.theme.fg_dim)
             };
@@ -5930,7 +5954,7 @@ impl Pickers {
         f.render_widget(paragraph, inner);
     }
 
-    fn command_palette_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn command_palette(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let commands = CommandPalette::commands(&app.icon_style);
 
         let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
@@ -6078,7 +6102,7 @@ impl Pickers {
         f.render_widget(para, inner);
     }
 
-    fn render_equalizer_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_equalizer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let presets = [
             ("Flat", "Neutral, uncoloured response", EqPreset::Flat),
             ("Normal", "Balanced all-rounder", EqPreset::Normal),
@@ -6393,7 +6417,7 @@ impl Pickers {
         lines
     }
 
-    fn render_theme_picker_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_theme(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
         let q = query.to_lowercase();
 
@@ -6516,7 +6540,7 @@ impl Pickers {
         f.render_widget(list, inner);
     }
 
-    fn render_crossfade_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    fn render_crossfade(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let block = Self::picker_panel(
             app,
             " Crossfade Options ",
@@ -6585,7 +6609,7 @@ impl Pickers {
         f.render_widget(para, inner);
     }
 
-    fn render_visualizer_preset_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_visualizer_preset(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let block = Self::picker_panel(
             app,
             " Visualizer Preset ",
@@ -6718,7 +6742,7 @@ impl Pickers {
         }
     }
 
-    fn render_progress_style_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_progress_style(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let block = Self::picker_panel(
             app,
             " Progress Style ",
@@ -6858,7 +6882,7 @@ impl Pickers {
         }
     }
 
-    fn render_footer_preset_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_footer_preset(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let block = Self::picker_panel(
             app,
             " Footer Preset ",
@@ -7050,7 +7074,7 @@ fn scroll_text(text: &str, max_width: usize, frame: usize, is_selected: bool) ->
 // ─── Library Motion Overlays ───
 
 impl Pickers {
-    fn render_playlist_select_picker(f: &mut ratatui::Frame, area: Rect, app: &App) {
+    fn render_playlist_select(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let help = if app.playlist_creating {
             "type: name   Enter: create & add   Esc: back"
         } else {
@@ -7128,9 +7152,9 @@ impl Pickers {
     /// Multi-select track picker shown right after a playlist is created:
     /// every track is listed and `Space` toggles a persistent highlight, with
     /// `Ctrl+Enter` committing the selection. Highlights survive scrolling.
-    fn render_playlist_track_select_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_playlist_track_select(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let selected = app.selected_playlist_track_ids.len();
-        let hint = format!(
+        let _hint = format!(
             "Space/Tab: toggle   \u{2191}/\u{2193}: navigate   Ctrl+Enter: add {} to playlist   Esc: cancel",
             if selected > 0 {
                 format!("({selected} selected)")
@@ -7138,7 +7162,7 @@ impl Pickers {
                 String::new()
             }
         );
-        let block = Self::picker_panel(app, " Add Tracks ", Some(hint.as_str()));
+        let block = Self::picker_panel(app, " Add Tracks ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -7213,7 +7237,7 @@ impl Pickers {
         f.render_widget(list, inner);
     }
 
-    fn render_edit_metadata_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_edit_metadata(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let block = Self::picker_panel(
             app,
             " Edit Metadata ",

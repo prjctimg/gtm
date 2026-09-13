@@ -112,6 +112,9 @@ fn main() {
         println!("cargo:rustc-env=GTM_USE_MOLD=true");
     }
 
+    // Re-run if the CI-injected commit changes so a restored cargo cache can
+    // never bake a stale "unknown" or previous-commit SHA into the binary.
+    println!("cargo:rerun-if-env-changed=VERGEN_GIT_SHA");
     // Re-run if git HEAD changes
     println!("cargo:rerun-if-changed=.git/HEAD");
 }
