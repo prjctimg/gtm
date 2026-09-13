@@ -50,7 +50,7 @@ pub fn mask_credential(s: &str) -> String {
 /// Bind the Last.fm callback port and wait (up to five minutes) for the
 /// authorization redirect carrying a `token` query parameter. Responds 200 and
 /// returns the token, or continues waiting on unrelated requests with a 404.
-pub async fn capture_lastfm_token_loopback() -> Result<String, String> {
+pub async fn capture_lastfm_token() -> Result<String, String> {
     let port = lastfm_callback_port();
     let addr = format!("127.0.0.1:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -106,7 +106,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn query_param_extracts_named_field() {
+    fn query_param_field() {
         assert_eq!(
             query_param("GET /?token=abc123&api_key=k2 HTTP/1.1", "token"),
             Some("abc123".to_string())
@@ -125,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn mask_credential_hides_value() {
+    fn mask_hides_value() {
         assert_ne!(
             mask_credential("aVeryLongSecretValue"),
             "aVeryLongSecretValue"

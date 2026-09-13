@@ -505,7 +505,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn log_bands_are_monotonic_and_covered() {
+    fn log_bands_cover() {
         let a = SpectrumAnalyzer::new(44_100.0);
         for b in 0..SPECTRUM_BINS {
             assert!(a.band_edges[b + 1] > a.band_edges[b]);
@@ -513,7 +513,7 @@ mod tests {
     }
 
     #[test]
-    fn sine_energy_lands_in_expected_band() {
+    fn sine_energy_band() {
         let sr = 44_100.0;
         let freq = 440.0f32;
         let mut a = SpectrumAnalyzer::new(sr);

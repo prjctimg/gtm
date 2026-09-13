@@ -31,8 +31,8 @@ pub use global::{
 };
 pub use ipc::MetadataPatch;
 pub use paths::{
-    ensure_termux_pulseaudio, is_termux, resolve_command_socket, resolve_pid_file,
-    resolve_pulse_socket, termux_music_dirs,
+    ensure_termux_pulse, is_termux, resolve_command_socket, resolve_pid_file, resolve_pulse_socket,
+    termux_music_dirs,
 };
 pub use playlist::{M3u8Format, PlaylistFormat, PlaylistFormatKind, PlsFormat};
 pub use podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};

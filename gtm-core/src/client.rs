@@ -223,7 +223,7 @@ impl DaemonClient {
     /// Seed the clock-skewing state from a full daemon state snapshot
     /// (e.g. after `GetStatus` on reconnect).  This ensures the position
     /// estimate is correct before the first event arrives.
-    pub async fn seed_clock_from_state(&self, state: &DaemonState) {
+    pub async fn seed_clock(&self, state: &DaemonState) {
         let is_playing = state.status == PlaybackStatus::Playing;
         *self.base_pos.lock().await = state.time_pos;
         *self.base_time.lock().await = if is_playing {
@@ -242,7 +242,7 @@ impl DaemonClient {
                 response_tx: Some(tx),
             })
             .map_err(|_| CoreError::Daemon("IPC worker died".into()))?;
-        tokio::time::timeout(Duration::from_secs(IPC_COMMAND_TIMEOUT_SECS), rx)
+        tokio::time::timeout(Duration::from_secs(IPC_TIMEOUT_SECS), rx)
             .await
             .map_err(|_| CoreError::Daemon("IPC response timeout".into()))?
             .map_err(|_| CoreError::Daemon("IPC worker response dropped".into()))?
@@ -1653,7 +1653,7 @@ const HEARTBEAT_TIMEOUT_SECS: u64 = 60;
 /// heartbeat/health checks above, so this only needs to cover legitimate heavy
 /// operations (playlist rotation, playback startup, metadata resolution) which
 /// can exceed a few seconds on large libraries.
-const IPC_COMMAND_TIMEOUT_SECS: u64 = 30;
+const IPC_TIMEOUT_SECS: u64 = 30;
 
 impl IpcWorker {
     async fn run(mut self) {
@@ -1705,7 +1705,7 @@ impl IpcWorker {
             while let Ok(pending) = self.cmd_rx.try_recv() {
                 let id = self.next_id;
                 self.next_id = self.next_id.wrapping_add(1);
-                if let Err(e) = self.send_request_by_id(id, &pending).await {
+                if let Err(e) = self.send_by_id(id, &pending).await {
                     log(&format!("IPC worker send error: {e}"));
                     if let Some(tx) = pending.response_tx {
                         let _ = tx.send(Err(CoreError::Daemon("send failed".into())));
@@ -1884,7 +1884,7 @@ impl IpcWorker {
         }
     }
 
-    async fn send_request_by_id(&mut self, id: u64, pending: &PendingRequest) -> Result<()> {
+    async fn send_by_id(&mut self, id: u64, pending: &PendingRequest) -> Result<()> {
         let params = serde_json::to_value(&pending.req)?;
         let mut line = serde_json::to_string(&WireReq {
             id,

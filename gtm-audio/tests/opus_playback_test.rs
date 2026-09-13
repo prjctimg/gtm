@@ -15,7 +15,7 @@ fn find_opus_file() -> Option<String> {
 }
 
 #[test]
-fn test_mixer_load_opus() {
+fn mixer_opus() {
     let path = match find_opus_file() {
         Some(p) => p,
         None => {
@@ -57,7 +57,7 @@ fn test_mixer_load_opus() {
 }
 
 #[test]
-fn test_mixer_load_play_pause_stop() {
+fn mixer_play_pause() {
     let path = match find_opus_file() {
         Some(p) => p,
         None => {
@@ -92,7 +92,7 @@ fn test_mixer_load_play_pause_stop() {
 }
 
 #[test]
-fn test_mixer_seek_opus() {
+fn mixer_seek_opus() {
     let path = match find_opus_file() {
         Some(p) => p,
         None => {
@@ -133,7 +133,7 @@ fn test_mixer_seek_opus() {
 }
 
 #[test]
-fn test_mixer_poll_finished() {
+fn mixer_poll_finish() {
     let path = match find_opus_file() {
         Some(p) => p,
         None => {
@@ -161,7 +161,7 @@ fn test_mixer_poll_finished() {
 }
 
 #[test]
-fn test_mixer_nonexistent_file() {
+fn mixer_missing() {
     let mut mixer = match AudioMixer::new() {
         Ok(m) => m,
         Err(e) => {

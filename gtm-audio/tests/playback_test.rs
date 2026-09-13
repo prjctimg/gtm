@@ -54,7 +54,7 @@ fn test_wav_path() -> std::path::PathBuf {
 }
 
 #[test]
-fn test_mixer_load_play_pause_stop() {
+fn mixer_play_pause() {
     let wav_path = test_wav_path();
     create_test_wav(&wav_path, 3.0);
 
@@ -130,7 +130,7 @@ fn test_mixer_load_play_pause_stop() {
 }
 
 #[test]
-fn test_mixer_poll_detects_finished() {
+fn mixer_poll_done() {
     let wav_path = test_wav_path();
     create_test_wav(&wav_path, 0.5);
 
@@ -161,7 +161,7 @@ fn test_mixer_poll_detects_finished() {
 }
 
 #[test]
-fn test_mixer_multiple_volume_levels() {
+fn mixer_volume_levels() {
     let wav_path = test_wav_path();
     create_test_wav(&wav_path, 1.0);
 
@@ -190,7 +190,7 @@ fn test_mixer_multiple_volume_levels() {
 }
 
 #[test]
-fn test_mixer_load_nonexistent_file() {
+fn mixer_missing_file() {
     let mut mixer = match AudioMixer::new() {
         Ok(m) => m,
         Err(e) => {

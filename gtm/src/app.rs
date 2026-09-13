@@ -13,7 +13,7 @@ use gtm_core::global::{DaemonState, EqPreset, PlaybackStatus, RepeatMode};
 use gtm_core::ipc::{CacheKind, DaemonEvent, DaemonRes, HealthReport, SyncKind};
 use gtm_core::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 use gtm_core::radio::{RadioCountry, RadioStation, RadioTag};
-use gtm_core::secret::{SPOTIFY_CLIENT_ID_KEY, get_secret, set_secret};
+use gtm_core::secret::{SPOTIFY_CLIENT_ID, get_secret, set_secret};
 use gtm_core::spotify::{LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use gtm_core::state::{ThemeMode, TrackSort};
 use gtm_core::subsonic::{SubsonicAlbum, SubsonicSearchResults, SubsonicStatus, SubsonicTrack};
@@ -35,7 +35,7 @@ use crate::keymap::{
     parse_key_event,
 };
 use crate::mouse::{MouseMap, MouseZone};
-use crate::oauth::capture_lastfm_token_loopback;
+use crate::oauth::capture_lastfm_token;
 use crate::picker::{PickerId, PickerManager, PickerSource};
 use crate::progress::{ProgressSmoother, ProgressStyle};
 use crate::reactive::{ReactivePalette, derive_theme, extract_palette};
@@ -92,7 +92,7 @@ const EQ_PRESETS: [EqPreset; 16] = [
     EqPreset::Speaker,
 ];
 
-fn default_auto_fetch_lyrics() -> bool {
+fn default_fetch_lyrics() -> bool {
     true
 }
 
@@ -112,7 +112,7 @@ pub struct Prefs {
     reactive_theme: bool,
     #[serde(default = "default_reactive_intensity")]
     reactive_theme_intensity: f32,
-    #[serde(default = "default_footer_preset_name")]
+    #[serde(default = "default_preset_name")]
     footer_preset_name: String,
     #[serde(default)]
     progress_style: ProgressStyle,
@@ -130,7 +130,7 @@ pub struct Prefs {
     notification_modes: std::collections::HashMap<String, String>,
     #[serde(default = "default_cover_provider")]
     cover_provider: String,
-    #[serde(default = "default_auto_fetch_lyrics")]
+    #[serde(default = "default_fetch_lyrics")]
     auto_fetch_lyrics: bool,
     #[serde(default = "default_icon_style")]
     icon_style: String,
@@ -202,7 +202,7 @@ fn resolve_theme_index(themes: &[ThemeEntry], theme_name: &str, mode: &str) -> u
         .unwrap_or(0)
 }
 
-fn default_footer_preset_name() -> String {
+fn default_preset_name() -> String {
     "Default".into()
 }
 
@@ -227,7 +227,7 @@ impl Default for Prefs {
             transparent_pickers: false,
             reactive_theme: false,
             reactive_theme_intensity: default_reactive_intensity(),
-            footer_preset_name: default_footer_preset_name(),
+            footer_preset_name: default_preset_name(),
             progress_style: ProgressStyle::default(),
             visualizer_preset: VisualizerPreset::default(),
             time_format: default_time_format(),
@@ -236,7 +236,7 @@ impl Default for Prefs {
             keybindings: std::collections::HashMap::new(),
             notification_modes: default_notification_modes(),
             cover_provider: default_cover_provider(),
-            auto_fetch_lyrics: default_auto_fetch_lyrics(),
+            auto_fetch_lyrics: default_fetch_lyrics(),
             icon_style: default_icon_style(),
             hide_footer: false,
         }
@@ -505,7 +505,7 @@ pub struct DownloadProgressView {
     pub percent: f64,
     pub downloaded_bytes: Option<u64>,
     pub total_bytes: Option<u64>,
-    pub rate_bytes_per_sec: Option<f64>,
+    pub rate_bps: Option<f64>,
     pub eta_secs: Option<u64>,
     pub updated_at: std::time::Instant,
 }
@@ -576,6 +576,23 @@ pub enum PromptType {
     None,
 }
 
+/// Guard for a cover/preview fetch slot: the target id (or URL) the
+/// in-flight response belongs to, plus a generation used to drop stale
+/// replies. Replaces duplicated `last_*_fetch_id`/`version` bookkeeping pairs.
+pub struct FetchSlot<T> {
+    pub id: Option<T>,
+    pub version: Option<u64>,
+}
+
+impl<T> Default for FetchSlot<T> {
+    fn default() -> Self {
+        FetchSlot {
+            id: None,
+            version: None,
+        }
+    }
+}
+
 /// Spotify search/link UI state, grouped under `App::spotify`.
 pub struct SpotifyView {
     pub status: Option<SpotifyStatus>,
@@ -602,8 +619,7 @@ pub struct SpotifyView {
     /// album-cover URL of the highlighted web result.
     pub preview_cover: Option<Vec<u8>>,
     pub preview_cover_stateful: Option<StatefulProtocol>,
-    pub last_preview_fetch: Option<String>,
-    pub last_preview_fetch_gen: Option<u64>,
+    pub preview_fetch: FetchSlot<String>,
 }
 
 /// Subsonic (Navidrome) picker state, grouped under `App::subsonic`.
@@ -710,9 +726,8 @@ pub struct QueueView {
     /// entries.
     pub preview_cover: Option<Vec<u8>>,
     pub preview_cover_stateful: Option<StatefulProtocol>,
-    pub last_preview_cover_fetch_id: Option<i64>,
-    pub last_preview_cover_fetch_gen: Option<u64>,
-    pub preview_cover_fail_until: Option<(i64, std::time::Instant)>,
+    pub preview_slot: FetchSlot<i64>,
+    pub preview_fail_until: Option<(i64, std::time::Instant)>,
 }
 
 /// Lyrics pane UI state, grouped under `App::lyrics`.
@@ -806,7 +821,7 @@ pub struct App {
     pub crossfade_duration: u8,
     pub yt_search_loading: bool,
     pub yt_search_debounce: Option<std::time::Instant>,
-    pub yt_search_poll_deadline: Option<std::time::Instant>,
+    pub search_deadline: Option<std::time::Instant>,
     /// Live download progress (keyed by daemon download id), surfaced in the
     /// footer Download module.
     pub downloads: std::collections::HashMap<u64, DownloadProgressView>,
@@ -820,8 +835,8 @@ pub struct App {
     pub terminal_rows: u16,
     pub cmd_rx: mpsc::Receiver<TuiCommand>,
     cmd_tx: mpsc::Sender<TuiCommand>,
-    high_pri_cmd_rx: mpsc::UnboundedReceiver<TuiCommand>,
-    high_pri_cmd_tx: mpsc::UnboundedSender<TuiCommand>,
+    pri_cmd_rx: mpsc::UnboundedReceiver<TuiCommand>,
+    pri_cmd_tx: mpsc::UnboundedSender<TuiCommand>,
     ipc_rx: mpsc::UnboundedReceiver<IpcResult>,
     ipc_tx: mpsc::UnboundedSender<IpcResult>,
     keybindings: Keybindings,
@@ -852,7 +867,7 @@ pub struct App {
     /// manual-advance flag is reset, so the dust animation can be gated to
     /// genuine auto-advances only.
     pub auto_track_advance: bool,
-    last_track_path_display: Option<String>,
+    path_display: Option<String>,
     prev_track_id: Option<i64>,
     prev_status: PlaybackStatus,
     prev_volume: u8,
@@ -867,11 +882,11 @@ pub struct App {
     pub visualizer: AudioVisualizer,
     pub selected_indices: std::collections::HashSet<usize>,
     pending_motion: Option<char>,
-    pub pending_playlist_track_ids: Vec<i64>,
+    pub pending_track_ids: Vec<i64>,
     /// Id of a freshly-created playlist awaiting track selection.
     pub pending_playlist_id: Option<i64>,
     /// Tracks currently highlighted for the in-flight new-playlist flow.
-    pub selected_playlist_track_ids: std::collections::HashSet<i64>,
+    pub selected_track_ids: std::collections::HashSet<i64>,
     pub playlist_creating: bool,
     pub metadata: MetadataEditState,
     pub pending_quit: bool,
@@ -886,21 +901,18 @@ pub struct App {
     /// alive across refresh frames until the effect completes.
     pub anim_fx: EffectManager<&'static str>,
     pub track_popup_visible: bool,
-    pub track_popup_track_id: Option<i64>,
+    pub popup_track_id: Option<i64>,
     pub track_popup_cover: Option<Vec<u8>>,
     pub popup_cover_stateful: Option<StatefulProtocol>,
-    last_popup_cover_fetch_id: Option<i64>,
-    last_popup_cover_fetch_gen: Option<u64>,
+    popup_slot: FetchSlot<i64>,
     /// Cover art for the SearchLibrary picker preview window.
     pub picker_preview_cover: Option<Vec<u8>>,
     pub picker_preview_stateful: Option<StatefulProtocol>,
-    last_picker_preview_fetch_id: Option<i64>,
-    last_picker_preview_fetch_gen: Option<u64>,
+    picker_slot: FetchSlot<i64>,
     /// Cover art for artist selections in the search picker preview.
     pub artist_cover: Option<Vec<u8>>,
     pub artist_cover_stateful: Option<StatefulProtocol>,
-    last_artist_cover_fetch: Option<String>,
-    last_artist_cover_fetch_gen: Option<u64>,
+    artist_slot: FetchSlot<String>,
     /// Active "Up Next" crossfade-countdown notification.
     pub upnext: Option<UpNextNotif>,
     // Monotonic generation counter for all cover fetches — disambiguates
@@ -908,7 +920,7 @@ pub struct App {
     next_cover_gen: u64,
     pub lyrics: LyricsView,
     pub show_health_panel: bool,
-    pub show_health_on_report: bool,
+    pub report_health: bool,
     pub health_report: Option<HealthReport>,
     pub hide_help_bar: bool,
     pub hide_footer: bool,
@@ -952,7 +964,7 @@ enum IpcResult {
         file_path: Option<String>,
         downloaded_bytes: Option<u64>,
         total_bytes: Option<u64>,
-        rate_bytes_per_sec: Option<f64>,
+        rate_bps: Option<f64>,
         eta_secs: Option<u64>,
     },
     Notification(String, String, NotificationKind, NotifType),
@@ -993,7 +1005,7 @@ fn self_err(ipc_tx: &mpsc::UnboundedSender<IpcResult>, msg: String) {
 /// Best-effort browser open for an OAuth authorize URL. Tries the OS default
 /// opener (via `webbrowser`) then common launchers, each timeout-guarded so a
 /// wedged launcher never blocks a runtime worker or the UI.
-async fn open_browser_with_fallbacks(url: &str) -> bool {
+async fn open_browser(url: &str) -> bool {
     // Prefer the OS default browser opener, which is cross-platform. Guard
     // it with a timeout: a wedged `xdg-open`-style launcher must not leave
     // the flow looking dead.
@@ -1031,7 +1043,7 @@ fn try_open_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResult>) {
     let url = url.to_string();
     let ipc_tx = ipc_tx.clone();
     tokio::spawn(async move {
-        if open_browser_with_fallbacks(&url).await {
+        if open_browser(&url).await {
             return;
         }
         // All openers failed: surface the URL in the TUI so it can be copied.
@@ -1052,7 +1064,7 @@ fn try_open_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResult>) {
 /// from the app dashboard the flow fails silently inside the browser (see
 /// `docs/spec/spotify-linking.md`). The empty-input fallback (librespot's
 /// public desktop id) always passes this check.
-fn spotify_client_id_error(client_id: &str, port: u16) -> Option<String> {
+fn client_id_error(client_id: &str, port: u16) -> Option<String> {
     if client_id.len() != 32 || !client_id.chars().all(|c| c.is_ascii_hexdigit()) {
         return Some(format!(
             "This doesn't look like a valid Spotify Client ID (32 hex chars).\n\
@@ -1063,7 +1075,7 @@ fn spotify_client_id_error(client_id: &str, port: u16) -> Option<String> {
     None
 }
 
-fn spawn_sync_and_wait(
+fn sync_and_wait(
     c: DaemonClient,
     kind: SyncKind,
     label: &'static str,
@@ -1200,27 +1212,27 @@ impl App {
     fn clear_search_previews(&mut self) {
         self.picker_preview_cover = None;
         self.picker_preview_stateful = None;
-        self.last_picker_preview_fetch_id = None;
-        self.last_picker_preview_fetch_gen = None;
+        self.picker_slot.id = None;
+        self.picker_slot.version = None;
         self.artist_cover = None;
         self.artist_cover_stateful = None;
-        self.last_artist_cover_fetch = None;
-        self.last_artist_cover_fetch_gen = None;
+        self.artist_slot.id = None;
+        self.artist_slot.version = None;
     }
 
     fn clear_preview(&mut self) {
         self.queue.preview_cover = None;
         self.queue.preview_cover_stateful = None;
-        self.queue.last_preview_cover_fetch_id = None;
-        self.queue.last_preview_cover_fetch_gen = None;
+        self.queue.preview_slot.id = None;
+        self.queue.preview_slot.version = None;
     }
 
     fn clear_popup_cover(&mut self) {
-        self.track_popup_track_id = None;
+        self.popup_track_id = None;
         self.track_popup_cover = None;
         self.popup_cover_stateful = None;
-        self.last_popup_cover_fetch_id = None;
-        self.last_popup_cover_fetch_gen = None;
+        self.popup_slot.id = None;
+        self.popup_slot.version = None;
     }
 
     pub async fn new(
@@ -1230,7 +1242,7 @@ impl App {
         let client = DaemonClient::connect(socket_path).await?;
         let state = DaemonState::new();
         let (cmd_tx, cmd_rx) = mpsc::channel(64);
-        let (high_pri_cmd_tx, high_pri_cmd_rx) = mpsc::unbounded_channel();
+        let (pri_cmd_tx, pri_cmd_rx) = mpsc::unbounded_channel();
         let (ipc_tx, ipc_rx) = mpsc::unbounded_channel();
         let prefs = tokio::task::spawn_blocking(load_prefs)
             .await
@@ -1290,9 +1302,8 @@ impl App {
                 move_target: 0,
                 preview_cover: None,
                 preview_cover_stateful: None,
-                last_preview_cover_fetch_id: None,
-                last_preview_cover_fetch_gen: None,
-                preview_cover_fail_until: None,
+                preview_slot: FetchSlot::default(),
+                preview_fail_until: None,
             },
             browse_detail: None,
             yt_results_cache: Vec::new(),
@@ -1315,8 +1326,7 @@ impl App {
                 web_seq: 0,
                 preview_cover: None,
                 preview_cover_stateful: None,
-                last_preview_fetch: None,
-                last_preview_fetch_gen: None,
+                preview_fetch: FetchSlot::default(),
             },
             subsonic: SubsonicView::default(),
             podcast: PodcastView::default(),
@@ -1337,7 +1347,7 @@ impl App {
             pending_prompt: None,
             yt_search_loading: false,
             yt_search_debounce: None,
-            yt_search_poll_deadline: None,
+            search_deadline: None,
             pickers: PickerManager::new(),
             sleep_timer: SleepTimerState {
                 remaining: None,
@@ -1357,8 +1367,8 @@ impl App {
             terminal_rows: 24,
             cmd_rx,
             cmd_tx,
-            high_pri_cmd_rx,
-            high_pri_cmd_tx,
+            pri_cmd_rx,
+            pri_cmd_tx,
             ipc_rx,
             ipc_tx,
             keybindings,
@@ -1388,7 +1398,7 @@ impl App {
             last_queue_cursor: initial_cursor,
             manual_track_advance: false,
             auto_track_advance: false,
-            last_track_path_display: None,
+            path_display: None,
             prev_track_id: None,
             prev_status: PlaybackStatus::Stopped,
             prev_volume: 100,
@@ -1407,9 +1417,9 @@ impl App {
             },
             selected_indices: std::collections::HashSet::new(),
             pending_motion: None,
-            pending_playlist_track_ids: Vec::new(),
+            pending_track_ids: Vec::new(),
             pending_playlist_id: None,
-            selected_playlist_track_ids: std::collections::HashSet::new(),
+            selected_track_ids: std::collections::HashSet::new(),
             playlist_creating: false,
             metadata: MetadataEditState {
                 edit_track_id: None,
@@ -1426,19 +1436,16 @@ impl App {
             track_anim_trigger: false,
             anim_fx: EffectManager::default(),
             track_popup_visible: false,
-            track_popup_track_id: None,
+            popup_track_id: None,
             track_popup_cover: None,
             popup_cover_stateful: None,
-            last_popup_cover_fetch_id: None,
-            last_popup_cover_fetch_gen: None,
+            popup_slot: FetchSlot::default(),
             picker_preview_cover: None,
             picker_preview_stateful: None,
-            last_picker_preview_fetch_id: None,
-            last_picker_preview_fetch_gen: None,
+            picker_slot: FetchSlot::default(),
             artist_cover: None,
             artist_cover_stateful: None,
-            last_artist_cover_fetch: None,
-            last_artist_cover_fetch_gen: None,
+            artist_slot: FetchSlot::default(),
             upnext: None,
             next_cover_gen: 1,
             lyrics: LyricsView {
@@ -1452,7 +1459,7 @@ impl App {
                 manual_scroll: false,
             },
             show_health_panel: false,
-            show_health_on_report: false,
+            report_health: false,
             health_report: None,
             hide_help_bar: true,
             hide_footer: false,
@@ -1518,13 +1525,13 @@ impl App {
     /// registration is reported inline instead of silently dying in the
     /// browser.
     fn start_spotify_oauth(&mut self, client_id: String, port: u16) {
-        if let Some(err) = spotify_client_id_error(&client_id, port) {
+        if let Some(err) = client_id_error(&client_id, port) {
             self.spotify.oauth_error = Some(err);
             self.spotify.oauth_pending = false;
             self.spotify.link_input.clear();
             return;
         }
-        set_secret(SPOTIFY_CLIENT_ID_KEY, &client_id);
+        set_secret(SPOTIFY_CLIENT_ID, &client_id);
         let c = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         self.spotify.link_input.clear();
@@ -1633,7 +1640,7 @@ impl App {
     }
 
     pub fn send_high(&self, cmd: TuiCommand) {
-        let _ = self.high_pri_cmd_tx.send(cmd);
+        let _ = self.pri_cmd_tx.send(cmd);
     }
 
     /// Snapshot of the user-facing preferences resolved from current indices.
@@ -1654,7 +1661,7 @@ impl App {
                 .footer_presets
                 .get(self.footer_preset)
                 .map(|p| p.name.to_string())
-                .unwrap_or_else(default_footer_preset_name),
+                .unwrap_or_else(default_preset_name),
             progress_style: self.progress_style,
             visualizer_preset: self.visualizer.preset,
             time_format: self.footer_time_format.clone(),
@@ -1744,7 +1751,7 @@ impl App {
     }
 
     /// Apply a footer-preset picker selection by index and persist by name.
-    fn apply_footer_preset_index(&mut self, idx: usize) {
+    fn apply_preset_index(&mut self, idx: usize) {
         let idx = idx.min(self.footer_presets.len().saturating_sub(1));
         self.footer_preset = idx;
         save_prefs(&self.current_prefs());
@@ -2091,7 +2098,7 @@ impl App {
             // Re-seed clock from state after track change events so the
             // local position estimate stays in sync with the daemon.
             if had_track_change {
-                self.client.seed_clock_from_state(&self.state).await;
+                self.client.seed_clock(&self.state).await;
             }
             if had_sync_done
                 && let Ok(DaemonRes::Tracks { tracks, .. }) =
@@ -2122,7 +2129,7 @@ impl App {
                             .top()
                             .is_some_and(|o| o.id == PickerId::SpotifyLink)
                         {
-                            self.close_top_picker_with_cleanup();
+                            self.close_picker();
                         }
                         self.reset_library_view(5, None);
                         self.library_pane_focus = true;
@@ -2178,9 +2185,9 @@ impl App {
             // between them (stale elapsed, cover art and lyrics).
             let current_tid = self.state.current_track.as_ref().map(|t| t.id);
             let current_path = self.state.current_track.as_ref().map(|t| t.path.clone());
-            let track_changed = current_path.as_deref() != self.last_track_path_display.as_deref();
+            let track_changed = current_path.as_deref() != self.path_display.as_deref();
             if track_changed {
-                self.last_track_path_display = current_path;
+                self.path_display = current_path;
                 let raw = self.client.estimated_position().await;
                 self.display_position = raw;
                 self.last_display_position = raw;
@@ -2276,7 +2283,7 @@ impl App {
                             && self.state.version.saturating_sub(state.version) > 1000;
                         if state.version >= self.state.version || restarted {
                             self.state = *state;
-                            self.client.seed_clock_from_state(&self.state).await;
+                            self.client.seed_clock(&self.state).await;
                             // Cover art is fetched on track-change events only.
                             // Do not clear track_id when a periodic RefreshDone
                             // carries no cover, or the track-change guard would
@@ -2423,7 +2430,7 @@ impl App {
                                 false,
                                 NotifType::Lastfm,
                             );
-                            self.close_top_picker_with_cleanup();
+                            self.close_picker();
                         }
                     }
                     IpcResult::LastfmAuthUrl(url) => {
@@ -2432,7 +2439,7 @@ impl App {
                         let c = self.client.clone();
                         let ipc_tx = self.ipc_tx.clone();
                         tokio::spawn(async move {
-                            match capture_lastfm_token_loopback().await {
+                            match capture_lastfm_token().await {
                                 Ok(token) if token.is_empty() => {
                                     self_err(&ipc_tx, "no Last.fm token provided".to_string());
                                 }
@@ -2474,9 +2481,9 @@ impl App {
                     IpcResult::Playlists(playlists) => self.playlist_cache = playlists,
                     IpcResult::PlaylistCreated(id, _name) => {
                         self.pending_playlist_id = Some(id);
-                        self.selected_playlist_track_ids.clear();
+                        self.selected_track_ids.clear();
                         self.pickers.open(PickerId::PlaylistTrackSelect);
-                        self.pending_playlist_track_ids = vec![id];
+                        self.pending_track_ids = vec![id];
                     }
                     IpcResult::PlaylistTracks(tracks) => self.playlist_tracks_cache = tracks,
                     IpcResult::Queue(tracks, cursor) => {
@@ -2530,7 +2537,7 @@ impl App {
                         file_path,
                         downloaded_bytes,
                         total_bytes,
-                        rate_bytes_per_sec,
+                        rate_bps,
                         eta_secs,
                     } => {
                         let terminal =
@@ -2559,7 +2566,7 @@ impl App {
                                     percent: smooth,
                                     downloaded_bytes,
                                     total_bytes,
-                                    rate_bytes_per_sec,
+                                    rate_bps,
                                     eta_secs,
                                     updated_at: std::time::Instant::now(),
                                 },
@@ -2568,8 +2575,8 @@ impl App {
                     }
                     IpcResult::PopupCoverArt(cover, track_id, fetch_gen) => {
                         if !no_image_protocol()
-                            && self.track_popup_track_id == Some(track_id)
-                            && self.last_popup_cover_fetch_gen == Some(fetch_gen)
+                            && self.popup_track_id == Some(track_id)
+                            && self.popup_slot.version == Some(fetch_gen)
                         {
                             self.track_popup_cover = cover;
                             self.popup_cover_sync();
@@ -2590,22 +2597,22 @@ impl App {
                     }
                     IpcResult::QueuePreviewCover(cover, track_id, fetch_gen) => {
                         if !no_image_protocol()
-                            && self.queue.last_preview_cover_fetch_id == Some(track_id)
-                            && self.queue.last_preview_cover_fetch_gen == Some(fetch_gen)
+                            && self.queue.preview_slot.id == Some(track_id)
+                            && self.queue.preview_slot.version == Some(fetch_gen)
                         {
                             self.queue.preview_cover = cover;
-                            self.queue_preview_cover_sync();
+                            self.sync_preview_cover();
                             // The cover arrived on the IPC event loop; force a
                             // redraw this frame so the picker shows it without
                             // waiting for a coincidental render trigger.
                             self.cover_art_dirty = true;
                             if self.queue.preview_cover.is_some() {
-                                self.queue.preview_cover_fail_until = None;
+                                self.queue.preview_fail_until = None;
                             } else {
                                 // Failed or empty: release the guard so a later
                                 // preview retries, and throttle the refetch.
-                                self.queue.last_preview_cover_fetch_gen = None;
-                                self.queue.preview_cover_fail_until = Some((
+                                self.queue.preview_slot.version = None;
+                                self.queue.preview_fail_until = Some((
                                     track_id,
                                     std::time::Instant::now() + Duration::from_secs(30),
                                 ));
@@ -2614,8 +2621,8 @@ impl App {
                     }
                     IpcResult::PickerPreviewCover(cover, track_id, fetch_gen) => {
                         if !no_image_protocol()
-                            && self.last_picker_preview_fetch_id == Some(track_id)
-                            && self.last_picker_preview_fetch_gen == Some(fetch_gen)
+                            && self.picker_slot.id == Some(track_id)
+                            && self.picker_slot.version == Some(fetch_gen)
                         {
                             self.picker_preview_cover = cover;
                             self.picker_preview_sync();
@@ -2634,8 +2641,8 @@ impl App {
                     }
                     IpcResult::ArtistCoverArt(cover, artist, fetch_gen) => {
                         if !no_image_protocol()
-                            && self.last_artist_cover_fetch.as_deref() == Some(&artist)
-                            && self.last_artist_cover_fetch_gen == Some(fetch_gen)
+                            && self.artist_slot.id.as_deref() == Some(&artist)
+                            && self.artist_slot.version == Some(fetch_gen)
                         {
                             self.artist_cover = cover;
                             self.artist_cover_sync();
@@ -2643,8 +2650,8 @@ impl App {
                     }
                     IpcResult::SpotifyPreviewCover(cover, url, fetch_gen) => {
                         if !no_image_protocol()
-                            && self.spotify.last_preview_fetch.as_deref() == Some(&url)
-                            && self.spotify.last_preview_fetch_gen == Some(fetch_gen)
+                            && self.spotify.preview_fetch.id.as_deref() == Some(&url)
+                            && self.spotify.preview_fetch.version == Some(fetch_gen)
                         {
                             self.spotify.preview_cover = cover;
                             self.spotify_preview_sync();
@@ -2660,7 +2667,7 @@ impl App {
                         self.cover_sync();
                         self.popup_cover_sync();
                         self.upnext_cover_sync();
-                        self.queue_preview_cover_sync();
+                        self.sync_preview_cover();
                         self.picker_preview_sync();
                         self.artist_cover_sync();
                         self.spotify_preview_sync();
@@ -2695,7 +2702,7 @@ impl App {
                     }
                     IpcResult::HealthReport(report) => {
                         self.health_report = Some(report);
-                        self.show_health_panel = std::mem::take(&mut self.show_health_on_report);
+                        self.show_health_panel = std::mem::take(&mut self.report_health);
                     }
                     IpcResult::SpotifyStatus(s) => self.spotify.status = Some(s),
                     IpcResult::SpotifyOauthUrl(url) => {
@@ -2736,7 +2743,7 @@ impl App {
                 }
             }
 
-            while let Ok(cmd) = self.high_pri_cmd_rx.try_recv() {
+            while let Ok(cmd) = self.pri_cmd_rx.try_recv() {
                 self.handle_command(cmd);
             }
             while let Ok(cmd) = self.cmd_rx.try_recv() {
@@ -2784,16 +2791,16 @@ impl App {
                     .top()
                     .is_some_and(|t| t.id == PickerId::YTSearch)
             {
-                if self.yt_search_poll_deadline.is_none() {
-                    self.yt_search_poll_deadline = Some(now + Duration::from_millis(500));
+                if self.search_deadline.is_none() {
+                    self.search_deadline = Some(now + Duration::from_millis(500));
                 }
-                if now >= self.yt_search_poll_deadline.unwrap_or(now) {
-                    self.yt_search_poll_deadline = Some(now + Duration::from_millis(700));
+                if now >= self.search_deadline.unwrap_or(now) {
+                    self.search_deadline = Some(now + Duration::from_millis(700));
                     let tx = self.cmd_tx();
                     let _ = tx.send(TuiCommand::RefreshYt).await;
                 }
             } else {
-                self.yt_search_poll_deadline = None;
+                self.search_deadline = None;
             }
 
             // Detect state changes
@@ -3259,7 +3266,7 @@ impl App {
             self.clear_popup_cover();
             return;
         };
-        self.track_popup_track_id = Some(tid);
+        self.popup_track_id = Some(tid);
 
         let current_is_selected = self
             .state
@@ -3273,15 +3280,15 @@ impl App {
             if let Some(cover) = self.np_cover.image.clone() {
                 self.track_popup_cover = Some(cover);
                 self.popup_cover_sync();
-                self.last_popup_cover_fetch_id = None;
-                self.last_popup_cover_fetch_gen = None;
+                self.popup_slot.id = None;
+                self.popup_slot.version = None;
                 return;
             }
             // else fall through to fetch below
         }
         // Generation-guarded fetch: `id == 0` reuse is safe via fetch_gen.
-        let already_pending = self.last_popup_cover_fetch_id == Some(tid)
-            && self.last_popup_cover_fetch_gen.is_some()
+        let already_pending = self.popup_slot.id == Some(tid)
+            && self.popup_slot.version.is_some()
             && !no_image_protocol();
         if already_pending {
             return;
@@ -3290,8 +3297,8 @@ impl App {
             return;
         }
         let fetch_gen = self.next_cover_gen();
-        self.last_popup_cover_fetch_id = Some(tid);
-        self.last_popup_cover_fetch_gen = Some(fetch_gen);
+        self.popup_slot.id = Some(tid);
+        self.popup_slot.version = Some(fetch_gen);
         self.track_popup_cover = None;
         self.popup_cover_stateful = None;
         let client = self.client.clone();
@@ -3318,44 +3325,42 @@ impl App {
             // Robust: invalidate pending fetch_gen so close/reopen does not retain stale key
             self.picker_preview_cover = None;
             self.picker_preview_stateful = None;
-            self.last_picker_preview_fetch_id = None;
-            self.last_picker_preview_fetch_gen = None;
+            self.picker_slot.id = None;
+            self.picker_slot.version = None;
             return;
         };
         if top.id != PickerId::SearchLibrary {
             self.picker_preview_cover = None;
             self.picker_preview_stateful = None;
-            self.last_picker_preview_fetch_id = None;
-            self.last_picker_preview_fetch_gen = None;
+            self.picker_slot.id = None;
+            self.picker_slot.version = None;
             return;
         }
         let picks = self.search_library_picks();
         if picks.is_empty() {
             self.picker_preview_cover = None;
             self.picker_preview_stateful = None;
-            self.last_picker_preview_fetch_id = None;
-            self.last_picker_preview_fetch_gen = None;
+            self.picker_slot.id = None;
+            self.picker_slot.version = None;
             return;
         }
         let sel = top.selected.min(picks.len() - 1);
         let LibraryPick::Track(i) = &picks[sel] else {
             self.picker_preview_cover = None;
             self.picker_preview_stateful = None;
-            self.last_picker_preview_fetch_id = None;
-            self.last_picker_preview_fetch_gen = None;
+            self.picker_slot.id = None;
+            self.picker_slot.version = None;
             return;
         };
         let tid = self.tracks_cache[*i].id;
         // Generation-guarded dedup: id reuse (id==0) cannot block new fetches.
         // Only skip when both id and generation match current pending.
-        if self.last_picker_preview_fetch_id == Some(tid)
-            && self.last_picker_preview_fetch_gen.is_some()
-        {
+        if self.picker_slot.id == Some(tid) && self.picker_slot.version.is_some() {
             return;
         }
         let fetch_gen = self.next_cover_gen();
-        self.last_picker_preview_fetch_id = Some(tid);
-        self.last_picker_preview_fetch_gen = Some(fetch_gen);
+        self.picker_slot.id = Some(tid);
+        self.picker_slot.version = Some(fetch_gen);
         self.picker_preview_cover = None;
         self.picker_preview_stateful = None;
         if no_image_protocol() {
@@ -3376,41 +3381,41 @@ impl App {
         let Some(top) = self.pickers.top() else {
             self.artist_cover = None;
             self.artist_cover_stateful = None;
-            self.last_artist_cover_fetch = None;
-            self.last_artist_cover_fetch_gen = None;
+            self.artist_slot.id = None;
+            self.artist_slot.version = None;
             return;
         };
         if top.id != PickerId::SearchLibrary {
             self.artist_cover = None;
             self.artist_cover_stateful = None;
-            self.last_artist_cover_fetch = None;
-            self.last_artist_cover_fetch_gen = None;
+            self.artist_slot.id = None;
+            self.artist_slot.version = None;
             return;
         }
         let picks = self.search_library_picks();
         if picks.is_empty() {
             self.artist_cover = None;
             self.artist_cover_stateful = None;
-            self.last_artist_cover_fetch = None;
-            self.last_artist_cover_fetch_gen = None;
+            self.artist_slot.id = None;
+            self.artist_slot.version = None;
             return;
         }
         let sel = top.selected.min(picks.len() - 1);
         let LibraryPick::Artist(name) = &picks[sel] else {
             self.artist_cover = None;
             self.artist_cover_stateful = None;
-            self.last_artist_cover_fetch = None;
-            self.last_artist_cover_fetch_gen = None;
+            self.artist_slot.id = None;
+            self.artist_slot.version = None;
             return;
         };
-        if self.last_artist_cover_fetch.as_deref() == Some(name.as_str())
-            && self.last_artist_cover_fetch_gen.is_some()
+        if self.artist_slot.id.as_deref() == Some(name.as_str())
+            && self.artist_slot.version.is_some()
         {
             return;
         }
         let fetch_gen = self.next_cover_gen();
-        self.last_artist_cover_fetch = Some(name.clone());
-        self.last_artist_cover_fetch_gen = Some(fetch_gen);
+        self.artist_slot.id = Some(name.clone());
+        self.artist_slot.version = Some(fetch_gen);
         self.artist_cover = None;
         self.artist_cover_stateful = None;
         if no_image_protocol() {
@@ -3488,8 +3493,8 @@ impl App {
             .top()
             .map_or(String::new(), |o| o.query.to_lowercase());
         self.spotify.search_results.clear();
-        self.spotify.last_preview_fetch = None;
-        self.spotify.last_preview_fetch_gen = None;
+        self.spotify.preview_fetch.id = None;
+        self.spotify.preview_fetch.version = None;
         self.spotify.preview_cover = None;
         self.spotify.preview_cover_stateful = None;
         if q.is_empty() {
@@ -3628,10 +3633,10 @@ impl App {
             }
             PickerId::RadioBrowse => {}
             PickerId::RadioBrowseList => {
-                self.fetch_radio_browse_list();
+                self.fetch_browse_list();
             }
             PickerId::RadioBrowseStations => {
-                self.fetch_radio_browse_stations();
+                self.fetch_browse_stations();
             }
             PickerId::Setup => {
                 self.refresh_subsonic_status();
@@ -3787,7 +3792,7 @@ impl App {
     }
 
     /// (Re)load the tag or country list for the RadioBrowseList picker.
-    pub fn fetch_radio_browse_list(&mut self) {
+    pub fn fetch_browse_list(&mut self) {
         self.radio.browse_pending = true;
         let (c, ipc_tx) = (self.client.clone(), self.ipc_tx.clone());
         let kind = self.radio.browse_kind;
@@ -3812,7 +3817,7 @@ impl App {
     }
 
     /// (Re)load the stations for the tag/country selected at RadioBrowseList.
-    pub fn fetch_radio_browse_stations(&mut self) {
+    pub fn fetch_browse_stations(&mut self) {
         self.radio.browse_stations.clear();
         self.radio.browse_stations_pending = true;
         let (c, ipc_tx) = (self.client.clone(), self.ipc_tx.clone());
@@ -4013,7 +4018,7 @@ impl App {
 
     /// Virtual action rows (Play All / Shuffle) prepended to a Spotify playlist
     /// drill-down track list.
-    pub const SPOTIFY_PLAYLIST_ACTION_ROWS: usize = 2;
+    pub const SPOTIFY_PLAYLIST_ROWS: usize = 2;
 
     /// True while the right pane is showing the track list of a Spotify
     /// playlist (drilled down from the Spotify playlists category).
@@ -4024,7 +4029,7 @@ impl App {
     /// Row count of the Spotify playlist drill-down list, including the two
     /// virtual action rows (`Play All`, `Shuffle`) at the top.
     pub fn spotify_playlist_rows(&self) -> usize {
-        self.spotify.playlist_tracks_cache.len() + Self::SPOTIFY_PLAYLIST_ACTION_ROWS
+        self.spotify.playlist_tracks_cache.len() + Self::SPOTIFY_PLAYLIST_ROWS
     }
 
     /// The track the current list position maps to in a Spotify playlist
@@ -4033,10 +4038,9 @@ impl App {
         if !self.in_spotify_playlist() {
             return None;
         }
-        self.spotify.playlist_tracks_cache.get(
-            self.list_pos()
-                .saturating_sub(Self::SPOTIFY_PLAYLIST_ACTION_ROWS),
-        )
+        self.spotify
+            .playlist_tracks_cache
+            .get(self.list_pos().saturating_sub(Self::SPOTIFY_PLAYLIST_ROWS))
     }
 
     /// Track ids owned by the list position `pos` (when that row maps to a
@@ -4140,14 +4144,14 @@ impl App {
     /// Fetch cover art for the queue picker "Up Next" strip, once per
     /// track.  Locally-inserted tracks (`id == 0`) are fetched too; if the
     /// daemon has no art the renderer falls back to a glyph.
-    pub fn update_queue_preview_cover(&mut self) {
+    pub fn update_upnext_cover(&mut self) {
         if no_image_protocol() {
             return;
         }
         let next_idx = self.queue.cursor + 1;
         let Some(track) = self.queue.cache.get(next_idx) else {
-            self.queue.last_preview_cover_fetch_id = None;
-            self.queue.last_preview_cover_fetch_gen = None;
+            self.queue.preview_slot.id = None;
+            self.queue.preview_slot.version = None;
             self.queue.preview_cover = None;
             self.queue.preview_cover_stateful = None;
             return;
@@ -4159,15 +4163,14 @@ impl App {
         // reset the fetch guard without invalidating the bytes; dropping them
         // here guarantees the preview can never show art for the previous
         // track (rendered from a stale `cover_block` fallback).
-        if self.queue.preview_cover.is_some() && self.queue.last_preview_cover_fetch_id != Some(tid)
-        {
+        if self.queue.preview_cover.is_some() && self.queue.preview_slot.id != Some(tid) {
             self.queue.preview_cover = None;
             self.queue.preview_cover_stateful = None;
         }
         // A failed lookup clears the gen guard so a later preview can retry;
         // this throttle prevents the per-frame render from re-fetching a
         // cover that isn't there, at most once per 30s per track.
-        if let Some((fail_tid, until)) = self.queue.preview_cover_fail_until
+        if let Some((fail_tid, until)) = self.queue.preview_fail_until
             && fail_tid == tid
             && std::time::Instant::now() < until
         {
@@ -4183,26 +4186,24 @@ impl App {
                 u.track.id == tid
                     && u.track.path == track_path
                     && u.cover.is_some()
-                    && self.queue.last_preview_cover_fetch_id != Some(tid)
+                    && self.queue.preview_slot.id != Some(tid)
             })
             .and_then(|u| u.cover.clone());
         if let Some(cover) = reuse {
             self.queue.preview_cover = Some(cover);
-            self.queue_preview_cover_sync();
-            self.queue.last_preview_cover_fetch_id = Some(tid);
-            self.queue.last_preview_cover_fetch_gen = None;
+            self.sync_preview_cover();
+            self.queue.preview_slot.id = Some(tid);
+            self.queue.preview_slot.version = None;
             return;
         }
         // Generation-guarded dedup: allows `id == 0` tracks to refetch
         // distinctly. Only skip when pending fetch_gen exists.
-        if self.queue.last_preview_cover_fetch_id == Some(tid)
-            && self.queue.last_preview_cover_fetch_gen.is_some()
-        {
+        if self.queue.preview_slot.id == Some(tid) && self.queue.preview_slot.version.is_some() {
             return;
         }
         let fetch_gen = self.next_cover_gen();
-        self.queue.last_preview_cover_fetch_id = Some(tid);
-        self.queue.last_preview_cover_fetch_gen = Some(fetch_gen);
+        self.queue.preview_slot.id = Some(tid);
+        self.queue.preview_slot.version = Some(fetch_gen);
         self.queue.preview_cover = None;
         self.queue.preview_cover_stateful = None;
         let client = self.client.clone();
@@ -4219,7 +4220,7 @@ impl App {
         });
     }
 
-    fn queue_preview_cover_sync(&mut self) {
+    fn sync_preview_cover(&mut self) {
         match (&self.queue.preview_cover, &self.np_cover.picker) {
             (Some(bytes), Some(picker)) => {
                 if let Ok(img) = image::load_from_memory(bytes) {
@@ -4288,26 +4289,26 @@ impl App {
     /// Fetch cover art for the highlighted SpotifySearch picker row (a web
     /// search hit carrying an album-cover URL) so the preview window can render
     /// it as ASCII, mirroring the SearchLibrary picker behaviour.
-    pub fn update_spotify_search_preview(&mut self) {
+    pub fn update_spot_preview(&mut self) {
         let Some(top) = self.pickers.top() else {
             self.spotify.preview_cover = None;
             self.spotify.preview_cover_stateful = None;
-            self.spotify.last_preview_fetch = None;
-            self.spotify.last_preview_fetch_gen = None;
+            self.spotify.preview_fetch.id = None;
+            self.spotify.preview_fetch.version = None;
             return;
         };
         if top.id != PickerId::SpotifySearch {
             self.spotify.preview_cover = None;
             self.spotify.preview_cover_stateful = None;
-            self.spotify.last_preview_fetch = None;
-            self.spotify.last_preview_fetch_gen = None;
+            self.spotify.preview_fetch.id = None;
+            self.spotify.preview_fetch.version = None;
             return;
         }
         if self.spotify.search_results.is_empty() {
             self.spotify.preview_cover = None;
             self.spotify.preview_cover_stateful = None;
-            self.spotify.last_preview_fetch = None;
-            self.spotify.last_preview_fetch_gen = None;
+            self.spotify.preview_fetch.id = None;
+            self.spotify.preview_fetch.version = None;
             return;
         }
         let sel = top
@@ -4316,18 +4317,18 @@ impl App {
         let Some(url) = self.spotify.search_results[sel].2.image_url.clone() else {
             self.spotify.preview_cover = None;
             self.spotify.preview_cover_stateful = None;
-            self.spotify.last_preview_fetch = None;
-            self.spotify.last_preview_fetch_gen = None;
+            self.spotify.preview_fetch.id = None;
+            self.spotify.preview_fetch.version = None;
             return;
         };
-        if self.spotify.last_preview_fetch.as_deref() == Some(&url)
-            && self.spotify.last_preview_fetch_gen.is_some()
+        if self.spotify.preview_fetch.id.as_deref() == Some(&url)
+            && self.spotify.preview_fetch.version.is_some()
         {
             return;
         }
         let fetch_gen = self.next_cover_gen();
-        self.spotify.last_preview_fetch = Some(url.clone());
-        self.spotify.last_preview_fetch_gen = Some(fetch_gen);
+        self.spotify.preview_fetch.id = Some(url.clone());
+        self.spotify.preview_fetch.version = Some(fetch_gen);
         self.spotify.preview_cover = None;
         self.spotify.preview_cover_stateful = None;
         if no_image_protocol() {
@@ -4383,7 +4384,7 @@ impl App {
         });
     }
 
-    fn settings_options_for_category(&self) -> usize {
+    fn category_options(&self) -> usize {
         match self.settings_category {
             0 => 4,  // YouTube: Cookie Source, Cookie File, JS Runtime, Auto Download
             1 => 6,  // Playback: Repeat, Shuffle, Crossfade, EQ Enabled, Reverb, Cover Source
@@ -4637,7 +4638,7 @@ impl App {
                                     file_path: fp,
                                     downloaded_bytes,
                                     total_bytes,
-                                    rate_bytes_per_sec,
+                                    rate_bps,
                                     eta_secs,
                                 } => {
                                     // Mirror live progress to the TUI footer so
@@ -4651,7 +4652,7 @@ impl App {
                                         file_path: fp.clone(),
                                         downloaded_bytes: *downloaded_bytes,
                                         total_bytes: *total_bytes,
-                                        rate_bytes_per_sec: *rate_bytes_per_sec,
+                                        rate_bps: *rate_bps,
                                         eta_secs: *eta_secs,
                                     });
                                     if let Some(fp) = fp.clone().filter(|_| status == "completed") {
@@ -4929,7 +4930,7 @@ impl App {
                 });
             }
             TuiCommand::CheckHealth => {
-                self.show_health_on_report = true;
+                self.report_health = true;
                 let client = self.client.clone();
                 let ipc_tx = self.ipc_tx.clone();
                 tokio::spawn(async move {
@@ -5134,7 +5135,7 @@ impl App {
 
     /// Track id of the Subsonic row currently highlighted in a Subsonic
     /// picker (used for the cover-art preview).
-    fn current_subsonic_track_id(&self) -> Option<String> {
+    fn subsonic_track_id(&self) -> Option<String> {
         let top = self.pickers.top()?;
         let rows_before_tracks =
             self.subsonic.search_results.artists.len() + self.subsonic.search_results.albums.len();
@@ -5172,7 +5173,7 @@ impl App {
                     .picker_area
                     .is_some_and(|r| x >= r.x && x < r.right() && y >= r.y && y < r.bottom());
                 if !inside {
-                    self.close_top_picker_with_cleanup();
+                    self.close_picker();
                 }
             }
             return;
@@ -5260,7 +5261,7 @@ impl App {
                         tokio::spawn(async move {
                             let _ = c.spotify().oauth_cancel().await;
                         });
-                        self.close_top_picker_with_cleanup();
+                        self.close_picker();
                     } else if self
                         .pickers
                         .top()
@@ -5274,7 +5275,7 @@ impl App {
                             top.viewport_offset = 0;
                         }
                     } else {
-                        self.close_top_picker_with_cleanup();
+                        self.close_picker();
                     }
                     true
                 }
@@ -5347,7 +5348,7 @@ impl App {
                                     .filter_map(|i| tracks.get(*i).map(|t| t.id))
                                     .collect();
                                 if !indices.is_empty() {
-                                    self.pending_playlist_track_ids = indices;
+                                    self.pending_track_ids = indices;
                                     self.selected_indices.clear();
                                     self.multiselect_mode = false;
                                     self.playlist_creating = false;
@@ -5951,7 +5952,7 @@ impl App {
                                     // virtual actions (Play All / Shuffle), rows
                                     // 2+ resolve their track to a playable stream.
                                     let pos = self.list_pos();
-                                    if pos < Self::SPOTIFY_PLAYLIST_ACTION_ROWS {
+                                    if pos < Self::SPOTIFY_PLAYLIST_ROWS {
                                         let shuffle = pos == 1;
                                         let playlist_id =
                                             self.browse_detail.clone().unwrap_or_default();
@@ -6203,7 +6204,7 @@ impl App {
                                     prompt_type: PromptType::MultiselectAddToPlaylist,
                                 });
                             } else if !indices.is_empty() {
-                                self.pending_playlist_track_ids = indices;
+                                self.pending_track_ids = indices;
                                 self.playlist_creating = false;
                                 self.pickers.open(PickerId::PlaylistSelect);
                             }
@@ -6320,7 +6321,7 @@ impl App {
                                     true,
                                     NotifType::Library,
                                 );
-                                spawn_sync_and_wait(
+                                sync_and_wait(
                                     self.client.clone(),
                                     SyncKind::Covers,
                                     "Covers",
@@ -6338,7 +6339,7 @@ impl App {
 
     /// Close the top picker, clearing per-picker state that Esc must reset
     /// (same cleanup for arrow-key closes, ).
-    fn close_top_picker_with_cleanup(&mut self) {
+    fn close_picker(&mut self) {
         if let Some(top) = self.pickers.top() {
             match top.id {
                 PickerId::SleepTimer => self.sleep_timer.remaining = None,
@@ -6367,7 +6368,7 @@ impl App {
                 }
                 PickerId::PlaylistTrackSelect => {
                     self.pending_playlist_id = None;
-                    self.selected_playlist_track_ids.clear();
+                    self.selected_track_ids.clear();
                 }
                 _ => {}
             }
@@ -6379,10 +6380,10 @@ impl App {
     /// pending playlist, then close the picker.
     fn commit_playlist_selection(&mut self) {
         let Some(pid) = self.pending_playlist_id else {
-            self.close_top_picker_with_cleanup();
+            self.close_picker();
             return;
         };
-        let track_ids: Vec<i64> = self.selected_playlist_track_ids.iter().copied().collect();
+        let track_ids: Vec<i64> = self.selected_track_ids.iter().copied().collect();
         if track_ids.is_empty() {
             self.notify_typed(
                 "System",
@@ -6391,9 +6392,9 @@ impl App {
                 false,
                 NotifType::NowPlaying,
             );
-            self.close_top_picker_with_cleanup();
+            self.close_picker();
             self.pending_playlist_id = None;
-            self.selected_playlist_track_ids.clear();
+            self.selected_track_ids.clear();
             return;
         }
         let client = self.client.clone();
@@ -6410,9 +6411,9 @@ impl App {
                 NotifType::NowPlaying,
             ));
         });
-        self.close_top_picker_with_cleanup();
+        self.close_picker();
         self.pending_playlist_id = None;
-        self.selected_playlist_track_ids.clear();
+        self.selected_track_ids.clear();
     }
 
     async fn handle_picker_key(&mut self, key: event::KeyEvent) {
@@ -6519,8 +6520,8 @@ impl App {
                     && let Some(track) = self.tracks_cache.get(top.selected)
                 {
                     let id = track.id;
-                    if !self.selected_playlist_track_ids.remove(&id) {
-                        self.selected_playlist_track_ids.insert(id);
+                    if !self.selected_track_ids.remove(&id) {
+                        self.selected_track_ids.insert(id);
                     }
                 }
                 return;
@@ -6940,7 +6941,7 @@ impl App {
                             (self.settings_category + 1).min(NUM_SETTINGS_CATEGORIES - 1);
                         self.settings_option = 0;
                     } else {
-                        let max = self.settings_options_for_category().saturating_sub(1);
+                        let max = self.category_options().saturating_sub(1);
                         self.settings_option = (self.settings_option + 1).min(max);
                     }
                     return;
@@ -7033,7 +7034,7 @@ impl App {
                                     save_prefs(&self.current_prefs());
                                 }
                                 3 => {
-                                    spawn_sync_and_wait(
+                                    sync_and_wait(
                                         self.client.clone(),
                                         SyncKind::Covers,
                                         "Covers",
@@ -7041,7 +7042,7 @@ impl App {
                                     );
                                 }
                                 4 => {
-                                    spawn_sync_and_wait(
+                                    sync_and_wait(
                                         self.client.clone(),
                                         SyncKind::Lyrics,
                                         "Lyrics",
@@ -7049,7 +7050,7 @@ impl App {
                                     );
                                 }
                                 5 => {
-                                    spawn_sync_and_wait(
+                                    sync_and_wait(
                                         self.client.clone(),
                                         SyncKind::Metadata,
                                         "Metadata",
@@ -7153,7 +7154,7 @@ impl App {
                                     self.spotify.link_input.clear();
                                     self.spotify.oauth_port = "8990".to_string();
                                     self.spotify.link_field = 0;
-                                    if let Some(cid) = get_secret(SPOTIFY_CLIENT_ID_KEY) {
+                                    if let Some(cid) = get_secret(SPOTIFY_CLIENT_ID) {
                                         self.spotify.link_input = cid;
                                     }
                                     self.pickers.open(PickerId::SpotifyLink);
@@ -7206,7 +7207,7 @@ impl App {
                                     self.spotify.link_input.clear();
                                     self.spotify.oauth_port = "8990".to_string();
                                     self.spotify.link_field = 0;
-                                    if let Some(cid) = get_secret(SPOTIFY_CLIENT_ID_KEY) {
+                                    if let Some(cid) = get_secret(SPOTIFY_CLIENT_ID) {
                                         self.spotify.link_input = cid;
                                     }
                                     self.pickers.open(PickerId::SpotifyLink);
@@ -7314,7 +7315,7 @@ impl App {
                 }
                 KeyCode::Up | KeyCode::Down => {
                     self.move_picker_selection(key.code == KeyCode::Down);
-                    if let Some(track_id) = self.current_subsonic_track_id() {
+                    if let Some(track_id) = self.subsonic_track_id() {
                         self.fetch_subsonic_cover(track_id);
                     }
                 }
@@ -7403,7 +7404,7 @@ impl App {
                 }
                 KeyCode::Up | KeyCode::Down => {
                     self.move_picker_selection(key.code == KeyCode::Down);
-                    if let Some(track_id) = self.current_subsonic_track_id() {
+                    if let Some(track_id) = self.subsonic_track_id() {
                         self.fetch_subsonic_cover(track_id);
                     }
                 }
@@ -7476,7 +7477,7 @@ impl App {
                                     let ipc_url = ipc_tx.clone();
                                     let open_url = url.clone();
                                     tokio::spawn(async move {
-                                        if !open_browser_with_fallbacks(&open_url).await {
+                                        if !open_browser(&open_url).await {
                                             let _ = ipc_url.send(IpcResult::LastfmAuthError(
                                                 "Could not open a browser automatically — copy the URL from the last.fm setup screen".into(),
                                             ));
@@ -7899,7 +7900,7 @@ impl App {
                     }
                 }
                 KeyCode::Char('r') => {
-                    self.fetch_radio_browse_list();
+                    self.fetch_browse_list();
                 }
                 KeyCode::Up | KeyCode::Down => {
                     self.move_picker_selection(key.code == KeyCode::Down);
@@ -7926,7 +7927,7 @@ impl App {
                     }
                 }
                 KeyCode::Char('r') => {
-                    self.fetch_radio_browse_stations();
+                    self.fetch_browse_stations();
                 }
                 KeyCode::Up | KeyCode::Down => {
                     self.move_picker_selection(key.code == KeyCode::Down);
@@ -7944,7 +7945,7 @@ impl App {
 
         match key.code {
             KeyCode::Esc => {
-                self.close_top_picker_with_cleanup();
+                self.close_picker();
             }
             // Uniform picker navigation: Left/Right leave
             // single-section pickers like Esc, or cycle the mode in the
@@ -7959,7 +7960,7 @@ impl App {
                         | Some(PickerId::ThemePicker)
                         | Some(PickerId::PlaylistSelect)
                 ) {
-                    self.close_top_picker_with_cleanup();
+                    self.close_picker();
                 }
             }
             // Help picker vim motions
@@ -8071,7 +8072,7 @@ impl App {
                     }
                 }
                 self.clamp_picker_selection();
-                self.apply_eq_on_navigation().await;
+                self.apply_eq_nav().await;
                 self.apply_preset_preview();
                 // Refresh picker preview cover for SearchLibrary when selection changes
                 if self
@@ -8088,7 +8089,7 @@ impl App {
                     .top()
                     .is_some_and(|t| t.id == PickerId::SpotifySearch)
                 {
-                    self.update_spotify_search_preview();
+                    self.update_spot_preview();
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
@@ -8133,7 +8134,7 @@ impl App {
                     }
                 }
                 self.clamp_picker_selection();
-                self.apply_eq_on_navigation().await;
+                self.apply_eq_nav().await;
                 self.apply_preset_preview();
                 // Refresh picker preview cover for SearchLibrary when selection changes
                 if self
@@ -8148,7 +8149,7 @@ impl App {
                     .top()
                     .is_some_and(|t| t.id == PickerId::SpotifySearch)
                 {
-                    self.update_spotify_search_preview();
+                    self.update_spot_preview();
                 }
             }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -8426,7 +8427,7 @@ impl App {
                                 let idx = top
                                     .selected
                                     .min(self.footer_presets.len().saturating_sub(1));
-                                self.apply_footer_preset_index(idx);
+                                self.apply_preset_index(idx);
                                 let name = self
                                     .footer_presets
                                     .get(self.footer_preset)
@@ -8661,7 +8662,7 @@ impl App {
                                                 .unwrap_or_default()
                                         };
                                         if !indices.is_empty() {
-                                            self.pending_playlist_track_ids = indices;
+                                            self.pending_track_ids = indices;
                                             self.playlist_creating = false;
                                             self.pickers.open(PickerId::PlaylistSelect);
                                         }
@@ -8824,13 +8825,13 @@ impl App {
                                         }
                                     });
                                     self.playlist_creating = false;
-                                    self.close_top_picker_with_cleanup();
+                                    self.close_picker();
                                 }
                             } else if top.selected == 0 {
                                 self.playlist_creating = true;
                             } else {
                                 let idx = top.selected.saturating_sub(1);
-                                let track_ids = self.pending_playlist_track_ids.clone();
+                                let track_ids = self.pending_track_ids.clone();
                                 if let Some(pl) = self.playlist_cache.get(idx) {
                                     let playlist_id = pl.id;
                                     if !track_ids.is_empty() {
@@ -8849,7 +8850,7 @@ impl App {
                                             NotifType::NowPlaying,
                                         );
                                     }
-                                    self.close_top_picker_with_cleanup();
+                                    self.close_picker();
                                 }
                             }
                         }
@@ -9105,10 +9106,10 @@ impl App {
                         top.viewport_offset = 0;
                         self.picker_preview_cover = None;
                         self.picker_preview_stateful = None;
-                        self.last_picker_preview_fetch_id = None;
+                        self.picker_slot.id = None;
                         self.artist_cover = None;
                         self.artist_cover_stateful = None;
-                        self.last_artist_cover_fetch = None;
+                        self.artist_slot.id = None;
                     } else if top.id == PickerId::EditMetadata {
                         self.metadata.field_idx = (self.metadata.field_idx + 1) % 7;
                     } else if top.id == PickerId::SpotifyLink {
@@ -9203,7 +9204,7 @@ impl App {
         }
     }
 
-    async fn apply_eq_on_navigation(&mut self) {
+    async fn apply_eq_nav(&mut self) {
         if let Some(top) = self.pickers.top()
             && top.id == PickerId::Equalizer
         {
@@ -9316,7 +9317,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lyric_index_tracks_position_through_timed_lines() {
+    fn lyridx_timed_lines() {
         let lines = vec![
             LrcLine {
                 timestamp: -1.0,
@@ -9343,12 +9344,12 @@ mod tests {
     }
 
     #[test]
-    fn lyric_index_empty_returns_zero() {
+    fn lyridx_empty_zero() {
         assert_eq!(lyric_index_at(&[], 42.0), 0);
     }
 
     #[test]
-    fn cycle_library_focus_advances_forward() {
+    fn lib_focus_forward() {
         let (lib, lyr) = cycle_library_focus(true, false, true);
         assert_eq!((lib, lyr), (false, false));
         let (lib, lyr) = cycle_library_focus(false, false, true);
@@ -9358,7 +9359,7 @@ mod tests {
     }
 
     #[test]
-    fn cycle_library_focus_advances_backward() {
+    fn lib_focus_backward() {
         let (lib, lyr) = cycle_library_focus(true, false, false);
         assert_eq!((lib, lyr), (false, true));
         let (lib, lyr) = cycle_library_focus(false, false, false);

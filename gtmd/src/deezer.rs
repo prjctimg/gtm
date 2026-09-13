@@ -353,7 +353,7 @@ mod tests {
     }
 
     #[test]
-    fn test_best_match_accepts_plausible_hit() {
+    fn best_match_hit() {
         let results = vec![json!({
             "id": 1,
             "title": "Beautiful (feat. Camila Cabello)",
@@ -374,7 +374,7 @@ mod tests {
     }
 
     #[test]
-    fn test_best_match_rejects_unrelated() {
+    fn best_match_reject() {
         let results = vec![json!({
             "id": 2,
             "title": "Something Completely Different",
@@ -386,12 +386,12 @@ mod tests {
     }
 
     #[test]
-    fn test_best_match_empty_results() {
+    fn best_match_empty() {
         assert!(best_match(&[], "Bazzi", "Beautiful", 0.0).is_none());
     }
 
     #[test]
-    fn test_build_query_does_not_pre_encode() {
+    fn build_query_raw() {
         assert_eq!(
             build_query("Bazzi", "Beautiful feat. Camila"),
             "artist:\"Bazzi\" track:\"Beautiful feat. Camila\""

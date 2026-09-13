@@ -297,7 +297,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_ring_buffer_basic() {
+    fn ring_buff_basic() {
         let rb = RingBufferInner::new(1024);
         assert_eq!(rb.available(), 0);
         assert!(rb.push(1.0));
@@ -309,7 +309,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ring_buffer_full() {
+    fn ring_buff_full() {
         let rb = RingBufferInner::new(1024);
         for i in 0..1024 {
             assert!(rb.push(i as f32));
@@ -319,7 +319,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ring_buffer_flush() {
+    fn ring_buff_flush() {
         let rb = RingBufferInner::new(1024);
         rb.push(1.0);
         rb.push(2.0);
@@ -329,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn test_ring_buffer_wraparound() {
+    fn ring_buff_wrap() {
         let rb = RingBufferInner::new(1024);
         for _ in 0..2 {
             for i in 0..1024 {

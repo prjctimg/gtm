@@ -929,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_uses_lowercase_d_and_del() {
+    fn delete_lowercase_keys() {
         // d / Del remove an item…
         assert!(matches!(
             dispatch(KeyCode::Char('d').into(), KeyContext::Normal),
@@ -947,7 +947,7 @@ mod tests {
     }
 
     #[test]
-    fn settings_picker_shortcut_not_shadowed_by_chords() {
+    fn picker_shortcut_unique() {
         // Alt+, opens the Settings picker; plain `,` seeks backward.
         assert!(matches!(
             dispatch(
@@ -975,7 +975,7 @@ mod tests {
     }
 
     #[test]
-    fn colon_opens_command_palette_only() {
+    fn colon_opens_palette() {
         // `:` is the command palette; the removed duplicate (health check)
         // binding must not shadow it.
         assert!(matches!(

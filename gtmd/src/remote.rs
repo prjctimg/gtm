@@ -21,7 +21,7 @@ pub type IcySlot = Arc<Mutex<Option<String>>>;
 /// Shoutcast/ICEcast transparently tag a request with `Icy-MetaData: 1` so it
 /// advertises metadata mode.
 pub(crate) const ICY_META_HEADER: &str = "Icy-MetaData";
-pub(crate) const ICY_META_INT_HEADER: &str = "icy-metaint";
+pub(crate) const ICY_META_INTERVAL: &str = "icy-metaint";
 
 /// A blocking HTTP(S) transport exposed as a `std::io::Read` so symphonia's
 /// decoder can stream radio, podcast, and Subsonic audio natively. Reads block

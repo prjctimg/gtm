@@ -972,7 +972,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_color_accepts_hash_hex() {
+    fn color_accepts_hex() {
         assert_eq!(
             parse_color("#7aa2f7").unwrap(),
             Color::Rgb(0x7a, 0xa2, 0xf7)
@@ -981,19 +981,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_color_rejects_bad_input() {
+    fn color_rejects_input() {
         assert!(parse_color("#abc").is_err());
         assert!(parse_color("zzzzzz").is_err());
         assert!(parse_color("").is_err());
     }
 
     #[test]
-    fn builtin_themes_have_unique_names() {
+    fn builtin_themes_unique() {
         assert_unique_names(builtin_themes().iter().map(|t| t.name.as_ref()), "theme");
     }
 
     #[test]
-    fn tokyonight_storm_derives_from_chadrula() {
+    fn storm_from_chadrula() {
         let base = chadrula();
         let storm = tokyonight_storm();
         // Shared fields stay in sync with the base.
@@ -1006,7 +1006,7 @@ mod tests {
     }
 
     #[test]
-    fn light_themes_are_flagged() {
+    fn light_themes_flag() {
         for t in builtin_themes() {
             let luma = match t.theme.bg {
                 Color::Rgb(r, g, b) => 0.299 * r as f64 + 0.587 * g as f64 + 0.114 * b as f64,
@@ -1022,7 +1022,7 @@ mod tests {
     }
 
     #[test]
-    fn user_theme_round_trip() {
+    fn theme_roundtrip() {
         let toml = r##"
             name = "Test"
             light = true
@@ -1056,7 +1056,7 @@ mod tests {
     }
 
     #[test]
-    fn user_theme_missing_c0_fields_fall_back() {
+    fn theme_missing_fields() {
         // Pre-C0 TOML without elevated_bg/muted_border must still parse.
         let toml = r##"
             name = "Legacy"
@@ -1086,7 +1086,7 @@ mod tests {
     }
 
     #[test]
-    fn merged_themes_replaces_on_collision() {
+    fn merged_theme_collision() {
         let mut v: Vec<ThemeEntry> = builtin_themes().to_vec();
         let custom = ThemeEntry {
             name: Cow::Borrowed("Chadrula"),

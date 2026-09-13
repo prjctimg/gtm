@@ -18,7 +18,7 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 const SPOTIFY_AUTHORIZE_URL: &str = "https://accounts.spotify.com/authorize";
 const SPOTIFY_TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 
-/// Default local redirect port served by [`OauthFlow::wait_for_access_token`].
+/// Default local redirect port served by [`OauthFlow::wait_token`].
 pub const DEFAULT_OAUTH_PORT: u16 = 8990;
 
 /// How long an OAuth link flow waits for the browser redirect before giving
@@ -45,7 +45,7 @@ const OAUTH_SCOPES: &[&str] = &[
 ];
 
 /// One pending OAuth link flow. Create it, hand [`Self::authorize_url`] to
-/// the user, then await [`Self::wait_for_access_token`]. `port` selects the
+/// the user, then await [`Self::wait_token`]. `port` selects the
 /// local callback port so users can reuse a redirect URI already registered
 /// in their Spotify dashboard.
 pub struct OauthFlow {
@@ -98,9 +98,9 @@ impl OauthFlow {
     /// an access token, and return it. Cancels itself after [`OAUTH_TIMEOUT`].
     /// The redirect's `state` must match the value this flow issued, or the
     /// flow is rejected as a cross-site request forgery attempt.
-    pub async fn wait_for_access_token(&self) -> Result<String, String> {
-        let code = listen_for_auth_code(self.redirect_addr, &self.state).await?;
-        exchange_code_for_token(
+    pub async fn wait_token(&self) -> Result<String, String> {
+        let code = listen_code(self.redirect_addr, &self.state).await?;
+        exchange_code(
             &code,
             &self.client_id,
             &self.pkce.verifier,
@@ -147,7 +147,7 @@ fn urlencode(s: &str) -> String {
     out
 }
 
-async fn listen_for_auth_code(addr: SocketAddr, expected_state: &str) -> Result<String, String> {
+async fn listen_code(addr: SocketAddr, expected_state: &str) -> Result<String, String> {
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .map_err(|e| format!("bind OAuth callback server to {addr}: {e}"))?;
@@ -163,7 +163,7 @@ async fn listen_for_auth_code(addr: SocketAddr, expected_state: &str) -> Result<
             Ok(Err(e)) => return Err(format!("accept: {e}")),
             Err(_) => return Err("OAuth link timed out waiting for the browser".into()),
         };
-        match read_code_from_stream(&mut stream, expected_state).await {
+        match read_code(&mut stream, expected_state).await {
             Some(code) => {
                 write_response(
                     &mut stream,
@@ -180,10 +180,7 @@ async fn listen_for_auth_code(addr: SocketAddr, expected_state: &str) -> Result<
     }
 }
 
-async fn read_code_from_stream(
-    stream: &mut tokio::net::TcpStream,
-    expected_state: &str,
-) -> Option<String> {
+async fn read_code(stream: &mut tokio::net::TcpStream, expected_state: &str) -> Option<String> {
     let mut reader = BufReader::new(stream);
     // The request head's first line is all we need.
     let mut line = String::new();
@@ -230,7 +227,7 @@ fn code_from_redirect(target: &str, expected_state: &str) -> Option<String> {
     }
 }
 
-async fn exchange_code_for_token(
+async fn exchange_code(
     code: &str,
     client_id: &str,
     verifier: &str,
@@ -304,13 +301,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn redirect_uri_uses_gtm_port() {
+    fn redirect_gtm_port() {
         let flow = OauthFlow::new("test-client-id", DEFAULT_OAUTH_PORT);
         assert_eq!(flow.redirect_uri, DEFAULT_REDIRECT_URI);
     }
 
     #[test]
-    fn authorize_url_contains_pkce_params() {
+    fn url_has_pkce() {
         let flow = OauthFlow::new("test-client-id", DEFAULT_OAUTH_PORT);
         let url = flow.authorize_url();
         assert!(url.starts_with(SPOTIFY_AUTHORIZE_URL));
@@ -344,11 +341,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn flow_serves_callback_and_exchanges() {
+    async fn flow_callback_exchange() {
         // End-to-end against a stub token endpoint is out of scope here; just
         // verify the callback listener returns the code sent to the port.
         let flow = OauthFlow::new("cid", DEFAULT_OAUTH_PORT);
-        let f = flow.wait_for_access_token();
+        let f = flow.wait_token();
         // Don't bind the real flow; only exercise URL/code helpers above.
         drop(f);
     }

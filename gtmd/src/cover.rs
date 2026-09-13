@@ -27,7 +27,7 @@ const RATE_LIMIT_MS: u64 = 200;
 const MIN_COVER_DIM: u32 = 300;
 /// Upper bound for the on-disk `covers/` cache. Oldest files are pruned by
 /// mtime once the directory exceeds this, so the cache can't grow unbounded.
-const DISK_CACHE_CAP_BYTES: u64 = 512 * 1024 * 1024;
+const DISK_CACHE_CAP: u64 = 512 * 1024 * 1024;
 
 /// Which artwork source(s) to consult, in the requested order. `Auto` is the
 /// default: MusicBrainz/Cover Art Archive first, with Spotify preferred over
@@ -85,7 +85,7 @@ impl CoverCache {
     }
 
     /// Write cover bytes to the album-cover disk cache, periodically pruning
-    /// oldest-by-mtime files once the directory exceeds `DISK_CACHE_CAP_BYTES`.
+    /// oldest-by-mtime files once the directory exceeds `DISK_CACHE_CAP`.
     fn store_disk(&self, path: &PathBuf, bytes: &[u8]) {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).ok();
@@ -118,12 +118,12 @@ impl CoverCache {
                 files.push((md.modified().unwrap_or(UNIX_EPOCH), path, md.len()));
             }
         }
-        if total <= DISK_CACHE_CAP_BYTES {
+        if total <= DISK_CACHE_CAP {
             return;
         }
         files.sort_by_key(|(mtime, _, _)| *mtime);
         for (_, path, len) in files {
-            if total <= DISK_CACHE_CAP_BYTES {
+            if total <= DISK_CACHE_CAP {
                 break;
             }
             if fs::remove_file(&path).is_ok() {

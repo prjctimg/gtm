@@ -288,7 +288,7 @@ impl LyricsManager {
         //    tags (e.g. queued/foreign files) fall back to a title-only
         //    search.
         let fetched = if track.artist.is_empty() {
-            self.fetch_lrclib_search_title(&track.title).await
+            self.fetch_lrclib_title(&track.title).await
         } else if let Some(lrc) = self.fetch_lrclib_exact(track).await {
             Some(lrc)
         } else if let Some(lrc) = self.fetch_lrclib_search(track).await {
@@ -298,7 +298,7 @@ impl LyricsManager {
             // spelled differently or carries a featuring/remix credit). Drop
             // to a title-only search so a correct song is still recovered;
             // the tight title threshold keeps an unrelated song's lyrics out.
-            self.fetch_lrclib_search_title(&track.title).await
+            self.fetch_lrclib_title(&track.title).await
         };
 
         if let Some(lrc) = fetched {
@@ -503,7 +503,7 @@ impl LyricsManager {
         None
     }
 
-    async fn fetch_lrclib_search_title(&self, title: &str) -> Option<LrcData> {
+    async fn fetch_lrclib_title(&self, title: &str) -> Option<LrcData> {
         if title.is_empty() {
             return None;
         }
@@ -671,7 +671,7 @@ mod tests {
 
     #[test]
     #[ignore = "requires network access to lrclib.net"]
-    fn lrclib_search_returns_lyrics() {
+    fn lrclib_returns_lyrics() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let manager = LyricsManager::new();
         let result = rt.block_on(manager.search("The Weeknd", "Blinding Lights"));
@@ -679,7 +679,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_lrc_keeps_plain_lines() {
+    fn lrc_plain_lines() {
         let lrc = LyricsManager::parse_lrc("Line one\nLine two\n\n[00:01.00]timed line");
         assert_eq!(lrc.lines.len(), 3);
         // Timed lines sort first, plain lines go to the end.
@@ -691,7 +691,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_lrc_applies_offset_tag() {
+    fn lrc_offset_tag() {
         let lrc = LyricsManager::parse_lrc("[offset:+500]\n[00:10.00]shifted earlier");
         assert!((lrc.lines[0].timestamp - 9.5).abs() < 1e-6);
         let lrc = LyricsManager::parse_lrc("[offset:-1000ms]\n[00:10.00]shifted later");
@@ -702,28 +702,28 @@ mod tests {
     }
 
     #[test]
-    fn parse_lrc_skips_tag_lines() {
+    fn lrc_skips_tags() {
         let lrc = LyricsManager::parse_lrc("[length:03:30]\n[00:01.00]real line");
         assert_eq!(lrc.lines.len(), 1);
         assert_eq!(lrc.lines[0].text, "real line");
     }
 
     #[test]
-    fn meta_from_filename_parses_artist_title() {
+    fn meta_parses_artist() {
         let (artist, title) = meta_from_filename("/tmp/music/Artist Name - Song Title.flac");
         assert_eq!(artist, "Artist Name");
         assert_eq!(title, "Song Title");
     }
 
     #[test]
-    fn meta_from_filename_defaults_to_stem() {
+    fn meta_defaults_stem() {
         let (artist, title) = meta_from_filename("/tmp/music/Just A Title.mp3");
         assert!(artist.is_empty());
         assert_eq!(title, "Just A Title");
     }
 
     #[test]
-    fn meta_from_filename_strips_official_tags() {
+    fn meta_strips_tags() {
         let (artist, title) =
             meta_from_filename("/tmp/music/Drake - God's Plan (Official Audio).flac");
         assert_eq!(artist, "Drake");
@@ -731,7 +731,7 @@ mod tests {
     }
 
     #[test]
-    fn lrc_to_text_round_trips_through_parse() {
+    fn lrc_roundtrip() {
         let lrc = sample_lrc(vec![line(65.0, "timed line"), line(-1.0, "plain line")]);
 
         let text = lrc_to_text(&lrc);
@@ -745,7 +745,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_round_trips_lyrics() {
+    fn cache_lyrics_roundtrip() {
         let dir = temp_cache_dir("cache");
         let manager = LyricsManager::with_cache_dir(dir.clone());
         let track = TrackInfo {
@@ -771,7 +771,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_key_stable_across_paths() {
+    fn cache_key_stable() {
         let dir = temp_cache_dir("key");
         let manager = LyricsManager::with_cache_dir(dir.clone());
         let a = TrackInfo {

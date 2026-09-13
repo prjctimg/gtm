@@ -163,7 +163,7 @@ mod tests {
     }
 
     #[test]
-    fn kind_from_path_and_extension() {
+    fn kind_from_path() {
         assert_eq!(
             PlaylistFormatKind::from_path("mix.pls"),
             PlaylistFormatKind::Pls
@@ -228,7 +228,7 @@ mod tests {
     }
 
     #[test]
-    fn pls_parses_out_of_order_and_skips_directives() {
+    fn pls_skips_directives() {
         let fmt = PlsFormat;
         let content = "[playlist]\nFile2=/b/two.flac\nTitle2=x\nFile1=/a/one.mp3\nLength1=10\nNumberOfEntries=2\nPlaylistName=foo\n";
         assert_eq!(

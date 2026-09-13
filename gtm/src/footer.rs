@@ -495,7 +495,7 @@ impl Footer {
             "\u{2193} " // ↓
         };
         let mut out = format!("{icon}{:.0}%", dl.percent.clamp(0.0, 100.0));
-        if let Some(rate) = dl.rate_bytes_per_sec {
+        if let Some(rate) = dl.rate_bps {
             out.push_str(&format!(" {}", Footer::format_rate(rate)));
         }
         if let Some(eta) = dl.eta_secs {
@@ -824,7 +824,7 @@ fn platform_icon() -> &'static str {
     }
 }
 
-pub(crate) fn read_process_memory_kb() -> Option<u64> {
+pub(crate) fn read_proc_mem() -> Option<u64> {
     let status = std::fs::read_to_string("/proc/self/status").ok()?;
     for line in status.lines() {
         if let Some(rest) = line.strip_prefix("VmRSS:") {
@@ -876,19 +876,19 @@ mod tests {
     }
 
     #[test]
-    fn presets_have_unique_names() {
+    fn presets_unique() {
         assert_unique_names(presets().iter().map(|p| p.name.as_ref()), "preset");
     }
 
     #[test]
-    fn parse_module_list_drops_unknowns() {
+    fn module_list_unknowns() {
         let names = vec!["Playback".into(), "Bogus".into(), "Volume".into()];
         let parsed = parse_module_list(&names);
         assert_eq!(parsed, vec![FooterModule::Playback, FooterModule::Volume]);
     }
 
     #[test]
-    fn user_presets_round_trip() {
+    fn user_presets_roundtrip() {
         let toml_text = r#"
             [[preset]]
             name = "Custom"

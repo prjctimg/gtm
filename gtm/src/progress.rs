@@ -238,7 +238,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn seek_head_always_visible() {
+    fn seek_head_visible() {
         for ratio in [0.0f64, 0.5, 1.0] {
             let bar = render_progress(ratio, 22, ProgressStyle::SeekHead);
             assert!(bar.contains('●'), "head missing at ratio {ratio}");

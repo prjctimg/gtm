@@ -80,7 +80,7 @@ pub struct DownloadProgress {
     /// Total size to download, when known.
     pub total_bytes: Option<u64>,
     /// Current transfer rate in bytes/second.
-    pub rate_bytes_per_sec: Option<f64>,
+    pub rate_bps: Option<f64>,
     /// Remaining seconds per yt-dlp's ETA line.
     pub eta_secs: Option<u64>,
 }
@@ -335,7 +335,7 @@ impl YoutubeManager {
                 file_path: None,
                 downloaded_bytes: None,
                 total_bytes: None,
-                rate_bytes_per_sec: None,
+                rate_bps: None,
                 eta_secs: None,
             });
 
@@ -373,7 +373,7 @@ impl YoutubeManager {
                         file_path: None,
                         downloaded_bytes: None,
                         total_bytes: None,
-                        rate_bytes_per_sec: None,
+                        rate_bps: None,
                         eta_secs: None,
                     });
                     return;
@@ -459,7 +459,7 @@ impl YoutubeManager {
                 },
                 downloaded_bytes: maybe_file.is_some().then_some(0u64),
                 total_bytes: maybe_file.is_some().then_some(0u64),
-                rate_bytes_per_sec: None,
+                rate_bps: None,
                 eta_secs: None,
                 file_path: maybe_file.map(|p| p.to_string_lossy().into_owned()),
             });
@@ -491,7 +491,7 @@ impl YoutubeManager {
         while self.download_progress_rx.try_recv().is_ok() {}
     }
 
-    pub fn set_max_concurrent_downloads(&mut self, max: usize) {
+    pub fn set_max_downloads(&mut self, max: usize) {
         self.max_concurrent_downloads = max.max(1);
     }
 
@@ -688,7 +688,7 @@ async fn spawn_progress_reader<R>(
 {
     let mut lines = BufReader::new(reader).lines();
     while let Ok(Some(line)) = lines.next_line().await {
-        if let Some(fields) = parse_yt_dlp_progress(&line) {
+        if let Some(fields) = parse_dl_progress(&line) {
             let _ = progress_tx.send(DownloadProgress {
                 id: download_id,
                 url: url.clone(),
@@ -699,7 +699,7 @@ async fn spawn_progress_reader<R>(
                 file_path: None,
                 downloaded_bytes: fields.downloaded_bytes,
                 total_bytes: fields.total_bytes,
-                rate_bytes_per_sec: fields.rate_bytes_per_sec,
+                rate_bps: fields.rate_bps,
                 eta_secs: fields.eta_secs,
             });
         }
@@ -710,7 +710,7 @@ struct YtDlpLine {
     percent: f64,
     downloaded_bytes: Option<u64>,
     total_bytes: Option<u64>,
-    rate_bytes_per_sec: Option<f64>,
+    rate_bps: Option<f64>,
     eta_secs: Option<u64>,
 }
 
@@ -719,7 +719,7 @@ struct YtDlpLine {
 /// we track. Sizes and rates use the exact units yt-dlp prints (`KiB/MiB/GiB`,
 /// occasionally with a `~` for estimated totals), so they convert cleanly to
 /// bytes.
-fn parse_yt_dlp_progress(line: &str) -> Option<YtDlpLine> {
+fn parse_dl_progress(line: &str) -> Option<YtDlpLine> {
     let start = line.find('%')?;
     let prefix = &line[..start];
     let digits = prefix
@@ -735,7 +735,7 @@ fn parse_yt_dlp_progress(line: &str) -> Option<YtDlpLine> {
         percent,
         downloaded_bytes: extract_downloaded_bytes(line, start),
         total_bytes: extract_total_bytes(line),
-        rate_bytes_per_sec: extract_rate(line),
+        rate_bps: extract_rate(line),
         eta_secs: extract_eta(line),
     })
 }
@@ -1075,12 +1075,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_progress_line_extracts_fields() {
+    fn prog_fields() {
         let line = "[download]  42.3% of 3.86MiB at 1.10MiB/s ETA 00:07";
-        let fields = parse_yt_dlp_progress(line).expect("progress line parses");
+        let fields = parse_dl_progress(line).expect("progress line parses");
         assert!((fields.percent - 42.3).abs() < 1e-9);
         assert_eq!(fields.total_bytes, Some((3.86 * 1024.0 * 1024.0) as u64));
-        assert!((fields.rate_bytes_per_sec.unwrap() - 1.10 * 1024.0 * 1024.0).abs() < 1.0);
+        assert!((fields.rate_bps.unwrap() - 1.10 * 1024.0 * 1024.0).abs() < 1.0);
         assert_eq!(fields.eta_secs, Some(7));
         assert_eq!(
             fields.downloaded_bytes,
@@ -1089,19 +1089,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_progress_estimated_total_and_mmss_eta() {
+    fn prog_eta_estimate() {
         let line = "[download]   5.0% of ~2.36GiB at 90.5KiB/s ETA 07:10";
-        let fields = parse_yt_dlp_progress(line).expect("estimated total parses");
+        let fields = parse_dl_progress(line).expect("estimated total parses");
         assert!((fields.percent - 5.0).abs() < 1e-9);
         let gi = 1024.0 * 1024.0 * 1024.0;
         assert_eq!(fields.total_bytes, Some((2.36 * gi) as u64));
-        assert!((fields.rate_bytes_per_sec.unwrap() - 90.5 * 1024.0).abs() < 1.0);
+        assert!((fields.rate_bps.unwrap() - 90.5 * 1024.0).abs() < 1.0);
         assert_eq!(fields.eta_secs, Some(7 * 60 + 10));
     }
 
     #[test]
-    fn parse_progress_does_not_parse_non_progress_lines() {
-        assert!(parse_yt_dlp_progress("[download] Destination: /tmp/x.m4a").is_none());
-        assert!(parse_yt_dlp_progress("[ExtractAudio] Destination: /tmp/x.m4a").is_none());
+    fn prog_skips_junk() {
+        assert!(parse_dl_progress("[download] Destination: /tmp/x.m4a").is_none());
+        assert!(parse_dl_progress("[ExtractAudio] Destination: /tmp/x.m4a").is_none());
     }
 }

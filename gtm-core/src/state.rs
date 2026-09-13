@@ -74,17 +74,17 @@ pub struct ScrobbleConfig {
 }
 
 /// Default minimum play time (seconds) before a track qualifies for scrobbling.
-pub const DEFAULT_MIN_PLAY_SECS: u32 = 240;
+pub const MIN_PLAY_SECS: u32 = 240;
 /// Default minimum play fraction of the total track duration for scrobbling.
-pub const DEFAULT_MIN_PLAY_PCT: f32 = 0.5;
+pub const MIN_PLAY_PCT: f32 = 0.5;
 
 impl ScrobbleConfig {
-    pub fn min_play_secs_effective(&self) -> u32 {
-        self.min_play_secs.unwrap_or(DEFAULT_MIN_PLAY_SECS)
+    pub fn effective_play_secs(&self) -> u32 {
+        self.min_play_secs.unwrap_or(MIN_PLAY_SECS)
     }
 
-    pub fn min_play_pct_effective(&self) -> f32 {
-        self.min_play_pct.unwrap_or(DEFAULT_MIN_PLAY_PCT)
+    pub fn effective_play_pct(&self) -> f32 {
+        self.min_play_pct.unwrap_or(MIN_PLAY_PCT)
     }
 }
 

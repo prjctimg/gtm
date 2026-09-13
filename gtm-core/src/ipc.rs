@@ -515,10 +515,10 @@ impl DaemonReq {
             DaemonReq::YtDownloadPoll => "yt_download_poll",
             DaemonReq::YtCancelDownload { .. } => "yt_cancel_download",
             DaemonReq::YtFetchPlaylist { .. } => "yt_fetch_playlist",
-            DaemonReq::YtFetchPlaylistPoll => "yt_fetch_playlist_poll",
+            DaemonReq::YtFetchPlaylistPoll => "yt_playlist_poll",
             DaemonReq::YtSetConfig { .. } => "yt_set_config",
             DaemonReq::GetCoverArt { .. } => "get_cover_art",
-            DaemonReq::GetArtistCoverArt { .. } => "get_artist_cover_art",
+            DaemonReq::GetArtistCoverArt { .. } => "artist_cover_art",
             DaemonReq::SetCoverProvider { .. } => "set_cover_provider",
             DaemonReq::GetLyrics { .. } => "get_lyrics",
             DaemonReq::LyricsSearch { .. } => "lyrics_search",
@@ -790,7 +790,7 @@ impl DaemonReq {
                 let x: Params = p(params)?;
                 DaemonReq::YtFetchPlaylist { url: x.url }
             }
-            "yt_fetch_playlist_poll" => DaemonReq::YtFetchPlaylistPoll,
+            "yt_playlist_poll" => DaemonReq::YtFetchPlaylistPoll,
             "yt_set_config" => {
                 #[derive(Deserialize)]
                 struct Params {
@@ -822,7 +822,7 @@ impl DaemonReq {
                     path: x.path,
                 }
             }
-            "get_artist_cover_art" => {
+            "artist_cover_art" => {
                 #[derive(Deserialize)]
                 struct Params {
                     artist: String,
@@ -1583,7 +1583,7 @@ pub enum DaemonRes {
         file_path: Option<String>,
         downloaded_bytes: Option<u64>,
         total_bytes: Option<u64>,
-        rate_bytes_per_sec: Option<f64>,
+        rate_bps: Option<f64>,
         eta_secs: Option<u64>,
     },
     YtDownloadResult {
@@ -1697,7 +1697,7 @@ impl DaemonRes {
                 file_path,
                 downloaded_bytes,
                 total_bytes,
-                rate_bytes_per_sec,
+                rate_bps,
                 eta_secs,
             } => Some(serde_json::json!({
                 "id": id,
@@ -1709,7 +1709,7 @@ impl DaemonRes {
                 "file_path": file_path,
                 "downloaded_bytes": downloaded_bytes,
                 "total_bytes": total_bytes,
-                "rate_bytes_per_sec": rate_bytes_per_sec,
+                "rate_bps": rate_bps,
                 "eta_secs": eta_secs,
             })),
             DaemonRes::YtDownloadResult {
@@ -1857,7 +1857,7 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "get_cover_art" | "get_artist_cover_art" => {
+            "get_cover_art" | "artist_cover_art" => {
                 let d = data.get("data").cloned().unwrap_or(Value::Null);
                 match serde_json::from_value::<Option<String>>(d) {
                     Ok(data) => DaemonRes::CoverArt { data },
@@ -2085,7 +2085,7 @@ impl DaemonRes {
                     file_path,
                     downloaded_bytes: data.get("downloaded_bytes").and_then(|v| v.as_u64()),
                     total_bytes: data.get("total_bytes").and_then(|v| v.as_u64()),
-                    rate_bytes_per_sec: data.get("rate_bytes_per_sec").and_then(|v| v.as_f64()),
+                    rate_bps: data.get("rate_bps").and_then(|v| v.as_f64()),
                     eta_secs: data.get("eta_secs").and_then(|v| v.as_u64()),
                 }
             }

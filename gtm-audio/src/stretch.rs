@@ -258,7 +258,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn speed_control_clamps_and_defaults() {
+    fn speed_clamps() {
         let c = SpeedControl::new();
         assert_eq!(c.load(), 1.0);
         c.store(1.5);

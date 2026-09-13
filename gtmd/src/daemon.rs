@@ -33,15 +33,14 @@ use gtm_core::ipc::{
 };
 use gtm_core::playlist::{M3u8Format, PlaylistFormat, PlsFormat};
 use gtm_core::secret::{
-    LASTFM_API_KEY_KEY, LASTFM_API_SECRET_KEY, SPOTIFY_CLIENT_ID_KEY, delete_secret, get_secret,
-    set_secret,
+    LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, delete_secret, get_secret, set_secret,
 };
 use gtm_core::spotify::SpotifyTrack;
 use gtm_core::track::TrackInfo;
 use gtm_core::wire;
 use gtm_core::{CoreError, MetadataPatch};
 #[cfg(feature = "pulseaudio")]
-use gtm_core::{ensure_termux_pulseaudio, is_termux};
+use gtm_core::{ensure_termux_pulse, is_termux};
 #[cfg(feature = "mpris")]
 use gtm_mpris::{MprisHandle, start};
 
@@ -160,7 +159,7 @@ async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<(String, bool
         }
         RemoteKind::Radio { station_id, .. } => {
             if let Some(index) = gtm_core::custom::parse_custom_id(station_id) {
-                gtm_core::custom::custom_station_by_index(index)
+                gtm_core::custom::station_by_index(index)
                     .map_err(CoreError::Daemon)?
                     .ok_or_else(|| CoreError::Daemon(format!("no custom station {index}")))?
                     .url
@@ -204,7 +203,7 @@ fn decode_remote_reader(
     let reader: Box<dyn std::io::Read + Send> = if let Some(slot) = title_slot.filter(|_| live) {
         if let Some(metaint) = resp
             .headers()
-            .get(remote::ICY_META_INT_HEADER)
+            .get(remote::ICY_META_INTERVAL)
             .and_then(|v| v.to_str().ok())
             .and_then(|s| s.trim().parse::<usize>().ok())
             .filter(|&n| n > 0)
@@ -351,8 +350,8 @@ impl Cmd {
             let state = inner.state.read().await;
             (
                 state.scrobble.enabled,
-                state.scrobble.min_play_secs_effective(),
-                state.scrobble.min_play_pct_effective(),
+                state.scrobble.effective_play_secs(),
+                state.scrobble.effective_play_pct(),
             )
         };
         if !enabled {
@@ -750,7 +749,7 @@ impl Cmd {
 }
 
 /// Derive a display title from a stream URL (host name or path segment).
-fn stream_title_from_url(url: &str) -> String {
+fn title_from_url(url: &str) -> String {
     url.split("://")
         .nth(1)
         .and_then(|r| r.split(['/', '?']).next())
@@ -832,7 +831,7 @@ impl Cmd {
             .iter()
             .map(|u| TrackInfo {
                 path: u.clone(),
-                title: stream_title_from_url(u),
+                title: title_from_url(u),
                 artist: "Stream".into(),
                 album: "Stream".into(),
                 ..Default::default()
@@ -1682,7 +1681,7 @@ async fn spotify_yt_fallback(
         };
         let auth = yt.auth_args();
         drop(yt);
-        Daemon::download_audio_to_cache(&inner.config.cache_dir, cache_key, &top.url, auth).await
+        Daemon::download_to_cache(&inner.config.cache_dir, cache_key, &top.url, auth).await
     }
 }
 
@@ -1740,13 +1739,13 @@ impl Spotify {
         }
         // Persist the client id in the OS keychain so future links can reuse it
         // without the user pasting it again.
-        set_secret(SPOTIFY_CLIENT_ID_KEY, cid);
+        set_secret(SPOTIFY_CLIENT_ID, cid);
         let flow = OauthFlow::new(cid, port);
         let url = flow.authorize_url();
 
         let inner2 = Arc::clone(inner);
         let handle = tokio::spawn(async move {
-            match flow.wait_for_access_token().await {
+            match flow.wait_token().await {
                 Ok(token) => {
                     let mut spotify = inner2.spotify.lock().await;
                     // No artificial timeout here: the first sync after linking
@@ -1903,7 +1902,7 @@ impl Spotify {
         };
         if let Some(uri) = stream_uri {
             let duration = track.duration_ms.map(|ms| ms as f64 / 1000.0);
-            let _ = Spotify::queue_stream_with_meta(
+            let _ = Spotify::queue_stream(
                 inner,
                 &uri,
                 &spotify_title,
@@ -1999,7 +1998,7 @@ impl Spotify {
         };
         if can_stream {
             let uri = uri.clone().expect("checked above");
-            Spotify::queue_stream_with_meta(inner, &uri, name, artists, album, None).await?;
+            Spotify::queue_stream(inner, &uri, name, artists, album, None).await?;
             return Ok(DaemonRes::Ok);
         }
 
@@ -2052,7 +2051,7 @@ impl Spotify {
     /// given title/artist/album metadata, pre-warm the cover cache for the
     /// album, and start playback immediately when the queue was empty. Mirrors
     /// the Premium branch of `resolve`.
-    async fn queue_stream_with_meta(
+    async fn queue_stream(
         inner: &DaemonInner,
         uri: &str,
         title: &str,
@@ -2593,7 +2592,7 @@ impl Radio {
         // name is only a fallback for the queue display.
         let name = {
             if let Some(index) = gtm_core::custom::parse_custom_id(station_id) {
-                match gtm_core::custom::custom_station_by_index(index) {
+                match gtm_core::custom::station_by_index(index) {
                     Ok(Some(st)) => st.name,
                     _ => station_name.to_string(),
                 }
@@ -2639,10 +2638,10 @@ impl Lastfm {
         // Persist any new credentials in the OS keychain so they survive daemon
         // restarts; blank values mean "keep what is already stored".
         if let Some(key) = api_key.as_ref().filter(|k| !k.trim().is_empty()) {
-            set_secret(LASTFM_API_KEY_KEY, key.trim());
+            set_secret(LASTFM_API_KEY, key.trim());
         }
         if let Some(secret) = api_secret.as_ref().filter(|s| !s.trim().is_empty()) {
-            set_secret(LASTFM_API_SECRET_KEY, secret.trim());
+            set_secret(LASTFM_API_SECRET, secret.trim());
         }
 
         let current_session = inner.state.read().await.scrobble.session_token.clone();
@@ -2653,14 +2652,14 @@ impl Lastfm {
         let effective_key = if enabled {
             api_key
                 .filter(|k| !k.trim().is_empty())
-                .or_else(|| get_secret(LASTFM_API_KEY_KEY))
+                .or_else(|| get_secret(LASTFM_API_KEY))
         } else {
             None
         };
         let effective_secret = if enabled {
             api_secret
                 .filter(|s| !s.trim().is_empty())
-                .or_else(|| get_secret(LASTFM_API_SECRET_KEY))
+                .or_else(|| get_secret(LASTFM_API_SECRET))
         } else {
             None
         };
@@ -2689,8 +2688,8 @@ impl Lastfm {
     /// and the saved session token, so scrobbling survives a daemon restart
     /// without re-running the setup wizard.
     pub async fn restore_credentials(inner: &DaemonInner) {
-        let api_key = get_secret(LASTFM_API_KEY_KEY);
-        let api_secret = get_secret(LASTFM_API_SECRET_KEY);
+        let api_key = get_secret(LASTFM_API_KEY);
+        let api_secret = get_secret(LASTFM_API_SECRET);
         let session = inner.state.read().await.scrobble.session_token.clone();
         if let (Some(api_key), Some(api_secret)) = (api_key, api_secret) {
             let mut lastfm = inner.lastfm.lock().await;
@@ -2734,7 +2733,7 @@ impl Lastfm {
             .scrobble
             .api_key
             .clone()
-            .or_else(|| get_secret(LASTFM_API_KEY_KEY));
+            .or_else(|| get_secret(LASTFM_API_KEY));
         let session_token = state.scrobble.session_token.clone();
         drop(state);
         let ready = lastfm.is_ready().await;
@@ -2749,8 +2748,8 @@ impl Lastfm {
     pub async fn clear(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let mut lastfm = inner.lastfm.lock().await;
         lastfm.clear_session().await;
-        delete_secret(LASTFM_API_KEY_KEY);
-        delete_secret(LASTFM_API_SECRET_KEY);
+        delete_secret(LASTFM_API_KEY);
+        delete_secret(LASTFM_API_SECRET);
         let mut state = inner.state.write().await;
         state.scrobble.enabled = false;
         state.scrobble.api_key = None;
@@ -3202,19 +3201,16 @@ impl LibraryHandler {
 
         let data_dir = inner.config.data_dir.clone();
         let cache_dir = inner.config.cache_dir.clone();
-        let inner_config_covers_provider = inner.effective_cover_provider().await;
+        let covers_provider = inner.effective_cover_provider().await;
         let lyrics_manager = inner.lyrics_manager().await;
         let progress = inner.sync_progress.clone();
         let event_tx = inner.event_tx.clone();
         tokio::spawn(async move {
             let progress_inner = progress.clone();
             let result = tokio::task::spawn_blocking(move || match kind {
-                SyncKind::Covers => run_covers_sync(
-                    data_dir,
-                    cache_dir,
-                    inner_config_covers_provider,
-                    &progress_inner,
-                ),
+                SyncKind::Covers => {
+                    run_covers_sync(data_dir, cache_dir, covers_provider, &progress_inner)
+                }
                 SyncKind::Lyrics => run_lyrics_sync(data_dir, lyrics_manager, &progress_inner),
                 SyncKind::Metadata => {
                     run_metadata_sync(data_dir, cache_dir, only_path, &progress_inner)
@@ -3673,7 +3669,7 @@ pub struct Daemon {
 /// Returns `true` for requests that only read state and never mutate it, so
 /// they can share a read lock and run concurrently with each other instead of
 /// being serialized behind slow mutating commands.
-fn request_is_read_only(req: &DaemonReq) -> bool {
+fn is_read_only(req: &DaemonReq) -> bool {
     matches!(
         req,
         DaemonReq::GetStatus
@@ -3763,7 +3759,7 @@ fn request_is_playback(req: &DaemonReq) -> bool {
 /// Spotify resolve, YouTube search/download). They serialize on `slow_lock`
 /// instead of `cmd_lock.write()` so fast reads (`GetStatus`/`Ping`) never
 /// get stuck behind a multi-minute network stall.
-fn request_is_slow_network(req: &DaemonReq) -> bool {
+fn is_slow_network(req: &DaemonReq) -> bool {
     matches!(
         req,
         DaemonReq::SpotifySync
@@ -3931,7 +3927,7 @@ impl Daemon {
                         // "All the user has to do is run gtm": try to launch the
                         // PulseAudio server before giving up, so no manual
                         // `pulseaudio --start` is required.
-                        ensure_termux_pulseaudio();
+                        ensure_termux_pulse();
                         match PulseAudioMixer::new() {
                             Ok(m) => Ok(Box::new(m)),
                             Err(retry) => Err(CoreError::Daemon(format!(
@@ -4413,13 +4409,13 @@ impl Daemon {
         // job either. Network-bound commands (Spotify sync/resolve, YouTube
         // search/download) run on their own serialized lock: they can block a
         // caller for many seconds, but never `GetStatus`/`Ping`.
-        let res = if request_is_read_only(&req) {
+        let res = if is_read_only(&req) {
             let _guard = inner.cmd_lock.read().await;
             Self::handle_request(&inner, &req, client_id, authenticated).await
         } else if request_is_playback(&req) {
             let _guard = inner.play_lock.write().await;
             Self::handle_request(&inner, &req, client_id, authenticated).await
-        } else if request_is_slow_network(&req) {
+        } else if is_slow_network(&req) {
             let _guard = inner.slow_lock.lock().await;
             Self::handle_request(&inner, &req, client_id, authenticated).await
         } else {
@@ -4584,7 +4580,7 @@ impl Daemon {
                                 file_path: progress.file_path,
                                 downloaded_bytes: progress.downloaded_bytes,
                                 total_bytes: progress.total_bytes,
-                                rate_bytes_per_sec: progress.rate_bytes_per_sec,
+                                rate_bps: progress.rate_bps,
                                 eta_secs: progress.eta_secs,
                             })
                         }
@@ -4664,7 +4660,7 @@ impl Daemon {
                 yt.set_js_runtime(js_runtime.clone());
                 yt.set_download_dir(download_dir.clone());
                 if let Some(mc) = max_concurrent {
-                    yt.set_max_concurrent_downloads(*mc as usize);
+                    yt.set_max_downloads(*mc as usize);
                 }
                 drop(yt);
                 Self::save_state(inner);
@@ -5180,7 +5176,7 @@ impl Daemon {
         };
         let path = path.to_path_buf();
         let path_for_blocking = path.clone();
-        tokio::task::spawn_blocking(move || resolve_track_meta_sync(&ctx, &path_for_blocking, dur))
+        tokio::task::spawn_blocking(move || resolve_meta_sync(&ctx, &path_for_blocking, dur))
             .await
             .unwrap_or_else(|_| {
                 let stem = path
@@ -5471,7 +5467,7 @@ impl Daemon {
     // ─── Spotify ───
 
     #[cfg(feature = "youtube")]
-    async fn download_audio_to_cache(
+    async fn download_to_cache(
         cache_dir: &Path,
         prefix: &str,
         url: &str,
@@ -5480,7 +5476,7 @@ impl Daemon {
         let max_retries = 3u32;
         let mut last_err = String::new();
         for attempt in 1..=max_retries {
-            match Self::try_download_audio_to_cache(cache_dir, prefix, url, auth.clone()).await {
+            match Self::try_cache_download(cache_dir, prefix, url, auth.clone()).await {
                 Ok(path) => return Ok(path),
                 Err(e) => {
                     last_err = e;
@@ -5494,7 +5490,7 @@ impl Daemon {
     }
 
     #[cfg(feature = "youtube")]
-    async fn try_download_audio_to_cache(
+    async fn try_cache_download(
         cache_dir: &Path,
         prefix: &str,
         url: &str,
@@ -5525,7 +5521,7 @@ struct MetaCtx {
 
 /// Blocking metadata resolution for a local file: SQLite library lookup
 /// followed by a lofty tag read, then a filename-stem fallback.
-fn resolve_track_meta_sync(ctx: &MetaCtx, path: &std::path::Path, dur: f64) -> TrackInfo {
+fn resolve_meta_sync(ctx: &MetaCtx, path: &std::path::Path, dur: f64) -> TrackInfo {
     let path = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let path_str = path.to_string_lossy().into_owned();
     let stem = path

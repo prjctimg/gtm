@@ -114,14 +114,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_metadata_to_write_default() {
+    fn meta_write_default() {
         let meta = MetadataToWrite::default();
         assert!(meta.title.is_empty());
         assert!(meta.year.is_none());
     }
 
     #[test]
-    fn test_writable_formats_supported() {
+    fn formats_writable() {
         for ext in ["mp3", "flac", "ogg", "m4a", "mp4", "wav", "aiff"] {
             assert!(is_writable_ext(ext), "{ext} should support tag writes");
         }
@@ -129,7 +129,7 @@ mod tests {
     }
 
     #[test]
-    fn test_roundtrip_write_and_read() {
+    fn write_read_roundtrip() {
         if Command::new("ffmpeg").arg("-version").output().is_err() {
             return;
         }

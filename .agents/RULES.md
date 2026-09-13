@@ -2,6 +2,7 @@
 
 - Never inline-import symbols with `crate::my_crate::SomeSymbol` paths inside expressions or function bodies; that is a code smell. Always resolve symbols via `use` statements at the top of the module.
 - Avoid verbose or long variable and function names; rely on language features such as type inference, iterators, pattern matching, and RAII to keep names terse.
+- Identifiers may have at most three underscore-separated segments (hard limit, e.g. `resolve_track_meta`); prefer composing types/structs over extending a name. External crate and standard library symbols are exempt.
 
 # Rules
 

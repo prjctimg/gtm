@@ -45,7 +45,7 @@ pub fn list_custom_stations() -> Result<Vec<CustomRadioStation>, String> {
 }
 
 /// The custom station at 1-based `index`, if any.
-pub fn custom_station_by_index(index: usize) -> Result<Option<CustomRadioStation>, String> {
+pub fn station_by_index(index: usize) -> Result<Option<CustomRadioStation>, String> {
     if index == 0 {
         return Ok(None);
     }
@@ -94,7 +94,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_custom_id_handles_index() {
+    fn custom_id_index() {
         assert_eq!(parse_custom_id("custom:3"), Some(3));
         assert_eq!(parse_custom_id("custom:0"), Some(0));
         assert_eq!(parse_custom_id("custom:"), None);
@@ -103,7 +103,7 @@ mod tests {
     }
 
     #[test]
-    fn store_round_trips_via_toml() {
+    fn store_toml_roundtrip() {
         let store = Store {
             station: vec![
                 CustomRadioStation {
@@ -123,7 +123,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_store_round_trips() {
+    fn store_empty_roundtrip() {
         let s = toml::to_string(&Store::default()).unwrap();
         let back: Store = toml::from_str(&s).unwrap();
         assert!(back.station.is_empty());

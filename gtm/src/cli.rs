@@ -16,7 +16,7 @@ use gtm_core::ipc::MetadataPatch;
 use gtm_core::playlist::PlaylistFormatKind;
 use gtm_core::resolve_command_socket;
 use gtm_core::secret::{
-    LASTFM_API_KEY_KEY, LASTFM_API_SECRET_KEY, SPOTIFY_CLIENT_ID_KEY, get_secret, set_secret,
+    LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, get_secret, set_secret,
 };
 use gtm_core::spotify::SpotifyStatus;
 use gtm_core::subsonic::SubsonicStatus;
@@ -26,7 +26,7 @@ use tokio::io::AsyncBufReadExt;
 
 use crate::app::{Prefs, ensure_prefs_file};
 use crate::footer::format_uptime;
-use crate::oauth::{capture_lastfm_token_loopback, lastfm_callback_port, mask_credential};
+use crate::oauth::{capture_lastfm_token, lastfm_callback_port, mask_credential};
 use crate::ui::run_tui;
 
 /// Parse a CLI `--format` value into a [`PlaylistFormatKind`].
@@ -437,7 +437,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 }
             }
         } else {
-            if let Err(e) = open_config_in_editor() {
+            if let Err(e) = open_config() {
                 eprintln!("error: {e}");
                 std::process::exit(1);
             }
@@ -1416,7 +1416,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
     }
 }
 
-fn open_config_in_editor() -> Result<(), String> {
+fn open_config() -> Result<(), String> {
     let path = ensure_prefs_file();
     let editor = pick_editor().ok_or_else(|| {
         format!(
@@ -1633,7 +1633,7 @@ async fn spotify_login(
     // locked keychain still lets the user log in).
     let client_id = match client_id {
         Some(c) => c,
-        None => match get_secret(SPOTIFY_CLIENT_ID_KEY) {
+        None => match get_secret(SPOTIFY_CLIENT_ID) {
             Some(c) => c,
             None => masked_prompt("Spotify Client ID: ")?,
         },
@@ -1641,7 +1641,7 @@ async fn spotify_login(
     if client_id.trim().is_empty() {
         return Err("no Spotify client id provided".into());
     }
-    set_secret(SPOTIFY_CLIENT_ID_KEY, &client_id);
+    set_secret(SPOTIFY_CLIENT_ID, &client_id);
 
     let url = client
         .spotify()
@@ -1676,8 +1676,8 @@ async fn setup_lastfm(client: &DaemonClient) -> Result<String, String> {
 
     println!("Create an API application (API key, secret, and callback URL) at:");
     println!("  https://www.last.fm/api/account/create");
-    let api_key = value_or_default("Last.fm API key", get_secret(LASTFM_API_KEY_KEY))?;
-    let api_secret = masked_or_default("Last.fm API secret", get_secret(LASTFM_API_SECRET_KEY))?;
+    let api_key = value_or_default("Last.fm API key", get_secret(LASTFM_API_KEY))?;
+    let api_secret = masked_or_default("Last.fm API secret", get_secret(LASTFM_API_SECRET))?;
     if api_key.trim().is_empty() || api_secret.trim().is_empty() {
         return Err("Last.fm API key and secret are required".into());
     }
@@ -1749,7 +1749,7 @@ async fn capture_callback_token() -> Result<String, String> {
     let mut stdin_line = String::new();
     let mut stdin_reader = tokio::io::BufReader::new(tokio::io::stdin());
     tokio::select! {
-        token = capture_lastfm_token_loopback() => token,
+        token = capture_lastfm_token() => token,
         pasted = stdin_reader.read_line(&mut stdin_line) => {
             let _ = pasted;
             Ok(stdin_line.trim().to_string())

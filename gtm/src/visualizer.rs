@@ -309,7 +309,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn preset_cycles_through_all_and_wraps() {
+    fn preset_cycles_wrap() {
         let mut p = VisualizerPreset::default();
         assert_eq!(p, VisualizerPreset::Braille);
         let names: Vec<&str> = VisualizerPreset::all().iter().map(|x| x.name()).collect();
@@ -324,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn preset_serde_round_trip() {
+    fn preset_roundtrip() {
         let p = serde_json::from_str::<VisualizerPreset>("\"spectrum\"").unwrap();
         assert_eq!(p, VisualizerPreset::Spectrum);
         assert_eq!(

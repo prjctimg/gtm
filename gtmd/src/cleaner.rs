@@ -109,7 +109,7 @@ pub fn clean_youtube_title(title: &str) -> (Option<String>, String) {
     }
 
     // Strip year: (2024), [2024]
-    result = strip_bracket_content_matching(&result, |s| {
+    result = strip_bracket_match(&result, |s| {
         s.chars().all(|c| c.is_ascii_digit()) && s.len() == 4
     });
 
@@ -194,12 +194,12 @@ pub fn clean_youtube_title(title: &str) -> (Option<String>, String) {
 }
 
 /// Strip bracket content `(...)` or `[...]` where the inner content matches a predicate.
-fn strip_bracket_content_matching(s: &str, pred: impl Fn(&str) -> bool) -> String {
+fn strip_bracket_match(s: &str, pred: impl Fn(&str) -> bool) -> String {
     let mut result = s.to_string();
     loop {
         let mut found = false;
         // Find last matched bracket pair
-        if let Some((_open_ch, _close_ch, open_pos, close_pos)) = find_last_bracket_pair(&result) {
+        if let Some((_open_ch, _close_ch, open_pos, close_pos)) = last_bracket_pair(&result) {
             let inner = &result[open_pos + 1..close_pos];
             if pred(inner) {
                 // Remove the bracket and its content, plus any trailing space
@@ -220,7 +220,7 @@ fn strip_bracket_content_matching(s: &str, pred: impl Fn(&str) -> bool) -> Strin
 
 /// Strip a suffix parenthesized group matching a predicate.
 fn strip_suffix_parenthesized(s: &str, pred: impl Fn(&str) -> bool) -> String {
-    if let Some((_open_ch, _close_ch, open_pos, close_pos)) = find_last_bracket_pair(s)
+    if let Some((_open_ch, _close_ch, open_pos, close_pos)) = last_bracket_pair(s)
         && close_pos == s.len() - 1
     {
         let inner = &s[open_pos + 1..close_pos];
@@ -237,7 +237,7 @@ fn strip_suffix_parenthesized(s: &str, pred: impl Fn(&str) -> bool) -> String {
 }
 
 /// Find the last matched bracket pair in a string.
-fn find_last_bracket_pair(s: &str) -> Option<(char, char, usize, usize)> {
+fn last_bracket_pair(s: &str) -> Option<(char, char, usize, usize)> {
     let bytes = s.as_bytes();
     let mut last = None;
     for (i, &b) in bytes.iter().enumerate() {
@@ -353,26 +353,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_strip_official_audio() {
+    fn strip_official() {
         let (artist, title) = clean_youtube_title("Drake - God's Plan (Official Audio)");
         assert_eq!(artist.as_deref(), Some("Drake"));
         assert_eq!(title, "God's Plan");
     }
 
     #[test]
-    fn test_strip_multiple_tags() {
+    fn strip_multi_tags() {
         let (_, title) = clean_youtube_title("Song Title (Official Video) [HD] (2024)");
         assert_eq!(title, "Song Title");
     }
 
     #[test]
-    fn test_strip_topic_prefix() {
+    fn strip_topic() {
         let (_, title) = clean_youtube_title("Pink Floyd - Topic - Comfortably Numb");
         assert_eq!(title, "Comfortably Numb");
     }
 
     #[test]
-    fn test_strip_feature_tag() {
+    fn strip_feature_tag() {
         let (_, title) = clean_youtube_title("Song Title | feat. Someone");
         assert_eq!(title, "Song Title");
     }
@@ -383,14 +383,14 @@ mod tests {
     }
 
     #[test]
-    fn test_passthrough_clean_title() {
+    fn clean_title_pass() {
         let (artist, title) = clean_youtube_title("Some Clean Song Title");
         assert!(artist.is_none());
         assert_eq!(title, "Some Clean Song Title");
     }
 
     #[test]
-    fn test_normalize_filename_stem() {
+    fn normalize_stem() {
         assert_eq!(
             normalize_filename_stem("Bazzi_-_Beautiful_feat._Camila_Official_Audio"),
             "Bazzi - Beautiful feat. Camila Official Audio"
@@ -400,14 +400,14 @@ mod tests {
     }
 
     #[test]
-    fn test_clean_filename_stem() {
+    fn clean_stem() {
         let (artist, title) = clean_filename_stem("Bazzi_-_Beautiful_feat._Camila_Official_Audio");
         assert_eq!(artist.as_deref(), Some("Bazzi"));
         assert_eq!(title, "Beautiful feat. Camila");
     }
 
     #[test]
-    fn test_title_is_unreliable() {
+    fn title_unreliable() {
         assert!(title_is_unreliable(
             "Hello",
             "Hello",
@@ -431,7 +431,7 @@ mod tests {
     }
 
     #[test]
-    fn test_tags_need_enrichment() {
+    fn tags_need_enrich() {
         // Good title/artist/album but missing genre -> enrich.
         assert!(tags_need_enrichment(
             "Song",
@@ -466,7 +466,7 @@ mod tests {
     }
 
     #[test]
-    fn test_is_filename_like() {
+    fn filename_like_matches() {
         assert!(is_filename_like(
             "Bazzi_-_Beautiful_feat._Camila_Official_Audio",
             "Bazzi_-_Beautiful_feat._Camila__Audio"

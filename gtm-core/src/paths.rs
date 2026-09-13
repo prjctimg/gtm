@@ -123,7 +123,7 @@ pub fn termux_music_dirs() -> Vec<PathBuf> {
 /// server is kept alive with `--exit-idle-time=-1` so it does not die between
 /// command invocations. Failures are swallowed (the daemon reports the real
 /// init error if audio still can't start).
-pub fn ensure_termux_pulseaudio() {
+pub fn ensure_termux_pulse() {
     if !is_termux() {
         return;
     }

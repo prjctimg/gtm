@@ -12,8 +12,7 @@ use crate::app::{
     RadioBrowseKind, TrackInfoKind, lyrics_are_synced, no_image_protocol, setup_selection,
 };
 use crate::footer::{
-    draw as footer_draw, format_duration, format_uptime, read_process_memory_kb,
-    render as footer_render,
+    draw as footer_draw, format_duration, format_uptime, read_proc_mem, render as footer_render,
 };
 use crate::mouse::MouseZone;
 use crate::picker::{Picker, PickerId, PickerSource};
@@ -30,7 +29,7 @@ use crossterm::terminal::{
 use gtm_core::daemon::ensure_daemon_running;
 use gtm_core::global::{EqPreset, PlaybackStatus};
 use gtm_core::ipc::HealthStatus;
-use gtm_core::log::redirect_stderr_to_log;
+use gtm_core::log::redirect_stderr;
 use gtm_core::radio::RadioStation;
 use gtm_core::resolve_command_socket;
 use gtm_core::track::TrackInfo;
@@ -512,14 +511,14 @@ impl Render {
         widget: W,
         key: &'static str,
         app: &mut App,
-        animate_on_track_change: bool,
+        on_track_change: bool,
     ) {
         // Dust/thanos-style evolve-into is reserved for genuine auto-advances;
         // a manual Next/Prev shouldn't dissolve the pane. (First frame still
         // evolves so the startup animation is preserved.)
         let start = app.track_anim_trigger
             && app.auto_track_advance
-            && (animate_on_track_change || app.frame_count == 0);
+            && (on_track_change || app.frame_count == 0);
         if !start && !app.anim_fx.is_running() {
             f.render_widget(widget, area);
             return;
@@ -630,7 +629,7 @@ impl Render {
         // Visualizer needs at least 80 columns for useful display
         let show_vis = app.visualizer.is_enabled() && app.terminal_cols >= 80;
         // Lyrics in third pane only when >= 100 columns; otherwise show in results pane
-        let lyrics_in_third_pane = app.lyrics.show && app.terminal_cols >= 100;
+        let lyrics_third_pane = app.lyrics.show && app.terminal_cols >= 100;
         let np_height: u16 = if is_narrow {
             5
         } else if is_small_height {
@@ -647,9 +646,9 @@ impl Render {
             28u16.min(area.width.saturating_sub(2))
         };
 
-        let lyrics_takes_full_height = lyrics_in_third_pane;
+        let lyrics_full_height = lyrics_third_pane;
 
-        let (left_area, lyrics_area) = if lyrics_takes_full_height {
+        let (left_area, lyrics_area) = if lyrics_full_height {
             let lyrics_w = area.width / 3;
             let left_w = area.width - lyrics_w;
             let h = Layout::default()
@@ -1022,7 +1021,7 @@ impl Render {
 
         let track_info_h: u16 = if app.track_popup_visible && !is_small_height {
             let avail_h = left_inner.height.saturating_sub(1);
-            let need = track_info_block_height();
+            let need = info_block_h();
             // Reserve at least 4 rows for the category list so "Spotify" never gets clipped.
             let max_card = avail_h.saturating_sub(4);
             need.min(max_card.max(6))
@@ -1042,8 +1041,8 @@ impl Render {
             ])
             .split(left_inner);
         let left_list_area = left_vchunks[0];
-        let left_track_info_sep_area = left_vchunks[1];
-        let left_track_info_area = left_vchunks[2];
+        let info_sep_area = left_vchunks[1];
+        let left_info_area = left_vchunks[2];
 
         f.render_widget(List::new(left_items), left_list_area);
 
@@ -1087,7 +1086,7 @@ impl Render {
 
             let pane_w = panes[1].width as usize;
             let mut lines = vec![Line::from("")];
-            const ACTION_ROWS: usize = App::SPOTIFY_PLAYLIST_ACTION_ROWS;
+            const ACTION_ROWS: usize = App::SPOTIFY_PLAYLIST_ROWS;
             // Rows 0/1: virtual actions (Play All / Shuffle), then the tracks.
             let action_help = [("▶  Play All", "  Enter"), ("🔀  Shuffle", "  Enter / S")];
             for (ai, (action, key_hint)) in action_help.iter().enumerate() {
@@ -1465,25 +1464,25 @@ impl Render {
         };
 
         if app.track_popup_visible
-            && left_track_info_area.height >= track_info_block_height()
-            && (left_track_info_sep_area.height > 0 || left_track_info_area.height > 0)
+            && left_info_area.height >= info_block_h()
+            && (info_sep_area.height > 0 || left_info_area.height > 0)
         {
             // Narrow + lyrics: the middle pane is given over to lyrics, so the
             // info block is repurposed to show the currently-highlighted list
             // contents (the selected row and its neighbours) instead of the
             // now-playing track card.
             if is_narrow && app.lyrics.show {
-                Render::highlighted_list_in_info(f, left_track_info_area, app);
+                Render::list_in_info(f, left_info_area, app);
             } else {
-                Render::track_info_in_pane(f, left_track_info_sep_area, left_track_info_area, app);
+                Render::info_in_pane(f, info_sep_area, left_info_area, app);
             }
         }
 
         // On narrow/medium screens lyrics take over the results pane entirely,
         // so skip rendering the list underneath and registering hit zones for
         // rows that are not visible.
-        let lyrics_in_results_pane = app.lyrics.show && lyrics_area.is_none();
-        if !lyrics_in_results_pane {
+        let lyrics_results_pane = app.lyrics.show && lyrics_area.is_none();
+        if !lyrics_results_pane {
             let right_para = Paragraph::new(right_lines);
             let header_label = if let Some(detail) = app.browse_detail.as_deref() {
                 format!("▶ {detail}")
@@ -1535,7 +1534,7 @@ impl Render {
 
         if let Some(lyrics_area) = lyrics_area {
             Render::lyrics_pane(f, lyrics_area, app);
-        } else if app.lyrics.show && !lyrics_in_third_pane {
+        } else if app.lyrics.show && !lyrics_third_pane {
             // Medium-width screens (60-99 cols): show lyrics in the results pane
             // instead of a separate third pane.
             let base = panes
@@ -1798,7 +1797,7 @@ impl Render {
     /// neighbours in the info block, so the buried middle pane's contents stay
     /// usable while lyrics take the main area. This replaces the now-playing
     /// track-info card ("l" swaps it back when lyrics are dismissed).
-    fn highlighted_list_in_info(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn list_in_info(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let rows: Vec<&TrackInfo> = app.filtered_tracks();
         let total = rows.len();
         let sel = app.list_pos().min(total.saturating_sub(1));
@@ -1860,7 +1859,7 @@ impl Render {
         f.render_widget(para, area);
     }
 
-    fn track_info_in_pane(f: &mut ratatui::Frame, sep_area: Rect, area: Rect, app: &mut App) {
+    fn info_in_pane(f: &mut ratatui::Frame, sep_area: Rect, area: Rect, app: &mut App) {
         let fields = match track_info_fields(app) {
             Some(fields) => fields,
             None => return,
@@ -2081,7 +2080,7 @@ pub fn run_tui(
         .map(PathBuf::from)
         .unwrap_or_else(resolve_command_socket);
 
-    let _original_stderr = redirect_stderr_to_log();
+    let _original_stderr = redirect_stderr();
 
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(async {
@@ -2580,7 +2579,7 @@ impl Pickers {
     fn render_picker(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         app.update_picker_preview();
         app.update_artist_cover();
-        app.update_spotify_search_preview();
+        app.update_spot_preview();
         let Some(top) = app.pickers.top() else {
             return;
         };
@@ -2647,9 +2646,7 @@ impl Pickers {
             PickerId::ThemePicker => Self::render_theme(f, picker_area, app),
             PickerId::Help => Self::render_help(f, picker_area, app),
             PickerId::PlaylistSelect => Self::render_playlist_select(f, picker_area, app),
-            PickerId::PlaylistTrackSelect => {
-                Self::render_playlist_track_select(f, picker_area, app)
-            }
+            PickerId::PlaylistTrackSelect => Self::render_track_select(f, picker_area, app),
             PickerId::EditMetadata => Self::render_edit_metadata(f, picker_area, app),
             PickerId::Crossfade => Self::render_crossfade(f, picker_area, app),
             PickerId::VisualizerPreset => Self::render_visualizer_preset(f, picker_area, app),
@@ -2662,9 +2659,7 @@ impl Pickers {
             }
             PickerId::SubsonicSearch => Self::render_subsonic_search(f, picker_area, app),
             PickerId::SubsonicAlbums => Self::render_subsonic_albums(f, picker_area, app),
-            PickerId::SubsonicAlbumTracks => {
-                Self::render_subsonic_album_tracks(f, picker_area, app)
-            }
+            PickerId::SubsonicAlbumTracks => Self::render_album_tracks(f, picker_area, app),
             PickerId::SubsonicSetup => Self::render_subsonic_setup(f, picker_area, app),
             PickerId::PodcastFeeds => Self::render_podcast_feeds(f, picker_area, app),
             PickerId::PodcastEpisodes => Self::render_podcast_episodes(f, picker_area, app),
@@ -2673,10 +2668,8 @@ impl Pickers {
             PickerId::RadioSearch => Self::render_radio_search(f, picker_area, app),
             PickerId::RadioTop => Self::render_radio_top(f, picker_area, app),
             PickerId::RadioBrowse => Self::render_radio_browse(f, picker_area, app),
-            PickerId::RadioBrowseList => Self::render_radio_browse_list(f, picker_area, app),
-            PickerId::RadioBrowseStations => {
-                Self::render_radio_browse_stations(f, picker_area, app)
-            }
+            PickerId::RadioBrowseList => Self::render_browse_list(f, picker_area, app),
+            PickerId::RadioBrowseStations => Self::render_browse_stations(f, picker_area, app),
             PickerId::Setup => Self::render_setup(f, picker_area, app),
             PickerId::LastfmAuth => Self::render_lastfm_setup(f, picker_area, app),
             PickerId::SpotifyLink => {
@@ -3176,17 +3169,12 @@ impl Pickers {
                 width: inner.width,
                 height: preview_h,
             };
-            Self::render_queue_upnext_preview(f, preview_area, app, app.queue.cursor + 1);
+            Self::render_upnext_preview(f, preview_area, app, app.queue.cursor + 1);
         }
     }
 
-    fn render_queue_upnext_preview(
-        f: &mut ratatui::Frame,
-        area: Rect,
-        app: &mut App,
-        next_idx: usize,
-    ) {
-        app.update_queue_preview_cover();
+    fn render_upnext_preview(f: &mut ratatui::Frame, area: Rect, app: &mut App, next_idx: usize) {
+        app.update_upnext_cover();
         // Use the same transparent/filled background as the picker panel so the
         // "Up Next" strip never shows a mismatched solid background over the
         // rest of the (possibly transparent) queue picker.
@@ -3654,7 +3642,7 @@ impl Pickers {
         );
     }
 
-    fn render_subsonic_album_tracks(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_album_tracks(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let mut rows = Vec::new();
         for t in &app.subsonic.album_tracks {
             rows.push(format!(
@@ -4079,7 +4067,7 @@ impl Pickers {
         );
     }
 
-    fn render_radio_browse_list(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_browse_list(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let kind = app.radio.browse_kind;
         let mut rows = Vec::new();
         match kind {
@@ -4126,7 +4114,7 @@ impl Pickers {
         );
     }
 
-    fn render_radio_browse_stations(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    fn render_browse_stations(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let mut rows = Vec::new();
         for s in &app.radio.browse_stations {
             rows.push(Self::radio_row(s));
@@ -4632,15 +4620,15 @@ impl Pickers {
 
 // ─── Footer ───
 
-const TRACK_INFO_CARD_H: u16 = 16;
+const INFO_CARD_H: u16 = 16;
 
-const TRACK_INFO_TEXT_H: u16 = 6;
+const INFO_TEXT_H: u16 = 6;
 
-fn track_info_block_height() -> u16 {
+fn info_block_h() -> u16 {
     if no_image_protocol() {
-        TRACK_INFO_TEXT_H
+        INFO_TEXT_H
     } else {
-        TRACK_INFO_CARD_H
+        INFO_CARD_H
     }
 }
 
@@ -4725,7 +4713,7 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
     match app.track_info_kind() {
         TrackInfoKind::Track => {
             let track = app
-                .track_popup_track_id
+                .popup_track_id
                 .and_then(|id| app.tracks_cache.iter().find(|t| t.id == id))?;
             let title = if track.title.is_empty() {
                 std::path::Path::new(&track.path)
@@ -5439,7 +5427,7 @@ impl Pickers {
         let cpus = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        let mem_kb = read_process_memory_kb();
+        let mem_kb = read_proc_mem();
         let mem_str = mem_kb
             .map(|kb| {
                 if kb > 1024 * 1024 {
@@ -7152,8 +7140,8 @@ impl Pickers {
     /// Multi-select track picker shown right after a playlist is created:
     /// every track is listed and `Space` toggles a persistent highlight, with
     /// `Ctrl+Enter` committing the selection. Highlights survive scrolling.
-    fn render_playlist_track_select(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let selected = app.selected_playlist_track_ids.len();
+    fn render_track_select(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let selected = app.selected_track_ids.len();
         let _hint = format!(
             "Space/Tab: toggle   \u{2191}/\u{2193}: navigate   Ctrl+Enter: add {} to playlist   Esc: cancel",
             if selected > 0 {
@@ -7193,7 +7181,7 @@ impl Pickers {
         for i in scroll_start..scroll_end {
             let Some(track) = tracks.get(i) else { continue };
             let is_sel = i == sel;
-            let is_picked = app.selected_playlist_track_ids.contains(&track.id);
+            let is_picked = app.selected_track_ids.contains(&track.id);
             let mark = if is_picked { " \u{2713} " } else { "   " };
             let label = if track.title.is_empty() {
                 std::path::Path::new(&track.path)
@@ -7329,7 +7317,7 @@ mod tests {
     use super::scroll_text;
 
     #[test]
-    fn scroll_text_handles_multibyte_utf8() {
+    fn scroll_multibyte() {
         let text = "Artist \u{2014} T\u{e9}t\u{e9} Song Title That Is Quite Long";
         for frame in 0..600 {
             for width in [8usize, 16, 24] {
@@ -7342,12 +7330,12 @@ mod tests {
     }
 
     #[test]
-    fn scroll_text_pads_when_fits() {
+    fn scroll_pads_fits() {
         assert_eq!(scroll_text("ab", 4, 0, true), "ab  ");
     }
 
     #[test]
-    fn scroll_text_empty_never_panics() {
+    fn scroll_empty_panics() {
         let out = scroll_text("", 0, 1, true);
         assert_eq!(out, "");
     }

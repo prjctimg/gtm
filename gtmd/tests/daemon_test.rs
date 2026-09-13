@@ -217,7 +217,7 @@ async fn test_queue_list() {
 }
 
 #[tokio::test]
-async fn test_queue_add_and_list() {
+async fn queue_add_list() {
     let (handle, config) = daemon_handle().await;
     let (mut reader, mut writer) = connect(&config.socket_path).await;
 
@@ -260,7 +260,7 @@ async fn test_queue_add_and_list() {
 }
 
 #[tokio::test]
-async fn test_queue_add_multiple() {
+async fn queue_add_multi() {
     let (handle, config) = daemon_handle().await;
     let (mut reader, mut writer) = connect(&config.socket_path).await;
 
@@ -445,7 +445,7 @@ fn create_test_wav(path: &std::path::Path, duration_secs: f64) {
 /// Deleting the currently-playing track must stop playback and drop it from
 /// the queue so neither the row nor the audio survives (pause-then-delete).
 #[tokio::test]
-async fn test_delete_playing_track() {
+async fn delete_playing_track() {
     let (handle, config) = daemon_handle().await;
 
     let audio_dir = config.data_dir.join("audio");
@@ -542,7 +542,7 @@ async fn test_delete_playing_track() {
 }
 
 #[tokio::test]
-async fn test_lastfm_set_config_and_status() {
+async fn lastfm_setup() {
     let (handle, config) = daemon_handle().await;
     let (mut reader, mut writer) = connect(&config.socket_path).await;
 
@@ -590,7 +590,7 @@ async fn test_lastfm_set_config_and_status() {
 }
 
 #[tokio::test]
-async fn test_spotify_oauth_start_returns_authorize_url() {
+async fn oauth_start_url() {
     let (handle, config) = daemon_handle().await;
     let (mut reader, mut writer) = connect(&config.socket_path).await;
 

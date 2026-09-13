@@ -57,7 +57,7 @@ pub fn log_file_path() -> std::path::PathBuf {
     log_path().clone()
 }
 
-pub fn redirect_stderr_to_log() -> std::os::unix::io::RawFd {
+pub fn redirect_stderr() -> std::os::unix::io::RawFd {
     let path = log_path();
     let file = match OpenOptions::new().create(true).append(true).open(path) {
         Ok(f) => f,

@@ -14,15 +14,15 @@ use std::path::PathBuf;
 /// Keychain service name under which all gtm secrets are stored.
 pub const SERVICE: &str = "gtm";
 /// Keychain/username for the Spotify app client id.
-pub const SPOTIFY_CLIENT_ID_KEY: &str = "spotify_client_id";
+pub const SPOTIFY_CLIENT_ID: &str = "spotify_client_id";
 /// Keychain/username for the Spotify OAuth token.
 pub const SPOTIFY_TOKEN_KEY: &str = "spotify_token";
 /// Keychain/username for the Subsonic (Navidrome) server credentials.
 pub const SUBSONIC_KEY: &str = "subsonic_credentials";
 /// Keychain/username for the Last.fm API key.
-pub const LASTFM_API_KEY_KEY: &str = "lastfm_api_key";
+pub const LASTFM_API_KEY: &str = "lastfm_api_key";
 /// Keychain/username for the Last.fm API secret.
-pub const LASTFM_API_SECRET_KEY: &str = "lastfm_api_secret";
+pub const LASTFM_API_SECRET: &str = "lastfm_api_secret";
 
 fn fallback_dir() -> PathBuf {
     let base = dirs::config_dir().unwrap_or_else(|| {

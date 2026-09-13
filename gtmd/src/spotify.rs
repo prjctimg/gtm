@@ -17,7 +17,7 @@ use rspotify::{CallbackError, Config, Credentials, OAuth, TokenCallback};
 use tracing::{debug, info, warn};
 
 use gtm_core::secret::{
-    SPOTIFY_CLIENT_ID_KEY, SPOTIFY_TOKEN_KEY, delete_secret, get_secret, set_secret,
+    SPOTIFY_CLIENT_ID, SPOTIFY_TOKEN_KEY, delete_secret, get_secret, set_secret,
 };
 use gtm_core::spotify::{LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 
@@ -109,7 +109,7 @@ impl SpotifyManager {
         }
         // Drop any keychain-stored credentials too.
         delete_secret(SPOTIFY_TOKEN_KEY);
-        delete_secret(SPOTIFY_CLIENT_ID_KEY);
+        delete_secret(SPOTIFY_CLIENT_ID);
     }
 
     /// Snapshot of the current link state for the Settings UI.
@@ -310,7 +310,7 @@ impl SpotifyManager {
 
     async fn init_client(&mut self, token: Token) -> Result<(), String> {
         let refreshable = token.refresh_token.is_some();
-        let client_id = get_secret(SPOTIFY_CLIENT_ID_KEY).unwrap_or_default();
+        let client_id = get_secret(SPOTIFY_CLIENT_ID).unwrap_or_default();
         // Fall back to librespot's public desktop client id when the user
         // linked with a plain pasted access token (which never stores a
         // client id). `Credentials::default()` is a dead end: rspotify's
@@ -549,7 +549,7 @@ mod tests {
     use super::{TOKEN_ACCESS_PERMS, parse_token};
 
     #[test]
-    fn parse_token_plain_access_token() {
+    fn token_plain() {
         let tok =
             parse_token("BQC8xYt0aBcDeFgHiJkLmNoPqRsTuVwXyZ").expect("plain token should parse");
         assert_eq!(tok.access_token, "BQC8xYt0aBcDeFgHiJkLmNoPqRsTuVwXyZ");
@@ -557,7 +557,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_token_full_json() {
+    fn token_full_json() {
         let json = r#"{"access_token":"abc","expires_in":3600,"scopes":""}"#;
         let tok = parse_token(json).expect("full token json should parse");
         assert_eq!(tok.access_token, "abc");
@@ -565,13 +565,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_token_rejects_empty() {
+    fn token_rejects_empty() {
         assert!(parse_token("").is_err());
         assert!(parse_token("   ").is_err());
     }
 
     #[test]
-    fn token_permissions_are_owner_only() {
+    fn token_owner_only() {
         assert_eq!(TOKEN_ACCESS_PERMS, 0o600);
     }
 }
