@@ -178,16 +178,17 @@ async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<(String, bool
     Ok((url, live))
 }
 
-/// Blocking decode of an HTTP stream into a decodable source. Runs on a
-/// blocking thread (network read during probe); returns the same source type
-/// the local-file and Spotify paths feed into `load_active_decoded`.
-fn decode_remote_reader(
-    url: String,
+/// Blocking HTTP open of a remote stream. Runs on a blocking thread; returns
+/// a byte transport (`IcyReader` strips Shoutcast metadata blocks and publishes
+/// `StreamTitle` into `title_slot`, `HttpReader` is the plain fallback). The
+/// real decode happens later on the mixer's decode thread for live sources or
+/// in [`decode_remote_reader`] for on-demand content.
+fn open_remote_reader(
+    url: &str,
     live: bool,
-    start_pos: f64,
     title_slot: Option<remote::IcySlot>,
-) -> AudioResult<Box<dyn rodio::Source<Item = f32> + Send>> {
-    let mut req = remote::client().get(&url);
+) -> AudioResult<Box<dyn std::io::Read + Send>> {
+    let mut req = remote::client().get(url);
     if live && title_slot.is_some() {
         req = req.header(remote::ICY_META_HEADER, "1");
     }
@@ -215,6 +216,19 @@ fn decode_remote_reader(
     } else {
         Box::new(remote::HttpReader::from_response(resp))
     };
+    Ok(reader)
+}
+
+/// Blocking decode of an HTTP stream into a decodable source. Runs on a
+/// blocking thread (network read during probe); returns the same source type
+/// the local-file and Spotify paths feed into `load_active_decoded`.
+fn decode_remote_reader(
+    url: String,
+    live: bool,
+    start_pos: f64,
+    title_slot: Option<remote::IcySlot>,
+) -> AudioResult<Box<dyn rodio::Source<Item = f32> + Send>> {
+    let reader = open_remote_reader(&url, live, title_slot)?;
     let reopen: Option<Box<dyn StreamingReopen>> = if live {
         None
     } else {
@@ -670,14 +684,29 @@ impl Cmd {
         }
         let start = start_pos.max(0.0);
         let icy_slot = inner.icy_title.clone();
-        let decoded = tokio::task::spawn_blocking(move || {
-            decode_remote_reader(url, live, start, Some(icy_slot))
-        })
-        .await
-        .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
-        .map_err(|e| CoreError::Daemon(format!("decode: {e}")))?;
-
-        let dur = {
+        let dur = if live {
+            // Live transports: hand the byte stream to the ring-buffer decode
+            // thread so network jitter is absorbed by the 6 s ring instead of
+            // stalling the audio callback and false-triggering `Finished`.
+            // `load_active_reader` leaves duration at 0.0, which also keeps
+            // the Finished stall-guard bypassed (the ring empties only on a
+            // genuine EOF).
+            let reader =
+                tokio::task::spawn_blocking(move || open_remote_reader(&url, true, Some(icy_slot)))
+                    .await
+                    .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
+                    .map_err(|e| CoreError::Daemon(format!("open stream: {e}")))?;
+            let mut mixer = inner.mixer.lock().await;
+            mixer.load_active_reader(reader, start_pos)?;
+            mixer.play()?;
+            mixer.duration()
+        } else {
+            let decoded = tokio::task::spawn_blocking(move || {
+                decode_remote_reader(url, false, start, Some(icy_slot))
+            })
+            .await
+            .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
+            .map_err(|e| CoreError::Daemon(format!("decode: {e}")))?;
             let mut mixer = inner.mixer.lock().await;
             mixer.load_active_decoded(decoded, start_pos)?;
             mixer.play()?;
@@ -1741,11 +1770,18 @@ impl Spotify {
         // without the user pasting it again.
         set_secret(SPOTIFY_CLIENT_ID, cid);
         let flow = OauthFlow::new(cid, port);
+        // Bind the loopback callback server *before* returning the URL so the
+        // browser always opens to a live listener (a previously spawned task
+        // raced the bind, hitting a dead port).
+        let listener = flow
+            .listen()
+            .await
+            .map_err(|e| CoreError::Daemon(format!("OAuth callback server: {e}")))?;
         let url = flow.authorize_url();
 
         let inner2 = Arc::clone(inner);
         let handle = tokio::spawn(async move {
-            match flow.wait_token().await {
+            match flow.wait_token(listener).await {
                 Ok(token) => {
                     let mut spotify = inner2.spotify.lock().await;
                     // No artificial timeout here: the first sync after linking
@@ -3390,6 +3426,22 @@ impl Cover {
             }
         }
 
+        // Radio stations have no album art; serve the station's own favicon
+        // (fetched once, cached under `radio:<uuid>`) so the now-playing pane
+        // shows the station logo instead of a blank tile.
+        let radio_uuid = track_path
+            .and_then(|p| p.strip_prefix("radio://"))
+            .and_then(|rest| {
+                let uuid = rest.split('/').next().unwrap_or(rest);
+                (!uuid.is_empty()).then_some(uuid)
+            });
+        if let Some(uuid) = radio_uuid
+            && let Some(bytes) = Self::radio_favicon_cover(inner, uuid).await
+        {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            return Ok(DaemonRes::CoverArt { data: Some(b64) });
+        }
+
         if !discovered_artist.is_empty() && !discovered_album.is_empty() {
             let artist = discovered_artist.clone();
             let album = discovered_album.clone();
@@ -3436,6 +3488,53 @@ impl Cover {
         }
 
         Ok(DaemonRes::CoverArt { data: None })
+    }
+
+    /// Resolve a radio station's favicon to cover-sized bytes, using the
+    /// directory's `byuuid` lookup to find the station (and thus its favicon
+    /// URL), then fetching the PNG once and caching it under `radio:<uuid>`.
+    async fn radio_favicon_cover(inner: &DaemonInner, uuid: &str) -> Option<Vec<u8>> {
+        {
+            let mut guard = inner.cover_cache().await;
+            let hit = guard
+                .as_mut()
+                .and_then(|c| c.get("radio", uuid, CoverProvider::Auto).await);
+            if let Some(cover) = hit {
+                return Some(cover.data);
+            }
+        }
+        let favicon = {
+            let radio = inner.radio.lock().await;
+            radio.by_uuid(uuid).await.map(|s| s.favicon).ok()
+        }
+        .into_iter()
+        .find(|f| !f.is_empty())?;
+        let bytes = tokio::time::timeout(Duration::from_secs(8), async {
+            let req = reqwest::Client::builder()
+                .user_agent(format!("gtm/{}", env!("CARGO_PKG_VERSION")))
+                .timeout(Duration::from_secs(8))
+                .build()
+                .ok()?;
+            req.get(&favicon)
+                .send()
+                .await
+                .ok()?
+                .bytes()
+                .await
+                .ok()
+                .map(|b| b.to_vec())
+        })
+        .await
+        .ok()?
+        .flatten()?;
+        if CoverCache::too_small(&bytes) {
+            return None;
+        }
+        let mut guard = inner.cover_cache().await;
+        if let Some(cache) = guard.as_mut() {
+            cache.put("radio", uuid, bytes.clone()).await;
+        }
+        Some(bytes)
     }
 
     pub async fn artist(inner: &DaemonInner, artist: &str) -> Result<DaemonRes, CoreError> {
@@ -5401,6 +5500,23 @@ impl Daemon {
                 Self::push_event(inner, DaemonEvent::DurationChanged { duration: dur });
             }
             AudioEvent::Finished => {
+                // A dead live stream is a stop, not a queue advance: `radio://`
+                // streams are endless, so `Finished` only fires when the server
+                // closed the connection or the ring exhausted. Auto-advancing
+                // would skip to the next queue entry when the user never asked
+                // to leave the station. Manual Next keeps working (it switches
+                // the source before any `Finished` can fire).
+                let active_is_radio = {
+                    let state = inner.state.read().await;
+                    state
+                        .current_track
+                        .as_ref()
+                        .is_some_and(|t| t.path.starts_with("radio://"))
+                };
+                if active_is_radio {
+                    Self::stop_playback(inner).await;
+                    return;
+                }
                 let was_crossfading = inner.crossfade_loaded_for.lock().await.is_some();
                 if was_crossfading {
                     // Run on a detached task to avoid blocking the poll loop on

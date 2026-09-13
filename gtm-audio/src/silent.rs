@@ -60,6 +60,16 @@ impl Mixer for NullMixer {
         Ok(())
     }
 
+    fn load_active_reader(
+        &mut self,
+        _reader: Box<dyn std::io::Read + Send>,
+        start_pos: f64,
+    ) -> AudioResult<()> {
+        *self.position.lock().unwrap() = start_pos;
+        self.playing.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+
     fn load_standby(&mut self, _path: &str) -> AudioResult<()> {
         *self.standby_loaded.lock().unwrap() = true;
         Ok(())

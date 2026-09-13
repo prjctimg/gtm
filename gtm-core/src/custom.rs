@@ -6,6 +6,11 @@ use std::path::PathBuf;
 pub struct CustomRadioStation {
     pub name: String,
     pub url: String,
+    /// Optional Radio Browser `stationuuid`, set when a directory station is
+    /// saved from the TUI. Lets the daemon re-resolve the playable URL and the
+    /// station favicon even if the custom entry lives in `radios.toml`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uuid: Option<String>,
 }
 
 /// Absolute path of the custom stations file (`radios.toml`) in the gtm
@@ -52,12 +57,14 @@ pub fn station_by_index(index: usize) -> Result<Option<CustomRadioStation>, Stri
     Ok(list_custom_stations()?.get(index - 1).cloned())
 }
 
-/// Append a station and return its 1-based index.
-pub fn add_custom_station(name: &str, url: &str) -> Result<usize, String> {
+/// Append a station (optionally carrying its Radio Browser `uuid`) and return
+/// its 1-based index.
+pub fn add_custom_station(name: &str, url: &str, uuid: Option<&str>) -> Result<usize, String> {
     let mut stations = list_custom_stations()?;
     stations.push(CustomRadioStation {
         name: name.to_string(),
         url: url.to_string(),
+        uuid: uuid.map(str::to_string),
     });
     write_store(&stations)?;
     Ok(stations.len())
@@ -109,10 +116,12 @@ mod tests {
                 CustomRadioStation {
                     name: "SomaFM".into(),
                     url: "http://example.com/soma".into(),
+                    uuid: None,
                 },
                 CustomRadioStation {
                     name: "KEXP".into(),
                     url: "http://example.com/kexp".into(),
+                    uuid: Some("abc-123".into()),
                 },
             ],
         };
@@ -127,5 +136,14 @@ mod tests {
         let s = toml::to_string(&Store::default()).unwrap();
         let back: Store = toml::from_str(&s).unwrap();
         assert!(back.station.is_empty());
+    }
+
+    #[test]
+    fn legacy_station_without_uuid_parses() {
+        // radios.toml files written before `uuid` existed must keep loading.
+        let s = "[[station]]\nname = \"KEXP\"\nurl = \"http://example.com/kexp\"\n";
+        let back: Store = toml::from_str(s).unwrap();
+        assert_eq!(back.station.len(), 1);
+        assert_eq!(back.station[0].uuid, None);
     }
 }

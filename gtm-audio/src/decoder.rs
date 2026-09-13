@@ -5,6 +5,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
@@ -210,7 +211,7 @@ fn boost_thread_priority() {}
 // ---------------------------------------------------------------------------
 
 pub struct DecodeThread {
-    path: String,
+    source: DecodeSource,
     shared: SharedRingBuffer,
     control: Arc<DecodeControl>,
     eq_gains: EqGains,
@@ -220,6 +221,17 @@ pub struct DecodeThread {
     speed: SpeedControl,
     spectrum: Arc<Mutex<Vec<f32>>>,
     prebuffer_samples: usize,
+}
+
+/// What the decode thread reads its samples from. Local files reopen on seek;
+/// live transport byte streams are consumed once (seeks are reported as
+/// not-supported and the request is dropped).
+enum DecodeSource {
+    /// Local file opened with `SymphoniaSource::from_file` (seek = reopen).
+    File { path: String },
+    /// Live byte stream handed straight to `SymphoniaSource::from_reader`
+    /// with no re-opener. Declared so one-shot readers never race a seek.
+    Reader(Option<Box<dyn Read + Send>>),
 }
 
 impl DecodeThread {
@@ -237,7 +249,37 @@ impl DecodeThread {
         prebuffer_samples: usize,
     ) -> Self {
         Self {
-            path,
+            source: DecodeSource::File { path },
+            shared,
+            control,
+            eq_gains,
+            eq_enabled,
+            reverb_enabled,
+            reverb_room_size,
+            speed,
+            spectrum,
+            prebuffer_samples,
+        }
+    }
+
+    /// Same as [`DecodeThread::new`] but samples come from a live byte
+    /// transport (radio/HTTP stream) instead of a seekable file. The reader
+    /// is owned and drained by this thread; seeking a live source is
+    /// unsupported and logged as a no-op.
+    pub fn new_reader(
+        reader: Box<dyn Read + Send>,
+        shared: SharedRingBuffer,
+        control: Arc<DecodeControl>,
+        eq_gains: EqGains,
+        eq_enabled: Arc<AtomicBool>,
+        reverb_enabled: Arc<AtomicBool>,
+        reverb_room_size: Arc<Mutex<f32>>,
+        speed: SpeedControl,
+        spectrum: Arc<Mutex<Vec<f32>>>,
+        prebuffer_samples: usize,
+    ) -> Self {
+        Self {
+            source: DecodeSource::Reader(Some(reader)),
             shared,
             control,
             eq_gains,
@@ -271,13 +313,37 @@ impl DecodeThread {
             }
 
             // Create decoder for current position
-            let raw = match SymphoniaSource::from_file(&self.path, start_pos) {
-                Ok(s) => s,
-                Err(e) => {
-                    log::error!("decode thread: failed to open {}: {e}", self.path);
-                    self.shared.set_finished(true);
-                    self.control.ready.store(true, Ordering::Release);
-                    break;
+            let raw = match &mut self.source {
+                DecodeSource::File { path } => match SymphoniaSource::from_file(path, start_pos) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        log::error!("decode thread: failed to open {}: {e}", path);
+                        self.shared.set_finished(true);
+                        self.control.ready.store(true, Ordering::Release);
+                        break;
+                    }
+                },
+                DecodeSource::Reader(reader) => {
+                    // Live transport: consume the reader once. A probe or
+                    // read failure terminates the thread (the ring signals
+                    // finished so the consumer can end cleanly); `ready` stays
+                    // false so the launching mixer surfaces a clean error
+                    // instead of appending an empty source.
+                    let Some(r) = reader.take() else {
+                        log::error!("decode thread: live reader already consumed");
+                        self.shared.set_finished(true);
+                        self.control.finished.store(true, Ordering::Release);
+                        return;
+                    };
+                    match SymphoniaSource::from_reader(r, None, 0.0) {
+                        Ok(s) => Box::new(s) as Box<dyn Source<Item = f32> + Send>,
+                        Err(e) => {
+                            log::error!("decode thread: failed to open live stream: {e}");
+                            self.shared.set_finished(true);
+                            self.control.finished.store(true, Ordering::Release);
+                            return;
+                        }
+                    }
                 }
             };
 
@@ -332,11 +398,21 @@ impl DecodeThread {
 
                 // Check for seek request
                 if let Some(target_secs) = self.control.consume_seek() {
-                    log::info!("decode thread: seek to {target_secs:.2}s");
-                    start_pos = target_secs;
-                    self.shared.flush();
                     self.control.seeking.store(false, Ordering::Release);
-                    break; // restart decoder at new position
+                    match &self.source {
+                        DecodeSource::Reader(_) => {
+                            // Live transports cannot seek: the request is
+                            // dropped so a stale seek can never mask EOF or
+                            // strand the consumer on the seeking flag.
+                            log::debug!("decode thread: seek ignored on live stream");
+                        }
+                        DecodeSource::File { .. } => {
+                            log::info!("decode thread: seek to {target_secs:.2}s");
+                            start_pos = target_secs;
+                            self.shared.flush();
+                            break; // restart decoder at new position
+                        }
+                    }
                 }
 
                 // Check ring buffer space: when nearly full, sleep briefly so

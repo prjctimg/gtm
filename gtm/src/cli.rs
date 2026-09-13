@@ -1387,7 +1387,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     Ok(format!("{} custom stations", stations.len()))
                 }
                 RadioAction::Add { name, url } => {
-                    let index = gtm_core::custom::add_custom_station(name, url)?;
+                    let index = gtm_core::custom::add_custom_station(name, url, None)?;
                     Ok(format!("added custom:{index} {name}"))
                 }
                 RadioAction::Rm { selector } => {

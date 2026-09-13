@@ -69,6 +69,7 @@ pub enum PickerSource {
     Artists,
     Albums,
     Playlists,
+    Radio,
 }
 
 impl PickerSource {
@@ -79,6 +80,7 @@ impl PickerSource {
             Self::Artists => "Artists",
             Self::Albums => "Albums",
             Self::Playlists => "Playlists",
+            Self::Radio => "Radio",
         }
     }
 
@@ -88,7 +90,8 @@ impl PickerSource {
             Self::Tracks => Self::Artists,
             Self::Artists => Self::Albums,
             Self::Albums => Self::Playlists,
-            Self::Playlists => Self::All,
+            Self::Playlists => Self::Radio,
+            Self::Radio => Self::All,
         }
     }
 }

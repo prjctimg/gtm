@@ -32,6 +32,14 @@ pub trait Mixer: Send + Sync {
         source: Box<dyn Source<Item = f32> + Send>,
         start_pos: f64,
     ) -> AudioResult<()>;
+    /// Load a live byte transport (radio/HTTP stream) as the active source.
+    /// The decode thread owns reading, EQ, reverb and ring-buffer feeding, so
+    /// network jitter can never stall the audio callback. Seeking is disabled.
+    fn load_active_reader(
+        &mut self,
+        reader: Box<dyn std::io::Read + Send>,
+        start_pos: f64,
+    ) -> AudioResult<()>;
     fn load_standby(&mut self, path: &str) -> AudioResult<()>;
     fn load_standby_decoded(
         &mut self,
@@ -138,6 +146,13 @@ impl Mixer for AudioMixer {
         start_pos: f64,
     ) -> AudioResult<()> {
         self.load_active_decoded(source, start_pos)
+    }
+    fn load_active_reader(
+        &mut self,
+        reader: Box<dyn std::io::Read + Send>,
+        start_pos: f64,
+    ) -> AudioResult<()> {
+        self.load_active_reader(reader, start_pos)
     }
     fn load_standby(&mut self, path: &str) -> AudioResult<()> {
         self.load_standby(path)
@@ -474,6 +489,12 @@ impl AudioMixer {
             }
             std::thread::sleep(Duration::from_millis(5));
         }
+        if !control.ready.load(Ordering::Acquire) {
+            return Err(AudioError::DecodeError(format!(
+                "decode thread for {} did not become ready in time",
+                path,
+            )));
+        }
 
         let source = RingBufferSource::new(shared, control.clone());
         Ok((control, source, handle))
@@ -544,6 +565,115 @@ impl AudioMixer {
         *self.position.lock().unwrap() = start_pos;
         *self.start_time.lock().unwrap() = None;
         *self.start_pos.lock().unwrap() = start_pos;
+        self.playing.store(false, Ordering::SeqCst);
+        self.crossfade_start = None;
+
+        Ok(())
+    }
+
+    /// Launch a decode thread that reads samples from a live byte transport
+    /// (radio/HTTP) into the ring buffer. The ring is backed by
+    /// [`BUFFER_CAPACITY_SAMPLES`] (6 s) so network stalls of up to that
+    /// duration do not interrupt playback. The 0.5 s pre-buffer keeps the
+    /// audio callback from signalling a false underflow on start.
+    #[allow(clippy::too_many_arguments)]
+    fn start_decode_reader(
+        reader: Box<dyn std::io::Read + Send>,
+        eq_gains: &EqGains,
+        eq_enabled: &Arc<AtomicBool>,
+        reverb_enabled: &Arc<AtomicBool>,
+        reverb_room_size: &Arc<Mutex<f32>>,
+        speed: &SpeedControl,
+        spectrum: &Arc<Mutex<Vec<f32>>>,
+    ) -> AudioResult<(
+        Arc<DecodeControl>,
+        RingBufferSource,
+        std::thread::JoinHandle<()>,
+    )> {
+        let control = Arc::new(DecodeControl::new());
+        let shared = Arc::new(RingBufferInner::new(BUFFER_CAPACITY_SAMPLES));
+
+        let thread = DecodeThread::new_reader(
+            reader,
+            shared.clone(),
+            control.clone(),
+            eq_gains.clone(),
+            eq_enabled.clone(),
+            reverb_enabled.clone(),
+            reverb_room_size.clone(),
+            speed.clone(),
+            spectrum.clone(),
+            PREBUFFER_SAMPLES_REDUCED,
+        );
+        let handle = thread.spawn().map_err(AudioError::DecodeError)?;
+
+        // For live readers the decode thread sets `ready` on probe success
+        // (ring has initial data). A pre-existing reader error (e.g., HTTP
+        // probe) skips `ready` entirely and signals `finished`, so the wait
+        // loop below exits immediately via the `finished` fast-path instead
+        // of waiting for a timeout.
+        let start = Instant::now();
+        let timeout = Duration::from_secs(5);
+        while !control.ready.load(Ordering::Acquire) && start.elapsed() < timeout {
+            if control.finished.load(Ordering::Acquire) {
+                return Err(AudioError::DecodeError(
+                    "live stream could not be opened".into(),
+                ));
+            }
+            if !control.running.load(Ordering::Acquire) {
+                return Err(AudioError::DecodeError(
+                    "decode thread exited before prebuffer".into(),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if !control.ready.load(Ordering::Acquire) {
+            return Err(AudioError::DecodeError(
+                "live stream did not become ready in time".into(),
+            ));
+        }
+
+        let source = RingBufferSource::new(shared, control.clone());
+        Ok((control, source, handle))
+    }
+
+    /// Load a live byte transport (radio/HTTP stream) as the active source.
+    /// Duration is set to zero so the `Finished` stall-guard (`total > 0.0 &&
+    /// pos < total - 0.5`) is always bypassed — a genuine EOF drains the ring
+    /// and fires `Finished` through the normal `Player::empty()` path instead.
+    pub fn load_active_reader(
+        &mut self,
+        reader: Box<dyn std::io::Read + Send>,
+        _start_pos: f64,
+    ) -> AudioResult<()> {
+        Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
+
+        let vol = volume_ratio(self.volume.load(Ordering::SeqCst));
+        self.active().stop();
+        self.active().set_volume(vol);
+
+        let (control, source, handle) = Self::start_decode_reader(
+            reader,
+            &self.eq_gains,
+            &self.eq_enabled,
+            &self.reverb_enabled,
+            &self.reverb_room_size,
+            &self.speed,
+            &self.spectrum,
+        )?;
+
+        // Live streams have no meaningful total duration; zero both so the
+        // Finished stall-guard is permanently disabled for this source.
+        *self.duration.lock().unwrap() = 0.0;
+
+        self.active().append(source);
+
+        self.active_control = Some(control);
+        self.active_decode_handle = Some(handle);
+
+        *self.position.lock().unwrap() = 0.0;
+        *self.start_time.lock().unwrap() = None;
+        *self.start_pos.lock().unwrap() = 0.0;
         self.playing.store(false, Ordering::SeqCst);
         self.crossfade_start = None;
 

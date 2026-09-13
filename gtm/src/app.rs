@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use crossterm::event::{self, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use gtm_core::client::{DaemonClient, LastfmStatus};
+use gtm_core::custom::CustomRadioStation;
 use gtm_core::global::{DaemonState, EqPreset, PlaybackStatus, RepeatMode};
 use gtm_core::ipc::{CacheKind, DaemonEvent, DaemonRes, HealthReport, SyncKind};
 use gtm_core::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
@@ -35,7 +36,7 @@ use crate::keymap::{
     parse_key_event,
 };
 use crate::mouse::{MouseMap, MouseZone};
-use crate::oauth::capture_lastfm_token;
+use crate::oauth::bind_lastfm_callback;
 use crate::picker::{PickerId, PickerManager, PickerSource};
 use crate::progress::{ProgressSmoother, ProgressStyle};
 use crate::reactive::{ReactivePalette, derive_theme, extract_palette};
@@ -312,6 +313,7 @@ pub const LIBRARY_CATEGORIES: &[&str] = &[
     "Artists",
     "Playlists",
     "Spotify",
+    "Radio",
 ];
 
 /// Returns true if the terminal doesn't support image protocols (Neovim, Zellij, etc.).
@@ -527,6 +529,7 @@ pub enum LibraryPick {
     Artist(String),
     Album(String),
     Playlist(usize),
+    Radio(usize),
 }
 
 pub struct SleepTimerState {
@@ -710,6 +713,9 @@ pub struct RadioView {
     pub browse_topic: String,
     pub browse_stations: Vec<RadioStation>,
     pub browse_stations_pending: bool,
+    /// Custom stations from `radios.toml` (1-based index = position + 1),
+    /// mirrored into the left-pane Radio category.
+    pub custom: Vec<CustomRadioStation>,
 }
 
 /// Queue picker/view UI state, grouped under `App::queue`. Note this mirrors
@@ -2434,37 +2440,12 @@ impl App {
                         }
                     }
                     IpcResult::LastfmAuthUrl(url) => {
+                        // Callback capture (bind, wait for the redirect, finish
+                        // the link) runs server-side in the Enter handler once
+                        // the port bound successfully; here we only surface the
+                        // URL so the user can paste it into a browser.
                         self.setup.lastfm_auth_url = Some(url);
                         self.setup.lastfm_pending = true;
-                        let c = self.client.clone();
-                        let ipc_tx = self.ipc_tx.clone();
-                        tokio::spawn(async move {
-                            match capture_lastfm_token().await {
-                                Ok(token) if token.is_empty() => {
-                                    self_err(&ipc_tx, "no Last.fm token provided".to_string());
-                                }
-                                Ok(token) => match c.lastfm().authenticate(token.trim()).await {
-                                    Ok(()) => match c.lastfm().status().await {
-                                        Ok(st) => {
-                                            let _ = ipc_tx.send(IpcResult::LastfmStatus(Some(st)));
-                                        }
-                                        Err(e) => {
-                                            self_err(&ipc_tx, format!("last.fm status failed: {e}"))
-                                        }
-                                    },
-                                    Err(e) => {
-                                        let _ = ipc_tx.send(IpcResult::LastfmAuthError(format!(
-                                            "Last.fm authorize failed: {e}"
-                                        )));
-                                    }
-                                },
-                                Err(e) => {
-                                    let _ = ipc_tx.send(IpcResult::LastfmAuthError(format!(
-                                        "Last.fm callback failed: {e}"
-                                    )));
-                                }
-                            }
-                        });
                     }
                     IpcResult::LastfmAuthError(e) => {
                         self.setup.lastfm_pending = false;
@@ -3484,6 +3465,13 @@ impl App {
                 }
             }
         }
+        if matches!(top.source, PickerSource::Radio | PickerSource::All) {
+            for (i, s) in self.radio.custom.iter().enumerate() {
+                if q.is_empty() || s.name.to_lowercase().contains(&q) {
+                    picks.push(LibraryPick::Radio(i));
+                }
+            }
+        }
         picks
     }
 
@@ -3847,6 +3835,57 @@ impl App {
         });
     }
 
+    /// (Re)read the custom stations list from `radios.toml` into the left
+    /// pane Radio category. Read-on-demand so external edits are picked up.
+    pub fn refresh_custom_stations(&mut self) {
+        if let Ok(stations) = gtm_core::custom::list_custom_stations() {
+            self.radio.custom = stations;
+        }
+    }
+
+    /// Save a Radio Browser station as a custom station, keyed by its browser
+    /// uuid so the daemon can re-resolve a fresh stream URL and fetch its
+    /// favicon. No-ops when an identical station already exists.
+    pub fn save_custom_station(&mut self, station: &RadioStation) {
+        if self.radio.custom.iter().any(|s| {
+            s.uuid.as_deref() == Some(&station.id) || s.name.eq_ignore_ascii_case(&station.name)
+        }) {
+            self.notify_titled(
+                "Radio",
+                format!("Already saved \"{}\"", station.name),
+                NotificationKind::Info,
+                true,
+                NotifType::Prefs,
+            );
+            return;
+        }
+        match gtm_core::custom::add_custom_station(
+            &station.name,
+            &station.url_resolved,
+            Some(&station.id),
+        ) {
+            Ok(_) => {
+                self.refresh_custom_stations();
+                self.notify_titled(
+                    "Radio",
+                    format!("Saved \"{}\" to custom stations", station.name),
+                    NotificationKind::Success,
+                    true,
+                    NotifType::Prefs,
+                );
+            }
+            Err(e) => {
+                self.notify_titled(
+                    "Radio",
+                    format!("Save failed: {e}"),
+                    NotificationKind::Error,
+                    true,
+                    NotifType::Prefs,
+                );
+            }
+        }
+    }
+
     /// Filtered tracks for the current library view, respecting search query, browse_detail, and category.
     /// Selection index for the currently active library list (per-category,
     /// see the `scroll_offset` field).
@@ -3870,6 +3909,9 @@ impl App {
         self.selected_indices.clear();
         self.playlist_tracks_cache.clear();
         self.spotify.playlist_tracks_cache.clear();
+        if self.library_category == 6 {
+            self.refresh_custom_stations();
+        }
         self.set_list_pos(0);
     }
 
@@ -3921,6 +3963,10 @@ impl App {
         } else if self.library_category == 5 {
             // Spotify: category renders the synced playlist browser, not a flat
             // TrackInfo list: resolve/play goes through the daemon.
+            tracks.clear();
+        } else if self.library_category == 6 {
+            // Radio: category renders custom stations; rows are virtual and act
+            // on radio:// paths, never on the flat TrackInfo list.
             tracks.clear();
         }
         // Sorting applies to the flat track list (All Tracks / Favourites and the
@@ -4012,6 +4058,7 @@ impl App {
             3 => self.unique_artists().len(),
             4 => self.playlist_cache.len(),
             5 => self.spotify.playlists.len(),
+            6 => self.radio.custom.len(),
             _ => self.filtered_tracks().len(),
         }
     }
@@ -6077,6 +6124,19 @@ impl App {
                                         }
                                     });
                                 }
+                            } else if self.library_category == 6 {
+                                // Radio: select custom station → play it
+                                let pos = self.list_pos();
+                                if let Some(station) = self.radio.custom.get(pos).cloned() {
+                                    let id = match station.uuid.as_deref() {
+                                        Some(uuid) => uuid.to_string(),
+                                        None => format!("custom:{}", pos + 1),
+                                    };
+                                    let c = self.client.clone();
+                                    tokio::spawn(async move {
+                                        let _ = c.radio().play(&id, &station.name).await;
+                                    });
+                                }
                             } else if self.library_category <= 1 {
                                 // Default: play track from flat list (All Tracks / Liked)
                                 self.play_filtered_highlighted();
@@ -7474,16 +7534,83 @@ impl App {
                         {
                             Ok(()) => match c.lastfm().auth_url().await {
                                 Ok(url) => {
-                                    let ipc_url = ipc_tx.clone();
-                                    let open_url = url.clone();
-                                    tokio::spawn(async move {
-                                        if !open_browser(&open_url).await {
-                                            let _ = ipc_url.send(IpcResult::LastfmAuthError(
-                                                "Could not open a browser automatically — copy the URL from the last.fm setup screen".into(),
+                                    // Bind the callback port *before* opening
+                                    // the browser so the redirect after
+                                    // authorization never lands on a dead port.
+                                    match bind_lastfm_callback().await {
+                                        Ok(callback) => {
+                                            let c2 = c.clone();
+                                            let cap_tx = ipc_tx.clone();
+                                            tokio::spawn(async move {
+                                                match callback.wait_for_token().await {
+                                                    Ok(token) if token.is_empty() => {
+                                                        self_err(
+                                                            &cap_tx,
+                                                            "no Last.fm token provided".to_string(),
+                                                        );
+                                                    }
+                                                    Ok(token) => {
+                                                        match c2
+                                                            .lastfm()
+                                                            .authenticate(token.trim())
+                                                            .await
+                                                        {
+                                                            Ok(()) => {
+                                                                match c2.lastfm().status().await {
+                                                                    Ok(st) => {
+                                                                        let _ = cap_tx.send(
+                                                                            IpcResult::LastfmStatus(
+                                                                                Some(st),
+                                                                            ),
+                                                                        );
+                                                                    }
+                                                                    Err(e) => self_err(
+                                                                        &cap_tx,
+                                                                        format!(
+                                                                            "last.fm status failed: {e}"
+                                                                        ),
+                                                                    ),
+                                                                }
+                                                            }
+                                                            Err(e) => {
+                                                                let _ = cap_tx.send(
+                                                                    IpcResult::LastfmAuthError(
+                                                                        format!(
+                                                                            "Last.fm authorize failed: {e}"
+                                                                        ),
+                                                                    ),
+                                                                );
+                                                            }
+                                                        }
+                                                    }
+                                                    Err(e) => {
+                                                        let _ = cap_tx.send(
+                                                            IpcResult::LastfmAuthError(format!(
+                                                                "Last.fm callback failed: {e}"
+                                                            )),
+                                                        );
+                                                    }
+                                                }
+                                            });
+                                            let ipc_url = ipc_tx.clone();
+                                            let open_url = url.clone();
+                                            tokio::spawn(async move {
+                                                if !open_browser(&open_url).await {
+                                                    let _ = ipc_url.send(
+                                                        IpcResult::LastfmAuthError(
+                                                            "Could not open a browser automatically — copy the URL from the last.fm setup screen".into(),
+                                                        ),
+                                                    );
+                                                }
+                                            });
+                                            let _ = ipc_tx.send(IpcResult::LastfmAuthUrl(url));
+                                        }
+                                        Err(e) => {
+                                            let _ = ipc_tx.send(IpcResult::LastfmAuthError(
+                                                format!("Last.fm callback server: {e}"),
                                             ));
                                         }
-                                    });
-                                    let _ = ipc_tx.send(IpcResult::LastfmAuthUrl(url));
+                                    }
                                 }
                                 Err(e) => {
                                     let _ = ipc_tx.send(IpcResult::LastfmAuthError(format!(
@@ -7782,6 +7909,12 @@ impl App {
                         });
                     }
                 }
+                KeyCode::Char('s') => {
+                    let sel = self.pickers.top().map_or(0, |o| o.selected);
+                    if let Some(station) = self.radio.top.get(sel).cloned() {
+                        self.save_custom_station(&station);
+                    }
+                }
                 KeyCode::Char('r') => {
                     self.radio.top.clear();
                     self.radio.top_pending = true;
@@ -7924,6 +8057,12 @@ impl App {
                         tokio::spawn(async move {
                             let _ = c.radio().play(&station.id, &station.name).await;
                         });
+                    }
+                }
+                KeyCode::Char('s') => {
+                    let sel = self.pickers.top().map_or(0, |o| o.selected);
+                    if let Some(station) = self.radio.browse_stations.get(sel).cloned() {
+                        self.save_custom_station(&station);
                     }
                 }
                 KeyCode::Char('r') => {
@@ -8918,6 +9057,19 @@ impl App {
                                                     ipc_tx2.send(IpcResult::PlaylistTracks(tracks));
                                             }
                                         });
+                                    }
+                                    LibraryPick::Radio(i) => {
+                                        if let Some(station) = self.radio.custom.get(*i).cloned() {
+                                            let id = match station.uuid.as_deref() {
+                                                Some(uuid) => uuid.to_string(),
+                                                None => format!("custom:{}", i + 1),
+                                            };
+                                            let c = self.client.clone();
+                                            self.pickers.close_top();
+                                            tokio::spawn(async move {
+                                                let _ = c.radio().play(&id, &station.name).await;
+                                            });
+                                        }
                                     }
                                 }
                             }

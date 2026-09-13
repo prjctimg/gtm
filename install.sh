@@ -29,6 +29,7 @@ MUTED='\033[0;2m'
 RED='\033[0;31m'
 ORANGE='\033[38;5;214m'
 GREEN='\033[0;32m'
+BOLD='\033[1m'
 
 usage() {
   cat <<EOF
@@ -65,6 +66,8 @@ die() {
 need() {
   command -v "$1" >/dev/null 2>&1 || die "requires '$1' — install it first, or download a release archive manually"
 }
+# Colourised header for a dependency-install step (binaries, man pages, …).
+step() { printf "${BOLD}${GREEN}==>${NC} ${BOLD}%s${NC}\n" "$*" >&2; }
 
 CLR_RESET=$'\033[0m'
 CLR_DIM=$'\033[2m'
@@ -364,16 +367,18 @@ install_from_archive() {
   fi
 
   log "installing to ${prefix} (bin: ${bindir})"
+  log ""
 
   # Binaries
   if [ ! -d "bin" ]; then
     die "archive is missing its bin/ directory"
   fi
   mkdir -p "${bindir}"
+  step "binaries"
   for name in gtm gtmd; do
     if [ -f "bin/${name}" ]; then
       install -m 0755 "bin/${name}" "${bindir}/${name}"
-      ok "${name} -> ${bindir}/${name}"
+      ok "  ${name} -> ${bindir}/${name}"
     else
       warn "missing bin/${name} — skipping"
     fi
@@ -381,16 +386,18 @@ install_from_archive() {
 
   # Man pages
   if [ -d "man/man1" ]; then
+    step "man pages"
     mkdir -p "${mandir}"
     for f in man/man1/*.1; do
       [ -f "${f}" ] || continue
       install -m 0644 "${f}" "${mandir}/$(basename "${f}")"
     done
-    ok "man pages -> ${mandir}/"
+    ok "  ${mandir}/"
   fi
 
   # Completions — place each file into the conventional directory for its shell.
   if [ -d "completions" ]; then
+    step "shell completions"
     for f in completions/*; do
       [ -f "${f}" ] || continue
       base="$(basename "${f}")"
@@ -422,9 +429,10 @@ install_from_archive() {
 
   # systemd user unit (Linux only — not macOS/Android)
   if [ "${OS}" = "linux" ] && [ -f "systemd/gtmd.service" ]; then
+    step "systemd user unit"
     mkdir -p "${systemd_dir}"
     install -m 0644 "systemd/gtmd.service" "${systemd_dir}/gtmd.service"
-    ok "systemd user unit -> ${systemd_dir}/gtmd.service"
+    ok "  ${systemd_dir}/gtmd.service"
     log "enable with: systemctl --user enable --now gtmd"
   elif [ -f "systemd/gtmd.service" ]; then
     info "skipping systemd unit (no systemd on ${OS})"
@@ -432,14 +440,16 @@ install_from_archive() {
 
   # Desktop entry + icon
   if [ -f "desktop/gtm.desktop" ]; then
+    step "desktop entry"
     mkdir -p "${applications_dir}"
     install -m 0644 "desktop/gtm.desktop" "${applications_dir}/gtm.desktop"
-    ok "desktop entry -> ${applications_dir}/gtm.desktop"
+    ok "  ${applications_dir}/gtm.desktop"
   fi
   if [ -f "icons/gtm.svg" ]; then
+    step "icon"
     mkdir -p "${icons_dir}"
     install -m 0644 "icons/gtm.svg" "${icons_dir}/gtm.svg"
-    ok "icon -> ${icons_dir}/gtm.svg"
+    ok "  ${icons_dir}/gtm.svg"
   fi
 
   ok "installation complete"

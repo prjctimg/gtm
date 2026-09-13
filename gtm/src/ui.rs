@@ -995,6 +995,7 @@ impl Render {
                     "Artists" => app.unique_artists().len(),
                     "Playlists" => app.playlist_cache.len(),
                     "Spotify" => app.spotify.playlists.len(),
+                    "Radio" => app.radio.custom.len(),
                     _ => 0,
                 };
                 let label = if count > 0 {
@@ -1384,6 +1385,52 @@ impl Render {
                         Style::default().fg(app.theme.fg)
                     };
                     let row = format!("{}{}", prefix, pl.name);
+                    let row = if is_sel {
+                        let pad = row_pad(&row, panes[1].width);
+                        format!("{row}{}", " ".repeat(pad))
+                    } else {
+                        row
+                    };
+                    lines.push(Line::from(Span::styled(row, style)));
+                }
+            }
+            {
+                lib_total_rows = total_len;
+                (lines, st_line)
+            }
+        } else if app.library_category == 6 {
+            let stations = &app.radio.custom;
+            let total_len = stations.len();
+            let sel = app.list_pos().min(total_len.saturating_sub(1));
+            let st_line = format!(
+                " {} {} ",
+                total_len,
+                plural(total_len, "station", "stations")
+            );
+            let reserve = 3usize;
+            let available = panes[1].height.saturating_sub(reserve as u16) as usize;
+            app.viewport_items = available;
+            let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
+            app.list_scroll = list_scroll;
+            let mut lines = vec![Line::from("")];
+            if stations.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    " No custom stations: save one from Radio Browser with s",
+                    Style::default().fg(app.theme.fg_dim),
+                )));
+            } else {
+                for (i, s) in stations[app.list_scroll..end].iter().enumerate() {
+                    let real_i = app.list_scroll + i;
+                    let is_sel = real_i == sel && !left_focus;
+                    let prefix = if is_sel { " > " } else { "   " };
+                    let style = if is_sel {
+                        Style::default()
+                            .fg(app.theme.selection_fg_readable())
+                            .bg(app.theme.selection_bg)
+                    } else {
+                        Style::default().fg(app.theme.fg)
+                    };
+                    let row = format!("{}{}", prefix, s.name);
                     let row = if is_sel {
                         let pad = row_pad(&row, panes[1].width);
                         format!("{row}{}", " ".repeat(pad))
@@ -2061,7 +2108,7 @@ impl Render {
             f.render_widget(loading, inner);
         }
 
-        let help = Paragraph::new(" [Esc] Close").style(Style::default().fg(app.theme.fg_dim));
+        let help = Paragraph::new("").style(Style::default().fg(app.theme.fg_dim));
         let help_area = Rect::new(
             rect.x,
             rect.y + rect.height.saturating_sub(1),
@@ -2317,10 +2364,10 @@ fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
 // ─── Content Area ───
 
 const LIBRARY_ICONS_NERD: &[&str] = &[
-    "\u{f001}", "\u{f004}", "\u{f025}", "\u{f007}", "\u{f03a}", "\u{f1bc}",
+    "\u{f001}", "\u{f004}", "\u{f025}", "\u{f007}", "\u{f03a}", "\u{f1bc}", "\u{f43e}",
 ];
 
-const LIBRARY_ICONS_ASCII: &[&str] = &["♫", "♥", "▤", "♪", "≡", "☊"];
+const LIBRARY_ICONS_ASCII: &[&str] = &["♫", "♥", "▤", "♪", "≡", "☊", "◉"];
 
 pub(crate) fn use_nerd_fonts() -> bool {
     !matches!(std::env::var("GTM_NERD_FONTS"), Ok(v) if v == "0" || v == "false" || v == "no")
@@ -2673,11 +2720,7 @@ impl Pickers {
             PickerId::Setup => Self::render_setup(f, picker_area, app),
             PickerId::LastfmAuth => Self::render_lastfm_setup(f, picker_area, app),
             PickerId::SpotifyLink => {
-                let block = Self::picker_panel(
-                    app,
-                    " Spotify Link ",
-                    Some(" Enter: authorize   Esc: cancel"),
-                );
+                let block = Self::picker_panel(app, " Spotify Link ", None);
                 let inner = block.inner(picker_area);
                 f.render_widget(block, picker_area);
 
@@ -2811,11 +2854,11 @@ impl Pickers {
             }
             PickerId::SpotifySearch => {
                 let help = if app.spotify.status.as_ref().is_none_or(|s| !s.linked) {
-                    " Enter: link   Esc: close"
+                    None
                 } else {
-                    " Enter: play   Ctrl+D: download   Esc: close"
+                    Some(" Enter: play   Ctrl+D: download   Esc: close")
                 };
-                let block = Self::picker_panel(app, " \u{f1bc} Search ", Some(help));
+                let block = Self::picker_panel(app, " \u{f1bc} Search ", help);
                 let inner = block.inner(picker_area);
                 f.render_widget(block, picker_area);
 
@@ -3458,6 +3501,15 @@ impl Pickers {
                     }
                     _ => format!("{}\u{1f4dc} (missing playlist)", prefix),
                 },
+                LibraryPick::Radio(i) => {
+                    let station = app
+                        .radio
+                        .custom
+                        .get(*i)
+                        .map(|s| s.name.as_str())
+                        .unwrap_or("");
+                    format!("{}\u{1f3a7} {}", prefix, station)
+                }
             };
             let row = if i == sel {
                 format!("{text}{}", " ".repeat(row_pad(&text, results_area.width)))
@@ -3514,7 +3566,11 @@ impl Pickers {
         rows: Vec<String>,
         empty_msg: &str,
     ) {
-        let block = Self::picker_panel(app, title, Some(hint));
+        let block = if hint.is_empty() {
+            Self::picker_panel(app, title, None)
+        } else {
+            Self::picker_panel(app, title, Some(hint))
+        };
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -3600,7 +3656,7 @@ impl Pickers {
             area,
             app,
             "Subsonic Search",
-            " Enter: search / play   Esc: close",
+            "",
             prepend,
             rows,
             "type a query, then Enter",
@@ -3631,7 +3687,7 @@ impl Pickers {
             area,
             app,
             "Subsonic Albums",
-            " Enter: open album   r: refresh   Esc: close",
+            "",
             prepend,
             rows,
             if app.subsonic.albums_pending {
@@ -3725,11 +3781,7 @@ impl Pickers {
 
     /// `gtm setup` service chooser. Enter opens the matching setup flow.
     fn render_setup(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(
-            app,
-            "Setup",
-            Some(" j/k: move   Enter: configure   Esc: close"),
-        );
+        let block = Self::picker_panel(app, "Setup", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -3874,7 +3926,7 @@ impl Pickers {
             area,
             app,
             " Podcasts ",
-            " Enter: episodes   a: subscribe   r: refresh   Esc: close",
+            "",
             prepend,
             rows,
             if app.podcast.feeds_pending {
@@ -3905,7 +3957,7 @@ impl Pickers {
             area,
             app,
             &title,
-            " Enter: play   Backspace: back   Esc: close",
+            "",
             Vec::new(),
             rows,
             "no episodes \u{2014} press r in the feed list to refresh",
@@ -3990,7 +4042,7 @@ impl Pickers {
             area,
             app,
             " Radio search ",
-            " Enter: search / play   Esc: close",
+            "",
             prepend,
             rows,
             "type a query, then Enter",
@@ -4007,7 +4059,7 @@ impl Pickers {
             area,
             app,
             "Top Radio Stations",
-            " Enter: play   r: refresh   Esc: close",
+            "s: save   r: refresh   Esc: close",
             Vec::new(),
             rows,
             if app.radio.top_pending {
@@ -4125,7 +4177,7 @@ impl Pickers {
             area,
             app,
             &title,
-            " Enter: play   r: refresh   Esc: close",
+            "s: save   r: refresh   Esc: close",
             Vec::new(),
             rows,
             if app.radio.browse_stations_pending {
@@ -4268,6 +4320,12 @@ impl Pickers {
                 if let Some(p) = app.playlist_cache.get(*i) {
                     push("Playlist", &p.name);
                     push("Tracks", &p.track_count.to_string());
+                }
+            }
+            Some(LibraryPick::Radio(i)) => {
+                if let Some(s) = app.radio.custom.get(*i) {
+                    push("Station", &s.name);
+                    push("URL", &s.url);
                 }
             }
             None => {
@@ -5420,6 +5478,9 @@ impl Pickers {
         let version = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0");
         let commit = option_env!("VERGEN_GIT_SHA").unwrap_or("unknown");
         let build_date = option_env!("VERGEN_BUILD_DATE").unwrap_or("unknown");
+        // Nightly CI builds bake a `+nightly` suffix into `CARGO_PKG_VERSION`;
+        // surface that so users can tell a nightly build from a release.
+        let nightly = version.contains("+nightly");
         let lib_count = app.tracks_cache.len();
         let queue_count = app.queue.cache.len();
 
@@ -5467,7 +5528,11 @@ impl Pickers {
                 Style::default().fg(app.theme.fg_dim),
             )),
             Line::from(Span::styled(
-                format!("   Commit:  {:.7}", commit),
+                format!(
+                    "   Commit:  {:.7}{}",
+                    commit,
+                    if nightly { " (nightly)" } else { "" }
+                ),
                 Style::default().fg(app.theme.fg),
             )),
             Line::from(Span::styled(
@@ -5622,11 +5687,7 @@ impl Pickers {
     }
 
     fn render_notifications(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(
-            app,
-            " Notifications ",
-            Some("\u{2191}/\u{2193}: browse   Esc: close"),
-        );
+        let block = Self::picker_panel(app, " Notifications ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -5783,11 +5844,7 @@ impl Pickers {
     }
 
     fn render_notification_settings(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(
-            app,
-            " Notification Settings ",
-            Some("\u{2191}/\u{2193}: browse   Left/Right/Enter: toggle mode   Esc: close"),
-        );
+        let block = Self::picker_panel(app, " Notification Settings ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -5838,11 +5895,7 @@ impl Pickers {
 
     fn render_sleep_timer(f: &mut ratatui::Frame, area: Rect, app: &App) {
         if app.sleep_timer.input_mode {
-            let block = Self::picker_panel(
-                app,
-                " Sleep Timer: Manual Input ",
-                Some("Enter: set   Esc: back"),
-            );
+            let block = Self::picker_panel(app, " Sleep Timer: Manual Input ", None);
             let inner = block.inner(area);
             f.render_widget(block, area);
             let cursor_style = cursor_span_style(app);
@@ -5966,11 +6019,7 @@ impl Pickers {
                 .collect()
         };
 
-        let block = Self::picker_panel(
-            app,
-            " Commands ",
-            Some("type: filter   \u{2191}/\u{2193}: navigate   Enter: run   Esc: close"),
-        );
+        let block = Self::picker_panel(app, " Commands ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -6127,11 +6176,7 @@ impl Pickers {
             .top()
             .map_or(0, |o| o.selected.min(presets.len() - 1));
 
-        let block = Self::picker_panel(
-            app,
-            " Equalizer ",
-            Some("\u{2191}/\u{2193}: preset (applies live)   Enter: apply   Esc: close"),
-        );
+        let block = Self::picker_panel(app, " Equalizer ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -6445,7 +6490,7 @@ impl Pickers {
             Span::styled(" ", cursor_style.unwrap_or_default()),
         ]);
 
-        let visible = inner.height.saturating_sub(1).checked_div(2).unwrap_or(0) as usize;
+        let visible = inner.height.saturating_sub(1) as usize;
         let (scroll_start, scroll_end) = if total > 0 {
             if let Some(top) = app.pickers.top_mut() {
                 let (s, e) = step_viewport(top.viewport_offset, sel, visible, total);
@@ -6460,17 +6505,7 @@ impl Pickers {
 
         let mut list_items: Vec<ListItem> = vec![ListItem::new(search_line)];
         let row_w = inner.width as usize;
-        let mut first_row = true;
         for (visible_idx, &(i, entry)) in filtered[scroll_start..scroll_end].iter().enumerate() {
-            if !first_row {
-                let rule = Span::styled(
-                    "  ".to_string() + &"\u{2500}".repeat(row_w.saturating_sub(6)),
-                    Style::default().fg(app.theme.fg_dim),
-                );
-                list_items.push(ListItem::new(Line::from(rule)));
-            }
-            first_row = false;
-
             let is_active = i == app.theme_index;
             let prefix = if i == sel { " > " } else { "   " };
             let check = if is_active { " \u{2713}" } else { "" };
@@ -6517,7 +6552,7 @@ impl Pickers {
             list_items.push(ListItem::new(Line::from(spans)).style(style));
             let row_rect = Rect {
                 x: inner.x,
-                y: inner.y + 1 + (2 * visible_idx) as u16,
+                y: inner.y + 1 + visible_idx as u16,
                 width: inner.width,
                 height: 1,
             };
@@ -6529,11 +6564,7 @@ impl Pickers {
     }
 
     fn render_crossfade(f: &mut ratatui::Frame, area: Rect, app: &App) {
-        let block = Self::picker_panel(
-            app,
-            " Crossfade Options ",
-            Some("\u{2191}/\u{2193}: navigate   Enter: apply   Esc: close"),
-        );
+        let block = Self::picker_panel(app, " Crossfade Options ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -6598,11 +6629,7 @@ impl Pickers {
     }
 
     fn render_visualizer_preset(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(
-            app,
-            " Visualizer Preset ",
-            Some("\u{2191}/\u{2193}: preview   Enter: apply   Esc: close"),
-        );
+        let block = Self::picker_panel(app, " Visualizer Preset ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -6731,11 +6758,7 @@ impl Pickers {
     }
 
     fn render_progress_style(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(
-            app,
-            " Progress Style ",
-            Some("\u{2191}/\u{2193}: preview   Enter: apply   Esc: close"),
-        );
+        let block = Self::picker_panel(app, " Progress Style ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -6871,11 +6894,7 @@ impl Pickers {
     }
 
     fn render_footer_preset(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(
-            app,
-            " Footer Preset ",
-            Some("\u{2191}/\u{2193}: preview   Enter: apply   Esc: close"),
-        );
+        let block = Self::picker_panel(app, " Footer Preset ", None);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -7064,11 +7083,11 @@ fn scroll_text(text: &str, max_width: usize, frame: usize, is_selected: bool) ->
 impl Pickers {
     fn render_playlist_select(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let help = if app.playlist_creating {
-            "type: name   Enter: create & add   Esc: back"
+            None
         } else {
-            "\u{2191}/\u{2193}: choose   n: new   Enter: add   Esc: cancel"
+            Some("\u{2191}/\u{2193}: choose   n: new   Enter: add   Esc: cancel")
         };
-        let block = Self::picker_panel(app, " Select Playlist ", Some(help));
+        let block = Self::picker_panel(app, " Select Playlist ", help);
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -7142,7 +7161,7 @@ impl Pickers {
     /// `Ctrl+Enter` committing the selection. Highlights survive scrolling.
     fn render_track_select(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let selected = app.selected_track_ids.len();
-        let _hint = format!(
+        let hint = format!(
             "Space/Tab: toggle   \u{2191}/\u{2193}: navigate   Ctrl+Enter: add {} to playlist   Esc: cancel",
             if selected > 0 {
                 format!("({selected} selected)")
@@ -7150,7 +7169,7 @@ impl Pickers {
                 String::new()
             }
         );
-        let block = Self::picker_panel(app, " Add Tracks ", None);
+        let block = Self::picker_panel(app, " Add Tracks ", Some(&hint));
         let inner = block.inner(area);
         f.render_widget(block, area);
 

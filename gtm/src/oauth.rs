@@ -51,38 +51,66 @@ pub fn mask_credential(s: &str) -> String {
 /// authorization redirect carrying a `token` query parameter. Responds 200 and
 /// returns the token, or continues waiting on unrelated requests with a 404.
 pub async fn capture_lastfm_token() -> Result<String, String> {
+    bind_lastfm_callback().await?.wait_for_token().await
+}
+
+/// A pre-bound Last.fm loopback callback server. Bind it *before* opening the
+/// browser so the authorization redirect never hits a dead port, then wait.
+pub struct LastfmCallback {
+    listener: tokio::net::TcpListener,
+    addr: String,
+    deadline: tokio::time::Instant,
+}
+
+/// Bind the Last.fm callback port (five-minute wait deadline). The caller
+/// should open the browser only after this succeeds.
+pub async fn bind_lastfm_callback() -> Result<LastfmCallback, String> {
     let port = lastfm_callback_port();
     let addr = format!("127.0.0.1:{port}");
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
         .map_err(|e| format!("bind the 127.0.0.1:{port} callback server: {e}"))?;
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(300);
-    loop {
-        let accepted = tokio::time::timeout(
-            deadline.saturating_duration_since(tokio::time::Instant::now()),
-            listener.accept(),
-        )
-        .await;
-        let (mut stream, _) = match accepted {
-            Err(_) => {
-                return Err(format!(
-                    "timed out waiting for the callback on http://{addr}"
-                ));
-            }
-            Ok(Err(e)) => return Err(format!("callback accept: {e}")),
-            Ok(Ok(pair)) => pair,
-        };
-        let mut buf = [0u8; 4096];
-        let n = match tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf)).await {
-            Ok(Ok(n)) => n,
-            _ => 0,
-        };
-        let line = String::from_utf8_lossy(&buf[..n]).to_string();
-        if let Some(token) = query_param(&line, "token")
-            && !token.is_empty()
-        {
-            let body = "gtm authorized. You can close this tab.";
-            let _ = stream
+    Ok(LastfmCallback {
+        listener,
+        addr,
+        deadline: tokio::time::Instant::now() + Duration::from_secs(300),
+    })
+}
+
+impl LastfmCallback {
+    pub async fn wait_for_token(self) -> Result<String, String> {
+        let LastfmCallback {
+            listener,
+            addr,
+            deadline,
+        } = self;
+        loop {
+            let accepted = tokio::time::timeout(
+                deadline.saturating_duration_since(tokio::time::Instant::now()),
+                listener.accept(),
+            )
+            .await;
+            let (mut stream, _) = match accepted {
+                Err(_) => {
+                    return Err(format!(
+                        "timed out waiting for the callback on http://{addr}"
+                    ));
+                }
+                Ok(Err(e)) => return Err(format!("callback accept: {e}")),
+                Ok(Ok(pair)) => pair,
+            };
+            let mut buf = [0u8; 4096];
+            let n = match tokio::time::timeout(Duration::from_secs(2), stream.read(&mut buf)).await
+            {
+                Ok(Ok(n)) => n,
+                _ => 0,
+            };
+            let line = String::from_utf8_lossy(&buf[..n]).to_string();
+            if let Some(token) = query_param(&line, "token")
+                && !token.is_empty()
+            {
+                let body = "gtm authorized. You can close this tab.";
+                let _ = stream
                 .write_all(
                     format!(
                         "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{body}",
@@ -91,13 +119,16 @@ pub async fn capture_lastfm_token() -> Result<String, String> {
                     .as_bytes(),
                 )
                 .await;
+                let _ = stream.flush().await;
+                return Ok(token);
+            }
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await;
             let _ = stream.flush().await;
-            return Ok(token);
         }
-        let _ = stream
-            .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
-            .await;
-        let _ = stream.flush().await;
     }
 }
 

@@ -15,7 +15,10 @@ use pulseaudio::protocol;
 use pulseaudio::{Client, PlaybackSource};
 
 use crate::backend::{AudioError, AudioEvent, AudioResult};
-use crate::buffer::{DecodeControl, PREBUFFER_SAMPLES, RingBufferInner, SharedRingBuffer};
+use crate::buffer::{
+    BUFFER_CAPACITY_SAMPLES, DecodeControl, PREBUFFER_SAMPLES, PREBUFFER_SAMPLES_REDUCED,
+    RingBufferInner, SharedRingBuffer,
+};
 use crate::decoder::DecodeThread;
 use crate::eq::{EqGains, EqSource, ReverbSource};
 use crate::mixer::Mixer;
@@ -96,7 +99,7 @@ struct PaStreamState {
 
 impl PaStreamState {
     fn new(client: &Client, name: &str, _mixer_volume: &Arc<AtomicU8>) -> AudioResult<Self> {
-        let ring = Arc::new(RingBufferInner::new(44100 * 2 * 3));
+        let ring = Arc::new(RingBufferInner::new(BUFFER_CAPACITY_SAMPLES));
         let stream_volume = Arc::new(AtomicU8::new(0));
 
         let source = PaPlaybackSource {
@@ -334,12 +337,69 @@ impl PulseAudioMixer {
         let start = Instant::now();
         let timeout = Duration::from_secs(5);
         while !control.ready.load(Ordering::Acquire) && start.elapsed() < timeout {
+            if control.finished.load(Ordering::Acquire) {
+                return Err(AudioError::DecodeError("stream could not be opened".into()));
+            }
             if !control.running.load(Ordering::Acquire) {
                 return Err(AudioError::DecodeError(
                     "decode thread exited before prebuffer".into(),
                 ));
             }
             std::thread::sleep(Duration::from_millis(5));
+        }
+
+        Ok((control, handle))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn start_decode_reader(
+        reader: Box<dyn std::io::Read + Send>,
+        ring: &SharedRingBuffer,
+        eq_gains: &EqGains,
+        eq_enabled: &Arc<AtomicBool>,
+        reverb_enabled: &Arc<AtomicBool>,
+        reverb_room_size: &Arc<Mutex<f32>>,
+        speed: &SpeedControl,
+        spectrum: &Arc<Mutex<Vec<f32>>>,
+    ) -> AudioResult<(Arc<DecodeControl>, std::thread::JoinHandle<()>)> {
+        let control = Arc::new(DecodeControl::new());
+        let thread = DecodeThread::new_reader(
+            reader,
+            ring.clone(),
+            control.clone(),
+            eq_gains.clone(),
+            eq_enabled.clone(),
+            reverb_enabled.clone(),
+            reverb_room_size.clone(),
+            speed.clone(),
+            spectrum.clone(),
+            PREBUFFER_SAMPLES_REDUCED,
+        );
+        let handle = thread.spawn().map_err(AudioError::DecodeError)?;
+
+        // Same readiness contract as `start_decode_reader` on `AudioMixer`:
+        // a live reader that fails to probe exits early with `finished` set
+        // (and `ready` never set), so this wait returns immediately instead
+        // of stalling playback for the whole timeout.
+        let start = Instant::now();
+        let timeout = Duration::from_secs(5);
+        while !control.ready.load(Ordering::Acquire) && start.elapsed() < timeout {
+            if control.finished.load(Ordering::Acquire) {
+                return Err(AudioError::DecodeError(
+                    "live stream could not be opened".into(),
+                ));
+            }
+            if !control.running.load(Ordering::Acquire) {
+                return Err(AudioError::DecodeError(
+                    "decode thread exited before prebuffer".into(),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if !control.ready.load(Ordering::Acquire) {
+            return Err(AudioError::DecodeError(
+                "live stream did not become ready in time".into(),
+            ));
         }
 
         Ok((control, handle))
@@ -454,6 +514,46 @@ impl Mixer for PulseAudioMixer {
         *self.position.lock().unwrap() = start_pos;
         *self.start_time.lock().unwrap() = None;
         *self.start_pos.lock().unwrap() = start_pos;
+        self.playing.store(false, Ordering::SeqCst);
+        self.crossfade_start = None;
+
+        Ok(())
+    }
+
+    fn load_active_reader(
+        &mut self,
+        reader: Box<dyn std::io::Read + Send>,
+        _start_pos: f64,
+    ) -> AudioResult<()> {
+        self.active_mut().stop_decode();
+
+        self.active().cork();
+        self.active().flush();
+        Self::set_stream_volume(&self.active(), 0);
+
+        let (control, handle) = Self::start_decode_reader(
+            reader,
+            &self.active().ring,
+            &self.eq_gains,
+            &self.eq_enabled,
+            &self.reverb_enabled,
+            &self.reverb_room_size,
+            &self.speed,
+            &self.spectrum,
+        )?;
+
+        self.active_mut().control = Some(control);
+        self.active_mut().decode_handle = Some(handle);
+
+        self.active().uncork();
+
+        // Live streams have no meaningful total duration; zero it so the
+        // Finished stall-guard is permanently disabled for this source and a
+        // genuine EOF ends it via the ring's `finished` flag instead.
+        *self.duration.lock().unwrap() = 0.0;
+        *self.position.lock().unwrap() = 0.0;
+        *self.start_time.lock().unwrap() = None;
+        *self.start_pos.lock().unwrap() = 0.0;
         self.playing.store(false, Ordering::SeqCst);
         self.crossfade_start = None;
 
