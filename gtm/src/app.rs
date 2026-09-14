@@ -5461,18 +5461,17 @@ impl App {
                                 let ipc_tx = self.ipc_tx.clone();
                                 let mut deleted = 0;
                                 for idx in indices {
-                                    if let Some(t) = tracks.get(idx) {
-                                        if client.library().remove_track(t.id).await.is_ok() {
-                                            deleted += 1;
-                                        }
+                                    if let Some(t) = tracks.get(idx)
+                                        && client.library().remove_track(t.id).await.is_ok()
+                                    {
+                                        deleted += 1;
                                     }
                                 }
-                                if deleted > 0 {
-                                    if let Ok(DaemonRes::Tracks { tracks, .. }) =
+                                if deleted > 0
+                                    && let Ok(DaemonRes::Tracks { tracks, .. }) =
                                         client.library().get_tracks(None, None).await
-                                    {
-                                        let _ = ipc_tx.send(IpcResult::LibraryTracks(*tracks));
-                                    }
+                                {
+                                    let _ = ipc_tx.send(IpcResult::LibraryTracks(*tracks));
                                 }
                                 self.selected_indices.clear();
                                 self.multiselect_mode = false;
@@ -6434,15 +6433,14 @@ impl App {
                                     }
                                     let mut removed = 0;
                                     for idx in indices {
-                                        if let Some(t) = filtered.get(idx) {
-                                            if client
+                                        if let Some(t) = filtered.get(idx)
+                                            && client
                                                 .library()
                                                 .remove_from_playlist(playlist_id, t.id)
                                                 .await
                                                 .is_ok()
-                                            {
-                                                removed += 1;
-                                            }
+                                        {
+                                            removed += 1;
                                         }
                                     }
                                     if removed > 0 {
