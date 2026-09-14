@@ -266,6 +266,7 @@ impl DecodeThread {
     /// transport (radio/HTTP stream) instead of a seekable file. The reader
     /// is owned and drained by this thread; seeking a live source is
     /// unsupported and logged as a no-op.
+    #[allow(clippy::too_many_arguments)]
     pub fn new_reader(
         reader: Box<dyn Read + Send>,
         shared: SharedRingBuffer,

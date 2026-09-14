@@ -97,17 +97,17 @@ struct PaStreamState {
     decode_handle: Option<std::thread::JoinHandle<()>>,
     name: String,
     sample_rate: u32,
-    channels: u8,
+    channels: u16,
 }
 
 impl PaStreamState {
-    fn stream_params(sample_rate: u32, channels: u8) -> protocol::PlaybackStreamParams {
+    fn stream_params(sample_rate: u32, channels: u16) -> protocol::PlaybackStreamParams {
         let sample_rate = sample_rate.clamp(22050, 192000);
         let channels = if channels == 1 { 1 } else { 2 };
         protocol::PlaybackStreamParams {
             sample_spec: protocol::SampleSpec {
                 format: protocol::SampleFormat::Float32Le,
-                channels,
+                channels: channels as u8,
                 sample_rate,
             },
             channel_map: if channels == 1 {
@@ -115,7 +115,7 @@ impl PaStreamState {
             } else {
                 protocol::ChannelMap::stereo()
             },
-            cvolume: Some(protocol::ChannelVolume::muted(channels)),
+            cvolume: Some(protocol::ChannelVolume::muted(channels as u8)),
             buffer_attr: protocol::stream::BufferAttr {
                 max_length: u32::MAX,
                 // ~2s buffer and ~1.5s pre-buffer, scaled to the track rate so
@@ -135,7 +135,7 @@ impl PaStreamState {
         ring: &SharedRingBuffer,
         stream_volume: &Arc<AtomicU8>,
         sample_rate: u32,
-        channels: u8,
+        channels: u16,
     ) -> AudioResult<pulseaudio::PlaybackStream> {
         let source = PaPlaybackSource {
             ring: ring.clone(),
@@ -172,7 +172,7 @@ impl PaStreamState {
     /// the server, so a close-to-native rate avoids extra resampling and,
     /// crucially, fixes playback speed drift when a track's rate is not 44.1k
     /// (previously every stream was hard-coded to 44100 Hz).
-    fn reconfigure(&mut self, client: &Client, sample_rate: u32, channels: u8) -> AudioResult<()> {
+    fn reconfigure(&mut self, client: &Client, sample_rate: u32, channels: u16) -> AudioResult<()> {
         let sample_rate = sample_rate.clamp(22050, 192000);
         let channels = if channels == 1 { 1 } else { 2 };
         if sample_rate == self.sample_rate && channels == self.channels {
