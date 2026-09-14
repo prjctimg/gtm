@@ -728,6 +728,13 @@ fn strip_word_timings(body: &str) -> (String, Vec<LrcWord>) {
                 time: ts,
                 text: word.clone(),
             });
+            // Word separators live in the whitespace between tokens, which is
+            // dropped when caching (lrc_to_text writes <ts>word back-to-back),
+            // so rejoin with a single space unless one already trails the
+            // accumulated text.
+            if !text.is_empty() && !text.ends_with(char::is_whitespace) {
+                text.push(' ');
+            }
             text.push_str(&word);
         }
         if end < rest.len() {
@@ -780,7 +787,7 @@ fn parse_srt(content: &str) -> Option<LrcData> {
             }
             continue;
         }
-        pending_text.push(raw.trim_end().to_string());
+        pending_text.push(raw.trim().to_string());
     }
     flush(&mut lines, &mut pending_start, &mut pending_text);
 
