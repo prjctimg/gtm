@@ -24,9 +24,11 @@ pub const PREBUFFER_SAMPLES: usize = 44100 * 2 * 3 / 2; // 132300
 /// Reduced prebuffer for subsequent track transitions (0.5 seconds at 44100 stereo).
 pub const PREBUFFER_SAMPLES_REDUCED: usize = 44100 * 2 / 2; // 44100
 
-/// Ring buffer capacity (6 seconds at 44100 stereo) so the decode thread
+/// Ring buffer capacity (4 seconds at 44100 stereo) so the decode thread
 /// can push well ahead of the consumer on slow disks or EQ-heavy tracks.
-pub const BUFFER_CAPACITY_SAMPLES: usize = 44100 * 2 * 6; // 529200
+/// Reduced from 6 s for a smaller memory footprint; 4 s still absorbs
+/// multi-hundred-ms stalls comfortably.
+pub const BUFFER_CAPACITY_SAMPLES: usize = 44100 * 2 * 4; // 352800
 
 // SAFETY: RingBufferInner uses UnsafeCell for SPSC lock-free access.
 // - Only one producer thread calls push()

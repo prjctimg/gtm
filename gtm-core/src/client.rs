@@ -53,6 +53,8 @@ struct PendingRequest {
 pub struct DaemonClient {
     cmd_tx: mpsc::UnboundedSender<PendingRequest>,
     events: Arc<Mutex<Vec<DaemonEvent>>>,
+    /// Reusable buffer for draining events, avoiding per-frame allocation.
+    drain_buf: Arc<Mutex<Vec<DaemonEvent>>>,
     connected: Arc<AtomicBool>,
     /// Clock-skewing state: base position and time for local position estimation.
     /// Updated on playback start/pause/stop from event stream.
@@ -95,6 +97,7 @@ impl DaemonClient {
                     let client = Self {
                         cmd_tx: cmd_tx.clone(),
                         events: events.clone(),
+                        drain_buf: Arc::new(Mutex::new(Vec::with_capacity(256))),
                         connected: connected.clone(),
                         base_pos: Arc::new(Mutex::new(0.0)),
                         base_time: Arc::new(Mutex::new(None)),
@@ -173,9 +176,12 @@ impl DaemonClient {
     pub async fn drain(&self) -> Vec<DaemonEvent> {
         let mut events = self.events.lock().await;
         let cap = events.len().min(1000);
-        let drained: Vec<DaemonEvent> = events.drain(..cap).collect();
-        self.apply_clock_events(&drained).await;
-        drained
+        let mut buf = self.drain_buf.lock().await;
+        buf.clear();
+        buf.extend(events.drain(..cap));
+        drop(events);
+        self.apply_clock_events(&buf).await;
+        std::mem::take(&mut *buf)
     }
 
     async fn apply_clock_events(&self, evs: &[DaemonEvent]) {
@@ -1885,12 +1891,16 @@ impl IpcWorker {
     }
 
     async fn send_by_id(&mut self, id: u64, pending: &PendingRequest) -> Result<()> {
-        let params = serde_json::to_value(&pending.req)?;
-        let mut line = serde_json::to_string(&WireReq {
-            id,
-            cmd: pending.req.cmd_name().to_string(),
-            params,
-        })?;
+        let req_json = serde_json::to_string(&pending.req)?;
+        let cmd = pending.req.cmd_name();
+        let mut line = String::with_capacity(64 + req_json.len());
+        line.push_str("{\"id\":");
+        line.push_str(&id.to_string());
+        line.push_str(",\"cmd\":\"");
+        line.push_str(cmd);
+        line.push_str("\",\"params\":");
+        line.push_str(&req_json);
+        line.push('}');
         line.push('\n');
         self.writer.write_all(line.as_bytes()).await?;
         self.writer.flush().await?;
@@ -1905,21 +1915,15 @@ impl IpcWorker {
             Some(p) => p,
             None => return false,
         };
-        let line = self.buf[..pos].to_vec();
-        self.buf.drain(..=pos);
-        if let Ok(wire_res) = serde_json::from_slice::<WireRes>(&line) {
+        if let Ok(wire_res) = serde_json::from_slice::<WireRes>(&self.buf[..pos]) {
+            self.buf.drain(..=pos);
             if let Some((cmd, tx)) = self.pending.remove(&wire_res.id) {
-                // protocol.md: responses do not echo `cmd`; reconstruct the
-                // typed DaemonRes from the original request's cmd string so
-                // callers can match on typed variants.
                 let response = DaemonRes::from_wire(&cmd, &wire_res);
                 let _ = tx.send(Ok(response));
             }
             return true;
         }
-        // DaemonEvents are consumed exclusively over the dedicated pulse
-        // socket (compact binary stream) to avoid double-delivery; the
-        // command socket carries commands and their responses only.
+        self.buf.drain(..=pos);
         true
     }
 }

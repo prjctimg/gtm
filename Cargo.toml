@@ -25,5 +25,7 @@ gtm-audio = { path = "gtm-audio", version = "0.2.83" }
 gtm-mpris = { path = "gtm-mpris", version = "0.2.83" }
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 strip = "symbols"
+codegen-units = 1
+panic = "abort"

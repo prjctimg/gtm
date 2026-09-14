@@ -380,7 +380,7 @@ impl LyricsManager {
         // Try an `.lrc` sidecar first, then `.srt` / timed `.json` sources.
         for ext in ["lrc", "srt", "json"] {
             let sidecar = path.with_extension(ext);
-            let Ok(content) = std::fs::read_to_string(&sidecar) else {
+            let Ok(content) = tokio::fs::read_to_string(&sidecar).await else {
                 continue;
             };
             let lrc = match ext {

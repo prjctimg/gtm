@@ -15,13 +15,12 @@ gtm-core.workspace = true
 gtm-audio.workspace = true
 gtm-mpris = { workspace = true, optional = true }
 rusqlite = { version = "0.31", features = ["bundled"] }
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "process", "signal"] }
 tokio-util = "0.7"
 futures = "0.3"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "blocking", "rustls-tls-native-roots"] }
 urlencoding = "2"
 regex = "1"
-lastfm = "0.10"
 md5 = "0.8"
 innertube-rs = { version = "0.6", optional = true }
 rspotify = { version = "0.16.1", default-features = false, features = ["client-reqwest", "reqwest-rustls-tls"] }
@@ -46,7 +45,6 @@ dirs = "5"
 fastrand = "2"
 getrandom = "0.2"
 chrono = "0.4"
-tokio-tungstenite = "0.30.0"
 image = "0.25"
 
 [features]

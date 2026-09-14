@@ -2805,7 +2805,7 @@ impl Queue {
                 let state = inner.state.read().await;
                 let (queue, cursor) = queue::visible(&state);
                 drop(state);
-                Ok(DaemonRes::QueueState { queue, cursor })
+                Ok(DaemonRes::QueueState { queue: Box::new(queue), cursor })
             }
             QueueAction::Clear => {
                 Daemon::clear_history(inner).await;
@@ -2918,7 +2918,7 @@ impl LibraryHandler {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(tracks) => DaemonRes::Tracks { tracks },
+                    Ok(tracks) => DaemonRes::Tracks { tracks: Box::new(tracks) },
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
@@ -2931,7 +2931,7 @@ impl LibraryHandler {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(tracks) => DaemonRes::Tracks { tracks },
+                    Ok(tracks) => DaemonRes::Tracks { tracks: Box::new(tracks) },
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
@@ -2958,7 +2958,7 @@ impl LibraryHandler {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(tracks) => DaemonRes::Tracks { tracks },
+                    Ok(tracks) => DaemonRes::Tracks { tracks: Box::new(tracks) },
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
@@ -3042,7 +3042,7 @@ impl LibraryHandler {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(tracks) => DaemonRes::Tracks { tracks },
+                    Ok(tracks) => DaemonRes::Tracks { tracks: Box::new(tracks) },
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
@@ -3300,7 +3300,7 @@ impl Search {
         .await
         .map_err(|e| CoreError::Daemon(e.to_string()))?;
         match result {
-            Ok(tracks) => Ok(DaemonRes::Tracks { tracks }),
+            Ok(tracks) => Ok(DaemonRes::Tracks { tracks: Box::new(tracks) }),
             Err(e) => Ok(DaemonRes::Error { message: e }),
         }
     }
@@ -3318,7 +3318,7 @@ impl Favourites {
         .await
         .map_err(|e| CoreError::Daemon(e.to_string()))?;
         match result {
-            Ok(tracks) => Ok(DaemonRes::Tracks { tracks }),
+            Ok(tracks) => Ok(DaemonRes::Tracks { tracks: Box::new(tracks) }),
             Err(e) => Ok(DaemonRes::Error { message: e }),
         }
     }
@@ -4338,24 +4338,25 @@ impl Daemon {
                                         break;
                                     }
                                 };
-                                let daemon_req = match DaemonReq::parse_cmd(&wire_req.cmd, wire_req.params.clone()) {
+                                let WireReq { id, cmd, params } = wire_req;
+                                let daemon_req = match DaemonReq::parse_cmd(&cmd, params) {
                                     Ok(r) => r,
                                     Err(e) if e.starts_with("unknown command:") => {
-                                        let _ = r_tx.send((wire_req.id, DaemonRes::Error {
+                                        let _ = r_tx.send((id, DaemonRes::Error {
                                             message: e,
                                         }));
                                         line.clear();
                                         continue;
                                     }
                                     Err(e) => {
-                                        let _ = r_tx.send((wire_req.id, DaemonRes::Error {
-                                            message: format!("invalid params for {}: {}", wire_req.cmd, e),
+                                        let _ = r_tx.send((id, DaemonRes::Error {
+                                            message: format!("invalid params for {cmd}: {e}"),
                                         }));
                                         line.clear();
                                         continue;
                                     }
                                 };
-                                if req_tx.send((client_id, wire_req.id, daemon_req, r_tx.clone())).is_err() {
+                                if req_tx.send((client_id, id, daemon_req, r_tx.clone())).is_err() {
                                     break;
                                 }
                                 line.clear();
@@ -5613,12 +5614,14 @@ impl Daemon {
         auth: Vec<std::ffi::OsString>,
     ) -> Result<String, String> {
         let dir = cache_dir.join("spotify");
-        std::fs::create_dir_all(&dir).map_err(|e| format!("create spotify cache: {e}"))?;
-        if let Ok(entries) = std::fs::read_dir(&dir) {
-            for entry in entries.flatten() {
+        tokio::fs::create_dir_all(&dir)
+            .await
+            .map_err(|e| format!("create spotify cache: {e}"))?;
+        if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
+            while let Ok(Some(entry)) = entries.next_entry().await {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if name.starts_with(prefix) {
-                    let _ = std::fs::remove_file(entry.path());
+                    let _ = tokio::fs::remove_file(entry.path()).await;
                 }
             }
         }

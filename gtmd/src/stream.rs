@@ -112,7 +112,7 @@ impl PcmStreamSource {
     ) -> Self {
         Self {
             rx,
-            pending: VecDeque::new(),
+            pending: VecDeque::with_capacity(4096),
             analyzer: SpectrumAnalyzer::new(44_100.0),
             levels: [0.0; SPECTRUM_BINS],
             spectrum_out,

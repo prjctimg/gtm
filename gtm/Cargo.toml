@@ -16,7 +16,7 @@ gtm-audio.workspace = true
 ratatui = "0.30"
 crossterm = { version = "0.28", features = ["bracketed-paste"] }
 tachyonfx = "0.22"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros"] }
 clap = { version = "4", features = ["derive"] }
 color-eyre = "0.6"
 image = "0.25"

@@ -144,10 +144,10 @@ impl YoutubeManager {
     /// If the configured cookies.txt changes after the client was built, the
     /// client is rebuilt so fresh cookies take effect immediately.
     async fn ensure_client(&mut self) -> Result<Innertube, String> {
-        let cookie_mtime = self
-            .cookie_file
-            .as_ref()
-            .and_then(|p| std::fs::metadata(p).ok().and_then(|m| m.modified().ok()));
+        let cookie_mtime = match self.cookie_file.as_ref() {
+            Some(p) => tokio::fs::metadata(p).await.ok().and_then(|m| m.modified().ok()),
+            None => None,
+        };
         if let Some(c) = &self.client
             && cookie_mtime == self.client_cookie_mtime
         {
@@ -616,7 +616,9 @@ pub(crate) async fn download_into(
     prefix: &str,
     auth: &[std::ffi::OsString],
 ) -> Result<PathBuf, String> {
-    std::fs::create_dir_all(dest_dir).map_err(|e| format!("create download dir: {e}"))?;
+    tokio::fs::create_dir_all(dest_dir)
+        .await
+        .map_err(|e| format!("create download dir: {e}"))?;
     let template = dest_dir
         .join(format!("{prefix}.%(ext)s"))
         .to_string_lossy()

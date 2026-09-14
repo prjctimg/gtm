@@ -76,7 +76,8 @@ impl SpotifyManager {
 
     /// Read the token file and set up the client + cached playlists.
     pub async fn load(&mut self) -> Result<(), String> {
-        let raw = std::fs::read_to_string(self.token_path())
+        let raw = tokio::fs::read_to_string(self.token_path())
+            .await
             .map_err(|e| format!("read token file: {e}"))?;
         let token = parse_token(&raw)?;
         self.init_client(token).await

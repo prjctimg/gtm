@@ -9,12 +9,12 @@ use rmp_serde::{Deserializer, Serializer};
 use serde::{Deserialize, Serialize};
 
 pub fn encode(events: &[DaemonEvent]) -> Result<Vec<u8>, rmp_serde::encode::Error> {
-    let mut buf = Vec::with_capacity(1024);
-    events.serialize(&mut Serializer::new(&mut buf))?;
-    let len = buf.len() as u32;
-    let mut out = Vec::with_capacity(4 + len as usize);
-    out.extend_from_slice(&len.to_be_bytes());
-    out.extend_from_slice(&buf);
+    let mut out = Vec::with_capacity(1024);
+    out.extend_from_slice(&[0u8; 4]);
+    let mut serializer = Serializer::new(&mut out);
+    events.serialize(&mut serializer)?;
+    let len = out.len() - 4;
+    out[..4].copy_from_slice(&(len as u32).to_be_bytes());
     Ok(out)
 }
 

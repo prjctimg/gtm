@@ -1924,7 +1924,7 @@ impl App {
                     ..
                 }) = c.queue().list().await
                 {
-                    let _ = ipc_tx.send(IpcResult::Queue(tracks, cursor as usize));
+                    let _ = ipc_tx.send(IpcResult::Queue(*tracks, cursor as usize));
                 }
             });
         }
@@ -1936,7 +1936,7 @@ impl App {
                     c.library().get_tracks(None, None).await
                     && !tracks.is_empty()
                 {
-                    let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
+                    let _ = ipc_tx.send(IpcResult::LibraryTracks(*tracks));
                 }
             });
         }
@@ -1944,10 +1944,14 @@ impl App {
             let c = self.client.clone();
             let ipc_tx = self.ipc_tx.clone();
             tokio::spawn(async move {
-                if let Ok(status) = c.spotify().status().await {
+                let (status, playlists) = tokio::join!(
+                    async { c.spotify().status().await.ok() },
+                    async { c.spotify().playlists().await.ok() }
+                );
+                if let Some(status) = status {
                     let _ = ipc_tx.send(IpcResult::SpotifyStatus(status));
                 }
-                if let Ok(playlists) = c.spotify().playlists().await {
+                if let Some(playlists) = playlists {
                     let _ = ipc_tx.send(IpcResult::SpotifyPlaylists(playlists));
                 }
             });
@@ -4524,7 +4528,7 @@ impl App {
             ..
         }) = self.client.queue().list().await
         {
-            self.queue.cache = tracks;
+            self.queue.cache = *tracks;
             self.queue.cursor = cursor as usize;
         }
     }
@@ -4907,7 +4911,7 @@ impl App {
                         ..
                     }) = client2.queue().list().await
                     {
-                        let _ = ipc_tx2.send(IpcResult::Queue(tracks, cursor as usize));
+                        let _ = ipc_tx2.send(IpcResult::Queue(*tracks, cursor as usize));
                     }
                 });
             }
@@ -4916,7 +4920,7 @@ impl App {
                     if let Ok(DaemonRes::Tracks { tracks, .. }) =
                         client.library().get_tracks(None, None).await
                     {
-                        let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
+                        let _ = ipc_tx.send(IpcResult::LibraryTracks(*tracks));
                     }
                 });
             }

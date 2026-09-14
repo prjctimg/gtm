@@ -32,4 +32,3 @@ libc = "0.2"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }
-shellexpand = "3"

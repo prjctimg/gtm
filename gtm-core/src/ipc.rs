@@ -15,6 +15,21 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use std::collections::HashMap;
 
+/// Extract a sub-value from a JSON object, returning `Value::Null` if missing.
+/// Avoids the intermediate `.cloned().unwrap_or(Value::Null)` pattern.
+#[inline]
+fn field(data: &Value, key: &str) -> Value {
+    data.get(key)
+        .cloned()
+        .unwrap_or(Value::Null)
+}
+
+/// Extract a string field from a JSON object, returning the default if missing.
+#[inline]
+fn field_str<'a>(data: &'a Value, key: &str) -> &'a str {
+    data.get(key).and_then(|v| v.as_str()).unwrap_or("")
+}
+
 /// Default local callback port for the Spotify OAuth redirect when the caller
 /// doesn't specify one.
 fn default_oauth_port() -> u16 {
@@ -1473,10 +1488,10 @@ pub enum DaemonRes {
         value: Value,
     },
     Tracks {
-        tracks: Vec<TrackInfo>,
+        tracks: Box<Vec<TrackInfo>>,
     },
     QueueState {
-        queue: Vec<TrackInfo>,
+        queue: Box<Vec<TrackInfo>>,
         cursor: u64,
     },
     Status {
@@ -1760,8 +1775,6 @@ impl DaemonRes {
     }
 
     fn ok_from_data(cmd: &str, data: Value) -> Self {
-        // Plain ack: no payload. serde flatten turns an empty remainder into
-        // `Some(Object{})`, so treat Null/empty-object as a bare ack.
         let is_ack = match &data {
             Value::Null => true,
             Value::Object(map) => map.is_empty(),
@@ -1791,23 +1804,19 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "get_status" => match serde_json::from_value::<Box<DaemonState>>(
-                data.get("state").cloned().unwrap_or(Value::Null),
-            ) {
+            "get_status" => match serde_json::from_value::<Box<DaemonState>>(field(&data, "state")) {
                 Ok(state) => DaemonRes::Status { state },
                 Err(_) => DaemonRes::Value { value: data },
             },
             "queue" => {
-                let queue = data.get("queue").cloned().unwrap_or(Value::Null);
                 let cursor = data.get("cursor").and_then(|c| c.as_u64()).unwrap_or(0);
-                match serde_json::from_value::<Vec<TrackInfo>>(queue) {
-                    Ok(queue) => DaemonRes::QueueState { queue, cursor },
+                match serde_json::from_value::<Vec<TrackInfo>>(field(&data, "queue")) {
+                    Ok(queue) => DaemonRes::QueueState { queue: Box::new(queue), cursor },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "search" | "get_favourites" => {
-                let tracks = data.get("tracks").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<Vec<TrackInfo>>(tracks) {
+                match serde_json::from_value::<Vec<TrackInfo>>(field(&data, "tracks")) {
                     Ok(tracks) => DaemonRes::Tracks { tracks },
                     Err(_) => DaemonRes::Value { value: data },
                 }
@@ -1831,264 +1840,172 @@ impl DaemonRes {
                         Err(_) => DaemonRes::Value { value: data },
                     }
                 } else if data.get("playlists").is_some() {
-                    let playlists = data.get("playlists").cloned().unwrap_or(Value::Null);
-                    match serde_json::from_value::<Vec<Playlist>>(playlists) {
+                    match serde_json::from_value::<Vec<Playlist>>(field(&data, "playlists")) {
                         Ok(playlists) => DaemonRes::Playlists { playlists },
                         Err(_) => DaemonRes::Value { value: data },
                     }
                 } else {
-                    let tracks = data.get("tracks").cloned().unwrap_or(Value::Null);
-                    match serde_json::from_value::<Vec<TrackInfo>>(tracks) {
-                        Ok(tracks) => DaemonRes::Tracks { tracks },
+                    match serde_json::from_value::<Vec<TrackInfo>>(field(&data, "tracks")) {
+Ok(tracks) => DaemonRes::Tracks { tracks: Box::new(tracks) },
                         Err(_) => DaemonRes::Value { value: data },
                     }
                 }
             }
             "yt_search_poll" => {
-                let query = data
-                    .get("query")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let results = data.get("results").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<Vec<YTSearchResult>>(results) {
+                let query = field_str(&data, "query").to_string();
+                match serde_json::from_value::<Vec<YTSearchResult>>(field(&data, "results")) {
                     Ok(results) => DaemonRes::YtSearchResults { query, results },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "yt_resolve_stream" => {
-                let info = data.get("info").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<Box<StreamInfo>>(info) {
+                match serde_json::from_value::<Box<StreamInfo>>(field(&data, "info")) {
                     Ok(info) => DaemonRes::StreamInfo { info },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "get_cover_art" | "artist_cover_art" => {
-                let d = data.get("data").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<Option<String>>(d) {
+                match serde_json::from_value::<Option<String>>(field(&data, "data")) {
                     Ok(data) => DaemonRes::CoverArt { data },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "get_lyrics" => {
-                let lyrics = data.get("lyrics").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<Option<LrcData>>(lyrics) {
+                match serde_json::from_value::<Option<LrcData>>(field(&data, "lyrics")) {
                     Ok(lyrics) => DaemonRes::Lyrics { lyrics },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "spotify_status" => {
-                let status = data.get("status").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<SpotifyStatus>(status) {
+                match serde_json::from_value::<SpotifyStatus>(field(&data, "status")) {
                     Ok(status) => DaemonRes::SpotifyStatusRes { status },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "spotify_playlists" => {
-                let playlists = data.get("playlists").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<Vec<SpotifyPlaylist>>(playlists) {
+                match serde_json::from_value::<Vec<SpotifyPlaylist>>(field(&data, "playlists")) {
                     Ok(playlists) => DaemonRes::SpotifyPlaylistsRes { playlists },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "spotify_playlist_tracks" => {
-                let tracks = data.get("tracks").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<Vec<SpotifyTrack>>(tracks) {
+                match serde_json::from_value::<Vec<SpotifyTrack>>(field(&data, "tracks")) {
                     Ok(tracks) => DaemonRes::SpotifyTracksRes { tracks },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "spotify_set_token" | "spotify_clear" => {
-                let status = data.get("status").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<SpotifyStatus>(status) {
+                match serde_json::from_value::<SpotifyStatus>(field(&data, "status")) {
                     Ok(status) => DaemonRes::SpotifyStatusRes { status },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "spotify_track_image" => {
-                let img = data.get("data").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<Option<String>>(img) {
+                match serde_json::from_value::<Option<String>>(field(&data, "data")) {
                     Ok(data) => DaemonRes::SpotifyImageRes { data },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "spotify_oauth_start" => {
-                let url = data
-                    .get("url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                DaemonRes::SpotifyOauthStarted { url }
+                DaemonRes::SpotifyOauthStarted { url: field_str(&data, "url").to_string() }
             }
             "subsonic_status" => {
-                let status = data.get("status").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<SubsonicStatus>(status) {
+                match serde_json::from_value::<SubsonicStatus>(field(&data, "status")) {
                     Ok(status) => DaemonRes::SubsonicStatusRes { status },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "subsonic_search" => {
-                let results = data.get("results").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<SubsonicSearchResults>(results) {
+                match serde_json::from_value::<SubsonicSearchResults>(field(&data, "results")) {
                     Ok(results) => DaemonRes::SubsonicSearchRes { results },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "subsonic_albums" => {
-                let albums = data.get("albums").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<Vec<SubsonicAlbum>>(albums) {
+                match serde_json::from_value::<Vec<SubsonicAlbum>>(field(&data, "albums")) {
                     Ok(albums) => DaemonRes::SubsonicAlbumsRes { albums },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "subsonic_album_tracks" => {
-                let tracks = data.get("tracks").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<Vec<SubsonicTrack>>(tracks) {
+                match serde_json::from_value::<Vec<SubsonicTrack>>(field(&data, "tracks")) {
                     Ok(tracks) => DaemonRes::SubsonicTracksRes { tracks },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "subsonic_ping" => {
-                let message = data
-                    .get("message")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                DaemonRes::SubsonicPingRes { message }
+                DaemonRes::SubsonicPingRes { message: field_str(&data, "message").to_string() }
             }
             "subsonic_cover" => {
-                let img = data.get("data").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<Option<String>>(img) {
+                match serde_json::from_value::<Option<String>>(field(&data, "data")) {
                     Ok(data) => DaemonRes::SpotifyImageRes { data },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "podcast_feeds" => {
-                let feeds = data.get("feeds").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<Vec<PodcastFeed>>(feeds) {
+                match serde_json::from_value::<Vec<PodcastFeed>>(field(&data, "feeds")) {
                     Ok(feeds) => DaemonRes::PodcastFeedsRes { feeds },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "podcast_episodes" => {
-                let feed_id = data
-                    .get("feed_id")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let feed_title = data
-                    .get("feed_title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let episodes = data.get("episodes").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<Vec<PodcastEpisode>>(episodes) {
-                    Ok(episodes) => DaemonRes::PodcastEpisodesRes {
-                        feed_id,
-                        feed_title,
-                        episodes,
-                    },
+                let feed_id = field_str(&data, "feed_id").to_string();
+                let feed_title = field_str(&data, "feed_title").to_string();
+                match serde_json::from_value::<Vec<PodcastEpisode>>(field(&data, "episodes")) {
+                    Ok(episodes) => DaemonRes::PodcastEpisodesRes { feed_id, feed_title, episodes },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "podcast_status" => {
-                let status = data.get("status").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<PodcastStatus>(status) {
+                match serde_json::from_value::<PodcastStatus>(field(&data, "status")) {
                     Ok(status) => DaemonRes::PodcastStatusRes { status },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "radio_search" | "radio_top" | "radio_bytag" | "radio_bycountry" => {
-                let stations = data.get("stations").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<Vec<RadioStation>>(stations) {
+                match serde_json::from_value::<Vec<RadioStation>>(field(&data, "stations")) {
                     Ok(stations) => DaemonRes::RadioStationsRes { stations },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "radio_tags" => {
-                let tags = data.get("tags").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<Vec<RadioTag>>(tags) {
+                match serde_json::from_value::<Vec<RadioTag>>(field(&data, "tags")) {
                     Ok(tags) => DaemonRes::RadioTagsRes { tags },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "radio_countries" => {
-                let countries = data.get("countries").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<Vec<RadioCountry>>(countries) {
+                match serde_json::from_value::<Vec<RadioCountry>>(field(&data, "countries")) {
                     Ok(countries) => DaemonRes::RadioCountriesRes { countries },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "check_health" => {
-                let report = data.get("report").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<Box<HealthReport>>(report) {
+                match serde_json::from_value::<Box<HealthReport>>(field(&data, "report")) {
                     Ok(report) => DaemonRes::HealthReport { report },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "lastfm_auth_url" => {
-                let url = data
-                    .get("url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                DaemonRes::LastfmAuthUrlRes { url }
+                DaemonRes::LastfmAuthUrlRes { url: field_str(&data, "url").to_string() }
             }
             "lastfm_status" => {
-                let enabled = data
-                    .get("enabled")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                let api_key = data
-                    .get("api_key")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let session_token = data
-                    .get("session_token")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let ready = data.get("ready").and_then(|v| v.as_bool()).unwrap_or(false);
                 DaemonRes::LastfmStatusRes {
-                    enabled,
-                    api_key,
-                    session_token,
-                    ready,
+                    enabled: data.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
+                    api_key: data.get("api_key").and_then(|v| v.as_str()).map(String::from),
+                    session_token: data.get("session_token").and_then(|v| v.as_str()).map(String::from),
+                    ready: data.get("ready").and_then(|v| v.as_bool()).unwrap_or(false),
                 }
             }
             "yt_download_progress" => {
-                let id = data.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-                let url = data
-                    .get("url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let title = data
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let progress = data.get("progress").and_then(|v| v.as_f64()).unwrap_or(0.0);
-                let status = data
-                    .get("status")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let error = data
-                    .get("error")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let file_path = data
-                    .get("file_path")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
                 DaemonRes::YtDownloadProgress {
-                    id,
-                    url,
-                    title,
-                    progress,
-                    status,
-                    error,
-                    file_path,
+                    id: data.get("id").and_then(|v| v.as_u64()).unwrap_or(0),
+                    url: field_str(&data, "url").to_string(),
+                    title: field_str(&data, "title").to_string(),
+                    progress: data.get("progress").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                    status: field_str(&data, "status").to_string(),
+                    error: data.get("error").and_then(|v| v.as_str()).map(String::from),
+                    file_path: data.get("file_path").and_then(|v| v.as_str()).map(String::from),
                     downloaded_bytes: data.get("downloaded_bytes").and_then(|v| v.as_u64()),
                     total_bytes: data.get("total_bytes").and_then(|v| v.as_u64()),
                     rate_bps: data.get("rate_bps").and_then(|v| v.as_f64()),
@@ -2096,32 +2013,15 @@ impl DaemonRes {
                 }
             }
             "yt_download_result" => {
-                let id = data.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-                let url = data
-                    .get("url")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let title = data
-                    .get("title")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
-                let file_path = data
-                    .get("file_path")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
                 DaemonRes::YtDownloadResult {
-                    id,
-                    url,
-                    title,
-                    file_path,
+                    id: data.get("id").and_then(|v| v.as_u64()).unwrap_or(0),
+                    url: field_str(&data, "url").to_string(),
+                    title: field_str(&data, "title").to_string(),
+                    file_path: field_str(&data, "file_path").to_string(),
                 }
             }
             "list_eq_presets" => {
-                let presets = data.get("presets").cloned().unwrap_or(Value::Null);
-                match serde_json::from_value::<Vec<String>>(presets) {
+                match serde_json::from_value::<Vec<String>>(field(&data, "presets")) {
                     Ok(presets) => DaemonRes::EqPresets { presets },
                     Err(_) => DaemonRes::Value { value: data },
                 }
