@@ -1,0 +1,53 @@
+name: Auto-approve workflow runs
+
+# Approves workflow runs that GitHub blocks pending review because they were
+# triggered by `github-actions[bot]` (for example the Release bench job commits
+# benchmark results back to dev with the default GITHUB_TOKEN, and the resulting
+# commit re-triggers the CI `pull_request` workflow behind an approval gate).
+#
+# Only a human-owned token may call the approve endpoint (GITHUB_TOKEN would be
+# the bot approving itself), so this job runs with the APPROVE_PAT secret: a
+# classic PAT with the `repo` scope, or a fine-grained PAT with the Actions
+# permission set to write.
+#
+# Note: `workflow_run` events only fire for workflows that exist on the default
+# branch, so this helper takes effect only after it is merged to `main`.
+
+on:
+  workflow_run:
+    types: [requested, completed]
+    workflows:
+      - CI
+      - Release
+      - Clippy Auto-Fix
+      - Update CONTRIBUTORS
+
+permissions:
+  contents: read
+
+jobs:
+  approve:
+    name: Approve bot-triggered run
+    if: github.event.workflow_run.triggering_actor.login == 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Approve pending workflow run
+        uses: actions/github-script@v8
+        with:
+          github-token: ${{ secrets.APPROVE_PAT }}
+          script: |
+            const run_id = context.payload.workflow_run.id;
+            const { owner, repo } = context.repo;
+            const name = context.payload.workflow_run.name;
+            try {
+              await github.rest.actions.approveWorkflowRun({ owner, repo, run_id });
+              core.notice(`Approved '${name}' run ${run_id}`);
+            } catch (error) {
+              // The run is not pending approval (e.g. already running, or it
+              // completed without hitting the gate) — nothing to do.
+              if ([403, 404, 409, 422].includes(error.status)) {
+                core.info(`Run ${run_id} ('${name}') does not need approval (HTTP ${error.status})`);
+              } else {
+                throw error;
+              }
+            }
