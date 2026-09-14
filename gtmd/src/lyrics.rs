@@ -773,10 +773,10 @@ fn parse_srt(content: &str) -> Option<LrcData> {
         }
         if pending_start.is_none() {
             // Timing line (the cue index line is skipped).
-            if let Some(arrow) = trimmed.find("-->") {
-                if let Some(ts) = parse_srt_timestamp(trimmed[..arrow].trim()) {
-                    pending_start = Some(ts);
-                }
+            if let Some(arrow) = trimmed.find("-->")
+                && let Some(ts) = parse_srt_timestamp(trimmed[..arrow].trim())
+            {
+                pending_start = Some(ts);
             }
             continue;
         }
@@ -809,7 +809,7 @@ fn parse_srt_timestamp(ts: &str) -> Option<f64> {
     let m: f64 = parts[1].trim().parse().ok()?;
     let s: f64 = parts[2].trim().replace(',', ".").parse().ok()?;
     let total = h * 3600.0 + m * 60.0 + s;
-    (total.is_finite() && total >= 0.0 && total < 200000.0).then_some(total)
+    ((0.0..200000.0).contains(&total)).then_some(total)
 }
 
 /// Parse a timed JSON lyrics document. Accepts a full `LrcData`-shaped object

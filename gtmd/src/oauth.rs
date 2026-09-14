@@ -297,12 +297,11 @@ fn percent_decode(s: &str) -> String {
             && i + 3 <= bytes.len()
             && s.is_char_boundary(i + 1)
             && s.is_char_boundary(i + 3)
+            && let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16)
         {
-            if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(b);
-                i += 3;
-                continue;
-            }
+            out.push(b);
+            i += 3;
+            continue;
         }
         out.push(bytes[i]);
         i += 1;
