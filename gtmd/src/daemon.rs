@@ -2805,7 +2805,10 @@ impl Queue {
                 let state = inner.state.read().await;
                 let (queue, cursor) = queue::visible(&state);
                 drop(state);
-                Ok(DaemonRes::QueueState { queue: Box::new(queue), cursor })
+                Ok(DaemonRes::QueueState {
+                    queue: Box::new(queue),
+                    cursor,
+                })
             }
             QueueAction::Clear => {
                 Daemon::clear_history(inner).await;
@@ -2918,7 +2921,9 @@ impl LibraryHandler {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(tracks) => DaemonRes::Tracks { tracks: Box::new(tracks) },
+                    Ok(tracks) => DaemonRes::Tracks {
+                        tracks: Box::new(tracks),
+                    },
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
@@ -2931,7 +2936,9 @@ impl LibraryHandler {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(tracks) => DaemonRes::Tracks { tracks: Box::new(tracks) },
+                    Ok(tracks) => DaemonRes::Tracks {
+                        tracks: Box::new(tracks),
+                    },
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
@@ -2958,7 +2965,9 @@ impl LibraryHandler {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(tracks) => DaemonRes::Tracks { tracks: Box::new(tracks) },
+                    Ok(tracks) => DaemonRes::Tracks {
+                        tracks: Box::new(tracks),
+                    },
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
@@ -3042,7 +3051,9 @@ impl LibraryHandler {
                 .await
                 .map_err(|e| CoreError::Daemon(e.to_string()))?;
                 match result {
-                    Ok(tracks) => DaemonRes::Tracks { tracks: Box::new(tracks) },
+                    Ok(tracks) => DaemonRes::Tracks {
+                        tracks: Box::new(tracks),
+                    },
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
@@ -3300,7 +3311,9 @@ impl Search {
         .await
         .map_err(|e| CoreError::Daemon(e.to_string()))?;
         match result {
-            Ok(tracks) => Ok(DaemonRes::Tracks { tracks: Box::new(tracks) }),
+            Ok(tracks) => Ok(DaemonRes::Tracks {
+                tracks: Box::new(tracks),
+            }),
             Err(e) => Ok(DaemonRes::Error { message: e }),
         }
     }
@@ -3318,7 +3331,9 @@ impl Favourites {
         .await
         .map_err(|e| CoreError::Daemon(e.to_string()))?;
         match result {
-            Ok(tracks) => Ok(DaemonRes::Tracks { tracks: Box::new(tracks) }),
+            Ok(tracks) => Ok(DaemonRes::Tracks {
+                tracks: Box::new(tracks),
+            }),
             Err(e) => Ok(DaemonRes::Error { message: e }),
         }
     }

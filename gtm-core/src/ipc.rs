@@ -19,9 +19,7 @@ use std::collections::HashMap;
 /// Avoids the intermediate `.cloned().unwrap_or(Value::Null)` pattern.
 #[inline]
 fn field(data: &Value, key: &str) -> Value {
-    data.get(key)
-        .cloned()
-        .unwrap_or(Value::Null)
+    data.get(key).cloned().unwrap_or(Value::Null)
 }
 
 /// Extract a string field from a JSON object, returning the default if missing.
@@ -1804,20 +1802,26 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "get_status" => match serde_json::from_value::<Box<DaemonState>>(field(&data, "state")) {
+            "get_status" => match serde_json::from_value::<Box<DaemonState>>(field(&data, "state"))
+            {
                 Ok(state) => DaemonRes::Status { state },
                 Err(_) => DaemonRes::Value { value: data },
             },
             "queue" => {
                 let cursor = data.get("cursor").and_then(|c| c.as_u64()).unwrap_or(0);
                 match serde_json::from_value::<Vec<TrackInfo>>(field(&data, "queue")) {
-                    Ok(queue) => DaemonRes::QueueState { queue: Box::new(queue), cursor },
+                    Ok(queue) => DaemonRes::QueueState {
+                        queue: Box::new(queue),
+                        cursor,
+                    },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
             "search" | "get_favourites" => {
                 match serde_json::from_value::<Vec<TrackInfo>>(field(&data, "tracks")) {
-                    Ok(tracks) => DaemonRes::Tracks { tracks },
+                    Ok(tracks) => DaemonRes::Tracks {
+                        tracks: Box::new(tracks),
+                    },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
@@ -1846,7 +1850,9 @@ impl DaemonRes {
                     }
                 } else {
                     match serde_json::from_value::<Vec<TrackInfo>>(field(&data, "tracks")) {
-Ok(tracks) => DaemonRes::Tracks { tracks: Box::new(tracks) },
+                        Ok(tracks) => DaemonRes::Tracks {
+                            tracks: Box::new(tracks),
+                        },
                         Err(_) => DaemonRes::Value { value: data },
                     }
                 }
@@ -1906,9 +1912,9 @@ Ok(tracks) => DaemonRes::Tracks { tracks: Box::new(tracks) },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "spotify_oauth_start" => {
-                DaemonRes::SpotifyOauthStarted { url: field_str(&data, "url").to_string() }
-            }
+            "spotify_oauth_start" => DaemonRes::SpotifyOauthStarted {
+                url: field_str(&data, "url").to_string(),
+            },
             "subsonic_status" => {
                 match serde_json::from_value::<SubsonicStatus>(field(&data, "status")) {
                     Ok(status) => DaemonRes::SubsonicStatusRes { status },
@@ -1933,9 +1939,9 @@ Ok(tracks) => DaemonRes::Tracks { tracks: Box::new(tracks) },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "subsonic_ping" => {
-                DaemonRes::SubsonicPingRes { message: field_str(&data, "message").to_string() }
-            }
+            "subsonic_ping" => DaemonRes::SubsonicPingRes {
+                message: field_str(&data, "message").to_string(),
+            },
             "subsonic_cover" => {
                 match serde_json::from_value::<Option<String>>(field(&data, "data")) {
                     Ok(data) => DaemonRes::SpotifyImageRes { data },
@@ -1952,7 +1958,11 @@ Ok(tracks) => DaemonRes::Tracks { tracks: Box::new(tracks) },
                 let feed_id = field_str(&data, "feed_id").to_string();
                 let feed_title = field_str(&data, "feed_title").to_string();
                 match serde_json::from_value::<Vec<PodcastEpisode>>(field(&data, "episodes")) {
-                    Ok(episodes) => DaemonRes::PodcastEpisodesRes { feed_id, feed_title, episodes },
+                    Ok(episodes) => DaemonRes::PodcastEpisodesRes {
+                        feed_id,
+                        feed_title,
+                        episodes,
+                    },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
@@ -1968,12 +1978,10 @@ Ok(tracks) => DaemonRes::Tracks { tracks: Box::new(tracks) },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "radio_tags" => {
-                match serde_json::from_value::<Vec<RadioTag>>(field(&data, "tags")) {
-                    Ok(tags) => DaemonRes::RadioTagsRes { tags },
-                    Err(_) => DaemonRes::Value { value: data },
-                }
-            }
+            "radio_tags" => match serde_json::from_value::<Vec<RadioTag>>(field(&data, "tags")) {
+                Ok(tags) => DaemonRes::RadioTagsRes { tags },
+                Err(_) => DaemonRes::Value { value: data },
+            },
             "radio_countries" => {
                 match serde_json::from_value::<Vec<RadioCountry>>(field(&data, "countries")) {
                     Ok(countries) => DaemonRes::RadioCountriesRes { countries },
@@ -1986,40 +1994,46 @@ Ok(tracks) => DaemonRes::Tracks { tracks: Box::new(tracks) },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "lastfm_auth_url" => {
-                DaemonRes::LastfmAuthUrlRes { url: field_str(&data, "url").to_string() }
-            }
-            "lastfm_status" => {
-                DaemonRes::LastfmStatusRes {
-                    enabled: data.get("enabled").and_then(|v| v.as_bool()).unwrap_or(false),
-                    api_key: data.get("api_key").and_then(|v| v.as_str()).map(String::from),
-                    session_token: data.get("session_token").and_then(|v| v.as_str()).map(String::from),
-                    ready: data.get("ready").and_then(|v| v.as_bool()).unwrap_or(false),
-                }
-            }
-            "yt_download_progress" => {
-                DaemonRes::YtDownloadProgress {
-                    id: data.get("id").and_then(|v| v.as_u64()).unwrap_or(0),
-                    url: field_str(&data, "url").to_string(),
-                    title: field_str(&data, "title").to_string(),
-                    progress: data.get("progress").and_then(|v| v.as_f64()).unwrap_or(0.0),
-                    status: field_str(&data, "status").to_string(),
-                    error: data.get("error").and_then(|v| v.as_str()).map(String::from),
-                    file_path: data.get("file_path").and_then(|v| v.as_str()).map(String::from),
-                    downloaded_bytes: data.get("downloaded_bytes").and_then(|v| v.as_u64()),
-                    total_bytes: data.get("total_bytes").and_then(|v| v.as_u64()),
-                    rate_bps: data.get("rate_bps").and_then(|v| v.as_f64()),
-                    eta_secs: data.get("eta_secs").and_then(|v| v.as_u64()),
-                }
-            }
-            "yt_download_result" => {
-                DaemonRes::YtDownloadResult {
-                    id: data.get("id").and_then(|v| v.as_u64()).unwrap_or(0),
-                    url: field_str(&data, "url").to_string(),
-                    title: field_str(&data, "title").to_string(),
-                    file_path: field_str(&data, "file_path").to_string(),
-                }
-            }
+            "lastfm_auth_url" => DaemonRes::LastfmAuthUrlRes {
+                url: field_str(&data, "url").to_string(),
+            },
+            "lastfm_status" => DaemonRes::LastfmStatusRes {
+                enabled: data
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false),
+                api_key: data
+                    .get("api_key")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                session_token: data
+                    .get("session_token")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                ready: data.get("ready").and_then(|v| v.as_bool()).unwrap_or(false),
+            },
+            "yt_download_progress" => DaemonRes::YtDownloadProgress {
+                id: data.get("id").and_then(|v| v.as_u64()).unwrap_or(0),
+                url: field_str(&data, "url").to_string(),
+                title: field_str(&data, "title").to_string(),
+                progress: data.get("progress").and_then(|v| v.as_f64()).unwrap_or(0.0),
+                status: field_str(&data, "status").to_string(),
+                error: data.get("error").and_then(|v| v.as_str()).map(String::from),
+                file_path: data
+                    .get("file_path")
+                    .and_then(|v| v.as_str())
+                    .map(String::from),
+                downloaded_bytes: data.get("downloaded_bytes").and_then(|v| v.as_u64()),
+                total_bytes: data.get("total_bytes").and_then(|v| v.as_u64()),
+                rate_bps: data.get("rate_bps").and_then(|v| v.as_f64()),
+                eta_secs: data.get("eta_secs").and_then(|v| v.as_u64()),
+            },
+            "yt_download_result" => DaemonRes::YtDownloadResult {
+                id: data.get("id").and_then(|v| v.as_u64()).unwrap_or(0),
+                url: field_str(&data, "url").to_string(),
+                title: field_str(&data, "title").to_string(),
+                file_path: field_str(&data, "file_path").to_string(),
+            },
             "list_eq_presets" => {
                 match serde_json::from_value::<Vec<String>>(field(&data, "presets")) {
                     Ok(presets) => DaemonRes::EqPresets { presets },

@@ -259,7 +259,13 @@ impl CoverCache {
             warn!("Failed to write artist image to disk {disk:?}: {e}");
         }
         let mut mem = self.artist_memory.lock().await;
-        Self::insert_mem(&mut mem, &self.artist_memory_bytes, ARTIST_MEMORY_BUDGET_BYTES, key, cd);
+        Self::insert_mem(
+            &mut mem,
+            &self.artist_memory_bytes,
+            ARTIST_MEMORY_BUDGET_BYTES,
+            key,
+            cd,
+        );
     }
 
     fn disk_path(&self, key: &str) -> PathBuf {
@@ -303,7 +309,13 @@ impl CoverCache {
                     data,
                 };
                 let mut mem = self.memory.lock().await;
-                Self::insert_mem(&mut mem, &self.memory_bytes, MEMORY_BUDGET_BYTES, key, cd.clone());
+                Self::insert_mem(
+                    &mut mem,
+                    &self.memory_bytes,
+                    MEMORY_BUDGET_BYTES,
+                    key,
+                    cd.clone(),
+                );
                 return Some(cd);
             }
             // Small cover on disk: remove it and re-fetch from Deezer
@@ -332,7 +344,13 @@ impl CoverCache {
         }
         if let Some(ref cd) = cd {
             let mut mem = self.memory.lock().await;
-            Self::insert_mem(&mut mem, &self.memory_bytes, MEMORY_BUDGET_BYTES, key, cd.clone());
+            Self::insert_mem(
+                &mut mem,
+                &self.memory_bytes,
+                MEMORY_BUDGET_BYTES,
+                key,
+                cd.clone(),
+            );
         }
         cd
     }
@@ -378,7 +396,13 @@ impl CoverCache {
                 data,
             };
             let mut mem = self.artist_memory.lock().await;
-            Self::insert_mem(&mut mem, &self.artist_memory_bytes, ARTIST_MEMORY_BUDGET_BYTES, key, cd.clone());
+            Self::insert_mem(
+                &mut mem,
+                &self.artist_memory_bytes,
+                ARTIST_MEMORY_BUDGET_BYTES,
+                key,
+                cd.clone(),
+            );
             return Some(cd);
         }
         let deezer = DeezerSearch::new();
@@ -394,7 +418,13 @@ impl CoverCache {
             warn!("Failed to write artist image to disk {disk:?}: {e}");
         }
         let mut mem = self.artist_memory.lock().await;
-        Self::insert_mem(&mut mem, &self.artist_memory_bytes, ARTIST_MEMORY_BUDGET_BYTES, key, cd.clone());
+        Self::insert_mem(
+            &mut mem,
+            &self.artist_memory_bytes,
+            ARTIST_MEMORY_BUDGET_BYTES,
+            key,
+            cd.clone(),
+        );
         Some(cd)
     }
 

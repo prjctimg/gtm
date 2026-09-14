@@ -1116,7 +1116,7 @@ fn sync_and_wait(
                     if let Ok(DaemonRes::Tracks { tracks, .. }) =
                         c.library().get_tracks(None, None).await
                     {
-                        let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
+                        let _ = ipc_tx.send(IpcResult::LibraryTracks(*tracks));
                     }
                     break;
                 }
@@ -1944,10 +1944,10 @@ impl App {
             let c = self.client.clone();
             let ipc_tx = self.ipc_tx.clone();
             tokio::spawn(async move {
-                let (status, playlists) = tokio::join!(
-                    async { c.spotify().status().await.ok() },
-                    async { c.spotify().playlists().await.ok() }
-                );
+                let (status, playlists) =
+                    tokio::join!(async { c.spotify().status().await.ok() }, async {
+                        c.spotify().playlists().await.ok()
+                    });
                 if let Some(status) = status {
                     let _ = ipc_tx.send(IpcResult::SpotifyStatus(status));
                 }
@@ -2130,7 +2130,7 @@ impl App {
                 && let Ok(DaemonRes::Tracks { tracks, .. }) =
                     self.client.library().get_tracks(None, None).await
             {
-                self.tracks_cache = tracks;
+                self.tracks_cache = *tracks;
             }
 
             if had_spotify_change {
@@ -4781,7 +4781,7 @@ impl App {
                         if let Ok(DaemonRes::Tracks { tracks, .. }) =
                             client2.library().get_tracks(None, None).await
                         {
-                            let _ = ipc.send(IpcResult::LibraryTracks(tracks));
+                            let _ = ipc.send(IpcResult::LibraryTracks(*tracks));
                         }
                         // Try to fetch lyrics for the newly downloaded track
                         if let Ok(DaemonRes::Tracks { tracks, .. }) =
@@ -4947,7 +4947,7 @@ impl App {
                         if let Ok(DaemonRes::Tracks { tracks, .. }) =
                             client.library().get_tracks(None, None).await
                         {
-                            let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
+                            let _ = ipc_tx.send(IpcResult::LibraryTracks(*tracks));
                         }
                     }
                 });
@@ -5471,7 +5471,7 @@ impl App {
                                     if let Ok(DaemonRes::Tracks { tracks, .. }) =
                                         client.library().get_tracks(None, None).await
                                     {
-                                        let _ = ipc_tx.send(IpcResult::LibraryTracks(tracks));
+                                        let _ = ipc_tx.send(IpcResult::LibraryTracks(*tracks));
                                     }
                                 }
                                 self.selected_indices.clear();
@@ -6199,7 +6199,8 @@ impl App {
                                         if let Ok(DaemonRes::Tracks { tracks }) =
                                             c.library().get_playlist_tracks(pid).await
                                         {
-                                            let _ = ipc_tx2.send(IpcResult::PlaylistTracks(tracks));
+                                            let _ =
+                                                ipc_tx2.send(IpcResult::PlaylistTracks(*tracks));
                                         }
                                     });
                                 }
@@ -6453,7 +6454,7 @@ impl App {
                                         if let Ok(DaemonRes::Tracks { tracks, .. }) =
                                             client.library().get_playlist_tracks(playlist_id).await
                                         {
-                                            let _ = ipc_tx.send(IpcResult::PlaylistTracks(tracks));
+                                            let _ = ipc_tx.send(IpcResult::PlaylistTracks(*tracks));
                                         }
                                         self.selected_indices.clear();
                                         self.multiselect_mode = false;
@@ -9225,8 +9226,8 @@ impl App {
                                             if let Ok(DaemonRes::Tracks { tracks }) =
                                                 c.library().get_playlist_tracks(pid).await
                                             {
-                                                let _ =
-                                                    ipc_tx2.send(IpcResult::PlaylistTracks(tracks));
+                                                let _ = ipc_tx2
+                                                    .send(IpcResult::PlaylistTracks(*tracks));
                                             }
                                         });
                                     }

@@ -145,7 +145,10 @@ impl YoutubeManager {
     /// client is rebuilt so fresh cookies take effect immediately.
     async fn ensure_client(&mut self) -> Result<Innertube, String> {
         let cookie_mtime = match self.cookie_file.as_ref() {
-            Some(p) => tokio::fs::metadata(p).await.ok().and_then(|m| m.modified().ok()),
+            Some(p) => tokio::fs::metadata(p)
+                .await
+                .ok()
+                .and_then(|m| m.modified().ok()),
             None => None,
         };
         if let Some(c) = &self.client

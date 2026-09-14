@@ -1070,7 +1070,10 @@ mod tests {
             artist: "Artist".to_string(),
             ..Default::default()
         };
-        assert_eq!(manager.cache_path(&a), manager.cache_path(&b));
+        assert_eq!(
+            manager.cache_path(manager.track_cache_key(&a).as_deref().unwrap()),
+            manager.cache_path(manager.track_cache_key(&b).as_deref().unwrap())
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
