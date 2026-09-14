@@ -852,7 +852,23 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: stable
-      - run: go install github.com/bjarneo/cliamp@latest
+          # No go.mod in this repo (a Go tool is only installed ad hoc):
+          # disable setup-go's module cache to avoid its go.mod lookup warning.
+          cache: false
+      # go install talks to proxy.golang.org / sum.golang.org which flake
+      # intermittently (stream errors); retry instead of failing the run.
+      - name: Build cliamp binary
+        shell: bash
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if go install github.com/bjarneo/cliamp@latest; then
+              exit 0
+            fi
+            echo "cliamp install attempt ${attempt} failed; retrying in 10s..."
+            sleep 10
+          done
+          echo "::error::could not install cliamp after 5 attempts" >&2
+          exit 1
 
       - name: Extract gtm binaries from published archive
         shell: bash
