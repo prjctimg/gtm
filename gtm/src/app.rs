@@ -4085,7 +4085,8 @@ impl App {
     fn motion_row_ids(&self) -> Option<Vec<i64>> {
         match self.library_category {
             2 => {
-                let (name, _) = self.unique_albums().get(self.list_pos())?;
+                let albums = self.unique_albums();
+                let (name, _) = albums.get(self.list_pos())?;
                 Some(
                     self.tracks_cache
                         .iter()
@@ -4102,7 +4103,8 @@ impl App {
                 )
             }
             3 => {
-                let (name, _) = self.unique_artists().get(self.list_pos())?;
+                let artists = self.unique_artists();
+                let (name, _) = artists.get(self.list_pos())?;
                 Some(
                     self.tracks_cache
                         .iter()

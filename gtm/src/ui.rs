@@ -2539,7 +2539,7 @@ fn spotify_waiting_lines(app: &App) -> Vec<Line<'static>> {
     }
     if let Some(err) = app.spotify.oauth_error.as_deref() {
         lines.push(Line::from(Span::styled(
-            err,
+            err.to_string(),
             Style::default().fg(app.theme.error),
         )));
         lines.push(Line::from(""));
@@ -2550,7 +2550,7 @@ fn spotify_waiting_lines(app: &App) -> Vec<Line<'static>> {
             Style::default().fg(app.theme.fg_dim),
         )));
         lines.push(Line::from(Span::styled(
-            url,
+            url.to_string(),
             Style::default().fg(app.theme.accent),
         )));
         lines.push(Line::from(""));
@@ -6633,7 +6633,7 @@ impl Pickers {
             } else {
                 Style::default()
             };
-            list_items.push(ListItem::new(Line::from(spans)).style(style).height(item_h));
+            list_items.push(ListItem::new(vec![Line::from(spans), Line::from("")]).style(style));
             let row_rect = Rect {
                 x: inner.x,
                 y: inner.y + 1 + (visible_idx as u16) * item_h,
