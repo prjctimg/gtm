@@ -12,14 +12,18 @@ use chrono::{Duration, Utc};
 use futures::StreamExt;
 use rspotify::AuthCodePkceSpotify;
 use rspotify::clients::{BaseClient, OAuthClient};
-use rspotify::model::{AdditionalType, AlbumId, AlbumType, ArtistId, PlayableItem, SearchType, Token};
+use rspotify::model::{
+    AdditionalType, AlbumId, AlbumType, ArtistId, PlayableItem, SearchType, Token,
+};
 use rspotify::{CallbackError, Config, Credentials, OAuth, TokenCallback};
 use tracing::{debug, info, warn};
 
 use gtm_core::secret::{
     SPOTIFY_CLIENT_ID, SPOTIFY_TOKEN_KEY, delete_secret, get_secret, set_secret,
 };
-use gtm_core::spotify::{LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifySearchKind, SpotifyStatus, SpotifyTrack};
+use gtm_core::spotify::{
+    LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifySearchKind, SpotifyStatus, SpotifyTrack,
+};
 
 const TOKEN_FILE: &str = "spotify.json";
 const TOKEN_ACCESS_PERMS: u32 = 0o600;
@@ -438,20 +442,22 @@ impl SpotifyManager {
             .search(query, SearchType::Track, None, None, Some(limit), None)
             .await
         {
-            tracks.extend(page.items.iter().enumerate().map(|(i, t)| SpotifyTrack {
-                index: i,
-                name: t.name.clone(),
-                artists: t
-                    .artists
-                    .iter()
-                    .map(|a| a.name.clone())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-                album: Some(t.album.name.clone()),
-                duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
-                uri: t.id.as_ref().map(|id| format!("spotify:track:{id}")),
-                image_url: pick_largest_image(&t.album.images),
-                kind: None,
+            tracks.extend(page.items.iter().enumerate().map(|(i, t)| {
+                SpotifyTrack {
+                    index: i,
+                    name: t.name.clone(),
+                    artists: t
+                        .artists
+                        .iter()
+                        .map(|a| a.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    album: Some(t.album.name.clone()),
+                    duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
+                    uri: t.id.as_ref().map(|id| format!("spotify:track:{id}")),
+                    image_url: pick_largest_image(&t.album.images),
+                    kind: None,
+                }
             }));
         }
 
@@ -461,7 +467,14 @@ impl SpotifyManager {
 
         // Album results.
         if let Ok(rspotify::model::SearchResult::Albums(page)) = client
-            .search(query, SearchType::Album, None, None, Some(album_limit), None)
+            .search(
+                query,
+                SearchType::Album,
+                None,
+                None,
+                Some(album_limit),
+                None,
+            )
             .await
         {
             for a in &page.items {
@@ -486,7 +499,14 @@ impl SpotifyManager {
 
         // Artist results.
         if let Ok(rspotify::model::SearchResult::Artists(page)) = client
-            .search(query, SearchType::Artist, None, None, Some(artist_limit), None)
+            .search(
+                query,
+                SearchType::Artist,
+                None,
+                None,
+                Some(artist_limit),
+                None,
+            )
             .await
         {
             for a in &page.items {
@@ -512,8 +532,7 @@ impl SpotifyManager {
         let Some(client) = self.client.as_ref() else {
             return Err("spotify not linked".into());
         };
-        let album_id =
-            AlbumId::from_uri(uri).map_err(|e| format!("bad album uri: {e}"))?;
+        let album_id = AlbumId::from_uri(uri).map_err(|e| format!("bad album uri: {e}"))?;
         let page = client
             .album_track_manual(album_id, None, Some(50), Some(0))
             .await
@@ -532,10 +551,7 @@ impl SpotifyManager {
                 album: t.album.as_ref().map(|a| a.name.clone()),
                 duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
                 uri: t.id.as_ref().map(|id| format!("spotify:track:{id}")),
-                image_url: t
-                    .album
-                    .as_ref()
-                    .and_then(|a| pick_largest_image(&a.images)),
+                image_url: t.album.as_ref().and_then(|a| pick_largest_image(&a.images)),
                 kind: Some(SpotifySearchKind::Track),
             });
         }
@@ -549,8 +565,7 @@ impl SpotifyManager {
         let Some(client) = self.client.as_ref() else {
             return Err("spotify not linked".into());
         };
-        let artist_id =
-            ArtistId::from_uri(uri).map_err(|e| format!("bad artist uri: {e}"))?;
+        let artist_id = ArtistId::from_uri(uri).map_err(|e| format!("bad artist uri: {e}"))?;
         let page = client
             .artist_albums_manual(
                 artist_id,
@@ -606,10 +621,7 @@ impl SpotifyManager {
                         .or(Some(album.name.clone())),
                     duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
                     uri: Some(track_uri),
-                    image_url: t
-                        .album
-                        .as_ref()
-                        .and_then(|a| pick_largest_image(&a.images)),
+                    image_url: t.album.as_ref().and_then(|a| pick_largest_image(&a.images)),
                     kind: Some(SpotifySearchKind::Track),
                 });
                 if tracks.len() as u32 >= target {

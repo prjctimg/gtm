@@ -1815,10 +1815,7 @@ impl Spotify {
                                 if spotify.linked() {
                                     let count = playlists.len();
                                     spotify.commit_sync(user, playlists);
-                                    info!(
-                                        "spotify playlists synced ({:?} playlists)",
-                                        count
-                                    );
+                                    info!("spotify playlists synced ({:?} playlists)", count);
                                 }
                             }
                             Err(e) => {
@@ -1870,8 +1867,7 @@ impl Spotify {
         let inner2 = inner.clone();
         tokio::spawn(async move {
             let mut spotify = inner2.spotify.lock().await;
-            let _ =
-                tokio::time::timeout(Duration::from_secs(5), spotify.refresh_playback()).await;
+            let _ = tokio::time::timeout(Duration::from_secs(5), spotify.refresh_playback()).await;
         });
         let spotify = inner.spotify.lock().await;
         Ok(DaemonRes::SpotifyStatusRes {
@@ -2070,10 +2066,7 @@ impl Spotify {
 
     /// Resolve a web-search artist result (an artist `spotify:` URI) to their
     /// top tracks.
-    pub async fn artist_top_tracks(
-        inner: &DaemonInner,
-        uri: &str,
-    ) -> Result<DaemonRes, CoreError> {
+    pub async fn artist_top_tracks(inner: &DaemonInner, uri: &str) -> Result<DaemonRes, CoreError> {
         let tracks = {
             let spotify = inner.spotify.lock().await;
             match spotify.artist_top_tracks(uri).await {
@@ -4216,7 +4209,9 @@ impl Daemon {
             // The TUI only refreshes its Spotify pane when it hears this event,
             // so re-announce after the startup auto-sync; otherwise playlists
             // remain stale until a link or another event happens.
-            let _ = spotify_inner.event_tx.send(DaemonEvent::SpotifyStatusChanged);
+            let _ = spotify_inner
+                .event_tx
+                .send(DaemonEvent::SpotifyStatusChanged);
         });
 
         let provider_inner = Arc::clone(&self.inner);

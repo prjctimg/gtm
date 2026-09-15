@@ -604,7 +604,10 @@ fn has_timed_lines(lrc: &LrcData) -> bool {
 /// candidate with genuinely timestamped lines (the synced/LRC variant) wins
 /// even when it appears after a plain one; otherwise the first plain
 /// candidate is used as a fallback.
-fn pick_best_result(results: &[serde_json::Value], accept: impl Fn(&str, &str) -> bool) -> Option<LrcData> {
+fn pick_best_result(
+    results: &[serde_json::Value],
+    accept: impl Fn(&str, &str) -> bool,
+) -> Option<LrcData> {
     let mut fallback = None;
     for result in results {
         let Some(artist_name) = result.get("artistName").and_then(|v| v.as_str()) else {
