@@ -296,9 +296,15 @@ impl LyricsManager {
             return Some(lrc);
         }
 
-        // 2. Check the offline cache before hitting the network.
-        if let Some(lrc) = self.read_cache(track) {
-            return Some(lrc);
+        // 2. Offline cache: a synced (timestamped) entry is served
+        //    immediately. A plain/unsynced cache is only a fallback — the
+        //    network is still consulted so a synced variant can upgrade the
+        //    stale plain entry.
+        let cached = self.read_cache(track);
+        if let Some(lrc) = cached.as_ref()
+            && has_timed_lines(lrc)
+        {
+            return Some(lrc.clone());
         }
 
         // 3. lrclib's exact lookup requires an artist; tracks with missing
@@ -325,7 +331,8 @@ impl LyricsManager {
             return Some(lrc);
         }
 
-        None
+        // No better result available: fall back to the cached plain lyrics.
+        cached
     }
 
     /// Search lrclib for a free-form "Artist - Title" pair, returning the best
@@ -346,23 +353,15 @@ impl LyricsManager {
                 && resp.status().is_success()
                 && let Ok(results) = resp.json::<Vec<serde_json::Value>>().await
             {
-                // Try fuzzy match first; malformed entries are skipped so a
-                // single bad hit can't abort the whole list.
-                for result in &results {
-                    let Some(artist_name) = result.get("artistName").and_then(|v| v.as_str())
-                    else {
-                        continue;
-                    };
-                    let Some(track_name) = result.get("trackName").and_then(|v| v.as_str()) else {
-                        continue;
-                    };
-                    if fuzzy_match(artist_name, artist)
-                        && fuzzy_match(track_name, title)
-                        && let Some(lrc) = parse_lrclib_response(result)
-                    {
-                        self.write_cache_key(&key, &lrc);
-                        return Some(lrc);
-                    }
+                // Prefer a synced (timestamped) result across all fuzzy
+                // matches; a plain result is a last-resort fallback. Malformed
+                // entries are skipped so a single bad hit can't abort the list.
+                let picked = pick_best_result(&results, |artist_name, track_name| {
+                    fuzzy_match(artist_name, artist) && fuzzy_match(track_name, title)
+                });
+                if let Some(lrc) = picked {
+                    self.write_cache_key(&key, &lrc);
+                    return Some(lrc);
                 }
                 // No fuzzy match on artist+title: prefer no lyrics over a
                 // wrong song's, so a mismatched first hit is never served.
@@ -505,24 +504,12 @@ impl LyricsManager {
                 && resp.status().is_success()
                 && let Ok(results) = resp.json::<Vec<serde_json::Value>>().await
             {
-                // Try fuzzy match first
-                for result in &results {
-                    let Some(artist_name) = result.get("artistName").and_then(|v| v.as_str())
-                    else {
-                        continue;
-                    };
-                    let Some(track_name) = result.get("trackName").and_then(|v| v.as_str()) else {
-                        continue;
-                    };
-                    if fuzzy_match(artist_name, &track.artist)
-                        && fuzzy_match(track_name, &track.title)
-                    {
-                        return parse_lrclib_response(result);
-                    }
-                }
-                // No fuzzy match: skip the first-hit fallback so a wrong
-                // song's lyrics are never shown for this track.
-                return None;
+                // Prefer a synced (timestamped) result across all fuzzy
+                // matches; a plain result is a last-resort fallback so a
+                // wrong song's lyrics are never shown.
+                return pick_best_result(&results, |artist_name, track_name| {
+                    fuzzy_match(artist_name, &track.artist) && fuzzy_match(track_name, &track.title)
+                });
             }
             if attempt == 0 {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -543,17 +530,9 @@ impl LyricsManager {
         }
 
         let results: Vec<serde_json::Value> = resp.json().await.ok()?;
-        // Try fuzzy match against title
-        for result in &results {
-            let Some(track_name) = result.get("trackName").and_then(|v| v.as_str()) else {
-                continue;
-            };
-            if fuzzy_match(track_name, title) {
-                return parse_lrclib_response(result);
-            }
-        }
-        // No fuzzy title match: don't serve an unrelated song's lyrics.
-        None
+        // Prefer a synced (timestamped) result across all title fuzzy
+        // matches; plain results are a last-resort fallback.
+        pick_best_result(&results, |_, track_name| fuzzy_match(track_name, title))
     }
 }
 
@@ -615,14 +594,60 @@ fn lrc_minutes_seconds(seconds: f64) -> (u64, f64) {
     (mins, secs)
 }
 
+/// Whether any lyric line carries a real timestamp (>= 0.0). Lines stamped
+/// with the -1.0 sentinel are untimed/plain.
+fn has_timed_lines(lrc: &LrcData) -> bool {
+    lrc.lines.iter().any(|l| l.timestamp >= 0.0)
+}
+
+/// Pick the best candidate from already-match-checked lrclib results. A
+/// candidate with genuinely timestamped lines (the synced/LRC variant) wins
+/// even when it appears after a plain one; otherwise the first plain
+/// candidate is used as a fallback.
+fn pick_best_result(results: &[serde_json::Value], accept: impl Fn(&str, &str) -> bool) -> Option<LrcData> {
+    let mut fallback = None;
+    for result in results {
+        let Some(artist_name) = result.get("artistName").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(track_name) = result.get("trackName").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        if !accept(artist_name, track_name) {
+            continue;
+        }
+        let Some(lrc) = parse_lrclib_response(result) else {
+            continue;
+        };
+        if has_timed_lines(&lrc) {
+            return Some(lrc);
+        }
+        if fallback.is_none() {
+            fallback = Some(lrc);
+        }
+    }
+    fallback
+}
+
 fn parse_lrclib_response(json: &serde_json::Value) -> Option<LrcData> {
     let synced = json.get("syncLyrics").and_then(|v| v.as_str());
     let plain = json.get("plainLyrics").and_then(|v| v.as_str());
 
+    // Prefer the timestamped (LRC) variant. Some submissions carry
+    // `syncLyrics` that is really plain text with no time tags; only accept
+    // it as synced when timestamps are actually present, otherwise fall back
+    // to `plainLyrics`. Untimed `syncLyrics` is still served when that is all
+    // a record has, so nothing that used to display is dropped.
     if let Some(s) = synced
         && !s.is_empty()
     {
-        return Some(LyricsManager::parse_lrc(s));
+        let parsed = LyricsManager::parse_lrc(s);
+        if has_timed_lines(&parsed) {
+            return Some(parsed);
+        }
+        if plain.is_none_or(|p| p.is_empty()) {
+            return (!parsed.lines.is_empty()).then_some(parsed);
+        }
     }
 
     if let Some(p) = plain
@@ -997,6 +1022,67 @@ mod tests {
         let lrc = LyricsManager::parse_lrc("[length:03:30]\n[00:01.00]real line");
         assert_eq!(lrc.lines.len(), 1);
         assert_eq!(lrc.lines[0].text, "real line");
+    }
+
+    #[test]
+    fn lrclib_response_prefers_timed_sync() {
+        let json = serde_json::json!({
+            "syncLyrics": "[00:12.00]Hello\n[00:20.00]World",
+            "plainLyrics": "Hello\nWorld",
+        });
+        let lrc = parse_lrclib_response(&json).expect("response should parse");
+        assert!(has_timed_lines(&lrc));
+        assert_eq!(lrc.lines.len(), 2);
+        assert_eq!(lrc.lines[0].timestamp, 12.0);
+    }
+
+    #[test]
+    fn lrclib_response_rejects_pseudo_synced() {
+        // `syncLyrics` is actually plain text with no timestamps; when a real
+        // plain variant exists it must be served instead.
+        let json = serde_json::json!({
+            "syncLyrics": "Hello\nWorld",
+            "plainLyrics": "Hello\nWorld",
+        });
+        let lrc = parse_lrclib_response(&json).expect("response should parse");
+        assert!(!has_timed_lines(&lrc));
+        assert_eq!(lrc.lines.len(), 2);
+
+        // Untimed `syncLyrics` alone is still served as best effort.
+        let json = serde_json::json!({"syncLyrics": "Hello\nWorld"});
+        let lrc = parse_lrclib_response(&json).expect("response should parse");
+        assert!(!has_timed_lines(&lrc));
+        assert_eq!(lrc.lines.len(), 2);
+
+        assert!(parse_lrclib_response(&serde_json::json!({})).is_none());
+    }
+
+    #[test]
+    fn lrclib_picks_later_synced_variant() {
+        // The first fuzzy-matching result is plain-only; a later one is
+        // synced. The synced/LRC variant must win.
+        let (artist, title) = ("The Weeknd", "Blinding Lights");
+        let results = vec![
+            serde_json::json!({
+                "artistName": artist,
+                "trackName": title,
+                "syncLyrics": "",
+                "plainLyrics": "I'm blinded by the lights",
+            }),
+            serde_json::json!({
+                "artistName": artist,
+                "trackName": title,
+                "syncLyrics": "[00:05.00]I'm blinded by the lights",
+                "plainLyrics": "I'm blinded by the lights",
+            }),
+        ];
+        let lrc = pick_best_result(&results, |a, t| a == artist && t == title)
+            .expect("a result should be picked");
+        assert!(has_timed_lines(&lrc));
+        assert_eq!(lrc.lines[0].timestamp, 5.0);
+
+        // No fuzzy-matching result -> nothing is served.
+        assert!(pick_best_result(&results, |_, _| false).is_none());
     }
 
     #[test]
