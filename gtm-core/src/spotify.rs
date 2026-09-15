@@ -49,6 +49,19 @@ impl SpotifyPlaylist {
     }
 }
 
+/// What kind of object a Spotify web-search result represents. Tracks stream
+/// directly; albums/artists resolve to their track lists on the daemon.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SpotifySearchKind {
+    /// A searchable single track.
+    #[default]
+    Track,
+    /// A searchable album; resolves to the album's track list.
+    Album,
+    /// A searchable artist; resolves to the artist's top tracks.
+    Artist,
+}
+
 /// A single track inside a Spotify playlist.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SpotifyTrack {
@@ -68,6 +81,14 @@ pub struct SpotifyTrack {
     /// without an extra network round-trip to the daemon.
     #[serde(default)]
     pub image_url: Option<String>,
+    /// What the web search returned for this entry. Absent for synced
+    /// playlist tracks (defaults to `Track`).
+    #[serde(default, skip_serializing_if = "is_track_kind")]
+    pub kind: Option<SpotifySearchKind>,
+}
+
+fn is_track_kind(kind: &Option<SpotifySearchKind>) -> bool {
+    matches!(kind, None | Some(SpotifySearchKind::Track))
 }
 
 impl SpotifyTrack {

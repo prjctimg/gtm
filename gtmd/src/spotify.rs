@@ -12,14 +12,14 @@ use chrono::{Duration, Utc};
 use futures::StreamExt;
 use rspotify::AuthCodePkceSpotify;
 use rspotify::clients::{BaseClient, OAuthClient};
-use rspotify::model::{AdditionalType, PlayableItem, SearchType, Token};
+use rspotify::model::{AdditionalType, AlbumId, AlbumType, ArtistId, PlayableItem, SearchType, Token};
 use rspotify::{CallbackError, Config, Credentials, OAuth, TokenCallback};
 use tracing::{debug, info, warn};
 
 use gtm_core::secret::{
     SPOTIFY_CLIENT_ID, SPOTIFY_TOKEN_KEY, delete_secret, get_secret, set_secret,
 };
-use gtm_core::spotify::{LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
+use gtm_core::spotify::{LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifySearchKind, SpotifyStatus, SpotifyTrack};
 
 const TOKEN_FILE: &str = "spotify.json";
 const TOKEN_ACCESS_PERMS: u32 = 0o600;
@@ -319,7 +319,32 @@ impl SpotifyManager {
         tracks
     }
 
-    async fn init_client(&mut self, token: Token) -> Result<(), String> {
+    /// Accept a token, persist it, then build a usable client WITHOUT syncing
+    /// playlists. `linked()` becomes true immediately so the TUI can close its
+    /// OAuth picker and start loading playlists while the sync runs in the
+    /// background. Returns once the client is ready.
+    pub async fn link(&mut self, raw: &str) -> Result<(), String> {
+        let token = parse_token(raw)?;
+        self.save_token(&token)?;
+        // Mirror the token into the OS keychain so it survives the file-based
+        // token being cleared and can be restored without a re-login.
+        set_secret(SPOTIFY_TOKEN_KEY, raw);
+        self.set_client(token).await?;
+        // Populate the display name eagerly so the TUI can greet the user as
+        // soon as the picker closes; the playlist sync continues in the
+        // background and refreshes the cache when it finishes.
+        if let Some(client) = self.client.clone() {
+            if let Ok(me) = client.me().await {
+                self.user = me.display_name.or_else(|| Some(me.id.as_ref().to_string()));
+            }
+        }
+        Ok(())
+    }
+
+    /// Build a usable rspotify client from a token (persist-free). Does not
+    /// touch the playlist cache or call the network; `linked()` becomes true
+    /// once this returns.
+    async fn set_client(&mut self, token: Token) -> Result<(), String> {
         let refreshable = token.refresh_token.is_some();
         let client_id = get_secret(SPOTIFY_CLIENT_ID).unwrap_or_default();
         // Fall back to librespot's public desktop client id when the user
@@ -365,6 +390,12 @@ impl SpotifyManager {
             token, creds, oauth, config,
         ));
         self.error = None;
+        Ok(())
+    }
+
+    async fn init_client(&mut self, token: Token) -> Result<(), String> {
+        let refreshable = token.refresh_token.is_some();
+        self.set_client(token).await?;
         match self.sync().await {
             Ok(()) => {
                 info!(
@@ -400,17 +431,167 @@ impl SpotifyManager {
         let Some(client) = self.client.as_ref() else {
             return Vec::new();
         };
-        let q = format!("track:{query}");
-        match client
-            .search(&q, SearchType::Track, None, None, Some(limit), None)
+        let mut tracks: Vec<SpotifyTrack> = Vec::new();
+
+        // Track results first (the most useful).
+        if let Ok(rspotify::model::SearchResult::Tracks(page)) = client
+            .search(query, SearchType::Track, None, None, Some(limit), None)
             .await
         {
-            Ok(rspotify::model::SearchResult::Tracks(page)) => page
-                .items
-                .iter()
-                .enumerate()
-                .map(|(i, t)| SpotifyTrack {
-                    index: i,
+            tracks.extend(page.items.iter().enumerate().map(|(i, t)| SpotifyTrack {
+                index: i,
+                name: t.name.clone(),
+                artists: t
+                    .artists
+                    .iter()
+                    .map(|a| a.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                album: Some(t.album.name.clone()),
+                duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
+                uri: t.id.as_ref().map(|id| format!("spotify:track:{id}")),
+                image_url: pick_largest_image(&t.album.images),
+                kind: None,
+            }));
+        }
+
+        let mut idx = tracks.len();
+        let album_limit = (limit / 3).max(5);
+        let artist_limit = (limit / 4).max(4);
+
+        // Album results.
+        if let Ok(rspotify::model::SearchResult::Albums(page)) = client
+            .search(query, SearchType::Album, None, None, Some(album_limit), None)
+            .await
+        {
+            for a in &page.items {
+                tracks.push(SpotifyTrack {
+                    index: idx,
+                    name: a.name.clone(),
+                    artists: a
+                        .artists
+                        .iter()
+                        .map(|a| a.name.clone())
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                    album: Some(a.name.clone()),
+                    duration_ms: None,
+                    uri: a.id.as_ref().map(|id| format!("spotify:album:{id}")),
+                    image_url: pick_largest_image(&a.images),
+                    kind: Some(SpotifySearchKind::Album),
+                });
+                idx += 1;
+            }
+        }
+
+        // Artist results.
+        if let Ok(rspotify::model::SearchResult::Artists(page)) = client
+            .search(query, SearchType::Artist, None, None, Some(artist_limit), None)
+            .await
+        {
+            for a in &page.items {
+                tracks.push(SpotifyTrack {
+                    index: idx,
+                    name: a.name.clone(),
+                    artists: String::new(),
+                    album: None,
+                    duration_ms: None,
+                    uri: Some(format!("spotify:artist:{}", a.id)),
+                    image_url: pick_largest_image(&a.images),
+                    kind: Some(SpotifySearchKind::Artist),
+                });
+                idx += 1;
+            }
+        }
+
+        tracks
+    }
+
+    /// Resolve a web-search album result to its track list.
+    pub async fn album_tracks(&self, uri: &str) -> Result<Vec<SpotifyTrack>, String> {
+        let Some(client) = self.client.as_ref() else {
+            return Err("spotify not linked".into());
+        };
+        let album_id =
+            AlbumId::from_uri(uri).map_err(|e| format!("bad album uri: {e}"))?;
+        let page = client
+            .album_track_manual(album_id, None, Some(50), Some(0))
+            .await
+            .map_err(|e| format!("album tracks: {e}"))?;
+        let mut tracks = Vec::new();
+        for (i, t) in page.items.into_iter().enumerate() {
+            tracks.push(SpotifyTrack {
+                index: i,
+                name: t.name.clone(),
+                artists: t
+                    .artists
+                    .iter()
+                    .map(|a| a.name.clone())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                album: t.album.as_ref().map(|a| a.name.clone()),
+                duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
+                uri: t.id.as_ref().map(|id| format!("spotify:track:{id}")),
+                image_url: t
+                    .album
+                    .as_ref()
+                    .and_then(|a| pick_largest_image(&a.images)),
+                kind: Some(SpotifySearchKind::Track),
+            });
+        }
+        Ok(tracks)
+    }
+
+    /// Resolve an artist URI to their top tracks via their most recent albums.
+    /// Spotify removed the dedicated top-tracks endpoint, so we collect tracks
+    /// from the artist's newest albums/singles instead.
+    pub async fn artist_top_tracks(&self, uri: &str) -> Result<Vec<SpotifyTrack>, String> {
+        let Some(client) = self.client.as_ref() else {
+            return Err("spotify not linked".into());
+        };
+        let artist_id =
+            ArtistId::from_uri(uri).map_err(|e| format!("bad artist uri: {e}"))?;
+        let page = client
+            .artist_albums_manual(
+                artist_id,
+                [AlbumType::Album, AlbumType::Single],
+                None,
+                Some(20),
+                Some(0),
+            )
+            .await
+            .map_err(|e| format!("artist albums: {e}"))?;
+
+        let mut tracks: Vec<SpotifyTrack> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let target = 50u32;
+        let mut albums_fetched = 0u32;
+
+        for album in page.items {
+            if tracks.len() as u32 >= target || albums_fetched >= 4 {
+                break;
+            }
+            let Some(album_id) = album.id else {
+                continue;
+            };
+            let page = match client
+                .album_track_manual(album_id, None, Some(50), Some(0))
+                .await
+            {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            albums_fetched += 1;
+            for t in page.items {
+                let Some(track_id) = t.id.as_ref() else {
+                    continue;
+                };
+                let track_uri = format!("spotify:track:{track_id}");
+                if !seen.insert(track_uri.clone()) {
+                    continue;
+                }
+                tracks.push(SpotifyTrack {
+                    index: tracks.len(),
                     name: t.name.clone(),
                     artists: t
                         .artists
@@ -418,14 +599,25 @@ impl SpotifyManager {
                         .map(|a| a.name.clone())
                         .collect::<Vec<_>>()
                         .join(", "),
-                    album: Some(t.album.name.clone()),
+                    album: t
+                        .album
+                        .as_ref()
+                        .map(|a| a.name.clone())
+                        .or(Some(album.name.clone())),
                     duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
-                    uri: t.id.as_ref().map(|id| format!("spotify:track:{id}")),
-                    image_url: pick_largest_image(&t.album.images),
-                })
-                .collect(),
-            _ => Vec::new(),
+                    uri: Some(track_uri),
+                    image_url: t
+                        .album
+                        .as_ref()
+                        .and_then(|a| pick_largest_image(&a.images)),
+                    kind: Some(SpotifySearchKind::Track),
+                });
+                if tracks.len() as u32 >= target {
+                    break;
+                }
+            }
         }
+        Ok(tracks)
     }
 
     /// Fetch the largest album-cover image bytes for an artist + album via the
@@ -523,6 +715,7 @@ fn track_from_playable(item: &PlayableItem) -> Option<SpotifyTrack> {
             duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
             uri: t.id.as_ref().map(|id| format!("spotify:track:{id}")),
             image_url: pick_largest_image(&t.album.images),
+            kind: None,
         }),
         PlayableItem::Episode(_) | PlayableItem::Unknown(_) => None,
     }

@@ -488,6 +488,19 @@ impl Cmd {
 
         inner.scrobble.lock().await.start(&track.path, start_pos);
 
+        // Broadcast the new track as soon as the mixer is playing, before the
+        // Last.fm now-playing handshake below (which can hang for up to 10s),
+        // so the TUI's Now Playing pane and cover art update immediately.
+        Daemon::push_event(
+            inner,
+            DaemonEvent::PlaybackStarted {
+                track,
+                auto_advanced,
+                time_pos: start_pos,
+                duration: dur,
+            },
+        );
+
         // Update Last.fm now playing
         if inner.lastfm.lock().await.is_ready().await {
             let track_for_np = {
@@ -499,22 +512,16 @@ impl Cmd {
                 }
             };
             if let Some(ref track) = track_for_np {
+                // Bound the now-playing handshake hard so a slow Last.fm
+                // response never delays the play-command reply; the real
+                // scrobble uses the background tracker.
                 let _ = tokio::time::timeout(
-                    Duration::from_secs(10),
+                    Duration::from_secs(1),
                     inner.lastfm.lock().await.update_now_playing(track),
                 )
                 .await;
             }
         }
-        Daemon::push_event(
-            inner,
-            DaemonEvent::PlaybackStarted {
-                track,
-                auto_advanced,
-                time_pos: start_pos,
-                duration: dur,
-            },
-        );
         Ok(DaemonRes::Ok)
     }
 
@@ -739,15 +746,7 @@ impl Cmd {
 
         inner.scrobble.lock().await.start(&track.path, start_pos);
 
-        let lastfm = inner.lastfm.lock().await;
-        if lastfm.is_ready().await {
-            let track_for_np = inner.state.read().await.current_track.clone();
-            if let Some(ref track) = track_for_np {
-                let _ =
-                    tokio::time::timeout(Duration::from_secs(10), lastfm.update_now_playing(track))
-                        .await;
-            }
-        }
+        // Broadcast before the Last.fm handshake so Now Playing syncs fast.
         Daemon::push_event(
             inner,
             DaemonEvent::PlaybackStarted {
@@ -757,6 +756,18 @@ impl Cmd {
                 duration: dur,
             },
         );
+
+        let lastfm = inner.lastfm.lock().await;
+        if lastfm.is_ready().await {
+            let track_for_np = inner.state.read().await.current_track.clone();
+            if let Some(ref track) = track_for_np {
+                // Bounded to keep the play-command reply fast; Last.fm is
+                // best-effort and must not stall playback control.
+                let _ =
+                    tokio::time::timeout(Duration::from_secs(1), lastfm.update_now_playing(track))
+                        .await;
+            }
+        }
         Ok(DaemonRes::Ok)
     }
 }
@@ -1768,16 +1779,13 @@ impl Spotify {
             match flow.wait_token(listener).await {
                 Ok(token) => {
                     let mut spotify = inner2.spotify.lock().await;
-                    // No artificial timeout here: the first sync after linking
-                    // paginates every playlist and can legitimately take longer
-                    // than a minute on large libraries. Aborting it mid-flight
-                    // left a half-populated cache and a misleading failure toast.
-                    match spotify.set_token(&token).await {
+                    // Link (persist token + build client) without the full
+                    // playlist sync so the TUI's auth picker can close right
+                    // away; the sync runs below on a cloned client and emits
+                    // a second event when the playlist cache is ready.
+                    match spotify.link(&token).await {
                         Ok(()) => {
-                            info!(
-                                "spotify oauth link complete ({:?} playlists)",
-                                spotify.status().playlists
-                            );
+                            info!("spotify oauth link complete (client ready)");
                         }
                         Err(e) => {
                             warn!("spotify oauth link failed: {e}");
@@ -1785,7 +1793,44 @@ impl Spotify {
                         }
                     }
                     drop(spotify);
+                    // Immediately tell the TUI the account is linked so the
+                    // picker closes and playlist loading commences.
                     let _ = inner2.event_tx.send(DaemonEvent::SpotifyStatusChanged);
+                    // Background playlist sync. It pages every playlist on a
+                    // cloned client so the manager mutex is never held across
+                    // the network pass; no artificial timeout here — the first
+                    // sync after linking can legitimately take longer than a
+                    // minute on large libraries.
+                    let inner3 = Arc::clone(&inner2);
+                    tokio::spawn(async move {
+                        let client = { inner3.spotify.lock().await.sync_client() };
+                        let Some(client) = client else {
+                            return;
+                        };
+                        match SpotifyManager::run_sync(client).await {
+                            Ok((user, playlists)) => {
+                                let mut spotify = inner3.spotify.lock().await;
+                                // Guard: the user may have unlinked while we
+                                // paginated; do not resurrect credentials.
+                                if spotify.linked() {
+                                    let count = playlists.len();
+                                    spotify.commit_sync(user, playlists);
+                                    info!(
+                                        "spotify playlists synced ({:?} playlists)",
+                                        count
+                                    );
+                                }
+                            }
+                            Err(e) => {
+                                warn!("spotify playlist sync failed: {e}");
+                                let mut spotify = inner3.spotify.lock().await;
+                                if spotify.linked() {
+                                    spotify.set_error(format!("playlist sync failed: {e}"));
+                                }
+                            }
+                        }
+                        let _ = inner3.event_tx.send(DaemonEvent::SpotifyStatusChanged);
+                    });
                 }
                 Err(e) => {
                     warn!("spotify oauth link failed: {e}");
@@ -1817,9 +1862,18 @@ impl Spotify {
         })
     }
 
-    pub async fn status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let mut spotify = inner.spotify.lock().await;
-        let _ = tokio::time::timeout(Duration::from_secs(5), spotify.refresh_playback()).await;
+    pub async fn status(inner: &std::sync::Arc<DaemonInner>) -> Result<DaemonRes, CoreError> {
+        // Refresh the Web API playback state in the background: the call can
+        // stall for up to 5 seconds and must never hold the Spotify manager
+        // mutex, which would queue every other Spotify command (play/pause,
+        // resolve, sync, oauth cancel) behind a `current_playback` probe.
+        let inner2 = inner.clone();
+        tokio::spawn(async move {
+            let mut spotify = inner2.spotify.lock().await;
+            let _ =
+                tokio::time::timeout(Duration::from_secs(5), spotify.refresh_playback()).await;
+        });
+        let spotify = inner.spotify.lock().await;
         Ok(DaemonRes::SpotifyStatusRes {
             status: spotify.status(),
         })
@@ -1997,6 +2051,35 @@ impl Spotify {
         let tracks = {
             let spotify = inner.spotify.lock().await;
             spotify.search(query, 20).await
+        };
+        Ok(DaemonRes::SpotifyTracksRes { tracks })
+    }
+
+    /// Resolve a web-search album result (an album `spotify:` URI) to its full
+    /// track list so the TUI can queue and play it.
+    pub async fn album_tracks(inner: &DaemonInner, uri: &str) -> Result<DaemonRes, CoreError> {
+        let tracks = {
+            let spotify = inner.spotify.lock().await;
+            match spotify.album_tracks(uri).await {
+                Ok(tracks) => tracks,
+                Err(e) => return Ok(DaemonRes::Error { message: e }),
+            }
+        };
+        Ok(DaemonRes::SpotifyTracksRes { tracks })
+    }
+
+    /// Resolve a web-search artist result (an artist `spotify:` URI) to their
+    /// top tracks.
+    pub async fn artist_top_tracks(
+        inner: &DaemonInner,
+        uri: &str,
+    ) -> Result<DaemonRes, CoreError> {
+        let tracks = {
+            let spotify = inner.spotify.lock().await;
+            match spotify.artist_top_tracks(uri).await {
+                Ok(tracks) => tracks,
+                Err(e) => return Ok(DaemonRes::Error { message: e }),
+            }
         };
         Ok(DaemonRes::SpotifyTracksRes { tracks })
     }
@@ -3711,11 +3794,15 @@ struct DaemonInner {
     /// track. Long-running jobs and playback commands can then interleave: the
     /// underlying `DaemonState` keeps each individual mutation safe.
     play_lock: tokio::sync::RwLock<()>,
-    /// Serializes slow network commands (Spotify sync, Spotify resolve,
-    /// YouTube download) without blocking fast reads: `GetStatus`/`Ping`
-    /// never take this lock, so they stay responsive even when a multi-
-    /// minute Spotify sync is in progress.
-    slow_lock: tokio::sync::Mutex<()>,
+    /// Serializes slow Spotify network commands (sync, resolve, album/artist
+    /// track fetches) without blocking fast reads: `GetStatus`/`Ping` never
+    /// take this lock, so they stay responsive even when a multi-minute
+    /// Spotify sync is in progress. A separate `yt_lock` keeps Spotify and
+    /// YouTube jobs from serializing each other.
+    spotify_slow_lock: tokio::sync::Mutex<()>,
+    /// Serializes slow YouTube network commands (search, resolve/download,
+    /// playlist fetch) independently of Spotify's slow lock.
+    yt_slow_lock: tokio::sync::Mutex<()>,
     play_history: tokio::sync::Mutex<Vec<HistoryEntry>>,
     scrobble: tokio::sync::Mutex<ScrobbleTracker>,
     sync_progress: Arc<SyncProgress>,
@@ -3787,6 +3874,8 @@ fn is_read_only(req: &DaemonReq) -> bool {
             | DaemonReq::SpotifyPlaylists
             | DaemonReq::SpotifyPlaylistTracks { .. }
             | DaemonReq::SpotifySearchWeb { .. }
+            | DaemonReq::SpotifyAlbumTracks { .. }
+            | DaemonReq::SpotifyArtistTopTracks { .. }
             | DaemonReq::SpotifyTrackImage { .. }
             | DaemonReq::LastfmStatus
             | DaemonReq::SubsonicStatus
@@ -3854,16 +3943,26 @@ fn request_is_playback(req: &DaemonReq) -> bool {
 }
 
 /// Commands that touch remote APIs and can take many seconds (Spotify sync,
-/// Spotify resolve, YouTube search/download). They serialize on `slow_lock`
-/// instead of `cmd_lock.write()` so fast reads (`GetStatus`/`Ping`) never
-/// get stuck behind a multi-minute network stall.
-fn is_slow_network(req: &DaemonReq) -> bool {
+/// Spotify resolve, YouTube search/download). They serialize on per-provider
+/// locks instead of `cmd_lock.write()` so fast reads (`GetStatus`/`Ping`)
+/// never get stuck behind a multi-minute network stall.  Spotify and YouTube
+/// jobs use separate locks so a long Spotify sync no longer blocks a quick
+/// YouTube search.
+fn is_spotify_slow(req: &DaemonReq) -> bool {
     matches!(
         req,
         DaemonReq::SpotifySync
             | DaemonReq::SpotifyResolve { .. }
             | DaemonReq::SpotifyResolveTrack { .. }
-            | DaemonReq::YtSearch { .. }
+            | DaemonReq::SpotifyAlbumTracks { .. }
+            | DaemonReq::SpotifyArtistTopTracks { .. }
+    )
+}
+
+fn is_yt_slow(req: &DaemonReq) -> bool {
+    matches!(
+        req,
+        DaemonReq::YtSearch { .. }
             | DaemonReq::YtResolveStream { .. }
             | DaemonReq::YtDownload { .. }
             | DaemonReq::YtFetchPlaylist { .. }
@@ -3996,7 +4095,8 @@ impl Daemon {
             internal_req_tx,
             cmd_lock: tokio::sync::RwLock::new(()),
             play_lock: tokio::sync::RwLock::new(()),
-            slow_lock: tokio::sync::Mutex::new(()),
+            spotify_slow_lock: tokio::sync::Mutex::new(()),
+            yt_slow_lock: tokio::sync::Mutex::new(()),
             play_history: tokio::sync::Mutex::new(Vec::new()),
             scrobble: tokio::sync::Mutex::new(ScrobbleTracker::default()),
             sync_progress: Arc::new(SyncProgress::default()),
@@ -4546,8 +4646,11 @@ impl Daemon {
         } else if request_is_playback(&req) {
             let _guard = inner.play_lock.write().await;
             Self::handle_request(&inner, &req, client_id, authenticated).await
-        } else if is_slow_network(&req) {
-            let _guard = inner.slow_lock.lock().await;
+        } else if is_spotify_slow(&req) {
+            let _guard = inner.spotify_slow_lock.lock().await;
+            Self::handle_request(&inner, &req, client_id, authenticated).await
+        } else if is_yt_slow(&req) {
+            let _guard = inner.yt_slow_lock.lock().await;
             Self::handle_request(&inner, &req, client_id, authenticated).await
         } else {
             let _guard = inner.cmd_lock.write().await;
@@ -4828,6 +4931,10 @@ impl Daemon {
                 track_index,
             } => Spotify::resolve(inner, playlist_id, *track_index).await,
             DaemonReq::SpotifySearchWeb { query } => Spotify::search_web(inner, query).await,
+            DaemonReq::SpotifyAlbumTracks { uri } => Spotify::album_tracks(inner, uri).await,
+            DaemonReq::SpotifyArtistTopTracks { uri } => {
+                Spotify::artist_top_tracks(inner, uri).await
+            }
             DaemonReq::SpotifyResolveTrack {
                 name,
                 artists,

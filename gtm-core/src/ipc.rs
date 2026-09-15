@@ -342,6 +342,15 @@ pub enum DaemonReq {
     SpotifySearchWeb {
         query: String,
     },
+    /// Resolve an album found by web search to its full track list, so the
+    /// TUI can queue and play it.
+    SpotifyAlbumTracks {
+        uri: String,
+    },
+    /// Resolve an artist found by web search to their top tracks.
+    SpotifyArtistTopTracks {
+        uri: String,
+    },
     SpotifyResolveTrack {
         name: String,
         artists: String,
@@ -546,6 +555,8 @@ impl DaemonReq {
             DaemonReq::SpotifyPlaylistTracks { .. } => "spotify_playlist_tracks",
             DaemonReq::SpotifyResolve { .. } => "spotify_resolve",
             DaemonReq::SpotifySearchWeb { .. } => "spotify_search_web",
+            DaemonReq::SpotifyAlbumTracks { .. } => "spotify_album_tracks",
+            DaemonReq::SpotifyArtistTopTracks { .. } => "spotify_artist_top_tracks",
             DaemonReq::SpotifyResolveTrack { .. } => "spotify_resolve_track",
             DaemonReq::SpotifyPlayAll { .. } => "spotify_play_all",
             DaemonReq::SpotifyTrackImage { .. } => "spotify_track_image",
@@ -931,6 +942,22 @@ impl DaemonReq {
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SpotifySearchWeb { query: x.query }
+            }
+            "spotify_album_tracks" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    uri: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SpotifyAlbumTracks { uri: x.uri }
+            }
+            "spotify_artist_top_tracks" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    uri: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SpotifyArtistTopTracks { uri: x.uri }
             }
             "spotify_resolve_track" => {
                 #[derive(Deserialize)]
@@ -1894,7 +1921,7 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "spotify_playlist_tracks" => {
+            "spotify_playlist_tracks" | "spotify_album_tracks" | "spotify_artist_top_tracks" => {
                 match serde_json::from_value::<Vec<SpotifyTrack>>(field(&data, "tracks")) {
                     Ok(tracks) => DaemonRes::SpotifyTracksRes { tracks },
                     Err(_) => DaemonRes::Value { value: data },

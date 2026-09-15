@@ -32,6 +32,7 @@ use gtm_core::ipc::HealthStatus;
 use gtm_core::log::redirect_stderr;
 use gtm_core::radio::RadioStation;
 use gtm_core::resolve_command_socket;
+use gtm_core::spotify::SpotifySearchKind;
 use gtm_core::track::TrackInfo;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
@@ -3008,7 +3009,7 @@ impl Pickers {
                     let mut lines: Vec<Line> = vec![search_line];
                     if query.is_empty() {
                         lines.push(Line::from(Span::styled(
-                            "  Type to search your synced playlists...",
+                            "  Type to search tracks, albums & artists...",
                             Style::default().fg(app.theme.fg_dim),
                         )));
                     } else if total == 0 {
@@ -3020,12 +3021,23 @@ impl Pickers {
                         for i in scroll_start..scroll_end {
                             let (_, _pl_name, track) = &app.spotify.search_results[i];
                             let prefix = if i == sel { " > " } else { "   " };
+                            let tag = match track.kind {
+                                Some(SpotifySearchKind::Album) => Some("[Album]"),
+                                Some(SpotifySearchKind::Artist) => Some("[Artist]"),
+                                _ => None,
+                            };
+                            let body = match track.kind {
+                                Some(SpotifySearchKind::Artist) => track.name.clone(),
+                                _ => format!("{} - {}", track.artists, track.name),
+                            };
                             let dur = track
                                 .duration_ms
                                 .map(|ms| format_duration_short(ms / 1000))
                                 .unwrap_or_default();
-                            let content =
-                                format!("{}{} - {} [{}]", prefix, track.artists, track.name, dur);
+                            let content = format!(
+                                "{prefix}{body} [{}]",
+                                tag.map(|t| t.to_string()).unwrap_or(dur)
+                            );
                             let style = if i == sel {
                                 Style::default()
                                     .fg(app.theme.selection_fg_readable())
@@ -3128,13 +3140,26 @@ impl Pickers {
                                 ),
                             ]));
                         };
-                        push("Track", &track.name);
-                        push("Artist", &track.artists);
-                        if let Some(ref album) = track.album {
-                            push("Album", album);
-                        }
-                        if let Some(ms) = track.duration_ms {
-                            push("Length", &format_duration_short(ms / 1000));
+                        match track.kind {
+                            Some(SpotifySearchKind::Album) => {
+                                push("Album", &track.name);
+                                if !track.artists.is_empty() {
+                                    push("Artist", &track.artists);
+                                }
+                            }
+                            Some(SpotifySearchKind::Artist) => {
+                                push("Artist", &track.name);
+                            }
+                            _ => {
+                                push("Track", &track.name);
+                                push("Artist", &track.artists);
+                                if let Some(ref album) = track.album {
+                                    push("Album", album);
+                                }
+                                if let Some(ms) = track.duration_ms {
+                                    push("Length", &format_duration_short(ms / 1000));
+                                }
+                            }
                         }
                         f.render_widget(Paragraph::new(meta_lines), meta_area);
                     }

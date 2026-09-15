@@ -15,7 +15,7 @@ use gtm_core::ipc::{CacheKind, DaemonEvent, DaemonRes, HealthReport, SyncKind};
 use gtm_core::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 use gtm_core::radio::{RadioCountry, RadioStation, RadioTag};
 use gtm_core::secret::{SPOTIFY_CLIENT_ID, get_secret, set_secret};
-use gtm_core::spotify::{LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
+use gtm_core::spotify::{LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifySearchKind, SpotifyStatus, SpotifyTrack};
 use gtm_core::state::{ThemeMode, TrackSort};
 use gtm_core::subsonic::{SubsonicAlbum, SubsonicSearchResults, SubsonicStatus, SubsonicTrack};
 use gtm_core::track::{LrcData, LrcLine, Playlist, TrackInfo, YTSearchResult};
@@ -573,10 +573,10 @@ pub struct PendingPrompt {
     pub prompt_type: PromptType,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum PromptType {
     DeleteTrack(i64),
-    MultiselectDelete(usize),
+    MultiselectDelete(Vec<i64>),
     MultiselectAddToQueue,
     MultiselectAddToPlaylist,
     None,
@@ -886,6 +886,10 @@ pub struct App {
     prev_volume: u8,
     prev_cover_id: Option<i64>,
     cover_art_dirty: bool,
+    /// Set whenever the daemon pushes events or refreshes state so the next
+    /// frame re-renders even if no visual trigger (position/animation) is
+    /// active yet. Cleared after each forced render.
+    data_dirty: bool,
     pub footer_cache: FooterCache,
     pub footer_presets: Vec<FooterPreset>,
     pub footer_preset: usize,
@@ -1417,6 +1421,7 @@ impl App {
             prev_volume: 100,
             prev_cover_id: None,
             cover_art_dirty: false,
+            data_dirty: false,
             footer_cache: FooterCache::default(),
             footer_presets,
             footer_preset,
@@ -2077,6 +2082,12 @@ impl App {
                 self.state.apply_event(&ev);
                 events_received = true;
             }
+            // Mark the next frame dirty so any mid-transition state change
+            // (a `PlaybackStarted` right after a play command) is drawn even
+            // though position/animation triggers may not fire yet.
+            if events_received {
+                self.data_dirty = true;
+            }
             // After track change, check if new track has cover art.
             // If not, clear reactive palette so theme reverts to base.
             if had_track_change && self.reactive_theme {
@@ -2323,6 +2334,10 @@ impl App {
                         if state.version >= self.state.version || restarted {
                             self.state = *state;
                             self.client.seed_clock(&self.state).await;
+                            // Re-render so the initial state (or any daemon-side
+                            // refresh) paints immediately instead of waiting for
+                            // the next keypress or animation trigger.
+                            self.data_dirty = true;
                             // Cover art is fetched on track-change events only.
                             // Do not clear track_id when a periodic RefreshDone
                             // carries no cover, or the track-change guard would
@@ -2956,10 +2971,12 @@ impl App {
                 || self.cover_art_dirty
                 || self.metadata.cover_dirty
                 || self.track_anim_trigger
+                || self.data_dirty
                 || self.anim_fx.is_running();
             self.cover_art_dirty = false;
             self.metadata.cover_dirty = false;
             self.last_display_position = self.display_position;
+            self.data_dirty = false;
 
             if force_render {
                 let (cols, rows) = crossterm::terminal::size().unwrap_or((80, 24));
@@ -4962,21 +4979,25 @@ impl App {
                 });
             }
             TuiCommand::Refresh => {
+                // Skip the redundant queue list (below) when the local cache
+                // already has entries: it was only there to recover from an
+                // early background spawn failure.
+                let needs_queue = self.queue.cache.is_empty();
                 let client2 = self.client.clone();
                 let ipc_tx2 = self.ipc_tx.clone();
                 tokio::spawn(async move {
                     if let Ok(state) = client2.get_status().await {
                         // Cover art is fetched on track-change events, not
                         // here, to avoid an extra IPC call every second.
-                        let _ = ipc_tx2.send(IpcResult::RefreshDone(Box::new(state), None, None));
+                        let _ =
+                            ipc_tx2.send(IpcResult::RefreshDone(Box::new(state), None, None));
                     }
-                    // Also refresh queue to recover from initial background
-                    // spawn failures that leave queue_cache empty.
-                    if let Ok(DaemonRes::QueueState {
-                        queue: tracks,
-                        cursor,
-                        ..
-                    }) = client2.queue().list().await
+                    if needs_queue
+                        && let Ok(DaemonRes::QueueState {
+                            queue: tracks,
+                            cursor,
+                            ..
+                        }) = client2.queue().list().await
                     {
                         let _ = ipc_tx2.send(IpcResult::Queue(*tracks, cursor as usize));
                     }
@@ -5531,21 +5552,16 @@ impl App {
                                     self.pickers.open(PickerId::PlaylistSelect);
                                 }
                             }
-                            PromptType::MultiselectDelete(_) => {
-                                let tracks = self.filtered_tracks();
-                                let pos = self.list_pos();
-                                let indices: Vec<usize> = self
-                                    .selected_indices
-                                    .iter()
-                                    .copied()
-                                    .filter(|&i| i != pos)
-                                    .collect();
+                            PromptType::MultiselectDelete(ids) => {
                                 let client = self.client.clone();
                                 let ipc_tx = self.ipc_tx.clone();
                                 let mut deleted = 0;
-                                for idx in indices {
-                                    if let Some(t) = tracks.get(idx)
-                                        && client.library().remove_track(t.id).await.is_ok()
+                                for id in ids {
+                                    if client
+                                        .library()
+                                        .remove_track(id)
+                                        .await
+                                        .is_ok()
                                     {
                                         deleted += 1;
                                     }
@@ -5565,7 +5581,8 @@ impl App {
                                 };
                                 self.footer_notification = Some((
                                     msg,
-                                    std::time::Instant::now() + std::time::Duration::from_secs(2),
+                                    std::time::Instant::now()
+                                        + std::time::Duration::from_secs(2),
                                 ));
                             }
                             PromptType::None => {}
@@ -6331,40 +6348,33 @@ impl App {
                     }
                     Some(KeyboardAction::Delete) => {
                         if !self.library_pane_focus {
-                            let tracks = self.filtered_tracks();
-                            let pos = self.list_pos();
-                            let selected: Vec<usize> =
-                                if self.multiselect_mode && !self.selected_indices.is_empty() {
-                                    self.selected_indices
-                                        .iter()
-                                        .copied()
-                                        .filter(|&i| i != pos)
-                                        .collect()
-                                } else {
-                                    Vec::new()
-                                };
-                            if self.multiselect_mode && !selected.is_empty() {
-                                let count = selected.len();
-                                self.pending_prompt = Some(PendingPrompt {
-                                    message: format!("Delete {count} track(s)? [y/N]"),
-                                    confirm_keys: vec![
-                                        KeyCode::Char('y'),
-                                        KeyCode::Char('Y'),
-                                        KeyCode::Enter,
-                                    ],
-                                    cancel_keys: vec![
-                                        KeyCode::Char('n'),
-                                        KeyCode::Char('N'),
-                                        KeyCode::Esc,
-                                        KeyCode::Char('q'),
-                                    ],
-                                    prompt_type: PromptType::MultiselectDelete(count),
-                                });
-                            } else {
-                                let track_data = tracks.get(pos).map(|t| (t.id, t.title.clone()));
-                                if let Some((track_id, track_name)) = track_data {
+                            // Playlist overview rows have no tracks of their
+                            // own: the user must open the playlist first.
+                            if self.library_category == 4
+                                && self.browse_detail.is_none()
+                            {
+                                self.notify_typed(
+                                    "System",
+                                    "Open the playlist first to delete its tracks",
+                                    NotificationKind::Info,
+                                    false,
+                                    NotifType::NowPlaying,
+                                );
+                            } else if let Some(ids) = self.motion_row_ids() {
+                                // Album / artist view: batch-delete every track
+                                // that belongs to the selected row.
+                                let count = ids.len();
+                                if count > 0 {
+                                    let label = if self.library_category == 2 {
+                                        "album"
+                                    } else {
+                                        "artist"
+                                    };
                                     self.pending_prompt = Some(PendingPrompt {
-                                        message: format!("Delete \"{track_name}\"? [y/N]"),
+                                        message: format!(
+                                            "Delete {count} track(s) in this {label}? \
+                                             [y/N]"
+                                        ),
                                         confirm_keys: vec![
                                             KeyCode::Char('y'),
                                             KeyCode::Char('Y'),
@@ -6376,8 +6386,74 @@ impl App {
                                             KeyCode::Esc,
                                             KeyCode::Char('q'),
                                         ],
-                                        prompt_type: PromptType::DeleteTrack(track_id),
+                                        prompt_type: PromptType::MultiselectDelete(ids),
                                     });
+                                }
+                            } else {
+                                let tracks = self.filtered_tracks();
+                                let pos = self.list_pos();
+                                let selected: Vec<usize> =
+                                    if self.multiselect_mode && !self.selected_indices.is_empty()
+                                    {
+                                        self.selected_indices
+                                            .iter()
+                                            .copied()
+                                            .filter(|&i| i != pos)
+                                            .collect()
+                                    } else {
+                                        Vec::new()
+                                    };
+                                if self.multiselect_mode && !selected.is_empty() {
+                                    let ids: Vec<i64> = selected
+                                        .iter()
+                                        .filter_map(|&i| {
+                                            tracks.get(i).map(|t| t.id)
+                                        })
+                                        .collect();
+                                    if !ids.is_empty() {
+                                        self.pending_prompt = Some(PendingPrompt {
+                                            message: format!(
+                                                "Delete {} track(s)? [y/N]",
+                                                ids.len()
+                                            ),
+                                            confirm_keys: vec![
+                                                KeyCode::Char('y'),
+                                                KeyCode::Char('Y'),
+                                                KeyCode::Enter,
+                                            ],
+                                            cancel_keys: vec![
+                                                KeyCode::Char('n'),
+                                                KeyCode::Char('N'),
+                                                KeyCode::Esc,
+                                                KeyCode::Char('q'),
+                                            ],
+                                            prompt_type: PromptType::MultiselectDelete(ids),
+                                        });
+                                    }
+                                } else {
+                                    let track_data =
+                                        tracks.get(pos).map(|t| (t.id, t.title.clone()));
+                                    if let Some((track_id, track_name)) = track_data {
+                                        self.pending_prompt = Some(PendingPrompt {
+                                            message: format!(
+                                                "Delete \"{track_name}\"? [y/N]"
+                                            ),
+                                            confirm_keys: vec![
+                                                KeyCode::Char('y'),
+                                                KeyCode::Char('Y'),
+                                                KeyCode::Enter,
+                                            ],
+                                            cancel_keys: vec![
+                                                KeyCode::Char('n'),
+                                                KeyCode::Char('N'),
+                                                KeyCode::Esc,
+                                                KeyCode::Char('q'),
+                                            ],
+                                            prompt_type: PromptType::DeleteTrack(
+                                                track_id,
+                                            ),
+                                        });
+                                    }
                                 }
                             }
                         }
@@ -6873,6 +6949,16 @@ impl App {
                     .map_or(0, |o| o.selected)
                     .min(self.spotify.search_results.len() - 1);
                 let (playlist_id, _, track) = self.spotify.search_results[idx].clone();
+                if track.kind.is_some() {
+                    self.notify_typed(
+                        "System",
+                        "Only single tracks can be downloaded",
+                        NotificationKind::Info,
+                        false,
+                        NotifType::Downloads,
+                    );
+                    return;
+                }
                 let track_index = track.index;
                 let can_stream = track.uri.is_some();
                 let c = self.client.clone();
@@ -8730,38 +8816,121 @@ impl App {
                                 let ipc_tx = self.ipc_tx.clone();
                                 self.pickers.close_top();
                                 if playlist_id == "web" {
-                                    let c2 = c.clone();
-                                    let ipc_tx2 = ipc_tx.clone();
-                                    let track_clone = track.clone();
-                                    tokio::spawn(async move {
-                                        match c2
-                                            .spotify()
-                                            .resolve_track(
-                                                &track_clone.name,
-                                                &track_clone.artists,
-                                                track_clone.album.as_deref().unwrap_or(""),
-                                                track_clone.uri.clone(),
-                                            )
-                                            .await
-                                        {
-                                            Ok(()) => {
+                                    match track.kind {
+                                        Some(SpotifySearchKind::Album)
+                                        | Some(SpotifySearchKind::Artist) => {
+                                            let c2 = c.clone();
+                                            let ipc_tx2 = ipc_tx.clone();
+                                            let uri = track.uri.clone().unwrap_or_default();
+                                            let label = track.name.clone();
+                                            let is_album =
+                                                track.kind == Some(SpotifySearchKind::Album);
+                                            tokio::spawn(async move {
                                                 let _ = ipc_tx2.send(IpcResult::Notification(
                                                     "Spotify".to_string(),
-                                                    format!(
-                                                        "Queued: {} - {}",
-                                                        track_clone.artists, track_clone.name
-                                                    ),
-                                                    NotificationKind::Success,
+                                                    format!("Fetching {label} tracks..."),
+                                                    NotificationKind::Info,
                                                     NotifType::Spotify,
                                                 ));
-                                            }
-                                            Err(e) => {
-                                                let _ = ipc_tx2.send(IpcResult::Error(format!(
-                                                    "Spotify resolve failed: {e}"
-                                                )));
-                                            }
+                                                let result = if is_album {
+                                                    c2.spotify().album_tracks(&uri).await
+                                                } else {
+                                                    c2.spotify().artist_top_tracks(&uri).await
+                                                };
+                                                match result {
+                                                    Ok(tracks) if tracks.is_empty() => {
+                                                        let _ = ipc_tx2.send(
+                                                            IpcResult::Error(format!(
+                                                                "Spotify: no tracks for \
+                                                                 '{label}'"
+                                                            )),
+                                                        );
+                                                    }
+                                                    Ok(tracks) => {
+                                                        let total = tracks.len();
+                                                        let mut queued = 0;
+                                                        for t in &tracks {
+                                                            if c2
+                                                                .spotify()
+                                                                .resolve_track(
+                                                                    &t.name,
+                                                                    &t.artists,
+                                                                    t.album
+                                                                        .as_deref()
+                                                                        .unwrap_or(""),
+                                                                    t.uri.clone(),
+                                                                )
+                                                                .await
+                                                                .is_ok()
+                                                            {
+                                                                queued += 1;
+                                                            }
+                                                        }
+                                                        let _ = ipc_tx2.send(
+                                                            IpcResult::Notification(
+                                                                "Spotify".to_string(),
+                                                                format!(
+                                                                    "Queued {queued}/{total} \
+                                                                     tracks from: {label}"
+                                                                ),
+                                                                NotificationKind::Success,
+                                                                NotifType::Spotify,
+                                                            ),
+                                                        );
+                                                    }
+                                                    Err(e) => {
+                                                        let _ = ipc_tx2.send(
+                                                            IpcResult::Error(format!(
+                                                                "Spotify resolve failed: {e}"
+                                                            )),
+                                                        );
+                                                    }
+                                                }
+                                            });
                                         }
-                                    });
+                                        _ => {
+                                            let c2 = c.clone();
+                                            let ipc_tx2 = ipc_tx.clone();
+                                            let track_clone = track.clone();
+                                            tokio::spawn(async move {
+                                                match c2
+                                                    .spotify()
+                                                    .resolve_track(
+                                                        &track_clone.name,
+                                                        &track_clone.artists,
+                                                        track_clone
+                                                            .album
+                                                            .as_deref()
+                                                            .unwrap_or(""),
+                                                        track_clone.uri.clone(),
+                                                    )
+                                                    .await
+                                                {
+                                                    Ok(()) => {
+                                                        let _ = ipc_tx2.send(
+                                                            IpcResult::Notification(
+                                                                "Spotify".to_string(),
+                                                                format!(
+                                                                    "Queued: {} - {}",
+                                                                    track_clone.artists,
+                                                                    track_clone.name
+                                                                ),
+                                                                NotificationKind::Success,
+                                                                NotifType::Spotify,
+                                                            ),
+                                                        );
+                                                    }
+                                                    Err(e) => {
+                                                        let _ = ipc_tx2.send(
+                                                            IpcResult::Error(format!(
+                                                                "Spotify resolve failed: {e}"
+                                                            )),
+                                                        );
+                                                    }
+                                                }
+                                            });
+                                        }
+                                    }
                                 } else {
                                     tokio::spawn(async move {
                                         match c.spotify().resolve(&playlist_id, track_index).await {
