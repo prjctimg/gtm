@@ -237,12 +237,13 @@ impl YoutubeManager {
         let semaphore = self.semaphore.clone();
         let res_tx = self.results_tx.clone();
         let q = query.to_string();
+        let auth_args = self.ytdlp_auth_args();
         let handle = tokio::spawn(async move {
             let permit = match semaphore.acquire_owned().await {
                 Ok(p) => p,
                 Err(_) => return,
             };
-            let results = run_search(&client, &q, cancel_rx, permit).await;
+            let results = run_search(&client, &q, auth_args, cancel_rx, permit).await;
             let _ = res_tx.send((generation, results));
         });
         self.active_task = Some(handle);
@@ -842,9 +843,19 @@ fn unit_multiplier(unit: &str) -> Option<f64> {
 async fn run_search(
     client: &Innertube,
     query: &str,
+    auth_args: Vec<std::ffi::OsString>,
     cancel_rx: oneshot::Receiver<()>,
     _permit: OwnedSemaphorePermit,
 ) -> Vec<YTSearchResult> {
+    // Provider source selector (`scsearch:`/`bilisearch:`/`mcsearch:`) mirrors
+    // the yt-dlp extractor prefixes cliamp exposes for its Youtube-family
+    // providers. The prefix is stripped here and fed back to yt-dlp's search
+    // extractor with a 10-hit limit.
+    if let Some((extractor, rest)) = search_extractor(query) {
+        let search_arg = format!("{extractor}:{rest}");
+        return run_ytdlp_search(&search_arg, auth_args, cancel_rx).await;
+    }
+
     let search_arg = if query.starts_with("http://") || query.starts_with("https://") {
         query.to_string()
     } else {
@@ -898,6 +909,87 @@ async fn run_search(
     }
     out.sort_by(|a, b| b.priority.cmp(&a.priority).then(b.views.cmp(&a.views)));
     out
+}
+
+/// Map a query that starts with a cliamp-style source selector into the
+/// matching yt-dlp search extractor. Returns `(extractor, rest_of_query)`.
+fn search_extractor(query: &str) -> Option<(&'static str, &str)> {
+    const PREFIXES: &[(&str, &str)] = &[
+        ("scsearch:", "scsearch10"),
+        ("bilisearch:", "bilisearch10"),
+        ("mcsearch:", "mcsearch10"),
+        ("ytsearch10:", "ytsearch10"),
+        ("ytsearch:", "ytsearch10"),
+    ];
+    for (prefix, extractor) in PREFIXES {
+        if let Some(rest) = query.strip_prefix(prefix)
+            && !rest.trim().is_empty()
+        {
+            return Some((extractor, rest.trim()));
+        }
+    }
+    None
+}
+
+/// Run a yt-dlp search-extractor query (`scsearch10:...`, `bilisearch10:...`,
+/// `mcsearch10:...`, `ytsearch10:...`) and parse the JSON-lines output into
+/// [`YTSearchResult`]s, mirroring the flat-playlist fetch used for URLs.
+async fn run_ytdlp_search(
+    search_arg: &str,
+    auth_args: Vec<std::ffi::OsString>,
+    cancel_rx: oneshot::Receiver<()>,
+) -> Vec<YTSearchResult> {
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "--flat-playlist".into(),
+        "--dump-json".into(),
+        "--no-warnings".into(),
+        "--no-playlist".into(),
+    ];
+    args.extend(auth_args);
+    args.push(search_arg.to_string().into());
+
+    let fetch = async {
+        let output =
+            match timeout(SEARCH_TIMEOUT, Command::new("yt-dlp").args(&args).output()).await {
+                Ok(res) => res.map_err(|e| format!("yt-dlp: {e}"))?,
+                Err(_) => return Err("search timeout".to_string()),
+            };
+        if output.status.success() {
+            Ok(output.stdout)
+        } else {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let detail = stderr
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("unknown error");
+            Err(format!("yt-dlp search: {detail}"))
+        }
+    };
+
+    let stdout = match tokio::select! {
+        res = fetch => res,
+        _ = cancel_rx => return Vec::new(),
+    } {
+        Ok(out) => out,
+        Err(e) => {
+            debug!("{e}");
+            return Vec::new();
+        }
+    };
+
+    let mut results = Vec::new();
+    for line in stdout.split(|&b| b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(entry) = serde_json::from_slice::<Value>(line)
+            && let Some(r) = parse_flat_entry(&entry)
+        {
+            results.push(r);
+        }
+    }
+    results
 }
 
 /// Collect the entries of a YouTube playlist/URL via `yt-dlp --flat-playlist
@@ -991,7 +1083,14 @@ fn parse_flat_entry(v: &Value) -> Option<YTSearchResult> {
         .and_then(|u| u.as_str())
         .map(|s| s.to_string());
     let duration = v.get("duration").and_then(|d| d.as_f64()).unwrap_or(0.0);
-    let url = format!("https://www.youtube.com/watch?v={id}");
+    // Prefer the provider's own webpage URL (SoundCloud/Bilibili/Mixcloud
+    // entries carry one); fall back to reconstructing a YouTube watch URL.
+    let url = ["webpage_url", "url"]
+        .iter()
+        .find_map(|k| v.get(k).and_then(|x| x.as_str()))
+        .filter(|u| u.starts_with("http"))
+        .map(|u| u.to_string())
+        .unwrap_or_else(|| format!("https://www.youtube.com/watch?v={id}"));
     Some(YTSearchResult {
         id,
         title,

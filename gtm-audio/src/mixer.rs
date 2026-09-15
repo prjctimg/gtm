@@ -20,6 +20,7 @@ use crate::buffer::{
 };
 use crate::decoder::DecodeThread;
 use crate::eq::{EqGains, EqSource, ReverbSource};
+use crate::mono::MonoSource;
 use crate::stretch::{SpeedControl, TimeStretchSource};
 use crate::symphonia::{StreamingReopen, SymphoniaSource};
 use gtm_core::global::{EqPreset, ReverbConfig};
@@ -92,6 +93,13 @@ pub trait Mixer: Send + Sync {
             "device switching not supported on this backend".into(),
         ))
     }
+
+    // ─── Mono downmix ───
+    /// Force mono playback by summing every channel into one shared mix.
+    /// Applies live to sources already attached to the output.
+    fn set_mono(&self, _enabled: bool) {}
+    /// Whether mono downmix is currently active.
+    fn mono(&self) -> bool { false }
 }
 
 pub struct AudioMixer {
@@ -128,6 +136,8 @@ pub struct AudioMixer {
     underrun_since: Option<Instant>,
     // ─── Spectrum ───
     spectrum: Arc<Mutex<Vec<f32>>>,
+    // ─── Mono downmix ───
+    mono: Arc<AtomicBool>,
     // Track if this is the first track (for prebuffer optimization)
     first_track: bool,
 }
@@ -216,6 +226,14 @@ impl Mixer for AudioMixer {
         self.eq_gains.apply_preset(preset);
     }
 
+    fn set_mono(&self, enabled: bool) {
+        self.mono.store(enabled, Ordering::Relaxed);
+    }
+
+    fn mono(&self) -> bool {
+        self.mono.load(Ordering::Relaxed)
+    }
+
     fn set_eq_enabled(&self, enabled: bool) {
         self.eq_enabled.store(enabled, Ordering::Relaxed);
     }
@@ -250,6 +268,7 @@ impl Mixer for AudioMixer {
         let reverb_enabled = self.reverb_enabled.load(Ordering::Relaxed);
         let reverb_room = *self.reverb_room_size.lock().unwrap();
         let speed = self.speed.load();
+        let mono = self.mono.load(Ordering::Relaxed);
 
         Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
         Self::stop_decode_thread(&self.standby_control, &mut self.standby_decode_handle);
@@ -265,6 +284,7 @@ impl Mixer for AudioMixer {
             .store(reverb_enabled, Ordering::Relaxed);
         *fresh.reverb_room_size.lock().unwrap() = reverb_room;
         fresh.speed.store(speed);
+        fresh.mono.store(mono, Ordering::Relaxed);
         *self = fresh;
         Ok(())
     }
@@ -352,6 +372,7 @@ impl AudioMixer {
             standby_decode_handle: None,
             underrun_since: None,
             spectrum: Arc::new(Mutex::new(Vec::new())),
+            mono: Arc::new(AtomicBool::new(false)),
             first_track: true,
         })
     }
@@ -447,6 +468,16 @@ impl AudioMixer {
         }
     }
 
+    /// Apply live mono downmix as the outermost stage (closest to the output)
+    /// so it runs after EQ/reverb regardless of the source path. The shared
+    /// flag means toggling mono re-evaluates on the very next sample.
+    fn apply_mono(
+        &self,
+        source: Box<dyn Source<Item = f32> + Send>,
+    ) -> Box<dyn Source<Item = f32> + Send> {
+        Box::new(MonoSource::new(source, self.mono.clone()))
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn start_decode_thread(
         path: &str,
@@ -529,7 +560,7 @@ impl AudioMixer {
             prebuffer,
         )?;
 
-        self.active().append(source);
+        self.active().append(self.apply_mono(source));
 
         self.active_control = Some(control);
         self.active_decode_handle = Some(handle);
@@ -558,7 +589,7 @@ impl AudioMixer {
             *self.duration.lock().unwrap() = dur.as_secs_f64();
         }
         let source = self.wrap_source(source);
-        self.active().append(source);
+        self.active().append(self.apply_mono(source));
 
         self.active_control = None;
 
@@ -666,7 +697,7 @@ impl AudioMixer {
         // Finished stall-guard is permanently disabled for this source.
         *self.duration.lock().unwrap() = 0.0;
 
-        self.active().append(source);
+        self.active().append(self.apply_mono(source));
 
         self.active_control = Some(control);
         self.active_decode_handle = Some(handle);
@@ -697,7 +728,7 @@ impl AudioMixer {
             PREBUFFER_SAMPLES,
         )?;
 
-        self.standby().append(source);
+        self.standby().append(self.apply_mono(source));
         self.standby_control = Some(control);
         self.standby_decode_handle = Some(handle);
         Ok(())
@@ -716,7 +747,7 @@ impl AudioMixer {
             .map(|d| d.as_secs_f64())
             .unwrap_or(0.0);
         let source = self.wrap_source(source);
-        self.standby().append(source);
+        self.standby().append(self.apply_mono(source));
         self.standby_control = None;
         Ok(())
     }

@@ -77,6 +77,7 @@ pub enum FooterModule {
     EqPreset,
     SleepTimer,
     LowPower,
+    Mono,
     Device,
     Notification,
     Time,
@@ -102,6 +103,7 @@ impl FooterModule {
             FooterModule::EqPreset => "EqPreset",
             FooterModule::SleepTimer => "SleepTimer",
             FooterModule::LowPower => "LowPower",
+            FooterModule::Mono => "Mono",
             FooterModule::Device => "Device",
             FooterModule::Notification => "Notification",
             FooterModule::Time => "Time",
@@ -128,6 +130,7 @@ impl FooterModule {
             "EqPreset" => FooterModule::EqPreset,
             "SleepTimer" => FooterModule::SleepTimer,
             "LowPower" => FooterModule::LowPower,
+            "Mono" => FooterModule::Mono,
             "Device" => FooterModule::Device,
             "Notification" => FooterModule::Notification,
             "Time" => FooterModule::Time,
@@ -162,6 +165,7 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::Volume,
                 FooterModule::Speed,
                 FooterModule::LowPower,
+                FooterModule::Mono,
                 FooterModule::Device,
                 FooterModule::EqPreset,
                 FooterModule::KeyAction,
@@ -196,6 +200,7 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::Shuffle,
                 FooterModule::Volume,
                 FooterModule::EqPreset,
+                FooterModule::Mono,
                 FooterModule::Progress,
                 FooterModule::KeyAction,
                 FooterModule::SleepTimer,
@@ -596,6 +601,14 @@ impl Footer {
         }
     }
 
+    fn mono(app: &App) -> Option<String> {
+        if app.state.mono {
+            Some("MONO".into())
+        } else {
+            None
+        }
+    }
+
     fn device(app: &App) -> Option<String> {
         Some(
             app.state
@@ -744,6 +757,7 @@ fn module_color(m: FooterModule, theme: &AppTheme) -> Color {
         FooterModule::EqPreset => theme.secondary_accent,
         FooterModule::SleepTimer => theme.accent,
         FooterModule::LowPower => theme.warning,
+        FooterModule::Mono => theme.secondary_accent,
         FooterModule::Device => theme.secondary_accent,
         FooterModule::Notification => theme.fg_bright,
         FooterModule::Time => theme.tertiary_accent,
@@ -768,6 +782,7 @@ fn module_text(m: FooterModule, app: &App) -> Option<String> {
         FooterModule::EqPreset => Footer::eq_preset(app),
         FooterModule::SleepTimer => Footer::sleep_timer(app),
         FooterModule::LowPower => Footer::low_power(app),
+        FooterModule::Mono => Footer::mono(app),
         FooterModule::Device => Footer::device(app),
         FooterModule::Notification => Footer::footer_notification(app),
         FooterModule::Time => Footer::time(app),

@@ -4,11 +4,14 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use std::collections::VecDeque;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use md5::Context;
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
@@ -16,14 +19,28 @@ use gtm_core::track::TrackInfo;
 
 const LASTFM_API_URL: &str = "https://ws.audioscrobbler.com/2.0/";
 
-/// Manages Last.fm authentication and scrobbling.
+/// Upper bound on the number of failed scrobbles cached for later retry.
+const MAX_RETRY_QUEUE: usize = 200;
+
+/// A scrobble that failed transiently and is queued for a later flush.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PendingScrobble {
+    artist: String,
+    track: String,
+    album: String,
+    timestamp: i64,
+}
+
+/// Manages Last.fm authentication, scrobbling, and track loving.
 pub struct LastfmManager {
     client: Client,
     api_key: Option<String>,
     api_secret: Option<String>,
     session_key: Arc<Mutex<Option<String>>>,
     last_scrobble: Arc<Mutex<Option<(String, Instant)>>>,
-    last_now_playing: Arc<Mutex<Option<Instant>>>,
+    last_now_playing: Arc<Mutex<Option<(String, Instant)>>>,
+    retry: Arc<Mutex<VecDeque<PendingScrobble>>>,
+    retry_path: Option<PathBuf>,
 }
 
 impl Default for LastfmManager {
@@ -41,6 +58,40 @@ impl LastfmManager {
             session_key: Arc::new(Mutex::new(None)),
             last_scrobble: Arc::new(Mutex::new(None)),
             last_now_playing: Arc::new(Mutex::new(None)),
+            retry: Arc::new(Mutex::new(VecDeque::new())),
+            retry_path: None,
+        }
+    }
+
+    /// Set where the offline retry queue is persisted and load any cached
+    /// scrobbles from a previous run so failures survive daemon restarts.
+    pub fn set_retry_path(&mut self, path: PathBuf) {
+        self.retry_path = Some(path.clone());
+        if let Ok(data) = std::fs::read(&path)
+            && let Ok(queued) = serde_json::from_slice::<VecDeque<PendingScrobble>>(&data)
+        {
+            let count = queued.len();
+            *self.retry.blocking_lock() = queued;
+            if count > 0 {
+                info!("Last.fm: restored {count} queued scrobble(s)");
+            }
+        }
+    }
+
+    /// Persist a snapshot of the retry queue to disk (best effort).
+    fn persist_snapshot(&self, snapshot: &VecDeque<PendingScrobble>) {
+        let Some(path) = self.retry_path.as_ref() else {
+            return;
+        };
+        if snapshot.is_empty() {
+            let _ = std::fs::remove_file(path);
+            return;
+        }
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if let Ok(json) = serde_json::to_vec(snapshot) {
+            let _ = std::fs::write(path, json);
         }
     }
 
@@ -116,20 +167,22 @@ impl LastfmManager {
     }
 
     /// Update "now playing" status on Last.fm.
-    /// Throttled to once per minute per Last.fm API guidelines.
+    /// Throttled per track to once per minute per Last.fm API guidelines, so
+    /// skipping back to a recently played track still refreshes its now-playing.
     pub async fn update_now_playing(&self, track: &TrackInfo) -> Result<(), String> {
         if !self.is_ready().await {
             return Err("Last.fm not configured".into());
         }
 
-        // Throttle: Last.fm recommends max 1 update per minute
+        let key = format!("{}|{}", track.artist, track.title);
         let mut last_np = self.last_now_playing.lock().await;
-        if let Some(last) = *last_np
+        if let Some((last_key, last)) = last_np.as_ref()
+            && *last_key == key
             && last.elapsed() < Duration::from_secs(60)
         {
-            return Ok(()); // Skip throttled update
+            return Ok(()); // Skip throttled update for the same track
         }
-        *last_np = Some(Instant::now());
+        *last_np = Some((key, Instant::now()));
         drop(last_np);
 
         let session_key = self
@@ -189,7 +242,8 @@ impl LastfmManager {
     /// Only scrobbles if track meets minimum play criteria. Same-track
     /// duplicate scrobbles within a short window are suppressed, but distinct
     /// tracks are never dropped (a cross-track throttle would silently lose
-    /// legitimate scrobbles during quick skip-ahead).
+    /// legitimate scrobbles during quick skip-ahead). Transient delivery
+    /// failures are queued for a later retry instead of being dropped.
     pub async fn scrobble(
         &self,
         track: &TrackInfo,
@@ -227,6 +281,102 @@ impl LastfmManager {
         *last_scrobble = Some((key, Instant::now()));
         drop(last_scrobble);
 
+        let artist = track.artist.clone();
+        let title = track.title.clone();
+        let album = track.album.clone();
+        let timestamp = chrono::Utc::now().timestamp();
+
+        match self.submit_scrobble(&artist, &title, &album, timestamp).await {
+            Ok(()) => {
+                info!("Last.fm scrobbled: {} - {}", artist, title);
+                Ok(())
+            }
+            Err(e) if e.starts_with("Last.fm error") => {
+                warn!("Last.fm scrobble failed: {e}");
+                Err(e)
+            }
+            Err(e) => {
+                // Transient failure (network/timeout/bad response): cache it.
+                warn!("Last.fm scrobble queued for retry: {e}");
+                self.enqueue_retry(PendingScrobble {
+                    artist,
+                    track: title,
+                    album,
+                    timestamp,
+                })
+                .await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Append a failed scrobble to the retry queue (capped, oldest dropped).
+    async fn enqueue_retry(&self, item: PendingScrobble) {
+        let mut retry = self.retry.lock().await;
+        if retry.len() >= MAX_RETRY_QUEUE {
+            retry.pop_front();
+        }
+        retry.push_back(item);
+        let snapshot = retry.clone();
+        drop(retry);
+        self.persist_snapshot(&snapshot);
+    }
+
+    /// Retry any queued scrobbles. Successful entries are removed; entries that
+    /// still fail on a transient error stay queued for the next flush. Called
+    /// from a background task so playback is never blocked.
+    pub async fn flush_retries(&self) {
+        if !self.is_ready().await {
+            return;
+        }
+        let to_try = {
+            let retry = self.retry.lock().await;
+            retry.iter().cloned().collect::<Vec<_>>()
+        };
+        let mut kept = VecDeque::new();
+        for item in to_try {
+            match self
+                .submit_scrobble(&item.artist, &item.track, &item.album, item.timestamp)
+                .await
+            {
+                Ok(()) => info!(
+                    "Last.fm retried scrobble: {} - {}",
+                    item.artist, item.track
+                ),
+                Err(e) if e.starts_with("Last.fm error") => {
+                    warn!(
+                        "Last.fm cached scrobble dropped ({e}): {} - {}",
+                        item.artist, item.track
+                    );
+                }
+                Err(e) => {
+                    debug!("Last.fm scrobble still failing ({e}), kept for later");
+                    kept.push_back(item);
+                }
+            }
+        }
+        {
+            let mut retry = self.retry.lock().await;
+            *retry = kept.clone();
+        }
+        self.persist_snapshot(&kept);
+    }
+
+    /// Love the current track on Last.fm.
+    pub async fn love(&self, track: &TrackInfo) -> Result<(), String> {
+        self.set_loved(track, true).await
+    }
+
+    /// Un-love the current track on Last.fm.
+    pub async fn unlove(&self, track: &TrackInfo) -> Result<(), String> {
+        self.set_loved(track, false).await
+    }
+
+    /// Submit `track.love` / `track.unlove` for the given track.
+    async fn set_loved(&self, track: &TrackInfo, love: bool) -> Result<(), String> {
+        if !self.is_ready().await {
+            return Err("Last.fm not configured".into());
+        }
         let session_key = self
             .session_key
             .lock()
@@ -236,14 +386,69 @@ impl LastfmManager {
 
         let track_name = track.title.clone();
         let artist = track.artist.clone();
-        let album = track.album.clone();
-        let timestamp = chrono::Utc::now().timestamp();
+        let method = if love { "track.love" } else { "track.unlove" };
 
         let sig = self.sign_params(&[
             ("api_key", self.api_key.as_ref().unwrap()),
             ("artist", &artist),
             ("track", &track_name),
-            ("album", &album),
+            ("method", method),
+            ("sk", &session_key),
+        ]);
+
+        let params = [
+            ("method", method),
+            ("api_key", self.api_key.as_ref().unwrap()),
+            ("artist", &artist),
+            ("track", &track_name),
+            ("sk", &session_key),
+            ("api_sig", &sig),
+            ("format", "json"),
+        ];
+
+        let resp = self
+            .client
+            .post(LASTFM_API_URL)
+            .form(&params)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {e}"))?;
+
+        let json: serde_json::Value = resp
+            .json()
+            .await
+            .map_err(|e| format!("Invalid JSON: {e}"))?;
+
+        if let Some(error) = json.get("error") {
+            warn!("Last.fm {method} failed: {}", error);
+            return Err(error.to_string());
+        }
+
+        info!("Last.fm {} - {} {}", method, artist, track_name);
+        Ok(())
+    }
+
+    /// Raw scrobble submission for a resolved identity (used by both the
+    /// criteria-gated path and the offline retry queue).
+    async fn submit_scrobble(
+        &self,
+        artist: &str,
+        track_name: &str,
+        album: &str,
+        timestamp: i64,
+    ) -> Result<(), String> {
+        let session_key = self
+            .session_key
+            .lock()
+            .await
+            .clone()
+            .ok_or("No Last.fm session")?;
+
+        let sig = self.sign_params(&[
+            ("api_key", self.api_key.as_ref().unwrap()),
+            ("artist", artist),
+            ("track", track_name),
+            ("album", album),
             ("method", "track.scrobble"),
             ("sk", &session_key),
             ("timestamp", &timestamp.to_string()),
@@ -252,9 +457,9 @@ impl LastfmManager {
         let params = [
             ("method", "track.scrobble"),
             ("api_key", self.api_key.as_ref().unwrap()),
-            ("artist", &artist),
-            ("track", &track_name),
-            ("album", &album),
+            ("artist", artist),
+            ("track", track_name),
+            ("album", album),
             ("sk", &session_key),
             ("timestamp", &timestamp.to_string()),
             ("api_sig", &sig),
@@ -275,11 +480,9 @@ impl LastfmManager {
             .map_err(|e| format!("Invalid JSON: {e}"))?;
 
         if let Some(error) = json.get("error") {
-            warn!("Last.fm scrobble failed: {}", error);
-            return Err(error.to_string());
+            return Err(format!("Last.fm error: {error}"));
         }
 
-        info!("Last.fm scrobbled: {} - {}", artist, track_name);
         Ok(())
     }
 

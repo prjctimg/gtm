@@ -19,6 +19,7 @@ use crate::picker::{Picker, PickerId, PickerSource};
 use crate::progress::{ProgressStyle, render_progress, render_progress_styled, render_ratio};
 use crate::theme::blend_colors;
 pub use crate::theme::readable_fg;
+use crate::extensions::ExtensionId;
 use crate::visualizer::VisualizerPreset;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
@@ -627,8 +628,11 @@ impl Render {
     fn library(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let is_narrow = app.terminal_cols < 60;
         let is_small_height = app.terminal_rows < 22;
-        // Visualizer needs at least 80 columns for useful display
-        let show_vis = app.visualizer.is_enabled() && app.terminal_cols >= 80;
+        // Visualizer needs at least 80 columns for useful display and is a
+        // configurable extension (see `[extensions]` in the TUI config).
+        let show_vis = app.visualizer.is_enabled()
+            && app.extensions.is_enabled(ExtensionId::Visualizer)
+            && app.terminal_cols >= 80;
         // Lyrics in third pane only when >= 100 columns; otherwise show in results pane
         let lyrics_third_pane = app.lyrics.show && app.terminal_cols >= 100;
         let np_height: u16 = if is_narrow {
@@ -3471,15 +3475,42 @@ impl Pickers {
         };
 
         let mut lines: Vec<Line> = vec![search_line];
+        match app.pickers.top().map(|o| o.query.clone()).as_deref() {
+            Some(q) if q.starts_with("scsearch:") => {
+                lines.push(Line::from(Span::styled(
+                    " SoundCloud search (yt-dlp)",
+                    Style::default().fg(app.theme.secondary_fg),
+                )));
+            }
+            Some(q) if q.starts_with("bilisearch:") => {
+                lines.push(Line::from(Span::styled(
+                    " Bilibili search (yt-dlp)",
+                    Style::default().fg(app.theme.secondary_fg),
+                )));
+            }
+            Some(q) if q.starts_with("mcsearch:") => {
+                lines.push(Line::from(Span::styled(
+                    " Mixcloud search (yt-dlp)",
+                    Style::default().fg(app.theme.secondary_fg),
+                )));
+            }
+            Some(q) if q.starts_with("ytsearch") => {
+                lines.push(Line::from(Span::styled(
+                    " YouTube Music search (yt-dlp)",
+                    Style::default().fg(app.theme.secondary_fg),
+                )));
+            }
+            _ => {}
+        }
         if app.yt_results_cache.is_empty() && app.yt_search_loading {
             f.render_widget(Paragraph::new(lines), inner);
             let loader_area = Rect {
                 x: inner.x,
-                y: inner.y + 1,
+                y: inner.y + lines.len() as u16,
                 width: inner.width,
-                height: inner.height.saturating_sub(1),
+                height: inner.height.saturating_sub(lines.len() as u16),
             };
-            Render::loader(f, loader_area, app, "Searching YouTube\u{2026}");
+            Render::loader(f, loader_area, app, "Searching…");
             return;
         }
         for i in scroll_start..scroll_end {
@@ -5096,6 +5127,11 @@ impl CommandPalette {
                 hint: "mute",
             },
             Command {
+                icon: "\u{f04ab} Mono: Toggle",
+                keys: "Alt+1",
+                hint: "toggle mono",
+            },
+            Command {
                 icon: "\u{f0577} Repeat Mode",
                 keys: "r",
                 hint: "repeat",
@@ -5109,6 +5145,16 @@ impl CommandPalette {
                 icon: "\u{f0493} Toggle Favourite",
                 keys: "f",
                 hint: "toggle favourite",
+            },
+            Command {
+                icon: "\u{f04a6} Love / Un-love on Last.fm",
+                keys: "*",
+                hint: "love last.fm",
+            },
+            Command {
+                icon: "\u{f04ec} Toggle Last.fm Scrobbling",
+                keys: "&",
+                hint: "toggle scrobbling",
             },
             Command {
                 icon: "\u{f057a} Search Track",
@@ -5326,6 +5372,11 @@ impl CommandPalette {
                 hint: "mute",
             },
             Command {
+                icon: "\u{1f508} Mono: Toggle",
+                keys: "Alt+1",
+                hint: "toggle mono",
+            },
+            Command {
                 icon: "\u{1f501} Repeat Mode",
                 keys: "r",
                 hint: "repeat",
@@ -5339,6 +5390,16 @@ impl CommandPalette {
                 icon: "\u{2764}\u{fe0f} Toggle Favourite",
                 keys: "f",
                 hint: "toggle favourite",
+            },
+            Command {
+                icon: "\u{1f49e} Love / Un-love on Last.fm",
+                keys: "*",
+                hint: "love last.fm",
+            },
+            Command {
+                icon: "\u{1f504} Toggle Last.fm Scrobbling",
+                keys: "&",
+                hint: "toggle scrobbling",
             },
             Command {
                 icon: "\u{1f50d} Search Track",
@@ -5528,6 +5589,9 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   > / <       Speed Up / Down (pitch-preserving)"),
     ("", "   z           Toggle Low-Power Mode"),
     ("", "   m           Mute Toggle"),
+    ("", "   Alt+1       Mono Toggle"),
+    ("", "   *           Love / Un-love on Last.fm"),
+    ("", "   &           Toggle Last.fm Scrobbling"),
     ("", "   r           Repeat Mode"),
     ("", "   S           Shuffle Library"),
     ("", "   f           Toggle Favourite"),

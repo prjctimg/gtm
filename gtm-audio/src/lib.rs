@@ -9,6 +9,7 @@ pub mod buffer;
 pub mod decoder;
 pub mod eq;
 pub mod mixer;
+pub mod mono;
 pub mod silent;
 pub mod stretch;
 pub mod symphonia;

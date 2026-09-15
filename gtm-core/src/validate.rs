@@ -35,6 +35,7 @@ impl DaemonState {
             repeat: RepeatMode::Off,
             shuffle: false,
             mute: false,
+            mono: false,
             crossfade: Some(CrossfadeConfig {
                 enabled: true,
                 duration_secs: 6,

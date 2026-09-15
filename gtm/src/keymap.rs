@@ -51,7 +51,13 @@ pub enum KeyboardAction {
     ToggleShuffle,
     CycleRepeat,
     ToggleMute,
+    /// Toggle mono downmix (`Alt+1`).
+    ToggleMono,
     ToggleFavourite,
+    /// Love / un-love the current track on Last.fm (`*`).
+    ToggleLove,
+    /// Toggle Last.fm scrobbling for this session (`&`).
+    ToggleScrobble,
 
     // Queue
     ClearQueue,
@@ -377,6 +383,14 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
+            // Mono downmix: Alt+1
+            (
+                KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT),
+                BoundCommand {
+                    action: KeyboardAction::ToggleMono,
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
             // Quit daemon: Q / Ctrl+Q
             (
                 KeyCode::Char('Q').into(),
@@ -397,6 +411,22 @@ pub fn default_keybindings() -> Keybindings {
                 KeyCode::Char('f').into(),
                 BoundCommand {
                     action: KeyboardAction::ToggleFavourite,
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
+            // Last.fm love/unlove: *
+            (
+                KeyCode::Char('*').into(),
+                BoundCommand {
+                    action: KeyboardAction::ToggleLove,
+                    contexts: vec![KeyContext::Normal],
+                },
+            ),
+            // Last.fm session scrobble toggle: &
+            (
+                KeyCode::Char('&').into(),
+                BoundCommand {
+                    action: KeyboardAction::ToggleScrobble,
                     contexts: vec![KeyContext::Normal],
                 },
             ),
@@ -830,7 +860,10 @@ impl KeyboardAction {
             "toggle_shuffle" | "shuffle" => KeyboardAction::ToggleShuffle,
             "cycle_repeat" | "repeat" => KeyboardAction::CycleRepeat,
             "toggle_mute" | "mute" => KeyboardAction::ToggleMute,
+            "toggle_mono" | "mono" => KeyboardAction::ToggleMono,
             "toggle_favourite" | "favourite" | "fav" => KeyboardAction::ToggleFavourite,
+            "toggle_love" | "love" => KeyboardAction::ToggleLove,
+            "toggle_scrobble" | "scrobble" => KeyboardAction::ToggleScrobble,
             "clear_queue" => KeyboardAction::ClearQueue,
             "back" => KeyboardAction::Back,
             "focus_left" => KeyboardAction::FocusLeft,

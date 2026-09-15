@@ -8,6 +8,7 @@
 
 pub mod app;
 pub mod cli;
+pub mod extensions;
 pub mod footer;
 pub mod keymap;
 pub mod mouse;

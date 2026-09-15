@@ -185,6 +185,9 @@ pub struct DaemonState {
     pub repeat: RepeatMode,
     pub shuffle: bool,
     pub mute: bool,
+    /// Force mono playback (downmix to a single summed channel).
+    #[serde(default)]
+    pub mono: bool,
     pub crossfade: Option<CrossfadeConfig>,
     pub current_track: Option<TrackInfo>,
     pub time_pos: f64,
@@ -528,6 +531,9 @@ pub struct SavedState {
     pub repeat: RepeatMode,
     pub shuffle: bool,
     pub mute: bool,
+    /// Force mono playback (downmix to a single summed channel).
+    #[serde(default)]
+    pub mono: bool,
     pub crossfade: Option<CrossfadeConfig>,
     #[serde(flatten)]
     pub audio: AudioSettings,
@@ -557,6 +563,7 @@ impl SavedState {
             repeat: state.repeat,
             shuffle: state.shuffle,
             mute: state.mute,
+            mono: state.mono,
             crossfade: state.crossfade.clone(),
             audio: state.audio.clone(),
             gapless: state.gapless,
@@ -576,6 +583,7 @@ impl SavedState {
         state.repeat = self.repeat;
         state.shuffle = self.shuffle;
         state.mute = self.mute;
+        state.mono = self.mono;
         state.crossfade = self.crossfade.clone();
         state.audio = self.audio.clone();
         state.gapless = self.gapless;

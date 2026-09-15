@@ -208,6 +208,7 @@ fn req_cmd_name() {
         },
         DaemonReq::ToggleShuffle,
         DaemonReq::ToggleMute,
+        DaemonReq::SetMono { enabled: true },
         DaemonReq::GetStatus,
         DaemonReq::CheckHealth,
         DaemonReq::Ping,

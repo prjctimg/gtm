@@ -48,6 +48,7 @@ use crate::ui::{
     CROSSFADE_DURATIONS, Command, CommandPalette, HELP_LINES, cover_provider_label,
     theme_mode_label,
 };
+use crate::extensions::{ExtensionId, ExtensionsConfig};
 use crate::visualizer::{AudioVisualizer, VisualizerPreset};
 
 fn prefs_path() -> std::path::PathBuf {
@@ -121,6 +122,8 @@ pub struct Prefs {
     progress_style: ProgressStyle,
     #[serde(default)]
     visualizer_preset: VisualizerPreset,
+    #[serde(default)]
+    extensions: ExtensionsConfig,
     #[serde(default = "default_time_format")]
     time_format: String,
     #[serde(default = "default_theme_mode")]
@@ -233,6 +236,7 @@ impl Default for Prefs {
             footer_preset_name: default_preset_name(),
             progress_style: ProgressStyle::default(),
             visualizer_preset: VisualizerPreset::default(),
+            extensions: ExtensionsConfig::default(),
             time_format: default_time_format(),
             theme_mode: default_theme_mode(),
             track_sort: default_track_sort(),
@@ -258,6 +262,17 @@ fn save_prefs(prefs: &Prefs) {
     if let Ok(s) = toml::to_string(prefs) {
         let _ = std::fs::write(prefs_path(), s);
     }
+}
+
+/// Map a picker overlay to the extension that owns it, if any. Used to gate
+/// keybindings/palette entries whose surface was moved out of core.
+fn overlay_extension(id: PickerId) -> Option<ExtensionId> {
+    Some(match id {
+        PickerId::VisualizerPreset => ExtensionId::Visualizer,
+        PickerId::Notifications => ExtensionId::FloatingNotifications,
+        PickerId::NotificationSettings => ExtensionId::NotificationOverlay,
+        _ => return None,
+    })
 }
 
 fn build_keybindings(overrides: &std::collections::HashMap<String, String>) -> Keybindings {
@@ -899,6 +914,8 @@ pub struct App {
     pub multiselect_mode: bool,
     pub progress_style: ProgressStyle,
     pub visualizer: AudioVisualizer,
+    /// Config-driven component registry (`[extensions]` in the TUI config).
+    pub extensions: ExtensionsConfig,
     pub selected_indices: std::collections::HashSet<usize>,
     pending_motion: Option<char>,
     pub pending_track_ids: Vec<i64>,
@@ -1157,6 +1174,7 @@ pub enum TuiCommand {
     ToggleShuffle,
     CycleRepeat(RepeatMode),
     ToggleMute,
+    ToggleMono,
     Crossfade(bool, u8),
     QueueAdd(String),
     QueueMove(u64, u64),
@@ -1435,6 +1453,7 @@ impl App {
                 v.preset = prefs.visualizer_preset;
                 v
             },
+            extensions: prefs.extensions.clone(),
             selected_indices: std::collections::HashSet::new(),
             pending_motion: None,
             pending_track_ids: Vec::new(),
@@ -1688,6 +1707,7 @@ impl App {
                 .unwrap_or_else(default_preset_name),
             progress_style: self.progress_style,
             visualizer_preset: self.visualizer.preset,
+            extensions: self.extensions.clone(),
             time_format: self.footer_time_format.clone(),
             theme_mode: self.theme_mode.clone(),
             track_sort: self.track_sort,
@@ -1714,6 +1734,44 @@ impl App {
         // preference can't fight the choice on restart.
         self.theme_mode = "manual".to_string();
         save_prefs(&self.current_prefs());
+    }
+
+    /// Open the visualizer preset picker, refusing when the visualizer
+    /// extension is disabled. Shared by the palette entry and keybindings.
+    fn open_visualizer_picker(&mut self) {
+        if self.extensions.is_disabled(ExtensionId::Visualizer) {
+            self.notify(
+                format!(
+                    "{} is an optional extension (disabled)",
+                    ExtensionId::Visualizer.label()
+                ),
+                NotificationKind::Info,
+                NotifType::System,
+            );
+            return;
+        }
+        self.pickers.open(PickerId::VisualizerPreset);
+        self.dismiss_track_popup();
+        self.on_picker_opened(PickerId::VisualizerPreset);
+    }
+
+    /// Open the notification settings overlay, refusing when the overlay
+    /// extension is disabled.
+    fn open_settings_overlay(&mut self) {
+        if self.extensions.is_disabled(ExtensionId::NotificationOverlay) {
+            self.notify(
+                format!(
+                    "{} is an optional extension (disabled)",
+                    ExtensionId::NotificationOverlay.label()
+                ),
+                NotificationKind::Info,
+                NotifType::System,
+            );
+            return;
+        }
+        self.pickers.open(PickerId::NotificationSettings);
+        self.dismiss_track_popup();
+        self.on_picker_opened(PickerId::NotificationSettings);
     }
 
     /// Cycle the theme-following mode (auto → dark → light → manual → auto),
@@ -2068,6 +2126,16 @@ impl App {
                 {
                     self.start_upnext(track.clone());
                 }
+                // The visualizer is a configurable extension: when disabled
+                // the spectrum stream is zeroed on the client so the IPC pipe
+                // is effectively idle from the app's perspective.
+                if matches!(ev, DaemonEvent::SpectrumChanged { .. })
+                    && self.extensions.is_disabled(ExtensionId::Visualizer)
+                {
+                    self.state.audio_levels.clear();
+                } else {
+                    self.state.apply_event(&ev);
+                }
                 // The daemon finished an OAuth link flow: pull the fresh
                 // status + playlists so they appear without a restart.
                 if matches!(ev, DaemonEvent::SpotifyStatusChanged) {
@@ -2081,7 +2149,6 @@ impl App {
                 {
                     had_sync_done = true;
                 }
-                self.state.apply_event(&ev);
                 events_received = true;
             }
             // Mark the next frame dirty so any mid-transition state change
@@ -3132,6 +3199,13 @@ impl App {
             .copied()
             .unwrap_or(NotifMode::Floating);
         match mode {
+            NotifMode::Floating if self.extensions.is_disabled(ExtensionId::FloatingNotifications) => {
+                // The floating-card surface is a configurable extension; when
+                // disabled the event is demoted to the footer (or dropped by
+                // the next arm) rather than lost, and the per-category mode is
+                // left untouched.
+                self.notify_footer(format!("{title}: {message}"));
+            }
             NotifMode::Floating => {
                 let expires_at = std::time::Instant::now() + std::time::Duration::from_millis(1500);
                 self.notifications.push(Notification {
@@ -3754,6 +3828,90 @@ impl App {
                 }
             }
         });
+    }
+
+    /// Love or un-love the current track on Last.fm. `*` toggles based on the
+    /// last known loved state; the daemon immediate-scrobbles on love.
+    fn manage_lastfm_love(&mut self) -> bool {
+        if self.library_pane_focus {
+            return true;
+        }
+        let love = !self
+            .setup
+            .lastfm_status
+            .as_ref()
+            .is_some_and(|s| s.loved);
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            let result = if love {
+                c.lastfm().love().await
+            } else {
+                c.lastfm().unlove().await
+            };
+            match result {
+                Ok(()) => {
+                    let _ = ipc_tx.send(IpcResult::Notification(
+                        "Last.fm".to_string(),
+                        if love {
+                            "Track loved ♥ — scrobbling now".to_string()
+                        } else {
+                            "Track un-loved".to_string()
+                        },
+                        if love {
+                            NotificationKind::Success
+                        } else {
+                            NotificationKind::Info
+                        },
+                        NotifType::Lastfm,
+                    ));
+                }
+                Err(e) => {
+                    let _ = ipc_tx.send(IpcResult::Error(format!("Last.fm love failed: {e}")));
+                }
+            }
+        });
+        self.refresh_lastfm_status();
+        false
+    }
+
+    /// Flip Last.fm scrobbling on/off for this session (`&`).
+    fn toggle_scrobble_session(&mut self) {
+        let enabled = !self
+            .setup
+            .lastfm_status
+            .as_ref()
+            .is_some_and(|s| s.enabled);
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            match c
+                .lastfm()
+                .set_config(enabled, None, None, None, None, None)
+                .await
+            {
+                Ok(()) => {
+                    let _ = ipc_tx.send(IpcResult::Notification(
+                        "Last.fm".to_string(),
+                        if enabled {
+                            "Scrobbling enabled".to_string()
+                        } else {
+                            "Scrobbling paused for this session".to_string()
+                        },
+                        if enabled {
+                            NotificationKind::Success
+                        } else {
+                            NotificationKind::Info
+                        },
+                        NotifType::Lastfm,
+                    ));
+                }
+                Err(e) => {
+                    let _ = ipc_tx.send(IpcResult::Error(format!("Last.fm toggle failed: {e}")));
+                }
+            }
+        });
+        self.refresh_lastfm_status();
     }
 
     pub fn refresh_subsonic_status(&mut self) {
@@ -4736,6 +4894,13 @@ impl App {
                     }
                 });
             }
+            TuiCommand::ToggleMono => {
+                tokio::spawn(async move {
+                    if let Err(e) = client.toggle_mono().await {
+                        error_handler(e);
+                    }
+                });
+            }
             TuiCommand::Crossfade(en, dur) => {
                 tokio::spawn(async move {
                     if let Err(e) = client.crossfade(en, dur).await {
@@ -5659,6 +5824,19 @@ impl App {
                         self.dismiss_track_popup();
                     }
                     Some(KeyboardAction::OpenOverlay(id)) => {
+                        if let Some(ext) = overlay_extension(id)
+                            && self.extensions.is_disabled(ext)
+                        {
+                            self.notify(
+                                format!(
+                                    "{} is an optional extension (disabled)",
+                                    ext.label()
+                                ),
+                                NotificationKind::Info,
+                                NotifType::System,
+                            );
+                            return true;
+                        }
                         self.pickers.open(id);
                         self.dismiss_track_popup();
                         self.on_picker_opened(id);
@@ -5799,6 +5977,27 @@ impl App {
                             msg.to_string(),
                             std::time::Instant::now() + std::time::Duration::from_secs(2),
                         ));
+                    }
+                    Some(KeyboardAction::ToggleMono) => {
+                        self.set_last_action("Toggle Mono");
+                        self.send_high(TuiCommand::ToggleMono);
+                        let msg = if self.state.mono { "Mono off" } else { "Mono on" };
+                        self.footer_notification = Some((
+                            msg.to_string(),
+                            std::time::Instant::now() + std::time::Duration::from_secs(2),
+                        ));
+                    }
+                    Some(KeyboardAction::ToggleLove) => {
+                        self.set_last_action(if self.setup.lastfm_status.as_ref().is_some_and(|s| s.loved) {
+                            "Un-love on Last.fm"
+                        } else {
+                            "Love on Last.fm"
+                        });
+                        return self.manage_lastfm_love();
+                    }
+                    Some(KeyboardAction::ToggleScrobble) => {
+                        self.set_last_action("Toggle Last.fm scrobbling");
+                        self.toggle_scrobble_session();
                     }
                     Some(KeyboardAction::CycleRepeat) => {
                         self.set_last_action("Cycle Repeat");
@@ -5987,16 +6186,26 @@ impl App {
                         ));
                     }
                     Some(KeyboardAction::ToggleVisualizer) => {
-                        self.visualizer.toggle();
-                        let state = if self.visualizer.is_enabled() {
-                            "ON"
+                        if self.extensions.is_disabled(ExtensionId::Visualizer) {
+                            self.footer_notification = Some((
+                                format!(
+                                    "{} disabled — enable in [extensions]",
+                                    ExtensionId::Visualizer.label()
+                                ),
+                                std::time::Instant::now() + std::time::Duration::from_secs(2),
+                            ));
                         } else {
-                            "OFF"
-                        };
-                        self.footer_notification = Some((
-                            format!("Visualizer: {}", state),
-                            std::time::Instant::now() + std::time::Duration::from_secs(2),
-                        ));
+                            self.visualizer.toggle();
+                            let state = if self.visualizer.is_enabled() {
+                                "ON"
+                            } else {
+                                "OFF"
+                            };
+                            self.footer_notification = Some((
+                                format!("Visualizer: {}", state),
+                                std::time::Instant::now() + std::time::Duration::from_secs(2),
+                            ));
+                        }
                     }
                     Some(KeyboardAction::ToggleTheme) => {
                         self.toggle_theme();
@@ -7621,7 +7830,7 @@ impl App {
                                     });
                                 }
                                 12 => {
-                                    self.pickers.open(PickerId::NotificationSettings);
+                                    self.open_settings_overlay();
                                 }
                                 13 => {
                                     self.cycle_theme_mode();
@@ -9103,6 +9312,8 @@ impl App {
                                     self.send_high(TuiCommand::SetVolume(new_vol));
                                 } else if action == "mute" {
                                     self.send_high(TuiCommand::ToggleMute);
+                                } else if action == "toggle mono" {
+                                    self.send_high(TuiCommand::ToggleMono);
                                 } else if action == "repeat" {
                                     let new_mode = match self.state.repeat {
                                         RepeatMode::Off => RepeatMode::One,
@@ -9143,7 +9354,20 @@ impl App {
                                 } else if action == "about" {
                                     self.pickers.open(PickerId::About);
                                 } else if action == "notifications" {
-                                    self.pickers.open(PickerId::Notifications);
+                                    if let Some(ext) = overlay_extension(PickerId::Notifications)
+                                        && self.extensions.is_disabled(ext)
+                                    {
+                                        self.notify(
+                                            format!(
+                                                "{} is an optional extension (disabled)",
+                                                ext.label()
+                                            ),
+                                            NotificationKind::Info,
+                                            NotifType::System,
+                                        );
+                                    } else {
+                                        self.pickers.open(PickerId::Notifications);
+                                    }
                                 } else if action == "search" {
                                     self.pickers.open(PickerId::SearchLibrary);
                                 } else if action == "spotify" {
@@ -9154,21 +9378,32 @@ impl App {
                                 } else if action == "progress style" {
                                     self.pickers.open(PickerId::ProgressStyle);
                                 } else if action == "visualizer preset" {
-                                    self.pickers.open(PickerId::VisualizerPreset);
+                                    self.open_visualizer_picker();
                                 } else if action == "visualizer" {
-                                    self.visualizer.toggle();
-                                    let state = if self.visualizer.is_enabled() {
-                                        "ON"
+                                    if self.extensions.is_disabled(ExtensionId::Visualizer) {
+                                        self.notify(
+                                            format!(
+                                                "{} is an optional extension (disabled)",
+                                                ExtensionId::Visualizer.label()
+                                            ),
+                                            NotificationKind::Info,
+                                            NotifType::System,
+                                        );
                                     } else {
-                                        "OFF"
-                                    };
-                                    self.notify_typed(
-                                        "System",
-                                        format!("Visualizer: {}", state),
-                                        NotificationKind::Info,
-                                        false,
-                                        NotifType::Playback,
-                                    );
+                                        self.visualizer.toggle();
+                                        let state = if self.visualizer.is_enabled() {
+                                            "ON"
+                                        } else {
+                                            "OFF"
+                                        };
+                                        self.notify_typed(
+                                            "System",
+                                            format!("Visualizer: {}", state),
+                                            NotificationKind::Info,
+                                            false,
+                                            NotifType::Playback,
+                                        );
+                                    }
                                 } else if action == "stop" {
                                     self.send_high(TuiCommand::Stop);
                                 } else if action == "seek forward" {
@@ -9209,6 +9444,10 @@ impl App {
                                         std::time::Instant::now()
                                             + std::time::Duration::from_secs(2),
                                     ));
+                                } else if action == "love last.fm" {
+                                    self.manage_lastfm_love();
+                                } else if action == "toggle scrobbling" {
+                                    self.toggle_scrobble_session();
                                 } else if action == "prev tab" {
                                     self.cycle_pane_focus(false);
                                     self.pickers.close_top();

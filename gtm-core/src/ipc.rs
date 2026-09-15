@@ -210,6 +210,9 @@ pub enum DaemonReq {
         mode: RepeatMode,
     },
     ToggleMute,
+    SetMono {
+        enabled: bool,
+    },
     Crossfade {
         enabled: bool,
         duration_secs: u8,
@@ -385,6 +388,11 @@ pub enum DaemonReq {
     },
     LastfmStatus,
     LastfmClear,
+    /// Love the current track on Last.fm; also immediate-scrobbles the active
+    /// play session so a loved track is never lost on a quick skip.
+    LastfmLove,
+    /// Un-love the current track on Last.fm.
+    LastfmUnlove,
     SetSleepTimer {
         minutes: u32,
     },
@@ -510,6 +518,7 @@ impl DaemonReq {
             DaemonReq::ToggleShuffle => "toggle_shuffle",
             DaemonReq::CycleRepeat { .. } => "cycle_repeat",
             DaemonReq::ToggleMute => "toggle_mute",
+            DaemonReq::SetMono { .. } => "set_mono",
             DaemonReq::Crossfade { .. } => "crossfade",
             DaemonReq::SetLoudnessMode { .. } => "set_loudness_mode",
             DaemonReq::ScanLoudness { .. } => "scan_loudness",
@@ -565,6 +574,8 @@ impl DaemonReq {
             DaemonReq::LastfmAuthenticate { .. } => "lastfm_authenticate",
             DaemonReq::LastfmStatus => "lastfm_status",
             DaemonReq::LastfmClear => "lastfm_clear",
+            DaemonReq::LastfmLove => "lastfm_love",
+            DaemonReq::LastfmUnlove => "lastfm_unlove",
             DaemonReq::SetSleepTimer { .. } => "set_sleep_timer",
             DaemonReq::CancelSleepTimer => "cancel_sleep_timer",
             DaemonReq::SetLowPower { .. } => "set_low_power",
@@ -680,6 +691,14 @@ impl DaemonReq {
                 DaemonReq::CycleRepeat { mode: x.mode }
             }
             "toggle_mute" => DaemonReq::ToggleMute,
+            "set_mono" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    enabled: bool,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SetMono { enabled: x.enabled }
+            }
             "crossfade" => {
                 #[derive(Deserialize)]
                 struct Params {
@@ -1030,6 +1049,8 @@ impl DaemonReq {
             }
             "lastfm_status" => DaemonReq::LastfmStatus,
             "lastfm_clear" => DaemonReq::LastfmClear,
+            "lastfm_love" => DaemonReq::LastfmLove,
+            "lastfm_unlove" => DaemonReq::LastfmUnlove,
             "set_sleep_timer" => {
                 #[derive(Deserialize)]
                 struct Params {
@@ -1432,6 +1453,8 @@ pub enum DaemonEvent {
     DurationChanged { duration: f64 },
     #[serde(rename = "volume_changed")]
     VolumeChanged { volume: u8 },
+    #[serde(rename = "mono_changed")]
+    MonoChanged { enabled: bool },
     #[serde(rename = "metadata_changed")]
     MetadataChanged { detail: String },
     #[serde(rename = "queue_changed")]
@@ -1612,6 +1635,8 @@ pub enum DaemonRes {
         api_key: Option<String>,
         session_token: Option<String>,
         ready: bool,
+        /// Whether the currently playing track is loved on Last.fm.
+        loved: bool,
     },
     YtDownloadProgress {
         id: u64,
@@ -1721,11 +1746,13 @@ impl DaemonRes {
                 api_key,
                 session_token,
                 ready,
+                loved,
             } => Some(serde_json::json!({
                 "enabled": enabled,
                 "api_key": api_key,
                 "session_token": session_token,
                 "ready": ready,
+                "loved": loved,
             })),
             DaemonRes::YtDownloadProgress {
                 id,
@@ -2038,6 +2065,7 @@ impl DaemonRes {
                     .and_then(|v| v.as_str())
                     .map(String::from),
                 ready: data.get("ready").and_then(|v| v.as_bool()).unwrap_or(false),
+                loved: data.get("loved").and_then(|v| v.as_bool()).unwrap_or(false),
             },
             "yt_download_progress" => DaemonRes::YtDownloadProgress {
                 id: data.get("id").and_then(|v| v.as_u64()).unwrap_or(0),

@@ -340,6 +340,16 @@ impl DaemonClient {
         self.send_ok(DaemonReq::ToggleMute).await
     }
 
+    pub async fn set_mono(&self, enabled: bool) -> Result<()> {
+        self.send_ok(DaemonReq::SetMono { enabled }).await
+    }
+
+    pub async fn toggle_mono(&self) -> Result<()> {
+        let st = self.get_status().await?;
+        self.send_ok(DaemonReq::SetMono { enabled: !st.mono })
+            .await
+    }
+
     pub async fn set_eq_preset(&self, preset: EqPreset) -> Result<()> {
         self.send_ok(DaemonReq::SetEqPreset { preset }).await
     }
@@ -1537,11 +1547,13 @@ impl<'a> Lastfm<'a> {
                 api_key,
                 session_token,
                 ready,
+                loved,
             } => Ok(LastfmStatus {
                 enabled,
                 api_key,
                 session_token,
                 ready,
+                loved,
             }),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
             _ => Err(unexpected(&res)),
@@ -1552,6 +1564,18 @@ impl<'a> Lastfm<'a> {
     pub async fn clear(&self) -> Result<()> {
         self.client.send_ok(DaemonReq::LastfmClear).await
     }
+
+    /// Love the currently playing track on Last.fm. The daemon also submits an
+    /// immediate scrobble for the active play session so a loved track is
+    /// never lost on a quick skip.
+    pub async fn love(&self) -> Result<()> {
+        self.client.send_ok(DaemonReq::LastfmLove).await
+    }
+
+    /// Un-love the currently playing track on Last.fm.
+    pub async fn unlove(&self) -> Result<()> {
+        self.client.send_ok(DaemonReq::LastfmUnlove).await
+    }
 }
 
 /// Last.fm configuration and link state.
@@ -1561,6 +1585,7 @@ pub struct LastfmStatus {
     pub api_key: Option<String>,
     pub session_token: Option<String>,
     pub ready: bool,
+    pub loved: bool,
 }
 
 pub struct Favourites<'a> {

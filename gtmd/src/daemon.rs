@@ -280,6 +280,11 @@ impl ScrobbleTracker {
     }
 }
 
+/// Identity key used to track which track is currently loved on Last.fm.
+fn track_love_key(track: &TrackInfo) -> String {
+    format!("{}|{}", track.artist, track.title)
+}
+
 /// Capacity of the daemon→client event broadcast channel.
 pub const EVENT_CHANNEL_CAPACITY: usize = 4096;
 
@@ -1193,6 +1198,16 @@ impl Cmd {
             inner.state.read().await.volume
         };
         inner.mixer.lock().await.set_volume(vol)?;
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn set_mono(inner: &DaemonInner, enabled: bool) -> Result<DaemonRes, CoreError> {
+        let mut state = inner.state.write().await;
+        state.mono = enabled;
+        drop(state);
+        inner.mixer.lock().await.set_mono(enabled);
+        Daemon::push_event(inner, DaemonEvent::MonoChanged { enabled });
         Daemon::save_state(inner);
         Ok(DaemonRes::Ok)
     }
@@ -2793,6 +2808,14 @@ impl Lastfm {
         }
     }
 
+    /// Point the manager at the on-disk retry queue and load any cached
+    /// scrobbles from the previous run.
+    pub async fn set_retry_queue(inner: &DaemonInner) {
+        let path = inner.config.data_dir.join("scrobble-queue.json");
+        let mut lastfm = inner.lastfm.lock().await;
+        lastfm.set_retry_path(path);
+    }
+
     pub async fn auth_url(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let lastfm = inner.lastfm.lock().await;
         if let Some(url) = lastfm.auth_url() {
@@ -2823,6 +2846,7 @@ impl Lastfm {
 
     pub async fn status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let lastfm = inner.lastfm.lock().await;
+        let current_track = inner.state.read().await.current_track.clone();
         let state = inner.state.read().await;
         let enabled = state.scrobble.enabled;
         let api_key = state
@@ -2833,12 +2857,69 @@ impl Lastfm {
         let session_token = state.scrobble.session_token.clone();
         drop(state);
         let ready = lastfm.is_ready().await;
+        // `loved` reports only for the currently playing track; a fresh track
+        // (or none) always reports false.
+        let loved = {
+            let store = inner.lastfm_loved.lock().unwrap();
+            current_track
+                .as_ref()
+                .map(track_love_key)
+                .is_some_and(|cur| store.as_ref().is_some_and(|(k, loved)| *k == cur && *loved))
+        };
         Ok(DaemonRes::LastfmStatusRes {
             enabled,
             api_key,
             session_token,
             ready,
+            loved,
         })
+    }
+
+    /// Love the current track. A loved track is scrobbled immediately — even
+    /// below the normal play threshold — so a quick skip never loses it.
+    pub async fn love(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        Self::set_loved(inner, true).await
+    }
+
+    /// Un-love the current track.
+    pub async fn unlove(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        Self::set_loved(inner, false).await
+    }
+
+    async fn set_loved(inner: &DaemonInner, love: bool) -> Result<DaemonRes, CoreError> {
+        let track = inner.state.read().await.current_track.clone();
+        let Some(track) = track else {
+            return Ok(DaemonRes::Error {
+                message: "No track is currently playing".into(),
+            });
+        };
+        {
+            let mut store = inner.lastfm_loved.lock().unwrap();
+            *store = Some((track_love_key(&track), love));
+        }
+        // Record the loved state even when the daemon isn't authenticated so
+        // the status stays truthful; only the network call needs credentials.
+        let result = {
+            let lastfm = inner.lastfm.lock().await;
+            if !lastfm.is_ready().await {
+                Ok(Ok(()))
+            } else if love {
+                tokio::time::timeout(Duration::from_secs(10), lastfm.love(&track)).await
+            } else {
+                tokio::time::timeout(Duration::from_secs(10), lastfm.unlove(&track)).await
+            }
+        };
+        if love {
+            // Immediate scrobble: a loved track counts even pre-threshold.
+            Cmd::scrobble_track(inner, &track, 0.0).await;
+        }
+        match result {
+            Ok(Ok(())) => Ok(DaemonRes::Ok),
+            Ok(Err(e)) => Ok(DaemonRes::Error { message: e }),
+            Err(_) => Ok(DaemonRes::Error {
+                message: "Last.fm request timed out".into(),
+            }),
+        }
     }
 
     pub async fn clear(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
@@ -3745,6 +3826,9 @@ struct DaemonInner {
     cover_cache: tokio::sync::Mutex<Option<CoverCache>>,
     lyrics_manager: tokio::sync::Mutex<Option<LyricsManager>>,
     lastfm: tokio::sync::Mutex<LastfmManager>,
+    /// Last.fm loved-state for the current track: `Some((artist|title, loved))`
+    /// once the user has loved/unloved anything this session.
+    lastfm_loved: std::sync::Mutex<Option<(String, bool)>>,
     #[cfg(feature = "youtube")]
     youtube: Arc<tokio::sync::Mutex<YoutubeManager>>,
     spotify: tokio::sync::Mutex<SpotifyManager>,
@@ -3915,6 +3999,7 @@ fn request_is_playback(req: &DaemonReq) -> bool {
             | DaemonReq::Seek { .. }
             | DaemonReq::SetVolume { .. }
             | DaemonReq::ToggleMute
+            | DaemonReq::SetMono { .. }
             | DaemonReq::SetSpeed { .. }
             | DaemonReq::SetEqPreset { .. }
             | DaemonReq::SetEqEnabled { .. }
@@ -4002,6 +4087,10 @@ impl Daemon {
                 mixer.set_speed(speed);
             }
         }
+        // Apply persisted mono downmix so the first track honours it.
+        if !config.test_mode && initial_state.mono {
+            mixer.set_mono(true);
+        }
 
         let state = Arc::new(RwLock::new(initial_state));
 
@@ -4069,6 +4158,7 @@ impl Daemon {
             cover_provider_override: tokio::sync::Mutex::new(None),
             lyrics_manager: tokio::sync::Mutex::new(None),
             lastfm: tokio::sync::Mutex::new(LastfmManager::new()),
+            lastfm_loved: std::sync::Mutex::new(None),
             #[cfg(feature = "youtube")]
             youtube: Arc::new(tokio::sync::Mutex::new(YoutubeManager::new())),
             spotify: tokio::sync::Mutex::new(SpotifyManager::new(config_dir.clone())),
@@ -4223,6 +4313,21 @@ impl Daemon {
             drop(subsonic);
             drop(podcast);
             Lastfm::restore_credentials(&provider_inner).await;
+            Lastfm::set_retry_queue(&provider_inner).await;
+            // Periodically flush any scrobbles that failed transiently (network
+            // drop, server 5xx). Runs in the background so retries never block
+            // playback; the queue is persisted on disk and survives restarts.
+            let flush_inner = Arc::clone(&provider_inner);
+            tokio::spawn(async move {
+                let mut ticker = tokio::time::interval(Duration::from_secs(300));
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                ticker.tick().await;
+                loop {
+                    ticker.tick().await;
+                    let lastfm = flush_inner.lastfm.lock().await;
+                    lastfm.flush_retries().await;
+                }
+            });
         });
 
         // Resume exactly as the user left it: if the saved state carried a
@@ -4717,6 +4822,7 @@ impl Daemon {
             DaemonReq::ToggleShuffle => Cmd::toggle_shuffle(inner).await,
             DaemonReq::CycleRepeat { mode } => Cmd::set_repeat_mode(inner, *mode).await,
             DaemonReq::ToggleMute => Cmd::toggle_mute(inner).await,
+            DaemonReq::SetMono { enabled } => Cmd::set_mono(inner, enabled).await,
             DaemonReq::Crossfade {
                 enabled,
                 duration_secs,
@@ -4966,6 +5072,8 @@ impl Daemon {
             DaemonReq::LastfmAuthenticate { token } => Lastfm::authenticate(inner, token).await,
             DaemonReq::LastfmStatus => Lastfm::status(inner).await,
             DaemonReq::LastfmClear => Lastfm::clear(inner).await,
+            DaemonReq::LastfmLove => Lastfm::love(inner).await,
+            DaemonReq::LastfmUnlove => Lastfm::unlove(inner).await,
             DaemonReq::SubsonicConfigure {
                 server,
                 username,

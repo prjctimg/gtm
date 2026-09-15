@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 use gtm_core::client::{DaemonClient, LastfmStatus};
 use gtm_core::daemon::ensure_daemon_running;
 use gtm_core::global::{PlaybackStatus, RepeatMode};
+use gtm_core::ipc::DaemonRes;
 use gtm_core::ipc::HealthStatus;
 use gtm_core::ipc::MetadataPatch;
 use gtm_core::playlist::PlaylistFormatKind;
@@ -98,6 +99,14 @@ pub enum CliCommand {
     },
     /// Toggle mute
     Mute,
+    /// Toggle mono downmix
+    Mono,
+    /// Love the current track on Last.fm (immediate-scrobbles the play session)
+    Love,
+    /// Un-love the current track on Last.fm
+    Unlove,
+    /// Toggle Last.fm scrobbling for this session
+    Scrobble,
     /// Set pitch-preserving playback speed (0.25-2.0, empty/omitted shows the current rate)
     Speed {
         #[arg(value_name = "RATE", value_parser = clap::value_parser!(f32))]
@@ -199,6 +208,12 @@ pub enum CliCommand {
     Lyrics { query: String },
     /// Search the library
     Search { query: String },
+    /// Search YouTube / SoundCloud (`scsearch:`) / Bilibili (`bilisearch:`)
+    /// / Mixcloud (`mcsearch:`) via the daemon and print matching tracks
+    YtSearch {
+        #[arg(value_name = "QUERY")]
+        query: String,
+    },
     /// Show daemon status
     Status {
         #[arg(long)]
@@ -585,6 +600,39 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .await
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
+            CliCommand::Mono => {
+                let st = client.get_status().await.map_err(|e| e.to_string())?;
+                client
+                    .set_mono(!st.mono)
+                    .await
+                    .map(|()| format!("ok (mono {})", if !st.mono { "on" } else { "off" }))
+                    .map_err(|e| e.to_string())
+            }
+            CliCommand::Love => client
+                .lastfm()
+                .love()
+                .await
+                .map(|()| "ok".to_string())
+                .map_err(|e| e.to_string()),
+            CliCommand::Unlove => client
+                .lastfm()
+                .unlove()
+                .await
+                .map(|()| "ok".to_string())
+                .map_err(|e| e.to_string()),
+            CliCommand::Scrobble => {
+                let st = client
+                    .lastfm()
+                    .status()
+                    .await
+                    .map_err(|e| e.to_string())?;
+                client
+                    .lastfm()
+                    .set_config(!st.enabled, None, None, None, None, None)
+                    .await
+                    .map(|()| format!("ok (scrobbling {})", if !st.enabled { "on" } else { "off" }))
+                    .map_err(|e| e.to_string())
+            }
             CliCommand::Speed { rate } => match rate {
                 Some(r) => client
                     .set_speed(*r)
@@ -806,6 +854,58 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     serde_json::to_string_pretty(&res).map_err(|e| e.to_string())
                 } else {
                     Ok(format!("{res:?}"))
+                }
+            }
+            CliCommand::YtSearch { query } => {
+                let _ = client
+                    .yt()
+                    .search(query, None)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let mut results: Option<Vec<gtm_core::YTSearchResult>> = None;
+                let mut last_err: Option<String> = None;
+                for _ in 0..40 {
+                    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                    match client.yt().poll().await {
+                        Ok(DaemonRes::YtSearchResults {
+                            query: got_query,
+                            results: r,
+                        }) if got_query == *query => {
+                            results = Some(r);
+                            break;
+                        }
+                        Ok(DaemonRes::Ok) => {}
+                        Ok(other) => {
+                            last_err = Some(format!("unexpected daemon response: {other:?}"));
+                            break;
+                        }
+                        Err(e) => {
+                            last_err = Some(e.to_string());
+                            break;
+                        }
+                    }
+                }
+                let results = results.ok_or_else(|| {
+                    last_err.unwrap_or_else(|| "youtube search timed out".to_string())
+                })?;
+                if json {
+                    serde_json::to_string_pretty(&results).map_err(|e| e.to_string())
+                } else {
+                    let mut out = String::new();
+                    for (i, r) in results.iter().enumerate() {
+                        if r.is_playlist {
+                            out += &format!("{:>2}. [playlist] {}\n     {}\n", i + 1, r.title, r.url);
+                        } else {
+                            out += &format!(
+                                "{:>2}. {} - {}\n     {}\n",
+                                i + 1,
+                                r.title,
+                                r.channel,
+                                r.url
+                            );
+                        }
+                    }
+                    Ok(out)
                 }
             }
             CliCommand::Lyrics { query } => {
