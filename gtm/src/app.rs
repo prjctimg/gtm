@@ -540,7 +540,10 @@ pub struct SleepTimerState {
 }
 
 pub struct MetadataEditState {
-    pub edit_track_id: Option<i64>,
+    /// Tracks being edited. Usually one, but an album/artist row opens the
+    /// editor with every cached track in that album/artist so the same field
+    /// edits apply to the whole batch (cover sync only uses `first()`).
+    pub edit_track_ids: Vec<i64>,
     pub fields: [String; 7],
     pub field_idx: usize,
     pub cover: Option<Vec<u8>>,
@@ -1432,7 +1435,7 @@ impl App {
             selected_track_ids: std::collections::HashSet::new(),
             playlist_creating: false,
             metadata: MetadataEditState {
-                edit_track_id: None,
+                edit_track_ids: Vec::new(),
                 fields: Default::default(),
                 field_idx: 0,
                 cover: None,
@@ -1513,13 +1516,16 @@ impl App {
     }
 
     /// Kick off the Spotify OAuth browser flow, opening the picker and
-    /// requesting the authorize URL from the daemon.
+    /// requesting the authorize URL from the daemon. An explicit client id in
+    /// `link_input` wins; otherwise a previously stored client id is reused so
+    /// re-linking (and the Alt+s shortcut) never forces a re-paste.
     pub fn open_spotify_link(&mut self) {
-        let client_id = self.spotify.link_input.trim().to_string();
-        let client_id = if client_id.is_empty() {
-            LIBRESPOT_CLIENT_ID.to_string()
+        let client_id = if self.spotify.link_input.trim().is_empty() {
+            get_secret(SPOTIFY_CLIENT_ID)
+                .filter(|cid| !cid.trim().is_empty())
+                .unwrap_or_else(|| LIBRESPOT_CLIENT_ID.to_string())
         } else {
-            client_id
+            self.spotify.link_input.trim().to_string()
         };
         let port = self
             .spotify
@@ -2146,19 +2152,25 @@ impl App {
                             NotifType::Spotify,
                         );
                         // The OAuth browser flow finished: dismiss the waiting
-                        // picker if it's still open and navigate to Spotify.
+                        // state. If the flow started from the Setup walkthrough
+                        // close its picker and navigate to Spotify; if it
+                        // started from the Alt+s search picker, keep that
+                        // picker open so it now behaves as the search box.
                         self.spotify.oauth_pending = false;
                         self.spotify.oauth_url = None;
                         self.spotify.oauth_error = None;
-                        if self
-                            .pickers
-                            .top()
-                            .is_some_and(|o| o.id == PickerId::SpotifyLink)
-                        {
-                            self.close_picker();
+                        match self.pickers.top().map(|o| o.id) {
+                            Some(PickerId::SpotifyLink) => {
+                                self.close_picker();
+                                self.reset_library_view(5, None);
+                                self.library_pane_focus = true;
+                            }
+                            Some(PickerId::SpotifySearch) => {}
+                            _ => {
+                                self.reset_library_view(5, None);
+                                self.library_pane_focus = true;
+                            }
                         }
-                        self.reset_library_view(5, None);
-                        self.library_pane_focus = true;
                     } else if self.spotify.oauth_pending && !status.linked {
                         // The OAuth browser flow failed (e.g. no network): stop
                         // waiting, dismiss the picker and report the failure.
@@ -2633,7 +2645,7 @@ impl App {
                     }
                     IpcResult::MetadataCoverArt(cover, track_id, fetch_gen) => {
                         if !no_image_protocol()
-                            && self.metadata.edit_track_id == Some(track_id)
+                            && self.metadata.edit_track_ids.first() == Some(&track_id)
                             && self.metadata.cover_fetch_gen == Some(fetch_gen)
                         {
                             self.metadata.cover = cover;
@@ -3576,6 +3588,15 @@ impl App {
     /// Kick off data fetches right after a remote-service picker opens.
     pub fn on_picker_opened(&mut self, id: PickerId) {
         match id {
+            PickerId::SpotifySearch => {
+                // Alt+s on an unlinked account opens the browser OAuth flow
+                // automatically, exactly like the Setup → Spotify walkthrough:
+                // the picker becomes the "waiting for login" view instead of a
+                // manual access-token paste form.
+                if self.spotify.status.as_ref().is_none_or(|s| !s.linked) {
+                    self.open_spotify_link();
+                }
+            }
             PickerId::SubsonicSearch => {
                 self.refresh_subsonic_status();
                 self.subsonic.search_results = SubsonicSearchResults::default();
@@ -4058,6 +4079,49 @@ impl App {
         tracks
     }
 
+    /// Expand the highlighted album/artist row to the ids of every cached track
+    /// in that album/artist. Returns `None` in flat views where the highlighted
+    /// row maps 1:1 to `filtered_tracks()` (the caller falls back to that list).
+    fn motion_row_ids(&self) -> Option<Vec<i64>> {
+        match self.library_category {
+            2 => {
+                let (name, _) = self.unique_albums().get(self.list_pos())?;
+                Some(
+                    self.tracks_cache
+                        .iter()
+                        .filter(|t| {
+                            let album: &str = if t.album.is_empty() {
+                                "Unknown Album"
+                            } else {
+                                &t.album
+                            };
+                            album == name
+                        })
+                        .map(|t| t.id)
+                        .collect(),
+                )
+            }
+            3 => {
+                let (name, _) = self.unique_artists().get(self.list_pos())?;
+                Some(
+                    self.tracks_cache
+                        .iter()
+                        .filter(|t| {
+                            let artist: &str = if t.artist.is_empty() {
+                                "Unknown Artist"
+                            } else {
+                                &t.artist
+                            };
+                            artist == name
+                        })
+                        .map(|t| t.id)
+                        .collect(),
+                )
+            }
+            _ => None,
+        }
+    }
+
     /// Play the track highlighted in the current library view, replacing the
     /// queue with the filtered list and starting at that row.
     fn play_filtered_highlighted(&self) {
@@ -4451,7 +4515,8 @@ impl App {
     /// to the `MetadataCoverArt` IPC channel so the preview can refresh.
     /// Generation-guarded to prevent stale picker-reuse overwrites.
     fn fetch_metadata_cover(&mut self) {
-        let Some(track_id) = self.metadata.edit_track_id else {
+        // Batch edits (album/artist rows) preview the first track's cover only.
+        let Some(&track_id) = self.metadata.edit_track_ids.first() else {
             return;
         };
         if no_image_protocol() {
@@ -5347,6 +5412,22 @@ impl App {
                         && self.spotify.oauth_pending
                     {
                         // Cancel the pending OAuth browser flow.
+                        self.spotify.oauth_pending = false;
+                        self.spotify.oauth_url = None;
+                        self.spotify.oauth_error = None;
+                        let c = self.client.clone();
+                        tokio::spawn(async move {
+                            let _ = c.spotify().oauth_cancel().await;
+                        });
+                        self.close_picker();
+                    } else if self
+                        .pickers
+                        .top()
+                        .is_some_and(|o| o.id == PickerId::SpotifySearch)
+                        && self.spotify.oauth_pending && self.spotify.status.as_ref().is_none_or(|s| !s.linked)
+                    {
+                        // The Alt+s picker was mid-OAuth: cancel the browser
+                        // flow and close the picker.
                         self.spotify.oauth_pending = false;
                         self.spotify.oauth_url = None;
                         self.spotify.oauth_error = None;
@@ -6318,36 +6399,26 @@ impl App {
                     }
                     Some(KeyboardAction::AddToQueue) => {
                         if !self.library_pane_focus {
-                            let tracks = self.filtered_tracks();
-                            let indices: Vec<usize> =
-                                if self.multiselect_mode && !self.selected_indices.is_empty() {
-                                    self.selected_indices.iter().copied().collect()
-                                } else {
-                                    vec![self.list_pos()]
-                                };
-                            if self.multiselect_mode && !self.selected_indices.is_empty() {
-                                let count = indices.len();
-                                self.pending_prompt = Some(PendingPrompt {
-                                    message: format!("Add {count} tracks to queue? [y/N]"),
-                                    confirm_keys: vec![
-                                        KeyCode::Char('y'),
-                                        KeyCode::Char('Y'),
-                                        KeyCode::Enter,
-                                    ],
-                                    cancel_keys: vec![
-                                        KeyCode::Char('n'),
-                                        KeyCode::Char('N'),
-                                        KeyCode::Esc,
-                                        KeyCode::Char('q'),
-                                    ],
-                                    prompt_type: PromptType::MultiselectAddToQueue,
-                                });
-                            } else {
+                            // Playlist overview rows have no tracks of their
+                            // own: open the playlist first.
+                            if self.library_category == 4 && self.browse_detail.is_none() {
+                                self.notify_typed(
+                                    "System",
+                                    "Open the playlist first to add its tracks",
+                                    NotificationKind::Info,
+                                    false,
+                                    NotifType::NowPlaying,
+                                );
+                                return true;
+                            }
+                            if let Some(ids) = self.motion_row_ids() {
+                                // Album/artist row: queue every cached track in
+                                // the album/artist.
                                 let mut added = 0;
-                                for idx in indices {
-                                    if let Some(track) = tracks.get(idx) {
+                                for t in &self.tracks_cache {
+                                    if ids.contains(&t.id) {
                                         let c = self.client.clone();
-                                        let path = track.path.clone();
+                                        let path = t.path.clone();
                                         tokio::spawn(async move {
                                             let _ = c.queue().add(&path, None).await;
                                         });
@@ -6357,27 +6428,100 @@ impl App {
                                 self.fetch_queue().await;
                                 self.footer_notification = Some((
                                     format!("Added {added} track(s) to queue"),
-                                    std::time::Instant::now() + std::time::Duration::from_secs(2),
+                                    std::time::Instant::now()
+                                        + std::time::Duration::from_secs(2),
                                 ));
+                            } else {
+                                let tracks = self.filtered_tracks();
+                                let indices: Vec<usize> = if self.multiselect_mode
+                                    && !self.selected_indices.is_empty()
+                                {
+                                    self.selected_indices.iter().copied().collect()
+                                } else {
+                                    vec![self.list_pos()]
+                                };
+                                if self.multiselect_mode && !self.selected_indices.is_empty() {
+                                    let count = indices.len();
+                                    self.pending_prompt = Some(PendingPrompt {
+                                        message: format!("Add {count} tracks to queue? [y/N]"),
+                                        confirm_keys: vec![
+                                            KeyCode::Char('y'),
+                                            KeyCode::Char('Y'),
+                                            KeyCode::Enter,
+                                        ],
+                                        cancel_keys: vec![
+                                            KeyCode::Char('n'),
+                                            KeyCode::Char('N'),
+                                            KeyCode::Esc,
+                                            KeyCode::Char('q'),
+                                        ],
+                                        prompt_type: PromptType::MultiselectAddToQueue,
+                                    });
+                                } else {
+                                    let mut added = 0;
+                                    for idx in indices {
+                                        if let Some(track) = tracks.get(idx) {
+                                            let c = self.client.clone();
+                                            let path = track.path.clone();
+                                            tokio::spawn(async move {
+                                                let _ = c.queue().add(&path, None).await;
+                                            });
+                                            added += 1;
+                                        }
+                                    }
+                                    self.fetch_queue().await;
+                                    self.footer_notification = Some((
+                                        format!("Added {added} track(s) to queue"),
+                                        std::time::Instant::now()
+                                            + std::time::Duration::from_secs(2),
+                                    ));
+                                }
                             }
                         }
                     }
                     Some(KeyboardAction::AddToPlaylist) => {
                         if !self.library_pane_focus {
-                            let tracks = self.filtered_tracks();
-                            let indices: Vec<i64> =
-                                if self.multiselect_mode && !self.selected_indices.is_empty() {
-                                    self.selected_indices
-                                        .iter()
-                                        .filter_map(|i| tracks.get(*i).map(|t| t.id))
-                                        .collect()
-                                } else {
-                                    tracks
-                                        .get(self.list_pos())
-                                        .map(|t| vec![t.id])
-                                        .unwrap_or_default()
-                                };
-                            if self.multiselect_mode && !self.selected_indices.is_empty() {
+                            // Playlist overview rows have no tracks of their
+                            // own: open the playlist first.
+                            if self.library_category == 4 && self.browse_detail.is_none() {
+                                self.notify_typed(
+                                    "System",
+                                    "Open the playlist first to add its tracks",
+                                    NotificationKind::Info,
+                                    false,
+                                    NotifType::NowPlaying,
+                                );
+                                return true;
+                            }
+                            let row_expanded =
+                                self.library_category == 2 || self.library_category == 3;
+                            let indices: Vec<i64> = if let Some(ids) = self.motion_row_ids() {
+                                // Album/artist row: add every cached track in
+                                // the album/artist to the playlist.
+                                ids
+                            } else if self.multiselect_mode && !self.selected_indices.is_empty()
+                            {
+                                let tracks = self.filtered_tracks();
+                                self.selected_indices
+                                    .iter()
+                                    .filter_map(|i| tracks.get(*i).map(|t| t.id))
+                                    .collect()
+                            } else {
+                                let tracks = self.filtered_tracks();
+                                tracks
+                                    .get(self.list_pos())
+                                    .map(|t| vec![t.id])
+                                    .unwrap_or_default()
+                            };
+                            if row_expanded {
+                                // Album/artist rows skip the confirmation prompt:
+                                // expanding the row is an explicit act.
+                                if !indices.is_empty() {
+                                    self.pending_track_ids = indices;
+                                    self.playlist_creating = false;
+                                    self.pickers.open(PickerId::PlaylistSelect);
+                                }
+                            } else if self.multiselect_mode && !self.selected_indices.is_empty() {
                                 let count = indices.len();
                                 self.pending_prompt = Some(PendingPrompt {
                                     message: format!("Add {count} tracks to playlist? [y/N]"),
@@ -6489,37 +6633,87 @@ impl App {
                     }
                     Some(KeyboardAction::EditMetadata) => {
                         if !self.library_pane_focus {
-                            let track_data = {
-                                let tracks = self.filtered_tracks();
-                                tracks.get(self.list_pos()).map(|t| {
-                                    (
-                                        t.id,
-                                        t.title.clone(),
-                                        t.artist.clone(),
-                                        t.album.clone(),
-                                        t.genre.clone(),
-                                        t.year,
-                                        t.track_number,
-                                    )
-                                })
-                            };
-                            if let Some((id, title, artist, album, genre, year, track_num)) =
-                                track_data
-                            {
-                                self.metadata.edit_track_id = Some(id);
-                                self.metadata.fields = [
-                                    title,
-                                    artist,
-                                    album,
-                                    String::new(),
-                                    genre,
-                                    year.map_or(String::new(), |y| y.to_string()),
-                                    track_num.map_or(String::new(), |n| n.to_string()),
-                                ];
-                                self.metadata.field_idx = 0;
-                                self.pickers.open(PickerId::EditMetadata);
-                                self.fetch_metadata_cover();
+                            // Playlist overview rows carry no metadata of their
+                            // own: open the playlist first.
+                            if self.library_category == 4 && self.browse_detail.is_none() {
+                                self.notify_typed(
+                                    "System",
+                                    "Open the playlist first to edit its tracks",
+                                    NotificationKind::Info,
+                                    false,
+                                    NotifType::NowPlaying,
+                                );
+                                return true;
                             }
+                            let ids = if self.library_category == 2
+                                || self.library_category == 3
+                            {
+                                // Album/artist row: edit every cached track in
+                                // the album/artist in one batch.
+                                self.motion_row_ids().unwrap_or_default()
+                            } else {
+                                let tracks = self.filtered_tracks();
+                                match tracks.get(self.list_pos()) {
+                                    Some(t) => vec![t.id],
+                                    None => return true,
+                                }
+                            };
+                            if ids.is_empty() {
+                                return true;
+                            }
+                            // Seed the field template from the row itself: the
+                            // album/artist name for grouped rows, the
+                            // highlighted track otherwise.
+                            let (title, artist, album, genre, year, track_num) =
+                                match self.library_category {
+                                    2 => (
+                                        String::new(),
+                                        String::new(),
+                                        self.unique_albums()
+                                            .get(self.list_pos())
+                                            .map_or_else(String::new, |(n, _)| n.clone()),
+                                        String::new(),
+                                        None,
+                                        None,
+                                    ),
+                                    3 => (
+                                        String::new(),
+                                        self.unique_artists()
+                                            .get(self.list_pos())
+                                            .map_or_else(String::new, |(n, _)| n.clone()),
+                                        String::new(),
+                                        String::new(),
+                                        None,
+                                        None,
+                                    ),
+                                    _ => {
+                                        let tracks = self.filtered_tracks();
+                                        match tracks.get(self.list_pos()) {
+                                            Some(t) => (
+                                                t.title.clone(),
+                                                t.artist.clone(),
+                                                t.album.clone(),
+                                                t.genre.clone(),
+                                                t.year,
+                                                t.track_number,
+                                            ),
+                                            None => return true,
+                                        }
+                                    }
+                                };
+                            self.metadata.edit_track_ids = ids;
+                            self.metadata.fields = [
+                                title,
+                                artist,
+                                album,
+                                String::new(),
+                                genre,
+                                year.map_or(String::new(), |y| y.to_string()),
+                                track_num.map_or(String::new(), |n| n.to_string()),
+                            ];
+                            self.metadata.field_idx = 0;
+                            self.pickers.open(PickerId::EditMetadata);
+                            self.fetch_metadata_cover();
                         }
                     }
                     // Queue move actions: only handled in picker mode
@@ -6584,7 +6778,7 @@ impl App {
                 PickerId::EditMetadata => {
                     self.metadata.cover = None;
                     self.metadata.cover_stateful = None;
-                    self.metadata.edit_track_id = None;
+                    self.metadata.edit_track_ids.clear();
                     self.metadata.cover_fetch_gen = None;
                 }
                 PickerId::SearchLibrary => {
@@ -6648,14 +6842,14 @@ impl App {
     }
 
     async fn handle_picker_key(&mut self, key: event::KeyEvent) {
-        // While the OAuth browser flow is pending, the SpotifyLink picker is in
-        // a waiting state; ignore all key input except Esc (handled in
-        // handle_key) so the user can't mutate the now-irrelevant input.
+        // While the OAuth browser flow is pending, the SpotifyLink /
+        // SpotifySearch pickers are in a waiting state; ignore all key input
+        // except Esc (handled in handle_key) so the user can't mutate the
+        // now-irrelevant input.
         if self.spotify.oauth_pending
-            && self
-                .pickers
-                .top()
-                .is_some_and(|o| o.id == PickerId::SpotifyLink)
+            && self.pickers.top().is_some_and(|o| {
+                o.id == PickerId::SpotifyLink || o.id == PickerId::SpotifySearch
+            })
         {
             return;
         }
@@ -8467,13 +8661,14 @@ impl App {
                     self.pickers.top().map(|o| o.id),
                     Some(PickerId::EditMetadata)
                 ) {
-                    if let Some(track_id) = self.metadata.edit_track_id {
+                    if !self.metadata.edit_track_ids.is_empty() {
                         let title = self.metadata.fields[0].clone();
                         let artist = self.metadata.fields[1].clone();
                         let album = self.metadata.fields[2].clone();
                         let genre = self.metadata.fields[4].clone();
                         let year = self.metadata.fields[5].parse::<i32>().ok();
                         let track_number = self.metadata.fields[6].parse::<i32>().ok();
+                        let ids = self.metadata.edit_track_ids.clone();
                         let client = self.client.clone();
                         let ipc_tx = self.ipc_tx.clone();
                         tokio::spawn(async move {
@@ -8486,7 +8681,9 @@ impl App {
                                 track_number,
                                 album_id: None,
                             };
-                            let _ = client.library().update_metadata(track_id, patch).await;
+                            for track_id in ids {
+                                let _ = client.library().update_metadata(track_id, patch.clone()).await;
+                            }
                             let _ = ipc_tx.send(IpcResult::Notification(
                                 "Library".to_string(),
                                 "Metadata saved".to_string(),
@@ -8496,7 +8693,7 @@ impl App {
                         });
                         self.metadata.cover = None;
                         self.metadata.cover_stateful = None;
-                        self.metadata.edit_track_id = None;
+                        self.metadata.edit_track_ids.clear();
                     }
                     self.pickers.close_top();
                 }
@@ -8508,52 +8705,11 @@ impl App {
                         PickerId::SpotifySearch => {
                             let not_linked = self.spotify.status.as_ref().is_none_or(|s| !s.linked);
                             if not_linked {
-                                let token = self.spotify.token_input.trim().to_string();
-                                if token.is_empty() {
-                                    self.notify_typed(
-                                        "System",
-                                        "Paste a Spotify access token first",
-                                        NotificationKind::Error,
-                                        false,
-                                        NotifType::Spotify,
-                                    );
-                                } else {
-                                    let c = self.client.clone();
-                                    let ipc_tx = self.ipc_tx.clone();
-                                    tokio::spawn(async move {
-                                        if let Err(e) = c.spotify().set_token(&token).await {
-                                            let _ = ipc_tx.send(IpcResult::Error(format!(
-                                                "Spotify token failed: {e}"
-                                            )));
-                                            return;
-                                        }
-                                        let _ = ipc_tx.send(IpcResult::Notification(
-                                            "Spotify".to_string(),
-                                            "Token set. Syncing playlists…".to_string(),
-                                            NotificationKind::Info,
-                                            NotifType::Spotify,
-                                        ));
-                                        match c.spotify().sync().await {
-                                            Ok(()) => {
-                                                let _ = ipc_tx.send(IpcResult::Notification(
-                                                    "Spotify".to_string(),
-                                                    "Sync complete".to_string(),
-                                                    NotificationKind::Success,
-                                                    NotifType::Spotify,
-                                                ));
-                                            }
-                                            Err(e) => {
-                                                let _ = ipc_tx.send(IpcResult::Error(format!(
-                                                    "Spotify sync failed: {e}"
-                                                )));
-                                            }
-                                        }
-                                        let status = c.spotify().status().await;
-                                        if let Ok(s) = status {
-                                            let _ = ipc_tx.send(IpcResult::SpotifyStatus(s));
-                                        }
-                                    });
-                                    self.spotify.token_input.clear();
+                                // No manual token-paste path: always run the
+                                // browser OAuth flow so the access token carries
+                                // a refresh_token and playlists auto-sync.
+                                if !self.spotify.oauth_pending {
+                                    self.open_spotify_link();
                                 }
                             } else if self.spotify.search_results.is_empty() {
                                 self.notify_typed(
@@ -9049,7 +9205,7 @@ impl App {
                                             track_num,
                                         )) = track_data
                                         {
-                                            self.metadata.edit_track_id = Some(id);
+                                            self.metadata.edit_track_ids = vec![id];
                                             self.metadata.fields = [
                                                 title,
                                                 artist,
@@ -9250,13 +9406,14 @@ impl App {
                             if self.metadata.field_idx < 6 {
                                 self.metadata.field_idx += 1;
                             } else {
-                                if let Some(track_id) = self.metadata.edit_track_id {
+                                if !self.metadata.edit_track_ids.is_empty() {
                                     let title = self.metadata.fields[0].clone();
                                     let artist = self.metadata.fields[1].clone();
                                     let album = self.metadata.fields[2].clone();
                                     let genre = self.metadata.fields[4].clone();
                                     let year = self.metadata.fields[5].parse::<i32>().ok();
                                     let track_number = self.metadata.fields[6].parse::<i32>().ok();
+                                    let ids = self.metadata.edit_track_ids.clone();
                                     let client = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {
@@ -9269,8 +9426,12 @@ impl App {
                                             track_number,
                                             album_id: None,
                                         };
-                                        let _ =
-                                            client.library().update_metadata(track_id, patch).await;
+                                        for track_id in ids {
+                                            let _ = client
+                                                .library()
+                                                .update_metadata(track_id, patch.clone())
+                                                .await;
+                                        }
                                         let _ = ipc_tx.send(IpcResult::Notification(
                                             "Library".to_string(),
                                             "Metadata saved".to_string(),
@@ -9280,7 +9441,7 @@ impl App {
                                     });
                                     self.metadata.cover = None;
                                     self.metadata.cover_stateful = None;
-                                    self.metadata.edit_track_id = None;
+                                    self.metadata.edit_track_ids.clear();
                                 }
                                 self.pickers.close_top();
                             }
@@ -9322,9 +9483,11 @@ impl App {
                 }
             }
             KeyCode::Char('s') if key.modifiers == KeyModifiers::CONTROL => {
-                // Edit Metadata: sync cover using the currently-entered metadata.
+                // Edit Metadata: sync cover using the currently-entered metadata. Only
+                // meaningful for single-track edits (batch rows preview the
+                // first track's cover but sync it individually).
                 if top_id == Some(PickerId::EditMetadata)
-                    && let Some(track_id) = self.metadata.edit_track_id
+                    && let Some(&track_id) = self.metadata.edit_track_ids.first()
                 {
                     let title = self.metadata.fields[0].clone();
                     let artist = self.metadata.fields[1].clone();
@@ -9392,7 +9555,9 @@ impl App {
                         }
                         PickerId::SpotifySearch => {
                             if self.spotify.status.as_ref().is_none_or(|s| !s.linked) {
-                                self.spotify.token_input.push(c);
+                                // Unlinked: this picker only runs the browser
+                                // OAuth flow, so typed input is ignored (Enter
+                                // (re)starts the flow, Esc cancels).
                             } else {
                                 top.query.push(c);
                                 // Invalidate stale results immediately and
@@ -9448,7 +9613,7 @@ impl App {
                         }
                         PickerId::SpotifySearch => {
                             if self.spotify.status.as_ref().is_none_or(|s| !s.linked) {
-                                self.spotify.token_input.pop();
+                                // Unlinked: no manual token input anymore.
                             } else {
                                 top.query.pop();
                                 self.spotify.search_results.clear();
@@ -9488,7 +9653,7 @@ impl App {
             match top.id {
                 PickerId::SpotifySearch => {
                     if self.spotify.status.as_ref().is_none_or(|s| !s.linked) {
-                        self.spotify.token_input.push_str(text);
+                        // Unlinked: no manual token input anymore.
                     } else {
                         top.query.push_str(text);
                         self.spotify.search_results.clear();

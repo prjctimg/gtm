@@ -4128,6 +4128,11 @@ impl Daemon {
                     Err(e) => warn!("spotify auto-sync failed: {e}"),
                 }
             }
+            drop(spotify);
+            // The TUI only refreshes its Spotify pane when it hears this event,
+            // so re-announce after the startup auto-sync; otherwise playlists
+            // remain stale until a link or another event happens.
+            let _ = spotify_inner.event_tx.send(DaemonEvent::SpotifyStatusChanged);
         });
 
         let provider_inner = Arc::clone(&self.inner);
@@ -4139,6 +4144,33 @@ impl Daemon {
             drop(subsonic);
             drop(podcast);
             Lastfm::restore_credentials(&provider_inner).await;
+        });
+
+        // Resume exactly as the user left it: if the saved state carried a
+        // `current_track`, start playback (or restore paused) at the saved
+        // position. A failed resume (e.g. missing file) clears the ghost
+        // entry so the TUI doesn't show a stale track.
+        let resume_inner = Arc::clone(&self.inner);
+        tokio::spawn(async move {
+            let (path, start_pos, was_playing) = {
+                let state = resume_inner.state.read().await;
+                match &state.current_track {
+                    Some(t) => {
+                        let playing = state.status == PlaybackStatus::Playing;
+                        (t.path.clone(), state.time_pos, playing)
+                    }
+                    None => return,
+                }
+            };
+            if let Err(e) = Cmd::play(&resume_inner, &path, start_pos, false).await {
+                warn!("failed to resume last track at startup: {e}");
+                let mut state = resume_inner.state.write().await;
+                state.current_track = None;
+                state.time_pos = 0.0;
+                state.status = PlaybackStatus::Stopped;
+            } else if !was_playing {
+                let _ = Cmd::pause(&resume_inner).await;
+            }
         });
 
         let mut poll_interval = tokio::time::interval(Duration::from_millis(16));
@@ -4931,13 +4963,16 @@ impl Daemon {
             DaemonReq::GetSpeed => Cmd::get_speed(inner).await,
             DaemonReq::Quit => {
                 info!("quit requested");
-                let _ = Cmd::stop(inner).await;
+                // Capture the full state (including the live current track and
+                // position) *before* stopping so the next start can resume
+                // exactly as the user left it — `Cmd::stop` clears those fields.
                 let cleanup_state = if !inner.config.test_mode {
                     let s = inner.state.read().await;
                     Some((SavedState::from_state(&s), inner.config.state_file.clone()))
                 } else {
                     None
                 };
+                let _ = Cmd::stop(inner).await;
                 let _ = inner.event_tx.send(DaemonEvent::Custom {
                     name: "daemon_quitting".into(),
                     data: [].into(),

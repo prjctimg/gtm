@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Audio playback backends (rodio/symphonia, optional PulseAudio) for the gtm music player"
+publish = false
 repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true

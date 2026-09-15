@@ -2505,6 +2505,63 @@ fn step_viewport(offset: usize, sel: usize, visible: usize, total: usize) -> (us
     (o, (o + visible).min(total))
 }
 
+/// Shared "waiting for the OAuth browser flow" view used by both the Spotify
+/// Setup walkthrough (`SpotifyLink`) and the Alt+s (`SpotifySearch`) picker
+/// while an authorization request is pending or has failed.
+fn spotify_waiting_lines(app: &App) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if app.spotify.oauth_pending {
+        lines.push(Line::from(Span::styled(
+            "Waiting for you to finish login in your browser…",
+            Style::default().fg(app.theme.fg_bright),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "A browser window should have opened to authorize gtm.",
+            Style::default().fg(app.theme.fg_dim),
+        )));
+        lines.push(Line::from(Span::styled(
+            "Once you approve, playlists sync automatically.",
+            Style::default().fg(app.theme.fg_dim),
+        )));
+        lines.push(Line::from(Span::styled(
+            "Still stuck? Your app must list this exact Redirect URI:",
+            Style::default().fg(app.theme.fg_dim),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "http://127.0.0.1:{}/login   (127.0.0.1, not localhost)",
+                app.spotify.oauth_port.parse::<u16>().unwrap_or(8990)
+            ),
+            Style::default().fg(app.theme.accent),
+        )));
+        lines.push(Line::from(""));
+    }
+    if let Some(err) = app.spotify.oauth_error.as_deref() {
+        lines.push(Line::from(Span::styled(
+            err,
+            Style::default().fg(app.theme.error),
+        )));
+        lines.push(Line::from(""));
+    }
+    if let Some(url) = app.spotify.oauth_url.as_deref() {
+        lines.push(Line::from(Span::styled(
+            "If your browser did not open, copy this URL:",
+            Style::default().fg(app.theme.fg_dim),
+        )));
+        lines.push(Line::from(Span::styled(
+            url,
+            Style::default().fg(app.theme.accent),
+        )));
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(Span::styled(
+        "Press Esc to cancel.",
+        Style::default().fg(app.theme.fg_dim),
+    )));
+    lines
+}
+
 fn fill_pane(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(
         ratatui::widgets::Block::default()
@@ -2805,57 +2862,7 @@ impl Pickers {
                 f.render_widget(block, picker_area);
 
                 if app.spotify.oauth_pending || app.spotify.oauth_error.is_some() {
-                    let mut lines = Vec::new();
-                    if app.spotify.oauth_pending {
-                        lines.push(Line::from(Span::styled(
-                            "Waiting for you to finish login in your browser…",
-                            Style::default().fg(app.theme.fg_bright),
-                        )));
-                        lines.push(Line::from(""));
-                        lines.push(Line::from(Span::styled(
-                            "A browser window should have opened to authorize gtm.",
-                            Style::default().fg(app.theme.fg_dim),
-                        )));
-                        lines.push(Line::from(Span::styled(
-                            "Once you approve, playlists sync automatically.",
-                            Style::default().fg(app.theme.fg_dim),
-                        )));
-                        lines.push(Line::from(Span::styled(
-                            "Still stuck? Your app must list this exact Redirect URI:",
-                            Style::default().fg(app.theme.fg_dim),
-                        )));
-                        lines.push(Line::from(Span::styled(
-                            format!(
-                                "http://127.0.0.1:{}/login   (127.0.0.1, not localhost)",
-                                app.spotify.oauth_port.parse::<u16>().unwrap_or(8990)
-                            ),
-                            Style::default().fg(app.theme.accent),
-                        )));
-                        lines.push(Line::from(""));
-                    }
-                    if let Some(err) = app.spotify.oauth_error.as_deref() {
-                        lines.push(Line::from(Span::styled(
-                            err,
-                            Style::default().fg(app.theme.error),
-                        )));
-                        lines.push(Line::from(""));
-                    }
-                    if let Some(url) = app.spotify.oauth_url.as_deref() {
-                        lines.push(Line::from(Span::styled(
-                            "If your browser did not open, copy this URL:",
-                            Style::default().fg(app.theme.fg_dim),
-                        )));
-                        lines.push(Line::from(Span::styled(
-                            url,
-                            Style::default().fg(app.theme.accent),
-                        )));
-                        lines.push(Line::from(""));
-                    }
-                    lines.push(Line::from(Span::styled(
-                        "Press Esc to cancel.",
-                        Style::default().fg(app.theme.fg_dim),
-                    )));
-                    let p = Paragraph::new(lines);
+                    let p = Paragraph::new(spotify_waiting_lines(app));
                     f.render_widget(p, inner);
                 } else {
                     let input_cursor = cursor_span_style(app);
@@ -2946,35 +2953,28 @@ impl Pickers {
                 let cursor_style = cursor_span_style(app);
 
                 if app.spotify.status.as_ref().is_none_or(|s| !s.linked) {
-                    let token_input = app.spotify.token_input.clone();
-                    let masked = "•".repeat(token_input.chars().count());
-                    let cursor_style = cursor_span_style(app);
-                    let lines = vec![
-                        Line::from(Span::styled(
-                            "Paste your Spotify access token and press Enter:",
-                            Style::default().fg(app.theme.fg),
-                        )),
-                        Line::from(""),
-                        Line::from(vec![
-                            Span::styled(" > ", Style::default().fg(app.theme.fg_dim)),
-                            Span::styled(masked, Style::default().fg(app.theme.fg)),
-                            Span::styled(
-                                if app.spotify.token_input.is_empty() {
-                                    String::new()
-                                } else {
-                                    " ".to_string()
-                                },
-                                cursor_style.unwrap_or_default(),
-                            ),
-                        ]),
-                        Line::from(""),
-                        Line::from(Span::styled(
-                            "Get a token from https://developer.spotify.com/dashboard",
-                            Style::default().fg(app.theme.fg_dim),
-                        )),
-                    ];
-                    let p = Paragraph::new(lines);
-                    f.render_widget(p, inner);
+                    if app.spotify.oauth_pending || app.spotify.oauth_error.is_some() {
+                        let p = Paragraph::new(spotify_waiting_lines(app));
+                        f.render_widget(p, inner);
+                    } else {
+                        let lines = vec![
+                            Line::from(Span::styled(
+                                "Spotify is not linked yet.",
+                                Style::default().fg(app.theme.fg),
+                            )),
+                            Line::from(""),
+                            Line::from(Span::styled(
+                                "Press Enter to open your browser and authorize gtm.",
+                                Style::default().fg(app.theme.fg_dim),
+                            )),
+                            Line::from(Span::styled(
+                                "Esc closes this picker.",
+                                Style::default().fg(app.theme.fg_dim),
+                            )),
+                        ];
+                        let p = Paragraph::new(lines);
+                        f.render_widget(p, inner);
+                    }
                 } else {
                     let search_line = Line::from(vec![
                         Span::styled(" > ", Style::default().fg(app.theme.fg_dim)),
@@ -6570,7 +6570,11 @@ impl Pickers {
             Span::styled(" ", cursor_style.unwrap_or_default()),
         ]);
 
-        let visible = inner.height.saturating_sub(1) as usize;
+        // Each theme row is padded with a blank line so the swatch runs don't
+        // visually merge into one continuous color band; the math must count
+        // rows at 2 cells each (the search line stays 1 high).
+        let item_h: u16 = 2;
+        let visible = (inner.height.saturating_sub(1) / item_h) as usize;
         let (scroll_start, scroll_end) = if total > 0 {
             if let Some(top) = app.pickers.top_mut() {
                 let (s, e) = step_viewport(top.viewport_offset, sel, visible, total);
@@ -6629,12 +6633,12 @@ impl Pickers {
             } else {
                 Style::default()
             };
-            list_items.push(ListItem::new(Line::from(spans)).style(style));
+            list_items.push(ListItem::new(Line::from(spans)).style(style).height(item_h));
             let row_rect = Rect {
                 x: inner.x,
-                y: inner.y + 1 + visible_idx as u16,
+                y: inner.y + 1 + (visible_idx as u16) * item_h,
                 width: inner.width,
-                height: 1,
+                height: item_h,
             };
             app.mouse_map.register(row_rect, MouseZone::PickerItem(i));
         }

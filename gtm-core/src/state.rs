@@ -516,9 +516,10 @@ pub struct Image {
 
 /// Persistent daemon state saved to disk across restarts.
 ///
-/// Only contains user preferences and queue data: ephemeral session
-/// state (status, current_track, time_pos, duration, sleep_timer) is
-/// not persisted.
+/// Contains user preferences, queue data, and (since resume support) the last
+/// played track and position so playback continues exactly where the user left
+/// off. Ephemeral session state (status, duration, sleep_timer) is not
+/// persisted.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedState {
     pub queue: Vec<TrackInfo>,
@@ -533,6 +534,17 @@ pub struct SavedState {
     pub gapless: bool,
     pub dynamic_mode: DynamicModeConfig,
     pub scrobble: ScrobbleConfig,
+    /// Last played track. Restored on startup so playback resumes exactly as
+    /// the user left it (position included).
+    #[serde(default)]
+    pub current_track: Option<TrackInfo>,
+    /// Playback position (seconds) into `current_track` at last save.
+    #[serde(default)]
+    pub time_pos: f64,
+    /// Whether playback was active (vs paused) at save time: when true the
+    /// daemon resumes playing at `time_pos`, otherwise it restores paused.
+    #[serde(default)]
+    pub resume: bool,
 }
 
 impl SavedState {
@@ -550,6 +562,9 @@ impl SavedState {
             gapless: state.gapless,
             dynamic_mode: state.dynamic_mode.clone(),
             scrobble: state.scrobble.clone(),
+            current_track: state.current_track.clone(),
+            time_pos: state.time_pos,
+            resume: state.status == PlaybackStatus::Playing,
         }
     }
 
@@ -566,6 +581,18 @@ impl SavedState {
         state.gapless = self.gapless;
         state.dynamic_mode = self.dynamic_mode.clone();
         state.scrobble = self.scrobble.clone();
+        // Restore the last track so the daemon can resume exactly as left.
+        // Actual playback is kicked off by the startup resume task.
+        state.current_track = self.current_track.clone();
+        state.time_pos = self.time_pos;
+        if let Some(track) = &self.current_track {
+            state.duration = track.duration;
+            state.status = if self.resume {
+                PlaybackStatus::Playing
+            } else {
+                PlaybackStatus::Paused
+            };
+        }
     }
 
     /// Save to a JSON file. Creates parent directories if needed.

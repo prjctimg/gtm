@@ -260,13 +260,23 @@ impl SpotifyManager {
         let mut metas = Vec::new();
         let mut paginator = client.current_user_playlists();
         while let Some(item) = paginator.next().await {
-            let pl = item.map_err(|e| format!("playlists: {e}"))?;
-            metas.push(pl);
+            match item {
+                Ok(pl) => metas.push(pl),
+                Err(e) => {
+                    // A transient failure on one page must not abort the whole
+                    // sync (which previously cleared the entire cache): skip the
+                    // remaining pages gracefully instead.
+                    warn!("spotify playlists: {e} — skipping remainder");
+                    break;
+                }
+            }
         }
         debug!("fetched {} spotify playlists for {:?}", metas.len(), user);
 
         let mut playlists = Vec::new();
         for meta in &metas {
+            // Per-playlist failures are already tolerated inside
+            // `fetch_playlist_tracks`; an unparseable playlist only logs.
             let tracks = Self::fetch_playlist_tracks(&client, meta.id.clone()).await;
             playlists.push(SpotifyPlaylist {
                 id: meta.id.as_ref().to_string(),
@@ -366,7 +376,10 @@ impl SpotifyManager {
             }
             Err(e) => {
                 self.error = Some(e.clone());
-                self.client = None;
+                // Keep the linked client: a transient network failure is not an
+                // unlink. Dropping it here removed the credentials, made every
+                // follow-up call fail with "spotify not linked", and left the
+                // account linked in name only until a full OAuth re-link.
                 Err(e)
             }
         }
