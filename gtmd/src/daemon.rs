@@ -684,25 +684,9 @@ impl Cmd {
         }
         let start = start_pos.max(0.0);
         let icy_slot = inner.icy_title.clone();
-        let dur = if live {
-            // Live transports: hand the byte stream to the ring-buffer decode
-            // thread so network jitter is absorbed by the 6 s ring instead of
-            // stalling the audio callback and false-triggering `Finished`.
-            // `load_active_reader` leaves duration at 0.0, which also keeps
-            // the Finished stall-guard bypassed (the ring empties only on a
-            // genuine EOF).
-            let reader =
-                tokio::task::spawn_blocking(move || open_remote_reader(&url, true, Some(icy_slot)))
-                    .await
-                    .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
-                    .map_err(|e| CoreError::Daemon(format!("open stream: {e}")))?;
-            let mut mixer = inner.mixer.lock().await;
-            mixer.load_active_reader(reader, start_pos)?;
-            mixer.play()?;
-            mixer.duration()
-        } else {
+        let dur = {
             let decoded = tokio::task::spawn_blocking(move || {
-                decode_remote_reader(url, false, start, Some(icy_slot))
+                decode_remote_reader(url, live, start, Some(icy_slot))
             })
             .await
             .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
