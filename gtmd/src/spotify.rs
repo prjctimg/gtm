@@ -333,10 +333,10 @@ impl SpotifyManager {
         // Populate the display name eagerly so the TUI can greet the user as
         // soon as the picker closes; the playlist sync continues in the
         // background and refreshes the cache when it finishes.
-        if let Some(client) = self.client.clone() {
-            if let Ok(me) = client.me().await {
-                self.user = me.display_name.or_else(|| Some(me.id.as_ref().to_string()));
-            }
+        if let Some(client) = self.client.clone()
+            && let Ok(me) = client.me().await
+        {
+            self.user = me.display_name.or_else(|| Some(me.id.as_ref().to_string()));
         }
         Ok(())
     }

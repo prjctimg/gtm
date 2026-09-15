@@ -427,6 +427,7 @@ fn res_spotify_wire() {
             duration_ms: Some(240000),
             uri: None,
             image_url: None,
+            kind: None,
         }],
     };
     let cases: Vec<(&str, DaemonRes)> = vec![
