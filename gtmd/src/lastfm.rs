@@ -286,7 +286,10 @@ impl LastfmManager {
         let album = track.album.clone();
         let timestamp = chrono::Utc::now().timestamp();
 
-        match self.submit_scrobble(&artist, &title, &album, timestamp).await {
+        match self
+            .submit_scrobble(&artist, &title, &album, timestamp)
+            .await
+        {
             Ok(()) => {
                 info!("Last.fm scrobbled: {} - {}", artist, title);
                 Ok(())
@@ -339,10 +342,7 @@ impl LastfmManager {
                 .submit_scrobble(&item.artist, &item.track, &item.album, item.timestamp)
                 .await
             {
-                Ok(()) => info!(
-                    "Last.fm retried scrobble: {} - {}",
-                    item.artist, item.track
-                ),
+                Ok(()) => info!("Last.fm retried scrobble: {} - {}", item.artist, item.track),
                 Err(e) if e.starts_with("Last.fm error") => {
                     warn!(
                         "Last.fm cached scrobble dropped ({e}): {} - {}",

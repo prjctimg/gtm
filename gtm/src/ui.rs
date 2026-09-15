@@ -11,6 +11,7 @@ use crate::app::{
     App, InputMode, LIBRARY_CATEGORIES, LibraryPick, NotifMode, NotifType, NotificationKind,
     RadioBrowseKind, TrackInfoKind, lyrics_are_synced, no_image_protocol, setup_selection,
 };
+use crate::extensions::ExtensionId;
 use crate::footer::{
     draw as footer_draw, format_duration, format_uptime, read_proc_mem, render as footer_render,
 };
@@ -19,7 +20,6 @@ use crate::picker::{Picker, PickerId, PickerSource};
 use crate::progress::{ProgressStyle, render_progress, render_progress_styled, render_ratio};
 use crate::theme::blend_colors;
 pub use crate::theme::readable_fg;
-use crate::extensions::ExtensionId;
 use crate::visualizer::VisualizerPreset;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,

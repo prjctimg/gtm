@@ -346,8 +346,7 @@ impl DaemonClient {
 
     pub async fn toggle_mono(&self) -> Result<()> {
         let st = self.get_status().await?;
-        self.send_ok(DaemonReq::SetMono { enabled: !st.mono })
-            .await
+        self.send_ok(DaemonReq::SetMono { enabled: !st.mono }).await
     }
 
     pub async fn set_eq_preset(&self, preset: EqPreset) -> Result<()> {

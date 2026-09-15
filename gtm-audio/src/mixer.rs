@@ -99,7 +99,9 @@ pub trait Mixer: Send + Sync {
     /// Applies live to sources already attached to the output.
     fn set_mono(&self, _enabled: bool) {}
     /// Whether mono downmix is currently active.
-    fn mono(&self) -> bool { false }
+    fn mono(&self) -> bool {
+        false
+    }
 }
 
 pub struct AudioMixer {
@@ -560,7 +562,7 @@ impl AudioMixer {
             prebuffer,
         )?;
 
-        self.active().append(self.apply_mono(source));
+        self.active().append(self.apply_mono(Box::new(source)));
 
         self.active_control = Some(control);
         self.active_decode_handle = Some(handle);
@@ -697,7 +699,7 @@ impl AudioMixer {
         // Finished stall-guard is permanently disabled for this source.
         *self.duration.lock().unwrap() = 0.0;
 
-        self.active().append(self.apply_mono(source));
+        self.active().append(self.apply_mono(Box::new(source)));
 
         self.active_control = Some(control);
         self.active_decode_handle = Some(handle);
@@ -728,7 +730,7 @@ impl AudioMixer {
             PREBUFFER_SAMPLES,
         )?;
 
-        self.standby().append(self.apply_mono(source));
+        self.standby().append(self.apply_mono(Box::new(source)));
         self.standby_control = Some(control);
         self.standby_decode_handle = Some(handle);
         Ok(())

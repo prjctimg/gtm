@@ -621,11 +621,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .map(|()| "ok".to_string())
                 .map_err(|e| e.to_string()),
             CliCommand::Scrobble => {
-                let st = client
-                    .lastfm()
-                    .status()
-                    .await
-                    .map_err(|e| e.to_string())?;
+                let st = client.lastfm().status().await.map_err(|e| e.to_string())?;
                 client
                     .lastfm()
                     .set_config(!st.enabled, None, None, None, None, None)
@@ -894,7 +890,8 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     let mut out = String::new();
                     for (i, r) in results.iter().enumerate() {
                         if r.is_playlist {
-                            out += &format!("{:>2}. [playlist] {}\n     {}\n", i + 1, r.title, r.url);
+                            out +=
+                                &format!("{:>2}. [playlist] {}\n     {}\n", i + 1, r.title, r.url);
                         } else {
                             out += &format!(
                                 "{:>2}. {} - {}\n     {}\n",

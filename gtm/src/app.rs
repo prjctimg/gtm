@@ -32,6 +32,7 @@ use tokio::sync::mpsc;
 
 use base64::Engine;
 
+use crate::extensions::{ExtensionId, ExtensionsConfig};
 use crate::footer::{FooterCache, FooterPreset, merged_presets};
 use crate::keymap::{
     BoundCommand, KeyContext, Keybindings, KeyboardAction, default_keybindings, detect_clashes,
@@ -48,7 +49,6 @@ use crate::ui::{
     CROSSFADE_DURATIONS, Command, CommandPalette, HELP_LINES, cover_provider_label,
     theme_mode_label,
 };
-use crate::extensions::{ExtensionId, ExtensionsConfig};
 use crate::visualizer::{AudioVisualizer, VisualizerPreset};
 
 fn prefs_path() -> std::path::PathBuf {
@@ -1758,7 +1758,10 @@ impl App {
     /// Open the notification settings overlay, refusing when the overlay
     /// extension is disabled.
     fn open_settings_overlay(&mut self) {
-        if self.extensions.is_disabled(ExtensionId::NotificationOverlay) {
+        if self
+            .extensions
+            .is_disabled(ExtensionId::NotificationOverlay)
+        {
             self.notify(
                 format!(
                     "{} is an optional extension (disabled)",
@@ -3199,7 +3202,11 @@ impl App {
             .copied()
             .unwrap_or(NotifMode::Floating);
         match mode {
-            NotifMode::Floating if self.extensions.is_disabled(ExtensionId::FloatingNotifications) => {
+            NotifMode::Floating
+                if self
+                    .extensions
+                    .is_disabled(ExtensionId::FloatingNotifications) =>
+            {
                 // The floating-card surface is a configurable extension; when
                 // disabled the event is demoted to the footer (or dropped by
                 // the next arm) rather than lost, and the per-category mode is
@@ -3836,11 +3843,7 @@ impl App {
         if self.library_pane_focus {
             return true;
         }
-        let love = !self
-            .setup
-            .lastfm_status
-            .as_ref()
-            .is_some_and(|s| s.loved);
+        let love = !self.setup.lastfm_status.as_ref().is_some_and(|s| s.loved);
         let c = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
@@ -3877,11 +3880,7 @@ impl App {
 
     /// Flip Last.fm scrobbling on/off for this session (`&`).
     fn toggle_scrobble_session(&mut self) {
-        let enabled = !self
-            .setup
-            .lastfm_status
-            .as_ref()
-            .is_some_and(|s| s.enabled);
+        let enabled = !self.setup.lastfm_status.as_ref().is_some_and(|s| s.enabled);
         let c = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
@@ -5828,10 +5827,7 @@ impl App {
                             && self.extensions.is_disabled(ext)
                         {
                             self.notify(
-                                format!(
-                                    "{} is an optional extension (disabled)",
-                                    ext.label()
-                                ),
+                                format!("{} is an optional extension (disabled)", ext.label()),
                                 NotificationKind::Info,
                                 NotifType::System,
                             );
@@ -5981,18 +5977,24 @@ impl App {
                     Some(KeyboardAction::ToggleMono) => {
                         self.set_last_action("Toggle Mono");
                         self.send_high(TuiCommand::ToggleMono);
-                        let msg = if self.state.mono { "Mono off" } else { "Mono on" };
+                        let msg = if self.state.mono {
+                            "Mono off"
+                        } else {
+                            "Mono on"
+                        };
                         self.footer_notification = Some((
                             msg.to_string(),
                             std::time::Instant::now() + std::time::Duration::from_secs(2),
                         ));
                     }
                     Some(KeyboardAction::ToggleLove) => {
-                        self.set_last_action(if self.setup.lastfm_status.as_ref().is_some_and(|s| s.loved) {
-                            "Un-love on Last.fm"
-                        } else {
-                            "Love on Last.fm"
-                        });
+                        self.set_last_action(
+                            if self.setup.lastfm_status.as_ref().is_some_and(|s| s.loved) {
+                                "Un-love on Last.fm"
+                            } else {
+                                "Love on Last.fm"
+                            },
+                        );
                         return self.manage_lastfm_love();
                     }
                     Some(KeyboardAction::ToggleScrobble) => {
