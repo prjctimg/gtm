@@ -2290,7 +2290,7 @@ impl App {
                 let c = self.client.clone();
                 let ipc_tx = self.ipc_tx.clone();
                 tokio::spawn(async move {
-                    if let Ok(state) = c.get_status().await {
+                    if let Ok(state) = c.get_status_lite().await {
                         let _ = ipc_tx.send(IpcResult::RefreshDone(Box::new(state), None, None));
                     }
                 });
@@ -5150,7 +5150,7 @@ impl App {
                 let client2 = self.client.clone();
                 let ipc_tx2 = self.ipc_tx.clone();
                 tokio::spawn(async move {
-                    if let Ok(state) = client2.get_status().await {
+                    if let Ok(state) = client2.get_status_lite().await {
                         // Cover art is fetched on track-change events, not
                         // here, to avoid an extra IPC call every second.
                         let _ = ipc_tx2.send(IpcResult::RefreshDone(Box::new(state), None, None));

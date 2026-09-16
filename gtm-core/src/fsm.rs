@@ -321,6 +321,7 @@ impl DaemonState {
                 };
                 self.audio.speed = clamped;
             }
+            DaemonEvent::MonoChanged { enabled } => self.mono = *enabled,
             DaemonEvent::LowPowerChanged { enabled } => self.low_power = *enabled,
             DaemonEvent::AudioDeviceChanged { name } => self.audio.audio_device = name.clone(),
             DaemonEvent::EqPresetChanged { preset } => {
@@ -356,7 +357,14 @@ impl DaemonState {
                 self.audio_levels = levels.clone();
                 return; // don't bump version for high-frequency spectrum
             }
-            _ => {} // MetadataChanged, Custom: no state mirror field
+            // Info-only or app-level events with no DaemonState mirror field.
+            // Listing every variant here (instead of a catch-all `_`) forces a
+            // compile check when new events are added to DaemonEvent.
+            DaemonEvent::MetadataChanged { .. }
+            | DaemonEvent::SleepTimerExpired
+            | DaemonEvent::Custom { .. }
+            | DaemonEvent::SpotifyStatusChanged
+            | DaemonEvent::Heartbeat => {}
         }
         self.commit();
     }

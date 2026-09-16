@@ -85,9 +85,7 @@ impl DaemonClient {
                         connected: connected.clone(),
                         buf: Vec::with_capacity(4096),
                         socket_path: path.clone(),
-                        last_event_time: Instant::now(),
                         last_heartbeat_at: heartbeat_at,
-                        consecutive_failures: 0,
                         pending: HashMap::new(),
                         next_id: 0,
                         authenticated: Arc::new(AtomicBool::new(false)),
@@ -559,6 +557,19 @@ impl DaemonClient {
 
     pub async fn get_status(&self) -> Result<DaemonState> {
         let res = self.send_raw(DaemonReq::GetStatus).await?;
+        match res {
+            DaemonRes::Status { state, .. } => Ok(*state),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
+    /// Lightweight status snapshot: identical to [`get_status`] but omits the
+    /// full `default_list` (library) from the daemon state. Used by the TUI's
+    /// periodic background refresh so the daemon does not re-serialize the
+    /// whole library every second.
+    pub async fn get_status_lite(&self) -> Result<DaemonState> {
+        let res = self.send_raw(DaemonReq::GetStatusLite).await?;
         match res {
             DaemonRes::Status { state, .. } => Ok(*state),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
@@ -1694,21 +1705,18 @@ struct IpcWorker {
     connected: Arc<AtomicBool>,
     buf: Vec<u8>,
     socket_path: std::path::PathBuf,
-    last_event_time: Instant,
     last_heartbeat_at: Arc<std::sync::Mutex<Instant>>,
-    consecutive_failures: u32,
     pending: HashMap<u64, (String, oneshot::Sender<Result<DaemonRes>>)>,
     next_id: u64,
     authenticated: Arc<AtomicBool>,
 }
 
-const MAX_CONSECUTIVE_FAILURES: u32 = 5;
 const HEARTBEAT_TIMEOUT_SECS: u64 = 60;
 /// Upper bound on how long a single IPC command may take before the client
 /// reports the daemon as unresponsive. Connection liveness is handled by the
-/// heartbeat/health checks above, so this only needs to cover legitimate heavy
-/// operations (playlist rotation, playback startup, metadata resolution) which
-/// can exceed a few seconds on large libraries.
+/// heartbeat timeout (see HEARTBEAT_TIMEOUT_SECS), so this only needs to
+/// cover legitimate heavy operations (playlist rotation, playback startup,
+/// metadata resolution) which can exceed a few seconds on large libraries.
 const IPC_TIMEOUT_SECS: u64 = 30;
 
 impl IpcWorker {
@@ -1727,38 +1735,23 @@ impl IpcWorker {
                 self.fail_all_pending("heartbeat timeout");
                 self.reconnect().await;
                 *self.last_heartbeat_at.lock().unwrap() = Instant::now();
-                self.last_event_time = Instant::now();
                 continue;
             }
 
-            // Health check: only force reconnect after MAX_CONSECUTIVE_FAILURES
-            // timeouts, to tolerate brief daemon stalls during prev/next.
-            if self.last_event_time.elapsed() > Duration::from_secs(30) {
-                self.consecutive_failures += 1;
-                if self.consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
-                    log(&format!(
-                        "IPC worker: no events for 30s ({} consecutive), forcing reconnect",
-                        self.consecutive_failures
-                    ));
-                    self.fail_all_pending("daemon not responding");
-                    self.reconnect().await;
-                    self.consecutive_failures = 0;
-                } else {
-                    log(&format!(
-                        "IPC worker: no events for 30s ({}/{} failures), waiting",
-                        self.consecutive_failures, MAX_CONSECUTIVE_FAILURES
-                    ));
-                }
-                self.last_event_time = Instant::now();
-                continue;
-            }
-
-            // Drain ALL pending requests from the channel and send them
-            // without waiting for individual responses. This is the key fix:
-            // previously we blocked on read_response() after each send,
-            // causing commands to queue up for 15 seconds.
+            // Drain pending requests from the channel and send them.
+            // Requests queued while not yet authenticated (during reconnect
+            // handshake retries) are rejected immediately so callers see a
+            // transient "daemon is reconnecting" error instead of a permanent
+            // "handshake required" state.
             let mut sent_any = false;
             while let Ok(pending) = self.cmd_rx.try_recv() {
+                let authed = self.authenticated.load(Ordering::Acquire);
+                if !authed && !matches!(pending.req, DaemonReq::Handshake { .. }) {
+                    if let Some(tx) = pending.response_tx {
+                        let _ = tx.send(Err(CoreError::Daemon("daemon is reconnecting".into())));
+                    }
+                    continue;
+                }
                 let id = self.next_id;
                 self.next_id = self.next_id.wrapping_add(1);
                 if let Err(e) = self.send_by_id(id, &pending).await {
@@ -1791,8 +1784,6 @@ impl IpcWorker {
             // to check for requests.
             match self.read_with_timeout(&mut tmp).await {
                 Ok(true) => {
-                    self.last_event_time = Instant::now();
-                    self.consecutive_failures = 0;
                     // Parse all complete frames, dispatching responses by ID
                     while self.parse_next().await {}
                 }
@@ -1815,6 +1806,7 @@ impl IpcWorker {
 
     async fn reconnect(&mut self) {
         self.connected.store(false, Ordering::Release);
+        self.authenticated.store(false, Ordering::Release);
         let mut attempt = 0u32;
         loop {
             let delay_ms = (100u64 * 2u64.saturating_pow(attempt.min(10))).min(10_000);
@@ -1828,12 +1820,22 @@ impl IpcWorker {
                     self.pending.clear();
                     self.next_id = 0;
                     self.connected.store(true, Ordering::Release);
-                    log(&format!("IPC worker reconnected after {attempt} attempts"));
-                    self.authenticated.store(false, Ordering::Release);
-                    if let Err(e) = self.post_reconnect_handshake().await {
-                        log(&format!("IPC worker post-reconnect handshake failed: {e}"));
+                    *self.last_heartbeat_at.lock().unwrap() = Instant::now();
+                    match self.post_reconnect_handshake().await {
+                        Ok(()) => {
+                            log(&format!("IPC worker reconnected after {attempt} attempts"));
+                            return;
+                        }
+                        Err(e) => {
+                            log(&format!("IPC worker post-reconnect handshake failed: {e}"));
+                            attempt += 1;
+                            if attempt >= 5 {
+                                log("IPC worker: giving up handshake retries; \
+                                     commands will fail until next reconnect");
+                                return;
+                            }
+                        }
                     }
-                    return;
                 }
                 Err(e) => {
                     attempt += 1;
@@ -1848,8 +1850,10 @@ impl IpcWorker {
     }
 
     /// Send a handshake immediately after reconnect so the daemon marks this
-    /// client as authenticated. Without this, all subsequent commands would
-    /// fail with "handshake required".
+    /// client as authenticated. The daemon may write interleaved broadcast
+    /// event frames before the reply; scan `self.buf` until we find a
+    /// complete `WireRes` with `id == 0`, discarding non-matching frames
+    /// (events can never carry a WireRes id).
     async fn post_reconnect_handshake(&mut self) -> Result<()> {
         let wire_req = WireReq {
             id: 0,
@@ -1872,43 +1876,75 @@ impl IpcWorker {
             .await
             .map_err(|e| CoreError::Daemon(format!("flush handshake: {e}")))?;
 
-        // Read the response with a short timeout
+        // Read until we find a complete WireRes frame carrying id == 0
+        // (the daemon's handshake reply). Non-WireRes frames — broadcast
+        // events, or a reply for a different id that somehow survived the
+        // reconnect flush — are kept in `self.buf` for the run loop.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
         let mut tmp = [0u8; 4096];
-        let n = tokio::time::timeout(Duration::from_secs(5), self.reader.read(&mut tmp))
-            .await
-            .map_err(|_| CoreError::Daemon("handshake response timeout".into()))?
-            .map_err(|e| CoreError::Daemon(format!("read handshake response: {e}")))?;
-
-        // Parse the first complete line as the handshake response.
-        // Preserve any remaining data in self.buf so broadcast events that
-        // arrived in the same TCP segment are not silently dropped.
-        let data = &tmp[..n];
-        let pos = data
-            .iter()
-            .position(|&b| b == b'\n')
-            .ok_or_else(|| CoreError::Daemon("malformed handshake response".into()))?;
-
-        let line = &data[..pos];
-        if pos + 1 < n {
-            self.buf.extend_from_slice(&data[pos + 1..n]);
-        }
-
-        let wire_res = serde_json::from_slice::<WireRes>(line)
-            .map_err(|_| CoreError::Daemon("malformed handshake response".into()))?;
-
-        match wire_res.ok {
-            Some(true) => {
-                self.authenticated.store(true, Ordering::Release);
-                *self.last_heartbeat_at.lock().unwrap() = Instant::now();
-                log("IPC worker post-reconnect handshake OK");
-                Ok(())
+        loop {
+            if let Some(wire) = self.take_id0_frame() {
+                match wire.ok {
+                    Some(true) => {
+                        self.authenticated.store(true, Ordering::Release);
+                        *self.last_heartbeat_at.lock().unwrap() = Instant::now();
+                        log("IPC worker post-reconnect handshake OK");
+                        return Ok(());
+                    }
+                    Some(false) => {
+                        return Err(CoreError::Daemon(format!(
+                            "handshake rejected: {:?}",
+                            wire.error
+                        )));
+                    }
+                    _ => {
+                        return Err(CoreError::Daemon("malformed handshake response".into()));
+                    }
+                }
             }
-            Some(false) => Err(CoreError::Daemon(format!(
-                "handshake rejected: {:?}",
-                wire_res.error
-            ))),
-            _ => Err(CoreError::Daemon("malformed handshake response".into())),
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(CoreError::Daemon("handshake response timeout".into()));
+            }
+            match tokio::time::timeout(remaining, self.reader.read(&mut tmp)).await {
+                Ok(Ok(0)) => {
+                    return Err(CoreError::Daemon(
+                        "connection closed during handshake".into(),
+                    ));
+                }
+                Ok(Ok(n)) => self.buf.extend_from_slice(&tmp[..n]),
+                Ok(Err(e)) => {
+                    return Err(CoreError::Daemon(format!("read handshake response: {e}")));
+                }
+                Err(_) => {
+                    return Err(CoreError::Daemon("handshake response timeout".into()));
+                }
+            }
         }
+    }
+
+    /// Scan `self.buf` for a complete JSON frame that parses as a `WireRes`
+    /// with `id == 0` (the reconnect handshake reply). Complete non-matching
+    /// frames (e.g. broadcast events) are drained; the incomplete trailing
+    /// frame and any partial data are left in place.
+    fn take_id0_frame(&mut self) -> Option<WireRes> {
+        let mut search_from = 0;
+        while search_from < self.buf.len() {
+            let nl = match self.buf[search_from..].iter().position(|&b| b == b'\n') {
+                Some(p) => search_from + p + 1,
+                None => break,
+            };
+            match serde_json::from_slice::<WireRes>(&self.buf[search_from..nl]) {
+                Ok(w) if w.id == 0 => {
+                    self.buf.drain(..nl);
+                    return Some(w);
+                }
+                _ => {}
+            }
+            search_from = nl;
+        }
+        self.buf.drain(..search_from);
+        None
     }
 
     async fn read_with_timeout(&mut self, tmp: &mut [u8; 4096]) -> Result<bool> {

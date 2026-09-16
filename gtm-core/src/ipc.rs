@@ -495,6 +495,10 @@ pub enum DaemonReq {
         limit: u16,
     },
     GetStatus,
+    /// Like `GetStatus` but omits the full `default_list` (the whole library)
+    /// from the returned state. Used for the client's periodic background
+    /// refresh so the daemon does not re-serialize the library every second.
+    GetStatusLite,
     CheckHealth,
     Ping,
     Quit,
@@ -608,6 +612,7 @@ impl DaemonReq {
             DaemonReq::RadioCountries { .. } => "radio_countries",
             DaemonReq::RadioByCountry { .. } => "radio_bycountry",
             DaemonReq::GetStatus => "get_status",
+            DaemonReq::GetStatusLite => "get_status_lite",
             DaemonReq::CheckHealth => "check_health",
             DaemonReq::Ping => "ping",
             DaemonReq::Quit => "quit",
@@ -1292,6 +1297,7 @@ impl DaemonReq {
                 }
             }
             "get_status" => DaemonReq::GetStatus,
+            "get_status_lite" => DaemonReq::GetStatusLite,
             "check_health" => DaemonReq::CheckHealth,
             "ping" => DaemonReq::Ping,
             "set_loudness_mode" => {
@@ -1806,6 +1812,161 @@ impl DaemonRes {
         WireRes::ok(id, data)
     }
 
+    /// Serialize this typed response straight to the wire JSON line, in one
+    /// pass, without building the intermediate `Value` tree that
+    /// [`to_wire`](Self::to_wire) + `serde_json::to_string` requires. Keeps
+    /// the exact same envelope shape (`{"id":N,"ok":true/"true"/...,fields}`)
+    /// so the client's `from_wire` parses it identically.
+    pub fn to_wire_line(self, id: u64) -> Result<String, serde_json::Error> {
+        use std::fmt::Write as _;
+        if let DaemonRes::Error { message } = &self {
+            return Ok(format!(
+                "{{\"id\":{id},\"ok\":false,\"error\":{}}}",
+                serde_json::to_string(message)?
+            ));
+        }
+        let mut line = format!("{{\"id\":{id},\"ok\":true");
+        macro_rules! field {
+            ($name:literal, $val:expr) => {{
+                line.push(',');
+                let _ = write!(line, "\"{}\":", $name);
+                line.push_str(&serde_json::to_string($val)?);
+            }};
+        }
+        macro_rules! flatten {
+            ($val:expr) => {{
+                line.push(',');
+                let s = serde_json::to_string($val)?;
+                // WireRes flattens an object Value into the envelope; strip
+                // the object braces to mirror that behaviour. DaemonRes::Value
+                // always holds an object in practice (e.g. {"volume": N}).
+                if s.starts_with('{') && s.ends_with('}') {
+                    line.push_str(&s[1..s.len() - 1]);
+                } else {
+                    line.push_str(&s);
+                }
+            }};
+        }
+        match self {
+            DaemonRes::Ok | DaemonRes::Pong => {}
+            DaemonRes::Value { value } => flatten!(&value),
+            DaemonRes::Tracks { tracks } => field!("tracks", &tracks),
+            DaemonRes::QueueState { queue, cursor } => {
+                field!("queue", &queue);
+                field!("cursor", &cursor);
+            }
+            DaemonRes::Status { state } => field!("state", &state),
+            DaemonRes::Playlists { playlists } => field!("playlists", &playlists),
+            DaemonRes::YtSearchResults { query, results } => {
+                field!("query", &query);
+                field!("results", &results);
+            }
+            DaemonRes::StreamInfo { info } => field!("info", &info),
+            DaemonRes::Lyrics { lyrics } => field!("lyrics", &lyrics),
+            DaemonRes::SpotifyStatusRes { status } => field!("status", &status),
+            DaemonRes::SpotifyOauthStarted { url } => field!("url", &url),
+            DaemonRes::SpotifyPlaylistsRes { playlists } => field!("playlists", &playlists),
+            DaemonRes::SpotifyTracksRes { tracks } => field!("tracks", &tracks),
+            DaemonRes::SpotifyImageRes { data } => field!("data", &data),
+            DaemonRes::SubsonicStatusRes { status } => field!("status", &status),
+            DaemonRes::SubsonicSearchRes { results } => field!("results", &results),
+            DaemonRes::SubsonicAlbumsRes { albums } => field!("albums", &albums),
+            DaemonRes::SubsonicTracksRes { tracks } => field!("tracks", &tracks),
+            DaemonRes::SubsonicPingRes { message } => field!("message", &message),
+            DaemonRes::PodcastFeedsRes { feeds } => field!("feeds", &feeds),
+            DaemonRes::PodcastEpisodesRes {
+                feed_id,
+                feed_title,
+                episodes,
+            } => {
+                field!("feed_id", &feed_id);
+                field!("feed_title", &feed_title);
+                field!("episodes", &episodes);
+            }
+            DaemonRes::PodcastStatusRes { status } => field!("status", &status),
+            DaemonRes::RadioStationsRes { stations } => field!("stations", &stations),
+            DaemonRes::RadioTagsRes { tags } => field!("tags", &tags),
+            DaemonRes::RadioCountriesRes { countries } => field!("countries", &countries),
+            DaemonRes::CoverArt { data } => field!("data", &data),
+            DaemonRes::SyncStatus {
+                running,
+                kind,
+                synced,
+                total,
+            } => {
+                field!("running", &running);
+                field!("kind", &kind);
+                field!("synced", &synced);
+                field!("total", &total);
+            }
+            DaemonRes::HealthReport { report } => field!("report", &report),
+            DaemonRes::EqPresets { presets } => field!("presets", &presets),
+            DaemonRes::LastfmAuthUrlRes { url } => field!("url", &url),
+            DaemonRes::LastfmStatusRes {
+                enabled,
+                api_key,
+                session_token,
+                ready,
+                loved,
+            } => {
+                field!("enabled", &enabled);
+                field!("api_key", &api_key);
+                field!("session_token", &session_token);
+                field!("ready", &ready);
+                field!("loved", &loved);
+            }
+            DaemonRes::YtDownloadProgress {
+                id,
+                url,
+                title,
+                progress,
+                status,
+                error,
+                file_path,
+                downloaded_bytes,
+                total_bytes,
+                rate_bps,
+                eta_secs,
+            } => {
+                field!("id", &id);
+                field!("url", &url);
+                field!("title", &title);
+                field!("progress", &progress);
+                field!("status", &status);
+                field!("error", &error);
+                field!("file_path", &file_path);
+                field!("downloaded_bytes", &downloaded_bytes);
+                field!("total_bytes", &total_bytes);
+                field!("rate_bps", &rate_bps);
+                field!("eta_secs", &eta_secs);
+            }
+            DaemonRes::YtDownloadResult {
+                id,
+                url,
+                title,
+                file_path,
+            } => {
+                field!("id", &id);
+                field!("url", &url);
+                field!("title", &title);
+                field!("file_path", &file_path);
+            }
+            DaemonRes::Handshake {
+                version,
+                daemon,
+                daemon_version,
+            } => {
+                field!("version", &version);
+                field!("daemon", &daemon);
+                field!("daemon_version", &daemon_version);
+            }
+            // Handled by the early return above.
+            DaemonRes::Error { .. } => unreachable!(),
+        }
+        line.push('}');
+        Ok(line)
+    }
+
     /// Reconstruct a typed `DaemonRes` from a parsed `WireRes` keyed by the
     /// `cmd` string of the request that produced it.
     pub fn from_wire(cmd: &str, wire: &WireRes) -> Self {
@@ -1856,11 +2017,12 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "get_status" => match serde_json::from_value::<Box<DaemonState>>(field(&data, "state"))
-            {
-                Ok(state) => DaemonRes::Status { state },
-                Err(_) => DaemonRes::Value { value: data },
-            },
+            "get_status" | "get_status_lite" => {
+                match serde_json::from_value::<Box<DaemonState>>(field(&data, "state")) {
+                    Ok(state) => DaemonRes::Status { state },
+                    Err(_) => DaemonRes::Value { value: data },
+                }
+            }
             "queue" => {
                 let cursor = data.get("cursor").and_then(|c| c.as_u64()).unwrap_or(0);
                 match serde_json::from_value::<Vec<TrackInfo>>(field(&data, "queue")) {

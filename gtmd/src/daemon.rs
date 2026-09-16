@@ -397,6 +397,9 @@ impl Cmd {
         start_pos: f64,
         auto_advanced: bool,
     ) -> Result<DaemonRes, CoreError> {
+        // Bump first so any in-flight auto-advance/crossfade task sees a
+        // session change and backs out before it touches state.
+        inner.play_session.fetch_add(1, Ordering::Release);
         if path.starts_with("spotify:") {
             return Cmd::play_stream(inner, path, start_pos, auto_advanced).await;
         }
@@ -539,6 +542,7 @@ impl Cmd {
         start_pos: f64,
         auto_advanced: bool,
     ) -> Result<DaemonRes, CoreError> {
+        inner.play_session.fetch_add(1, Ordering::Release);
         let (token, config_dir, duration_hint) = {
             let spotify = inner.spotify.lock().await;
             if !spotify.can_stream().await {
@@ -657,6 +661,7 @@ impl Cmd {
         start_pos: f64,
         auto_advanced: bool,
     ) -> Result<DaemonRes, CoreError> {
+        inner.play_session.fetch_add(1, Ordering::Release);
         let (url, live) = resolve_remote(inner, path).await?;
         let kind = parse_remote_path(path)
             .ok_or_else(|| CoreError::Daemon(format!("{path} is not a remote provider path")))?;
@@ -824,6 +829,7 @@ impl Cmd {
     /// playlists fetched from the URL. Remaining playlist entries stay in the
     /// queue so `next` rotates through them.
     pub async fn play_url_stream(inner: &DaemonInner, url: &str) -> Result<DaemonRes, CoreError> {
+        inner.play_session.fetch_add(1, Ordering::Release);
         let url_owned = url.to_string();
         let fetched =
             tokio::task::spawn_blocking(move || -> Result<(String, Vec<String>), String> {
@@ -947,6 +953,7 @@ impl Cmd {
     }
 
     pub async fn stop(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        inner.play_session.fetch_add(1, Ordering::Release);
         inner.stream.lock().await.reset();
         {
             let mut mixer = inner.mixer.lock().await;
@@ -1571,6 +1578,23 @@ impl Cmd {
         let (queue, cursor) = queue::visible(&state);
         state_clone.queue = queue;
         state_clone.queue_cursor = cursor;
+        drop(state);
+        Ok(DaemonRes::Status {
+            state: Box::new(state_clone),
+        })
+    }
+
+    /// Like [`get_status`] but drops `default_list` (the whole library) from
+    /// the returned state. The client never reads `default_list` — the merged
+    /// `queue` view is what it renders — so the periodic background refresh
+    /// saves re-serializing the full library on every tick.
+    pub async fn get_status_lite(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let state = inner.state.read().await;
+        let mut state_clone = state.clone();
+        let (queue, cursor) = queue::visible(&state);
+        state_clone.queue = queue;
+        state_clone.queue_cursor = cursor;
+        state_clone.default_list.clear();
         drop(state);
         Ok(DaemonRes::Status {
             state: Box::new(state_clone),
@@ -3856,6 +3880,10 @@ struct DaemonInner {
     /// bumps it so any previously scheduled timer observes the mismatch and
     /// backs out without racing the new one; `cancel_sleep_timer` also bumps.
     sleep_gen: Arc<AtomicU64>,
+    /// Monotonic counter bumped on every play/stop path. Crossfade tasks
+    /// capture it at spawn time and abort if it has changed, preventing a
+    /// stale auto-advance from overwriting a user-initiated playback switch.
+    play_session: Arc<AtomicU64>,
     health: Arc<HealthTracker>,
     client_auth: tokio::sync::Mutex<HashMap<ClientId, bool>>,
     active_clients: AtomicUsize,
@@ -3935,6 +3963,7 @@ fn is_read_only(req: &DaemonReq) -> bool {
     matches!(
         req,
         DaemonReq::GetStatus
+            | DaemonReq::GetStatusLite
             | DaemonReq::CheckHealth
             | DaemonReq::Ping
             | DaemonReq::ListEqPresets
@@ -4172,6 +4201,7 @@ impl Daemon {
             last_pos_broadcast: tokio::sync::Mutex::new(None),
             icy_title: Arc::new(std::sync::Mutex::new(None)),
             sleep_gen: Arc::new(AtomicU64::new(0)),
+            play_session: Arc::new(AtomicU64::new(0)),
             health: Arc::new(HealthTracker::new(audio_backend_name)),
             client_auth: tokio::sync::Mutex::new(HashMap::new()),
             active_clients: AtomicUsize::new(0),
@@ -4535,7 +4565,6 @@ impl Daemon {
         inner.active_clients.fetch_add(1, Ordering::Relaxed);
 
         let (reader, writer) = stream.into_split();
-        let event_rx = inner.event_tx.subscribe();
         let (reply_tx, mut reply_rx) = mpsc::unbounded_channel::<(u64, DaemonRes)>();
 
         let token = tokio_util::sync::CancellationToken::new();
@@ -4623,21 +4652,20 @@ impl Daemon {
 
         tokio::spawn(async move {
             let mut writer = writer;
-            let mut event_rx = event_rx;
             loop {
                 tokio::select! {
                     _ = token.cancelled() => break,
                     res = reply_rx.recv() => {
                         match res {
                             Some((id, response)) => {
-                                let wire = response.to_wire(id);
-                                let line = match serde_json::to_string(&wire) {
-                                    Ok(s) => s + "\n",
+                                let line = match response.to_wire_line(id) {
+                                    Ok(line) => line,
                                     Err(e) => {
                                         warn!("serialize response: {e}");
                                         continue;
                                     }
                                 };
+                                let line = line + "\n";
                                 if writer.write_all(line.as_bytes()).await.is_err()
                                     || writer.flush().await.is_err()
                                 {
@@ -4645,28 +4673,6 @@ impl Daemon {
                                 }
                             }
                             None => break,
-                        }
-                    }
-                    event = event_rx.recv() => {
-                        match event {
-                            Ok(event) => {
-                                let line = match serde_json::to_string(&event) {
-                                    Ok(s) => s + "\n",
-                                    Err(e) => {
-                                        warn!("serialize event: {e}");
-                                        continue;
-                                    }
-                                };
-                                if writer.write_all(line.as_bytes()).await.is_err()
-                                    || writer.flush().await.is_err()
-                                {
-                                    break;
-                                }
-                            }
-                            Err(broadcast::error::RecvError::Lagged(n)) => {
-                                warn!("event lagged by {n}");
-                            }
-                            Err(broadcast::error::RecvError::Closed) => break,
                         }
                     }
                 }
@@ -5144,6 +5150,7 @@ impl Daemon {
             DaemonReq::SetAudioDevice { name } => Cmd::set_audio_device(inner, name.clone()).await,
             DaemonReq::ClearCache { what } => Cmd::clear_cache(inner, *what).await,
             DaemonReq::GetStatus => Cmd::get_status(inner).await,
+            DaemonReq::GetStatusLite => Cmd::get_status_lite(inner).await,
             DaemonReq::CheckHealth => Cmd::check_health(inner).await,
             DaemonReq::Ping => Ok(DaemonRes::Pong),
             DaemonReq::Queue { action } => Queue::handle(inner, action).await,
@@ -5430,6 +5437,7 @@ impl Daemon {
     }
 
     async fn stop_playback(inner: &DaemonInner) {
+        inner.play_session.fetch_add(1, Ordering::Release);
         {
             let mut mixer = inner.mixer.lock().await;
             let _ = mixer.stop();
@@ -5456,6 +5464,7 @@ impl Daemon {
     }
 
     async fn try_start_crossfade(inner: &DaemonInner, track: &TrackInfo) -> bool {
+        let session = inner.play_session.load(Ordering::Acquire);
         let (enabled, dur) = {
             let state = inner.state.read().await;
             match state.crossfade.as_ref() {
@@ -5494,12 +5503,24 @@ impl Daemon {
             Ok(Ok(source)) => source,
             _ => return false,
         };
-        let mut mixer = inner.mixer.lock().await;
-        if mixer.load_standby_decoded(source).is_err() {
+        {
+            let mut mixer = inner.mixer.lock().await;
+            // A user play/stop was issued while the next track was decoding:
+            // abandon the stale load instead of crossfading over it.
+            if inner.play_session.load(Ordering::Acquire) != session {
+                return false;
+            }
+            if mixer.load_standby_decoded(source).is_err() {
+                return false;
+            }
+            mixer.start_crossfade(dur);
+        }
+        // Re-verify after the mixer mutation: a play/stop that ran while we
+        // held the lock would have swapped the session, so the marker below
+        // must not be published against a fresh playback state.
+        if inner.play_session.load(Ordering::Acquire) != session {
             return false;
         }
-        mixer.start_crossfade(dur);
-        drop(mixer);
         *inner.crossfade_loaded_for.lock().await = Some(track.path.clone());
         true
     }
@@ -5669,8 +5690,14 @@ impl Daemon {
                     // loop does not stall waiting on the exclusive lock while a
                     // slow mutating command holds it.
                     let inner = Arc::clone(inner);
+                    let session = inner.play_session.load(Ordering::Acquire);
                     tokio::spawn(async move {
-                        let _lock = inner.cmd_lock.write().await;
+                        let _lock = inner.play_lock.write().await;
+                        // A play/stop raced the task start: the user switched
+                        // sources, so this auto-advance must not run.
+                        if inner.play_session.load(Ordering::Acquire) != session {
+                            return;
+                        }
                         Self::finish_crossfade(&inner).await;
                     });
                 }
@@ -5767,8 +5794,14 @@ impl Daemon {
                     // Run on a detached task to avoid blocking the poll loop on
                     // the exclusive lock during next-track startup.
                     let inner = Arc::clone(inner);
+                    let session = inner.play_session.load(Ordering::Acquire);
                     tokio::spawn(async move {
                         let _lock = inner.play_lock.write().await;
+                        // A play/stop raced the task: don't advance over a
+                        // fresh user-initiated playback.
+                        if inner.play_session.load(Ordering::Acquire) != session {
+                            return;
+                        }
                         Self::finish_crossfade(&inner).await;
                         let _ = Cmd::next(&inner).await;
                     });
