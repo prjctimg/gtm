@@ -3503,12 +3503,13 @@ impl Pickers {
             _ => {}
         }
         if app.yt_results_cache.is_empty() && app.yt_search_loading {
+            let lines_len = lines.len();
             f.render_widget(Paragraph::new(lines), inner);
             let loader_area = Rect {
                 x: inner.x,
-                y: inner.y + lines.len() as u16,
+                y: inner.y + lines_len as u16,
                 width: inner.width,
-                height: inner.height.saturating_sub(lines.len() as u16),
+                height: inner.height.saturating_sub(lines_len as u16),
             };
             Render::loader(f, loader_area, app, "Searching…");
             return;
