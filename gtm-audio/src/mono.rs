@@ -60,10 +60,7 @@ where
         let ch = self.channels.get() as usize;
         let mut sum = 0.0f32;
         for _ in 0..ch {
-            match self.inner.next() {
-                Some(s) => sum += s,
-                None => return None,
-            }
+            sum += self.inner.next()?;
         }
         let mixed = sum / ch as f32;
         self.emit = vec![mixed; ch];

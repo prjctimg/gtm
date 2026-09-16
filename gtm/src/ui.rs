@@ -3479,25 +3479,25 @@ impl Pickers {
             Some(q) if q.starts_with("scsearch:") => {
                 lines.push(Line::from(Span::styled(
                     " SoundCloud search (yt-dlp)",
-                    Style::default().fg(app.theme.secondary_fg),
+                    Style::default().fg(app.theme.fg_dim),
                 )));
             }
             Some(q) if q.starts_with("bilisearch:") => {
                 lines.push(Line::from(Span::styled(
                     " Bilibili search (yt-dlp)",
-                    Style::default().fg(app.theme.secondary_fg),
+                    Style::default().fg(app.theme.fg_dim),
                 )));
             }
             Some(q) if q.starts_with("mcsearch:") => {
                 lines.push(Line::from(Span::styled(
                     " Mixcloud search (yt-dlp)",
-                    Style::default().fg(app.theme.secondary_fg),
+                    Style::default().fg(app.theme.fg_dim),
                 )));
             }
             Some(q) if q.starts_with("ytsearch") => {
                 lines.push(Line::from(Span::styled(
                     " YouTube Music search (yt-dlp)",
-                    Style::default().fg(app.theme.secondary_fg),
+                    Style::default().fg(app.theme.fg_dim),
                 )));
             }
             _ => {}

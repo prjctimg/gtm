@@ -485,6 +485,7 @@ fn res_lastfm_wire() {
                 api_key: Some("k1".into()),
                 session_token: Some("sess".into()),
                 ready: true,
+                loved: false,
             },
         ),
     ];

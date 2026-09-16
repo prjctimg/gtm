@@ -10,7 +10,7 @@
 #   aarch64-linux-arch    Arch Linux container (aarch64)   → gtm-arch-aarch64.tar.gz + .pkg.tar.zst
 #   aarch64-darwin        macOS runner                     → tar.gz
 #   aarch64-android       Ubuntu runner + cargo-ndk        → tar.gz + Termux deb
-#   x86_64-linux-musl     Alpine 3.22 container (musl)      → tar.gz + apk
+#   x86_64-linux-musl     Alpine 3.22 ad-hoc container      → tar.gz + apk
 #   aarch64-linux-musl    Alpine 3.22 ad-hoc container      → tar.gz + apk
 #
 # Each build job stages everything it produces into a single release-assets/
@@ -23,7 +23,8 @@
 #     │          (stable: vX.Y.Z on main, nightly: `nightly` at latest dev)
 #     ▼
 #   build job  → per OS/arch:
-#     │         1. cargo build --release (cargo-ndk for Android; native musl for Alpine)
+#     │         1. cargo build --release (cargo-ndk for Android; musl in the
+#     │            Alpine ad-hoc container for both Linux musl targets)
 #     │         2. Generate manpages (pandoc) + completions (release-gen)
 #     │         3. Assemble a complete per-target archive:
 #     │            gtm-{platform}.tar.gz for macOS/Alpine/Android,
@@ -251,8 +252,13 @@ jobs:
             mold_arg: -C link-arg=-fuse-ld=mold
           - os: ubuntu-22.04
             platform: x86_64-linux-musl
-            container: alpine:3.22
-            family: alpine
+            # This job runs on the host and performs the Alpine build via
+            # `docker run` (see the build step below). Inside an Alpine
+            # container the busybox /bin/tar cannot save the rust-cache (it
+            # lacks the GNU tar flags), so every run was a full cold ~15 min
+            # build; on the host the cargo cache persists normally.
+            container: null
+            family: musl
             link_override: -C linker=gcc
             mold_arg: -C link-arg=-fuse-ld=mold
           - os: ubuntu-24.04-arm
@@ -261,7 +267,7 @@ jobs:
             # containers on ARM64 runners, so this job runs on the host and
             # performs the Alpine build via `docker run` (see build step).
             container: null
-            family: alpine-arm
+            family: musl
             link_override: -C linker=gcc
             mold_arg: -C link-arg=-fuse-ld=mold
     steps:
@@ -291,20 +297,6 @@ jobs:
             base-devel rust pandoc alsa-lib cmake clang lld mold git \
             libarchive zstd
 
-      - name: Bootstrap tooling (Alpine container)
-        if: matrix.container == 'alpine:3.22'
-        run: |
-          apk add --no-cache \
-            ca-certificates curl git bash build-base cmake musl-dev \
-            clang lld mold \
-            pkgconfig alsa-lib-dev pandoc
-
-      - name: Install Rust (Alpine container)
-        if: matrix.container == 'alpine:3.22'
-        run: |
-          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-
       - uses: actions/checkout@v7
       - name: Cache cargo dependencies
         uses: Swatinem/rust-cache@v2
@@ -332,9 +324,12 @@ jobs:
 
       # Alpine-on-ARM64 cannot run JavaScript actions inside a container, so the
       # aarch64-musl build runs the whole Alpine pipeline in an ad-hoc container.
+      # The x86_64-musl build uses the same ad-hoc container so the rust-cache
+      # (busybox tar in Alpine can't save it) runs on the host instead.
       - name: Build musl binaries + packages (Alpine container)
-        if: matrix.family == 'alpine-arm'
+        if: matrix.family == 'musl'
         run: |
+          arch="${matrix.platform%-linux-musl}"
           docker run --rm \
             -v "$PWD":/work \
             -w /work \
@@ -342,7 +337,7 @@ jobs:
             -e VERGEN_GIT_SHA="$VERGEN_GIT_SHA" \
             alpine:3.22 \
             /bin/sh -c "apk add --no-cache bash && /bin/bash /work/scripts/build/musl-in-container.sh \
-              aarch64-linux-musl ${{ needs.tag.outputs.version }} aarch64"
+              ${{ matrix.platform }} ${{ needs.tag.outputs.version }} ${arch}"
 
       # Arch-on-ARM64 cannot run JavaScript actions inside a container, so the
       # aarch64-arch build runs the whole Arch pipeline in an ad-hoc container.
@@ -390,7 +385,7 @@ jobs:
           cmake --build termux-elf-cleaner/build -j
 
       - name: Build release binaries
-        if: matrix.family != 'android' && matrix.family != 'alpine-arm' && matrix.family != 'arch-arm'
+        if: matrix.family != 'android' && matrix.family != 'musl' && matrix.family != 'arch-arm'
         run: cargo build --release
 
       # Debian 12 ships glibc 2.36; guard the Linux glibc targets so a binary
@@ -422,11 +417,11 @@ jobs:
           termux-elf-cleaner/build/termux-elf-cleaner target/aarch64-linux-android/release/gtm
 
       - name: Generate manpages (pandoc)
-        if: matrix.family != 'alpine-arm' && matrix.family != 'arch-arm'
+        if: matrix.family != 'musl' && matrix.family != 'arch-arm'
         run: ./scripts/build/manpages.sh artifacts
 
       - name: Generate shell completions
-        if: matrix.family != 'alpine-arm' && matrix.family != 'arch-arm'
+        if: matrix.family != 'musl' && matrix.family != 'arch-arm'
         run: cargo run --release --bin release-gen completions artifacts
 
       # ── Complete per-target archive (bin + man + completions + service) ──
@@ -458,27 +453,6 @@ jobs:
           cp LICENSE            "$root/"
           cp install.sh         "$root/"
           tar czf "release-assets/${root}.tar.gz" "$root"
-
-      - name: Package complete archive (Alpine musl)
-        if: matrix.family == 'alpine'
-        shell: bash
-        run: |
-          set -euo pipefail
-          platform="${{ matrix.platform }}"
-          root="gtm-${platform}"
-          mkdir -p release-assets \
-            "$root/bin" "$root/man/man1" "$root/completions" \
-            "$root/systemd" "$root/desktop" "$root/icons"
-          cp target/release/gtm  "$root/bin/"
-          cp target/release/gtmd "$root/bin/"
-          cp artifacts/man/*.1        "$root/man/man1/"
-          cp artifacts/completions/*  "$root/completions/"
-          cp dist/gtmd.service  "$root/systemd/"
-          cp dist/gtm.desktop   "$root/desktop/"
-          cp assets/gtm.svg     "$root/icons/"
-          cp LICENSE            "$root/"
-          cp install.sh         "$root/"
-          tar czf "release-assets/gtm-${platform}.tar.gz" "$root"
 
       - name: Package complete archive (Arch Linux)
         if: matrix.family == 'arch'
@@ -642,51 +616,6 @@ jobs:
           ./scripts/build/arch-pkg.sh "$version" "$arch" stage \
             "release-assets/gtm-${version}-${arch}.pkg.tar.zst"
 
-      - name: Stage rootfs tree (Alpine .apk)
-        if: matrix.family == 'alpine'
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p stage/usr/bin \
-            stage/usr/lib/systemd/user \
-            stage/usr/share/man/man1 \
-            stage/usr/share/bash-completion/completions \
-            stage/usr/share/zsh/site-functions \
-            stage/usr/share/fish/vendor_completions.d \
-            stage/usr/share/elvish/lib \
-            stage/usr/share/powershell/Modules \
-            stage/usr/share/applications \
-            stage/usr/share/icons/hicolor/scalable/apps \
-            stage/usr/share/licenses/gtm
-          cp target/release/gtm  stage/usr/bin/
-          cp target/release/gtmd stage/usr/bin/
-          cp dist/gtmd.service stage/usr/lib/systemd/user/
-          cp artifacts/man/*.1 stage/usr/share/man/man1/
-          cp artifacts/completions/gtm.bash  stage/usr/share/bash-completion/completions/gtm
-          cp artifacts/completions/gtmd.bash stage/usr/share/bash-completion/completions/gtmd
-          cp artifacts/completions/_gtm  stage/usr/share/zsh/site-functions/_gtm
-          cp artifacts/completions/_gtmd stage/usr/share/zsh/site-functions/_gtmd
-          cp artifacts/completions/gtm.fish  stage/usr/share/fish/vendor_completions.d/
-          cp artifacts/completions/gtmd.fish stage/usr/share/fish/vendor_completions.d/
-          cp artifacts/completions/gtm.elv  stage/usr/share/elvish/lib/
-          cp artifacts/completions/gtmd.elv stage/usr/share/elvish/lib/
-          cp artifacts/completions/gtm.ps1  stage/usr/share/powershell/Modules/
-          cp artifacts/completions/gtmd.ps1 stage/usr/share/powershell/Modules/
-          cp dist/gtm.desktop stage/usr/share/applications/
-          cp assets/gtm.svg stage/usr/share/icons/hicolor/scalable/apps/
-          cp LICENSE stage/usr/share/licenses/gtm/
-
-      - name: Build Alpine .apk
-        if: matrix.family == 'alpine'
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="${{ needs.tag.outputs.version }}"
-          arch="x86_64"
-          [[ "${{ matrix.platform }}" == "aarch64-linux-musl" ]] && arch="aarch64"
-          ./scripts/build/alpine-apk.sh "$version" "$arch" stage \
-            "release-assets/gtm-${version}-r0-${arch}.apk"
-
       - name: Build Termux .deb packages
         if: matrix.family == 'android'
         run: |
@@ -755,17 +684,6 @@ jobs:
           bash scripts/build/release-notes.sh "${prev_tag}" "${{ github.sha }}" "$version" release-notes.md
           ls -l release-notes.md
 
-      - name: Prune stale nightly assets
-        if: needs.tag.outputs.nightly == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          gh release view nightly --json assets -q '.assets[].name' 2>/dev/null \
-            | while IFS= read -r name; do
-              [ -n "$name" ] || continue
-              gh release delete-asset nightly "$name" -y || true
-            done
-
       - name: Print release asset manifest
         run: |
           echo "=== Release assets ==="
@@ -799,6 +717,29 @@ jobs:
             *.apk
             checksums.txt
             release-notes.md
+
+      # Prune stale nightly assets AFTER the upload instead of before: the old
+      # step deleted every existing asset first, so between the wipe and the
+      # softprops upload it toggles the release into a draft, every
+      # releases/download/nightly/<name> URL 404'd for users during that window.
+      # Only assets that were NOT part of this run's fresh upload set are
+      # removed, so the live assets (or the previous ones on a failed build)
+      # stay downloadable the whole time.
+      - name: Prune stale nightly assets
+        if: needs.tag.outputs.nightly == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mapfile -t kept < <(
+            ls gtm-*.tar.gz *.deb *.rpm *.pkg.tar.zst *.apk \
+              checksums.txt release-notes.md 2>/dev/null | xargs -n1 basename
+          )
+          gh release view nightly --json assets -q '.assets[].name' 2>/dev/null \
+            | while IFS= read -r name; do
+                [ -n "$name" ] || continue
+                [[ " ${kept[*]} " == *" $name "* ]] && continue
+                gh release delete-asset nightly "$name" -y || true
+              done
 
       # If any step above fails after the release was toggled into a draft
       # (softprops drafts it to overwrite assets), the nightly would stay a

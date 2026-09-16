@@ -1746,7 +1746,6 @@ impl App {
                     ExtensionId::Visualizer.label()
                 ),
                 NotificationKind::Info,
-                NotifType::System,
             );
             return;
         }
@@ -1768,7 +1767,6 @@ impl App {
                     ExtensionId::NotificationOverlay.label()
                 ),
                 NotificationKind::Info,
-                NotifType::System,
             );
             return;
         }
@@ -5829,7 +5827,6 @@ impl App {
                             self.notify(
                                 format!("{} is an optional extension (disabled)", ext.label()),
                                 NotificationKind::Info,
-                                NotifType::System,
                             );
                             return true;
                         }
@@ -9365,7 +9362,6 @@ impl App {
                                                 ext.label()
                                             ),
                                             NotificationKind::Info,
-                                            NotifType::System,
                                         );
                                     } else {
                                         self.pickers.open(PickerId::Notifications);
@@ -9389,7 +9385,6 @@ impl App {
                                                 ExtensionId::Visualizer.label()
                                             ),
                                             NotificationKind::Info,
-                                            NotifType::System,
                                         );
                                     } else {
                                         self.visualizer.toggle();

@@ -4822,7 +4822,7 @@ impl Daemon {
             DaemonReq::ToggleShuffle => Cmd::toggle_shuffle(inner).await,
             DaemonReq::CycleRepeat { mode } => Cmd::set_repeat_mode(inner, *mode).await,
             DaemonReq::ToggleMute => Cmd::toggle_mute(inner).await,
-            DaemonReq::SetMono { enabled } => Cmd::set_mono(inner, enabled).await,
+            DaemonReq::SetMono { enabled } => Cmd::set_mono(inner, *enabled).await,
             DaemonReq::Crossfade {
                 enabled,
                 duration_secs,
