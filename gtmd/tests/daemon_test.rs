@@ -576,11 +576,13 @@ async fn lastfm_setup() {
             api_key,
             session_token,
             ready,
+            loved,
         } => {
             assert!(enabled, "scrobbling should be enabled");
             assert_eq!(api_key.as_deref(), Some("k1"));
             assert_eq!(session_token.as_deref(), Some("sess"));
             assert!(ready, "manager should be ready once key+secret are set");
+            assert!(!loved, "nothing should be loved yet");
         }
         other => panic!("expected LastfmStatusRes, got {other:?}"),
     }
