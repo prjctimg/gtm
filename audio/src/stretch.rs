@@ -14,8 +14,8 @@ use rodio::Source;
 use timestretch::engine::{Engine, EngineConfig, EngineProfile};
 use timestretch::engine::{EngineController, EngineProcessor, SourceProducer};
 
-/// Re-exported shared speed bounds (single source of truth in `gtm-core`).
-pub use gtm_core::global::{DEFAULT_SPEED, MAX_SPEED, MIN_SPEED};
+/// Re-exported shared speed bounds (single source of truth in `shared`).
+pub use shared::global::{DEFAULT_SPEED, MAX_SPEED, MIN_SPEED};
 
 /// Playback rate bounds for the engine.
 pub fn speed_bounds() -> (f32, f32) {

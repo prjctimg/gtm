@@ -1,4 +1,4 @@
-# gtm-audio
+# audio
 
 Audio backend for `gtm`, behind the `AudioBackend` trait.
 

@@ -27,14 +27,6 @@ use crossterm::event::{
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use gtm_core::daemon::ensure_daemon_running;
-use gtm_core::global::{EqPreset, PlaybackStatus};
-use gtm_core::ipc::HealthStatus;
-use gtm_core::log::redirect_stderr;
-use gtm_core::radio::RadioStation;
-use gtm_core::resolve_command_socket;
-use gtm_core::spotify::SpotifySearchKind;
-use gtm_core::track::TrackInfo;
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
@@ -44,6 +36,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap};
 use ratatui_image::StatefulImage;
 use ratatui_image::protocol::StatefulProtocol;
+use shared::daemon::ensure_daemon_running;
+use shared::global::{EqPreset, PlaybackStatus};
+use shared::ipc::HealthStatus;
+use shared::log::redirect_stderr;
+use shared::radio::RadioStation;
+use shared::resolve_command_socket;
+use shared::spotify::SpotifySearchKind;
+use shared::track::TrackInfo;
 
 /// Grouped render helpers: previously free `render_*` functions.
 pub struct Render;

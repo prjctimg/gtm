@@ -59,7 +59,7 @@ build() {
 
   mkdir -p artifacts
   ./scripts/build/manpages.sh artifacts
-  cargo run --release --bin release-gen completions artifacts
+  cargo run --release --manifest-path release-gen/Cargo.toml --bin release-gen completions artifacts
 }
 
 package() {

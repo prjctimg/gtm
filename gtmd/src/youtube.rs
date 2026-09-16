@@ -19,8 +19,8 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tracing::debug;
 
-use gtm_core::global::YTFilter;
-use gtm_core::track::{StreamInfo, YTSearchResult};
+use shared::global::YTFilter;
+use shared::track::{StreamInfo, YTSearchResult};
 
 use crate::cleaner::clean_youtube_title;
 

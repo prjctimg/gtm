@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use reqwest::Client;
 use urlencoding::encode;
 
-use gtm_core::track::{LrcData, LrcLine, LrcWord, TrackInfo};
+use shared::track::{LrcData, LrcLine, LrcWord, TrackInfo};
 
 use crate::cleaner::clean_filename_stem;
 

@@ -6,7 +6,7 @@
 
 pub type AudioResult<T> = std::result::Result<T, AudioError>;
 
-use gtm_core::CoreError;
+use shared::CoreError;
 
 #[derive(Debug, Clone)]
 pub enum AudioEvent {

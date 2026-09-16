@@ -56,7 +56,7 @@
             install -Dm 0644 artifacts/man/gtm.1      $out/share/man/man1/gtm.1
 
             # Shell completions
-            cargo run --release --bin release-gen completions artifacts
+            cargo run --release --manifest-path release-gen/Cargo.toml --bin release-gen completions artifacts
             install -Dm 0644 artifacts/completions/gtm.bash   $out/share/bash-completion/completions/gtm
             install -Dm 0644 artifacts/completions/_gtm       $out/share/zsh/site-functions/_gtm
             install -Dm 0644 artifacts/completions/gtm.fish   $out/share/fish/vendor_completions.d/gtm.fish

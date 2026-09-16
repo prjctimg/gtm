@@ -1,15 +1,14 @@
+[workspace]
+
 [package]
 name = "release-gen"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+version = "0.2.83"
+edition = "2024"
+license = "GPL-3.0-only"
 description = "Release asset generation helper for gtm builds"
 publish = false
-repository.workspace = true
-homepage.workspace = true
-keywords.workspace = true
-categories.workspace = true
-readme.workspace = true
+repository = "https://github.com/prjctimg/gtm.rs"
+homepage = "https://github.com/prjctimg/gtm.rs"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

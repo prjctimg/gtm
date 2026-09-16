@@ -42,7 +42,7 @@
 #                 checksums.txt, and create/update the GitHub Release.
 #
 #   crates-io job → publish the workspace crates to crates.io in dependency
-#                   order (gtm-core → gtm-audio → gtm-mpris → gtmd → gtm).
+#                   order (shared → audio → mpris → gtmd → gtm).
 #                   Stable releases only (nightly shares the manifest version
 #                   and would hit duplicate-version errors). Already-published
 #                   versions are skipped so re-running a release after a
@@ -423,7 +423,7 @@ jobs:
 
       - name: Generate shell completions
         if: matrix.family != 'musl' && matrix.family != 'arch-arm'
-        run: cargo run --release --bin release-gen completions artifacts
+        run: cargo run --release --manifest-path release-gen/Cargo.toml --bin release-gen completions artifacts
 
       # ── Complete per-target archive (bin + man + completions + service) ──
       # Debian 12 glibc builds are labelled explicitly in release assets
@@ -878,15 +878,15 @@ jobs:
             BENCHMARK.md
           if-no-files-found: error
 
-  # Publishes the workspace crates to crates.io in dependency order
-  # (gtm-core → gtm-audio → gtm-mpris → gtmd → gtm). Runs only after every
-  # target in the build matrix succeeded, and only for stable releases
-  # (nightly shares the manifest version and would hit duplicate-version
-  # errors). Already-published versions are skipped so re-running a release
-  # after a partial publish resumes cleanly. Publishing uses crates.io Trusted
-  # Publishing (OIDC) — no API-token secret is stored. Each crate needs a
-  # Trusted Publisher configured on crates.io (owner: prjctimg, repo: gtm.rs,
-  # workflow: release.yml) or the token exchange is rejected.
+  # Publishes the workspace crates to crates.io in dependency order (shared →
+  # audio → mpris → gtmd → gtm). Runs only after every target in the build
+  # matrix succeeded, and only for stable releases (nightly shares the
+  # manifest version and would hit duplicate-version errors). Already-published
+  # versions are skipped so re-running a release after a partial publish
+  # resumes cleanly. Publishing uses crates.io Trusted Publishing (OIDC) — no
+  # API-token secret is stored. Each crate needs a Trusted Publisher
+  # configured on crates.io (owner: prjctimg, repo: gtm.rs, workflow:
+  # release.yml) or the token exchange is rejected.
   crates-io:
     needs: [tag, build]
     if: needs.tag.outputs.skip != 'true' && needs.tag.outputs.nightly == 'false'
@@ -924,11 +924,11 @@ jobs:
                 echo "${crate} v${version}: already published, skipping"
                 return 0
               fi
-              # gtm-core (or another gtm- dep) just went live but the crates.io
-              # index hasn't propagated yet — retry instead of failing the whole
-              # chain of downstream crates.
-              if grep -q "failed to select a version for the requirement \`gtm-" <<<"${out}"; then
-                echo "${crate} v${version}: waiting for gtm- index propagation (attempt ${attempt}/6)..."
+              # An upstream crate just went live but the crates.io index hasn't
+              # propagated yet — retry instead of failing the whole chain of
+              # downstream crates.
+              if grep -q "failed to select a version for the requirement" <<<"${out}"; then
+                echo "${crate} v${version}: waiting for index propagation (attempt ${attempt}/6)..."
                 sleep 30
                 continue
               fi
@@ -937,7 +937,7 @@ jobs:
             done
             return 1
           }
-          for crate in gtm-core gtm-audio gtm-mpris gtmd gtm; do
+          for crate in shared audio mpris gtmd gtm; do
             echo "Publishing ${crate} v${version}..."
             publish_crate "${crate}"
           done

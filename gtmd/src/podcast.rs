@@ -14,7 +14,7 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 use tracing::{info, warn};
 
-use gtm_core::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
+use shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 
 const CONFIG_FILE: &str = "podcast.json";
 const CONFIG_PERMS: u32 = 0o600;

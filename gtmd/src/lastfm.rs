@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use gtm_core::track::TrackInfo;
+use shared::track::TrackInfo;
 
 const LASTFM_API_URL: &str = "https://ws.audioscrobbler.com/2.0/";
 

@@ -12,7 +12,7 @@ use ratatui::widgets::Paragraph;
 use std::borrow::Cow;
 
 use chrono::Local;
-use gtm_core::state::{PlaybackStatus, RepeatMode};
+use shared::state::{PlaybackStatus, RepeatMode};
 
 use crate::app::App;
 use crate::theme::{AppTheme, readable_fg};

@@ -20,7 +20,7 @@ export PATH="$HOME/.cargo/bin:$PATH"
 cargo build --release
 
 ./scripts/build/manpages.sh artifacts
-cargo run --release --bin release-gen completions artifacts
+cargo run --release --manifest-path release-gen/Cargo.toml --bin release-gen completions artifacts
 
 root="gtm-${platform}"
 mkdir -p release-assets \

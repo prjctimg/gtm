@@ -128,9 +128,9 @@ Starlight gives structure; the gtm identity comes from a theme layer:
 ## 6. IPC-Protocol page: generate, don't hand-author
 
 `wiki/IPC-Protocol.md` describes the request/response wire format. The IPC
-surface already has a canonical schema (`gtm-core::ipc`, `WireReq`/`WireRes`
+surface already has a canonical schema (`shared::ipc`, `WireReq`/`WireRes`
 serde models). Recommendation: a small doc-gen crate/bin (or a cargo alias)
-emits the protocol section from `gtm-core` at build time so the manual never
+emits the protocol section from `shared` at build time so the manual never
 drifts from the code. Ships in phase 2.
 
 ---
@@ -187,7 +187,7 @@ it later is negligible.
 | Phase | Deliverable | Notes |
 |-------|-------------|-------|
 | **1** | Scaffold Astro + Starlight in `docs/`; migrate `Home`/`TUI Guide`/`Configuration`; CI deploy to GitHub Pages | Ships the primary surfaces on `gtmd.dev` |
-| **2** | Generate `IPC-Protocol` from `gtm-core`; migrate `CLI Reference` + man page, `Architecture`, `Development`; `sync-wiki.sh` | Single source of truth complete |
+| **2** | Generate `IPC-Protocol` from `shared`; migrate `CLI Reference` + man page, `Architecture`, `Development`; `sync-wiki.sh` | Single source of truth complete |
 | **3** | Terminal theme polish, keybinding component, optional Ratzilla demo page, i18n | Differentiation + "wow" factor |
 
 Each phase is independently shippable; none blocks the others. Phase 1 is ~1-2

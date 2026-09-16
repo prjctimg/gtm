@@ -2,7 +2,7 @@
 // Author: prjctimg <prjctimg@outlook.com>
 // Config-driven extension registry for the gtm TUI.
 //
-// Core playback, DSP, library, IPC and the event bus stay in `gtm-core`;
+// Core playback, DSP, library, IPC and the event bus stay in `shared`;
 // optional user-facing surfaces (visualizer, floating notification cards,
 // the notification settings overlay) live in the TUI and can be switched
 // off per-session via the `[extensions]` table in the TUI config:

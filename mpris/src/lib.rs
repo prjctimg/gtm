@@ -17,9 +17,9 @@ use zbus::connection::Builder;
 use zbus::interface;
 use zvariant::{ObjectPath, Value};
 
-use gtm_core::ipc::{DaemonEvent, DaemonReq};
-use gtm_core::state::{DaemonState, PlaybackStatus, RepeatMode};
-use gtm_core::{volume_from_ratio, volume_ratio};
+use shared::ipc::{DaemonEvent, DaemonReq};
+use shared::state::{DaemonState, PlaybackStatus, RepeatMode};
+use shared::{volume_from_ratio, volume_ratio};
 
 const BUS_NAME: &str = "org.mpris.MediaPlayer2.gtm";
 const OBJECT_PATH: &str = "/org/mpris/MediaPlayer2";

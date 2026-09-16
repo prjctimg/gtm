@@ -1,7 +1,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use gtm_audio::{AudioEvent, AudioMixer};
+use audio::{AudioEvent, AudioMixer};
 
 static TEST_COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -49,7 +49,7 @@ fn create_test_wav(path: &std::path::Path, duration_secs: f64) {
 fn test_wav_path() -> std::path::PathBuf {
     let n = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
     let mut p = std::env::temp_dir();
-    p.push(format!("gtm_audio_test_{n}.wav"));
+    p.push(format!("audio_test_{n}.wav"));
     p
 }
 

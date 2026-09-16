@@ -1,4 +1,4 @@
-use gtm_audio::AudioMixer;
+use audio::AudioMixer;
 use std::time::Duration;
 
 fn find_opus_file() -> Option<String> {

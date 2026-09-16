@@ -1,4 +1,4 @@
-# gtm-mpris
+# mpris
 
 MPRIS D-Bus server for gtm, built on zbus.
 

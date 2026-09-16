@@ -8,21 +8,21 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
-use gtm_core::client::{DaemonClient, LastfmStatus};
-use gtm_core::daemon::ensure_daemon_running;
-use gtm_core::global::{PlaybackStatus, RepeatMode};
-use gtm_core::ipc::DaemonRes;
-use gtm_core::ipc::HealthStatus;
-use gtm_core::ipc::MetadataPatch;
-use gtm_core::playlist::PlaylistFormatKind;
-use gtm_core::resolve_command_socket;
-use gtm_core::secret::{
+use shared::client::{DaemonClient, LastfmStatus};
+use shared::daemon::ensure_daemon_running;
+use shared::global::{PlaybackStatus, RepeatMode};
+use shared::ipc::DaemonRes;
+use shared::ipc::HealthStatus;
+use shared::ipc::MetadataPatch;
+use shared::playlist::PlaylistFormatKind;
+use shared::resolve_command_socket;
+use shared::secret::{
     LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, get_secret, set_secret,
 };
-use gtm_core::spotify::SpotifyStatus;
-use gtm_core::subsonic::SubsonicStatus;
-use gtm_core::subsonic::SubsonicTrack;
-use gtm_core::track::LrcData;
+use shared::spotify::SpotifyStatus;
+use shared::subsonic::SubsonicStatus;
+use shared::subsonic::SubsonicTrack;
+use shared::track::LrcData;
 use tokio::io::AsyncBufReadExt;
 
 use crate::app::{Prefs, ensure_prefs_file};
@@ -858,7 +858,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     .search(query, None)
                     .await
                     .map_err(|e| e.to_string())?;
-                let mut results: Option<Vec<gtm_core::YTSearchResult>> = None;
+                let mut results: Option<Vec<shared::YTSearchResult>> = None;
                 let mut last_err: Option<String> = None;
                 for _ in 0..40 {
                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -1479,18 +1479,18 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     Ok(format!("{} stations", stations.len()))
                 }
                 RadioAction::List => {
-                    let stations = gtm_core::custom::list_custom_stations()?;
+                    let stations = shared::custom::list_custom_stations()?;
                     for (i, s) in stations.iter().enumerate() {
                         println!("custom:{}\t{}\t{}", i + 1, s.name, s.url);
                     }
                     Ok(format!("{} custom stations", stations.len()))
                 }
                 RadioAction::Add { name, url } => {
-                    let index = gtm_core::custom::add_custom_station(name, url, None)?;
+                    let index = shared::custom::add_custom_station(name, url, None)?;
                     Ok(format!("added custom:{index} {name}"))
                 }
                 RadioAction::Rm { selector } => {
-                    let removed = gtm_core::custom::remove_custom_station(selector)?;
+                    let removed = shared::custom::remove_custom_station(selector)?;
                     Ok(format!("removed custom:{}", removed.name))
                 }
             },

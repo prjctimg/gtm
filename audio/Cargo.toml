@@ -1,10 +1,9 @@
 [package]
-name = "gtm-audio"
+name = "audio"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 description = "Audio playback backends (rodio/symphonia, optional PulseAudio) for the gtm music player"
-publish = false
 repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true
@@ -16,7 +15,7 @@ default = []
 pulseaudio = ["dep:pulseaudio", "dep:tokio"]
 
 [dependencies]
-gtm-core.workspace = true
+shared.workspace = true
 rodio = { version = "0.22", default-features = false, features = ["playback", "symphonia-all"] }
 symphonia = { version = "0.6", default-features = false, features = ["all-codecs", "all-formats", "all-meta"] }
 symphonia-adapter-libopus = "0.3"

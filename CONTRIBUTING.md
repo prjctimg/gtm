@@ -60,8 +60,8 @@ cargo test
 # Run tests for a specific crate
 cargo test -p gtm
 cargo test -p gtmd
-cargo test -p gtm-core
-cargo test -p gtm-audio
+cargo test -p shared
+cargo test -p audio
 
 # Run inline tests only (no integration tests)
 cargo test --lib -p gtm
@@ -86,7 +86,7 @@ The codebase layout is summarized below, split into different crates and
 
 ```
 gtm.rs/
-├── gtm-core/         Shared types, IPC protocol, state machine, DaemonClient
+├── shared/         Shared types, IPC protocol, state machine, DaemonClient
 │   ├── src/
 │   │   ├── lib.rs         Module declarations, re-exports
 │   │   ├── ipc.rs         68 typed commands, 30+ events, wire format
@@ -101,7 +101,7 @@ gtm.rs/
 │   │   ├── validate.rs    Validated constructors
 │   │   └── tripwire.rs    Fail-point injection (debug builds)
 │   └── Cargo.toml
-├── gtm-audio/        Audio playback backend
+├── audio/        Audio playback backend
 │   ├── src/
 │   │   ├── lib.rs         Module declarations
 │   │   ├── mixer.rs       AudioMixer: dual-player crossfade, decode threads
@@ -144,7 +144,7 @@ gtm.rs/
 │   │   ├── visualizer.rs  Audio visualizer (5 presets)
 │   │   └── progress.rs    Progress bar (4 styles)
 │   └── Cargo.toml
-├── gtm-mpris/        MPRIS D-Bus integration
+├── mpris/        MPRIS D-Bus integration
 │   └── src/lib.rs
 ├── release-gen/      Build-time tool for shell completions
 ├── docs/             Documentation (manpage sources)
@@ -171,11 +171,11 @@ gtm.rs/
 | `gtm/src/cli.rs`         | CLI command definitions (30+ subcommands via clap)                              |
 | `gtmd/src/daemon.rs`     | Main daemon logic: tokio event loop, client handling, command dispatch          |
 | `gtmd/src/library.rs`    | SQLite library: tracks, playlists, metadata extraction, M3U                     |
-| `gtm-core/src/ipc.rs`    | IPC protocol: wire format, 68 typed commands, 30+ events                        |
-| `gtm-core/src/state.rs`  | DaemonState, EQ presets (16), easing functions (7)                              |
-| `gtm-core/src/client.rs` | Async IPC client: reconnection, clock estimation, typed API                     |
-| `gtm-audio/src/mixer.rs` | Audio mixer: dual-player crossfade, decode threads, ring buffer                 |
-| `gtm-audio/src/eq.rs`    | 15-band parametric EQ (fundsp) + stereo reverb                                  |
+| `shared/src/ipc.rs`    | IPC protocol: wire format, 68 typed commands, 30+ events                        |
+| `shared/src/state.rs`  | DaemonState, EQ presets (16), easing functions (7)                              |
+| `shared/src/client.rs` | Async IPC client: reconnection, clock estimation, typed API                     |
+| `audio/src/mixer.rs` | Audio mixer: dual-player crossfade, decode threads, ring buffer                 |
+| `audio/src/eq.rs`    | 15-band parametric EQ (fundsp) + stereo reverb                                  |
 
 ## Manpage generation
 
@@ -244,11 +244,11 @@ care about:
 
 | Crate | Description |
 |---|---|
-| `gtm-core` | Shared types, IPC protocol, state machine, `DaemonClient` |
-| `gtm-audio` | Audio playback backend (rodio + symphonia and fundsp) |
+| `shared` | Shared types, IPC protocol, state machine, `DaemonClient` |
+| `audio` | Audio playback backend (rodio + symphonia and fundsp) |
 | `gtmd` | Daemon: manages queue, library, IPC socket |
 | `gtm` | Client: TUI and CLI interface |
-| `gtm-mpris` | MPRIS D-Bus interface (optional) |
+| `mpris` | MPRIS D-Bus interface (optional) |
 | `release-gen` | Shell-completion generator used by the release pipeline |
 
 Every change must pass all three before it is mergeable:

@@ -1,18 +1,18 @@
 // Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
-// Integration tests for gtm-core: serde, wire, state machine, and invariants
+// Integration tests for shared: serde, wire, state machine, and invariants
 //
 // This is free software released under the GPL-3.0 license.
 
-use gtm_core::Result;
-use gtm_core::global::{
+use shared::Result;
+use shared::global::{
     CrossfadeConfig, DaemonState, Image, PlaybackStatus, RepeatMode, ThemeMode, UIMode, YTFilter,
 };
-use gtm_core::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction};
-use gtm_core::playlist::PlaylistFormatKind;
-use gtm_core::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
-use gtm_core::track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
-use gtm_core::wire::{decode, encode};
+use shared::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction};
+use shared::playlist::PlaylistFormatKind;
+use shared::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
+use shared::track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
+use shared::wire::{decode, encode};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -111,7 +111,7 @@ roundtrip!(
     LrcLine {
         timestamp: 12.5,
         text: "hello".into(),
-        words: vec![gtm_core::track::LrcWord {
+        words: vec![shared::track::LrcWord {
             time: 12.5,
             text: "hello".into(),
         }],

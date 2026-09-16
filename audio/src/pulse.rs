@@ -24,9 +24,9 @@ use crate::eq::{EqGains, EqSource, ReverbSource};
 use crate::mixer::Mixer;
 use crate::stretch::{SpeedControl, TimeStretchSource};
 use crate::symphonia::SymphoniaSource;
-use gtm_core::global::{EqPreset, ReverbConfig};
-use gtm_core::{MAX_VOLUME, volume_from_ratio, volume_ratio};
 use rodio::Source;
+use shared::global::{EqPreset, ReverbConfig};
+use shared::{MAX_VOLUME, volume_from_ratio, volume_ratio};
 
 struct PaPlaybackSource {
     ring: SharedRingBuffer,

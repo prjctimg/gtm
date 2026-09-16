@@ -47,7 +47,7 @@ sees provider internals.
 ### Phase 1 — provider core
 
 - Introduce `provider://` path parsing in the player (mirror
-  `gtm-core`'s `parse_remote_path`): a URI with a kind + provider-specific id.
+  `shared`'s `parse_remote_path`): a URI with a kind + provider-specific id.
 - Add the `radio://` kind first (cheapest, most self-contained):
   - radio-browser.org search/top/tags/country API calls.
   - a `radios.toml` custom-station store (same location semantics as gtm:
@@ -55,7 +55,7 @@ sees provider internals.
   - ICEcast/Shoutcast metadata stripping with `StreamTitle` capture.
 - Route resolved bytes into the existing audio core. Live streams must never
   block the audio callback: feed through a buffering reader (gtm uses a 6 s
-  ring-buffer decode thread — see `gtm-audio/src/buffer.rs` and the reader
+  ring-buffer decode thread — see `audio/src/buffer.rs` and the reader
   decode path in `gtmd/src/daemon.rs`).
 
 ### Phase 2 — on-demand providers

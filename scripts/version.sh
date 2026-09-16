@@ -19,7 +19,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # Workspace Cargo.toml — first 'version = "..." line is the workspace version,
 # plus the internal workspace-dependency version literals.
 sed -i -E '0,/^version = "[0-9.]+"$/s//version = "'"$NEW"'"/' "$ROOT/Cargo.toml"
-for dep in gtm-core gtm-audio gtm-mpris; do
+for dep in shared audio mpris gtmd; do
   sed -i -E 's/('"$dep"' = \{ path = "'"$dep"'", version = ")[0-9.]+("\s*\})/\1'"$NEW"'\2/' "$ROOT/Cargo.toml"
 done
 

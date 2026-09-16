@@ -4,8 +4,8 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use gtm_core::state::ThemeMode;
 use ratatui::style::Color;
+use shared::state::ThemeMode;
 use std::borrow::Cow;
 
 /// Central theme: all UI colors flow through here.

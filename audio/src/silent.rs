@@ -11,8 +11,8 @@ use rodio::Source;
 
 use crate::backend::{AudioEvent, AudioResult};
 use crate::mixer::Mixer;
-use gtm_core::MAX_VOLUME;
-use gtm_core::global::{EqPreset, ReverbConfig};
+use shared::MAX_VOLUME;
+use shared::global::{EqPreset, ReverbConfig};
 
 /// A silent no-op mixer for environments without audio hardware (CI, testing).
 pub struct NullMixer {

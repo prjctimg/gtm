@@ -14,7 +14,7 @@ use fundsp::audiounit::AudioUnit;
 use fundsp::prelude32::*;
 use rodio::Source;
 
-use gtm_core::global::{EQ_DEFAULT_Q, EQ_FREQUENCIES};
+use ::shared::global::{EQ_DEFAULT_Q, EQ_FREQUENCIES};
 
 use crate::buffer::{DecodeControl, SharedRingBuffer};
 use crate::eq::EqGains;

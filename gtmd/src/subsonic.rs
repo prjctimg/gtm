@@ -11,8 +11,8 @@ use std::time::Duration;
 use base64::Engine;
 use tracing::{info, warn};
 
-use gtm_core::secret::{SUBSONIC_KEY, delete_secret, set_secret};
-use gtm_core::subsonic::{
+use shared::secret::{SUBSONIC_KEY, delete_secret, set_secret};
+use shared::subsonic::{
     SubsonicAlbum, SubsonicArtist, SubsonicSearchResults, SubsonicStatus, SubsonicTrack,
 };
 

@@ -2,12 +2,12 @@
 # Publish the gtm workspace crates to crates.io in dependency order.
 #
 # The crates share one workspace version and each internal dependency pins that
-# exact version (`gtm-core = { path = ..., version = "X" }`). crates.io
+# exact version (`shared = { path = ..., version = "X" }`). crates.io
 # therefore requires every upstream crate to already be published at that
 # version before the next one can go up. Publishing in any other order fails
 # with:
 #
-#   failed to select a version for the requirement `gtm-core = "^X"`
+#   failed to select a version for the requirement `shared = "^X"`
 #
 # This script preflights each crate against the live crates.io index, waits for
 # the upstream version to become visible (index propagation can lag the upload
@@ -15,9 +15,9 @@
 # partial publish can be resumed.
 #
 # Usage:
-#   scripts/build/publish.sh            # publish every crate (gtm-core first)
+#   scripts/build/publish.sh            # publish every crate (shared first)
 #   scripts/build/publish.sh --dry-run  # package + verify without uploading
-#   scripts/build/publish.sh gtm-core   # publish a single crate (order enforced
+#   scripts/build/publish.sh shared     # publish a single crate (order enforced
 #                                       # for its upstreams via preflight)
 #
 # Requires CARGO_REGISTRY_TOKEN (or a logged-in ~/.cargo/credentials).
@@ -40,11 +40,11 @@ done
 # Crate -> whitespace-separated list of crates that must be live first.
 prereqs() {
   case "$1" in
-    gtm-core) echo "" ;;
-    gtm-audio) echo "gtm-core" ;;
-    gtm-mpris) echo "gtm-core" ;;
-    gtmd) echo "gtm-core gtm-audio gtm-mpris" ;;
-    gtm) echo "gtm-core gtm-audio" ;;
+    shared) echo "" ;;
+    audio) echo "shared" ;;
+    mpris) echo "shared" ;;
+    gtmd) echo "shared audio mpris" ;;
+    gtm) echo "shared audio gtmd" ;;
   esac
 }
 
@@ -95,7 +95,7 @@ publish_crate() {
       echo "   ✓ ${crate} v${VERSION} already published, skipping"
       return 0
     fi
-    if grep -q "failed to select a version for the requirement \`gtm-" <<<"${out}"; then
+    if grep -q "failed to select a version for the requirement" <<<"${out}"; then
       echo "   · upstream just went live; retrying in 30 s (${attempt}/6)..."
       sleep 30
       continue
@@ -106,12 +106,12 @@ publish_crate() {
   return 1
 }
 
-CRATES="gtm-core gtm-audio gtm-mpris gtmd gtm"
+CRATES="shared audio mpris gtmd gtm"
 if [ -n "${CRATE_FILTER}" ]; then
   case " ${CRATES} " in
     *" ${CRATE_FILTER} "*) CRATES="${CRATE_FILTER}" ;;
     *)
-      echo "Error: unknown crate '${CRATE_FILTER}'. Valid: gtm-core gtm-audio gtm-mpris gtmd gtm" >&2
+      echo "Error: unknown crate '${CRATE_FILTER}'. Valid: shared audio mpris gtmd gtm" >&2
       exit 1
       ;;
   esac
@@ -120,7 +120,7 @@ fi
 if [ -n "${DRY_RUN}" ]; then
   echo "Dry run — verifying packaging, no uploads."
   echo "Workspace version: ${VERSION}"
-  echo "Registry state:    gtm-core=$(cargo search gtm-core --limit 1 2>/dev/null | grep -o '"'"'=[^#]*'"'"' | head -1)"
+  echo "Registry state:    shared=$(cargo search shared --limit 1 2>/dev/null | grep -o '"'"'=[^#]*'"'"' | head -1)"
 fi
 
 for crate in ${CRATES}; do

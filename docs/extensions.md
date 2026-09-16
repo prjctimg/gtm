@@ -1,6 +1,6 @@
 # Extensions
 
-The playback engine, DSP, library, IPC and the event bus live in `gtm-core`
+The playback engine, DSP, library, IPC and the event bus live in `shared`
 and are always on. A few **optional user-facing surfaces** of the TUI are
 registered as *extensions* and can be switched off per session through the
 `[extensions]` table in the TUI config (`prefs.toml`-style file written to

@@ -423,6 +423,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
+name = "audio"
+version = "0.2.83"
+dependencies = [
+ "fundsp",
+ "libc",
+ "log",
+ "pulseaudio",
+ "rodio",
+ "rustfft",
+ "shared",
+ "symphonia 0.6.0",
+ "symphonia-adapter-libopus",
+ "thiserror 2.0.18",
+ "timestretch",
+ "tokio",
+]
+
+[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -798,15 +816,6 @@ dependencies = [
  "anstyle",
  "clap_lex",
  "strsim",
-]
-
-[[package]]
-name = "clap_complete"
-version = "4.6.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0a7a9bfdb35811f9e59832f0f05975114d2251b415fb534108e6f34060fd772"
-dependencies = [
- "clap",
 ]
 
 [[package]]
@@ -1967,14 +1976,14 @@ dependencies = [
 name = "gtm"
 version = "0.2.83"
 dependencies = [
+ "audio",
  "base64",
  "chrono",
  "clap",
  "color-eyre",
  "color-thief",
  "crossterm 0.28.1",
- "gtm-audio",
- "gtm-core",
+ "gtmd",
  "image",
  "libc",
  "ratatui",
@@ -1982,6 +1991,7 @@ dependencies = [
  "rpassword",
  "serde",
  "serde_json",
+ "shared",
  "tachyonfx",
  "tokio",
  "toml",
@@ -1991,59 +2001,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "gtm-audio"
-version = "0.2.83"
-dependencies = [
- "fundsp",
- "gtm-core",
- "libc",
- "log",
- "pulseaudio",
- "rodio",
- "rustfft",
- "symphonia 0.6.0",
- "symphonia-adapter-libopus",
- "thiserror 2.0.18",
- "timestretch",
- "tokio",
-]
-
-[[package]]
-name = "gtm-core"
-version = "0.2.83"
-dependencies = [
- "bincode",
- "chrono",
- "dirs",
- "keyring",
- "libc",
- "rmp-serde",
- "rustc-hash",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "toml",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "gtm-mpris"
-version = "0.2.83"
-dependencies = [
- "gtm-core",
- "serde",
- "tokio",
- "tracing",
- "zbus",
- "zvariant",
-]
-
-[[package]]
 name = "gtmd"
 version = "0.2.83"
 dependencies = [
+ "audio",
  "base64",
  "bincode",
  "chrono",
@@ -2052,9 +2013,6 @@ dependencies = [
  "fastrand",
  "futures",
  "getrandom 0.2.17",
- "gtm-audio",
- "gtm-core",
- "gtm-mpris",
  "hex",
  "image",
  "innertube-rs",
@@ -2063,6 +2021,7 @@ dependencies = [
  "lofty",
  "lru 0.12.5",
  "md5",
+ "mpris",
  "quick-xml",
  "regex",
  "reqwest",
@@ -2072,6 +2031,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shared",
  "symphonia 0.6.0",
  "tokio",
  "tokio-util",
@@ -3243,6 +3203,18 @@ checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "mpris"
+version = "0.2.83"
+dependencies = [
+ "serde",
+ "shared",
+ "tokio",
+ "tracing",
+ "zbus",
+ "zvariant",
 ]
 
 [[package]]
@@ -4823,14 +4795,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
-name = "release-gen"
-version = "0.2.83"
-dependencies = [
- "clap",
- "clap_complete",
-]
-
-[[package]]
 name = "reqwest"
 version = "0.12.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5462,6 +5426,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
+]
+
+[[package]]
+name = "shared"
+version = "0.2.83"
+dependencies = [
+ "bincode",
+ "chrono",
+ "dirs",
+ "keyring",
+ "libc",
+ "rmp-serde",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "toml",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

@@ -1,4 +1,4 @@
-# gtm-core
+# shared
 
 Shared types for the gtm workspace:
 

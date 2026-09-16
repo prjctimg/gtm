@@ -9,8 +9,8 @@ use std::path::PathBuf;
 use clap::Parser;
 
 use crate::cover::CoverProvider;
-use gtm_core::{is_termux, resolve_command_socket, resolve_pulse_socket, termux_music_dirs};
 use serde::{Deserialize, Serialize};
+use shared::{is_termux, resolve_command_socket, resolve_pulse_socket, termux_music_dirs};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum AudioBackendKind {

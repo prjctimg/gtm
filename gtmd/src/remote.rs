@@ -8,7 +8,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use gtm_audio::symphonia::StreamingReopen;
+use audio::symphonia::StreamingReopen;
 use tracing::warn;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);

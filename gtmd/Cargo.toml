@@ -11,9 +11,9 @@ categories.workspace = true
 readme = "README.md"
 
 [dependencies]
-gtm-core.workspace = true
-gtm-audio.workspace = true
-gtm-mpris = { workspace = true, optional = true }
+shared.workspace = true
+audio.workspace = true
+mpris = { workspace = true, optional = true }
 rusqlite = { version = "0.31", features = ["bundled"] }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "process", "signal"] }
 tokio-util = "0.7"
@@ -49,12 +49,12 @@ image = "0.25"
 
 [features]
 default = ["mpris", "youtube"]
-mpris = ["gtm-mpris"]
+mpris = ["dep:mpris"]
 # YouTube search/resolution via innertube-rs (embeds QuickJS via rquickjs).
 # rquickjs ships no bindings for aarch64-linux-android, so the Android/Termux
 # build disables this to stay compilable (local music playback is unaffected).
 youtube = ["dep:innertube-rs"]
-pulseaudio = ["gtm-audio/pulseaudio"]
+pulseaudio = ["audio/pulseaudio"]
 
 [package.metadata.deb]
 maintainer = "prjctimg <prjctimg@outlook.com>"

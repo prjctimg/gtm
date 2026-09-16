@@ -23,8 +23,8 @@ use crate::eq::{EqGains, EqSource, ReverbSource};
 use crate::mono::MonoSource;
 use crate::stretch::{SpeedControl, TimeStretchSource};
 use crate::symphonia::{StreamingReopen, SymphoniaSource};
-use gtm_core::global::{EqPreset, ReverbConfig};
-use gtm_core::{MAX_VOLUME, volume_ratio};
+use shared::global::{EqPreset, ReverbConfig};
+use shared::{MAX_VOLUME, volume_ratio};
 
 pub trait Mixer: Send + Sync {
     fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()>;

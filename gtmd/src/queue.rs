@@ -6,8 +6,8 @@
 
 use std::path::Path;
 
-use gtm_core::global::DaemonState;
-use gtm_core::track::TrackInfo;
+use shared::global::DaemonState;
+use shared::track::TrackInfo;
 
 use crate::library::extract_metadata;
 

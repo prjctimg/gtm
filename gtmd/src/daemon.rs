@@ -15,34 +15,34 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{RwLock, broadcast, mpsc};
 use tracing::{error, info, warn};
 
-use gtm_core::paths::resolve_pid_file;
+use shared::paths::resolve_pid_file;
 
 use crate::config::AudioBackendKind;
-use base64::Engine;
 #[cfg(feature = "pulseaudio")]
-use gtm_audio::PulseAudioMixer;
-use gtm_audio::symphonia::StreamingReopen;
-use gtm_audio::{AudioError, AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
-use gtm_core::global::{
+use audio::PulseAudioMixer;
+use audio::symphonia::StreamingReopen;
+use audio::{AudioError, AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
+use base64::Engine;
+#[cfg(feature = "mpris")]
+use mpris::{MprisHandle, start};
+use shared::global::{
     DaemonState, EQ_PRESETS, EqPreset, LoudnessMode, PlaybackStatus, RepeatMode, ReverbConfig,
     SavedState, YTFilter,
 };
-use gtm_core::ipc::{
+use shared::ipc::{
     CacheKind, ComponentHealth, DaemonEvent, DaemonReq, DaemonRes, HealthReport, HealthStatus,
     LibraryAction, PROTOCOL_VERSION, QueueAction, SyncKind, WireReq,
 };
-use gtm_core::playlist::{M3u8Format, PlaylistFormat, PlsFormat};
-use gtm_core::secret::{
+use shared::playlist::{M3u8Format, PlaylistFormat, PlsFormat};
+use shared::secret::{
     LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, delete_secret, get_secret, set_secret,
 };
-use gtm_core::spotify::SpotifyTrack;
-use gtm_core::track::TrackInfo;
-use gtm_core::wire;
-use gtm_core::{CoreError, MetadataPatch};
+use shared::spotify::SpotifyTrack;
+use shared::track::TrackInfo;
+use shared::wire;
+use shared::{CoreError, MetadataPatch};
 #[cfg(feature = "pulseaudio")]
-use gtm_core::{ensure_termux_pulse, is_termux};
-#[cfg(feature = "mpris")]
-use gtm_mpris::{MprisHandle, start};
+use shared::{ensure_termux_pulse, is_termux};
 
 use crate::cleaner::{
     clean_filename_stem, clean_youtube_title, is_filename_like, sanitize_text, tags_need_enrichment,
@@ -158,8 +158,8 @@ async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<(String, bool
             }
         }
         RemoteKind::Radio { station_id, .. } => {
-            if let Some(index) = gtm_core::custom::parse_custom_id(station_id) {
-                gtm_core::custom::station_by_index(index)
+            if let Some(index) = shared::custom::parse_custom_id(station_id) {
+                shared::custom::station_by_index(index)
                     .map_err(CoreError::Daemon)?
                     .ok_or_else(|| CoreError::Daemon(format!("no custom station {index}")))?
                     .url
@@ -2726,8 +2726,8 @@ impl Radio {
         // Fresh name from the directory (authoritative); the caller-provided
         // name is only a fallback for the queue display.
         let name = {
-            if let Some(index) = gtm_core::custom::parse_custom_id(station_id) {
-                match gtm_core::custom::station_by_index(index) {
+            if let Some(index) = shared::custom::parse_custom_id(station_id) {
+                match shared::custom::station_by_index(index) {
                     Ok(Some(st)) => st.name,
                     _ => station_name.to_string(),
                 }

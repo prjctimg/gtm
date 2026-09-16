@@ -1,12 +1,11 @@
 [workspace]
 resolver = "3"
 members = [
-    "gtm-core",
-    "gtm-audio",
+    "shared",
+    "audio",
     "gtmd",
     "gtm",
-    "gtm-mpris",
-    "release-gen",
+    "mpris",
 ]
 
 [workspace.package]
@@ -20,9 +19,10 @@ categories = ["command-line-utilities", "multimedia::audio"]
 readme = "README.md"
 
 [workspace.dependencies]
-gtm-core = { path = "gtm-core", version = "0.2.83" }
-gtm-audio = { path = "gtm-audio", version = "0.2.83" }
-gtm-mpris = { path = "gtm-mpris", version = "0.2.83" }
+shared = { path = "shared", version = "0.2.83" }
+audio = { path = "audio", version = "0.2.83" }
+mpris = { path = "mpris", version = "0.2.83" }
+gtmd = { path = "gtmd", version = "0.2.83" }
 
 [profile.release]
 lto = "fat"

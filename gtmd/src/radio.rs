@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use gtm_core::radio::{RadioCountry, RadioStation, RadioTag};
+use shared::radio::{RadioCountry, RadioStation, RadioTag};
 
 /// Radio Browser API mirrors. `all.api.radio-browser.info` round-robins across
 /// the public servers; the per-region mirrors are used as fallback hosts.

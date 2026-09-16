@@ -5,8 +5,8 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
-use gtm_core::global::PlaybackStatus;
-use gtm_core::ipc::{
+use shared::global::PlaybackStatus;
+use shared::ipc::{
     DaemonReq, DaemonRes, LibraryAction, PROTOCOL_VERSION, QueueAction, WireReq, WireRes,
 };
 
@@ -53,7 +53,7 @@ fn cleanup(config: &DaemonConfig) {
 
 /// A buffered reader that can handle both JSON response lines and binary
 /// WireFrame event frames on the same stream, using the first-byte heuristic
-/// (same logic as `IpcWorker::parse` in gtm-core/src/client.rs).
+/// (same logic as `IpcWorker::parse` in shared/src/client.rs).
 struct TestReader {
     stream: tokio::net::unix::OwnedReadHalf,
     buf: Vec<u8>,

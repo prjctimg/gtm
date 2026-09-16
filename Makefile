@@ -54,7 +54,7 @@ man:
 	./scripts/build/manpages.sh artifacts
 
 completions: release
-	cargo run --release --bin release-gen completions artifacts
+	cargo run --release --manifest-path release-gen/Cargo.toml --bin release-gen completions artifacts
 	cp install.sh artifacts/install.sh
 
 install: release man completions

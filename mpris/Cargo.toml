@@ -1,5 +1,5 @@
 [package]
-name = "gtm-mpris"
+name = "mpris"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,7 +11,7 @@ categories.workspace = true
 readme = "README.md"
 
 [dependencies]
-gtm-core.workspace = true
+shared.workspace = true
 zbus = { version = "4", features = ["tokio"] }
 zvariant = "4"
 tracing = "0.1"
