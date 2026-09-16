@@ -41,8 +41,7 @@
 #   release job → download all artifacts, print the asset manifest, generate
 #                 checksums.txt, and create/update the GitHub Release.
 #
-#   crates-io job → publish the workspace crates to crates.io in dependency
-#                   order (shared → audio → mpris → gtmd → gtm).
+#   crates-io job → publish the single `gtm` crate to crates.io.
 #                   Stable releases only (nightly shares the manifest version
 #                   and would hit duplicate-version errors). Already-published
 #                   versions are skipped so re-running a release after a
@@ -409,7 +408,7 @@ jobs:
         if: matrix.family == 'android'
         run: |
           CARGO_INCREMENTAL=0 cargo ndk -t arm64-v8a -P 27 \
-            build --release --no-default-features --features pulseaudio
+            build --release --no-default-features --features tui,pulseaudio
 
       - name: Clean Android ELF sections
         if: matrix.family == 'android'
@@ -878,13 +877,13 @@ jobs:
             BENCHMARK.md
           if-no-files-found: error
 
-  # Publishes the workspace crates to crates.io in dependency order (shared →
-  # audio → mpris → gtmd → gtm). Runs only after every target in the build
-  # matrix succeeded, and only for stable releases (nightly shares the
-  # manifest version and would hit duplicate-version errors). Already-published
-  # versions are skipped so re-running a release after a partial publish
+  # Publishes the `gtm` crate to crates.io (the single workspace crate; the
+  # daemon, core, audio, and MPRIS subsystems ship inside it). Runs only after
+  # every target in the build matrix succeeded, and only for stable releases
+  # (nightly shares the manifest version and would hit duplicate-version
+  # errors). Already-published versions are skipped so re-running a release
   # resumes cleanly. Publishing uses crates.io Trusted Publishing (OIDC) — no
-  # API-token secret is stored. Each crate needs a Trusted Publisher
+  # API-token secret is stored. The `gtm` crate needs a Trusted Publisher
   # configured on crates.io (owner: prjctimg, repo: gtm.rs, workflow:
   # release.yml) or the token exchange is rejected.
   crates-io:
@@ -906,40 +905,27 @@ jobs:
       - name: Set crates.io token
         run: echo "CARGO_REGISTRY_TOKEN=${{ steps.auth.outputs.token }}" >> "${GITHUB_ENV}"
 
-      - name: Publish crates
+      - name: Publish crate
         run: |
           set -euo pipefail
           version="${{ needs.tag.outputs.version }}"
 
-          publish_crate() {
-            local crate="$1"
-            local attempt
-            for attempt in 1 2 3 4 5 6; do
-              local out
-              if out="$(cargo publish -p "${crate}" 2>&1)"; then
-                echo "${crate} v${version} published"
-                return 0
-              fi
-              if grep -q "already exists" <<<"${out}"; then
-                echo "${crate} v${version}: already published, skipping"
-                return 0
-              fi
-              # An upstream crate just went live but the crates.io index hasn't
-              # propagated yet — retry instead of failing the whole chain of
-              # downstream crates.
-              if grep -q "failed to select a version for the requirement" <<<"${out}"; then
-                echo "${crate} v${version}: waiting for index propagation (attempt ${attempt}/6)..."
-                sleep 30
-                continue
-              fi
-              echo "${out}"
-              return 1
-            done
-            return 1
-          }
-          for crate in shared audio mpris gtmd gtm; do
-            echo "Publishing ${crate} v${version}..."
-            publish_crate "${crate}"
+          for attempt in 1 2 3 4 5 6; do
+            out="$(cargo publish -p gtm 2>&1)"
+            if [[ $? -eq 0 ]]; then
+              echo "gtm v${version} published"
+              exit 0
+            fi
+            if grep -q "already exists" <<<"${out}"; then
+              echo "gtm v${version}: already published, skipping"
+              exit 0
+            fi
+            # crates.io index propagation can lag the upload by ~30-60 s; retry
+            # before failing the release.
+            echo "gtm v${version}: publish failed, retrying (attempt ${attempt}/6)..."
+            echo "${out}"
+            sleep 30
           done
+          exit 1
 
 

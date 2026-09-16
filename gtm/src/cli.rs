@@ -7,22 +7,22 @@
 use std::io::Write;
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
-use shared::client::{DaemonClient, LastfmStatus};
-use shared::daemon::ensure_daemon_running;
-use shared::global::{PlaybackStatus, RepeatMode};
-use shared::ipc::DaemonRes;
-use shared::ipc::HealthStatus;
-use shared::ipc::MetadataPatch;
-use shared::playlist::PlaylistFormatKind;
-use shared::resolve_command_socket;
-use shared::secret::{
+use crate::shared::client::{DaemonClient, LastfmStatus};
+use crate::shared::daemon::ensure_daemon_running;
+use crate::shared::global::{PlaybackStatus, RepeatMode};
+use crate::shared::ipc::DaemonRes;
+use crate::shared::ipc::HealthStatus;
+use crate::shared::ipc::MetadataPatch;
+use crate::shared::playlist::PlaylistFormatKind;
+use crate::shared::resolve_command_socket;
+use crate::shared::secret::{
     LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, get_secret, set_secret,
 };
-use shared::spotify::SpotifyStatus;
-use shared::subsonic::SubsonicStatus;
-use shared::subsonic::SubsonicTrack;
-use shared::track::LrcData;
+use crate::shared::spotify::SpotifyStatus;
+use crate::shared::subsonic::SubsonicStatus;
+use crate::shared::subsonic::SubsonicTrack;
+use crate::shared::track::LrcData;
+use clap::{Parser, Subcommand};
 use tokio::io::AsyncBufReadExt;
 
 use crate::app::{Prefs, ensure_prefs_file};
@@ -858,7 +858,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     .search(query, None)
                     .await
                     .map_err(|e| e.to_string())?;
-                let mut results: Option<Vec<shared::YTSearchResult>> = None;
+                let mut results: Option<Vec<crate::shared::YTSearchResult>> = None;
                 let mut last_err: Option<String> = None;
                 for _ in 0..40 {
                     tokio::time::sleep(std::time::Duration::from_millis(250)).await;
@@ -1479,18 +1479,18 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     Ok(format!("{} stations", stations.len()))
                 }
                 RadioAction::List => {
-                    let stations = shared::custom::list_custom_stations()?;
+                    let stations = crate::shared::custom::list_custom_stations()?;
                     for (i, s) in stations.iter().enumerate() {
                         println!("custom:{}\t{}\t{}", i + 1, s.name, s.url);
                     }
                     Ok(format!("{} custom stations", stations.len()))
                 }
                 RadioAction::Add { name, url } => {
-                    let index = shared::custom::add_custom_station(name, url, None)?;
+                    let index = crate::shared::custom::add_custom_station(name, url, None)?;
                     Ok(format!("added custom:{index} {name}"))
                 }
                 RadioAction::Rm { selector } => {
-                    let removed = shared::custom::remove_custom_station(selector)?;
+                    let removed = crate::shared::custom::remove_custom_station(selector)?;
                     Ok(format!("removed custom:{}", removed.name))
                 }
             },

@@ -55,8 +55,8 @@ sees provider internals.
   - ICEcast/Shoutcast metadata stripping with `StreamTitle` capture.
 - Route resolved bytes into the existing audio core. Live streams must never
   block the audio callback: feed through a buffering reader (gtm uses a 6 s
-  ring-buffer decode thread — see `audio/src/buffer.rs` and the reader
-  decode path in `gtmd/src/daemon.rs`).
+  ring-buffer decode thread — see `gtm/src/audio/buffer.rs` and the reader
+  decode path in `gtm/src/gtmd/daemon.rs`).
 
 ### Phase 2 — on-demand providers
 

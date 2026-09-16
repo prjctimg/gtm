@@ -7,26 +7,28 @@
 use std::path::Path;
 use std::time::Duration;
 
+use crate::shared::client::{DaemonClient, LastfmStatus};
+use crate::shared::custom::CustomRadioStation;
+use crate::shared::global::{DaemonState, EqPreset, PlaybackStatus, RepeatMode};
+use crate::shared::ipc::{CacheKind, DaemonEvent, DaemonRes, HealthReport, SyncKind};
+use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
+use crate::shared::radio::{RadioCountry, RadioStation, RadioTag};
+use crate::shared::secret::{SPOTIFY_CLIENT_ID, get_secret, set_secret};
+use crate::shared::spotify::{
+    LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifySearchKind, SpotifyStatus, SpotifyTrack,
+};
+use crate::shared::state::{ThemeMode, TrackSort};
+use crate::shared::subsonic::{
+    SubsonicAlbum, SubsonicSearchResults, SubsonicStatus, SubsonicTrack,
+};
+use crate::shared::track::{LrcData, LrcLine, Playlist, TrackInfo, YTSearchResult};
+use crate::shared::{CoreError, MAX_SPEED, MAX_VOLUME, MIN_SPEED, MetadataPatch};
 use crossterm::event::{self, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 use ratatui::Terminal;
 use ratatui::layout::Alignment;
 use ratatui::widgets::Paragraph;
 use ratatui_image::picker::Picker;
 use ratatui_image::protocol::StatefulProtocol;
-use shared::client::{DaemonClient, LastfmStatus};
-use shared::custom::CustomRadioStation;
-use shared::global::{DaemonState, EqPreset, PlaybackStatus, RepeatMode};
-use shared::ipc::{CacheKind, DaemonEvent, DaemonRes, HealthReport, SyncKind};
-use shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
-use shared::radio::{RadioCountry, RadioStation, RadioTag};
-use shared::secret::{SPOTIFY_CLIENT_ID, get_secret, set_secret};
-use shared::spotify::{
-    LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifySearchKind, SpotifyStatus, SpotifyTrack,
-};
-use shared::state::{ThemeMode, TrackSort};
-use shared::subsonic::{SubsonicAlbum, SubsonicSearchResults, SubsonicStatus, SubsonicTrack};
-use shared::track::{LrcData, LrcLine, Playlist, TrackInfo, YTSearchResult};
-use shared::{CoreError, MAX_SPEED, MAX_VOLUME, MIN_SPEED, MetadataPatch};
 use tachyonfx::EffectManager;
 use tokio::sync::mpsc;
 
@@ -4079,7 +4081,7 @@ impl App {
     /// (Re)read the custom stations list from `radios.toml` into the left
     /// pane Radio category. Read-on-demand so external edits are picked up.
     pub fn refresh_custom_stations(&mut self) {
-        if let Ok(stations) = shared::custom::list_custom_stations() {
+        if let Ok(stations) = crate::shared::custom::list_custom_stations() {
             self.radio.custom = stations;
         }
     }
@@ -4100,7 +4102,7 @@ impl App {
             );
             return;
         }
-        match shared::custom::add_custom_station(
+        match crate::shared::custom::add_custom_station(
             &station.name,
             &station.url_resolved,
             Some(&station.id),

@@ -18,7 +18,7 @@ class Gtm < Formula
     system "cargo", "fetch", "--locked"
     system "cargo", "build", "--release", "--locked",
            "--features", "pulseaudio",
-           "--package", "gtm", "--package", "gtmd"
+           "--package", "gtm"
     bin.install "target/release/gtm"
     bin.install "target/release/gtmd"
   end

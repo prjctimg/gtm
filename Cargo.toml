@@ -1,11 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
-    "shared",
-    "audio",
-    "gtmd",
     "gtm",
-    "mpris",
 ]
 
 [workspace.package]
@@ -17,12 +13,6 @@ homepage = "https://github.com/prjctimg/gtm.rs"
 keywords = ["music", "player", "tui", "audio", "youtube"]
 categories = ["command-line-utilities", "multimedia::audio"]
 readme = "README.md"
-
-[workspace.dependencies]
-shared = { path = "shared", version = "0.2.83" }
-audio = { path = "audio", version = "0.2.83" }
-mpris = { path = "mpris", version = "0.2.83" }
-gtmd = { path = "gtmd", version = "0.2.83" }
 
 [profile.release]
 lto = "fat"

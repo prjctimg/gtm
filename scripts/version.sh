@@ -16,12 +16,8 @@ fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Workspace Cargo.toml — first 'version = "..." line is the workspace version,
-# plus the internal workspace-dependency version literals.
+# Workspace Cargo.toml — first 'version = "..." line is the workspace version.
 sed -i -E '0,/^version = "[0-9.]+"$/s//version = "'"$NEW"'"/' "$ROOT/Cargo.toml"
-for dep in shared audio mpris gtmd; do
-  sed -i -E 's/('"$dep"' = \{ path = "'"$dep"'", version = ")[0-9.]+("\s*\})/\1'"$NEW"'\2/' "$ROOT/Cargo.toml"
-done
 
 # flake.nix
 sed -i -E 's/(version = ")[0-9.]+(";)/\1'"$NEW"'\2/' "$ROOT/flake.nix"
@@ -37,7 +33,7 @@ sed -i -E 's/(Version: )[0-9.]+/\1'"$NEW"'/' "$ROOT/dist/rpm/gtmd.spec"
 sed -i -E 's/( - )[0-9]+\.[0-9]+\.[0-9]+-1/\1'"$NEW"'-1/' "$ROOT/dist/rpm/gtmd.spec"
 
 echo "Bumped version to $NEW in:"
-echo "  Cargo.toml (workspace + internal deps)"
+echo "  Cargo.toml (workspace version)"
 echo "  flake.nix"
 echo "  dist/termux/gtm.yml"
 echo "  dist/arch/PKGBUILD"

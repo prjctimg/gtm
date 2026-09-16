@@ -19,7 +19,7 @@ deserialized from the envelope's `params` key. Each command variant carries
 its own params structure — the envelope `params` is a flat object with no
 wrapper key.
 
-The daemon's protocol version is `3` (`shared/src/ipc.rs:16`). Framing is
+The daemon's protocol version is `3` (`gtm/src/shared/ipc.rs:16`). Framing is
 newline-delimited JSON for commands/responses; binary MessagePack frames for
 the dedicated pulse socket event stream.
 
@@ -101,8 +101,8 @@ The client distinguishes JSON responses from binary events by the first byte:
 - `0x7B` (`{`): JSON response (read until `\n`)
 - anything else: binary event frame (read 4-byte length, then payload)
 
-Maximum JSON line length: 1,048,576 bytes (1 MiB) (`gtmd/src/daemon.rs:618`).
-Maximum binary frame: 16,777,216 bytes (16 MiB) (`shared/src/client.rs:1122`).
+Maximum JSON line length: 1,048,576 bytes (1 MiB) (`gtm/src/gtmd/daemon.rs:618`).
+Maximum binary frame: 16,777,216 bytes (16 MiB) (`gtm/src/shared/client.rs:1122`).
 
 # HANDSHAKE
 

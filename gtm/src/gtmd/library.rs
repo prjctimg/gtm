@@ -1,0 +1,951 @@
+// Copyright (c) 2026
+// Author: prjctimg <prjctimg@outlook.com>
+// Library scanning and persistence: discover tracks, sync metadata
+//
+// This is free software released under the GPL-3.0 license.
+
+use std::fs;
+use std::fs::File;
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::sync::Mutex;
+
+use rusqlite::{Connection, params};
+use sha2::{Digest, Sha256};
+use symphonia::core::formats::FormatOptions;
+use symphonia::core::formats::probe::Hint;
+use symphonia::core::io::MediaSourceStream;
+use symphonia::core::meta::StandardVisualKey;
+use symphonia::core::meta::{MetadataOptions, StandardTag};
+use symphonia::core::units::Timestamp;
+use tracing::warn;
+
+use crate::shared::MetadataPatch;
+use crate::shared::playlist::{M3u8Format, PlaylistFormat, PlaylistFormatKind, PlsFormat};
+use crate::shared::track::{Playlist, TrackInfo};
+
+use crate::gtmd::cleaner::{clean_filename_stem, sanitize_text};
+
+const DB_NAME: &str = "library.db";
+/// Map a playlist name to a safe `.m3u8` file name in the data directory.
+fn m3u8_file_name(name: &str) -> String {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '(' | ')' | '.') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("{}.m3u8", cleaned.trim().replace(' ', "_"))
+}
+
+/// Build the format parser/serializer for a [`PlaylistFormatKind`].
+fn format_fmt(kind: PlaylistFormatKind) -> Box<dyn PlaylistFormat + Send + Sync> {
+    match kind {
+        PlaylistFormatKind::M3u8 => Box::new(M3u8Format),
+        PlaylistFormatKind::Pls => Box::new(PlsFormat),
+    }
+}
+
+pub struct Library {
+    conn: Connection,
+    _watch_dirs: Mutex<Vec<String>>,
+    /// Directory holding the SQLite database; playlists are mirrored as
+    /// `.m3u8` files here so they survive DB resets and are directly
+    /// portable/readable by other players.
+    data_dir: PathBuf,
+}
+
+impl Library {
+    pub fn new(db_dir: &str) -> Result<Self, String> {
+        let path = format!("{}/{}", db_dir, DB_NAME);
+        let conn = Connection::open(&path).map_err(|e| format!("db open: {e}"))?;
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS tracks (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                path         TEXT NOT NULL UNIQUE,
+                title        TEXT NOT NULL DEFAULT '',
+                artist       TEXT NOT NULL DEFAULT '',
+                album        TEXT NOT NULL DEFAULT '',
+                duration     REAL NOT NULL DEFAULT 0.0,
+                track_number INTEGER,
+                genre        TEXT NOT NULL DEFAULT '',
+                year         INTEGER,
+                bitrate      INTEGER,
+                samplerate   INTEGER,
+                hash         TEXT NOT NULL DEFAULT '',
+                cover_path   TEXT,
+                favourite    INTEGER NOT NULL DEFAULT 0,
+                album_id     TEXT
+            );
+            CREATE TABLE IF NOT EXISTS playlists (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                name       TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now'))
+            );
+            CREATE TABLE IF NOT EXISTS playlist_tracks (
+                playlist_id INTEGER NOT NULL,
+                track_id    INTEGER NOT NULL,
+                position    INTEGER NOT NULL,
+                PRIMARY KEY (playlist_id, track_id),
+                FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE,
+                FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_tracks_path ON tracks(path);
+            CREATE INDEX IF NOT EXISTS idx_tracks_fav ON tracks(favourite);",
+        )
+        .map_err(|e| format!("db init: {e}"))?;
+        // Add the album_id column for tracks that pre-date it. SQLite has no
+        // `ADD COLUMN IF NOT EXISTS`, so probe the column list first.
+        let has_album_id = conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('tracks') WHERE name = 'album_id'")
+            .map_err(|e| format!("db probe: {e}"))?
+            .query_row([], |row| row.get::<_, i64>(0))
+            .map_err(|e| format!("db probe read: {e}"))?
+            > 0;
+        if !has_album_id {
+            conn.execute_batch(
+                "ALTER TABLE tracks ADD COLUMN album_id TEXT;
+             CREATE INDEX IF NOT EXISTS idx_tracks_album_id ON tracks(album_id);",
+            )
+            .map_err(|e| format!("db migrate album_id: {e}"))?;
+        }
+
+        Ok(Self {
+            conn,
+            _watch_dirs: Mutex::new(Vec::new()),
+            data_dir: PathBuf::from(db_dir),
+        })
+    }
+
+    pub fn list_tracks(&self) -> Result<Vec<TrackInfo>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite, album_id FROM tracks ORDER BY title ASC")
+            .map_err(|e| format!("prepare: {e}"))?;
+        let rows = stmt
+            .query_map([], Self::row_to_track)
+            .map_err(|e| format!("query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("rows: {e}"))
+    }
+
+    pub fn get_track(&self, id: i64) -> Result<Option<TrackInfo>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite, album_id FROM tracks WHERE id = ?1")
+            .map_err(|e| format!("prepare: {e}"))?;
+        let mut rows = stmt
+            .query_map(params![id], Self::row_to_track)
+            .map_err(|e| format!("query: {e}"))?;
+        match rows.next() {
+            Some(Ok(t)) => Ok(Some(t)),
+            Some(Err(e)) => Err(format!("row: {e}")),
+            None => Ok(None),
+        }
+    }
+
+    pub fn add_track(&self, path: &str, cache_dir: Option<&str>) -> Result<TrackInfo, String> {
+        if self.track_by_path(path)?.is_some() {
+            return Err("track already exists".to_string());
+        }
+
+        let (meta, hash) = extract_metadata(path, cache_dir)?;
+
+        self.conn
+            .execute(
+                "INSERT INTO tracks (path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    path,
+                    meta.title,
+                    meta.artist,
+                    meta.album,
+                    meta.duration,
+                    meta.track_number,
+                    meta.genre,
+                    meta.year,
+                    meta.bitrate,
+                    meta.samplerate,
+                    hash,
+                    meta.cover_path,
+                ],
+            )
+            .map_err(|e| format!("insert: {e}"))?;
+
+        let id = self.conn.last_insert_rowid();
+        self.get_track(id)?
+            .ok_or_else(|| "inserted track not found".to_string())
+    }
+
+    pub fn remove_track(&self, id: i64) -> Result<(), String> {
+        let affected = self
+            .conn
+            .execute("DELETE FROM tracks WHERE id = ?1", params![id])
+            .map_err(|e| format!("delete: {e}"))?;
+        if affected == 0 {
+            return Err("track not found".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn remove_track_full(
+        &self,
+        id: i64,
+        library_dirs: &[PathBuf],
+        allow_delete_files: bool,
+    ) -> Result<Option<String>, String> {
+        if !allow_delete_files {
+            return Err(
+                "file deletion is disabled by the daemon (allow_delete_files=false)".into(),
+            );
+        }
+        let track = self.get_track(id).map_err(|e| format!("lookup: {e}"))?;
+        let Some(track) = track else {
+            return Ok(None);
+        };
+
+        self.conn
+            .execute(
+                "DELETE FROM playlist_tracks WHERE track_id = ?1",
+                params![id],
+            )
+            .map_err(|e| format!("delete playlist rows: {e}"))?;
+
+        self.conn
+            .execute("DELETE FROM tracks WHERE id = ?1", params![id])
+            .map_err(|e| format!("delete: {e}"))?;
+
+        let path = std::path::Path::new(&track.path);
+        let managed = library_dirs.iter().any(|d| path.starts_with(d));
+        if managed
+            && let Err(e) = fs::remove_file(path)
+            && e.kind() != std::io::ErrorKind::NotFound
+        {
+            warn!("delete audio file {}: {e}", track.path);
+        }
+
+        if let Some(cover) = &track.cover_path
+            && cover.contains("covers")
+        {
+            let _ = fs::remove_file(cover);
+        }
+
+        let _ = fs::remove_file(path.with_extension("lrc"));
+
+        Ok(Some(track.path))
+    }
+
+    pub fn update_cover_path(&self, id: i64, cover_path: &str) -> Result<(), String> {
+        let affected = self
+            .conn
+            .execute(
+                "UPDATE tracks SET cover_path = ?1 WHERE id = ?2",
+                params![cover_path, id],
+            )
+            .map_err(|e| format!("update cover_path: {e}"))?;
+        if affected == 0 {
+            return Err("track not found".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn update_metadata(&self, id: i64, patch: &MetadataPatch) -> Result<(), String> {
+        let mut sets = Vec::new();
+        let mut values: Vec<Box<dyn rusqlite::ToSql>> = vec![Box::new(id)];
+
+        if patch.title.is_some() {
+            sets.push(format!("title = ?{}", values.len() + 1));
+            values.push(Box::new(patch.title.clone()));
+        }
+        if patch.artist.is_some() {
+            sets.push(format!("artist = ?{}", values.len() + 1));
+            values.push(Box::new(patch.artist.clone()));
+        }
+        if patch.album.is_some() {
+            sets.push(format!("album = ?{}", values.len() + 1));
+            values.push(Box::new(patch.album.clone()));
+        }
+        if patch.genre.is_some() {
+            sets.push(format!("genre = ?{}", values.len() + 1));
+            values.push(Box::new(patch.genre.clone()));
+        }
+        if patch.year.is_some() {
+            sets.push(format!("year = ?{}", values.len() + 1));
+            values.push(Box::new(patch.year));
+        }
+        if patch.track_number.is_some() {
+            sets.push(format!("track_number = ?{}", values.len() + 1));
+            values.push(Box::new(patch.track_number));
+        }
+        if patch.album_id.is_some() {
+            sets.push(format!("album_id = ?{}", values.len() + 1));
+            values.push(Box::new(patch.album_id.clone()));
+        }
+        if sets.is_empty() {
+            return Ok(());
+        }
+        let sql = format!("UPDATE tracks SET {} WHERE id = ?1", sets.join(", "));
+        let mut stmt = self
+            .conn
+            .prepare(&sql)
+            .map_err(|e| format!("prepare update: {e}"))?;
+        stmt.execute(rusqlite::params_from_iter(values.iter()))
+            .map_err(|e| format!("update metadata: {e}"))?;
+        Ok(())
+    }
+
+    pub fn toggle_favourite(&self, id: i64) -> Result<bool, String> {
+        self.conn
+            .execute(
+                "UPDATE tracks SET favourite = CASE WHEN favourite = 0 THEN 1 ELSE 0 END WHERE id = ?1",
+                params![id],
+            )
+            .map_err(|e| format!("toggle fav: {e}"))?;
+        let val: i32 = self
+            .conn
+            .query_row(
+                "SELECT favourite FROM tracks WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("read fav: {e}"))?;
+        Ok(val != 0)
+    }
+
+    pub fn get_favourites(&self) -> Result<Vec<TrackInfo>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite, album_id FROM tracks WHERE favourite = 1 ORDER BY title ASC")
+            .map_err(|e| format!("prepare: {e}"))?;
+        let rows = stmt
+            .query_map([], Self::row_to_track)
+            .map_err(|e| format!("query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("rows: {e}"))
+    }
+
+    pub fn create_playlist(&self, name: &str) -> Result<Playlist, String> {
+        self.conn
+            .execute("INSERT INTO playlists (name) VALUES (?1)", params![name])
+            .map_err(|e| format!("create playlist: {e}"))?;
+        let id = self.conn.last_insert_rowid();
+        // Mirror the playlist as a `.m3u8` file next to the database so the
+        // playlist survives a DB reset and is usable by other players.
+        let m3u_path = self.data_dir.join(m3u8_file_name(name));
+        if let Err(e) = std::fs::write(&m3u_path, format!("#EXTM3U\n#PLAYLIST: {name}\n")) {
+            tracing::warn!("failed to write {}: {e}", m3u_path.display());
+        }
+        self.get_playlist(id)?
+            .ok_or_else(|| "created playlist not found".to_string())
+    }
+
+    pub fn delete_playlist(&self, id: i64) -> Result<(), String> {
+        let name: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT name FROM playlists WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .ok();
+        let affected = self
+            .conn
+            .execute("DELETE FROM playlists WHERE id = ?1", params![id])
+            .map_err(|e| format!("delete playlist: {e}"))?;
+        if affected == 0 {
+            return Err("playlist not found".to_string());
+        }
+        // Clean up the mirrored `.m3u8` file if one exists.
+        if let Some(name) = name {
+            let m3u_path = self.data_dir.join(m3u8_file_name(&name));
+            let _ = std::fs::remove_file(m3u_path);
+        }
+        Ok(())
+    }
+
+    pub fn add_to_playlist(&self, playlist_id: i64, track_id: i64) -> Result<(), String> {
+        let max_pos: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(MAX(position), -1) FROM playlist_tracks WHERE playlist_id = ?1",
+                params![playlist_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("max pos: {e}"))?;
+        self.conn
+            .execute(
+                "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?1, ?2, ?3)",
+                params![playlist_id, track_id, max_pos + 1],
+            )
+            .map_err(|e| format!("add to playlist: {e}"))?;
+        Ok(())
+    }
+
+    pub fn remove_from_playlist(&self, playlist_id: i64, track_id: i64) -> Result<(), String> {
+        self.conn
+            .execute(
+                "DELETE FROM playlist_tracks WHERE playlist_id = ?1 AND track_id = ?2",
+                params![playlist_id, track_id],
+            )
+            .map_err(|e| format!("remove from playlist: {e}"))?;
+        Ok(())
+    }
+
+    /// Reassign contiguous `position` values (0..n) in playlist order, so gaps
+    /// left by removals disappear and sorting stays authoritative.
+    fn reposition(&self, playlist_id: i64) -> Result<(), String> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| format!("reposition tx: {e}"))?;
+        {
+            let mut stmt = tx
+                .prepare(
+                    "SELECT track_id FROM playlist_tracks
+                     WHERE playlist_id = ?1 ORDER BY position ASC, rowid ASC",
+                )
+                .map_err(|e| format!("reposition prepare: {e}"))?;
+            let rows: Result<Vec<i64>, _> = stmt
+                .query_map(params![playlist_id], |r| r.get(0))
+                .map_err(|e| format!("reposition query: {e}"))?
+                .collect();
+            let rows = rows.map_err(|e| format!("reposition rows: {e}"))?;
+            for (pos, track_id) in rows.iter().enumerate() {
+                tx.execute(
+                    "UPDATE playlist_tracks SET position = ?1
+                     WHERE playlist_id = ?2 AND track_id = ?3",
+                    params![pos as i64, playlist_id, track_id],
+                )
+                .map_err(|e| format!("reposition update: {e}"))?;
+            }
+        }
+        tx.commit().map_err(|e| format!("reposition commit: {e}"))
+    }
+
+    /// Remove duplicate track entries from a playlist (keeping the earliest
+    /// `position`), returning how many rows were removed. With the
+    /// `(playlist_id, track_id)` primary key duplicates can only arise from
+    /// manual DB edits, but the repair doubles as a position repack.
+    pub fn playlist_dedup(&self, id: i64) -> Result<usize, String> {
+        let removed = self
+            .conn
+            .execute(
+                "DELETE FROM playlist_tracks
+                 WHERE playlist_id = ?1 AND rowid NOT IN (
+                     SELECT MIN(rowid) FROM playlist_tracks
+                     WHERE playlist_id = ?1 GROUP BY track_id
+                 )",
+                params![id, id],
+            )
+            .map_err(|e| format!("playlist dedup: {e}"))?;
+        self.reposition(id)?;
+        Ok(removed)
+    }
+
+    /// Doctor a playlist: remove entries whose audio file no longer exists on
+    /// disk, returning how many broken entries were removed.
+    pub fn playlist_doctor(&self, id: i64) -> Result<usize, String> {
+        let tracks = self.get_playlist_tracks(id)?;
+        let mut removed = 0usize;
+        for track in tracks {
+            if !std::path::Path::new(&track.path).exists() {
+                self.remove_from_playlist(id, track.id)?;
+                removed += 1;
+            }
+        }
+        if removed > 0 {
+            self.reposition(id)?;
+        }
+        Ok(removed)
+    }
+
+    /// Sort a playlist's tracks in place by `field` (`title` | `artist` |
+    /// `album` | `date`), reassigning contiguous positions.
+    pub fn playlist_sort(&self, id: i64, field: &str) -> Result<(), String> {
+        let mut tracks = self.get_playlist_tracks(id)?;
+        let lt = |a: &TrackInfo, b: &TrackInfo| match field {
+            "artist" => (
+                a.artist.as_str().to_lowercase(),
+                a.title.to_lowercase().as_str(),
+            )
+                .cmp(&(
+                    b.artist.as_str().to_lowercase(),
+                    b.title.to_lowercase().as_str(),
+                )),
+            "album" => (
+                a.album.as_str().to_lowercase(),
+                a.track_number,
+                a.title.to_lowercase().as_str(),
+            )
+                .cmp(&(
+                    b.album.as_str().to_lowercase(),
+                    b.track_number,
+                    b.title.to_lowercase().as_str(),
+                )),
+            "date" => (b.year, a.title.to_lowercase().as_str())
+                .cmp(&(a.year, b.title.to_lowercase().as_str())),
+            // "title" and default
+            _ => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
+        };
+        tracks.sort_by(lt);
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .map_err(|e| format!("playlist sort tx: {e}"))?;
+        {
+            for (pos, track) in tracks.iter().enumerate() {
+                tx.execute(
+                    "UPDATE playlist_tracks SET position = ?1
+                     WHERE playlist_id = ?2 AND track_id = ?3",
+                    params![pos as i64, id, track.id],
+                )
+                .map_err(|e| format!("playlist sort update: {e}"))?;
+            }
+        }
+        tx.commit()
+            .map_err(|e| format!("playlist sort commit: {e}"))
+    }
+
+    pub fn get_playlist_tracks(&self, id: i64) -> Result<Vec<TrackInfo>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT t.id, t.path, t.title, t.artist, t.album, t.duration, t.track_number, t.genre, t.year, t.bitrate, t.samplerate, t.hash, t.cover_path, t.favourite, t.album_id
+                 FROM tracks t
+                 JOIN playlist_tracks pt ON pt.track_id = t.id
+                 WHERE pt.playlist_id = ?1
+                 ORDER BY pt.position ASC",
+            )
+            .map_err(|e| format!("prepare: {e}"))?;
+        let rows = stmt
+            .query_map(params![id], Self::row_to_track)
+            .map_err(|e| format!("query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("rows: {e}"))
+    }
+
+    pub fn get_playlists(&self) -> Result<Vec<Playlist>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT p.id, p.name, p.created_at,
+                        (SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = p.id) AS track_count
+                 FROM playlists p ORDER BY p.name ASC",
+            )
+            .map_err(|e| format!("prepare: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(Playlist {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    created_at: row.get(2)?,
+                    track_count: row.get::<_, i64>(3)? as u64,
+                })
+            })
+            .map_err(|e| format!("query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("rows: {e}"))
+    }
+
+    pub fn get_recent(&self, count: u64) -> Result<Vec<TrackInfo>, String> {
+        let limit = if count > 0 { count as i64 } else { 50 };
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite, album_id
+                 FROM tracks ORDER BY id DESC LIMIT ?1",
+            )
+            .map_err(|e| format!("prepare: {e}"))?;
+        let rows = stmt
+            .query_map(params![limit], Self::row_to_track)
+            .map_err(|e| format!("query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("rows: {e}"))
+    }
+
+    pub fn get_playlist(&self, id: i64) -> Result<Option<Playlist>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT p.id, p.name, p.created_at,
+                        (SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = p.id) AS track_count
+                 FROM playlists p WHERE p.id = ?1",
+            )
+            .map_err(|e| format!("prepare: {e}"))?;
+        let mut rows = stmt
+            .query_map(params![id], |row| {
+                Ok(Playlist {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    created_at: row.get(2)?,
+                    track_count: row.get::<_, i64>(3)? as u64,
+                })
+            })
+            .map_err(|e| format!("query: {e}"))?;
+        match rows.next() {
+            Some(Ok(p)) => Ok(Some(p)),
+            Some(Err(e)) => Err(format!("row: {e}")),
+            None => Ok(None),
+        }
+    }
+
+    pub fn import_playlist(
+        &self,
+        path: &str,
+        format: PlaylistFormatKind,
+    ) -> Result<Playlist, String> {
+        let content = std::fs::read_to_string(path).map_err(|e| format!("read playlist: {e}"))?;
+
+        let name = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Imported")
+            .to_string();
+
+        let playlist = self.create_playlist(&name)?;
+
+        let fmt = format_fmt(format);
+        for line in fmt.parse_track_lines(&content) {
+            let abs_path = if std::path::Path::new(&line).is_absolute() {
+                line.clone()
+            } else {
+                let base = std::path::Path::new(path)
+                    .parent()
+                    .unwrap_or(std::path::Path::new("."));
+                base.join(&line).to_string_lossy().to_string()
+            };
+
+            match self.add_track(&abs_path, None) {
+                Ok(track) => {
+                    let _ = self.add_to_playlist(playlist.id, track.id);
+                }
+                Err(e) => warn!("skipping {abs_path}: {e}"),
+            }
+        }
+
+        Ok(playlist)
+    }
+
+    pub fn export_playlist(
+        &self,
+        playlist_id: i64,
+        path: &str,
+        format: PlaylistFormatKind,
+    ) -> Result<(), String> {
+        let playlist = self
+            .get_playlist(playlist_id)?
+            .ok_or("playlist not found")?;
+        let tracks = self.get_playlist_tracks(playlist_id)?;
+        let fmt = format_fmt(format);
+        let content = fmt.render(&playlist, &tracks);
+        std::fs::write(path, content).map_err(|e| format!("write playlist: {e}"))?;
+        Ok(())
+    }
+
+    pub fn scan_directory(
+        &self,
+        dir: &str,
+        recursive: bool,
+        cache_dir: Option<&str>,
+    ) -> Result<Vec<TrackInfo>, String> {
+        let mut added = Vec::new();
+        let extensions = ["mp3", "flac", "ogg", "wav", "m4a", "aac", "opus"];
+
+        let walk = if recursive {
+            walkdir::WalkDir::new(dir).follow_links(true)
+        } else {
+            walkdir::WalkDir::new(dir).max_depth(1).follow_links(true)
+        };
+
+        for entry in walk.into_iter().filter_map(|e| e.ok()) {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let ext = entry
+                .path()
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            if !extensions.contains(&ext.to_lowercase().as_str()) {
+                continue;
+            }
+            let path = entry.path().to_string_lossy().to_string();
+            match self.add_track(&path, cache_dir) {
+                Ok(t) => added.push(t),
+                Err(e) => warn!("skip {path}: {e}"),
+            }
+        }
+
+        Ok(added)
+    }
+
+    pub fn search_tracks(&self, query: &str) -> Result<Vec<TrackInfo>, String> {
+        let pattern = format!("%{}%", query);
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite, album_id
+                 FROM tracks
+                 WHERE title LIKE ?1 OR artist LIKE ?1 OR album LIKE ?1
+                 ORDER BY title ASC
+                 LIMIT 10",
+            )
+            .map_err(|e| format!("prepare: {e}"))?;
+        let rows = stmt
+            .query_map(params![pattern], Self::row_to_track)
+            .map_err(|e| format!("query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("rows: {e}"))
+    }
+
+    pub fn track_by_path(&self, path: &str) -> Result<Option<TrackInfo>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite, album_id FROM tracks WHERE path = ?1")
+            .map_err(|e| format!("prepare: {e}"))?;
+        let mut rows = stmt
+            .query_map(params![path], Self::row_to_track)
+            .map_err(|e| format!("query: {e}"))?;
+        match rows.next() {
+            Some(Ok(t)) => Ok(Some(t)),
+            Some(Err(e)) => Err(format!("row: {e}")),
+            None => Ok(None),
+        }
+    }
+
+    fn row_to_track(row: &rusqlite::Row) -> rusqlite::Result<TrackInfo> {
+        Ok(TrackInfo {
+            id: row.get(0)?,
+            path: row.get(1)?,
+            title: row.get(2)?,
+            artist: row.get(3)?,
+            album: row.get(4)?,
+            duration: row.get(5)?,
+            track_number: row.get(6)?,
+            genre: row.get(7)?,
+            year: row.get(8)?,
+            bitrate: row.get(9)?,
+            samplerate: row.get(10)?,
+            hash: row.get(11)?,
+            cover_path: row.get(12)?,
+            favourite: row.get::<_, i32>(13)? != 0,
+            album_id: row.get(14)?,
+            ..Default::default()
+        })
+    }
+
+    pub fn track_path(&self, id: i64) -> Result<String, String> {
+        self.conn
+            .query_row(
+                "SELECT path FROM tracks WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("track path: {e}"))
+    }
+}
+
+pub(crate) struct Metadata {
+    pub(crate) title: String,
+    pub(crate) artist: String,
+    pub(crate) album: String,
+    pub(crate) genre: String,
+    pub(crate) year: Option<i32>,
+    pub(crate) track_number: Option<i32>,
+    pub(crate) duration: f64,
+    pub(crate) bitrate: Option<i32>,
+    pub(crate) samplerate: Option<i32>,
+    pub(crate) cover_path: Option<String>,
+}
+
+fn tag_title(dst: &mut String, tag: &symphonia::core::meta::Tag) {
+    if !dst.is_empty() {
+        return;
+    }
+    *dst = tag.raw.value.to_string();
+}
+
+pub(crate) fn extract_metadata(
+    path: &str,
+    cache_dir: Option<&str>,
+) -> Result<(Metadata, String), String> {
+    let cache_base = cache_dir
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::cache_dir()
+                .unwrap_or_else(|| PathBuf::from("/tmp"))
+                .join("gtm")
+        })
+        .join("covers");
+    fs::create_dir_all(&cache_base).ok();
+
+    let hash = {
+        let mut hasher = Sha256::new();
+        let mut f = File::open(path).map_err(|e| format!("open hash: {e}"))?;
+        let mut buf = [0u8; 8192];
+        loop {
+            let n = f.read(&mut buf).map_err(|e| format!("read hash: {e}"))?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buf[..n]);
+        }
+        hex::encode(hasher.finalize())
+    };
+
+    let file = match File::open(path) {
+        Ok(f) => f,
+        Err(e) => return Err(format!("open: {e}")),
+    };
+    let mss = MediaSourceStream::new(Box::new(file), Default::default());
+    let hint = Hint::new();
+    let fmt_opts = FormatOptions::default();
+    let meta_opts = MetadataOptions::default();
+
+    let probe = symphonia::default::get_probe();
+    let mut reader = match probe.probe(&hint, mss, fmt_opts, meta_opts) {
+        Ok(r) => r,
+        Err(e) => return Err(format!("probe: {e}")),
+    };
+
+    let mut title = String::new();
+    let mut artist = String::new();
+    let mut album = String::new();
+    let mut genre = String::new();
+    let mut year: Option<i32> = None;
+    let mut track_number: Option<i32> = None;
+    let bitrate: Option<i32> = None;
+    let samplerate: Option<i32> = None;
+
+    {
+        let meta = reader.metadata();
+        if let Some(rev) = meta.current() {
+            for tag in &rev.media.tags {
+                match &tag.std {
+                    Some(StandardTag::TrackTitle(_)) => tag_title(&mut title, tag),
+                    Some(StandardTag::Artist(_)) => tag_title(&mut artist, tag),
+                    Some(StandardTag::Album(_)) => tag_title(&mut album, tag),
+                    Some(StandardTag::Genre(_)) => tag_title(&mut genre, tag),
+                    Some(StandardTag::TrackNumber(n)) => track_number = Some(*n as i32),
+                    Some(StandardTag::RecordingYear(n))
+                    | Some(StandardTag::ReleaseYear(n))
+                    | Some(StandardTag::OriginalReleaseYear(n))
+                    | Some(StandardTag::OriginalRecordingYear(n))
+                        if year.is_none() =>
+                    {
+                        year = Some(*n as i32);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    let mut cover_path: Option<String> = None;
+    {
+        let meta = reader.metadata();
+        if let Some(rev) = meta.current() {
+            for visual in &rev.media.visuals {
+                let is_cover = matches!(visual.usage, Some(StandardVisualKey::FrontCover));
+                if is_cover || visual.usage.is_none() {
+                    let ext = match visual.media_type.as_deref() {
+                        Some("image/jpeg" | "image/jpg") => "jpg",
+                        Some("image/png") => "png",
+                        _ => "jpg",
+                    };
+                    let cover_file = cache_base.join(format!("{}.{}", hash, ext));
+                    if !cover_file.exists()
+                        && let Ok(mut buf) = File::create(&cover_file)
+                    {
+                        let _ = buf.write_all(&visual.data);
+                    }
+                    cover_path = Some(cover_file.to_string_lossy().to_string());
+                    break;
+                }
+            }
+        }
+    }
+
+    let duration = reader
+        .tracks()
+        .iter()
+        .filter_map(|t| {
+            let tb = t.time_base.as_ref()?;
+            let dur = t.duration?;
+            let ts = Timestamp::new(dur.get() as i64);
+            let time = tb.calc_time(ts)?;
+            Some(time.as_secs_f64())
+        })
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+        .unwrap_or(0.0);
+
+    if artist.is_empty() || title.is_empty() {
+        let stem = std::path::Path::new(path)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("");
+        let (cleaned_artist, cleaned_title) = clean_filename_stem(stem);
+        let cleaned_title = sanitize_text(&cleaned_title);
+        if title.is_empty() && !cleaned_title.is_empty() {
+            title = cleaned_title;
+        }
+        if artist.is_empty() {
+            if let Some(a) = cleaned_artist {
+                artist = sanitize_text(&a);
+            } else if let Some(dash_idx) = stem.find(" - ") {
+                if dash_idx > 0 {
+                    artist = stem[..dash_idx].trim().to_string();
+                }
+                let after_dash = stem[dash_idx + 3..].trim();
+                let mut clean = after_dash.to_string();
+                loop {
+                    let prev = clean.clone();
+                    let trimmed = prev.trim_end();
+                    let next = if trimmed.ends_with(')') {
+                        trimmed
+                            .rfind('(')
+                            .filter(|&o| o > 0)
+                            .map(|o| trimmed[..o].trim_end().to_string())
+                    } else if trimmed.ends_with(']') {
+                        trimmed
+                            .rfind('[')
+                            .filter(|&o| o > 0)
+                            .map(|o| trimmed[..o].trim_end().to_string())
+                    } else {
+                        None
+                    };
+                    match next {
+                        Some(s) if !s.is_empty() && s != clean => clean = s,
+                        _ => break,
+                    }
+                }
+                if !clean.is_empty() && title.is_empty() {
+                    title = clean;
+                }
+            }
+        }
+        if title.is_empty() {
+            title = stem.to_string();
+        }
+    }
+
+    Ok((
+        Metadata {
+            title,
+            artist,
+            album,
+            genre,
+            year,
+            track_number,
+            duration,
+            bitrate,
+            samplerate,
+            cover_path,
+        },
+        hash,
+    ))
+}

@@ -128,9 +128,9 @@ Starlight gives structure; the gtm identity comes from a theme layer:
 ## 6. IPC-Protocol page: generate, don't hand-author
 
 `wiki/IPC-Protocol.md` describes the request/response wire format. The IPC
-surface already has a canonical schema (`shared::ipc`, `WireReq`/`WireRes`
+surface already has a canonical schema (`gtm::shared::ipc`, `WireReq`/`WireRes`
 serde models). Recommendation: a small doc-gen crate/bin (or a cargo alias)
-emits the protocol section from `shared` at build time so the manual never
+emits the protocol section from `gtm::shared` at build time so the manual never
 drifts from the code. Ships in phase 2.
 
 ---
@@ -146,7 +146,7 @@ CLI Reference  > gtm flags + gtmd flags (mirrors gtm.1)
 Configuration  > config.toml reference, per-key tables
 Queue & MPRIS  > daemon features (replaces ad-hoc FAQ)
 IPC Protocol   > generated wire spec
-Architecture   > crate overview, data flow
+Architecture   > module overview, data flow
 Development    > build, test, bench, contributors
 ```
 

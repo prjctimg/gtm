@@ -1,3 +1,4 @@
+use std::env;
 use std::process::Command;
 
 /// Look up a package's version in the workspace Cargo.lock.
@@ -17,6 +18,23 @@ fn locked_version(pkg: &str) -> Option<String> {
 }
 
 fn main() {
+    // Termux cross-builds target `aarch64-linux-android`; the environment also
+    // sets $PREFIX and/or $TERMUX_VERSION when building on-device. If that is
+    // detected without the `pulseaudio` feature, warn now instead of failing at
+    // runtime with an obscure audio error.
+    let target = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
+    let in_termux =
+        target == "android" || env::var("PREFIX").is_ok() || env::var("TERMUX_VERSION").is_ok();
+    if in_termux && env::var("CARGO_FEATURE_PULSEAUDIO").is_err() {
+        println!(
+            "cargo:warning=Termux detected: enable the `pulseaudio` backend with \
+             `cargo build --features pulseaudio` (the Makefile `termux` and `termux-deb` \
+             targets do this for you)."
+        );
+    }
+    println!("cargo:rerun-if-env-changed=PREFIX");
+    println!("cargo:rerun-if-env-changed=TERMUX_VERSION");
+
     // Git commit SHA - try env var first (for CI), then git rev-parse
     let git_sha = std::env::var("VERGEN_GIT_SHA")
         .ok()

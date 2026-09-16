@@ -423,24 +423,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 
 [[package]]
-name = "audio"
-version = "0.2.83"
-dependencies = [
- "fundsp",
- "libc",
- "log",
- "pulseaudio",
- "rodio",
- "rustfft",
- "shared",
- "symphonia 0.6.0",
- "symphonia-adapter-libopus",
- "thiserror 2.0.18",
- "timestretch",
- "tokio",
-]
-
-[[package]]
 name = "autocfg"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1976,70 +1958,61 @@ dependencies = [
 name = "gtm"
 version = "0.2.83"
 dependencies = [
- "audio",
  "base64",
+ "bincode",
  "chrono",
  "clap",
  "color-eyre",
  "color-thief",
  "crossterm 0.28.1",
- "gtmd",
- "image",
- "libc",
- "ratatui",
- "ratatui-image",
- "rpassword",
- "serde",
- "serde_json",
- "shared",
- "tachyonfx",
- "tokio",
- "toml",
- "tracing",
- "tracing-subscriber",
- "webbrowser",
-]
-
-[[package]]
-name = "gtmd"
-version = "0.2.83"
-dependencies = [
- "audio",
- "base64",
- "bincode",
- "chrono",
- "clap",
  "dirs",
  "fastrand",
+ "fundsp",
  "futures",
  "getrandom 0.2.17",
  "hex",
  "image",
  "innertube-rs",
+ "keyring",
+ "libc",
  "librespot-core",
  "librespot-playback",
  "lofty",
+ "log",
  "lru 0.12.5",
  "md5",
- "mpris",
+ "pulseaudio",
  "quick-xml",
+ "ratatui",
+ "ratatui-image",
  "regex",
  "reqwest",
+ "rmp-serde",
  "rodio",
+ "rpassword",
  "rspotify",
  "rusqlite",
+ "rustc-hash",
+ "rustfft",
  "serde",
  "serde_json",
  "sha2",
- "shared",
  "symphonia 0.6.0",
+ "symphonia-adapter-libopus",
+ "tachyonfx",
+ "thiserror 2.0.18",
+ "timestretch",
  "tokio",
  "tokio-util",
  "toml",
  "tracing",
  "tracing-subscriber",
  "urlencoding",
+ "uuid",
  "walkdir",
+ "webbrowser",
+ "zbus",
+ "zvariant",
 ]
 
 [[package]]
@@ -3203,18 +3176,6 @@ checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",
-]
-
-[[package]]
-name = "mpris"
-version = "0.2.83"
-dependencies = [
- "serde",
- "shared",
- "tokio",
- "tracing",
- "zbus",
- "zvariant",
 ]
 
 [[package]]
@@ -5426,26 +5387,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f40ca3c46823713e0d4209592e8d6e826aa57e928f09752619fc696c499637f6"
 dependencies = [
  "lazy_static",
-]
-
-[[package]]
-name = "shared"
-version = "0.2.83"
-dependencies = [
- "bincode",
- "chrono",
- "dirs",
- "keyring",
- "libc",
- "rmp-serde",
- "rustc-hash",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "toml",
- "tracing",
- "uuid",
 ]
 
 [[package]]

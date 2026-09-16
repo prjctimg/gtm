@@ -11,8 +11,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use std::borrow::Cow;
 
+use crate::shared::state::{PlaybackStatus, RepeatMode};
 use chrono::Local;
-use shared::state::{PlaybackStatus, RepeatMode};
 
 use crate::app::App;
 use crate::theme::{AppTheme, readable_fg};

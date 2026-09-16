@@ -1,0 +1,46 @@
+// Copyright (c) 2026
+// Author: prjctimg <prjctimg@outlook.com>
+// Library root: re-exports all public types and Result<T>
+//
+// This is free software released under the GPL-3.0 license.
+
+pub mod client;
+pub mod custom;
+pub mod daemon;
+pub mod fsm;
+pub mod global;
+pub mod ipc;
+pub mod log;
+pub mod paths;
+pub mod playlist;
+pub mod podcast;
+pub mod radio;
+pub mod secret;
+pub mod spotify;
+pub mod state;
+pub mod subsonic;
+pub mod track;
+pub mod tripwire;
+pub mod validate;
+pub mod wire;
+
+pub use crate::shared::custom::CustomRadioStation;
+pub use global::{
+    CoreError, CrossfadeConfig, DEFAULT_SPEED, DaemonState, EQ_FREQUENCIES, EqBand, MAX_SPEED,
+    MAX_VOLUME, MIN_SPEED, ReverbConfig, volume_from_ratio, volume_ratio,
+};
+pub use ipc::MetadataPatch;
+pub use paths::{
+    ensure_termux_pulse, is_termux, resolve_command_socket, resolve_pid_file, resolve_pulse_socket,
+    termux_music_dirs,
+};
+pub use playlist::{M3u8Format, PlaylistFormat, PlaylistFormatKind, PlsFormat};
+pub use podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
+pub use radio::RadioStation;
+pub use spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
+pub use subsonic::{
+    SubsonicAlbum, SubsonicArtist, SubsonicSearchResults, SubsonicStatus, SubsonicTrack,
+};
+pub use track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
+
+pub type Result<T> = std::result::Result<T, CoreError>;

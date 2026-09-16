@@ -57,11 +57,8 @@ strip = "symbols"
 # Run all tests
 cargo test
 
-# Run tests for a specific crate
+# Run tests for a specific module's integration tests (single crate)
 cargo test -p gtm
-cargo test -p gtmd
-cargo test -p shared
-cargo test -p audio
 
 # Run inline tests only (no integration tests)
 cargo test --lib -p gtm
@@ -82,100 +79,98 @@ cargo fmt
 
 ## Project Structure
 
-The codebase layout is summarized below, split into different crates and
+The codebase is a single crate (`gtm`) with the shared core, audio backend,
+MPRIS integration, and daemon subsystems living as module trees under
+`gtm/src/`. Two binaries ship from `gtm/`: `gtm` (TUI, `tui` feature) and
+`gtmd` (daemon, always built).
 
 ```
 gtm.rs/
-├── shared/         Shared types, IPC protocol, state machine, DaemonClient
+├── gtm/                    The single crate — client, daemon, core, audio, MPRIS
+│   ├── Cargo.toml          Merged dependencies, features, [[bin]] targets
+│   ├── build.rs            Build-time env (VERGEN, Termux warning, mold)
 │   ├── src/
-│   │   ├── lib.rs         Module declarations, re-exports
-│   │   ├── ipc.rs         68 typed commands, 30+ events, wire format
-│   │   ├── state.rs       DaemonState, EqPreset, Easing, LoudnessMode
-│   │   ├── client.rs      Async IPC client, clock estimation, reconnect
-│   │   ├── fsm.rs         State machine transitions, apply_event
-│   │   ├── track.rs       TrackInfo, Playlist, LrcData, YTSearchResult
-│   │   ├── wire.rs        MessagePack encode/decode for pulse socket
-│   │   ├── paths.rs       Termux-aware path resolution
-│   │   ├── spotify.rs     Spotify types
-│   │   ├── log.rs         File logger
-│   │   ├── validate.rs    Validated constructors
-│   │   └── tripwire.rs    Fail-point injection (debug builds)
-│   └── Cargo.toml
-├── audio/        Audio playback backend
-│   ├── src/
-│   │   ├── lib.rs         Module declarations
-│   │   ├── mixer.rs       AudioMixer: dual-player crossfade, decode threads
-│   │   ├── eq.rs          15-band parametric EQ (fundsp), reverb
-│   │   ├── backend.rs     AudioEvent, AudioError types
-│   │   ├── buffer.rs      RingBufferSource (lock-free)
-│   │   ├── decoder.rs     DecodeThread (symphonia + ring buffer)
-│   │   ├── symphonia.rs   SymphoniaSource (file decoding)
-│   │   ├── silent.rs      NullMixer (no-op backend)
-│   │   └── pulse.rs       PulseAudioMixer (optional)
-│   └── Cargo.toml
-├── gtmd/             Background daemon
-│   ├── src/
-│   │   ├── lib.rs         Module declarations
-│   │   ├── main.rs        Entry point, CLI args, daemon startup
-│   │   ├── daemon.rs      Main event loop, client handling, command dispatch
-│   │   ├── config.rs      DaemonConfig (paths, settings)
-│   │   ├── library.rs     SQLite library (tracks, playlists, metadata)
-│   │   ├── queue.rs       Queue helpers (dual-list, path expansion)
-│   │   ├── youtube.rs     YouTube search/streams via innertube-rs
-│   │   ├── spotify.rs     Spotify Web API integration
-│   │   ├── cover.rs       Cover art (Deezer API + LRU cache)
-│   │   ├── lyrics.rs      Lyrics (lrclib.net + disk cache)
-│   │   ├── deezer.rs      Deezer metadata enrichment
-│   │   ├── tags.rs        Audio tag writing (lofty)
-│   │   ├── cleaner.rs     YouTube title/filename cleaning
-│   │   └── updater.rs     Self-update from GitHub releases
-│   └── Cargo.toml
-├── gtm/              Client — TUI + CLI
-│   ├── src/
-│   │   ├── lib.rs         Module declarations
-│   │   ├── main.rs        Entry point (CLI/TUI dispatch)
-│   │   ├── app.rs         App state machine (~5000 lines)
-│   │   ├── ui.rs          TUI rendering (~4400 lines)
-│   │   ├── keymap.rs      Context-aware keybinding dispatch
-│   │   ├── theme.rs       16 built-in themes + TOML user themes
-│   │   ├── footer.rs      Modular footer bar system
-│   │   ├── picker.rs      Picker overlay manager (LIFO stack)
-│   │   ├── cli.rs         CLI command definitions (clap)
-│   │   ├── visualizer.rs  Audio visualizer (5 presets)
-│   │   └── progress.rs    Progress bar (4 styles)
-│   └── Cargo.toml
-├── mpris/        MPRIS D-Bus integration
-│   └── src/lib.rs
-├── release-gen/      Build-time tool for shell completions
-├── docs/             Documentation (manpage sources)
-├── wiki/             GitHub wiki (mirrored from this repo's wiki/ directory)
-├── scripts/build/    Build scripts (packaging, manpages, verification)
-├── dist/             Packaging files (systemd service, desktop entry)
-├── termux/           Termux packaging (YAML manifest)
-├── artifacts/        Generated manpages and completions
-├── Makefile          Build targets (release, test, man, completions, deb, rpm)
-├── Cargo.toml        Workspace root (version 0.2.0)
-└── flake.nix         Nix flake
+│   │   ├── lib.rs          Module declarations, re-exports
+│   │   ├── main.rs         gtm CLI/TUI entry point
+│   │   ├── daemon_main.rs  gtmd daemon binary entry point
+│   │   ├── app.rs          App state machine (~5000 lines)
+│   │   ├── ui.rs           TUI rendering (~4400 lines)
+│   │   ├── keymap.rs       Context-aware keybinding dispatch
+│   │   ├── theme.rs        16 built-in themes + TOML user themes
+│   │   ├── footer.rs       Modular footer bar system
+│   │   ├── picker.rs       Picker overlay manager (LIFO stack)
+│   │   ├── cli.rs          CLI command definitions (clap)
+│   │   ├── visualizer.rs   Audio visualizer (5 presets)
+│   │   ├── progress.rs     Progress bar (4 styles)
+│   │   ├── shared/         Core: IPC protocol, state machine, DaemonClient
+│   │   │   ├── mod.rs      Module declarations, re-exports
+│   │   │   ├── ipc.rs      68 typed commands, 30+ events, wire format
+│   │   │   ├── state.rs    DaemonState, EqPreset, Easing, LoudnessMode
+│   │   │   ├── client.rs   Async IPC client, clock estimation, reconnect
+│   │   │   ├── fsm.rs      State machine transitions, apply_event
+│   │   │   ├── track.rs    TrackInfo, Playlist, LrcData, YTSearchResult
+│   │   │   ├── wire.rs     MessagePack encode/decode for pulse socket
+│   │   │   ├── paths.rs    Termux-aware path resolution
+│   │   │   ├── spotify.rs  Spotify types
+│   │   │   ├── log.rs      File logger
+│   │   │   ├── validate.rs Validated constructors
+│   │   │   └── tripwire.rs Fail-point injection (debug-fail feature)
+│   │   ├── audio/          Audio playback backends
+│   │   │   ├── mod.rs      Module declarations
+│   │   │   ├── mixer.rs    AudioMixer: dual-player crossfade, decode threads
+│   │   │   ├── eq.rs       15-band parametric EQ (fundsp), reverb
+│   │   │   ├── backend.rs  AudioEvent, AudioError types
+│   │   │   ├── buffer.rs   RingBufferSource (lock-free)
+│   │   │   ├── decoder.rs  DecodeThread (symphonia + ring buffer)
+│   │   │   ├── symphonia.rs SymphoniaSource (file decoding)
+│   │   │   ├── silent.rs   NullMixer (no-op backend)
+│   │   │   └── pulse.rs    PulseAudioMixer (pulseaudio feature)
+│   │   ├── mpris/          MPRIS D-Bus integration (mpris feature)
+│   │   │   └── mod.rs
+│   │   └── gtmd/           Background daemon
+│   │       ├── mod.rs      Module declarations, re-exports
+│   │       ├── daemon.rs   Main event loop, client handling, command dispatch
+│   │       ├── config.rs   DaemonConfig (paths, settings)
+│   │       ├── library.rs  SQLite library (tracks, playlists, metadata)
+│   │       ├── queue.rs    Queue helpers (dual-list, path expansion)
+│   │       ├── youtube.rs  YouTube search/streams via innertube-rs (youtube feature)
+│   │       ├── spotify.rs  Spotify Web API integration
+│   │       ├── cover.rs    Cover art (Deezer API + LRU cache)
+│   │       ├── lyrics.rs   Lyrics (lrclib.net + disk cache)
+│   │       ├── deezer.rs   Deezer metadata enrichment
+│   │       ├── tags.rs     Audio tag writing (lofty)
+│   │       └── cleaner.rs  YouTube title/filename cleaning
+│   └── tests/              Integration tests (core, audio, daemon)
+├── release-gen/            Build-time tool for shell completions (standalone crate)
+├── docs/                   Documentation (manpage sources)
+├── scripts/build/          Build scripts (packaging, manpages, verification)
+├── dist/                   Packaging files (systemd service, desktop entry, termux/rpm/arch)
+├── assets/                 Icons and artwork
+├── Formula/                Homebrew formula
+├── artifacts/              Generated manpages and completions
+├── Makefile                Build targets (release, test, man, completions, deb, rpm)
+├── Cargo.toml              Workspace root (single member: gtm)
+└── flake.nix               Nix flake
 ```
 
 ## Key Source Files
 
-| File                     | Purpose                                                                         |
-| ------------------------ | ------------------------------------------------------------------------------- |
-| `gtm/src/app.rs`         | Application state machine: input handling, IPC dispatch, crossfade, preferences |
-| `gtm/src/ui.rs`          | TUI rendering: all widgets, layout, tab content, overlays, notifications        |
-| `gtm/src/keymap.rs`      | Context-aware keybinding dispatch (Global, Normal, List)                        |
-| `gtm/src/theme.rs`       | 16 built-in themes + TOML user themes, contrast-safe rendering                  |
-| `gtm/src/footer.rs`      | Modular footer: 14 module types, 3 built-in presets, TOML user presets          |
-| `gtm/src/picker.rs`      | Picker overlay manager: LIFO stack of 15 picker types                           |
-| `gtm/src/cli.rs`         | CLI command definitions (30+ subcommands via clap)                              |
-| `gtmd/src/daemon.rs`     | Main daemon logic: tokio event loop, client handling, command dispatch          |
-| `gtmd/src/library.rs`    | SQLite library: tracks, playlists, metadata extraction, M3U                     |
-| `shared/src/ipc.rs`    | IPC protocol: wire format, 68 typed commands, 30+ events                        |
-| `shared/src/state.rs`  | DaemonState, EQ presets (16), easing functions (7)                              |
-| `shared/src/client.rs` | Async IPC client: reconnection, clock estimation, typed API                     |
-| `audio/src/mixer.rs` | Audio mixer: dual-player crossfade, decode threads, ring buffer                 |
-| `audio/src/eq.rs`    | 15-band parametric EQ (fundsp) + stereo reverb                                  |
+| File                       | Purpose                                                                       |
+| -------------------------- | ----------------------------------------------------------------------------- |
+| `gtm/src/app.rs`           | Application state machine: input handling, IPC dispatch, crossfade, preferences |
+| `gtm/src/ui.rs`            | TUI rendering: all widgets, layout, tab content, overlays, notifications      |
+| `gtm/src/keymap.rs`        | Context-aware keybinding dispatch (Global, Normal, List)                      |
+| `gtm/src/theme.rs`         | 16 built-in themes + TOML user themes, contrast-safe rendering                |
+| `gtm/src/footer.rs`        | Modular footer: 14 module types, 3 built-in presets, TOML user presets        |
+| `gtm/src/picker.rs`        | Picker overlay manager: LIFO stack of 15 picker types                         |
+| `gtm/src/cli.rs`           | CLI command definitions (30+ subcommands via clap)                            |
+| `gtm/src/gtmd/daemon.rs`   | Main daemon logic: tokio event loop, client handling, command dispatch        |
+| `gtm/src/gtmd/library.rs`  | SQLite library: tracks, playlists, metadata extraction, M3U                   |
+| `gtm/src/shared/ipc.rs`    | IPC protocol: wire format, 68 typed commands, 30+ events                      |
+| `gtm/src/shared/state.rs`  | DaemonState, EQ presets (16), easing functions (7)                            |
+| `gtm/src/shared/client.rs` | Async IPC client: reconnection, clock estimation, typed API                   |
+| `gtm/src/audio/mixer.rs`   | Audio mixer: dual-player crossfade, decode threads, ring buffer               |
+| `gtm/src/audio/eq.rs`      | 15-band parametric EQ (fundsp) + stereo reverb                                |
 
 ## Manpage generation
 
@@ -239,17 +234,17 @@ This guarantees compatibility with Debian 12 (bookworm) and newer.
 
 ## Crate layout
 
-The player is split into small crates so you can tweak just the component you
-care about:
+The player is a single crate (`gtm`) whose subsystems live as module trees so
+you can tweak just the component you care about:
 
-| Crate | Description |
+| Module | Description |
 |---|---|
-| `shared` | Shared types, IPC protocol, state machine, `DaemonClient` |
-| `audio` | Audio playback backend (rodio + symphonia and fundsp) |
-| `gtmd` | Daemon: manages queue, library, IPC socket |
-| `gtm` | Client: TUI and CLI interface |
-| `mpris` | MPRIS D-Bus interface (optional) |
-| `release-gen` | Shell-completion generator used by the release pipeline |
+| `gtm::shared` | Shared types, IPC protocol, state machine, `DaemonClient` |
+| `gtm::audio` | Audio playback backend (rodio + symphonia and fundsp) |
+| `gtm::gtmd` | Daemon: manages queue, library, IPC socket (bin `gtmd`) |
+| `gtm::mpris` | MPRIS D-Bus interface (mpris feature) |
+| `gtm::*` | Client: TUI and CLI interface (bin `gtm`, tui feature) |
+| `release-gen` | Shell-completion generator used by the release pipeline (standalone crate) |
 
 Every change must pass all three before it is mergeable:
 

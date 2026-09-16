@@ -24,5 +24,5 @@ async fn main() {
         return;
     }
 
-    gtmd::run().await;
+    gtm::run().await;
 }

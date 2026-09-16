@@ -1,0 +1,221 @@
+// Copyright (c) 2026
+// Author: prjctimg <prjctimg@outlook.com>
+// Daemon configuration: CLI args, paths, and defaults
+//
+// This is free software released under the GPL-3.0 license.
+
+use std::path::PathBuf;
+
+use clap::Parser;
+
+use crate::gtmd::cover::CoverProvider;
+use crate::shared::{is_termux, resolve_command_socket, resolve_pulse_socket, termux_music_dirs};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum AudioBackendKind {
+    #[default]
+    Rodio,
+    #[cfg(feature = "pulseaudio")]
+    PulseAudio,
+}
+
+#[derive(Debug, Clone)]
+pub struct DaemonConfig {
+    pub socket_path: PathBuf,
+    pub socket_pulse_path: PathBuf,
+    pub library_path: PathBuf,
+    pub config_dir: PathBuf,
+    pub cache_dir: PathBuf,
+    pub data_dir: PathBuf,
+    pub state_file: PathBuf,
+    pub library_paths: Vec<PathBuf>,
+    pub log_file: Option<PathBuf>,
+    pub verbose: bool,
+    pub test_mode: bool,
+    pub audio_backend: AudioBackendKind,
+    /// Permit the daemon to physically delete audio files (and their `.lrc`
+    /// sidecars) when a track is removed from the library. When disabled, the
+    /// remove action is refused with an error instead of touching the file.
+    /// Defaults to allowing deletion (matches pre-flag behaviour).
+    pub allow_delete_files: bool,
+    /// Artwork source preference, read from the TUI's config.toml.
+    pub cover_provider: CoverProvider,
+}
+
+#[derive(Parser, Debug)]
+#[command(name = "gtmd", about = "gtm background audio daemon")]
+pub struct DaemonArgs {
+    #[arg(long, help = "Unix socket path", value_hint = clap::ValueHint::AnyPath)]
+    pub socket: Option<String>,
+
+    #[arg(long, help = "Library database path", value_hint = clap::ValueHint::FilePath)]
+    pub library: Option<String>,
+
+    #[arg(long, help = "Config directory path", value_hint = clap::ValueHint::DirPath)]
+    pub config: Option<String>,
+
+    #[arg(short, long, help = "Enable verbose logging")]
+    pub verbose: bool,
+
+    #[arg(long, help = "Test mode (ephemeral socket, no daemonize)")]
+    pub test_mode: bool,
+
+    #[arg(long, help = "Audio backend", value_parser = ["rodio", "pulseaudio"])]
+    pub backend: Option<String>,
+}
+
+impl DaemonConfig {
+    pub fn load(args: &DaemonArgs) -> Self {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+        let home_path = PathBuf::from(&home);
+
+        let data_dir = if let Some(ref c) = args.config {
+            PathBuf::from(c)
+        } else {
+            let base = std::env::var("XDG_DATA_HOME")
+                .ok()
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .unwrap_or_else(|| home_path.join(".local/share"));
+            base.join("gtm")
+        };
+
+        let config_dir = if let Some(ref c) = args.config {
+            PathBuf::from(c)
+        } else {
+            let base = std::env::var("XDG_CONFIG_HOME")
+                .ok()
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .unwrap_or_else(|| home_path.join(".config"));
+            base.join("gtm")
+        };
+
+        let cache_dir = if let Some(ref c) = args.config {
+            PathBuf::from(c).join("cache")
+        } else {
+            let base = std::env::var("XDG_CACHE_HOME")
+                .ok()
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .unwrap_or_else(|| home_path.join(".cache"));
+            base.join("gtm")
+        };
+
+        let socket_path = if let Some(ref s) = args.socket {
+            PathBuf::from(s)
+        } else {
+            resolve_command_socket()
+        };
+
+        let socket_pulse_path = if let Some(ref s) = args.socket {
+            let mut p = PathBuf::from(s);
+            let name = p
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "gtmd.sock".into());
+            p.set_file_name(format!("{name}.pulse"));
+            p
+        } else {
+            resolve_pulse_socket()
+        };
+
+        let library_path = if let Some(ref l) = args.library {
+            PathBuf::from(l)
+        } else {
+            data_dir.join("library.db")
+        };
+
+        let log_file = if args.test_mode {
+            None
+        } else {
+            Some(data_dir.join("gtmd.log"))
+        };
+
+        let audio_backend = match args.backend.as_deref() {
+            #[cfg(feature = "pulseaudio")]
+            Some("pulseaudio") => AudioBackendKind::PulseAudio,
+            Some("rodio") => AudioBackendKind::Rodio,
+            // No explicit backend: on Termux, rodio/cpal cannot open an audio
+            // device, so default to PulseAudio when it is compiled in.
+            #[cfg(feature = "pulseaudio")]
+            _ if is_termux() => {
+                eprintln!(
+                    "gtmd: Termux detected: using the PulseAudio backend. \
+                     The server will be started automatically if needed."
+                );
+                AudioBackendKind::PulseAudio
+            }
+            #[cfg(not(feature = "pulseaudio"))]
+            _ if is_termux() => {
+                eprintln!(
+                    "gtmd: Termux detected but this build lacks the `pulseaudio` feature. \
+                     Rebuild with `--features pulseaudio` so audio can be output on Termux."
+                );
+                AudioBackendKind::Rodio
+            }
+            _ => AudioBackendKind::Rodio,
+        };
+
+        // Default library paths: data_dir/audio and user's Music directory
+        let mut library_paths = vec![data_dir.join("audio")];
+        if let Ok(home) = std::env::var("HOME") {
+            let music = PathBuf::from(home).join("Music");
+            if music.exists() {
+                library_paths.push(music);
+            }
+        }
+        // Termux: also scan shared storage (/sdcard/Music)
+        library_paths.extend(termux_music_dirs());
+
+        let state_file = data_dir.join("state.json");
+
+        // `cover_provider` lives in the same config.toml the gtm TUI edits.
+        // Known keys are honored; anything unrecognized falls back to Auto.
+        let cover_provider = std::fs::read_to_string(config_dir.join("config.toml"))
+            .ok()
+            .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
+            .and_then(|v| {
+                v.get("cover_provider")
+                    .and_then(|p| p.as_str())
+                    .map(CoverProvider::from_str_lossy)
+            })
+            .unwrap_or_default();
+
+        DaemonConfig {
+            socket_path,
+            socket_pulse_path,
+            library_path,
+            config_dir,
+            cache_dir,
+            data_dir,
+            state_file,
+            library_paths,
+            log_file,
+            verbose: args.verbose,
+            test_mode: args.test_mode,
+            audio_backend,
+            allow_delete_files: true,
+            cover_provider,
+        }
+    }
+
+    pub fn create_dirs(&self) -> std::io::Result<()> {
+        std::fs::create_dir_all(&self.data_dir)?;
+        std::fs::create_dir_all(&self.cache_dir)?;
+        std::fs::create_dir_all(&self.config_dir)?;
+        if let Some(parent) = self.socket_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if let Some(parent) = self.socket_pulse_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        if let Some(ref log) = self.log_file
+            && let Some(parent) = log.parent()
+        {
+            std::fs::create_dir_all(parent)?;
+        }
+        Ok(())
+    }
+}

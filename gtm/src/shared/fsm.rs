@@ -1,0 +1,411 @@
+// Copyright (c) 2026
+// Author: prjctimg <prjctimg@outlook.com>
+// Daemon state machine: transitions, event application, and debug invariants
+//
+// This is free software released under the GPL-3.0 license.
+//
+// ```text
+//  Playback state machine:
+//
+//  ┌──────────┐   play()    ┌─────────┐   pause()   ┌────────┐
+//  │  Stopped  │───────────▶│ Playing │────────────▶│ Paused │
+//  └──────────┘             └─────────┘             └────────┘
+//       ▲                       │                       │
+//       │                       │ stop()                │ stop()
+//       │                       ▼                       ▼
+//       └───────────────────────────────────────────────┘
+//
+//  All transitions increment `version` for optimistic concurrency.
+//  `check_invariants()` (debug-only) asserts safety properties.
+// ```
+
+use crate::shared::MAX_VOLUME;
+use crate::shared::Result;
+use crate::shared::global::{
+    CoreError, CrossfadeConfig, DaemonState, LoudnessMode, MAX_SPEED, MIN_SPEED, PlaybackStatus,
+    RepeatMode, ReverbConfig,
+};
+use crate::shared::ipc::DaemonEvent;
+use crate::shared::track::TrackInfo;
+use crate::shared::tripwire::{self, FailPoint};
+
+impl DaemonState {
+    /// Transition to Playing with the given track.
+    /// Allowed from: Stopped, Paused.
+    pub fn play(&mut self, track: TrackInfo) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
+        if self.status != PlaybackStatus::Stopped && self.status != PlaybackStatus::Paused {
+            return Err(CoreError::Daemon(format!(
+                "play() from invalid state: {:?}",
+                self.status
+            )));
+        }
+        self.status = PlaybackStatus::Playing;
+        self.current_track = Some(track);
+        self.commit();
+        Ok(())
+    }
+
+    /// Transition to Paused.
+    /// Allowed from: Playing.
+    pub fn pause(&mut self) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
+        if self.status != PlaybackStatus::Playing {
+            return Err(CoreError::Daemon(format!(
+                "pause() from invalid state: {:?}",
+                self.status
+            )));
+        }
+        self.status = PlaybackStatus::Paused;
+        self.commit();
+        Ok(())
+    }
+
+    /// Transition to Stopped.
+    /// Allowed from: Playing, Paused.  No-op if already Stopped.
+    pub fn stop(&mut self) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
+        if self.status == PlaybackStatus::Stopped {
+            return Ok(());
+        }
+        self.status = PlaybackStatus::Stopped;
+        self.current_track = None;
+        self.time_pos = 0.0;
+        self.commit();
+        Ok(())
+    }
+
+    /// Seek to absolute position in seconds. Clamped to [0, duration].
+    pub fn seek(&mut self, pos: f64) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
+        self.time_pos = pos.clamp(0.0, self.duration);
+        self.version += 1;
+        #[cfg(debug_assertions)]
+        {
+            self.check_invariants();
+        }
+        Ok(())
+    }
+
+    /// Set volume, clamped to [0, MAX_VOLUME].
+    pub fn set_volume(&mut self, vol: u8) -> Result<()> {
+        tripwire::check(FailPoint::VolumeChange)?;
+        self.volume = vol.min(MAX_VOLUME);
+        self.mute = false;
+        self.commit();
+        Ok(())
+    }
+
+    /// Set playback rate, clamped to [0.25, 2.0]; non-finite resets to 1.0.
+    pub fn set_speed(&mut self, rate: f32) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
+        let clamped = if rate.is_finite() {
+            rate.clamp(MIN_SPEED, MAX_SPEED)
+        } else {
+            1.0
+        };
+        self.audio.speed = clamped;
+        self.commit();
+        Ok(())
+    }
+
+    pub fn toggle_shuffle(&mut self) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
+        self.shuffle = !self.shuffle;
+        self.commit();
+        Ok(())
+    }
+
+    /// Enable or disable low-power mode.
+    pub fn set_low_power(&mut self, enabled: bool) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
+        self.low_power = enabled;
+        self.commit();
+        Ok(())
+    }
+
+    pub fn set_repeat_mode(&mut self, mode: RepeatMode) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
+        self.repeat = mode;
+        self.commit();
+        Ok(())
+    }
+
+    pub fn toggle_mute(&mut self) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
+        self.mute = !self.mute;
+        self.commit();
+        Ok(())
+    }
+
+    pub fn set_crossfade(&mut self, enabled: bool, duration: u8) -> Result<()> {
+        tripwire::check(FailPoint::CrossfadeApply)?;
+        self.crossfade = if enabled {
+            Some(CrossfadeConfig {
+                enabled: true,
+                duration_secs: duration.min(30),
+            })
+        } else {
+            None
+        };
+        self.commit();
+        Ok(())
+    }
+
+    /// Set loudness mode (Off, Track, Album, Auto).
+    pub fn set_loudness_mode(&mut self, mode: LoudnessMode) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
+        self.audio.loudness_mode = mode;
+        self.commit();
+        Ok(())
+    }
+
+    /// Set pre-gain in dB.
+    pub fn set_pre_gain(&mut self, pre_gain_db: f32) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
+        self.audio.pre_gain_db = pre_gain_db;
+        self.commit();
+        Ok(())
+    }
+
+    /// Set gapless playback.
+    pub fn set_gapless(&mut self, enabled: bool) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
+        self.gapless = enabled;
+        self.commit();
+        Ok(())
+    }
+
+    /// Set dynamic mode configuration.
+    pub fn set_dynamic_mode(
+        &mut self,
+        enabled: bool,
+        min_queue_remaining: Option<u32>,
+        max_history: Option<u32>,
+    ) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
+        self.dynamic_mode.enabled = enabled;
+        if let Some(min) = min_queue_remaining {
+            self.dynamic_mode.min_queue_remaining = min;
+        }
+        if let Some(max) = max_history {
+            self.dynamic_mode.max_history = max;
+        }
+        self.commit();
+        Ok(())
+    }
+
+    /// Set scrobble configuration.
+    pub fn set_scrobble(
+        &mut self,
+        enabled: bool,
+        api_key: Option<String>,
+        session_token: Option<String>,
+        min_play_secs: Option<u32>,
+        min_play_pct: Option<f32>,
+    ) -> Result<()> {
+        tripwire::check(FailPoint::StateTransition)?;
+        self.scrobble.enabled = enabled;
+        self.scrobble.api_key = api_key;
+        self.scrobble.session_token = session_token;
+        self.scrobble.min_play_secs = min_play_secs;
+        self.scrobble.min_play_pct = min_play_pct;
+        self.commit();
+        Ok(())
+    }
+
+    /// Consume the front of the one-time user queue.  The entry at the head
+    /// is the currently-playing track; advancing removes it and returns the
+    /// next pending user entry (now at the head), or None when the queue is
+    /// exhausted.
+    pub fn advance_queue(&mut self) -> Result<Option<&TrackInfo>> {
+        tripwire::check(FailPoint::QueueAdvance)?;
+        if self.queue.is_empty() {
+            return Ok(None);
+        }
+        self.queue.remove(0);
+        self.queue_cursor = 0;
+        self.commit();
+        Ok(self.queue.first())
+    }
+
+    /// Apply a DaemonEvent to mirror daemon state on the client side.
+    pub fn apply_event(&mut self, event: &DaemonEvent) {
+        match event {
+            DaemonEvent::PlaybackStarted {
+                track,
+                time_pos,
+                duration,
+                ..
+            } => {
+                self.current_track = Some(track.clone());
+                self.status = PlaybackStatus::Playing;
+                self.time_pos = *time_pos;
+                self.duration = *duration;
+                self.radio_title = None;
+            }
+            DaemonEvent::PlaybackPaused { time_pos } => {
+                self.status = PlaybackStatus::Paused;
+                self.time_pos = *time_pos;
+            }
+            DaemonEvent::PlaybackStopped => {
+                self.status = PlaybackStatus::Stopped;
+                self.current_track = None;
+                self.time_pos = 0.0;
+                self.radio_title = None;
+            }
+            DaemonEvent::PositionChanged { time_pos } => {
+                self.time_pos = *time_pos;
+            }
+            DaemonEvent::DurationChanged { duration } => {
+                self.duration = *duration;
+            }
+            DaemonEvent::VolumeChanged { volume } => {
+                self.volume = *volume;
+            }
+            DaemonEvent::QueueChanged { queue, cursor } => {
+                self.queue = queue.clone();
+                self.queue_cursor = *cursor;
+            }
+            DaemonEvent::QueueIndexChanged { index } => {
+                self.queue_cursor = *index;
+            }
+            DaemonEvent::RepeatModeChanged { mode } => {
+                self.repeat = *mode;
+            }
+            DaemonEvent::ShuffleChanged { enabled } => {
+                self.shuffle = *enabled;
+            }
+            DaemonEvent::SleepTimerTick { remaining_secs } => {
+                self.sleep_timer = Some(*remaining_secs);
+            }
+            DaemonEvent::TrackEnded => {
+                self.status = PlaybackStatus::Stopped;
+                self.current_track = None;
+                self.time_pos = 0.0;
+                self.radio_title = None;
+                // Note: do NOT clear the queue here: the daemon owns queue
+                // consumption and mirrors every change via QueueChanged.  Wiping
+                // it here previously erased pending entries on every track end.
+            }
+            DaemonEvent::RadioTitleChanged { title } => {
+                self.radio_title = title.clone();
+            }
+            DaemonEvent::EqEnabledChanged { enabled } => {
+                self.audio.eq_enabled = *enabled;
+            }
+            DaemonEvent::CrossfadeChanged {
+                enabled,
+                duration_secs,
+            } => {
+                self.crossfade = if *enabled {
+                    Some(CrossfadeConfig {
+                        enabled: true,
+                        duration_secs: *duration_secs,
+                    })
+                } else {
+                    None
+                };
+            }
+            DaemonEvent::ReverbChanged { enabled, room_size } => {
+                self.audio.reverb = ReverbConfig {
+                    enabled: *enabled,
+                    room_size: *room_size,
+                };
+            }
+            DaemonEvent::SpeedChanged { rate } => {
+                let clamped = if rate.is_finite() {
+                    rate.clamp(MIN_SPEED, MAX_SPEED)
+                } else {
+                    1.0
+                };
+                self.audio.speed = clamped;
+            }
+            DaemonEvent::MonoChanged { enabled } => self.mono = *enabled,
+            DaemonEvent::LowPowerChanged { enabled } => self.low_power = *enabled,
+            DaemonEvent::AudioDeviceChanged { name } => self.audio.audio_device = name.clone(),
+            DaemonEvent::EqPresetChanged { preset } => {
+                self.audio.eq_preset = *preset;
+            }
+            DaemonEvent::LoudnessModeChanged { mode } => {
+                self.audio.loudness_mode = *mode;
+            }
+            DaemonEvent::PreGainChanged { pre_gain_db } => {
+                self.audio.pre_gain_db = *pre_gain_db;
+            }
+            DaemonEvent::GaplessChanged { enabled } => {
+                self.gapless = *enabled;
+            }
+            DaemonEvent::DynamicModeChanged {
+                enabled,
+                min_queue_remaining,
+                max_history,
+            } => {
+                self.dynamic_mode.enabled = *enabled;
+                self.dynamic_mode.min_queue_remaining = *min_queue_remaining;
+                self.dynamic_mode.max_history = *max_history;
+            }
+            DaemonEvent::ScrobbleConfigChanged { enabled } => {
+                self.scrobble.enabled = *enabled;
+            }
+            DaemonEvent::CrossfadeCountdown { .. } => {
+                // Client-side-only signal; no mirror state field.
+            }
+            DaemonEvent::LoudnessScanProgress { .. } => {}
+            DaemonEvent::LoudnessScanDone { .. } => {}
+            DaemonEvent::SpectrumChanged { levels } => {
+                self.audio_levels = levels.clone();
+                return; // don't bump version for high-frequency spectrum
+            }
+            // Info-only or app-level events with no DaemonState mirror field.
+            // Listing every variant here (instead of a catch-all `_`) forces a
+            // compile check when new events are added to DaemonEvent.
+            DaemonEvent::MetadataChanged { .. }
+            | DaemonEvent::SleepTimerExpired
+            | DaemonEvent::Custom { .. }
+            | DaemonEvent::SpotifyStatusChanged
+            | DaemonEvent::Heartbeat => {}
+        }
+        self.commit();
+    }
+
+    /// Bump the version and assert invariants after a successful transition.
+    fn commit(&mut self) {
+        self.version += 1;
+        #[cfg(debug_assertions)]
+        self.check_invariants();
+    }
+
+    /// Assert all internal invariants. Only compiled in debug/test builds.
+    pub fn check_invariants(&self) {
+        assert!(
+            self.volume <= MAX_VOLUME,
+            "volume {} exceeds {}",
+            self.volume,
+            MAX_VOLUME
+        );
+        assert!(
+            self.queue.is_empty() || self.queue_cursor < self.queue.len() as u64,
+            "queue_cursor {} out of bounds for queue len {}",
+            self.queue_cursor,
+            self.queue.len()
+        );
+        assert!(self.time_pos >= 0.0, "negative time_pos {}", self.time_pos);
+        assert!(
+            self.time_pos <= self.duration || self.duration == 0.0,
+            "time_pos {} exceeds duration {}",
+            self.time_pos,
+            self.duration
+        );
+        assert!(
+            !(self.status == PlaybackStatus::Playing && self.current_track.is_none()),
+            "status is Playing but current_track is None"
+        );
+        assert!(
+            self.crossfade
+                .as_ref()
+                .is_none_or(|c| !c.enabled || c.duration_secs > 0),
+            "crossfade enabled with duration_secs = 0"
+        );
+    }
+}

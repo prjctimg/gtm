@@ -18,6 +18,14 @@ use crate::footer::{
 use crate::mouse::MouseZone;
 use crate::picker::{Picker, PickerId, PickerSource};
 use crate::progress::{ProgressStyle, render_progress, render_progress_styled, render_ratio};
+use crate::shared::daemon::ensure_daemon_running;
+use crate::shared::global::{EqPreset, PlaybackStatus};
+use crate::shared::ipc::HealthStatus;
+use crate::shared::log::redirect_stderr;
+use crate::shared::radio::RadioStation;
+use crate::shared::resolve_command_socket;
+use crate::shared::spotify::SpotifySearchKind;
+use crate::shared::track::TrackInfo;
 use crate::theme::blend_colors;
 pub use crate::theme::readable_fg;
 use crate::visualizer::VisualizerPreset;
@@ -36,14 +44,6 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap};
 use ratatui_image::StatefulImage;
 use ratatui_image::protocol::StatefulProtocol;
-use shared::daemon::ensure_daemon_running;
-use shared::global::{EqPreset, PlaybackStatus};
-use shared::ipc::HealthStatus;
-use shared::log::redirect_stderr;
-use shared::radio::RadioStation;
-use shared::resolve_command_socket;
-use shared::spotify::SpotifySearchKind;
-use shared::track::TrackInfo;
 
 /// Grouped render helpers: previously free `render_*` functions.
 pub struct Render;
