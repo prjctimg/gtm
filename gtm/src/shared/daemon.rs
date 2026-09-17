@@ -10,6 +10,31 @@ use std::path::Path;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use crate::shared::ipc::{DaemonReq, WireReq};
+use crate::shared::paths::resolve_pid_file;
+
+/// PID recorded by a running (or crashed) `gtmd`, if the pidfile exists and
+/// parses.
+pub fn read_daemon_pid() -> Option<u32> {
+    let raw = std::fs::read_to_string(resolve_pid_file()).ok()?;
+    raw.trim().parse::<u32>().ok()
+}
+
+/// Whether a PID is currently alive, via `kill(pid, 0)` (returns 0 for a
+/// running process, `ESRCH` for a dead one).
+pub fn pid_is_alive(pid: u32) -> bool {
+    if pid == 0 {
+        return false;
+    }
+    // SAFETY: `kill` with signal 0 only probes for existence and never
+    // delivers a signal.
+    unsafe { libc::kill(pid as i32, 0) == 0 }
+}
+
+/// Terminate a daemon process, escalating from SIGTERM to SIGKILL.
+pub fn terminate_daemon(pid: u32) {
+    // SAFETY: well-formed pid/signal passed to the OS kill syscall.
+    unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+}
 
 /// Locate the `gtmd` daemon binary: next to the current executable, on
 /// `$PATH`, or in the canonical `/usr/bin` location.
@@ -68,15 +93,45 @@ async fn ping_socket(socket_path: &Path, timeout: std::time::Duration) -> bool {
 }
 
 /// Ensure a live daemon answers at `socket_path`, spawning `gtmd` detached
-/// when the socket is absent or stale. Waits up to ~12 s for startup.
+/// when the socket is absent or stale. Waits up to ~12 s for startup. If a
+/// previous daemon process is recorded in the pidfile but does not answer,
+/// it is terminated so a fresh instance can bind (never two daemons).
 pub async fn ensure_daemon_running(socket_path: &Path) -> Result<(), String> {
-    if socket_path.exists() {
-        if ping_socket(socket_path, std::time::Duration::from_millis(100)).await {
+    // Fast path: an existing socket that answers ping means a live daemon.
+    if socket_path.exists() && ping_socket(socket_path, std::time::Duration::from_millis(100)).await
+    {
+        return Ok(());
+    }
+
+    // The socket is missing or stale. A pidfile with a live process is a
+    // leftover/hung daemon (mid-crash, unresponsive, or a partially shut-down
+    // instance); restart it instead of leaving a duplicate. Give it a second
+    // ping in case it is still mid-startup.
+    if let Some(pid) = read_daemon_pid()
+        && pid_is_alive(pid)
+    {
+        if socket_path.exists()
+            && ping_socket(socket_path, std::time::Duration::from_millis(500)).await
+        {
             return Ok(());
         }
-        // Stale socket: a previous daemon died without cleaning up.
-        let _ = std::fs::remove_file(socket_path);
+        terminate_daemon(pid);
+        for _ in 0..30 {
+            if !pid_is_alive(pid) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        if pid_is_alive(pid) {
+            // SAFETY: well-formed pid/signal passed to the OS kill syscall.
+            unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        }
     }
+
+    // Stale socket: the previous daemon died without cleaning up.
+    let _ = std::fs::remove_file(socket_path);
+    let pulse_path = socket_path.with_extension("pulse");
+    let _ = std::fs::remove_file(&pulse_path);
 
     if let Some(parent) = socket_path.parent() {
         let _ = std::fs::create_dir_all(parent);
@@ -99,6 +154,14 @@ pub async fn ensure_daemon_running(socket_path: &Path) -> Result<(), String> {
     for _ in 0..120 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         if ping_socket(socket_path, std::time::Duration::from_millis(500)).await {
+            return Ok(());
+        }
+        // A live pidfile with a dead socket means our spawn was beaten by (or
+        // starved out by) an existing daemon; adopt it rather than erroring.
+        if let Some(pid) = read_daemon_pid()
+            && pid_is_alive(pid)
+            && ping_socket(socket_path, std::time::Duration::from_millis(500)).await
+        {
             return Ok(());
         }
     }

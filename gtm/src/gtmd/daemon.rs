@@ -4,7 +4,6 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -30,7 +29,7 @@ use crate::shared::global::{
 };
 use crate::shared::ipc::{
     CacheKind, ComponentHealth, DaemonEvent, DaemonReq, DaemonRes, HealthReport, HealthStatus,
-    LibraryAction, PROTOCOL_VERSION, QueueAction, SyncKind, WireReq,
+    LibraryAction, QueueAction, SyncKind, WireReq,
 };
 use crate::shared::playlist::{M3u8Format, PlaylistFormat, PlsFormat};
 use crate::shared::secret::{
@@ -337,6 +336,13 @@ enum HistoryEntry {
     Default { index: usize, track: TrackInfo },
 }
 
+/// Upper bound on the in-memory play history. Back-navigation only walks a
+/// handful of recent tracks, so a long auto-advancing session must not retain
+/// one full `TrackInfo` per track played (a second library copy over time).
+const MAX_HISTORY: usize = 256;
+/// Upper bound on the radio station rotation ring.
+const MAX_RADIO_HISTORY: usize = 200;
+
 struct SyncProgress {
     running: AtomicBool,
     kind: std::sync::Mutex<SyncKind>,
@@ -545,9 +551,19 @@ impl Cmd {
         inner.play_session.fetch_add(1, Ordering::Release);
         let (token, config_dir, duration_hint) = {
             let spotify = inner.spotify.lock().await;
-            if !spotify.can_stream().await {
+            if !spotify.linked() {
                 return Ok(DaemonRes::Error {
-                    message: "spotify streaming requires a linked Premium account".into(),
+                    message: "spotify not linked".into(),
+                });
+            }
+            if !spotify.is_premium() {
+                return Ok(DaemonRes::Error {
+                    message: "spotify streaming requires a Premium account".into(),
+                });
+            }
+            if spotify.access_token().await.is_none() {
+                return Ok(DaemonRes::Error {
+                    message: "spotify access token unavailable; re-link the account".into(),
                 });
             }
             let token = spotify.access_token().await.unwrap_or_default();
@@ -1854,6 +1870,7 @@ impl Spotify {
                                 if spotify.linked() {
                                     let count = playlists.len();
                                     spotify.commit_sync(user, playlists);
+                                    spotify.refresh_playback().await;
                                     info!("spotify playlists synced ({:?} playlists)", count);
                                 }
                             }
@@ -1940,7 +1957,9 @@ impl Spotify {
             tokio::time::timeout(Duration::from_secs(60), SpotifyManager::run_sync(client)).await;
         match res {
             Ok(Ok((user, playlists))) => {
-                inner.spotify.lock().await.commit_sync(user, playlists);
+                let mut spotify = inner.spotify.lock().await;
+                spotify.commit_sync(user, playlists);
+                spotify.refresh_playback().await;
                 Ok(DaemonRes::Ok)
             }
             Ok(Err(e)) => Ok(DaemonRes::Error { message: e }),
@@ -3107,6 +3126,54 @@ impl LibraryHandler {
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
+            LibraryAction::GetMostPlayed { limit } => {
+                let limit = *limit;
+                let data_dir = inner.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.list_most_played(limit)
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(tracks) => DaemonRes::Tracks {
+                        tracks: Box::new(tracks),
+                    },
+                    Err(e) => DaemonRes::Error { message: e },
+                }
+            }
+            LibraryAction::GetRecentlyPlayed { limit } => {
+                let limit = *limit;
+                let data_dir = inner.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.list_recently_played(limit)
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(tracks) => DaemonRes::Tracks {
+                        tracks: Box::new(tracks),
+                    },
+                    Err(e) => DaemonRes::Error { message: e },
+                }
+            }
+            LibraryAction::GetRecentlyAdded { limit } => {
+                let limit = *limit;
+                let data_dir = inner.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.list_recently_added(limit)
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(tracks) => DaemonRes::Tracks {
+                        tracks: Box::new(tracks),
+                    },
+                    Err(e) => DaemonRes::Error { message: e },
+                }
+            }
             LibraryAction::GetPlaylists => {
                 let data_dir = inner.config.data_dir.clone();
                 let result = tokio::task::spawn_blocking(move || {
@@ -3150,6 +3217,21 @@ impl LibraryHandler {
                         let playlists = vec![playlist];
                         DaemonRes::Playlists { playlists }
                     }
+                    Err(e) => DaemonRes::Error { message: e },
+                }
+            }
+            LibraryAction::RenamePlaylist { id, name } => {
+                let id = *id;
+                let name = name.trim().to_string();
+                let data_dir = inner.config.data_dir.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    let lib = Library::new(data_dir.to_str().unwrap_or(""))?;
+                    lib.rename_playlist(id, &name).map(|_| ())
+                })
+                .await
+                .map_err(|e| CoreError::Daemon(e.to_string()))?;
+                match result {
+                    Ok(_) => DaemonRes::Ok,
                     Err(e) => DaemonRes::Error { message: e },
                 }
             }
@@ -3885,7 +3967,6 @@ struct DaemonInner {
     /// stale auto-advance from overwriting a user-initiated playback switch.
     play_session: Arc<AtomicU64>,
     health: Arc<HealthTracker>,
-    client_auth: tokio::sync::Mutex<HashMap<ClientId, bool>>,
     active_clients: AtomicUsize,
     internal_req_tx: mpsc::UnboundedSender<DaemonReq>,
     /// Serializes state-mutating commands. Read-only commands take a read
@@ -4128,6 +4209,18 @@ impl Daemon {
             std::fs::create_dir_all(parent)
                 .map_err(|e| CoreError::Daemon(format!("create socket dir: {e}")))?;
         }
+        // Single-instance guard: refuse to steal a live daemon's socket. Only a
+        // stale pidfile (dead process) allows the leftover socket file to be
+        // cleared and this instance to bind, so concurrent clients can never
+        // end up with two daemons.
+        if !config.test_mode
+            && let Some(pid) = crate::shared::daemon::read_daemon_pid()
+            && crate::shared::daemon::pid_is_alive(pid)
+        {
+            return Err(CoreError::Daemon(format!(
+                "gtmd already running (pid {pid}); connect to the existing daemon"
+            )));
+        }
         if socket_path.exists() {
             match std::fs::remove_file(socket_path) {
                 Ok(()) => {}
@@ -4203,7 +4296,6 @@ impl Daemon {
             sleep_gen: Arc::new(AtomicU64::new(0)),
             play_session: Arc::new(AtomicU64::new(0)),
             health: Arc::new(HealthTracker::new(audio_backend_name)),
-            client_auth: tokio::sync::Mutex::new(HashMap::new()),
             active_clients: AtomicUsize::new(0),
             internal_req_tx,
             cmd_lock: tokio::sync::RwLock::new(()),
@@ -4324,6 +4416,7 @@ impl Daemon {
                     Ok(()) => info!("spotify auto-synced on startup"),
                     Err(e) => warn!("spotify auto-sync failed: {e}"),
                 }
+                spotify.refresh_playback().await;
             }
             drop(spotify);
             // The TUI only refreshes its Spotify pane when it hears this event,
@@ -4390,11 +4483,29 @@ impl Daemon {
         let mut poll_interval = tokio::time::interval(Duration::from_millis(16));
         let mut save_interval = tokio::time::interval(Duration::from_secs(60));
         let mut last_spectrum_tx = tokio::time::Instant::now();
+        let mut last_started_path: Option<String> = None;
         loop {
             tokio::select! {
                 _ = poll_interval.tick() => {
                     let result = { self.inner.mixer.lock().await.poll() };
                     Self::handle_audio_event(&self.inner, result).await;
+                    // Record a listen the first poll tick that observes a
+                    // going-to-play track (path changed mid-playback).
+                    let started = {
+                        let s = self.inner.state.read().await;
+                        if s.status == PlaybackStatus::Playing {
+                            s.current_track.as_ref().cloned()
+                        } else {
+                            None
+                        }
+                    };
+                    if let Some(t) = &started {
+                        let path = t.path.clone();
+                        if last_started_path.as_deref() != Some(path.as_str()) {
+                            last_started_path = Some(path);
+                            Self::record_play(&self.inner, t).await;
+                        }
+                    }
                     // Disable the visualizer (spectrum analysis + broadcast)
                     // when no TUI client is connected to conserve CPU.
                     if self.inner.active_clients.load(Ordering::Relaxed) > 0 {
@@ -4472,12 +4583,12 @@ impl Daemon {
                     tokio::spawn(async move {
                         if request_is_playback(&req) {
                             let _lock = inner.play_lock.write().await;
-                            if let Err(e) = Self::handle_request(&inner, &req, 0, true).await {
+                            if let Err(e) = Self::handle_request(&inner, &req, 0).await {
                                 warn!("internal command {:?} failed: {e}", req);
                             }
                         } else {
                             let _lock = inner.cmd_lock.write().await;
-                            if let Err(e) = Self::handle_request(&inner, &req, 0, true).await {
+                            if let Err(e) = Self::handle_request(&inner, &req, 0).await {
                                 warn!("internal command {:?} failed: {e}", req);
                             }
                         }
@@ -4561,7 +4672,6 @@ impl Daemon {
         inner: Arc<DaemonInner>,
         req_tx: mpsc::UnboundedSender<(ClientId, u64, DaemonReq, ReplyTx)>,
     ) {
-        inner.client_auth.lock().await.insert(client_id, false);
         inner.active_clients.fetch_add(1, Ordering::Relaxed);
 
         let (reader, writer) = stream.into_split();
@@ -4630,23 +4740,10 @@ impl Daemon {
                 }
             }
             token_reader.cancel();
-            inner_clone.client_auth.lock().await.remove(&client_id);
             inner_clone.active_clients.fetch_sub(1, Ordering::Relaxed);
             info!("client {client_id} disconnected");
-        });
-
-        let token_watchdog = token.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(Duration::from_secs(10)).await;
-            if !*inner
-                .client_auth
-                .lock()
-                .await
-                .get(&client_id)
-                .unwrap_or(&true)
-            {
-                warn!("client {client_id}: handshake timeout");
-                token_watchdog.cancel();
+            if inner_clone.active_clients.load(Ordering::Relaxed) == 0 {
+                Daemon::maybe_prune_idle(&inner_clone).await;
             }
         });
 
@@ -4717,26 +4814,6 @@ impl Daemon {
         req: DaemonReq,
         reply_tx: ReplyTx,
     ) {
-        let authenticated = {
-            inner
-                .client_auth
-                .lock()
-                .await
-                .get(&client_id)
-                .copied()
-                .unwrap_or(false)
-        };
-
-        if !authenticated && !matches!(req, DaemonReq::Handshake { .. }) {
-            let _ = reply_tx.send((
-                request_id,
-                DaemonRes::Error {
-                    message: "handshake required".to_string(),
-                },
-            ));
-            return;
-        }
-
         // Read-only commands share a read lock so they are not serialized
         // behind slow mutating commands (Spotify sync, library scan, audio
         // decode, YouTube download). This prevents fast IPC requests such as
@@ -4748,19 +4825,19 @@ impl Daemon {
         // caller for many seconds, but never `GetStatus`/`Ping`.
         let res = if is_read_only(&req) {
             let _guard = inner.cmd_lock.read().await;
-            Self::handle_request(&inner, &req, client_id, authenticated).await
+            Self::handle_request(&inner, &req, client_id).await
         } else if request_is_playback(&req) {
             let _guard = inner.play_lock.write().await;
-            Self::handle_request(&inner, &req, client_id, authenticated).await
+            Self::handle_request(&inner, &req, client_id).await
         } else if is_spotify_slow(&req) {
             let _guard = inner.spotify_slow_lock.lock().await;
-            Self::handle_request(&inner, &req, client_id, authenticated).await
+            Self::handle_request(&inner, &req, client_id).await
         } else if is_yt_slow(&req) {
             let _guard = inner.yt_slow_lock.lock().await;
-            Self::handle_request(&inner, &req, client_id, authenticated).await
+            Self::handle_request(&inner, &req, client_id).await
         } else {
             let _guard = inner.cmd_lock.write().await;
-            Self::handle_request(&inner, &req, client_id, authenticated).await
+            Self::handle_request(&inner, &req, client_id).await
         };
 
         let res = match res {
@@ -4778,35 +4855,9 @@ impl Daemon {
     async fn handle_request(
         inner: &Arc<DaemonInner>,
         req: &DaemonReq,
-        client_id: ClientId,
-        _authenticated: bool,
+        _client_id: ClientId,
     ) -> Result<DaemonRes, CoreError> {
         match req {
-            DaemonReq::Handshake {
-                version,
-                client,
-                client_version,
-            } => {
-                if *version > PROTOCOL_VERSION {
-                    info!(
-                        "client {client_id}: handshake rejected: client protocol v{version} > daemon v{PROTOCOL_VERSION}"
-                    );
-                    return Ok(DaemonRes::Error {
-                        message: format!(
-                            "protocol version {version} not supported, daemon supports {PROTOCOL_VERSION}"
-                        ),
-                    });
-                }
-                inner.client_auth.lock().await.insert(client_id, true);
-                info!(
-                    "client {client_id}: handshake from {client} v{client_version:?}, protocol v{version}"
-                );
-                Ok(DaemonRes::Handshake {
-                    version: *version,
-                    daemon: "gtmd-rs".to_string(),
-                    daemon_version: env!("CARGO_PKG_VERSION").to_string(),
-                })
-            }
             DaemonReq::Play { path, start_pos } => {
                 Self::clear_history(inner).await;
                 Self::enable_fallback(inner).await;
@@ -5215,12 +5266,74 @@ impl Daemon {
         }
         let state_file = inner.config.state_file.clone();
         let state = inner.state.clone();
+        let clients = inner.active_clients.load(Ordering::Relaxed);
         tokio::spawn(async move {
+            // Skip the full queue clone + JSON serialization when the daemon
+            // is truly idle: no clients connected, playback stopped at
+            // position 0, and an empty queue. Nothing has changed to persist
+            // since the last save, so this avoids re-encoding the same state
+            // every minute.
+            if clients == 0 {
+                let s = state.read().await;
+                let idle =
+                    s.status == PlaybackStatus::Stopped && s.time_pos <= 0.0 && s.queue.is_empty();
+                drop(s);
+                if idle {
+                    return;
+                }
+            }
             let s = state.read().await;
             let saved = SavedState::from_state(&s);
             drop(s);
             if let Err(e) = saved.save(&state_file) {
                 warn!("failed to save state: {e}");
+            }
+        });
+    }
+
+    /// Release everything only a connected client would use once the last
+    /// client disconnects (and there is nothing playing headlessly):
+    ///
+    /// - the auto-advance library fallback list and radio rotation ring;
+    /// - the in-memory play history (bounded anyway, but dropped wholesale);
+    /// - stale spectrum levels;
+    /// - the cover-art LRU caches and lyrics manager with their TLS pools,
+    ///   rebuilt lazily on the next request.
+    ///
+    /// Playback state (queue, current track, position) is preserved so a still
+    /// playing stream keeps auto-advancing exactly as before.
+    async fn maybe_prune_idle(inner: &DaemonInner) {
+        {
+            let mut state = inner.state.write().await;
+            state.audio_levels.clear();
+            if state.status == PlaybackStatus::Stopped {
+                state.default_list.clear();
+                state.default_cursor = 0;
+                state.radio_history.clear();
+            }
+        }
+        inner.play_history.lock().await.clear();
+        *inner.cover_cache.lock().await = None;
+        *inner.lyrics_manager.lock().await = None;
+        info!("pruned idle state (no clients connected)");
+    }
+
+    /// Persist a listen to the SQLite library: increments `play_count` and
+    /// stamps `last_played`. Runs off-thread; failures are logged, never
+    /// fatal. Tracks with no library row (streams, radio, remote Spotify)
+    /// simply match zero rows.
+    async fn record_play(inner: &DaemonInner, track: &TrackInfo) {
+        if track.id <= 0 {
+            return;
+        }
+        let data_dir = inner.config.data_dir.clone();
+        let id = track.id;
+        tokio::task::spawn_blocking(move || {
+            let Ok(lib) = Library::new(data_dir.to_str().unwrap_or("")) else {
+                return;
+            };
+            if let Err(e) = lib.record_play(id) {
+                tracing::warn!("record play metrics: {e}");
             }
         });
     }
@@ -5336,8 +5449,14 @@ impl Daemon {
                     resume_key = Some(cur.title.clone());
                     if cur.path.starts_with("radio://") {
                         state.radio_history.push(cur.clone());
+                        if state.radio_history.len() > MAX_RADIO_HISTORY {
+                            state.radio_history.remove(0);
+                        }
                     }
                     history.push(HistoryEntry::User(cur));
+                    if history.len() > MAX_HISTORY {
+                        history.remove(0);
+                    }
                     if !state.queue.is_empty() {
                         let next = state.queue[0].clone();
                         drop(state);
@@ -5372,6 +5491,9 @@ impl Daemon {
                         index: cursor,
                         track: cur.clone(),
                     });
+                    if history.len() > MAX_HISTORY {
+                        history.remove(0);
+                    }
                     let next_idx = cursor + 1;
                     if next_idx < len {
                         state.default_cursor = next_idx;

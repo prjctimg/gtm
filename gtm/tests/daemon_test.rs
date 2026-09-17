@@ -6,9 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream;
 
 use gtm::shared::global::PlaybackStatus;
-use gtm::shared::ipc::{
-    DaemonReq, DaemonRes, LibraryAction, PROTOCOL_VERSION, QueueAction, WireReq, WireRes,
-};
+use gtm::shared::ipc::{DaemonReq, DaemonRes, LibraryAction, QueueAction, WireReq, WireRes};
 
 use gtm::gtmd::config::{DaemonArgs, DaemonConfig};
 use gtm::gtmd::daemon::Daemon;
@@ -41,13 +39,13 @@ fn test_config() -> DaemonConfig {
     };
     let config = DaemonConfig::load(&args);
     let _ = std::fs::remove_file(&config.socket_path);
-    let _ = std::fs::remove_file(&config.library_path);
+    let _ = std::fs::remove_file(config.data_dir.join("library.db"));
     config
 }
 
 fn cleanup(config: &DaemonConfig) {
     let _ = std::fs::remove_file(&config.socket_path);
-    let _ = std::fs::remove_file(&config.library_path);
+    let _ = std::fs::remove_file(config.data_dir.join("library.db"));
     let _ = std::fs::remove_dir_all(&config.data_dir);
 }
 
@@ -154,21 +152,8 @@ async fn daemon_handle() -> (tokio::task::JoinHandle<()>, DaemonConfig) {
 async fn connect(socket_path: &PathBuf) -> (TestReader, tokio::net::unix::OwnedWriteHalf) {
     let stream = UnixStream::connect(socket_path).await.unwrap();
     let (reader_half, writer_half) = stream.into_split();
-    let mut reader = TestReader::new(reader_half);
-    let mut writer = writer_half;
-
-    // The daemon requires a handshake before accepting commands.
-    let res = send_req(
-        &mut reader,
-        &mut writer,
-        &DaemonReq::Handshake {
-            version: PROTOCOL_VERSION,
-            client: "daemon_test".into(),
-            client_version: None,
-        },
-    )
-    .await;
-    assert!(matches!(res, DaemonRes::Handshake { .. }));
+    let reader = TestReader::new(reader_half);
+    let writer = writer_half;
 
     (reader, writer)
 }

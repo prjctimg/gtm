@@ -24,14 +24,12 @@ pub enum AudioBackendKind {
 pub struct DaemonConfig {
     pub socket_path: PathBuf,
     pub socket_pulse_path: PathBuf,
-    pub library_path: PathBuf,
     pub config_dir: PathBuf,
     pub cache_dir: PathBuf,
     pub data_dir: PathBuf,
     pub state_file: PathBuf,
     pub library_paths: Vec<PathBuf>,
     pub log_file: Option<PathBuf>,
-    pub verbose: bool,
     pub test_mode: bool,
     pub audio_backend: AudioBackendKind,
     /// Permit the daemon to physically delete audio files (and their `.lrc`
@@ -121,12 +119,6 @@ impl DaemonConfig {
             resolve_pulse_socket()
         };
 
-        let library_path = if let Some(ref l) = args.library {
-            PathBuf::from(l)
-        } else {
-            data_dir.join("library.db")
-        };
-
         let log_file = if args.test_mode {
             None
         } else {
@@ -186,14 +178,12 @@ impl DaemonConfig {
         DaemonConfig {
             socket_path,
             socket_pulse_path,
-            library_path,
             config_dir,
             cache_dir,
             data_dir,
             state_file,
             library_paths,
             log_file,
-            verbose: args.verbose,
             test_mode: args.test_mode,
             audio_backend,
             allow_delete_files: true,

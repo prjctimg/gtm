@@ -18,29 +18,16 @@ pub mod shared;
 pub use gtmd::run;
 pub use gtmd::{Daemon, DaemonArgs, DaemonConfig};
 
-#[cfg(feature = "tui")]
 pub mod app;
-#[cfg(feature = "tui")]
 pub mod cli;
-#[cfg(feature = "tui")]
 pub mod extensions;
-#[cfg(feature = "tui")]
 pub mod footer;
-#[cfg(feature = "tui")]
 pub mod keymap;
-#[cfg(feature = "tui")]
 pub mod mouse;
-#[cfg(feature = "tui")]
 pub mod oauth;
-#[cfg(feature = "tui")]
 pub mod picker;
-#[cfg(feature = "tui")]
 pub mod progress;
-#[cfg(feature = "tui")]
 pub mod reactive;
-#[cfg(feature = "tui")]
 pub mod theme;
-#[cfg(feature = "tui")]
 pub mod ui;
-#[cfg(feature = "tui")]
 pub mod visualizer;

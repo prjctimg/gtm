@@ -21,7 +21,7 @@ use crate::shared::global::{
 };
 use crate::shared::ipc::{
     CacheKind, DaemonEvent, DaemonReq, DaemonRes, HealthReport, LibraryAction, MetadataPatch,
-    PROTOCOL_VERSION, QueueAction, SyncKind, WireReq, WireRes,
+    QueueAction, SyncKind, WireRes,
 };
 use crate::shared::log::log;
 use crate::shared::playlist::PlaylistFormatKind;
@@ -92,10 +92,9 @@ impl DaemonClient {
                         last_heartbeat_at: heartbeat_at,
                         pending: HashMap::new(),
                         next_id: 0,
-                        authenticated: Arc::new(AtomicBool::new(false)),
                     };
                     // Spawn worker before constructing the client handle so
-                    // we can issue the mandatory handshake as id=0 here.
+                    // requests can flow immediately on connect.
                     let client = Self {
                         cmd_tx: cmd_tx.clone(),
                         events: events.clone(),
@@ -106,42 +105,7 @@ impl DaemonClient {
                         is_playing: Arc::new(AtomicBool::new(false)),
                     };
                     tokio::spawn(worker.run());
-
-                    // protocol.md "Handshake": first message after connect.
-                    // Worker assigns id=0 to the first request queued, so the
-                    // handshake naturally gets id=0 as required.
-                    let hres = client
-                        .send_raw(DaemonReq::Handshake {
-                            version: PROTOCOL_VERSION,
-                            client: "gtm-rs".to_string(),
-                            client_version: Some(env!("CARGO_PKG_VERSION").to_string()),
-                        })
-                        .await?;
-                    match hres {
-                        DaemonRes::Handshake {
-                            version,
-                            daemon,
-                            daemon_version,
-                        } => {
-                            if version > PROTOCOL_VERSION {
-                                return Err(CoreError::Daemon(format!(
-                                    "daemon {daemon} {daemon_version} speaks protocol v{version} \
-                                     which is newer than client v{PROTOCOL_VERSION}"
-                                )));
-                            }
-                            connected.store(true, Ordering::Release);
-                        }
-                        DaemonRes::Error { message, .. } => {
-                            return Err(CoreError::Daemon(format!(
-                                "handshake rejected: {message}"
-                            )));
-                        }
-                        other => {
-                            return Err(CoreError::Daemon(format!(
-                                "unexpected handshake response: {other:?}"
-                            )));
-                        }
-                    }
+                    connected.store(true, Ordering::Release);
 
                     // Connect to pulse socket for dedicated event stream
                     let pulse_path = {
@@ -706,6 +670,30 @@ impl<'a> Library<'a> {
             .await
     }
 
+    pub async fn most_played(&self, limit: u64) -> Result<DaemonRes> {
+        self.client
+            .send_raw(DaemonReq::Library {
+                action: LibraryAction::GetMostPlayed { limit },
+            })
+            .await
+    }
+
+    pub async fn recently_played(&self, limit: u64) -> Result<DaemonRes> {
+        self.client
+            .send_raw(DaemonReq::Library {
+                action: LibraryAction::GetRecentlyPlayed { limit },
+            })
+            .await
+    }
+
+    pub async fn recently_added(&self, limit: u64) -> Result<DaemonRes> {
+        self.client
+            .send_raw(DaemonReq::Library {
+                action: LibraryAction::GetRecentlyAdded { limit },
+            })
+            .await
+    }
+
     pub async fn get_playlist_tracks(&self, playlist_id: i64) -> Result<DaemonRes> {
         self.client
             .send_raw(DaemonReq::Library {
@@ -726,6 +714,17 @@ impl<'a> Library<'a> {
         self.client
             .send_ok(DaemonReq::Library {
                 action: LibraryAction::DeletePlaylist { id },
+            })
+            .await
+    }
+
+    pub async fn rename_playlist(&self, id: i64, name: &str) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::Library {
+                action: LibraryAction::RenamePlaylist {
+                    id,
+                    name: name.into(),
+                },
             })
             .await
     }
@@ -1712,7 +1711,6 @@ struct IpcWorker {
     last_heartbeat_at: Arc<std::sync::Mutex<Instant>>,
     pending: HashMap<u64, (String, oneshot::Sender<Result<DaemonRes>>)>,
     next_id: u64,
-    authenticated: Arc<AtomicBool>,
 }
 
 const HEARTBEAT_TIMEOUT_SECS: u64 = 60;
@@ -1743,19 +1741,8 @@ impl IpcWorker {
             }
 
             // Drain pending requests from the channel and send them.
-            // Requests queued while not yet authenticated (during reconnect
-            // handshake retries) are rejected immediately so callers see a
-            // transient "daemon is reconnecting" error instead of a permanent
-            // "handshake required" state.
             let mut sent_any = false;
             while let Ok(pending) = self.cmd_rx.try_recv() {
-                let authed = self.authenticated.load(Ordering::Acquire);
-                if !authed && !matches!(pending.req, DaemonReq::Handshake { .. }) {
-                    if let Some(tx) = pending.response_tx {
-                        let _ = tx.send(Err(CoreError::Daemon("daemon is reconnecting".into())));
-                    }
-                    continue;
-                }
                 let id = self.next_id;
                 self.next_id = self.next_id.wrapping_add(1);
                 if let Err(e) = self.send_by_id(id, &pending).await {
@@ -1810,7 +1797,6 @@ impl IpcWorker {
 
     async fn reconnect(&mut self) {
         self.connected.store(false, Ordering::Release);
-        self.authenticated.store(false, Ordering::Release);
         let mut attempt = 0u32;
         loop {
             let delay_ms = (100u64 * 2u64.saturating_pow(attempt.min(10))).min(10_000);
@@ -1825,21 +1811,8 @@ impl IpcWorker {
                     self.next_id = 0;
                     self.connected.store(true, Ordering::Release);
                     *self.last_heartbeat_at.lock().unwrap() = Instant::now();
-                    match self.post_reconnect_handshake().await {
-                        Ok(()) => {
-                            log(&format!("IPC worker reconnected after {attempt} attempts"));
-                            return;
-                        }
-                        Err(e) => {
-                            log(&format!("IPC worker post-reconnect handshake failed: {e}"));
-                            attempt += 1;
-                            if attempt >= 5 {
-                                log("IPC worker: giving up handshake retries; \
-                                     commands will fail until next reconnect");
-                                return;
-                            }
-                        }
-                    }
+                    log(&format!("IPC worker reconnected after {attempt} attempts"));
+                    return;
                 }
                 Err(e) => {
                     attempt += 1;
@@ -1851,104 +1824,6 @@ impl IpcWorker {
                 }
             }
         }
-    }
-
-    /// Send a handshake immediately after reconnect so the daemon marks this
-    /// client as authenticated. The daemon may write interleaved broadcast
-    /// event frames before the reply; scan `self.buf` until we find a
-    /// complete `WireRes` with `id == 0`, discarding non-matching frames
-    /// (events can never carry a WireRes id).
-    async fn post_reconnect_handshake(&mut self) -> Result<()> {
-        let wire_req = WireReq {
-            id: 0,
-            cmd: "handshake".to_string(),
-            params: serde_json::json!({
-                "version": PROTOCOL_VERSION,
-                "client": "gtm-rs",
-                "client_version": env!("CARGO_PKG_VERSION"),
-            }),
-        };
-        let mut line = serde_json::to_string(&wire_req)
-            .map_err(|e| CoreError::Daemon(format!("serialize handshake: {e}")))?;
-        line.push('\n');
-        self.writer
-            .write_all(line.as_bytes())
-            .await
-            .map_err(|e| CoreError::Daemon(format!("write handshake: {e}")))?;
-        self.writer
-            .flush()
-            .await
-            .map_err(|e| CoreError::Daemon(format!("flush handshake: {e}")))?;
-
-        // Read until we find a complete WireRes frame carrying id == 0
-        // (the daemon's handshake reply). Non-WireRes frames — broadcast
-        // events, or a reply for a different id that somehow survived the
-        // reconnect flush — are kept in `self.buf` for the run loop.
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        let mut tmp = [0u8; 4096];
-        loop {
-            if let Some(wire) = self.take_id0_frame() {
-                match wire.ok {
-                    Some(true) => {
-                        self.authenticated.store(true, Ordering::Release);
-                        *self.last_heartbeat_at.lock().unwrap() = Instant::now();
-                        log("IPC worker post-reconnect handshake OK");
-                        return Ok(());
-                    }
-                    Some(false) => {
-                        return Err(CoreError::Daemon(format!(
-                            "handshake rejected: {:?}",
-                            wire.error
-                        )));
-                    }
-                    _ => {
-                        return Err(CoreError::Daemon("malformed handshake response".into()));
-                    }
-                }
-            }
-            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-            if remaining.is_zero() {
-                return Err(CoreError::Daemon("handshake response timeout".into()));
-            }
-            match tokio::time::timeout(remaining, self.reader.read(&mut tmp)).await {
-                Ok(Ok(0)) => {
-                    return Err(CoreError::Daemon(
-                        "connection closed during handshake".into(),
-                    ));
-                }
-                Ok(Ok(n)) => self.buf.extend_from_slice(&tmp[..n]),
-                Ok(Err(e)) => {
-                    return Err(CoreError::Daemon(format!("read handshake response: {e}")));
-                }
-                Err(_) => {
-                    return Err(CoreError::Daemon("handshake response timeout".into()));
-                }
-            }
-        }
-    }
-
-    /// Scan `self.buf` for a complete JSON frame that parses as a `WireRes`
-    /// with `id == 0` (the reconnect handshake reply). Complete non-matching
-    /// frames (e.g. broadcast events) are drained; the incomplete trailing
-    /// frame and any partial data are left in place.
-    fn take_id0_frame(&mut self) -> Option<WireRes> {
-        let mut search_from = 0;
-        while search_from < self.buf.len() {
-            let nl = match self.buf[search_from..].iter().position(|&b| b == b'\n') {
-                Some(p) => search_from + p + 1,
-                None => break,
-            };
-            match serde_json::from_slice::<WireRes>(&self.buf[search_from..nl]) {
-                Ok(w) if w.id == 0 => {
-                    self.buf.drain(..nl);
-                    return Some(w);
-                }
-                _ => {}
-            }
-            search_from = nl;
-        }
-        self.buf.drain(..search_from);
-        None
     }
 
     async fn read_with_timeout(&mut self, tmp: &mut [u8; 4096]) -> Result<bool> {

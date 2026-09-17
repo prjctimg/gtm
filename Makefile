@@ -95,7 +95,7 @@ rpm: release
 termux:
 	@command -v cargo-ndk >/dev/null 2>&1 || { echo "cargo-ndk not found. Install with: cargo install cargo-ndk"; exit 1; }
 	CARGO_INCREMENTAL=0 cargo ndk -t arm64-v8a -p $(ANDROID_API) \
-		build --release --no-default-features --features tui,pulseaudio
+		build --release --no-default-features --features pulseaudio
 
 termux-elf:
 	@command -v termux-elf-cleaner >/dev/null 2>&1 || \

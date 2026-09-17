@@ -11,10 +11,7 @@ categories.workspace = true
 readme = "README.md"
 
 [features]
-default = ["tui", "mpris", "youtube"]
-# The TUI binary. `cargo install gtm --no-default-features` builds only the
-# bundled daemon binary (gtmd) without the terminal interface.
-tui = []
+default = ["mpris", "youtube"]
 # MPRIS D-Bus integration (daemon).
 mpris = ["dep:zbus", "dep:zvariant"]
 # YouTube search/resolution via innertube-rs (embeds QuickJS via rquickjs).
@@ -119,7 +116,6 @@ assets = [
 [[bin]]
 name = "gtm"
 path = "src/main.rs"
-required-features = ["tui"]
 
 [[bin]]
 name = "gtmd"

@@ -36,10 +36,6 @@ fn default_oauth_port() -> u16 {
     8990
 }
 
-/// Protocol version this implementation speaks. Bumped only on breaking
-/// wire changes.
-pub const PROTOCOL_VERSION: u32 = 4;
-
 /// `/queue` sub-commands. Internally tagged via `action`, wire encoding is
 /// flat: `{"action":"add","path":"...","position":null}` per `commands.md`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,11 +71,24 @@ pub enum LibraryAction {
         filter: Option<String>,
         sort: Option<String>,
     },
+    GetMostPlayed {
+        limit: u64,
+    },
+    GetRecentlyPlayed {
+        limit: u64,
+    },
+    GetRecentlyAdded {
+        limit: u64,
+    },
     GetPlaylists,
     GetPlaylistTracks {
         id: i64,
     },
     CreatePlaylist {
+        name: String,
+    },
+    RenamePlaylist {
+        id: i64,
         name: String,
     },
     DeletePlaylist {
@@ -183,11 +192,6 @@ pub enum CacheKind {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum DaemonReq {
-    Handshake {
-        version: u32,
-        client: String,
-        client_version: Option<String>,
-    },
     Play {
         path: String,
         start_pos: f64,
@@ -510,7 +514,6 @@ impl DaemonReq {
     /// Canonical `cmd` string for this request, as defined by `commands.md`.
     pub fn cmd_name(&self) -> &'static str {
         match self {
-            DaemonReq::Handshake { .. } => "handshake",
             DaemonReq::Play { .. } => "play",
             DaemonReq::PlayStream { .. } => "play_stream",
             DaemonReq::PlayPause => "play_pause",
@@ -630,20 +633,6 @@ impl DaemonReq {
             serde_json::from_value(v).map_err(|e| e.to_string())
         }
         Ok(match cmd {
-            "handshake" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    version: u32,
-                    client: String,
-                    client_version: Option<String>,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::Handshake {
-                    version: x.version,
-                    client: x.client,
-                    client_version: x.client_version,
-                }
-            }
             "play" => {
                 #[derive(Deserialize)]
                 struct Params {
@@ -1665,11 +1654,6 @@ pub enum DaemonRes {
         title: String,
         file_path: String,
     },
-    Handshake {
-        version: u32,
-        daemon: String,
-        daemon_version: String,
-    },
     Error {
         message: String,
     },
@@ -1797,15 +1781,6 @@ impl DaemonRes {
                 "url": url,
                 "title": title,
                 "file_path": file_path,
-            })),
-            DaemonRes::Handshake {
-                version,
-                daemon,
-                daemon_version,
-            } => Some(serde_json::json!({
-                "version": version,
-                "daemon": daemon,
-                "daemon_version": daemon_version,
             })),
             DaemonRes::Error { message } => return WireRes::err(id, message),
             DaemonRes::Pong => None,
@@ -1953,15 +1928,6 @@ impl DaemonRes {
                 field!("title", &title);
                 field!("file_path", &file_path);
             }
-            DaemonRes::Handshake {
-                version,
-                daemon,
-                daemon_version,
-            } => {
-                field!("version", &version);
-                field!("daemon", &daemon);
-                field!("daemon_version", &daemon_version);
-            }
             // Handled by the early return above.
             DaemonRes::Error { .. } => unreachable!(),
         }
@@ -2003,22 +1969,6 @@ impl DaemonRes {
             };
         }
         match cmd {
-            "handshake" => {
-                #[derive(Deserialize)]
-                struct D {
-                    version: u32,
-                    daemon: String,
-                    daemon_version: String,
-                }
-                match serde_json::from_value::<D>(data.clone()) {
-                    Ok(d) => DaemonRes::Handshake {
-                        version: d.version,
-                        daemon: d.daemon,
-                        daemon_version: d.daemon_version,
-                    },
-                    Err(_) => DaemonRes::Value { value: data },
-                }
-            }
             "get_status" | "get_status_lite" => {
                 match serde_json::from_value::<Box<DaemonState>>(field(&data, "state")) {
                     Ok(state) => DaemonRes::Status { state },

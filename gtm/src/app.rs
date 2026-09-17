@@ -333,7 +333,27 @@ pub const LIBRARY_CATEGORIES: &[&str] = &[
     "Playlists",
     "Spotify",
     "Radio",
+    "Most Played",
+    "Recently Played",
+    "Recently Added",
+    "Genres",
+    "Folders",
 ];
+
+pub fn folder_dir(path: &str) -> String {
+    std::path::Path::new(path)
+        .parent()
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Unknown Folder".into())
+}
+
+pub fn folder_name(path: &str) -> String {
+    std::path::Path::new(path)
+        .parent()
+        .and_then(|d| d.file_name())
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "Unknown Folder".into())
+}
 
 /// Returns true if the terminal doesn't support image protocols (Neovim, Zellij, etc.).
 pub fn no_image_protocol() -> bool {
@@ -595,6 +615,7 @@ pub struct PendingPrompt {
 #[derive(Debug, Clone)]
 pub enum PromptType {
     DeleteTrack(i64),
+    DeletePlaylist(i64),
     MultiselectDelete(Vec<i64>),
     MultiselectAddToQueue,
     MultiselectAddToPlaylist,
@@ -830,6 +851,9 @@ pub struct App {
     pub browse_detail: Option<String>,
     pub yt_results_cache: Vec<YTSearchResult>,
     pub playlist_cache: Vec<Playlist>,
+    pub most_played_cache: Vec<TrackInfo>,
+    pub recently_played_cache: Vec<TrackInfo>,
+    pub recently_added_cache: Vec<TrackInfo>,
     pub playlist_tracks_cache: Vec<TrackInfo>,
     pub spotify: SpotifyView,
     pub subsonic: SubsonicView,
@@ -926,6 +950,8 @@ pub struct App {
     /// Tracks currently highlighted for the in-flight new-playlist flow.
     pub selected_track_ids: std::collections::HashSet<i64>,
     pub playlist_creating: bool,
+    /// Playlist being renamed via the PlaylistSelect name input, if any.
+    pub renaming_playlist: Option<i64>,
     pub metadata: MetadataEditState,
     pub pending_quit: bool,
     /// Clickable row rectangles rebuilt every frame by `ui::render`
@@ -984,6 +1010,9 @@ enum IpcResult {
     /// A hard failure of the OAuth flow (daemon could not even start it).
     SpotifyOauthError(String),
     LibraryTracks(Vec<TrackInfo>),
+    MostPlayed(Vec<TrackInfo>),
+    RecentlyPlayed(Vec<TrackInfo>),
+    RecentlyAdded(Vec<TrackInfo>),
     PlaylistTracks(Vec<TrackInfo>),
     Playlists(Vec<Playlist>),
     /// A new playlist was created; carry its id + name so the TUI can open the
@@ -1348,6 +1377,9 @@ impl App {
             yt_results_cache: Vec::new(),
             downloads: std::collections::HashMap::new(),
             playlist_cache: Vec::new(),
+            most_played_cache: Vec::new(),
+            recently_played_cache: Vec::new(),
+            recently_added_cache: Vec::new(),
             playlist_tracks_cache: Vec::new(),
             spotify: SpotifyView {
                 status: None,
@@ -1462,6 +1494,7 @@ impl App {
             pending_playlist_id: None,
             selected_track_ids: std::collections::HashSet::new(),
             playlist_creating: false,
+            renaming_playlist: None,
             metadata: MetadataEditState {
                 edit_track_ids: Vec::new(),
                 fields: Default::default(),
@@ -2579,6 +2612,9 @@ impl App {
                         );
                     }
                     IpcResult::LibraryTracks(tracks) => self.tracks_cache = tracks,
+                    IpcResult::MostPlayed(tracks) => self.most_played_cache = tracks,
+                    IpcResult::RecentlyPlayed(tracks) => self.recently_played_cache = tracks,
+                    IpcResult::RecentlyAdded(tracks) => self.recently_added_cache = tracks,
                     IpcResult::Playlists(playlists) => self.playlist_cache = playlists,
                     IpcResult::PlaylistCreated(id, _name) => {
                         self.pending_playlist_id = Some(id);
@@ -4152,15 +4188,50 @@ impl App {
         self.selected_indices.clear();
         self.playlist_tracks_cache.clear();
         self.spotify.playlist_tracks_cache.clear();
-        if self.library_category == 6 {
-            self.refresh_custom_stations();
+        match self.library_category {
+            6 => self.refresh_custom_stations(),
+            7 => self.fetch_list_tracks(7),
+            8 => self.fetch_list_tracks(8),
+            9 => self.fetch_list_tracks(9),
+            _ => {}
         }
         self.set_list_pos(0);
+    }
+
+    fn fetch_list_tracks(&mut self, category: usize) {
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        let limit = 500u64;
+        tokio::spawn(async move {
+            let res = match category {
+                7 => c.library().most_played(limit).await,
+                8 => c.library().recently_played(limit).await,
+                _ => c.library().recently_added(limit).await,
+            };
+            let res = match res {
+                Ok(DaemonRes::Tracks { tracks }) => match category {
+                    7 => IpcResult::MostPlayed(*tracks),
+                    8 => IpcResult::RecentlyPlayed(*tracks),
+                    _ => IpcResult::RecentlyAdded(*tracks),
+                },
+                Err(e) => IpcResult::Error(format!("failed to load list: {e}")),
+                Ok(_) => return,
+            };
+            let _ = ipc_tx.send(res);
+        });
     }
 
     pub fn filtered_tracks(&self) -> Vec<&TrackInfo> {
         if self.library_category == 4 && self.browse_detail.is_some() {
             return self.playlist_tracks_cache.iter().collect();
+        }
+        if self.browse_detail.is_none() {
+            match self.library_category {
+                7 => return self.most_played_cache.iter().collect(),
+                8 => return self.recently_played_cache.iter().collect(),
+                9 => return self.recently_added_cache.iter().collect(),
+                _ => {}
+            }
         }
         let mut tracks: Vec<&TrackInfo> = self.tracks_cache.iter().collect();
         if !self.search_query.is_empty() {
@@ -4194,6 +4265,15 @@ impl App {
                     };
                     artist.eq_ignore_ascii_case(detail)
                 }
+                10 => {
+                    let genre: &str = if t.genre.is_empty() {
+                        "Unknown Genre"
+                    } else {
+                        &t.genre
+                    };
+                    genre.eq_ignore_ascii_case(detail)
+                }
+                11 => folder_dir(&t.path) == detail.as_str(),
                 _ => {
                     t.album.eq_ignore_ascii_case(detail)
                         || t.artist.eq_ignore_ascii_case(detail)
@@ -4296,6 +4376,35 @@ impl App {
                         .collect(),
                 )
             }
+            10 => {
+                let genres = self.unique_genres();
+                let (name, _) = genres.get(self.list_pos())?;
+                Some(
+                    self.tracks_cache
+                        .iter()
+                        .filter(|t| {
+                            let genre: &str = if t.genre.is_empty() {
+                                "Unknown Genre"
+                            } else {
+                                &t.genre
+                            };
+                            genre == name
+                        })
+                        .map(|t| t.id)
+                        .collect(),
+                )
+            }
+            11 => {
+                let folders = self.unique_folders();
+                let (dir, _) = folders.get(self.list_pos())?;
+                Some(
+                    self.tracks_cache
+                        .iter()
+                        .filter(|t| folder_dir(&t.path) == *dir)
+                        .map(|t| t.id)
+                        .collect(),
+                )
+            }
             _ => None,
         }
     }
@@ -4347,6 +4456,8 @@ impl App {
             4 => self.playlist_cache.len(),
             5 => self.spotify.playlists.len(),
             6 => self.radio.custom.len(),
+            10 => self.unique_genres().len(),
+            11 => self.unique_folders().len(),
             _ => self.filtered_tracks().len(),
         }
     }
@@ -4434,6 +4545,30 @@ impl App {
             *artists.entry(key).or_insert(0) += 1;
         }
         artists.into_iter().collect()
+    }
+
+    pub fn unique_genres(&self) -> Vec<(String, usize)> {
+        let mut genres: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for t in &self.tracks_cache {
+            let key = if t.genre.is_empty() {
+                "Unknown Genre".into()
+            } else {
+                t.genre.clone()
+            };
+            *genres.entry(key).or_insert(0) += 1;
+        }
+        genres.into_iter().collect()
+    }
+
+    pub fn unique_folders(&self) -> Vec<(String, usize)> {
+        let mut folders: std::collections::BTreeMap<String, usize> =
+            std::collections::BTreeMap::new();
+        for t in &self.tracks_cache {
+            let dir = folder_dir(&t.path);
+            *folders.entry(dir).or_insert(0) += 1;
+        }
+        folders.into_iter().collect()
     }
 
     fn cover_sync(&mut self) {
@@ -5680,6 +5815,33 @@ impl App {
                                 let tx = self.cmd_tx();
                                 let _ = tx.send(TuiCommand::RemoveTrack(track_id)).await;
                             }
+                            PromptType::DeletePlaylist(playlist_id) => {
+                                let client = self.client.clone();
+                                let ipc_tx = self.ipc_tx.clone();
+                                tokio::spawn(async move {
+                                    match client.library().delete_playlist(playlist_id).await {
+                                        Ok(()) => {
+                                            if let Ok(DaemonRes::Playlists { playlists, .. }) =
+                                                client.library().get_playlists().await
+                                            {
+                                                let _ =
+                                                    ipc_tx.send(IpcResult::Playlists(playlists));
+                                            }
+                                            let _ = ipc_tx.send(IpcResult::Notification(
+                                                "Playlist".to_string(),
+                                                "Deleted playlist".to_string(),
+                                                NotificationKind::Success,
+                                                NotifType::NowPlaying,
+                                            ));
+                                        }
+                                        Err(e) => {
+                                            let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                "Failed to delete playlist: {e}"
+                                            )));
+                                        }
+                                    }
+                                });
+                            }
                             PromptType::MultiselectAddToQueue => {
                                 let tracks = self.filtered_tracks();
                                 let indices: Vec<usize> =
@@ -6546,24 +6708,61 @@ impl App {
                                         let _ = c.radio().play(&id, &station.name).await;
                                     });
                                 }
-                            } else if self.library_category <= 1 {
-                                // Default: play track from flat list (All Tracks / Liked)
+                            } else if self.library_category == 10 {
+                                // Genres: select genre → show its tracks
+                                let genres = self.unique_genres();
+                                let pos = self.list_pos();
+                                if pos < genres.len() {
+                                    self.browse_detail = Some(genres[pos].0.clone());
+                                    self.set_list_pos(0);
+                                }
+                            } else if self.library_category == 11 {
+                                // Folders: select folder → show its tracks
+                                let folders = self.unique_folders();
+                                let pos = self.list_pos();
+                                if pos < folders.len() {
+                                    self.browse_detail = Some(folders[pos].0.clone());
+                                    self.set_list_pos(0);
+                                }
+                            } else if self.library_category <= 1 || self.library_category >= 7 {
+                                // Default: play track from a flat list
+                                // (All Tracks / Liked / Most Played /
+                                // Recently Played / Recently Added).
                                 self.play_filtered_highlighted();
                             }
                         }
                     }
                     Some(KeyboardAction::Delete) => {
                         if !self.library_pane_focus {
-                            // Playlist overview rows have no tracks of their
-                            // own: the user must open the playlist first.
+                            // Playlist overview rows let the user delete the whole
+                            // playlist; rows inside a playlist delete the track.
                             if self.library_category == 4 && self.browse_detail.is_none() {
-                                self.notify_typed(
-                                    "System",
-                                    "Open the playlist first to delete its tracks",
-                                    NotificationKind::Info,
-                                    false,
-                                    NotifType::NowPlaying,
-                                );
+                                if let Some(pl) = self.playlist_cache.get(self.list_pos()).cloned()
+                                {
+                                    self.pending_prompt = Some(PendingPrompt {
+                                        message: format!("Delete playlist \"{}\"? [y/N]", pl.name),
+                                        confirm_keys: vec![
+                                            KeyCode::Char('y'),
+                                            KeyCode::Char('Y'),
+                                            KeyCode::Enter,
+                                        ],
+                                        cancel_keys: vec![
+                                            KeyCode::Char('n'),
+                                            KeyCode::Char('N'),
+                                            KeyCode::Esc,
+                                            KeyCode::Char('q'),
+                                        ],
+                                        prompt_type: PromptType::DeletePlaylist(pl.id),
+                                    });
+                                } else {
+                                    self.notify_typed(
+                                        "System",
+                                        "No playlist selected",
+                                        NotificationKind::Info,
+                                        false,
+                                        NotifType::NowPlaying,
+                                    );
+                                }
                             } else if let Some(ids) = self.motion_row_ids() {
                                 // Album / artist view: batch-delete every track
                                 // that belongs to the selected row.
@@ -6905,16 +7104,20 @@ impl App {
                     }
                     Some(KeyboardAction::EditMetadata) => {
                         if !self.library_pane_focus {
-                            // Playlist overview rows carry no metadata of their
-                            // own: open the playlist first.
+                            // Playlist overview rows have no metadata of their
+                            // own: `e` renames the playlist (typing a new name
+                            // in the PlaylistSelect input, Enter to commit).
                             if self.library_category == 4 && self.browse_detail.is_none() {
-                                self.notify_typed(
-                                    "System",
-                                    "Open the playlist first to edit its tracks",
-                                    NotificationKind::Info,
-                                    false,
-                                    NotifType::NowPlaying,
-                                );
+                                if let Some(pl) = self.playlist_cache.get(self.list_pos()).cloned()
+                                {
+                                    self.renaming_playlist = Some(pl.id);
+                                    self.playlist_creating = true;
+                                    self.pickers.open(PickerId::PlaylistSelect);
+                                    if let Some(top) = self.pickers.top_mut() {
+                                        top.query = pl.name;
+                                    }
+                                    return true;
+                                }
                                 return true;
                             }
                             let ids = if self.library_category == 2 || self.library_category == 3 {
@@ -7064,6 +7267,10 @@ impl App {
                 PickerId::PlaylistTrackSelect => {
                     self.pending_playlist_id = None;
                     self.selected_track_ids.clear();
+                }
+                PickerId::PlaylistSelect => {
+                    self.playlist_creating = false;
+                    self.renaming_playlist = None;
                 }
                 _ => {}
             }
@@ -9639,7 +9846,42 @@ impl App {
                         PickerId::PlaylistSelect => {
                             if self.playlist_creating {
                                 let name = top.query.trim().to_string();
-                                if !name.is_empty() {
+                                if name.is_empty() {
+                                    // Keep the name input open until a name is given.
+                                } else if let Some(rename_id) = self.renaming_playlist.take() {
+                                    let client = self.client.clone();
+                                    let ipc_tx = self.ipc_tx.clone();
+                                    tokio::spawn(async move {
+                                        match client
+                                            .library()
+                                            .rename_playlist(rename_id, &name)
+                                            .await
+                                        {
+                                            Ok(()) => {
+                                                if let Ok(DaemonRes::Playlists {
+                                                    playlists, ..
+                                                }) = client.library().get_playlists().await
+                                                {
+                                                    let _ = ipc_tx
+                                                        .send(IpcResult::Playlists(playlists));
+                                                }
+                                                let _ = ipc_tx.send(IpcResult::Notification(
+                                                    "Playlist".to_string(),
+                                                    format!("Renamed playlist — {name}"),
+                                                    NotificationKind::Success,
+                                                    NotifType::NowPlaying,
+                                                ));
+                                            }
+                                            Err(e) => {
+                                                let _ = ipc_tx.send(IpcResult::Error(format!(
+                                                    "Failed to rename playlist: {e}"
+                                                )));
+                                            }
+                                        }
+                                    });
+                                    self.playlist_creating = false;
+                                    self.close_picker();
+                                } else {
                                     let client = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
                                     tokio::spawn(async move {

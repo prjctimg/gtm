@@ -154,6 +154,12 @@ impl SpotifyManager {
         self.access_token().await.is_some() && self.premium
     }
 
+    /// Whether the linked account is a Premium subscriber (probed via the
+    /// playback endpoint).
+    pub fn is_premium(&self) -> bool {
+        self.premium
+    }
+
     /// The cached playlist list (playlists keep their tracks embedded).
     pub fn playlists(&self) -> Vec<SpotifyPlaylist> {
         self.playlists.clone()
@@ -237,6 +243,9 @@ impl SpotifyManager {
             .ok_or_else(|| "spotify not linked".to_string())?;
         let (user, playlists) = Self::run_sync(client).await?;
         self.commit_sync(user, playlists);
+        // Probe `/me/player` so the Premium flag is established at sync time
+        // and native streaming is unlocked without the user visiting Settings.
+        self.refresh_playback().await;
         Ok(())
     }
 
@@ -342,6 +351,10 @@ impl SpotifyManager {
         {
             self.user = me.display_name.or_else(|| Some(me.id.as_ref().to_string()));
         }
+        // Probe `/me/player` right after linking so `premium` is set before any
+        // play command arrives (playlists sync purely via the Web API and never
+        // implied Premium).
+        self.refresh_playback().await;
         Ok(())
     }
 

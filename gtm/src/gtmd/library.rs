@@ -113,12 +113,82 @@ impl Library {
             )
             .map_err(|e| format!("db migrate album_id: {e}"))?;
         }
+        // Listen-metrics columns for the daemon-side Most Played / Recently
+        // Played queries (Added order is derived from the autoincrement id).
+        let has_play_count = conn
+            .prepare("SELECT COUNT(*) FROM pragma_table_info('tracks') WHERE name = 'play_count'")
+            .map_err(|e| format!("db probe: {e}"))?
+            .query_row([], |row| row.get::<_, i64>(0))
+            .map_err(|e| format!("db probe read: {e}"))?
+            > 0;
+        if !has_play_count {
+            conn.execute_batch(
+                "ALTER TABLE tracks ADD COLUMN play_count INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE tracks ADD COLUMN last_played TEXT;
+                 CREATE INDEX IF NOT EXISTS idx_tracks_play_count ON tracks(play_count);
+                 CREATE INDEX IF NOT EXISTS idx_tracks_last_played ON tracks(last_played);",
+            )
+            .map_err(|e| format!("db migrate play metrics: {e}"))?;
+        }
 
         Ok(Self {
             conn,
             _watch_dirs: Mutex::new(Vec::new()),
             data_dir: PathBuf::from(db_dir),
         })
+    }
+
+    /// Increment the play counter and refresh the last-played timestamp for a
+    /// track. Remote/streamed rows (id 0 or absent) affect nothing; the query
+    /// simply matches zero rows.
+    pub fn record_play(&self, id: i64) -> Result<(), String> {
+        self.conn
+            .execute(
+                "UPDATE tracks SET play_count = play_count + 1, last_played = datetime('now') WHERE id = ?1",
+                params![id],
+            )
+            .map_err(|e| format!("record play: {e}"))?;
+        Ok(())
+    }
+
+    /// Tracks the user has listened to the most, by descending play count.
+    pub fn list_most_played(&self, limit: u64) -> Result<Vec<TrackInfo>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite, album_id FROM tracks WHERE play_count > 0 ORDER BY play_count DESC, title ASC LIMIT ?1")
+            .map_err(|e| format!("prepare: {e}"))?;
+        let rows = stmt
+            .query_map([limit], Self::row_to_track)
+            .map_err(|e| format!("query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("rows: {e}"))
+    }
+
+    /// Tracks played most recently, most-recent first.
+    pub fn list_recently_played(&self, limit: u64) -> Result<Vec<TrackInfo>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite, album_id FROM tracks WHERE last_played IS NOT NULL AND last_played != '' ORDER BY last_played DESC, id DESC LIMIT ?1")
+            .map_err(|e| format!("prepare: {e}"))?;
+        let rows = stmt
+            .query_map([limit], Self::row_to_track)
+            .map_err(|e| format!("query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("rows: {e}"))
+    }
+
+    /// Tracks most recently added to the library, newest first. `id` is a
+    /// monotonic autoincrement, so it doubles as the add order.
+    pub fn list_recently_added(&self, limit: u64) -> Result<Vec<TrackInfo>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, path, title, artist, album, duration, track_number, genre, year, bitrate, samplerate, hash, cover_path, favourite, album_id FROM tracks ORDER BY id DESC LIMIT ?1")
+            .map_err(|e| format!("prepare: {e}"))?;
+        let rows = stmt
+            .query_map([limit], Self::row_to_track)
+            .map_err(|e| format!("query: {e}"))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("rows: {e}"))
     }
 
     pub fn list_tracks(&self) -> Result<Vec<TrackInfo>, String> {
@@ -341,6 +411,42 @@ impl Library {
         }
         self.get_playlist(id)?
             .ok_or_else(|| "created playlist not found".to_string())
+    }
+
+    pub fn rename_playlist(&self, id: i64, name: &str) -> Result<Playlist, String> {
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            return Err("playlist name cannot be empty".to_string());
+        }
+        let old_name: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT name FROM playlists WHERE id = ?1",
+                params![id],
+                |row| row.get(0),
+            )
+            .ok();
+        let affected = self
+            .conn
+            .execute(
+                "UPDATE playlists SET name = ?1 WHERE id = ?2",
+                params![name, id],
+            )
+            .map_err(|e| format!("rename playlist: {e}"))?;
+        if affected == 0 {
+            return Err("playlist not found".to_string());
+        }
+        // Mirror the rename on the filesystem copy so the `.m3u8` filename
+        // still matches the playlist after a DB reset.
+        if let Some(old_name) = old_name {
+            let old_path = self.data_dir.join(m3u8_file_name(&old_name));
+            let new_path = self.data_dir.join(m3u8_file_name(&name));
+            if old_path.exists() {
+                let _ = std::fs::rename(old_path, new_path);
+            }
+        }
+        self.get_playlist(id)?
+            .ok_or_else(|| "renamed playlist not found".to_string())
     }
 
     pub fn delete_playlist(&self, id: i64) -> Result<(), String> {

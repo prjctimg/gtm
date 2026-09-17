@@ -9,7 +9,8 @@ use std::path::PathBuf;
 
 use crate::app::{
     App, InputMode, LIBRARY_CATEGORIES, LibraryPick, NotifMode, NotifType, NotificationKind,
-    RadioBrowseKind, TrackInfoKind, lyrics_are_synced, no_image_protocol, setup_selection,
+    RadioBrowseKind, TrackInfoKind, folder_name, lyrics_are_synced, no_image_protocol,
+    setup_selection,
 };
 use crate::extensions::ExtensionId;
 use crate::footer::{
@@ -1001,6 +1002,11 @@ impl Render {
                     "Playlists" => app.playlist_cache.len(),
                     "Spotify" => app.spotify.playlists.len(),
                     "Radio" => app.radio.custom.len(),
+                    "Most Played" => app.most_played_cache.len(),
+                    "Recently Played" => app.recently_played_cache.len(),
+                    "Recently Added" => app.recently_added_cache.len(),
+                    "Genres" => app.unique_genres().len(),
+                    "Folders" => app.unique_folders().len(),
                     _ => 0,
                 };
                 let label = if count > 0 {
@@ -1444,6 +1450,77 @@ impl Render {
                     };
                     lines.push(Line::from(Span::styled(row, style)));
                 }
+            }
+            {
+                lib_total_rows = total_len;
+                (lines, st_line)
+            }
+        } else if app.library_category == 10 {
+            let genres = app.unique_genres();
+            let total_len = genres.len();
+            let sel = app.list_pos().min(total_len.saturating_sub(1));
+            let st_line = format!(" {} {} ", total_len, plural(total_len, "genre", "genres"));
+            let reserve = 3usize;
+            let available = panes[1].height.saturating_sub(reserve as u16) as usize;
+            app.viewport_items = available;
+            let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
+            app.list_scroll = list_scroll;
+            let mut lines = vec![Line::from("")];
+            for (i, (name, _count)) in genres[app.list_scroll..end].iter().enumerate() {
+                let real_i = app.list_scroll + i;
+                let is_sel = real_i == sel && !left_focus;
+                let prefix = if is_sel { " > " } else { "   " };
+                let style = if is_sel {
+                    Style::default()
+                        .fg(app.theme.selection_fg_readable())
+                        .bg(app.theme.selection_bg)
+                } else {
+                    Style::default().fg(app.theme.fg)
+                };
+                let row = format!("{}{}", prefix, name);
+                let row = if is_sel {
+                    let pad = row_pad(&row, panes[1].width);
+                    format!("{row}{}", " ".repeat(pad))
+                } else {
+                    row
+                };
+                lines.push(Line::from(Span::styled(row, style)));
+            }
+            {
+                lib_total_rows = total_len;
+                (lines, st_line)
+            }
+        } else if app.library_category == 11 {
+            let folders = app.unique_folders();
+            let total_len = folders.len();
+            let sel = app.list_pos().min(total_len.saturating_sub(1));
+            let st_line = format!(" {} {} ", total_len, plural(total_len, "folder", "folders"));
+            let reserve = 3usize;
+            let available = panes[1].height.saturating_sub(reserve as u16) as usize;
+            app.viewport_items = available;
+            let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
+            app.list_scroll = list_scroll;
+            let mut lines = vec![Line::from("")];
+            for (i, (dir, _count)) in folders[app.list_scroll..end].iter().enumerate() {
+                let real_i = app.list_scroll + i;
+                let is_sel = real_i == sel && !left_focus;
+                let prefix = if is_sel { " > " } else { "   " };
+                let style = if is_sel {
+                    Style::default()
+                        .fg(app.theme.selection_fg_readable())
+                        .bg(app.theme.selection_bg)
+                } else {
+                    Style::default().fg(app.theme.fg)
+                };
+                let name = folder_name(dir);
+                let row = format!("{}{}", prefix, name);
+                let row = if is_sel {
+                    let pad = row_pad(&row, panes[1].width);
+                    format!("{row}{}", " ".repeat(pad))
+                } else {
+                    row
+                };
+                lines.push(Line::from(Span::styled(row, style)));
             }
             {
                 lib_total_rows = total_len;
@@ -2433,9 +2510,14 @@ const LIBRARY_ICONS_NERD: &[&str] = &[
     "\u{f03a}",
     "\u{f04c7}",
     "\u{f43e}",
+    "\u{f2b8}",
+    "\u{f017}",
+    "\u{f1da}",
+    "\u{f121}",
+    "\u{f07b}",
 ];
 
-const LIBRARY_ICONS_ASCII: &[&str] = &["♫", "♥", "▤", "♪", "≡", "☊", "◉"];
+const LIBRARY_ICONS_ASCII: &[&str] = &["♫", "♥", "▤", "♪", "≡", "☊", "◉", "★", "◆", "♫", "◎", "▽"];
 
 pub(crate) fn use_nerd_fonts() -> bool {
     !matches!(std::env::var("GTM_NERD_FONTS"), Ok(v) if v == "0" || v == "false" || v == "no")
@@ -5609,6 +5691,9 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   Alt+R       Top Radio Stations"),
     ("", "   Alt+T       Radio Browse"),
     ("", "   Alt+O       Play Stream URL"),
+    ("topic", "── Playlists ──"),
+    ("", "   e           Rename Playlist (overview)"),
+    ("", "   d / Del     Delete Playlist (overview)"),
     ("topic", "── View ──"),
     ("", "   ?           Toggle Help"),
     ("", "   Ctrl+H      Hide Help Bar"),

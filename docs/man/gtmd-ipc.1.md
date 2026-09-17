@@ -46,7 +46,7 @@ Each command is a single JSON line terminated with `\n`:
 Fields:
 
 - `id` (uint64, required): Monotonically increasing sequence number. Used to
-  correlate responses. MUST be `0` for the handshake command only.
+  correlate responses.
 - `cmd` (string, required): The command name. Dispatch is via
   `DaemonReq::parse_cmd`.
 - Additional fields: command-specific parameters. The envelope's `params` key
@@ -103,24 +103,6 @@ The client distinguishes JSON responses from binary events by the first byte:
 
 Maximum JSON line length: 1,048,576 bytes (1 MiB) (`gtm/src/gtmd/daemon.rs:618`).
 Maximum binary frame: 16,777,216 bytes (16 MiB) (`gtm/src/shared/client.rs:1122`).
-
-# HANDSHAKE
-
-The first message a client sends MUST be a handshake command. The daemon
-responds with its version and daemon identifier.
-
-```json
-{"id": 0, "cmd": "handshake", "version": 3, "client": "gtm", "client_version": "0.1.8"}
-```
-
-Daemon response:
-
-```json
-{"id": 0, "ok": true, "version": 3, "daemon": "gtmd-rs", "daemon_version": "0.1.8"}
-```
-
-If the client's protocol version exceeds the daemon's, the daemon responds
-with `ok: false` and the client MUST disconnect.
 
 # COMMAND ENVELOPE
 

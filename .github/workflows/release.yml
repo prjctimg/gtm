@@ -408,7 +408,7 @@ jobs:
         if: matrix.family == 'android'
         run: |
           CARGO_INCREMENTAL=0 cargo ndk -t arm64-v8a -P 27 \
-            build --release --no-default-features --features tui,pulseaudio
+            build --release --no-default-features --features pulseaudio
 
       - name: Clean Android ELF sections
         if: matrix.family == 'android'
