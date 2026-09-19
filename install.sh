@@ -396,7 +396,11 @@ install_from_archive() {
     warn "${bindir} is not in your \$PATH"
     echo "  add it to your shell profile:" >&2
     echo "" >&2
+    echo "    # bash/zsh: ~/.bashrc, ~/.zshrc, or ~/.profile" >&2
     echo "    export PATH=\"${bindir}:\$PATH\"" >&2
+    echo "" >&2
+    echo "    # fish: ~/.config/fish/config.fish" >&2
+    echo "    fish_add_path ${bindir}" >&2
     echo "" >&2
   fi
 }
