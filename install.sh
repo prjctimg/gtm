@@ -393,15 +393,39 @@ install_from_archive() {
 
   ok "installation complete"
   if ! echo ":${PATH}:" | grep -q ":${bindir}:"; then
-    warn "${bindir} is not in your \$PATH"
-    echo "  add it to your shell profile:" >&2
-    echo "" >&2
-    echo "    # bash/zsh: ~/.bashrc, ~/.zshrc, or ~/.profile" >&2
-    echo "    export PATH=\"${bindir}:\$PATH\"" >&2
-    echo "" >&2
-    echo "    # fish: ~/.config/fish/config.fish" >&2
-    echo "    fish_add_path ${bindir}" >&2
-    echo "" >&2
+    warn "${bindir} is not in your \$PATH — adding it to your shell profiles..."
+
+    # bash: ~/.bashrc
+    if [ -f "${HOME}/.bashrc" ] && ! grep -q "export PATH=.*${bindir//\//\\/}" "${HOME}/.bashrc" 2>/dev/null; then
+      echo "" >> "${HOME}/.bashrc"
+      echo "# Added by gtm installer" >> "${HOME}/.bashrc"
+      echo "export PATH=\"${bindir}:\$PATH\"" >> "${HOME}/.bashrc"
+      ok "  added to ~/.bashrc"
+    fi
+
+    # zsh: ~/.zshrc
+    if [ -f "${HOME}/.zshrc" ] && ! grep -q "export PATH=.*${bindir//\//\\/}" "${HOME}/.zshrc" 2>/dev/null; then
+      echo "" >> "${HOME}/.zshrc"
+      echo "# Added by gtm installer" >> "${HOME}/.zshrc"
+      echo "export PATH=\"${bindir}:\$PATH\"" >> "${HOME}/.zshrc"
+      ok "  added to ~/.zshrc"
+    fi
+
+    # fish: ~/.config/fish/config.fish
+    local fish_config="${HOME}/.config/fish/config.fish"
+    if [ -f "${fish_config}" ] && ! grep -q "fish_add_path ${bindir//\//\\/}" "${fish_config}" 2>/dev/null; then
+      echo "" >> "${fish_config}"
+      echo "# Added by gtm installer" >> "${fish_config}"
+      echo "fish_add_path ${bindir}" >> "${fish_config}"
+      ok "  added to ~/.config/fish/config.fish"
+    elif [ ! -f "${fish_config}" ]; then
+      mkdir -p "${HOME}/.config/fish"
+      echo "# Added by gtm installer" > "${fish_config}"
+      echo "fish_add_path ${bindir}" >> "${fish_config}"
+      ok "  created ~/.config/fish/config.fish with PATH"
+    fi
+
+    log "Restart your shell or run: source ~/.bashrc (or ~/.zshrc / source ~/.config/fish/config.fish)"
   fi
 }
 
