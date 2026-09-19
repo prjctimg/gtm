@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Render BENCHMARK.md from benchmark results.
 #
-#   scripts/bench/render-bench.sh [--tag <tag>] [-o BENCHMARK.md]
+#   scripts/bench/render.sh [--tag <tag>] [-o BENCHMARK.md]
 #
 # Data flows:
 #   - `scripts/bench/collect.sh` writes one ephemeral JSON per release under
 #     the gitignored `.bench/` directory.
-#   - render-bench.sh merges those with history reconstructed from the
+#   - render.sh merges those with history reconstructed from the
 #     machine-readable `<!--bench:{json}-->` markers embedded at the bottom of
 #     the committed BENCHMARK.md, producing:
 #       - a per-metric delta table (vs the previous release)
@@ -20,6 +20,9 @@
 # Requires: jq
 
 set -euo pipefail
+
+# Temp files from the doc render below are always removed, even on failure.
+trap 'rm -f "${PYF:-}" "${DOC_TMP:-}"' EXIT
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BENCH_DIR="${REPO_DIR}/.bench"
@@ -42,7 +45,6 @@ mkdir -p "${HIST_DIR}"
 # ── 1. Reconstruct history ────────────────────────────────────────────────────
 # Markers in the committed BENCHMARK.md are the persistent store; any fresh
 # `.bench/*.json` written by collect.sh overrides its own tag.
-# Materialize markers from the committed doc.
 if [ -f "${OUT}" ]; then
   while IFS= read -r m; do
     [ -n "${m}" ] || continue
@@ -264,7 +266,7 @@ xychart-beta
 
 ## Machine-readable history
 
-Past results are stored only in the markers below; `render-bench.sh`
+Past results are stored only in the markers below; `render.sh`
 reconstructs trend history from them. Do not edit by hand.
 
 __MARKERS__
@@ -279,9 +281,9 @@ __MARKERS__
 - Metrics: peak / mean / at-5s RSS (kB, from `/proc/<pid>/status` `VmRSS`),
   CPU (ms, from `/proc/<pid>/stat` utime+stime), and t_ready (ms, IPC round
   trip to first playing state).
-- Harness: `scripts/bench/run-bench.sh <player> <file> <seconds>`; collection:
+- Harness: `scripts/bench/run.sh <player> <file> <seconds>`; collection:
   `scripts/bench/collect.sh <tag>` writes ephemeral results to `.bench/`; this
-  renderer: `scripts/bench/render-bench.sh` publishes them into this file.
+  renderer: `scripts/bench/render.sh` publishes them into this file.
 EOF
 )"
 
@@ -313,6 +315,5 @@ python3 "${PYF}" "${DOC_TMP}" "${OUT}" \
   "${LAT_LABELS}" "${LAT_PTS}" "${LAT_Y}" \
   "${IDX}" "${THIS_TAG_SAFE}" "${THIS_COMMIT_SAFE}" "${THIS_DATE_SAFE}" \
   "${baseline_note}" "${table_prev_col}" "${headline_suffix}" "${MARKERS}"
-rm -f "${PYF}" "${DOC_TMP}"
 
 echo "wrote ${OUT}"

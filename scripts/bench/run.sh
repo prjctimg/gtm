@@ -2,7 +2,7 @@
 # gtm benchmark harness — measures gtm/gtmd and cliamp resource usage during
 # playback and emits a JSON result line. See BENCHMARK.md for methodology.
 #
-#   scripts/bench/run-bench.sh <player> <file> <seconds>
+#   scripts/bench/run.sh <player> <file> <seconds>
 #
 #   player   gtm | cliamp
 #   file     path to an audio file (fixture under assets/fixtures)
@@ -20,9 +20,9 @@
 
 set -euo pipefail
 
-PLAYER="${1:?usage: run-bench.sh <player> <file> <seconds>}"
-FILE="${2:?usage: run-bench.sh <player> <file> <seconds>}"
-SECONDS="${3:?usage: run-bench.sh <player> <file> <seconds>}"
+PLAYER="${1:?usage: run.sh <player> <file> <seconds>}"
+FILE="${2:?usage: run.sh <player> <file> <seconds>}"
+SECONDS="${3:?usage: run.sh <player> <file> <seconds>}"
 
 case "${SECONDS}" in
   '' | *[!0-9]*) echo "seconds must be a positive integer" >&2; exit 2 ;;

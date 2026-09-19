@@ -77,7 +77,7 @@ xychart-beta
 
 ## Machine-readable history
 
-Past results are stored only in the markers below; `render-bench.sh`
+Past results are stored only in the markers below; `render.sh`
 reconstructs trend history from them. Do not edit by hand.
 
 <!--bench:{"tag":"0.2.83+cfe43fb+nightly","date":"2026-09-08T17:55:34Z","commit":"cfe43fbf581ce65bd900879a5883f49d610243e0","seconds":"152","runs":{"gtm/bench.flac":{"file_sha256":"c5e5c960cf59e5fdf3f3b68ea94a24d5f3d4b1122697e4e19d5ec5c1c3e175de","peak_rss_kb":19492,"mean_rss_kb":19449,"rss_5s_kb":19364,"cpu_ms":120,"t_ready_ms":71},"gtm/bench.mp3":{"file_sha256":"6bd083a60ca94245ffd8d1be73e4b83eaab0fb6eeb6648e214ca528563a0bbfd","peak_rss_kb":19924,"mean_rss_kb":19905,"rss_5s_kb":19816,"cpu_ms":210,"t_ready_ms":71}}}-->
@@ -114,6 +114,6 @@ reconstructs trend history from them. Do not edit by hand.
 - Metrics: peak / mean / at-5s RSS (kB, from `/proc/<pid>/status` `VmRSS`),
   CPU (ms, from `/proc/<pid>/stat` utime+stime), and t_ready (ms, IPC round
   trip to first playing state).
-- Harness: `scripts/bench/run-bench.sh <player> <file> <seconds>`; collection:
+- Harness: `scripts/bench/run.sh <player> <file> <seconds>`; collection:
   `scripts/bench/collect.sh <tag>` writes ephemeral results to `.bench/`; this
-  renderer: `scripts/bench/render-bench.sh` publishes them into this file.
+  renderer: `scripts/bench/render.sh` publishes them into this file.

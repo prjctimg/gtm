@@ -2,7 +2,7 @@
 # Collect benchmark results for one release tag into .bench/<tag>.json
 # (a gitignored, ephemeral store) and then render them into BENCHMARK.md.
 # Previous releases are reconstructed from machine-readable comments embedded
-# in BENCHMARK.md by render-bench.sh, so the committed doc is the single
+# in BENCHMARK.md by render.sh, so the committed doc is the single
 # permanent store — no JSON files are tracked.
 #
 #   scripts/bench/collect.sh <tag> [seconds]
@@ -24,11 +24,10 @@ case "${SECONDS}" in '' | *[!0-9]*) echo "seconds must be an integer" >&2; exit 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BENCH_DIR="${REPO_DIR}/.bench"
 FIXTURES_DIR="${REPO_DIR}/assets/fixtures"
-RUN_BENCH="${REPO_DIR}/scripts/bench/run-bench.sh"
+RUN_BENCH="${REPO_DIR}/scripts/bench/run.sh"
 
 mkdir -p "${BENCH_DIR}"
 
-# Validate fixtures against the pinned hashes first.
 "${REPO_DIR}/scripts/bench/gen-fixtures.sh" -c >/dev/null || {
   echo "fixture validation failed — refusing to collect (see gen-fixtures.sh -c)" >&2
   exit 1
@@ -48,16 +47,26 @@ for player in "${PLAYERS[@]}"; do
     name="$(basename "${file}")"
     key="${player}/${name}"
     line="$("${RUN_BENCH}" "${player}" "${file}" "${SECONDS}" || true)"
-    if printf '%s' "${line}" | jq -e '.error?' >/dev/null 2>&1; then
-      echo "  ${key}: SKIPPED (error: $(printf '%s' "${line}" | jq -r '.error'))" >&2
-      continue
-    fi
-    if ! printf '%s' "${line}" | jq -e '.peak_rss_kb != null' >/dev/null 2>&1; then
+    # Validate once: anything that is not a JSON object (empty output from a
+    # crashed harness, shell errors on stderr aside) is unparseable. Reusing
+    # the validated value below keeps `--argjson` from ever seeing garbage,
+    # which under `set -e` would otherwise abort the whole collection.
+    if ! parsed="$(printf '%s' "${line}" | jq -c 'select(type == "object")' 2>/dev/null)" \
+      || [ -z "${parsed}" ]; then
       echo "  ${key}: SKIPPED (no parseable result)" >&2
       continue
     fi
-    echo "  ${key}: $(printf '%s' "${line}" | jq -c '[.peak_rss_kb,.mean_rss_kb,.cpu_ms,.t_ready_ms]')" >&2
-    RUNS="$(printf '%s' "${RUNS}" | jq --arg key "${key}" --argjson v "$(printf '%s' "${line}" | jq 'del(.player,.file,.error)')" '.[$key] = $v')"
+    err="$(printf '%s' "${parsed}" | jq -r '.error // empty')"
+    if [ -n "${err}" ]; then
+      echo "  ${key}: SKIPPED (error: ${err})" >&2
+      continue
+    fi
+    if ! printf '%s' "${parsed}" | jq -e '.peak_rss_kb != null' >/dev/null 2>&1; then
+      echo "  ${key}: SKIPPED (no parseable result)" >&2
+      continue
+    fi
+    echo "  ${key}: $(printf '%s' "${parsed}" | jq -c '[.peak_rss_kb,.mean_rss_kb,.cpu_ms,.t_ready_ms]')" >&2
+    RUNS="$(printf '%s' "${RUNS}" | jq --arg key "${key}" --argjson v "$(printf '%s' "${parsed}" | jq -c 'del(.player,.file,.error)')" '.[$key] = $v')"
   done
 done
 
@@ -80,4 +89,4 @@ jq -n \
   '{tag:$tag,date:$date,commit:$commit,seconds:$seconds,runs:$runs}' \
   > "${RESULT_FILE}"
 
-echo "wrote ${RESULT_FILE} (ephemeral; render-bench.sh embeds it in BENCHMARK.md)"
+echo "wrote ${RESULT_FILE} (ephemeral; render.sh embeds it in BENCHMARK.md)"

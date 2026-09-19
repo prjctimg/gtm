@@ -74,8 +74,8 @@ Each played for 30 s, sampled every 100 ms, then SIGTERM.
 
 ## Harness plan
 
-`scripts/bench/run-bench.sh <player> <file> <seconds>` emits one JSON line per
-run; `scripts/bench/render.py` turns a results JSON into `BENCHMARK.md` with
+`scripts/bench/run.sh <player> <file> <seconds>` emits one JSON line per
+run; `scripts/bench/render.sh` turns a results JSON into `BENCHMARK.md` with
 mermaid bar/line charts and a delta table vs the previous tagged results.
 
 ## Automation ("update on every release")

@@ -839,7 +839,7 @@ jobs:
 
       - name: Render BENCHMARK.md
         shell: bash
-        run: ./scripts/bench/render-bench.sh --tag "${{ needs.tag.outputs.version }}"
+        run: ./scripts/bench/render.sh --tag "${{ needs.tag.outputs.version }}"
 
       - name: Commit benchmark results back (dev only)
         if: github.ref == 'refs/heads/dev'
