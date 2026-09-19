@@ -66,100 +66,16 @@ die() {
 need() {
   command -v "$1" >/dev/null 2>&1 || die "requires '$1' — install it first, or download a release archive manually"
 }
-# Colourised header for a dependency-install step (binaries, man pages, …).
+# Colourised header for an install step with emoji (binaries, man pages, …).
 step() { printf "${BOLD}${GREEN}==>${NC} ${BOLD}%s${NC}\n" "$*" >&2; }
 
-CLR_RESET=$'\033[0m'
-CLR_DIM=$'\033[2m'
-
-# Only emit ANSI escapes on a real terminal, honouring NO_COLOR and TERM=dumb
-# so piped logs (`install.sh | tee log`) stay clean. draw_progress() is only
-# ever called on a TTY, but NO_COLOR/TERM=dumb must still disable its escapes.
-USE_COLOR=1
-if [ ! -t 2 ] || [ -n "${NO_COLOR:-}" ] || [ "${TERM:-}" = "dumb" ]; then
-  USE_COLOR=0
-  NC=''; MUTED=''; RED=''; ORANGE=''; GREEN=''; BOLD=''
-  CLR_RESET=''; CLR_DIM=''
-fi
-
-# ANSI 256-color gradient (foreground). Maps a 0..1 fraction onto a
-# cyan->magenta ramp for the download progress bar.
-gradient_color() {
-  local f
-  f=$((16 + ($(awk -v f="$1" 'BEGIN{printf "%d", f*235}') % 236)))
-  printf '38;5;%d' "$f"
-}
-
-# Render a gradient-filled progress bar followed by a carriage return.
-#   draw_progress <frac> <label>
-# `<frac>` is 0..1; `<label>` e.g. "3.2 MB of 12.0 MB". Printable row is 46
-# columns wide so it stays on one line of a default 80-col terminal.
-draw_progress() {
-  local frac="$1" label="$2" width=36 filled i color
-  filled=$(awk -v f="$frac" -v w="$width" 'BEGIN{ n=int(f*w); if(n<0)n=0; if(n>w)n=w; print n }')
-  printf '\r%*s' 0 ""
-  for ((i = 0; i < filled; i++)); do
-    if [ "$USE_COLOR" = 1 ]; then
-      color=$(gradient_color "$(awk -v i="$i" -v w="$width" 'BEGIN{ if(w==0)w=1; printf "%.3f", i/w }')")
-      printf '\033[%sm█\033[0m' "$color"
-    else
-      printf '█'
-    fi
-  done
-  for ((i = filled; i < width; i++)); do
-    if [ "$USE_COLOR" = 1 ]; then
-      printf '%s░%s' "$CLR_DIM" "$CLR_RESET"
-    else
-      printf '░'
-    fi
-  done
-  printf ' %-3s%%  %s' "$(awk -v p="$frac" 'BEGIN{ printf "%d", p*100 }')" "$label"
-  if [ "$USE_COLOR" = 1 ]; then
-    printf '\033[0m'
-  fi
-}
-
-# Download a URL with a gradient progress bar. This is the single shared
-# download path for every channel (stable, pinned-version and nightly); the
-# CONTENT-LENGTH is fetched up front when a terminal is available so the bar
-# fills against a known total, and degrades to a byte counter when no length
-# is advertised. Fully non-interactive runs (stderr redirected) skip the
-# drawing but still use the same curl underneath.
-#   download_gradient <url> <outfile>
-download_gradient() {
-  local url="$1" out="$2" total="" bytes=0 prog label shown=0
-  if [ -t 2 ]; then
-    total=$(curl -sfIL "$url" 2>/dev/null | tr -d '\r' | awk 'tolower($1)=="content-length:"{print $2; exit}')
-    case "${total}" in '' | *[!0-9]*) total="" ;; esac
-  fi
-  curl -fL "$url" -o "$out" 2>/dev/null &
-  local pid=$!
-  while kill -0 "$pid" 2>/dev/null; do
-    if [ -f "$out" ]; then
-      bytes=$(wc -c < "$out" 2>/dev/null || echo 0)
-    else
-      bytes=0
-    fi
-    if [ -n "$total" ]; then
-      prog=$(awk -v b="$bytes" -v t="$total" 'BEGIN{ if(t<=0){print "0"; exit} b=(b<t?b:t); printf "%.3f", b/t }')
-      label=$(awk -v b="$bytes" -v t="$total" 'BEGIN{ printf "%.1f", b/1048576; printf " of "; printf "%.1f", t/1048576; printf " MB" }')
-    else
-      prog=0
-      label=$(awk -v b="$bytes" 'BEGIN{ printf "%.1f", b/1048576; printf " MB" }')
-    fi
-    if [ -t 2 ]; then
-      draw_progress "$prog" "$label" >&2
-      shown=1
-    fi
-    sleep 0.15
-  done
-  wait "$pid"
-  local rc=$?
-  if [ "$shown" = 1 ]; then
-    draw_progress "$prog" "$label" >&2
-    printf '\n' >&2
-  fi
-  return "$rc"
+# Download a URL with a simple message. The progress indicator was removed
+# because it was showing incorrect file size and downloaded size.
+#   download_simple <url> <outfile>
+download_simple() {
+  local url="$1" out="$2"
+  curl -fL "$url" -o "$out" 2>/dev/null
+  return $?
 }
 
 VERSION=""
@@ -329,10 +245,11 @@ bootstrap_install() {
   BOOTSTRAP_TMPDIR="$(mktemp -d)" || die "mktemp failed"
   trap 'rm -rf "${BOOTSTRAP_TMPDIR:?}"' EXIT
 
-  log "downloading ${archive_name}..."
-  if ! download_gradient "${url}" "${BOOTSTRAP_TMPDIR}/${archive_name}"; then
+  log "📥 downloading ${archive_name}..."
+  if ! download_simple "${url}" "${BOOTSTRAP_TMPDIR}/${archive_name}"; then
     die "download failed: ${url}"
   fi
+  ok "  downloaded ${archive_name}"
 
   info "extracting ${archive_name}..."
   tar -xzf "${BOOTSTRAP_TMPDIR}/${archive_name}" -C "${BOOTSTRAP_TMPDIR}"
@@ -396,7 +313,7 @@ install_from_archive() {
     die "archive is missing its bin/ directory"
   fi
   mkdir -p "${bindir}"
-  step "binaries"
+  step "📦 binaries"
   for name in gtm gtmd; do
     if [ -f "bin/${name}" ]; then
       install -m 0755 "bin/${name}" "${bindir}/${name}"
@@ -408,7 +325,7 @@ install_from_archive() {
 
   # Man pages
   if [ -d "man/man1" ]; then
-    step "man pages"
+    step "📖 man pages"
     mkdir -p "${mandir}"
     for f in man/man1/*.1; do
       [ -f "${f}" ] || continue
@@ -419,7 +336,7 @@ install_from_archive() {
 
   # Completions — place each file into the conventional directory for its shell.
   if [ -d "completions" ]; then
-    step "shell completions"
+    step "⌨️  shell completions"
     for f in completions/*; do
       [ -f "${f}" ] || continue
       base="$(basename "${f}")"
@@ -451,7 +368,7 @@ install_from_archive() {
 
   # systemd user unit (Linux only — not macOS/Android)
   if [ "${OS}" = "linux" ] && [ -f "systemd/gtmd.service" ]; then
-    step "systemd user unit"
+    step "⚙️  systemd user unit"
     mkdir -p "${systemd_dir}"
     install -m 0644 "systemd/gtmd.service" "${systemd_dir}/gtmd.service"
     ok "  ${systemd_dir}/gtmd.service"
@@ -462,13 +379,13 @@ install_from_archive() {
 
   # Desktop entry + icon
   if [ -f "desktop/gtm.desktop" ]; then
-    step "desktop entry"
+    step "🖥️  desktop entry"
     mkdir -p "${applications_dir}"
     install -m 0644 "desktop/gtm.desktop" "${applications_dir}/gtm.desktop"
     ok "  ${applications_dir}/gtm.desktop"
   fi
   if [ -f "icons/gtm.svg" ]; then
-    step "icon"
+    step "🎨  icon"
     mkdir -p "${icons_dir}"
     install -m 0644 "icons/gtm.svg" "${icons_dir}/gtm.svg"
     ok "  ${icons_dir}/gtm.svg"
