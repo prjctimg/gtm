@@ -20,11 +20,11 @@ use symphonia::core::meta::{MetadataOptions, StandardTag};
 use symphonia::core::units::Timestamp;
 use tracing::warn;
 
-use crate::shared::MetadataPatch;
-use crate::shared::playlist::{M3u8Format, PlaylistFormat, PlaylistFormatKind, PlsFormat};
-use crate::shared::track::{Playlist, TrackInfo};
+use gtm::shared::MetadataPatch;
+use gtm::shared::playlist::{M3u8Format, PlaylistFormat, PlaylistFormatKind, PlsFormat};
+use gtm::shared::track::{Playlist, TrackInfo};
 
-use crate::gtmd::cleaner::{clean_filename_stem, sanitize_text};
+use crate::cleaner::{clean_filename_stem, sanitize_text};
 
 const DB_NAME: &str = "library.db";
 /// Map a playlist name to a safe `.m3u8` file name in the data directory.

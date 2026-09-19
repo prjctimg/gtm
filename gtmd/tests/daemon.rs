@@ -8,8 +8,8 @@ use tokio::net::UnixStream;
 use gtm::shared::global::PlaybackStatus;
 use gtm::shared::ipc::{DaemonReq, DaemonRes, LibraryAction, QueueAction, WireReq, WireRes};
 
-use gtm::gtmd::config::{DaemonArgs, DaemonConfig};
-use gtm::gtmd::daemon::Daemon;
+use gtmd::config::{DaemonArgs, DaemonConfig};
+use gtmd::daemon::Daemon;
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 

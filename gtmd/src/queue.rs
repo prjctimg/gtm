@@ -6,10 +6,10 @@
 
 use std::path::Path;
 
-use crate::shared::global::DaemonState;
-use crate::shared::track::TrackInfo;
+use gtm::shared::global::DaemonState;
+use gtm::shared::track::TrackInfo;
 
-use crate::gtmd::library::extract_metadata;
+use crate::library::extract_metadata;
 
 /// Build a TrackInfo from a file path.  The title is derived from
 /// the file stem; all other fields are left empty/default.  The path is

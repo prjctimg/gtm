@@ -1,7 +1,6 @@
 // Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
-// Daemon binary bundled in the gtm crate so a single `cargo install gtm`
-// ships both the TUI (disablable via --no-default-features) and gtmd.
+// gtmd daemon binary entry point.
 //
 // This is free software released under the GPL-3.0 license.
 
@@ -24,5 +23,5 @@ async fn main() {
         return;
     }
 
-    gtm::run().await;
+    gtmd::run().await;
 }

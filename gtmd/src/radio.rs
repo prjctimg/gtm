@@ -6,7 +6,7 @@
 
 use std::time::Duration;
 
-use crate::shared::radio::{RadioCountry, RadioStation, RadioTag};
+use gtm::shared::radio::{RadioCountry, RadioStation, RadioTag};
 
 /// Radio Browser API mirrors. `all.api.radio-browser.info` round-robins across
 /// the public servers; the per-region mirrors are used as fallback hosts.

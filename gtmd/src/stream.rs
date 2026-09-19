@@ -7,8 +7,8 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::audio::{SPECTRUM_BINS, SpectrumAnalyzer};
-use crate::shared::spotify::LIBRESPOT_CLIENT_ID;
+use gtm::audio::{SPECTRUM_BINS, SpectrumAnalyzer};
+use gtm::shared::spotify::LIBRESPOT_CLIENT_ID;
 use librespot_core::SessionConfig;
 use librespot_core::authentication::Credentials;
 use librespot_core::cache::Cache;

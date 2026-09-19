@@ -1,0 +1,68 @@
+[package]
+name = "gtmd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "gtm background audio daemon (library + binary)"
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
+
+# `gtmd` is the daemon side of gtm. It depends on the `gtm` crate for the
+# shared types (IPC wire formats, daemon state, track metadata), the audio
+# mixer backends, and the MPRIS D-Bus integration. The `gtm` crate never
+# depends on `gtmd` — the TUI/CLI talks to the daemon exclusively over the
+# Unix-socket IPC protocol in `gtm::shared::ipc`.
+[features]
+default = ["mpris", "youtube"]
+# MPRIS D-Bus integration for the currently playing track (uses gtm's mpris module).
+mpris = ["gtm/mpris"]
+# YouTube search/stream resolution for free-tier Spotify playback (embeds
+# QuickJS via rquickjs). rquickjs ships no bindings for aarch64-linux-android,
+# so the Android/Termux build disables this to stay compilable.
+youtube = ["dep:innertube-rs"]
+# PulseAudio output backend (daemon mixer; uses gtm's pulse audio module).
+pulseaudio = ["gtm/pulseaudio"]
+# Test/debug helper that forces IPC failures (tripwire in gtm::shared).
+debug-fail = ["gtm/debug-fail"]
+
+[dependencies]
+gtm = { path = "../gtm" }
+base64 = "0.22"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+dirs = "5"
+fastrand = "2"
+futures = "0.3"
+getrandom = "0.2"
+hex = "0.4"
+image = "0.25"
+innertube-rs = { version = "0.6", optional = true }
+librespot-core = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
+librespot-playback = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
+lofty = "0.24"
+lru = "0.12"
+md5 = "0.8"
+quick-xml = "0.38"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "blocking", "rustls-tls-native-roots"] }
+rodio = { version = "0.22", default-features = false, features = ["playback", "symphonia-all"] }
+rspotify = { version = "0.16.1", default-features = false, features = ["client-reqwest", "reqwest-rustls-tls"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+symphonia = { version = "0.6", default-features = false, features = ["all-codecs", "all-formats", "all-meta"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "io-util", "sync", "time", "macros", "process", "io-std", "signal"] }
+tokio-util = "0.7"
+toml = "0.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+urlencoding = "2"
+walkdir = "2"
+
+[dev-dependencies]
+bincode = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "time", "macros"] }

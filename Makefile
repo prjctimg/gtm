@@ -54,7 +54,7 @@ man:
 	./scripts/build/manpages.sh artifacts
 
 completions: release
-	cargo run --release --manifest-path release-gen/Cargo.toml --bin release-gen completions artifacts
+	GTM_GEN_COMPLETIONS="$(CURDIR)/artifacts" cargo build --workspace --quiet
 	cp install.sh artifacts/install.sh
 
 install: release man completions

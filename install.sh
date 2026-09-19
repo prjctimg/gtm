@@ -72,6 +72,16 @@ step() { printf "${BOLD}${GREEN}==>${NC} ${BOLD}%s${NC}\n" "$*" >&2; }
 CLR_RESET=$'\033[0m'
 CLR_DIM=$'\033[2m'
 
+# Only emit ANSI escapes on a real terminal, honouring NO_COLOR and TERM=dumb
+# so piped logs (`install.sh | tee log`) stay clean. draw_progress() is only
+# ever called on a TTY, but NO_COLOR/TERM=dumb must still disable its escapes.
+USE_COLOR=1
+if [ ! -t 2 ] || [ -n "${NO_COLOR:-}" ] || [ "${TERM:-}" = "dumb" ]; then
+  USE_COLOR=0
+  NC=''; MUTED=''; RED=''; ORANGE=''; GREEN=''; BOLD=''
+  CLR_RESET=''; CLR_DIM=''
+fi
+
 # ANSI 256-color gradient (foreground). Maps a 0..1 fraction onto a
 # cyan->magenta ramp for the download progress bar.
 gradient_color() {
@@ -89,14 +99,24 @@ draw_progress() {
   filled=$(awk -v f="$frac" -v w="$width" 'BEGIN{ n=int(f*w); if(n<0)n=0; if(n>w)n=w; print n }')
   printf '\r%*s' 0 ""
   for ((i = 0; i < filled; i++)); do
-    color=$(gradient_color "$(awk -v i="$i" -v w="$width" 'BEGIN{ if(w==0)w=1; printf "%.3f", i/w }')")
-    printf '\033[%sm█\033[0m' "$color"
+    if [ "$USE_COLOR" = 1 ]; then
+      color=$(gradient_color "$(awk -v i="$i" -v w="$width" 'BEGIN{ if(w==0)w=1; printf "%.3f", i/w }')")
+      printf '\033[%sm█\033[0m' "$color"
+    else
+      printf '█'
+    fi
   done
   for ((i = filled; i < width; i++)); do
-    printf '%s░%s' "$CLR_DIM" "$CLR_RESET"
+    if [ "$USE_COLOR" = 1 ]; then
+      printf '%s░%s' "$CLR_DIM" "$CLR_RESET"
+    else
+      printf '░'
+    fi
   done
   printf ' %-3s%%  %s' "$(awk -v p="$frac" 'BEGIN{ printf "%d", p*100 }')" "$label"
-  printf '\033[0m'
+  if [ "$USE_COLOR" = 1 ]; then
+    printf '\033[0m'
+  fi
 }
 
 # Download a URL with a gradient progress bar. This is the single shared
@@ -301,21 +321,23 @@ bootstrap_install() {
     url="$(resolve_asset_url "${tag}" "${archive_name}")"
   fi
 
-  # Script-scope variable (no `local`): the EXIT trap below must still be
-  # able to read it after this function returns, or `set -u` would trip on
-  # an unbound variable at shutdown.
-  tmp="$(mktemp -d)"
-  trap 'rm -rf "${tmp:-}"' EXIT
+  # Script-scope on purpose (no `local`): the EXIT trap must still read it
+  # after this function returns, or `set -u` would trip on an unbound
+  # variable. Uniquely named so it can never collide with a caller-exported
+  # `$tmp`, and the trap uses `:?` so an empty value fails loudly instead of
+  # running `rm -rf ""`.
+  BOOTSTRAP_TMPDIR="$(mktemp -d)" || die "mktemp failed"
+  trap 'rm -rf "${BOOTSTRAP_TMPDIR:?}"' EXIT
 
   log "downloading ${archive_name}..."
-  if ! download_gradient "${url}" "${tmp}/${archive_name}"; then
+  if ! download_gradient "${url}" "${BOOTSTRAP_TMPDIR}/${archive_name}"; then
     die "download failed: ${url}"
   fi
 
   info "extracting ${archive_name}..."
-  tar -xzf "${tmp}/${archive_name}" -C "${tmp}"
+  tar -xzf "${BOOTSTRAP_TMPDIR}/${archive_name}" -C "${BOOTSTRAP_TMPDIR}"
 
-  local extracted_dir="${tmp}/${archive_name%.tar.gz}"
+  local extracted_dir="${BOOTSTRAP_TMPDIR}/${archive_name%.tar.gz}"
   [ -d "${extracted_dir}" ] || die "archive did not extract to ${extracted_dir}"
 
   info "running installer from the archive..."

@@ -8,8 +8,8 @@ use std::path::PathBuf;
 
 use clap::Parser;
 
-use crate::gtmd::cover::CoverProvider;
-use crate::shared::{is_termux, resolve_command_socket, resolve_pulse_socket, termux_music_dirs};
+use crate::cover::CoverProvider;
+use gtm::shared::{is_termux, resolve_command_socket, resolve_pulse_socket, termux_music_dirs};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

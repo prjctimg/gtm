@@ -106,6 +106,14 @@ fn default_icon_style() -> String {
     "mdi".to_string()
 }
 
+fn default_left_pane_lists() -> Vec<String> {
+    LIBRARY_CATEGORIES.iter().map(|s| s.to_string()).collect()
+}
+
+fn default_show_preview() -> bool {
+    true
+}
+
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub struct Prefs {
     #[serde(default = "default_theme_name")]
@@ -144,6 +152,15 @@ pub struct Prefs {
     icon_style: String,
     #[serde(default)]
     hide_footer: bool,
+    /// Left-pane category names shown, in display order. Unknown names are
+    /// ignored; an empty list falls back to the full default set so the pane
+    /// can never be bricked from TOML. Indices into `LIBRARY_CATEGORIES`
+    /// stay stable — this only filters/orders the render + navigation.
+    #[serde(default = "default_left_pane_lists")]
+    left_pane_lists: Vec<String>,
+    /// Master switch for the left-pane track preview card.
+    #[serde(default = "default_show_preview")]
+    show_preview: bool,
 }
 
 fn default_cover_provider() -> String {
@@ -248,6 +265,8 @@ impl Default for Prefs {
             auto_fetch_lyrics: default_fetch_lyrics(),
             icon_style: default_icon_style(),
             hide_footer: false,
+            left_pane_lists: default_left_pane_lists(),
+            show_preview: true,
         }
     }
 }
@@ -339,6 +358,23 @@ pub const LIBRARY_CATEGORIES: &[&str] = &[
     "Genres",
     "Folders",
 ];
+
+/// Sanitize a TOML `left_pane_lists` value: keep only canonical category
+/// names, drop duplicates, preserve user order. Empty (or fully unknown)
+/// input falls back to the full default set so the pane always renders.
+pub fn sanitize_left_pane_lists(names: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for n in names {
+        if LIBRARY_CATEGORIES.contains(&n.as_str()) && !out.iter().any(|e| e == n) {
+            out.push(n.clone());
+        }
+    }
+    if out.is_empty() {
+        default_left_pane_lists()
+    } else {
+        out
+    }
+}
 
 pub fn folder_dir(path: &str) -> String {
     std::path::Path::new(path)
@@ -802,6 +838,10 @@ pub struct LyricsView {
     pub offset_secs: f64,
 }
 
+/// Generation-keyed cache for one `unique_*` category scan: the cached
+/// rows are valid only for the `tracks_cache_gen` that produced them.
+type CachedCategories = std::sync::Mutex<Option<(u64, Vec<(String, usize)>)>>;
+
 pub struct App {
     pub theme: AppTheme,
     pub themes: Vec<ThemeEntry>,
@@ -847,6 +887,13 @@ pub struct App {
     pub settings_pane_focus: bool,
     pub settings_option: usize,
     pub tracks_cache: Vec<TrackInfo>,
+    /// Generation bumped on every wholesale `tracks_cache` replacement; keys
+    /// the `unique_*` caches below so per-frame renders don't rebuild maps.
+    tracks_cache_gen: u64,
+    cached_albums: CachedCategories,
+    cached_artists: CachedCategories,
+    cached_genres: CachedCategories,
+    cached_folders: CachedCategories,
     pub queue: QueueView,
     pub browse_detail: Option<String>,
     pub yt_results_cache: Vec<YTSearchResult>,
@@ -988,6 +1035,10 @@ pub struct App {
     pub health_report: Option<HealthReport>,
     pub hide_help_bar: bool,
     pub hide_footer: bool,
+    /// Visible left-pane categories (canonical names from TOML, sanitized).
+    pub left_pane_lists: Vec<String>,
+    /// Master switch for the left-pane track preview card.
+    pub show_preview: bool,
     pub pending_suspend: bool,
     last_config_mtime: Option<std::time::SystemTime>,
 }
@@ -1363,6 +1414,11 @@ impl App {
             settings_pane_focus: false,
             settings_option: 0,
             tracks_cache: Vec::new(),
+            tracks_cache_gen: 0,
+            cached_albums: std::sync::Mutex::new(None),
+            cached_artists: std::sync::Mutex::new(None),
+            cached_genres: std::sync::Mutex::new(None),
+            cached_folders: std::sync::Mutex::new(None),
             queue: QueueView {
                 cache: Vec::new(),
                 cursor: 0,
@@ -1538,6 +1594,8 @@ impl App {
             health_report: None,
             hide_help_bar: true,
             hide_footer: false,
+            left_pane_lists: default_left_pane_lists(),
+            show_preview: true,
             pending_suspend: false,
             setup: SetupView::default(),
             last_config_mtime: std::fs::metadata(prefs_path())
@@ -1711,6 +1769,18 @@ impl App {
 
         // Hide footer
         self.hide_footer = prefs.hide_footer;
+
+        // Left-pane lists + preview toggle (sanitized: unknown names dropped,
+        // empty falls back to the full set; active category clamped in).
+        self.left_pane_lists = sanitize_left_pane_lists(&prefs.left_pane_lists);
+        self.show_preview = prefs.show_preview;
+        if !self
+            .visible_library_indices()
+            .contains(&self.library_category)
+            && let Some(&first) = self.visible_library_indices().first()
+        {
+            self.library_category = first;
+        }
     }
 
     pub fn cmd_tx(&self) -> mpsc::Sender<TuiCommand> {
@@ -1756,6 +1826,8 @@ impl App {
             auto_fetch_lyrics: self.auto_fetch_lyrics,
             icon_style: self.icon_style.clone(),
             hide_footer: self.hide_footer,
+            left_pane_lists: self.left_pane_lists.clone(),
+            show_preview: self.show_preview,
         }
     }
 
@@ -2253,6 +2325,7 @@ impl App {
                     self.client.library().get_tracks(None, None).await
             {
                 self.tracks_cache = *tracks;
+                self.tracks_cache_gen = self.tracks_cache_gen.wrapping_add(1);
             }
 
             if had_spotify_change {
@@ -2611,7 +2684,10 @@ impl App {
                             NotifType::Lastfm,
                         );
                     }
-                    IpcResult::LibraryTracks(tracks) => self.tracks_cache = tracks,
+                    IpcResult::LibraryTracks(tracks) => {
+                        self.tracks_cache = tracks;
+                        self.tracks_cache_gen = self.tracks_cache_gen.wrapping_add(1);
+                    }
                     IpcResult::MostPlayed(tracks) => self.most_played_cache = tracks,
                     IpcResult::RecentlyPlayed(tracks) => self.recently_played_cache = tracks,
                     IpcResult::RecentlyAdded(tracks) => self.recently_added_cache = tracks,
@@ -4179,6 +4255,25 @@ impl App {
         self.scroll_offset[i] = v;
     }
 
+    /// Raw indices into `LIBRARY_CATEGORIES` that are currently visible,
+    /// in the user's configured display order. Indices stay stable so every
+    /// hardcoded `library_category == N` comparison keeps working.
+    pub fn visible_library_indices(&self) -> Vec<usize> {
+        let mut out = Vec::new();
+        for name in &self.left_pane_lists {
+            if let Some(i) = LIBRARY_CATEGORIES.iter().position(|c| c == name)
+                && !out.contains(&i)
+            {
+                out.push(i);
+            }
+        }
+        if out.is_empty() {
+            (0..LIBRARY_CATEGORIES.len()).collect()
+        } else {
+            out
+        }
+    }
+
     /// Fully reset the library-left-pane view to a target category + drill-down.
     /// Clears the list position, multiselect selection and drill-down caches so
     /// a stale Enter/toggle can never act on a row from a previous view.
@@ -4428,6 +4523,12 @@ impl App {
 
     /// Unique album names with track counts, sorted by album.
     pub fn unique_albums(&self) -> Vec<(String, usize)> {
+        if let Ok(guard) = self.cached_albums.lock()
+            && let Some((cached_gen, cached)) = guard.as_ref()
+            && *cached_gen == self.tracks_cache_gen
+        {
+            return cached.clone();
+        }
         let mut albums: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
         for t in &self.tracks_cache {
@@ -4438,7 +4539,11 @@ impl App {
             };
             *albums.entry(key).or_insert(0) += 1;
         }
-        albums.into_iter().collect()
+        let out: Vec<(String, usize)> = albums.into_iter().collect();
+        if let Ok(mut guard) = self.cached_albums.lock() {
+            *guard = Some((self.tracks_cache_gen, out.clone()));
+        }
+        out
     }
 
     /// Length of the list currently visible in the library right pane,
@@ -4534,6 +4639,12 @@ impl App {
 
     /// Unique artist names with track counts, sorted by artist.
     pub fn unique_artists(&self) -> Vec<(String, usize)> {
+        if let Ok(guard) = self.cached_artists.lock()
+            && let Some((cached_gen, cached)) = guard.as_ref()
+            && *cached_gen == self.tracks_cache_gen
+        {
+            return cached.clone();
+        }
         let mut artists: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
         for t in &self.tracks_cache {
@@ -4544,10 +4655,20 @@ impl App {
             };
             *artists.entry(key).or_insert(0) += 1;
         }
-        artists.into_iter().collect()
+        let out: Vec<(String, usize)> = artists.into_iter().collect();
+        if let Ok(mut guard) = self.cached_artists.lock() {
+            *guard = Some((self.tracks_cache_gen, out.clone()));
+        }
+        out
     }
 
     pub fn unique_genres(&self) -> Vec<(String, usize)> {
+        if let Ok(guard) = self.cached_genres.lock()
+            && let Some((cached_gen, cached)) = guard.as_ref()
+            && *cached_gen == self.tracks_cache_gen
+        {
+            return cached.clone();
+        }
         let mut genres: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
         for t in &self.tracks_cache {
@@ -4558,17 +4679,31 @@ impl App {
             };
             *genres.entry(key).or_insert(0) += 1;
         }
-        genres.into_iter().collect()
+        let out: Vec<(String, usize)> = genres.into_iter().collect();
+        if let Ok(mut guard) = self.cached_genres.lock() {
+            *guard = Some((self.tracks_cache_gen, out.clone()));
+        }
+        out
     }
 
     pub fn unique_folders(&self) -> Vec<(String, usize)> {
+        if let Ok(guard) = self.cached_folders.lock()
+            && let Some((cached_gen, cached)) = guard.as_ref()
+            && *cached_gen == self.tracks_cache_gen
+        {
+            return cached.clone();
+        }
         let mut folders: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
         for t in &self.tracks_cache {
             let dir = folder_dir(&t.path);
             *folders.entry(dir).or_insert(0) += 1;
         }
-        folders.into_iter().collect()
+        let out: Vec<(String, usize)> = folders.into_iter().collect();
+        if let Ok(mut guard) = self.cached_folders.lock() {
+            *guard = Some((self.tracks_cache_gen, out.clone()));
+        }
+        out
     }
 
     fn cover_sync(&mut self) {
@@ -6454,7 +6589,12 @@ impl App {
                             self.lyrics.manual_scroll = true;
                             self.lyrics.scroll = self.lyrics.scroll.saturating_sub(1);
                         } else if self.library_pane_focus {
-                            let new_cat = self.library_category.saturating_sub(1);
+                            let visible = self.visible_library_indices();
+                            let pos = visible
+                                .iter()
+                                .position(|&i| i == self.library_category)
+                                .unwrap_or(0);
+                            let new_cat = visible[pos.saturating_sub(1).min(visible.len() - 1)];
                             if new_cat != self.library_category {
                                 self.reset_library_view(new_cat, None);
                             }
@@ -6474,8 +6614,12 @@ impl App {
                                 .unwrap_or(0);
                             self.lyrics.scroll = (self.lyrics.scroll + 1).min(max);
                         } else if self.library_pane_focus {
-                            let new_cat =
-                                (self.library_category + 1).min(LIBRARY_CATEGORIES.len() - 1);
+                            let visible = self.visible_library_indices();
+                            let pos = visible
+                                .iter()
+                                .position(|&i| i == self.library_category)
+                                .unwrap_or(0);
+                            let new_cat = visible[(pos + 1).min(visible.len() - 1)];
                             if new_cat != self.library_category {
                                 self.reset_library_view(new_cat, None);
                             }

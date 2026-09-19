@@ -989,12 +989,13 @@ impl Render {
         } else {
             LIBRARY_ICONS_ASCII
         };
-        let left_items: Vec<ListItem> = LIBRARY_CATEGORIES
+        let visible_cats = app.visible_library_indices();
+        let left_items: Vec<ListItem> = visible_cats
             .iter()
-            .enumerate()
-            .map(|(i, cat)| {
+            .map(|&i| {
+                let cat = LIBRARY_CATEGORIES[i];
                 let icon = lib_icons.get(i).unwrap_or(&" ");
-                let count = match *cat {
+                let count = match cat {
                     "All Tracks" => app.tracks_cache.len(),
                     "Liked" => app.tracks_cache.iter().filter(|t| t.favourite).count(),
                     "Albums" => app.unique_albums().len(),
@@ -1031,7 +1032,7 @@ impl Render {
         let left_inner = Render::pane_header(f, panes[0], app, " ", left_focus, false, false);
         fill_pane(f, left_inner, app);
 
-        let track_info_h: u16 = if app.track_popup_visible && !is_small_height {
+        let track_info_h: u16 = if app.show_preview && app.track_popup_visible && !is_small_height {
             let avail_h = left_inner.height.saturating_sub(1);
             let need = info_block_h();
             // Reserve at least 4 rows for the category list so "Spotify" never gets clipped.
@@ -1044,11 +1045,13 @@ impl Render {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(4),
-                Constraint::Length(if app.track_popup_visible && !is_small_height {
-                    1
-                } else {
-                    0
-                }),
+                Constraint::Length(
+                    if app.show_preview && app.track_popup_visible && !is_small_height {
+                        1
+                    } else {
+                        0
+                    },
+                ),
                 Constraint::Length(track_info_h),
             ])
             .split(left_inner);
@@ -1058,8 +1061,13 @@ impl Render {
 
         f.render_widget(List::new(left_items), left_list_area);
 
-        if app.library_category < LIBRARY_CATEGORIES.len() {
-            let indicator_y = left_list_area.y + app.library_category as u16;
+        if app.library_category < LIBRARY_CATEGORIES.len()
+            && let Some(row) = app
+                .visible_library_indices()
+                .iter()
+                .position(|&i| i == app.library_category)
+        {
+            let indicator_y = left_list_area.y + row as u16;
             if indicator_y < left_list_area.y + left_list_area.height {
                 let indicator_area = Rect {
                     x: left_list_area.x + 1,
@@ -1592,7 +1600,8 @@ impl Render {
             }
         };
 
-        if app.track_popup_visible
+        if app.show_preview
+            && app.track_popup_visible
             && left_info_area.height >= info_block_h()
             && (info_sep_area.height > 0 || left_info_area.height > 0)
         {

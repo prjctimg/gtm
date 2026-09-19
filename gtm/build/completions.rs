@@ -1,3 +1,19 @@
+// Shell-completion generation for the `gtm` and `gtmd` CLIs.
+//
+// This module is `include!`d from `gtm/build.rs` and only activated when the
+// `GTM_GEN_COMPLETIONS` environment variable is set to an output directory.
+// It exists so release packaging (`make completions`, GitHub Actions) can
+// regenerate shell completions without maintaining a separate `release-gen`
+// crate or depending on clap at runtime.
+//
+// NOTE: the CLI/daemon argument structs below are compile-time duplicates of
+// the real `gtm::cli::Args` and `gtmd` argument parsing. When the real CLI
+// changes, regenerate completions and diff them against the previous output
+// to spot drift.
+//
+// NOTE: do not copy install.sh here — release packaging does that explicitly
+// (`cp install.sh artifacts/install.sh`).
+
 use std::fs;
 
 use clap::{Parser, Subcommand};
@@ -64,29 +80,28 @@ enum Command {
     Queue,
     /// Add one or more files or folders to the queue
     ///
-    /// Directories are scanned recursively for audio files. Without a
-    /// position the tracks are queued to play next.
-    QueueAdd {
-        /// File or folder paths to add
-        #[arg(value_name = "PATH", value_hint = clap::ValueHint::AnyPath, num_args = 1..)]
+    /// Directories are scanned recursively for supported audio files.
+    Add {
+        /// File or directory to add
+        #[arg(value_name = "PATH", value_hint = clap::ValueHint::AnyPath)]
         paths: Vec<String>,
-
-        /// Insert at this merged-view index instead of "play next"
-        #[arg(long, value_name = "INDEX")]
-        position: Option<u64>,
     },
-    QueueRemove {
+    /// Clear the queue
+    Clear,
+    /// Remove track at the given queue index
+    Remove {
+        #[arg(value_name = "INDEX")]
         index: u64,
     },
-    QueueMove {
+    /// Move a queue entry to a new position
+    Move {
+        #[arg(value_name = "FROM")]
         from: u64,
+        #[arg(value_name = "TO")]
         to: u64,
     },
-    QueueClear,
-    /// Replace the queue with a set of tracks
-    QueueSet {
-        #[arg(value_name = "PATH", value_hint = clap::ValueHint::AnyPath, num_args = 1..)]
-        paths: Vec<String>,
+    /// Start playback from the given queue index
+    PlayIndex {
         /// Merged-view index of the entry to start playback at
         #[arg(long, value_name = "INDEX")]
         start_idx: u64,
@@ -142,9 +157,12 @@ enum Command {
     },
     /// Enrich unreliable track metadata via Deezer and embed tags into the files
     MetadataSync {
-        /// Only sync this single track; otherwise all unreliable tracks
-        #[arg(value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
-        path: Option<String>,
+        /// Only sync this single track; otherwise all unreliable tracks are synced
+        #[arg(long, value_name = "TRACK_ID")]
+        track_id: Option<i64>,
+        /// Apply changes without asking for confirmation
+        #[arg(long)]
+        yes: bool,
     },
     Favourites,
     FavouriteAdd {
@@ -346,58 +364,21 @@ struct DaemonArgs {
     backend: Option<String>,
 }
 
-fn main() {
-    let args: Vec<String> = std::env::args().collect();
-    if args.len() < 2 {
-        eprintln!(
-            "Usage: release-gen <completions|completions-gtm <shell>|completions-gtmd <shell>> [outdir]"
-        );
-        std::process::exit(1);
-    }
-
-    match args[1].as_str() {
-        "completions-gtm" => {
-            if args.len() < 3 {
-                eprintln!("missing shell argument");
-                std::process::exit(1);
-            }
-            let shell: Shell = args[2]
-                .parse()
-                .expect("invalid shell (bash, zsh, fish, powershell, elvish)");
-            gen_completions::<Cli>("gtm", shell, &mut std::io::stdout());
-        }
-        "completions-gtmd" => {
-            if args.len() < 3 {
-                eprintln!("missing shell argument");
-                std::process::exit(1);
-            }
-            let shell: Shell = args[2]
-                .parse()
-                .expect("invalid shell (bash, zsh, fish, powershell, elvish)");
-            gen_completions::<DaemonArgs>("gtmd", shell, &mut std::io::stdout());
-        }
-        "completions" | "all" => {
-            let outdir = if args.len() >= 3 {
-                &args[2]
-            } else {
-                "artifacts"
-            };
-            generate_completions(outdir);
-        }
-        _ => {
-            eprintln!("unknown command: {}", args[1]);
-            std::process::exit(1);
-        }
-    }
-}
-
-fn gen_completions<T: Parser>(bin_name: &str, shell: Shell, w: &mut impl std::io::Write) {
-    let mut cmd = T::command();
-    clap_complete::generate(shell, &mut cmd, bin_name, w);
-}
-
-fn generate_completions(outdir: &str) {
-    let comp_dir = format!("{outdir}/completions");
+/// Generate gtm + gtmd completions for every supported shell into `outdir`.
+///
+/// `outdir` may be absolute or relative. Relative paths are resolved against
+/// the workspace root (the parent of the gtm crate), matching how
+/// `release-gen` behaved when invoked from the repository root.
+pub fn generate(outdir: &str) {
+    let out = if std::path::Path::new(outdir).is_absolute() {
+        std::path::PathBuf::from(outdir)
+    } else {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("gtm crate is not at the workspace root")
+            .join(outdir)
+    };
+    let comp_dir = out.join("completions");
     fs::create_dir_all(&comp_dir).expect("create completions dir");
 
     let shells = [
@@ -424,7 +405,7 @@ fn generate_completions(outdir: &str) {
         };
         let mut buf: Vec<u8> = Vec::new();
         gen_completions::<Cli>("gtm", *shell, &mut buf);
-        fs::write(format!("{comp_dir}/{name_suffix}"), &buf).expect("write gtm completion");
+        fs::write(comp_dir.join(name_suffix), &buf).expect("write gtm completion");
 
         buf.clear();
         let name_suffix2 = match ext {
@@ -432,13 +413,13 @@ fn generate_completions(outdir: &str) {
             _ => format!("gtmd.{}", suffix),
         };
         gen_completions::<DaemonArgs>("gtmd", *shell, &mut buf);
-        fs::write(format!("{comp_dir}/{name_suffix2}"), &buf).expect("write gtmd completion");
+        fs::write(comp_dir.join(name_suffix2), &buf).expect("write gtmd completion");
     }
 
-    // Copy install.sh to artifacts for release packaging
-    if let Err(e) = fs::copy("../../install.sh", format!("{outdir}/install.sh")) {
-        eprintln!("Warning: failed to copy install.sh: {e}");
-    }
+    println!("Generated completions in {}/", comp_dir.display());
+}
 
-    println!("Generated completions in {comp_dir}/");
+fn gen_completions<T: Parser>(bin_name: &str, shell: Shell, w: &mut impl std::io::Write) {
+    let mut cmd = T::command();
+    clap_complete::generate(shell, &mut cmd, bin_name, w);
 }

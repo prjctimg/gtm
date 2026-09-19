@@ -141,7 +141,8 @@ gtm.rs/
 │   │       ├── tags.rs     Audio tag writing (lofty)
 │   │       └── cleaner.rs  YouTube title/filename cleaning
 │   └── tests/              Integration tests (core, audio, daemon)
-├── release-gen/            Build-time tool for shell completions (standalone crate)
+├── gtmd/                   Daemon crate (gtmd binary, core playback engine)
+├── gtm/build/              Build-time helpers, incl. build/completions.rs
 ├── docs/                   Documentation (manpage sources)
 ├── scripts/build/          Build scripts (packaging, manpages, verification)
 ├── dist/                   Packaging files (systemd service, desktop entry, termux/rpm/arch)
@@ -244,7 +245,7 @@ you can tweak just the component you care about:
 | `gtm::gtmd` | Daemon: manages queue, library, IPC socket (bin `gtmd`) |
 | `gtm::mpris` | MPRIS D-Bus interface (mpris feature) |
 | `gtm::*` | Client: TUI and CLI interface (bin `gtm`, tui feature) |
-| `release-gen` | Shell-completion generator used by the release pipeline (standalone crate) |
+| `gtm/build.rs` | Build script: embeds git SHA, stamps feature env, and (via `GTM_GEN_COMPLETIONS`) generates shell completions during release builds |
 
 Every change must pass all three before it is mergeable:
 

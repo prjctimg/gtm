@@ -19,10 +19,10 @@ use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tracing::debug;
 
-use crate::shared::global::YTFilter;
-use crate::shared::track::{StreamInfo, YTSearchResult};
+use gtm::shared::global::YTFilter;
+use gtm::shared::track::{StreamInfo, YTSearchResult};
 
-use crate::gtmd::cleaner::clean_youtube_title;
+use crate::cleaner::clean_youtube_title;
 
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONCURRENT: usize = 2;

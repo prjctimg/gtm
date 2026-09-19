@@ -57,6 +57,7 @@ pub struct AudioVisualizer {
     pub preset: VisualizerPreset,
     bars: Vec<f32>,
     target_bars: Vec<f32>,
+    peaks: Vec<f32>,
     last_tick: Instant,
     spectrum_offset: f64,
 }
@@ -68,6 +69,7 @@ impl AudioVisualizer {
             preset: VisualizerPreset::default(),
             bars: vec![0.0; 32],
             target_bars: vec![0.0; 32],
+            peaks: vec![0.0; 32],
             last_tick: Instant::now(),
             spectrum_offset: 0.0,
         }
@@ -97,6 +99,7 @@ impl AudioVisualizer {
         if self.bars.len() != num_bars {
             self.bars.resize(num_bars, 0.0);
             self.target_bars.resize(num_bars, 0.0);
+            self.peaks.resize(num_bars, 0.0);
         }
 
         // Advance the animation phase; drives idle motion and Spectrum scroll.
@@ -105,9 +108,10 @@ impl AudioVisualizer {
         if is_playing && !audio_levels.is_empty() {
             let bins = audio_levels.len();
             for (i, target) in self.target_bars.iter_mut().enumerate() {
-                // Map bar index to spectrum bin index (log-ish mapping: lower frequencies get more bars)
+                // Log-frequency mapping: lower octaves get more bars, the
+                // high end compresses (cliamp-style).
                 let ratio = i as f64 / num_bars as f64;
-                let idx = (ratio * bins as f64 * 0.8) as usize; // compress high end slightly
+                let idx = (ratio.powf(2.2) * bins as f64) as usize;
                 let idx = idx.min(bins - 1);
                 let level = audio_levels[idx];
                 *target = level.clamp(0.0, 1.0);
@@ -130,6 +134,10 @@ impl AudioVisualizer {
             let rate = if diff > 0.0 { attack } else { decay };
             *bar += diff * rate as f32 * (dt * 60.0) as f32;
             *bar = bar.clamp(0.0, 1.0);
+        }
+        // Peak-hold caps fall slowly toward the live target.
+        for (peak, target) in self.peaks.iter_mut().zip(self.target_bars.iter()) {
+            *peak = (*peak - dt as f32 * 0.6).max(*target).clamp(0.0, 1.0);
         }
     }
 
@@ -157,13 +165,39 @@ impl AudioVisualizer {
             VisualizerPreset::Blocks => self.render_blocks(num_bars, h, theme),
             VisualizerPreset::Mirror => self.render_mirror(num_bars, h, theme),
             VisualizerPreset::Gradient => self.render_gradient(num_bars, h, theme),
-            VisualizerPreset::Spectrum => self.render_blocks(num_bars, h, theme),
+            VisualizerPreset::Spectrum => self.render_spectrum(num_bars, h, theme),
         })
+    }
+
+    /// Log-mapped spectrum bars with peak-hold caps. Distinct from Blocks
+    /// (fractional smooth columns): solid columns plus a falling `▔` marker
+    /// per bar. Glyphs are `&'static str` — no per-frame allocation.
+    fn render_spectrum(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
+        let mut lines: Vec<Line<'static>> = Vec::new();
+        for row_from_top in (0..height).rev() {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            for i in 0..num_bars {
+                let val = *self.bars.get(i).unwrap_or(&0.0);
+                let peak = *self.peaks.get(i).unwrap_or(&0.0);
+                let filled_rows = (val * height as f32).floor() as usize;
+                let peak_row = ((peak * height as f32).floor() as usize).min(height);
+                let (glyph, color) = if row_from_top < filled_rows {
+                    ("█", self.amplitude_color(val, theme))
+                } else if peak > 0.0 && row_from_top == peak_row && peak_row < height {
+                    ("▔", theme.accent)
+                } else {
+                    (" ", theme.bg)
+                };
+                spans.push(Span::styled(glyph, Style::default().fg(color)));
+            }
+            lines.push(Line::from(spans));
+        }
+        Lines(lines)
     }
 
     /// Block columns with fine fractional heights (`▁…█`).
     fn render_blocks(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
-        const BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+        const BLOCKS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
         let mut lines: Vec<Line<'static>> = Vec::new();
         for row_from_top in (0..height).rev() {
             let mut spans: Vec<Span<'static>> = Vec::new();
@@ -172,19 +206,19 @@ impl AudioVisualizer {
                 let filled = val * height as f32;
                 let full_rows = filled.floor() as usize;
                 let frac = filled - filled.floor();
-                let ch = if row_from_top < full_rows {
+                let glyph = if row_from_top < full_rows {
                     BLOCKS[7]
                 } else if row_from_top == full_rows && frac > 0.0 && full_rows < height {
                     BLOCKS[((frac * 8.0) as usize).min(7)]
                 } else {
-                    ' '
+                    " "
                 };
-                let color = if ch == ' ' {
+                let color = if glyph == " " {
                     theme.bg
                 } else {
                     self.amplitude_color(val, theme)
                 };
-                spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+                spans.push(Span::styled(glyph, Style::default().fg(color)));
             }
             lines.push(Line::from(spans));
         }
@@ -201,13 +235,12 @@ impl AudioVisualizer {
             for i in 0..num_bars {
                 let val = *self.bars.get(i).unwrap_or(&0.0);
                 let extent = val * half;
-                let ch = if center_dist <= extent { '█' } else { ' ' };
-                let color = if ch == ' ' {
-                    theme.bg
+                let (glyph, color) = if center_dist <= extent {
+                    ("█", self.amplitude_color(val, theme))
                 } else {
-                    self.amplitude_color(val, theme)
+                    (" ", theme.bg)
                 };
-                spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+                spans.push(Span::styled(glyph, Style::default().fg(color)));
             }
             lines.push(Line::from(spans));
         }
@@ -223,8 +256,6 @@ impl AudioVisualizer {
         color_fn: impl Fn(f32, &AppTheme) -> Color,
     ) -> Lines<'_> {
         let mut lines: Vec<Line<'static>> = Vec::new();
-        let braille_fill = '⣿';
-        let braille_empty = '⠀';
         for row in (0..height).rev() {
             let mut spans: Vec<Span<'static>> = Vec::new();
             let threshold = (row + 1) as f32 / height as f32;
@@ -232,15 +263,9 @@ impl AudioVisualizer {
                 let val = *self.bars.get(i).unwrap_or(&0.0);
                 if val >= threshold {
                     let color = color_fn(val, theme);
-                    spans.push(Span::styled(
-                        braille_fill.to_string(),
-                        Style::default().fg(color),
-                    ));
+                    spans.push(Span::styled("⣿", Style::default().fg(color)));
                 } else {
-                    spans.push(Span::styled(
-                        braille_empty.to_string(),
-                        Style::default().fg(theme.bg),
-                    ));
+                    spans.push(Span::styled("⠀", Style::default().fg(theme.bg)));
                 }
             }
             lines.push(Line::from(spans));
@@ -286,7 +311,9 @@ impl<'a> Widget for Lines<'a> {
             }
             let mut x = area.x;
             for span in &line.spans {
-                for ch in span.content.chars() {
+                // Slice glyphs out of the span instead of `char.to_string()`:
+                // zero per-cell allocation on the render hot path.
+                for (idx, ch) in span.content.char_indices() {
                     if x >= area.x + area.width {
                         break;
                     }
@@ -295,7 +322,8 @@ impl<'a> Widget for Lines<'a> {
                         break;
                     }
                     if let Some(cell) = buf.cell_mut((x, cell_y)) {
-                        cell.set_symbol(&ch.to_string()).set_style(span.style);
+                        cell.set_symbol(&span.content[idx..idx + ch.len_utf8()])
+                            .set_style(span.style);
                     }
                     x += 1;
                 }

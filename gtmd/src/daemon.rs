@@ -14,55 +14,56 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{RwLock, broadcast, mpsc};
 use tracing::{error, info, warn};
 
-use crate::shared::paths::resolve_pid_file;
+use gtm::shared::paths::resolve_pid_file;
 
+use crate::config::AudioBackendKind;
+use base64::Engine;
 #[cfg(feature = "pulseaudio")]
-use crate::audio::PulseAudioMixer;
-use crate::audio::symphonia::StreamingReopen;
-use crate::audio::{AudioError, AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
-use crate::gtmd::config::AudioBackendKind;
+use gtm::audio::PulseAudioMixer;
+use gtm::audio::symphonia::StreamingReopen;
+use gtm::audio::{AudioError, AudioEvent, AudioMixer, AudioResult, Mixer, NullMixer};
 #[cfg(feature = "mpris")]
-use crate::mpris::{MprisHandle, start};
-use crate::shared::global::{
+use gtm::mpris::{MprisHandle, start};
+use gtm::shared::global::{
     DaemonState, EQ_PRESETS, EqPreset, LoudnessMode, PlaybackStatus, RepeatMode, ReverbConfig,
     SavedState, YTFilter,
 };
-use crate::shared::ipc::{
+use gtm::shared::ipc::{
     CacheKind, ComponentHealth, DaemonEvent, DaemonReq, DaemonRes, HealthReport, HealthStatus,
     LibraryAction, QueueAction, SyncKind, WireReq,
 };
-use crate::shared::playlist::{M3u8Format, PlaylistFormat, PlsFormat};
-use crate::shared::secret::{
+use gtm::shared::playlist::{M3u8Format, PlaylistFormat, PlsFormat};
+use gtm::shared::secret::{
     LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, delete_secret, get_secret, set_secret,
 };
-use crate::shared::spotify::SpotifyTrack;
-use crate::shared::track::TrackInfo;
-use crate::shared::wire;
-use crate::shared::{CoreError, MetadataPatch};
+use gtm::shared::spotify::SpotifyTrack;
+use gtm::shared::track::TrackInfo;
+use gtm::shared::wire;
+use gtm::shared::{CoreError, MetadataPatch};
 #[cfg(feature = "pulseaudio")]
-use crate::shared::{ensure_termux_pulse, is_termux};
-use base64::Engine;
+use gtm::shared::{ensure_termux_pulse, is_termux};
 
-use crate::gtmd::cleaner::{
+use crate::cleaner::{
     clean_filename_stem, clean_youtube_title, is_filename_like, sanitize_text, tags_need_enrichment,
 };
-use crate::gtmd::config::DaemonConfig;
-use crate::gtmd::cover::{CoverCache, CoverProvider};
-use crate::gtmd::deezer::DeezerSearch;
-use crate::gtmd::lastfm::LastfmManager;
-use crate::gtmd::library::{Library, extract_metadata};
-use crate::gtmd::lyrics::{LyricsManager, lrc_to_text, meta_from_filename};
-use crate::gtmd::oauth::OauthFlow;
-use crate::gtmd::podcast::PodcastManager;
-use crate::gtmd::queue;
-use crate::gtmd::radio::RadioBrowserManager;
-use crate::gtmd::remote;
-use crate::gtmd::spotify::SpotifyManager;
-use crate::gtmd::stream::StreamManager;
-use crate::gtmd::subsonic::SubsonicManager;
-use crate::gtmd::tags::{MetadataToWrite, write_tags};
+use crate::config::DaemonConfig;
+use crate::cover::{CoverCache, CoverProvider};
+use crate::deezer::DeezerSearch;
+use crate::deferred_mixer::DeferredMixer;
+use crate::lastfm::LastfmManager;
+use crate::library::{Library, extract_metadata};
+use crate::lyrics::{LyricsManager, lrc_to_text, meta_from_filename};
+use crate::oauth::OauthFlow;
+use crate::podcast::PodcastManager;
+use crate::queue;
+use crate::radio::RadioBrowserManager;
+use crate::remote;
+use crate::spotify::SpotifyManager;
+use crate::stream::StreamManager;
+use crate::subsonic::SubsonicManager;
+use crate::tags::{MetadataToWrite, write_tags};
 #[cfg(feature = "youtube")]
-use crate::gtmd::youtube::{YoutubeManager, download_into};
+use crate::youtube::{YoutubeManager, download_into};
 
 type ClientId = u64;
 type ReplyTx = mpsc::UnboundedSender<(u64, DaemonRes)>;
@@ -157,8 +158,8 @@ async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<(String, bool
             }
         }
         RemoteKind::Radio { station_id, .. } => {
-            if let Some(index) = crate::shared::custom::parse_custom_id(station_id) {
-                crate::shared::custom::station_by_index(index)
+            if let Some(index) = gtm::shared::custom::parse_custom_id(station_id) {
+                gtm::shared::custom::station_by_index(index)
                     .map_err(CoreError::Daemon)?
                     .ok_or_else(|| CoreError::Daemon(format!("no custom station {index}")))?
                     .url
@@ -2150,8 +2151,7 @@ impl Spotify {
             let spotify = inner.spotify.lock().await;
             spotify.can_stream().await && uri.is_some()
         };
-        if can_stream {
-            let uri = uri.clone().expect("checked above");
+        if can_stream && let Some(uri) = uri.clone() {
             Spotify::queue_stream(inner, &uri, name, artists, album, None).await?;
             return Ok(DaemonRes::Ok);
         }
@@ -2745,8 +2745,8 @@ impl Radio {
         // Fresh name from the directory (authoritative); the caller-provided
         // name is only a fallback for the queue display.
         let name = {
-            if let Some(index) = crate::shared::custom::parse_custom_id(station_id) {
-                match crate::shared::custom::station_by_index(index) {
+            if let Some(index) = gtm::shared::custom::parse_custom_id(station_id) {
+                match gtm::shared::custom::station_by_index(index) {
                     Ok(Some(st)) => st.name,
                     _ => station_name.to_string(),
                 }
@@ -4168,39 +4168,39 @@ impl Daemon {
             saved.apply_to(&mut initial_state);
         }
 
-        // Re-apply a persisted output device before the state is shared (this
-        // happens before `Daemon::new` returns, while `initial_state` is still
-        // owned exclusively, so it must not take the tokio RwLock). A device
-        // that disappeared while the daemon was off falls back to the system
-        // default and is cleared from the saved settings.
-        let mut mixer: Box<dyn Mixer> = if config.test_mode {
+        // The real mixer build (PulseAudio connect, device enumeration, and on
+        // Termux possibly spawning the PulseAudio server) is deferred to the
+        // first actual mixer call via `DeferredMixer`, so the IPC socket binds
+        // before any audio-device or network I/O happens. Persisted device /
+        // speed / mono are replayed inside the factory on first init.
+        // NOTE: unlike the old eager path, a saved device that disappeared is
+        // no longer cleared from `initial_state` here; the factory warns and
+        // keeps the system default, and the stale name is retried (and
+        // re-warned) on the next launch.
+        let mixer: Box<dyn Mixer> = if config.test_mode {
             Box::new(NullMixer::new())
         } else {
-            Self::init_mixer(&config)?
-        };
-        if !config.test_mode
-            && let Some(dev) = initial_state.audio.audio_device.clone()
-        {
-            match mixer.set_device(Some(dev.clone())) {
-                Ok(()) => {}
-                Err(e) => {
-                    warn!("saved audio device '{dev}' unavailable ({e}); using default");
-                    initial_state.audio.audio_device = None;
-                }
-            }
-        }
-        // Apply persisted playback speed to the mixer so it's effective from the
-        // first track. The mixer defaults to 1.0 but the saved state may differ.
-        if !config.test_mode {
+            let cfg = config.clone();
+            let device = initial_state.audio.audio_device.clone();
             let speed = initial_state.audio.speed;
-            if (speed - 1.0).abs() > f32::EPSILON {
-                mixer.set_speed(speed);
-            }
-        }
-        // Apply persisted mono downmix so the first track honours it.
-        if !config.test_mode && initial_state.mono {
-            mixer.set_mono(true);
-        }
+            let mono = initial_state.mono;
+            Box::new(DeferredMixer::new(move || {
+                let mut m =
+                    Self::init_mixer(&cfg).map_err(|e| AudioError::OutputError(e.to_string()))?;
+                if let Some(dev) = device.clone()
+                    && let Err(e) = m.set_device(Some(dev.clone()))
+                {
+                    warn!("saved audio device '{dev}' unavailable ({e}); using default");
+                }
+                if (speed - 1.0).abs() > f32::EPSILON {
+                    m.set_speed(speed);
+                }
+                if mono {
+                    m.set_mono(true);
+                }
+                Ok(m)
+            }))
+        };
 
         let state = Arc::new(RwLock::new(initial_state));
 
@@ -4214,8 +4214,8 @@ impl Daemon {
         // cleared and this instance to bind, so concurrent clients can never
         // end up with two daemons.
         if !config.test_mode
-            && let Some(pid) = crate::shared::daemon::read_daemon_pid()
-            && crate::shared::daemon::pid_is_alive(pid)
+            && let Some(pid) = gtm::shared::daemon::read_daemon_pid()
+            && gtm::shared::daemon::pid_is_alive(pid)
         {
             return Err(CoreError::Daemon(format!(
                 "gtmd already running (pid {pid}); connect to the existing daemon"

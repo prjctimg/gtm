@@ -117,7 +117,10 @@ impl PlaylistFormat for PlsFormat {
                 // rest looks like "N=path" or "N=path with =". Split on first '='.
                 if let Some(eq) = rest.find('=') {
                     let num: u64 = rest[..eq].trim().parse().unwrap_or(0);
-                    let value = line[line.find('=').unwrap() + 1..].trim().to_string();
+                    // `rest` is `line` lowercased minus the 4-byte "file"
+                    // prefix, so the '=' sits at byte 4+eq in `line` and the
+                    // byte after it is always a char boundary.
+                    let value = line[4 + eq + 1..].trim().to_string();
                     if !value.is_empty() {
                         entries.push((num, value));
                     }

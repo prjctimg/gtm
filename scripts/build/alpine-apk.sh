@@ -14,8 +14,11 @@ pkgver="${version}-r0"
   exit 1
 }
 
-tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
+tmpdir="$(mktemp -d)" || {
+  echo "error: mktemp failed" >&2
+  exit 1
+}
+trap 'rm -rf "${tmpdir:?}"' EXIT
 root="$tmpdir/root"
 mkdir -p "$root"
 cp -a "$stage"/. "$root"/

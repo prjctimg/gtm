@@ -9,9 +9,9 @@ use std::path::{Path, PathBuf};
 use reqwest::Client;
 use urlencoding::encode;
 
-use crate::shared::track::{LrcData, LrcLine, LrcWord, TrackInfo};
+use gtm::shared::track::{LrcData, LrcLine, LrcWord, TrackInfo};
 
-use crate::gtmd::cleaner::clean_filename_stem;
+use crate::cleaner::clean_filename_stem;
 
 const LRCLIB_API: &str = "https://lrclib.net/api";
 

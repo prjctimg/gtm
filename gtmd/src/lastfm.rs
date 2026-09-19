@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Mutex;
 use tracing::{debug, info, warn};
 
-use crate::shared::track::TrackInfo;
+use gtm::shared::track::TrackInfo;
 
 const LASTFM_API_URL: &str = "https://ws.audioscrobbler.com/2.0/";
 
@@ -124,11 +124,11 @@ impl LastfmManager {
         let api_key = self.api_key.as_ref().ok_or("API key not set")?;
         let _api_secret = self.api_secret.as_ref().ok_or("API secret not set")?;
 
-        let sig = self.sign_params(&[
+        let sig = self.try_sign_params(&[
             ("api_key", api_key),
             ("method", "auth.getSession"),
             ("token", token),
-        ]);
+        ])?;
 
         let params = [
             ("method", "auth.getSession"),
@@ -196,18 +196,22 @@ impl LastfmManager {
         let artist = track.artist.clone();
         let album = track.album.clone();
 
-        let sig = self.sign_params(&[
-            ("api_key", self.api_key.as_ref().unwrap()),
+        let api_key = self
+            .api_key
+            .as_ref()
+            .ok_or("Last.fm API key not configured")?;
+        let sig = self.try_sign_params(&[
+            ("api_key", api_key),
             ("artist", &artist),
             ("track", &track_name),
             ("album", &album),
             ("method", "track.updateNowPlaying"),
             ("sk", &session_key),
-        ]);
+        ])?;
 
         let params = [
             ("method", "track.updateNowPlaying"),
-            ("api_key", self.api_key.as_ref().unwrap()),
+            ("api_key", api_key),
             ("artist", &artist),
             ("track", &track_name),
             ("album", &album),
@@ -388,17 +392,21 @@ impl LastfmManager {
         let artist = track.artist.clone();
         let method = if love { "track.love" } else { "track.unlove" };
 
-        let sig = self.sign_params(&[
-            ("api_key", self.api_key.as_ref().unwrap()),
+        let api_key = self
+            .api_key
+            .as_ref()
+            .ok_or("Last.fm API key not configured")?;
+        let sig = self.try_sign_params(&[
+            ("api_key", api_key),
             ("artist", &artist),
             ("track", &track_name),
             ("method", method),
             ("sk", &session_key),
-        ]);
+        ])?;
 
         let params = [
             ("method", method),
-            ("api_key", self.api_key.as_ref().unwrap()),
+            ("api_key", api_key),
             ("artist", &artist),
             ("track", &track_name),
             ("sk", &session_key),
@@ -444,19 +452,23 @@ impl LastfmManager {
             .clone()
             .ok_or("No Last.fm session")?;
 
-        let sig = self.sign_params(&[
-            ("api_key", self.api_key.as_ref().unwrap()),
+        let api_key = self
+            .api_key
+            .as_ref()
+            .ok_or("Last.fm API key not configured")?;
+        let sig = self.try_sign_params(&[
+            ("api_key", api_key),
             ("artist", artist),
             ("track", track_name),
             ("album", album),
             ("method", "track.scrobble"),
             ("sk", &session_key),
             ("timestamp", &timestamp.to_string()),
-        ]);
+        ])?;
 
         let params = [
             ("method", "track.scrobble"),
-            ("api_key", self.api_key.as_ref().unwrap()),
+            ("api_key", api_key),
             ("artist", artist),
             ("track", track_name),
             ("album", album),
@@ -493,8 +505,11 @@ impl LastfmManager {
     }
 
     /// Generate API signature for Last.fm request.
-    fn sign_params(&self, params: &[(&str, &str)]) -> String {
-        let api_secret = self.api_secret.as_ref().unwrap();
+    fn try_sign_params(&self, params: &[(&str, &str)]) -> Result<String, String> {
+        let api_secret = self
+            .api_secret
+            .as_ref()
+            .ok_or("Last.fm API secret not configured")?;
         let mut sorted: Vec<(&str, &str)> = params.to_vec();
         sorted.sort_by_key(|(k, _)| *k);
 
@@ -508,7 +523,7 @@ impl LastfmManager {
         let mut ctx = Context::new();
         ctx.consume(sig_string.as_bytes());
         let digest = ctx.finalize();
-        hex::encode(digest.0)
+        Ok(hex::encode(digest.0))
     }
 
     pub fn get_api_key(&self) -> Option<String> {

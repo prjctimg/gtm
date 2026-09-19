@@ -11,14 +11,11 @@ categories.workspace = true
 readme = "README.md"
 
 [features]
-default = ["mpris", "youtube"]
-# MPRIS D-Bus integration (daemon).
+default = ["mpris"]
+# MPRIS D-Bus integration (consumed by the gtmd daemon crate via gtmd/mpris).
 mpris = ["dep:zbus", "dep:zvariant"]
-# YouTube search/resolution via innertube-rs (embeds QuickJS via rquickjs).
-# rquickjs ships no bindings for aarch64-linux-android, so the Android/Termux
-# build disables this to stay compilable (local music playback is unaffected).
-youtube = ["dep:innertube-rs"]
-# PulseAudio output backend (daemon mixer).
+# PulseAudio output backend (consumed by the gtmd daemon crate via
+# gtmd/pulseaudio).
 pulseaudio = ["dep:pulseaudio"]
 # Test/debug helper that forces IPC failures (tripwire).
 debug-fail = ["dep:rustc-hash"]
@@ -73,11 +70,14 @@ lru = "0.12"
 hex = "0.4"
 fastrand = "2"
 getrandom = "0.2"
-innertube-rs = { version = "0.6", optional = true }
 zbus = { version = "4", features = ["tokio"], optional = true }
 zvariant = { version = "4", optional = true }
 pulseaudio = { version = "0.3", optional = true }
 rustc-hash = { version = "2", optional = true }
+
+[build-dependencies]
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 
 [dev-dependencies]
 bincode = "1"
@@ -116,7 +116,3 @@ assets = [
 [[bin]]
 name = "gtm"
 path = "src/main.rs"
-
-[[bin]]
-name = "gtmd"
-path = "src/daemon_main.rs"

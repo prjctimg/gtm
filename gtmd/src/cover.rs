@@ -17,8 +17,8 @@ use std::num::NonZeroUsize;
 use tokio::sync::Mutex;
 use tracing::warn;
 
-use crate::gtmd::deezer::DeezerSearch;
-use crate::gtmd::musicbrainz::MusicBrainz;
+use crate::deezer::DeezerSearch;
+use crate::musicbrainz::MusicBrainz;
 
 /// In-memory entry budget for album covers. Each entry is a normalized
 /// 500x500 JPEG (~20-150 KB), so 64 entries bind memory to roughly 8 MB worst

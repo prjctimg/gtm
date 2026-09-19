@@ -1,6 +1,13 @@
 use std::env;
 use std::process::Command;
 
+// Shell-completion generation for release packaging. The structs + generator
+// live in build/completions.rs (pulled in verbatim from the former
+// `release-gen` crate) and only run when GTM_GEN_COMPLETIONS is set.
+mod completions {
+    include!(concat!(env!("CARGO_MANIFEST_DIR"), "/build/completions.rs"));
+}
+
 /// Look up a package's version in the workspace Cargo.lock.
 fn locked_version(pkg: &str) -> Option<String> {
     let lock = std::fs::read_to_string("Cargo.lock").ok()?;
@@ -135,4 +142,15 @@ fn main() {
     println!("cargo:rerun-if-env-changed=VERGEN_GIT_SHA");
     // Re-run if git HEAD changes
     println!("cargo:rerun-if-changed=.git/HEAD");
+
+    // Release packaging: regenerate shell completions when the env var is set
+    // (used by `make completions` and the GitHub release workflow). Resolves
+    // relative outdirs against the workspace root, mirroring how release-gen
+    // behaved when run from the repository root.
+    println!("cargo:rerun-if-env-changed=GTM_GEN_COMPLETIONS");
+    if let Ok(outdir) = env::var("GTM_GEN_COMPLETIONS")
+        && !outdir.trim().is_empty()
+    {
+        completions::generate(&outdir);
+    }
 }

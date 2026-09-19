@@ -25,7 +25,7 @@
 #   build job  → per OS/arch:
 #     │         1. cargo build --release (cargo-ndk for Android; musl in the
 #     │            Alpine ad-hoc container for both Linux musl targets)
-#     │         2. Generate manpages (pandoc) + completions (release-gen)
+#     │         2. Generate manpages (pandoc) + completions (GTM_GEN_COMPLETIONS)
 #     │         3. Assemble a complete per-target archive:
 #     │            gtm-{platform}.tar.gz for macOS/Alpine/Android,
 #     │            gtm-debian-12-{x86_64,aarch64}.tar.gz for the Debian 12
@@ -407,7 +407,10 @@ jobs:
       - name: Build Android release binaries
         if: matrix.family == 'android'
         run: |
-          CARGO_INCREMENTAL=0 cargo ndk -t arm64-v8a -P 27 \
+          # Completions ride on this build (gtm's build script emits them):
+          # a separate host `cargo build` would try to compile rodio/ALSA
+          # for x86_64 Linux, which the runner lacks libraries for.
+          GTM_GEN_COMPLETIONS="$(pwd)/artifacts" CARGO_INCREMENTAL=0 cargo ndk -t arm64-v8a -P 27 \
             build --release --no-default-features --features pulseaudio
 
       - name: Clean Android ELF sections
@@ -421,8 +424,8 @@ jobs:
         run: ./scripts/build/manpages.sh artifacts
 
       - name: Generate shell completions
-        if: matrix.family != 'musl' && matrix.family != 'arch-arm'
-        run: cargo run --release --manifest-path release-gen/Cargo.toml --bin release-gen completions artifacts
+        if: matrix.family != 'musl' && matrix.family != 'arch-arm' && matrix.family != 'android'
+        run: GTM_GEN_COMPLETIONS="$(pwd)/artifacts" cargo build --release --quiet
 
       # ── Complete per-target archive (bin + man + completions + service) ──
       # Debian 12 glibc builds are labelled explicitly in release assets

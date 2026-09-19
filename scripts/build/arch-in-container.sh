@@ -23,7 +23,7 @@ pacman -S --noconfirm --needed $PACMAN_PACKAGES
 cargo build --release
 
 ./scripts/build/manpages.sh artifacts
-cargo run --release --manifest-path release-gen/Cargo.toml --bin release-gen completions artifacts
+GTM_GEN_COMPLETIONS="$(pwd)/artifacts" cargo build --release --quiet
 
 root="gtm-arch-${arch}"
 mkdir -p release-assets \
