@@ -188,7 +188,14 @@ fn open_remote_reader(
     live: bool,
     title_slot: Option<remote::IcySlot>,
 ) -> AudioResult<Box<dyn std::io::Read + Send>> {
-    let mut req = remote::client().get(url);
+    // Live streams use a client with no total timeout: reqwest's `.timeout()`
+    // covers the whole request including endless body streaming, so the
+    // on-demand client would kill every station ~60s in.
+    let mut req = if live {
+        remote::live_client().get(url)
+    } else {
+        remote::client().get(url)
+    };
     if live && title_slot.is_some() {
         req = req.header(remote::ICY_META_HEADER, "1");
     }
@@ -228,9 +235,12 @@ fn decode_remote_reader(
     start_pos: f64,
     title_slot: Option<remote::IcySlot>,
 ) -> AudioResult<Box<dyn rodio::Source<Item = f32> + Send>> {
-    let reader = open_remote_reader(&url, live, title_slot)?;
+    let reader = open_remote_reader(&url, live, title_slot.clone())?;
+    // Live streams reconnect from scratch (same URL, fresh ICY negotiation);
+    // seeks stay disabled for them at the symphonia level, but the re-opener
+    // lets a dropped connection resume instead of ending the source.
     let reopen: Option<Box<dyn StreamingReopen>> = if live {
-        None
+        Some(Box::new(remote::LiveReopen::new(url, title_slot)))
     } else {
         Some(Box::new(remote::HttpReopen::new(url)))
     };
@@ -4390,7 +4400,10 @@ impl Daemon {
 
         let hb_event_tx = self.inner.event_tx.clone();
         tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_secs(30));
+            // 15s interval against the client's 60s timeout: up to three beats
+            // can stall (slow yt-dlp spawn, event-loop hiccup) before the TUI
+            // treats the daemon as stale and fails in-flight requests.
+            let mut interval = tokio::time::interval(Duration::from_secs(15));
             loop {
                 interval.tick().await;
                 let _ = hb_event_tx.send(DaemonEvent::Heartbeat);
@@ -5558,6 +5571,42 @@ impl Daemon {
         Ok(Some(first))
     }
 
+    /// Re-play a live `radio://` path after a dropped connection, with capped
+    /// backoff. Aborts when `play_session` changes (user stop/next/prev/play)
+    /// or the current track moved on, so retries never fight user input. Falls
+    /// back to `stop_playback` only after repeated failures.
+    async fn retry_live_stream(inner: &Arc<DaemonInner>, path: &str, session: u64) {
+        let mut delay_secs = 2u64;
+        for _ in 0..8 {
+            tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+            if inner.play_session.load(Ordering::Acquire) != session {
+                return;
+            }
+            let still_current = {
+                let state = inner.state.read().await;
+                state.current_track.as_ref().is_some_and(|t| t.path == path)
+            };
+            if !still_current {
+                return;
+            }
+            // `Cmd::play` bumps the session itself; a concurrent user action
+            // racing us just wins and our next guard bails out.
+            let _lock = inner.play_lock.write().await;
+            if inner.play_session.load(Ordering::Acquire) != session {
+                return;
+            }
+            match Cmd::play(inner, path, 0.0, false).await {
+                Ok(_) => return,
+                Err(e) => warn!("radio reconnect for {path} failed: {e}"),
+            }
+            delay_secs = (delay_secs * 2).min(30);
+        }
+        if inner.play_session.load(Ordering::Acquire) == session {
+            warn!("radio reconnect for {path} gave up after retries");
+            Self::stop_playback(inner).await;
+        }
+    }
+
     async fn stop_playback(inner: &DaemonInner) {
         inner.play_session.fetch_add(1, Ordering::Release);
         {
@@ -5894,21 +5943,28 @@ impl Daemon {
                 Self::push_event(inner, DaemonEvent::DurationChanged { duration: dur });
             }
             AudioEvent::Finished => {
-                // A dead live stream is a stop, not a queue advance: `radio://`
+                // A dropped live stream reconnects, it doesn't stop: `radio://`
                 // streams are endless, so `Finished` only fires when the server
-                // closed the connection or the ring exhausted. Auto-advancing
-                // would skip to the next queue entry when the user never asked
-                // to leave the station. Manual Next keeps working (it switches
-                // the source before any `Finished` can fire).
-                let active_is_radio = {
+                // closed the connection or the transport hit EOF. The daemon
+                // re-plays the same station path (which re-resolves the stream
+                // URL, since those expire) with backoff; an explicit user
+                // stop/next bumps `play_session`, which aborts the retries.
+                // Manual Next keeps working (it switches the source before any
+                // `Finished` can fire).
+                let radio_path = {
                     let state = inner.state.read().await;
                     state
                         .current_track
                         .as_ref()
-                        .is_some_and(|t| t.path.starts_with("radio://"))
+                        .filter(|t| t.path.starts_with("radio://"))
+                        .map(|t| t.path.clone())
                 };
-                if active_is_radio {
-                    Self::stop_playback(inner).await;
+                if let Some(path) = radio_path {
+                    let inner = Arc::clone(inner);
+                    let session = inner.play_session.load(Ordering::Acquire);
+                    tokio::spawn(async move {
+                        Self::retry_live_stream(&inner, &path, session).await;
+                    });
                     return;
                 }
                 let was_crossfading = inner.crossfade_loaded_for.lock().await.is_some();
@@ -5940,6 +5996,23 @@ impl Daemon {
                         data: [("error".into(), msg)].into(),
                     },
                 );
+                // Same reconnect policy as `Finished`: a live radio transport
+                // error resumes the station instead of going silent.
+                let radio_path = {
+                    let state = inner.state.read().await;
+                    state
+                        .current_track
+                        .as_ref()
+                        .filter(|t| t.path.starts_with("radio://"))
+                        .map(|t| t.path.clone())
+                };
+                if let Some(path) = radio_path {
+                    let inner = Arc::clone(inner);
+                    let session = inner.play_session.load(Ordering::Acquire);
+                    tokio::spawn(async move {
+                        Self::retry_live_stream(&inner, &path, session).await;
+                    });
+                }
             }
         }
     }

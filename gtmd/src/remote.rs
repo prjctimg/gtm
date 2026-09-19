@@ -173,6 +173,49 @@ impl HttpReopen {
     }
 }
 
+/// Re-opener for live (endless) streams: re-issues the GET against the same
+/// URL, re-negotiating ICY metadata mode when the original stream used it.
+/// Used both for symphonia-level reconnects and daemon-level restarts after
+/// a server-side drop, so a dead radio connection resumes instead of
+/// stopping playback.
+pub struct LiveReopen {
+    url: String,
+    want_icy: bool,
+    slot: Option<IcySlot>,
+}
+
+impl LiveReopen {
+    pub fn new(url: impl Into<String>, slot: Option<IcySlot>) -> Self {
+        Self {
+            url: url.into(),
+            want_icy: slot.is_some(),
+            slot,
+        }
+    }
+}
+
+impl StreamingReopen for LiveReopen {
+    fn try_reopen(&self) -> Option<Box<dyn Read + Send>> {
+        let mut req = live_client().get(&self.url);
+        if self.want_icy {
+            req = req.header(ICY_META_HEADER, "1");
+        }
+        let resp = req.send().map_err(io_other).ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        match (&self.slot, resp.headers().get(ICY_META_INTERVAL)) {
+            (Some(slot), Some(v)) => match v.to_str().ok()?.trim().parse::<usize>().ok() {
+                Some(n) if n > 0 => {
+                    Some(Box::new(IcyReader::new(resp, n, slot.clone())) as Box<dyn Read + Send>)
+                }
+                _ => Some(Box::new(HttpReader::from_response(resp)) as Box<dyn Read + Send>),
+            },
+            _ => Some(Box::new(HttpReader::from_response(resp)) as Box<dyn Read + Send>),
+        }
+    }
+}
+
 impl StreamingReopen for HttpReopen {
     fn try_reopen(&self) -> Option<Box<dyn Read + Send>> {
         HttpReader::open(&self.url)
@@ -201,6 +244,19 @@ fn build_client() -> std::io::Result<reqwest::blocking::Client> {
         .redirect(reqwest::redirect::Policy::limited(10))
         .build()
         .map_err(io_other)
+}
+
+/// Blocking client for live (endless) streams. Deliberately no total
+/// `.timeout()`: reqwest's timeout covers the whole request including body
+/// streaming, so applying it here would kill every station ~60s in. Connect
+/// setup still fails fast via `CONNECT_TIMEOUT`.
+pub fn live_client() -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .user_agent(USER_AGENT)
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .build()
+        .expect("reqwest client builder cannot fail")
 }
 
 fn io_other(e: impl std::fmt::Display) -> std::io::Error {

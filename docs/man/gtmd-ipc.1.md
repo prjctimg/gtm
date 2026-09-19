@@ -780,7 +780,7 @@ frames on the pulse socket.
 
 ## System
 
-- `heartbeat`: emitted at least every 30 seconds during active playback.
+- `heartbeat`: emitted at least every 15 seconds during active playback.
 - `custom`: extensible event type with `name` sub-type field. Known names:
   `daemon_quitting`, `backend_error`, `audio_error`, `scan_done`.
 

@@ -208,13 +208,26 @@ impl DaemonClient {
 
     async fn send_raw(&self, req: DaemonReq) -> Result<DaemonRes> {
         let (tx, rx) = oneshot::channel();
+        // Network-backed commands (yt-dlp resolve/download, feed refresh,
+        // Spotify sync) legitimately take minutes; everything else must answer
+        // fast so a wedged daemon surfaces quickly instead of hanging the UI.
+        let timeout_secs = match &req {
+            DaemonReq::YtResolveStream { .. }
+            | DaemonReq::YtDownload { .. }
+            | DaemonReq::YtSearch { .. }
+            | DaemonReq::YtFetchPlaylist { .. }
+            | DaemonReq::SpotifySync
+            | DaemonReq::SpotifyResolve { .. }
+            | DaemonReq::SpotifyResolveTrack { .. } => 200,
+            _ => IPC_TIMEOUT_SECS,
+        };
         self.cmd_tx
             .send(PendingRequest {
                 req,
                 response_tx: Some(tx),
             })
             .map_err(|_| CoreError::Daemon("IPC worker died".into()))?;
-        tokio::time::timeout(Duration::from_secs(IPC_TIMEOUT_SECS), rx)
+        tokio::time::timeout(Duration::from_secs(timeout_secs), rx)
             .await
             .map_err(|_| CoreError::Daemon("IPC response timeout".into()))?
             .map_err(|_| CoreError::Daemon("IPC worker response dropped".into()))?
@@ -1882,6 +1895,11 @@ impl IpcWorker {
         };
         if let Ok(wire_res) = serde_json::from_slice::<WireRes>(&self.buf[..pos]) {
             self.buf.drain(..=pos);
+            // Any well-formed daemon reply proves the connection is alive; the
+            // pulse socket is not the only liveness signal anymore, so a dead
+            // pulse reader alone can no longer fail in-flight requests with a
+            // bogus "heartbeat timeout".
+            *self.last_heartbeat_at.lock().unwrap() = Instant::now();
             if let Some((cmd, tx)) = self.pending.remove(&wire_res.id) {
                 let response = DaemonRes::from_wire(&cmd, &wire_res);
                 let _ = tx.send(Ok(response));
@@ -1905,14 +1923,17 @@ async fn pulse_reader(
             Ok(s) => s,
             Err(e) => {
                 attempt += 1;
-                if attempt > 30 {
-                    log(&format!(
-                        "pulse: giving up after {attempt} reconnect attempts"
-                    ));
-                    return;
+                // Never give up: the pulse socket is the heartbeat source, and
+                // exiting here would guarantee a "heartbeat timeout" minutes
+                // later during the next long operation (e.g. a YT download).
+                // Backoff caps at 10s so recovery stays quick.
+                if attempt.is_multiple_of(10) {
+                    log(&format!("pulse connect attempt {attempt} failed: {e}"));
                 }
-                log(&format!("pulse connect attempt {attempt} failed: {e}"));
-                tokio::time::sleep(Duration::from_millis((200 * attempt.min(30)) as u64)).await;
+                let backoff = 200u64
+                    .saturating_mul(u64::from(attempt.min(50)))
+                    .min(10_000);
+                tokio::time::sleep(Duration::from_millis(backoff)).await;
                 continue;
             }
         };
@@ -1944,9 +1965,10 @@ async fn pulse_reader(
                     }
                 };
                 buf.drain(..consumed);
-                if decoded.iter().any(|e| matches!(e, DaemonEvent::Heartbeat)) {
-                    *last_heartbeat_at.lock().unwrap() = Instant::now();
-                }
+                // Any traffic on the pulse socket proves the daemon is alive,
+                // not just explicit heartbeats — status/event bursts during a
+                // long YT download keep liveness fresh on their own.
+                *last_heartbeat_at.lock().unwrap() = Instant::now();
                 let mut evs = events.lock().await;
                 evs.extend(decoded);
             }
