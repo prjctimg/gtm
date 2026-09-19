@@ -357,6 +357,7 @@ pub const LIBRARY_CATEGORIES: &[&str] = &[
     "Recently Added",
     "Genres",
     "Folders",
+    "Top Charts",
 ];
 
 /// Sanitize a TOML `left_pane_lists` value: keep only canonical category
@@ -704,6 +705,18 @@ pub struct SpotifyView {
     pub preview_fetch: FetchSlot<String>,
 }
 
+/// Top Charts picker state, grouped under `App::charts`.
+#[derive(Default)]
+pub struct ChartsView {
+    pub sources: Vec<crate::shared::chart::ChartSource>,
+    pub charts: Vec<crate::shared::chart::ChartPlaylist>,
+    pub chart_tracks: Vec<crate::shared::chart::ChartTrack>,
+    pub selected_source: Option<usize>,
+    pub selected_chart: Option<usize>,
+}
+
+/// Subsonic (Navidrome) picker state, grouped under `App::subsonic`.
+
 /// Subsonic (Navidrome) picker state, grouped under `App::subsonic`.
 #[derive(Default)]
 pub struct SubsonicView {
@@ -903,6 +916,7 @@ pub struct App {
     pub recently_added_cache: Vec<TrackInfo>,
     pub playlist_tracks_cache: Vec<TrackInfo>,
     pub spotify: SpotifyView,
+    pub charts: ChartsView,
     pub subsonic: SubsonicView,
     pub setup: SetupView,
     pub podcast: PodcastView,
@@ -1106,6 +1120,8 @@ enum IpcResult {
     RadioTags(Vec<RadioTag>),
     RadioCountries(Vec<RadioCountry>),
     RadioBrowseStations(Vec<RadioStation>),
+    ChartsLoaded(Vec<crate::shared::chart::ChartPlaylist>),
+    ChartTracksLoaded(Vec<crate::shared::chart::ChartTrack>),
     /// Last.fm link status refreshed after a setup action completes.
     LastfmStatus(Option<LastfmStatus>),
     /// Authorization URL produced by the daemon's Last.fm auth flow.
@@ -1455,6 +1471,7 @@ impl App {
                 preview_cover_stateful: None,
                 preview_fetch: FetchSlot::default(),
             },
+            charts: ChartsView::default(),
             subsonic: SubsonicView::default(),
             podcast: PodcastView::default(),
             radio: RadioView::default(),
@@ -2640,6 +2657,12 @@ impl App {
                     IpcResult::RadioBrowseStations(stations) => {
                         self.radio.browse_stations = stations;
                         self.radio.browse_stations_pending = false;
+                    }
+                    IpcResult::ChartsLoaded(charts) => {
+                        self.charts.charts = charts;
+                    }
+                    IpcResult::ChartTracksLoaded(tracks) => {
+                        self.charts.chart_tracks = tracks;
                     }
                     IpcResult::LastfmStatus(st) => {
                         let was_ready = self.setup.lastfm_status.as_ref().is_some_and(|s| s.ready);
@@ -6868,6 +6891,66 @@ impl App {
                                     self.browse_detail = Some(folders[pos].0.clone());
                                     self.set_list_pos(0);
                                 }
+                            } else if self.library_category == 12 {
+                                // Top Charts: three-level navigation
+                                if self.charts.selected_source.is_none() {
+                                    // Level 0: Select source → fetch charts
+                                    let pos = self.list_pos();
+                                    if pos < self.charts.sources.len() {
+                                        self.charts.selected_source = Some(pos);
+                                        self.charts.selected_chart = None;
+                                        self.charts.charts.clear();
+                                        self.charts.chart_tracks.clear();
+                                        self.set_list_pos(0);
+                                        let source_id = self.charts.sources[pos].id.clone();
+                                        let c = self.client.clone();
+                                        let ipc_tx2 = self.ipc_tx.clone();
+                                        tokio::spawn(async move {
+                                            if let Ok(charts) =
+                                                c.charts().list(Some(source_id)).await
+                                            {
+                                                let _ =
+                                                    ipc_tx2.send(IpcResult::ChartsLoaded(charts));
+                                            }
+                                        });
+                                    }
+                                } else if self.charts.selected_chart.is_none() {
+                                    // Level 1: Select chart → fetch tracks
+                                    let pos = self.list_pos();
+                                    if pos < self.charts.charts.len() {
+                                        self.charts.selected_chart = Some(pos);
+                                        self.charts.chart_tracks.clear();
+                                        self.set_list_pos(0);
+                                        let source_id = self
+                                            .charts
+                                            .sources
+                                            .get(self.charts.selected_source.unwrap_or(0))
+                                            .map(|s| s.id.clone())
+                                            .unwrap_or_default();
+                                        let chart_id = self.charts.charts[pos].id.clone();
+                                        let c = self.client.clone();
+                                        let ipc_tx2 = self.ipc_tx.clone();
+                                        tokio::spawn(async move {
+                                            if let Ok(tracks) =
+                                                c.charts().tracks(source_id, chart_id).await
+                                            {
+                                                let _ = ipc_tx2
+                                                    .send(IpcResult::ChartTracksLoaded(tracks));
+                                            }
+                                        });
+                                    }
+                                } else {
+                                    // Level 2: Play selected track
+                                    let pos = self.list_pos();
+                                    if let Some(track) = self.charts.chart_tracks.get(pos).cloned()
+                                    {
+                                        let c = self.client.clone();
+                                        let uri = track.uri.clone();
+                                        tokio::spawn(async move {
+                                            let _ = c.queue().add(&uri, None).await;
+                                        });
+                                    }
+                                }
                             } else if self.library_category <= 1 || self.library_category >= 7 {
                                 // Default: play track from a flat list
                                 // (All Tracks / Liked / Most Played /
@@ -7352,6 +7435,19 @@ impl App {
                                 if self.browse_detail.is_some() {
                                     self.browse_detail = None;
                                     self.set_list_pos(0);
+                                } else if self.library_category == 12 {
+                                    // Top Charts: three-level back navigation
+                                    if self.charts.selected_chart.is_some() {
+                                        // Level 2 -> Level 1
+                                        self.charts.selected_chart = None;
+                                        self.charts.chart_tracks.clear();
+                                        self.set_list_pos(0);
+                                    } else if self.charts.selected_source.is_some() {
+                                        // Level 1 -> Level 0
+                                        self.charts.selected_source = None;
+                                        self.charts.charts.clear();
+                                        self.set_list_pos(0);
+                                    }
                                 }
                             }
                             KeyCode::Char('S') => {

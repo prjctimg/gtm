@@ -518,6 +518,10 @@ impl DaemonClient {
         Radio { client: self }
     }
 
+    pub fn charts(&self) -> Charts<'_> {
+        Charts { client: self }
+    }
+
     pub fn lastfm(&self) -> Lastfm<'_> {
         Lastfm { client: self }
     }
@@ -1198,6 +1202,59 @@ impl<'a> Spotify<'a> {
     fn status_from(res: DaemonRes) -> Result<SpotifyStatus> {
         match res {
             DaemonRes::SpotifyStatusRes { status, .. } => Ok(status),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+}
+
+/// Client helpers for the Top Charts feature (provider-agnostic).
+pub struct Charts<'a> {
+    client: &'a DaemonClient,
+}
+
+impl<'a> Charts<'a> {
+    /// List available chart sources (Spotify, future Deezer/Tidal).
+    pub async fn sources(&self) -> Result<Vec<crate::shared::chart::ChartSource>> {
+        let res = self.client.send_raw(DaemonReq::ChartsSources).await?;
+        match res {
+            DaemonRes::ChartsSourcesRes { sources, .. } => Ok(sources),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
+    /// List charts from a specific source or all configured sources.
+    pub async fn list(
+        &self,
+        source_id: Option<String>,
+    ) -> Result<Vec<crate::shared::chart::ChartPlaylist>> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::ChartsList { source_id })
+            .await?;
+        match res {
+            DaemonRes::ChartsListRes { charts, .. } => Ok(charts),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
+    /// Fetch tracks for a specific chart playlist.
+    pub async fn tracks(
+        &self,
+        source_id: String,
+        chart_id: String,
+    ) -> Result<Vec<crate::shared::chart::ChartTrack>> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::ChartsTracks {
+                source_id,
+                chart_id,
+            })
+            .await?;
+        match res {
+            DaemonRes::ChartsTracksRes { tracks, .. } => Ok(tracks),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
             _ => Err(unexpected(&res)),
         }

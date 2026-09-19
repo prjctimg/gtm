@@ -1433,10 +1433,11 @@ impl Render {
             app.list_scroll = list_scroll;
             let mut lines = vec![Line::from("")];
             if stations.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    " No custom stations: save one from Radio Browser with s",
-                    Style::default().fg(app.theme.fg_dim),
-                )));
+                lines.extend(empty_hint_lines(
+                    app,
+                    "No custom stations yet",
+                    "Hint: open Radio Browser with / or r, then save one with s",
+                ));
             } else {
                 for (i, s) in stations[app.list_scroll..end].iter().enumerate() {
                     let real_i = app.list_scroll + i;
@@ -1474,25 +1475,33 @@ impl Render {
             let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
             app.list_scroll = list_scroll;
             let mut lines = vec![Line::from("")];
-            for (i, (name, _count)) in genres[app.list_scroll..end].iter().enumerate() {
-                let real_i = app.list_scroll + i;
-                let is_sel = real_i == sel && !left_focus;
-                let prefix = if is_sel { " > " } else { "   " };
-                let style = if is_sel {
-                    Style::default()
-                        .fg(app.theme.selection_fg_readable())
-                        .bg(app.theme.selection_bg)
-                } else {
-                    Style::default().fg(app.theme.fg)
-                };
-                let row = format!("{}{}", prefix, name);
-                let row = if is_sel {
-                    let pad = row_pad(&row, panes[1].width);
-                    format!("{row}{}", " ".repeat(pad))
-                } else {
-                    row
-                };
-                lines.push(Line::from(Span::styled(row, style)));
+            if genres.is_empty() {
+                lines.extend(empty_hint_lines(
+                    app,
+                    "No genres yet",
+                    "Hint: import tagged audio files, then browse them here by genre",
+                ));
+            } else {
+                for (i, (name, _count)) in genres[app.list_scroll..end].iter().enumerate() {
+                    let real_i = app.list_scroll + i;
+                    let is_sel = real_i == sel && !left_focus;
+                    let prefix = if is_sel { " > " } else { "   " };
+                    let style = if is_sel {
+                        Style::default()
+                            .fg(app.theme.selection_fg_readable())
+                            .bg(app.theme.selection_bg)
+                    } else {
+                        Style::default().fg(app.theme.fg)
+                    };
+                    let row = format!("{}{}", prefix, name);
+                    let row = if is_sel {
+                        let pad = row_pad(&row, panes[1].width);
+                        format!("{row}{}", " ".repeat(pad))
+                    } else {
+                        row
+                    };
+                    lines.push(Line::from(Span::styled(row, style)));
+                }
             }
             {
                 lib_total_rows = total_len;
@@ -1534,6 +1543,160 @@ impl Render {
                 lib_total_rows = total_len;
                 (lines, st_line)
             }
+        } else if app.library_category == 12 {
+            // Top Charts: three-level navigation
+            // Level 0: Chart sources (Spotify, future Deezer/Tidal)
+            // Level 1: Charts for selected source
+            // Level 2: Tracks for selected chart
+            let sources = &app.charts.sources;
+            let charts = &app.charts.charts;
+            let chart_tracks = &app.charts.chart_tracks;
+
+            if app.charts.selected_source.is_none() {
+                // Level 0: Show sources
+                let total_len = sources.len();
+                let sel = app.list_pos().min(total_len.saturating_sub(1));
+                let st_line = format!(" {} {} ", total_len, plural(total_len, "source", "sources"));
+                let reserve = 3usize;
+                let available = panes[1].height.saturating_sub(reserve as u16) as usize;
+                app.viewport_items = available;
+                let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
+                app.list_scroll = list_scroll;
+                let mut lines = vec![Line::from("")];
+                if sources.is_empty() {
+                    lines.extend(empty_hint_lines(
+                        app,
+                        "No chart sources available",
+                        "Hint: link Spotify in Settings to enable charts",
+                    ));
+                } else {
+                    for (i, src) in sources[app.list_scroll..end].iter().enumerate() {
+                        let real_i = app.list_scroll + i;
+                        let is_sel = real_i == sel && !left_focus;
+                        let prefix = if is_sel { " > " } else { "   " };
+                        let style = if is_sel {
+                            Style::default()
+                                .fg(app.theme.selection_fg_readable())
+                                .bg(app.theme.selection_bg)
+                        } else {
+                            Style::default().fg(app.theme.fg)
+                        };
+                        let configured = if src.configured { "●" } else { "○" };
+                        let row = format!("{}{} {} ({})", prefix, configured, src.display, src.id);
+                        let row = if is_sel {
+                            let pad = row_pad(&row, panes[1].width);
+                            format!("{row}{}", " ".repeat(pad))
+                        } else {
+                            row
+                        };
+                        lines.push(Line::from(Span::styled(row, style)));
+                    }
+                }
+                {
+                    lib_total_rows = total_len;
+                    (lines, st_line)
+                }
+            } else if app.charts.selected_chart.is_none() {
+                // Level 1: Show charts for selected source
+                let total_len = charts.len();
+                let sel = app.list_pos().min(total_len.saturating_sub(1));
+                let src_name = sources
+                    .get(app.charts.selected_source.unwrap_or(0))
+                    .map(|s| s.display.as_str())
+                    .unwrap_or("Charts");
+                let st_line = format!(" {} {} ", total_len, plural(total_len, "chart", "charts"));
+                let reserve = 3usize;
+                let available = panes[1].height.saturating_sub(reserve as u16) as usize;
+                app.viewport_items = available;
+                let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
+                app.list_scroll = list_scroll;
+                let mut lines = vec![Line::from("")];
+                if charts.is_empty() {
+                    lines.extend(empty_hint_lines(
+                        app,
+                        &format!("No charts for {}", src_name),
+                        "Hint: press Enter on a source to load its charts",
+                    ));
+                } else {
+                    for (i, ch) in charts[app.list_scroll..end].iter().enumerate() {
+                        let real_i = app.list_scroll + i;
+                        let is_sel = real_i == sel && !left_focus;
+                        let prefix = if is_sel { " > " } else { "   " };
+                        let style = if is_sel {
+                            Style::default()
+                                .fg(app.theme.selection_fg_readable())
+                                .bg(app.theme.selection_bg)
+                        } else {
+                            Style::default().fg(app.theme.fg)
+                        };
+                        let track_info = ch
+                            .track_count
+                            .map(|c| format!(" [{c} tracks]"))
+                            .unwrap_or_default();
+                        let row = format!("{}{}{}", prefix, ch.title, track_info);
+                        let row = if is_sel {
+                            let pad = row_pad(&row, panes[1].width);
+                            format!("{row}{}", " ".repeat(pad))
+                        } else {
+                            row
+                        };
+                        lines.push(Line::from(Span::styled(row, style)));
+                    }
+                }
+                {
+                    lib_total_rows = total_len;
+                    (lines, st_line)
+                }
+            } else {
+                // Level 2: Show tracks for selected chart
+                let total_len = chart_tracks.len();
+                let sel = app.list_pos().min(total_len.saturating_sub(1));
+                let st_line = format!(" {} {} ", total_len, plural(total_len, "track", "tracks"));
+                let reserve = 3usize;
+                let available = panes[1].height.saturating_sub(reserve as u16) as usize;
+                app.viewport_items = available;
+                let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
+                app.list_scroll = list_scroll;
+                let pane_w = panes[1].width as usize;
+                let mut lines = vec![Line::from("")];
+                if chart_tracks.is_empty() {
+                    lines.extend(empty_hint_lines(
+                        app,
+                        "No tracks in this chart",
+                        "Hint: press Backspace to go back",
+                    ));
+                } else {
+                    for (i, track) in chart_tracks[app.list_scroll..end].iter().enumerate() {
+                        let real_i = app.list_scroll + i;
+                        let is_sel = real_i == sel && !left_focus;
+                        let avail = pane_w.saturating_sub(2);
+                        let label = track.title.clone();
+                        let display_label =
+                            scroll_text(&label, avail, app.footer_title_scroll, is_sel);
+                        let artists = &track.artists;
+                        let prefix = if is_sel { " > " } else { "   " };
+                        let style = if is_sel {
+                            Style::default()
+                                .fg(app.theme.selection_fg_readable())
+                                .bg(app.theme.selection_bg)
+                        } else {
+                            Style::default().fg(app.theme.fg)
+                        };
+                        let row = format!("{}{} — {}", prefix, display_label, artists);
+                        let row = if is_sel {
+                            let pad = row_pad(&row, panes[1].width);
+                            format!("{row}{}", " ".repeat(pad))
+                        } else {
+                            row
+                        };
+                        lines.push(Line::from(Span::styled(row, style)));
+                    }
+                }
+                {
+                    lib_total_rows = total_len;
+                    (lines, st_line)
+                }
+            }
         } else {
             let (total_len, total_dur) = {
                 let f = app.filtered_tracks();
@@ -1561,38 +1724,61 @@ impl Render {
             let pane_w = panes[1].width as usize;
 
             let mut lines = vec![Line::from("")];
-            for (i, track) in filtered[app.list_scroll..end].iter().enumerate() {
-                let real_i = app.list_scroll + i;
-                let is_current = app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
-                let is_sel = real_i == sel && !left_focus;
-                let is_multiselected =
-                    app.multiselect_mode && app.selected_indices.contains(&real_i);
-                let label = track.title.clone();
-                let avail = pane_w.saturating_sub(2);
-                let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
-                let prefix = if is_current { "\u{25b6} " } else { "  " };
-                let checkbox = if is_multiselected { "☑ " } else { "" };
-                let row = format!("{}{}{}", prefix, checkbox, display_label);
-                let style = if is_sel {
-                    Style::default()
-                        .fg(app.theme.selection_fg_readable())
-                        .bg(app.theme.selection_bg)
-                } else if is_current {
-                    Style::default()
-                        .fg(app.theme.accent)
-                        .add_modifier(Modifier::BOLD)
-                } else if is_multiselected {
-                    Style::default().bg(app.theme.warning).fg(app.theme.bg)
-                } else {
-                    Style::default()
+            if filtered.is_empty() {
+                let (headline, hint) = match app.library_category {
+                    7 => (
+                        "No most-played tracks yet",
+                        "Hint: play counts build up as you listen",
+                    ),
+                    8 => (
+                        "Nothing played recently",
+                        "Hint: play any track and it will show up here",
+                    ),
+                    9 => (
+                        "No recent additions",
+                        "Hint: add music to your library to see it here",
+                    ),
+                    _ => (
+                        "No tracks in this list",
+                        "Hint: add music to your library to get started",
+                    ),
                 };
-                let row = if is_sel {
-                    let pad = row_pad(&row, panes[1].width);
-                    format!("{row}{}", " ".repeat(pad))
-                } else {
-                    row
-                };
-                lines.push(Line::from(Span::styled(row, style)));
+                lines.extend(empty_hint_lines(app, headline, hint));
+            } else {
+                for (i, track) in filtered[app.list_scroll..end].iter().enumerate() {
+                    let real_i = app.list_scroll + i;
+                    let is_current =
+                        app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
+                    let is_sel = real_i == sel && !left_focus;
+                    let is_multiselected =
+                        app.multiselect_mode && app.selected_indices.contains(&real_i);
+                    let label = track.title.clone();
+                    let avail = pane_w.saturating_sub(2);
+                    let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
+                    let prefix = if is_current { "\u{25b6} " } else { "  " };
+                    let checkbox = if is_multiselected { "☑ " } else { "" };
+                    let row = format!("{}{}{}", prefix, checkbox, display_label);
+                    let style = if is_sel {
+                        Style::default()
+                            .fg(app.theme.selection_fg_readable())
+                            .bg(app.theme.selection_bg)
+                    } else if is_current {
+                        Style::default()
+                            .fg(app.theme.accent)
+                            .add_modifier(Modifier::BOLD)
+                    } else if is_multiselected {
+                        Style::default().bg(app.theme.warning).fg(app.theme.bg)
+                    } else {
+                        Style::default()
+                    };
+                    let row = if is_sel {
+                        let pad = row_pad(&row, panes[1].width);
+                        format!("{row}{}", " ".repeat(pad))
+                    } else {
+                        row
+                    };
+                    lines.push(Line::from(Span::styled(row, style)));
+                }
             }
             {
                 lib_total_rows = total_len;
@@ -2518,15 +2704,18 @@ const LIBRARY_ICONS_NERD: &[&str] = &[
     "\u{f007}",
     "\u{f03a}",
     "\u{f04c7}",
-    "\u{f43e}",
-    "\u{f2b8}",
-    "\u{f017}",
+    "\u{f0439}", // Radio: nf-md-radio (official MDI)
+    "\u{f0122}", // Most Played: nf-md-chart_line (official MDI)
+    "\u{f02da}", // Recently Played: nf-md-history (official MDI)
     "\u{f1da}",
-    "\u{f121}",
+    "\u{f04fb}", // Genres: nf-md-tag_multiple (official MDI)
     "\u{f07b}",
+    "\u{f0535}", // Top Charts: nf-md-trending_up (official MDI)
 ];
 
-const LIBRARY_ICONS_ASCII: &[&str] = &["♫", "♥", "▤", "♪", "≡", "☊", "◉", "★", "◆", "♫", "◎", "▽"];
+const LIBRARY_ICONS_ASCII: &[&str] = &[
+    "♫", "♥", "▤", "♪", "≡", "☊", "◉", "★", "◆", "♫", "◎", "▽", "#",
+];
 
 pub(crate) fn use_nerd_fonts() -> bool {
     !matches!(std::env::var("GTM_NERD_FONTS"), Ok(v) if v == "0" || v == "false" || v == "no")
@@ -2574,6 +2763,16 @@ pub const COVER_H: u16 = 12;
 
 fn row_pad(content: &str, width: u16) -> usize {
     (width as usize).saturating_sub(content.chars().count())
+}
+
+/// Push list-relevant empty-state help into `lines`: a headline plus an
+/// action hint, both dimmed. Each list explains how to populate itself.
+fn empty_hint_lines(app: &App, headline: &str, hint: &str) -> Vec<Line<'static>> {
+    let dim = Style::default().fg(app.theme.fg_dim);
+    vec![
+        Line::from(Span::styled(format!(" {headline}"), dim)),
+        Line::from(Span::styled(format!(" {hint}"), dim)),
+    ]
 }
 
 fn cursor_span_style(app: &App) -> Option<Style> {

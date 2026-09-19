@@ -43,6 +43,7 @@ use gtm::shared::{CoreError, MetadataPatch};
 #[cfg(feature = "pulseaudio")]
 use gtm::shared::{ensure_termux_pulse, is_termux};
 
+use crate::charts::ChartsRegistry;
 use crate::cleaner::{
     clean_filename_stem, clean_youtube_title, is_filename_like, sanitize_text, tags_need_enrichment,
 };
@@ -2413,6 +2414,61 @@ impl Spotify {
     }
 }
 
+/// Chart providers (Spotify first; Deezer/Tidal slot in later via same trait).
+struct Charts;
+
+impl Charts {
+    pub async fn sources(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        let registry = inner.charts.lock().await;
+        Ok(DaemonRes::ChartsSourcesRes {
+            sources: registry.sources(),
+        })
+    }
+
+    pub async fn list(
+        inner: &DaemonInner,
+        source_id: Option<String>,
+    ) -> Result<DaemonRes, CoreError> {
+        let registry = inner.charts.lock().await;
+        match source_id {
+            Some(id) => {
+                if let Some(provider) = registry.get(&id) {
+                    match provider.list_charts().await {
+                        Ok(charts) => Ok(DaemonRes::ChartsListRes { charts }),
+                        Err(e) => Ok(DaemonRes::Error {
+                            message: format!("charts list failed: {e}"),
+                        }),
+                    }
+                } else {
+                    Ok(DaemonRes::Error {
+                        message: format!("unknown chart source: {id}"),
+                    })
+                }
+            }
+            None => match registry.list_all_charts().await {
+                Ok(charts) => Ok(DaemonRes::ChartsListRes { charts }),
+                Err(e) => Ok(DaemonRes::Error {
+                    message: format!("charts list failed: {e}"),
+                }),
+            },
+        }
+    }
+
+    pub async fn tracks(
+        inner: &DaemonInner,
+        source_id: String,
+        chart_id: String,
+    ) -> Result<DaemonRes, CoreError> {
+        let registry = inner.charts.lock().await;
+        match registry.chart_tracks(&source_id, &chart_id).await {
+            Ok(tracks) => Ok(DaemonRes::ChartsTracksRes { tracks }),
+            Err(e) => Ok(DaemonRes::Error {
+                message: format!("charts tracks failed: {e}"),
+            }),
+        }
+    }
+}
+
 /// Navidrome / Subsonic server integration.
 struct Subsonic;
 
@@ -3947,10 +4003,12 @@ struct DaemonInner {
     lastfm_loved: std::sync::Mutex<Option<(String, bool)>>,
     #[cfg(feature = "youtube")]
     youtube: Arc<tokio::sync::Mutex<YoutubeManager>>,
-    spotify: tokio::sync::Mutex<SpotifyManager>,
+    spotify: Arc<tokio::sync::Mutex<SpotifyManager>>,
     subsonic: tokio::sync::Mutex<SubsonicManager>,
     podcast: tokio::sync::Mutex<PodcastManager>,
     radio: tokio::sync::Mutex<RadioBrowserManager>,
+    /// Chart providers registry (Spotify first; Deezer/Tidal later).
+    charts: tokio::sync::Mutex<ChartsRegistry>,
     /// librespot streaming bridge for Premium Spotify playback.
     stream: tokio::sync::Mutex<StreamManager>,
     /// Pending OAuth link flow task; aborted when a new flow starts or the
@@ -4168,7 +4226,7 @@ fn is_yt_slow(req: &DaemonReq) -> bool {
 }
 
 impl Daemon {
-    pub fn new(config: DaemonConfig) -> Result<Self, CoreError> {
+    pub async fn new(config: DaemonConfig) -> Result<Self, CoreError> {
         let mut initial_state = DaemonState::new();
 
         if !config.test_mode
@@ -4293,10 +4351,13 @@ impl Daemon {
             lastfm_loved: std::sync::Mutex::new(None),
             #[cfg(feature = "youtube")]
             youtube: Arc::new(tokio::sync::Mutex::new(YoutubeManager::new())),
-            spotify: tokio::sync::Mutex::new(SpotifyManager::new(config_dir.clone())),
+            spotify: Arc::new(tokio::sync::Mutex::new(SpotifyManager::new(
+                config_dir.clone(),
+            ))),
             subsonic: tokio::sync::Mutex::new(SubsonicManager::new(config_dir.clone())),
             podcast: tokio::sync::Mutex::new(PodcastManager::new(config_dir)),
             radio: tokio::sync::Mutex::new(RadioBrowserManager::new()),
+            charts: tokio::sync::Mutex::new(ChartsRegistry::empty()),
             stream: tokio::sync::Mutex::new(StreamManager::new()),
             oauth_task: tokio::sync::Mutex::new(None),
             crossfade_loaded_for: tokio::sync::Mutex::new(None),
@@ -4316,6 +4377,15 @@ impl Daemon {
             scrobble: tokio::sync::Mutex::new(ScrobbleTracker::default()),
             sync_progress: Arc::new(SyncProgress::default()),
         });
+
+        // Initialize charts registry with Spotify provider if configured
+        {
+            let mut charts = inner.charts.lock().await;
+            let spotify_mgr = inner.spotify.lock().await;
+            if spotify_mgr.linked() {
+                charts.add_spotify(inner.spotify.clone());
+            }
+        }
 
         Ok(Self {
             inner,
@@ -5119,6 +5189,12 @@ impl Daemon {
             DaemonReq::SpotifyTrackImage { image_url } => {
                 Spotify::track_image(inner, image_url).await
             }
+            DaemonReq::ChartsSources => Charts::sources(inner).await,
+            DaemonReq::ChartsList { source_id } => Charts::list(inner, source_id.clone()).await,
+            DaemonReq::ChartsTracks {
+                source_id,
+                chart_id,
+            } => Charts::tracks(inner, source_id.clone(), chart_id.clone()).await,
             DaemonReq::LastfmSetConfig {
                 enabled,
                 api_key,

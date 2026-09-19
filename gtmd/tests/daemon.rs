@@ -139,7 +139,7 @@ async fn send_req(
 
 async fn daemon_handle() -> (tokio::task::JoinHandle<()>, DaemonConfig) {
     let config = test_config();
-    let mut daemon = Daemon::new(config.clone()).unwrap();
+    let mut daemon = Daemon::new(config.clone()).await.unwrap();
     let handle = tokio::spawn(async move {
         daemon.run().await.ok();
     });

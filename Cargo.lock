@@ -1967,6 +1967,7 @@ dependencies = [
 name = "gtm"
 version = "0.2.83"
 dependencies = [
+ "async-trait",
  "base64",
  "bincode",
  "chrono",
@@ -2028,6 +2029,7 @@ dependencies = [
 name = "gtmd"
 version = "0.2.83"
 dependencies = [
+ "async-trait",
  "base64",
  "bincode",
  "chrono",

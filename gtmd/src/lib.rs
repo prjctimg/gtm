@@ -7,6 +7,7 @@
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
+pub mod charts;
 pub mod cleaner;
 pub mod config;
 pub mod cover;
@@ -68,7 +69,7 @@ pub async fn run() {
 
     tracing::info!("starting gtm daemon");
 
-    match Daemon::new(config) {
+    match Daemon::new(config).await {
         Ok(mut daemon) => {
             if let Err(e) = daemon.run().await {
                 tracing::error!("daemon exited: {e}");

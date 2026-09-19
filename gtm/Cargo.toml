@@ -43,6 +43,7 @@ rpassword = "7"
 rmp-serde = "1"
 thiserror = "2"
 uuid = { version = "1", features = ["v4", "serde"] }
+async-trait = "0.1"
 keyring = "3"
 dirs = "5"
 rodio = { version = "0.22", default-features = false, features = ["playback", "symphonia-all"] }

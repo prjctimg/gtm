@@ -500,6 +500,17 @@ pub enum DaemonReq {
         country: String,
         limit: u16,
     },
+    /// List available chart sources (Spotify, future Deezer/Tidal).
+    ChartsSources,
+    /// List charts from a specific source or all configured sources.
+    ChartsList {
+        source_id: Option<String>,
+    },
+    /// Fetch tracks for a specific chart playlist.
+    ChartsTracks {
+        source_id: String,
+        chart_id: String,
+    },
     GetStatus,
     /// Like `GetStatus` but omits the full `default_list` (the whole library)
     /// from the returned state. Used for the client's periodic background
@@ -616,6 +627,9 @@ impl DaemonReq {
             DaemonReq::RadioByTag { .. } => "radio_bytag",
             DaemonReq::RadioCountries { .. } => "radio_countries",
             DaemonReq::RadioByCountry { .. } => "radio_bycountry",
+            DaemonReq::ChartsSources => "charts_sources",
+            DaemonReq::ChartsList { .. } => "charts_list",
+            DaemonReq::ChartsTracks { .. } => "charts_tracks",
             DaemonReq::GetStatus => "get_status",
             DaemonReq::GetStatusLite => "get_status_lite",
             DaemonReq::CheckHealth => "check_health",
@@ -1287,6 +1301,29 @@ impl DaemonReq {
                     limit: x.limit,
                 }
             }
+            "charts_sources" => DaemonReq::ChartsSources,
+            "charts_list" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    source_id: Option<String>,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::ChartsList {
+                    source_id: x.source_id,
+                }
+            }
+            "charts_tracks" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    source_id: String,
+                    chart_id: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::ChartsTracks {
+                    source_id: x.source_id,
+                    chart_id: x.chart_id,
+                }
+            }
             "get_status" => DaemonReq::GetStatus,
             "get_status_lite" => DaemonReq::GetStatusLite,
             "check_health" => DaemonReq::CheckHealth,
@@ -1608,6 +1645,21 @@ pub enum DaemonRes {
     RadioCountriesRes {
         countries: Vec<RadioCountry>,
     },
+    ChartsSourcesRes {
+        sources: Vec<crate::shared::chart::ChartSource>,
+    },
+    ChartsListRes {
+        charts: Vec<crate::shared::chart::ChartPlaylist>,
+    },
+    ChartsTracksRes {
+        tracks: Vec<crate::shared::chart::ChartTrack>,
+    },
+    ChartsLoaded {
+        charts: Vec<crate::shared::chart::ChartPlaylist>,
+    },
+    ChartTracksLoaded {
+        tracks: Vec<crate::shared::chart::ChartTrack>,
+    },
     CoverArt {
         data: Option<String>,
     },
@@ -1717,6 +1769,15 @@ impl DaemonRes {
             DaemonRes::RadioTagsRes { tags } => Some(serde_json::json!({ "tags": tags })),
             DaemonRes::RadioCountriesRes { countries } => {
                 Some(serde_json::json!({ "countries": countries }))
+            }
+            DaemonRes::ChartsSourcesRes { sources } => {
+                Some(serde_json::json!({ "sources": sources }))
+            }
+            DaemonRes::ChartsListRes { charts } => Some(serde_json::json!({ "charts": charts })),
+            DaemonRes::ChartsTracksRes { tracks } => Some(serde_json::json!({ "tracks": tracks })),
+            DaemonRes::ChartsLoaded { charts } => Some(serde_json::json!({ "charts": charts })),
+            DaemonRes::ChartTracksLoaded { tracks } => {
+                Some(serde_json::json!({ "tracks": tracks }))
             }
             DaemonRes::CoverArt { data } => Some(serde_json::json!({ "data": data })),
             DaemonRes::SyncStatus {
@@ -1864,6 +1925,11 @@ impl DaemonRes {
             DaemonRes::RadioStationsRes { stations } => field!("stations", &stations),
             DaemonRes::RadioTagsRes { tags } => field!("tags", &tags),
             DaemonRes::RadioCountriesRes { countries } => field!("countries", &countries),
+            DaemonRes::ChartsSourcesRes { sources } => field!("sources", &sources),
+            DaemonRes::ChartsListRes { charts } => field!("charts", &charts),
+            DaemonRes::ChartsTracksRes { tracks } => field!("tracks", &tracks),
+            DaemonRes::ChartsLoaded { charts } => field!("charts", &charts),
+            DaemonRes::ChartTracksLoaded { tracks } => field!("tracks", &tracks),
             DaemonRes::CoverArt { data } => field!("data", &data),
             DaemonRes::SyncStatus {
                 running,

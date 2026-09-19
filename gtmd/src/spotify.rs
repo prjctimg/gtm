@@ -713,7 +713,7 @@ impl SpotifyManager {
 
 /// Pick the largest (first-sorted-by-area) image URL from a set of Spotify
 /// image variants.
-fn pick_largest_image(images: &[rspotify::model::Image]) -> Option<String> {
+pub fn pick_largest_image(images: &[rspotify::model::Image]) -> Option<String> {
     images
         .iter()
         .max_by_key(|img| {
@@ -725,7 +725,7 @@ fn pick_largest_image(images: &[rspotify::model::Image]) -> Option<String> {
 }
 
 /// Convert an rspotify playable item into our IPC-friendly track shape.
-fn track_from_playable(item: &PlayableItem) -> Option<SpotifyTrack> {
+pub fn track_from_playable(item: &PlayableItem) -> Option<SpotifyTrack> {
     match item {
         PlayableItem::Track(t) => Some(SpotifyTrack {
             index: 0,
