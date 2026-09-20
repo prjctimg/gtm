@@ -250,7 +250,7 @@ impl Read for BlowfishReader {
             self.eof = true;
             return Ok(0);
         }
-        if self.chunk % 3 == 0 && filled == DZR_CHUNK {
+        if self.chunk.is_multiple_of(3) && filled == DZR_CHUNK {
             decrypt_deezer_chunk(&self.cipher, &mut raw);
         }
         self.chunk += 1;

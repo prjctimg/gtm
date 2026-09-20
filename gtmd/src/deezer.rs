@@ -529,10 +529,10 @@ impl DeezerStream {
             .unwrap_or_default();
         let track = data.first().cloned().unwrap_or(Value::Null);
         for key in ["TRACK_TOKEN", "/FALLBACK/TRACK_TOKEN"] {
-            if let Some(tok) = track.pointer(key).and_then(|v| v.as_str()) {
-                if !tok.is_empty() {
-                    return Ok(tok.to_string());
-                }
+            if let Some(tok) = track.pointer(key).and_then(|v| v.as_str())
+                && !tok.is_empty()
+            {
+                return Ok(tok.to_string());
             }
         }
         Err(format!(
@@ -575,10 +575,10 @@ impl DeezerStream {
             for item in media {
                 if let Some(sources) = item.get("sources").and_then(|s| s.as_array()) {
                     for src in sources {
-                        if let Some(url) = src.get("url").and_then(|v| v.as_str()) {
-                            if !url.is_empty() {
-                                return Ok(url.to_string());
-                            }
+                        if let Some(url) = src.get("url").and_then(|v| v.as_str())
+                            && !url.is_empty()
+                        {
+                            return Ok(url.to_string());
                         }
                     }
                 }
@@ -599,10 +599,10 @@ impl DeezerStream {
             .json()
             .await
             .map_err(|e| format!("deezer preview parse: {e}"))?;
-        if let Some(url) = body.get("preview").and_then(|v| v.as_str()) {
-            if !url.is_empty() {
-                return Ok(url.to_string());
-            }
+        if let Some(url) = body.get("preview").and_then(|v| v.as_str())
+            && !url.is_empty()
+        {
+            return Ok(url.to_string());
         }
         Err(format!("no 30s preview for Deezer track {track_id}"))
     }

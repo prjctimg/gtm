@@ -187,10 +187,10 @@ fn parse_remote_path(path: &str) -> Option<RemoteKind> {
             station_name,
         });
     }
-    if let Some(id) = path.strip_prefix("deezer://track/") {
-        if let Ok(track_id) = id.parse::<u64>() {
-            return Some(RemoteKind::Deezer { track_id });
-        }
+    if let Some(id) = path.strip_prefix("deezer://track/")
+        && let Ok(track_id) = id.parse::<u64>()
+    {
+        return Some(RemoteKind::Deezer { track_id });
     }
     if let Some(path) = deezer_link_path(path) {
         let track_id = path.trim_start_matches("deezer://track/").parse().ok()?;
