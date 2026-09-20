@@ -2152,7 +2152,10 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "spotify_playlist_tracks" | "spotify_album_tracks" | "spotify_artist_top_tracks" => {
+            "spotify_search_web"
+            | "spotify_playlist_tracks"
+            | "spotify_album_tracks"
+            | "spotify_artist_top_tracks" => {
                 match serde_json::from_value::<Vec<SpotifyTrack>>(field(&data, "tracks")) {
                     Ok(tracks) => DaemonRes::SpotifyTracksRes { tracks },
                     Err(_) => DaemonRes::Value { value: data },
