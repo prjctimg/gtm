@@ -34,6 +34,11 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - name: Apply clippy auto-fixes
         run: cargo clippy --fix --workspace --allow-dirty --all-targets
+      # clippy --fix writes its rewrites without rustfmt layout (e.g. match
+      # guards on their own line, leftover blank lines), so normalize before
+      # the fmt gate or `cargo fmt --check` fails on every auto-fix run.
+      - name: Normalize formatting of auto-fixes
+        run: cargo fmt
       - name: Format
         run: cargo fmt --check
       - name: Verify with cargo check

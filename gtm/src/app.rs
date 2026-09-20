@@ -740,17 +740,10 @@ pub struct SubsonicView {
 }
 
 /// Deezer streaming settings (single ARL token field).
+#[derive(Default)]
 pub struct DeezerView {
     /// Draft ARL token for the `DeezerArl` input form.
     pub arl_input: String,
-}
-
-impl Default for DeezerView {
-    fn default() -> Self {
-        Self {
-            arl_input: String::new(),
-        }
-    }
 }
 
 /// `gtm setup` wizard state, grouped under `App::setup`.
@@ -8396,11 +8389,9 @@ impl App {
                                 self.hide_footer = !self.hide_footer;
                                 save_prefs(&self.current_prefs());
                             }
-                            4 => {
-                                if opt == 0 {
-                                    self.pickers.open(PickerId::DeezerArl);
-                                    self.on_picker_opened(PickerId::DeezerArl);
-                                }
+                            4 if opt == 0 => {
+                                self.pickers.open(PickerId::DeezerArl);
+                                self.on_picker_opened(PickerId::DeezerArl);
                             }
                             _ => {}
                         }

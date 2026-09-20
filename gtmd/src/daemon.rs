@@ -274,10 +274,17 @@ async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<RemoteResolve
             (url, None)
         }
         RemoteKind::Stream { url } => (url.clone(), None),
+        #[cfg(feature = "youtube")]
         RemoteKind::YtDlp { url } => {
             let mut yt = inner.youtube.lock().await;
             let (_, direct) = yt.resolve_info(url).await.map_err(CoreError::Daemon)?;
             (direct, None)
+        }
+        #[cfg(not(feature = "youtube"))]
+        RemoteKind::YtDlp { .. } => {
+            return Err(CoreError::Daemon(
+                "youtube support is disabled in this build".into(),
+            ));
         }
         RemoteKind::Deezer { track_id } => {
             let mut deezer = inner.deezer.lock().await;
@@ -1016,21 +1023,30 @@ impl Cmd {
         // a direct CDN audio URL through the extractor; the queue entry keeps
         // the extracted title so the now-playing pane shows real names.
         if let Some(label) = ytdlp_label(url) {
-            let (title, direct) = match inner.youtube.lock().await.resolve_info(url).await {
-                Ok(v) => v,
-                Err(e) => return Ok(DaemonRes::Error { message: e }),
-            };
+            #[cfg(feature = "youtube")]
             {
-                let mut state = inner.state.write().await;
-                state.queue.push(TrackInfo {
-                    path: direct.clone(),
-                    title,
-                    artist: label.to_string(),
-                    album: label.to_string(),
-                    ..Default::default()
+                let (title, direct) = match inner.youtube.lock().await.resolve_info(url).await {
+                    Ok(v) => v,
+                    Err(e) => return Ok(DaemonRes::Error { message: e }),
+                };
+                {
+                    let mut state = inner.state.write().await;
+                    state.queue.push(TrackInfo {
+                        path: direct.clone(),
+                        title,
+                        artist: label.to_string(),
+                        album: label.to_string(),
+                        ..Default::default()
+                    });
+                }
+                return Cmd::play(inner, &direct, 0.0, false).await;
+            }
+            #[cfg(not(feature = "youtube"))]
+            {
+                return Ok(DaemonRes::Error {
+                    message: format!("{label} support is disabled in this build"),
                 });
             }
-            return Cmd::play(inner, &direct, 0.0, false).await;
         }
         let url_owned = url.to_string();
         let fetched =
