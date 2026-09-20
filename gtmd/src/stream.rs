@@ -7,7 +7,9 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use gtm::audio::{SPECTRUM_BINS, SpectrumAnalyzer};
+use gtm::audio::{
+    SPECTRUM_BINS, SpectrumAnalyzer, WaveformShared, WAVEFORM_DECIM, WAVEFORM_FRESHNESS,
+};
 use gtm::shared::spotify::LIBRESPOT_CLIENT_ID;
 use librespot_core::SessionConfig;
 use librespot_core::authentication::Credentials;
@@ -100,6 +102,9 @@ pub struct PcmStreamSource {
     analyzer: SpectrumAnalyzer,
     levels: [f32; SPECTRUM_BINS],
     spectrum_out: SpectrumShared,
+    wave_out: WaveformShared,
+    wave_left: Option<f32>,
+    wave_frame: usize,
     channels: u16,
     sample_rate: u32,
     total_duration: Option<Duration>,
@@ -109,14 +114,19 @@ impl PcmStreamSource {
     fn new(
         rx: std::sync::mpsc::Receiver<Vec<f32>>,
         spectrum_out: SpectrumShared,
+        wave_out: WaveformShared,
         duration_secs: f64,
     ) -> Self {
+        wave_out.set_stereo(true);
         Self {
             rx,
             pending: VecDeque::with_capacity(4096),
             analyzer: SpectrumAnalyzer::new(44_100.0),
             levels: [0.0; SPECTRUM_BINS],
             spectrum_out,
+            wave_out,
+            wave_left: None,
+            wave_frame: 0,
             channels: 2,
             sample_rate: 44_100,
             total_duration: Some(Duration::from_secs_f64(duration_secs)),
@@ -125,12 +135,23 @@ impl PcmStreamSource {
 
     /// Feed refilled samples through the mono spectrum analyzer (left
     /// channel) and publish fresh band levels when an FFT window completes.
+    /// Every `WAVEFORM_DECIM`th stereo frame is also tapped into the shared
+    /// waveform ring for the Wave/Stereo visualizer modes.
     fn refill(&mut self, chunk: Vec<f32>) {
         for (i, s) in chunk.into_iter().enumerate() {
-            if i % 2 == 0 && self.analyzer.push(s, &mut self.levels) {
-                let mut out = self.spectrum_out.lock().unwrap();
-                out.0 = std::time::Instant::now();
-                out.1 = self.levels.to_vec();
+            let even = i % 2 == 0;
+            if even {
+                self.wave_left = Some(s);
+                if self.analyzer.push(s, &mut self.levels) {
+                    let mut out = self.spectrum_out.lock().unwrap();
+                    out.0 = std::time::Instant::now();
+                    out.1 = self.levels.to_vec();
+                }
+            } else if let Some(l) = self.wave_left.take() {
+                self.wave_frame += 1;
+                if self.wave_frame % WAVEFORM_DECIM == 0 {
+                    self.wave_out.push_frame(l, s);
+                }
             }
             self.pending.push_back(s);
         }
@@ -191,6 +212,7 @@ pub struct StreamManager {
     player: Option<Arc<Player>>,
     target: SharedTarget,
     spectrum: SpectrumShared,
+    waveform: WaveformShared,
     current_uri: Option<String>,
     /// Access token the current session was created with. `load` reconnects
     /// the session whenever the daemon supplies a fresh token (rspotify
@@ -212,9 +234,17 @@ impl StreamManager {
             player: None,
             target: Arc::new(Mutex::new(None)),
             spectrum: new_spectrum_shared(),
+            waveform: WaveformShared::default(),
             current_uri: None,
             session_token: None,
         }
+    }
+
+    /// Latest waveform ring produced by the active stream, alongside its
+    /// stereo flag. Empty when nothing streamed recently so the UI decays to
+    /// rest.
+    pub fn waveform_snapshot(&self) -> (Vec<f32>, bool) {
+        self.waveform.snapshot(WAVEFORM_FRESHNESS)
     }
 
     /// Latest visualizer band levels produced by the active stream. Empty
@@ -342,6 +372,7 @@ impl StreamManager {
             let mut s = self.spectrum.lock().unwrap();
             s.1.clear();
         }
+        self.waveform.clear();
     }
 
     /// Start streaming `uri` and return the rodio source to hand to the
@@ -369,6 +400,7 @@ impl StreamManager {
             let mut s = self.spectrum.lock().unwrap();
             s.1.clear();
         }
+        self.waveform.clear();
         self.player
             .as_ref()
             .expect("session ensured")
@@ -377,6 +409,7 @@ impl StreamManager {
         Ok(PcmStreamSource::new(
             rx,
             self.spectrum.clone(),
+            self.waveform.clone(),
             duration_secs,
         ))
     }

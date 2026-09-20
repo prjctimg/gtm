@@ -198,6 +198,18 @@ impl Mixer for DeferredMixer {
         }
     }
 
+    fn current_waveform(&self) -> (Vec<f32>, bool) {
+        self.ensure_ref()
+            .map(|m| m.current_waveform())
+            .unwrap_or_default()
+    }
+
+    fn publish_waveform(&self, samples: Vec<f32>, stereo: bool) {
+        if let Ok(m) = self.ensure_ref() {
+            m.publish_waveform(samples, stereo);
+        }
+    }
+
     fn set_eq_preset(&self, preset: &EqPreset) {
         if let Ok(m) = self.ensure_ref() {
             m.set_eq_preset(preset);

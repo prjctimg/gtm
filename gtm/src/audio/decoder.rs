@@ -20,6 +20,7 @@ use crate::audio::buffer::{DecodeControl, SharedRingBuffer};
 use crate::audio::eq::EqGains;
 use crate::audio::stretch::{SpeedControl, TimeStretchSource};
 use crate::audio::symphonia::SymphoniaSource;
+use crate::audio::wave::{WaveformShared, WAVEFORM_DECIM};
 
 // ---------------------------------------------------------------------------
 // EQ helpers (moved from eq.rs EqSource: processing on decode thread)
@@ -220,6 +221,7 @@ pub struct DecodeThread {
     reverb_room_size: Arc<Mutex<f32>>,
     speed: SpeedControl,
     spectrum: Arc<Mutex<Vec<f32>>>,
+    wave: WaveformShared,
     prebuffer_samples: usize,
 }
 
@@ -246,6 +248,7 @@ impl DecodeThread {
         reverb_room_size: Arc<Mutex<f32>>,
         speed: SpeedControl,
         spectrum: Arc<Mutex<Vec<f32>>>,
+        wave: WaveformShared,
         prebuffer_samples: usize,
     ) -> Self {
         Self {
@@ -258,6 +261,7 @@ impl DecodeThread {
             reverb_room_size,
             speed,
             spectrum,
+            wave,
             prebuffer_samples,
         }
     }
@@ -277,6 +281,7 @@ impl DecodeThread {
         reverb_room_size: Arc<Mutex<f32>>,
         speed: SpeedControl,
         spectrum: Arc<Mutex<Vec<f32>>>,
+        wave: WaveformShared,
         prebuffer_samples: usize,
     ) -> Self {
         Self {
@@ -289,6 +294,7 @@ impl DecodeThread {
             reverb_room_size,
             speed,
             spectrum,
+            wave,
             prebuffer_samples,
         }
     }
@@ -350,6 +356,7 @@ impl DecodeThread {
 
             let sr = raw.sample_rate().get() as f64;
             let channels = raw.channels().get();
+            self.wave.set_stereo(channels > 1);
 
             // Store channel/rate info for RingBufferSource
             self.control.sample_rate.store(sr as u32, Ordering::Relaxed);
@@ -384,6 +391,12 @@ impl DecodeThread {
             let mut spectrum_analyzer = SpectrumAnalyzer::new(decimated_sr);
             let mut spectrum_frame = vec![0.0f32; SPECTRUM_BINS];
             let mut spectrum_count: usize = 0;
+
+            // Waveform capture state: a decimated interleaved L/R ring for
+            // the Wave/Stereo visualizer modes, rebuilt on every open.
+            let mut wave_left: Option<f32> = None;
+            let mut wave_frames: usize = 0;
+            self.wave.clear();
 
             // Decode loop: read from SymphoniaSource, process, write to ring buffer
             // Use an explicit loop over the iterator so we can check seek/running flags.
@@ -547,6 +560,28 @@ impl DecodeThread {
                     spec.extend_from_slice(&spectrum_frame);
                 }
                 spectrum_count += 1;
+
+                // Tap a decimated interleaved L/R ring for the Wave/Stereo
+                // visualizer modes. Reverb's stereo pair path (which reads
+                // ahead and `continue`s) never reaches this tap; those frames
+                // simply don't contribute, matching the spectrum behaviour.
+                let is_left = channels == 1 || (sample_count - 1) % 2 == 0;
+                let pair = if channels == 1 {
+                    Some((final_sample, final_sample))
+                } else if is_left {
+                    wave_left = Some(final_sample);
+                    None
+                } else if let Some(l) = wave_left.take() {
+                    Some((l, final_sample))
+                } else {
+                    None
+                };
+                if let Some((l, r)) = pair {
+                    wave_frames += 1;
+                    if wave_frames.is_multiple_of(WAVEFORM_DECIM) {
+                        self.wave.push_frame(l, r);
+                    }
+                }
 
                 prebuffer_check(
                     &self.shared,

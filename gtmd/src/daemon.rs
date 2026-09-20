@@ -4696,6 +4696,7 @@ impl Daemon {
         let mut poll_interval = tokio::time::interval(Duration::from_millis(16));
         let mut save_interval = tokio::time::interval(Duration::from_secs(60));
         let mut last_spectrum_tx = tokio::time::Instant::now();
+        let mut last_wave_tx = tokio::time::Instant::now();
         let mut last_started_path: Option<String> = None;
         loop {
             tokio::select! {
@@ -4749,6 +4750,40 @@ impl Daemon {
                             Self::push_event(
                                 &self.inner,
                                 DaemonEvent::SpectrumChanged { levels: spectrum },
+                            );
+                        }
+                        // Publish streamed-source waveform (streams bypass the
+                        // decode thread; local files feed the ring from the
+                        // decode thread itself). Mirror of the spectrum flow.
+                        {
+                            let stream = self.inner.stream.lock().await;
+                            let (ws, st) = stream.waveform_snapshot();
+                            if !ws.is_empty() {
+                                let mixer = self.inner.mixer.lock().await;
+                                mixer.publish_waveform(ws, st);
+                            }
+                        }
+                        let (wave_samples, wave_stereo) = {
+                            let mixer = self.inner.mixer.lock().await;
+                            mixer.current_waveform()
+                        };
+                        {
+                            let mut state = self.inner.state.write().await;
+                            state.wave_samples = wave_samples.clone();
+                            state.wave_stereo = wave_stereo;
+                        }
+                        // Throttle visualizer waveform broadcast to ~30 Hz
+                        // (the oscilloscope window is ~93 ms; 30 Hz is ample).
+                        if !wave_samples.is_empty()
+                            && last_wave_tx.elapsed() >= Duration::from_millis(32)
+                        {
+                            last_wave_tx = tokio::time::Instant::now();
+                            Self::push_event(
+                                &self.inner,
+                                DaemonEvent::WaveformChanged {
+                                    samples: wave_samples,
+                                    stereo: wave_stereo,
+                                },
                             );
                         }
                     }

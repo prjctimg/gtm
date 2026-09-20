@@ -24,6 +24,7 @@ use crate::audio::eq::{EqGains, EqSource, ReverbSource};
 use crate::audio::mixer::Mixer;
 use crate::audio::stretch::{SpeedControl, TimeStretchSource};
 use crate::audio::symphonia::SymphoniaSource;
+use crate::audio::wave::WaveformShared;
 use crate::shared::global::{EqPreset, ReverbConfig};
 use crate::shared::{MAX_VOLUME, volume_from_ratio, volume_ratio};
 use rodio::Source;
@@ -387,6 +388,7 @@ impl PulseAudioMixer {
             reverb_room_size.clone(),
             speed.clone(),
             spectrum.clone(),
+            WaveformShared::default(),
             prebuffer_samples,
         );
         let handle = thread.spawn().map_err(AudioError::DecodeError)?;
@@ -430,6 +432,7 @@ impl PulseAudioMixer {
             reverb_room_size.clone(),
             speed.clone(),
             spectrum.clone(),
+            WaveformShared::default(),
             PREBUFFER_SAMPLES_REDUCED,
         );
         let handle = thread.spawn().map_err(AudioError::DecodeError)?;

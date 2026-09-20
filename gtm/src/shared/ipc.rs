@@ -1555,6 +1555,11 @@ pub enum DaemonEvent {
     SpotifyStatusChanged,
     #[serde(rename = "spectrum_changed")]
     SpectrumChanged { levels: Vec<f32> },
+    /// Time-domain waveform ring (interleaved L/R) plus a stereo flag, for
+    /// the Wave/Stereo visualizer modes. Decimated on the decode/stream
+    /// threads so a ~5.5 kHz ring reaches the client at ~30 Hz.
+    #[serde(rename = "waveform_changed")]
+    WaveformChanged { samples: Vec<f32>, stereo: bool },
     /// A live ICY/Shoutcast stream published a new `StreamTitle` (or cleared
     /// it, `None`).
     #[serde(rename = "radio_title_changed")]

@@ -360,6 +360,11 @@ impl DaemonState {
                 self.audio_levels = levels.clone();
                 return; // don't bump version for high-frequency spectrum
             }
+            DaemonEvent::WaveformChanged { samples, stereo } => {
+                self.wave_samples = samples.clone();
+                self.wave_stereo = *stereo;
+                return; // don't bump version for high-frequency waveform
+            }
             // Info-only or app-level events with no DaemonState mirror field.
             // Listing every variant here (instead of a catch-all `_`) forces a
             // compile check when new events are added to DaemonEvent.

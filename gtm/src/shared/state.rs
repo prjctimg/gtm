@@ -212,6 +212,13 @@ pub struct DaemonState {
     pub scrobble: ScrobbleConfig,
     #[serde(default)]
     pub audio_levels: Vec<f32>,
+    /// Time-domain waveform ring (interleaved L/R pairs) broadcast for the
+    /// Wave/Stereo visualizer modes, plus whether the source is stereo.
+    /// Kept out of persistence: rebuilt fresh on every broadcast.
+    #[serde(default)]
+    pub wave_samples: Vec<f32>,
+    #[serde(default)]
+    pub wave_stereo: bool,
     /// Last known generic internet connectivity (`None` = not probed yet).
     /// Probed daemon-side via bounded TCP connects (1.1.1.1:443, then
     /// gstatic.com:443) and broadcast via `NetworkStatusChanged`. Independent

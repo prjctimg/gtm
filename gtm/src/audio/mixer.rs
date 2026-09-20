@@ -23,6 +23,7 @@ use crate::audio::eq::{EqGains, EqSource, ReverbSource};
 use crate::audio::mono::MonoSource;
 use crate::audio::stretch::{SpeedControl, TimeStretchSource};
 use crate::audio::symphonia::{StreamingReopen, SymphoniaSource};
+use crate::audio::wave::{WaveformShared, WAVEFORM_FRESHNESS};
 use crate::shared::global::{EqPreset, ReverbConfig};
 use crate::shared::{MAX_VOLUME, volume_ratio};
 
@@ -67,6 +68,17 @@ pub trait Mixer: Send + Sync {
     /// Publish externally produced spectrum levels (e.g. from streamed
     /// sources that bypass the decode thread). No-op by default.
     fn publish_spectrum(&self, _levels: Vec<f32>) {}
+
+    /// Latest time-domain waveform ring plus whether the source is stereo.
+    /// Returns `(samples, stereo)`; empty when nothing fresh has been
+    /// captured (paused/stopped) so visualizers decay to rest.
+    fn current_waveform(&self) -> (Vec<f32>, bool) {
+        (Vec::new(), false)
+    }
+
+    /// Publish externally produced waveform samples (streamed sources that
+    /// bypass the decode thread). No-op by default.
+    fn publish_waveform(&self, _samples: Vec<f32>, _stereo: bool) {}
 
     // ─── EQ / Reverb ───
     fn set_eq_preset(&self, preset: &EqPreset);
@@ -138,6 +150,8 @@ pub struct AudioMixer {
     underrun_since: Option<Instant>,
     // ─── Spectrum ───
     spectrum: Arc<Mutex<Vec<f32>>>,
+    // ─── Waveform (Wave/Stereo visualizer modes) ───
+    wave: WaveformShared,
     // ─── Mono downmix ───
     mono: Arc<AtomicBool>,
     // Track if this is the first track (for prebuffer optimization)
@@ -301,6 +315,12 @@ impl Mixer for AudioMixer {
     fn current_spectrum(&self) -> Vec<f32> {
         self.spectrum.lock().unwrap().clone()
     }
+    fn current_waveform(&self) -> (Vec<f32>, bool) {
+        self.wave.snapshot(WAVEFORM_FRESHNESS)
+    }
+    fn publish_waveform(&self, samples: Vec<f32>, stereo: bool) {
+        self.wave.publish(samples, stereo);
+    }
 }
 
 impl AudioMixer {
@@ -374,6 +394,7 @@ impl AudioMixer {
             standby_decode_handle: None,
             underrun_since: None,
             spectrum: Arc::new(Mutex::new(Vec::new())),
+            wave: WaveformShared::default(),
             mono: Arc::new(AtomicBool::new(false)),
             first_track: true,
         })
@@ -489,6 +510,7 @@ impl AudioMixer {
         reverb_room_size: &Arc<Mutex<f32>>,
         speed: &SpeedControl,
         spectrum: &Arc<Mutex<Vec<f32>>>,
+        wave: &WaveformShared,
         prebuffer_samples: usize,
     ) -> AudioResult<(
         Arc<DecodeControl>,
@@ -508,6 +530,7 @@ impl AudioMixer {
             reverb_room_size.clone(),
             speed.clone(),
             spectrum.clone(),
+            wave.clone(),
             prebuffer_samples,
         );
         let handle = thread.spawn().map_err(AudioError::DecodeError)?;
@@ -559,6 +582,7 @@ impl AudioMixer {
             &self.reverb_room_size,
             &self.speed,
             &self.spectrum,
+            &self.wave,
             prebuffer,
         )?;
 
@@ -618,6 +642,7 @@ impl AudioMixer {
         reverb_room_size: &Arc<Mutex<f32>>,
         speed: &SpeedControl,
         spectrum: &Arc<Mutex<Vec<f32>>>,
+        wave: &WaveformShared,
     ) -> AudioResult<(
         Arc<DecodeControl>,
         RingBufferSource,
@@ -636,6 +661,7 @@ impl AudioMixer {
             reverb_room_size.clone(),
             speed.clone(),
             spectrum.clone(),
+            wave.clone(),
             PREBUFFER_SAMPLES_REDUCED,
         );
         let handle = thread.spawn().map_err(AudioError::DecodeError)?;
@@ -693,6 +719,7 @@ impl AudioMixer {
             &self.reverb_room_size,
             &self.speed,
             &self.spectrum,
+            &self.wave,
         )?;
 
         // Live streams have no meaningful total duration; zero both so the
@@ -727,6 +754,7 @@ impl AudioMixer {
             &self.reverb_room_size,
             &self.speed,
             &self.spectrum,
+            &self.wave,
             PREBUFFER_SAMPLES,
         )?;
 

@@ -2250,12 +2250,16 @@ impl App {
                     self.start_upnext(track.clone());
                 }
                 // The visualizer is a configurable extension: when disabled
-                // the spectrum stream is zeroed on the client so the IPC pipe
-                // is effectively idle from the app's perspective.
-                if matches!(ev, DaemonEvent::SpectrumChanged { .. })
-                    && self.extensions.is_disabled(ExtensionId::Visualizer)
+                // the spectrum + waveform streams are zeroed on the client so
+                // the IPC pipe is effectively idle from the app's perspective.
+                if self.extensions.is_disabled(ExtensionId::Visualizer)
+                    && matches!(
+                        ev,
+                        DaemonEvent::SpectrumChanged { .. } | DaemonEvent::WaveformChanged { .. }
+                    )
                 {
                     self.state.audio_levels.clear();
+                    self.state.wave_samples.clear();
                 } else {
                     self.state.apply_event(&ev);
                 }
