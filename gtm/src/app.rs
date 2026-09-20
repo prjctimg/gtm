@@ -716,8 +716,6 @@ pub struct ChartsView {
 }
 
 /// Subsonic (Navidrome) picker state, grouped under `App::subsonic`.
-
-/// Subsonic (Navidrome) picker state, grouped under `App::subsonic`.
 #[derive(Default)]
 pub struct SubsonicView {
     pub status: Option<SubsonicStatus>,
