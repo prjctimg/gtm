@@ -183,9 +183,7 @@ impl SpotifyManager {
         for p in &self.playlists {
             for t in &p.tracks {
                 if t.uri.as_deref() == Some(uri) {
-                    if let Some(ms) = t.duration_ms {
-                        return Some(ms as f64 / 1000.0);
-                    }
+                    return t.duration_ms.map(|ms| ms as f64 / 1000.0);
                 }
             }
         }

@@ -128,12 +128,7 @@ const STEREO_PEAK_FALL: f32 = 0.65;
 const FLAME_MAX_COLS: usize = 320;
 
 /// Braille dot bit map: `braille_bit[dot_row][dot_col]`.
-const BRAILLE_BIT: [[u32; 2]; 4] = [
-    [0x01, 0x08],
-    [0x02, 0x10],
-    [0x04, 0x20],
-    [0x40, 0x80],
-];
+const BRAILLE_BIT: [[u32; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0x40, 0x80]];
 
 /// Fractional block glyphs (bottom half), for meter/preview fills.
 const BLOCKS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
@@ -161,7 +156,8 @@ fn freq_to_bin_pos(freq: f64, bins: usize) -> f64 {
         return 0.0;
     }
     let last = (bins - 1) as f64;
-    let t = ((freq / SPECTRUM_MIN_HZ).ln() / (SPECTRUM_MAX_HZ / SPECTRUM_MIN_HZ).ln()).clamp(0.0, 1.0);
+    let t =
+        ((freq / SPECTRUM_MIN_HZ).ln() / (SPECTRUM_MAX_HZ / SPECTRUM_MIN_HZ).ln()).clamp(0.0, 1.0);
     t * last
 }
 
@@ -325,7 +321,10 @@ impl AudioVisualizer {
             return;
         }
         let now = Instant::now();
-        let dt = now.duration_since(self.last_tick).as_secs_f64().clamp(0.0, MAX_SMOOTH_DT);
+        let dt = now
+            .duration_since(self.last_tick)
+            .as_secs_f64()
+            .clamp(0.0, MAX_SMOOTH_DT);
         self.last_tick = now;
         self.frame = self.frame.wrapping_add(1);
         self.spectrum_offset += dt * IDLE_DRIFT;
@@ -436,7 +435,11 @@ impl AudioVisualizer {
         }
         let mut rms = [0.0f32; 2];
         for (i, n_i) in n.iter().enumerate() {
-            rms[i] = if *n_i > 0 { (acc[i] / *n_i as f32).sqrt() } else { 0.0 };
+            rms[i] = if *n_i > 0 {
+                (acc[i] / *n_i as f32).sqrt()
+            } else {
+                0.0
+            };
             let diff = rms[i] - self.stereo_level[i];
             let rate = if diff > 0.0 { STEREO_RISE } else { STEREO_FALL };
             self.stereo_level[i] = (self.stereo_level[i] + diff * rate * dt).clamp(0.0, 1.0);
@@ -520,7 +523,8 @@ impl AudioVisualizer {
                 let jitter = (self.next_rng() % 3) as isize - 1;
                 let jx = ((x as isize + jitter).clamp(0, last as isize)) as usize;
                 let hot = self.heat[src * cols + x].max(self.heat[src * cols + jx]);
-                let decay = 1.0 - (0.18 + 0.22 * (self.next_rng() % 100) as f64 / 100.0) * dt60.min(1.5);
+                let decay =
+                    1.0 - (0.18 + 0.22 * (self.next_rng() % 100) as f64 / 100.0) * dt60.min(1.5);
                 self.heat[y * cols + x] = hot * decay;
             }
         }
@@ -618,7 +622,12 @@ impl AudioVisualizer {
 
     /// Classic falling peak caps over thin columns, with launch/gravity/cap
     /// physics (cliamp rendering: cap glyphs `⎺⎻⎼⎽` above `▏` bodies).
-    fn render_classic_peak(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'static> {
+    fn render_classic_peak(
+        &self,
+        num_bars: usize,
+        height: usize,
+        theme: &AppTheme,
+    ) -> Lines<'static> {
         let peak_glyphs: [&str; 4] = ["⎺", "⎻", "⎼", "⎽"];
         let mut lines: Vec<Line<'static>> = Vec::new();
         for row in 0..height {
@@ -771,7 +780,10 @@ impl AudioVisualizer {
                     };
                     (BLOCKS[idx], self.amplitude_color(level, theme))
                 } else if x == full_rows && frac > 0.001 && full_rows < meter_w {
-                    (BLOCKS[((frac * 8.0) as usize).min(7)], self.amplitude_color(level, theme))
+                    (
+                        BLOCKS[((frac * 8.0) as usize).min(7)],
+                        self.amplitude_color(level, theme),
+                    )
                 } else if peak > 0.0 && x == peak_col && peak_col >= full_rows {
                     ("·", theme.accent)
                 } else {
@@ -1199,6 +1211,15 @@ impl<'a> Widget for Lines<'a> {
     }
 }
 
+impl AudioVisualizer {
+    /// Test helper: pretend a 16 ms frame has elapsed so easing moves a
+    /// realistic amount per tick even in tight loops.
+    #[cfg(test)]
+    fn backdate_tick(&mut self) {
+        self.last_tick = std::time::Instant::now() - std::time::Duration::from_millis(16);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1294,14 +1315,5 @@ mod tests {
             v.backdate_tick();
         }
         assert!(v.bars.iter().any(|&b| b > 0.5));
-    }
-}
-
-impl AudioVisualizer {
-    /// Test helper: pretend a 16 ms frame has elapsed so easing moves a
-    /// realistic amount per tick even in tight loops.
-    #[cfg(test)]
-    fn backdate_tick(&mut self) {
-        self.last_tick = std::time::Instant::now() - std::time::Duration::from_millis(16);
     }
 }

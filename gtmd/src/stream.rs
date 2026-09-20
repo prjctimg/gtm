@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use gtm::audio::{
-    SPECTRUM_BINS, SpectrumAnalyzer, WaveformShared, WAVEFORM_DECIM, WAVEFORM_FRESHNESS,
+    SPECTRUM_BINS, SpectrumAnalyzer, WAVEFORM_DECIM, WAVEFORM_FRESHNESS, WaveformShared,
 };
 use gtm::shared::spotify::LIBRESPOT_CLIENT_ID;
 use librespot_core::SessionConfig;
@@ -149,7 +149,7 @@ impl PcmStreamSource {
                 }
             } else if let Some(l) = self.wave_left.take() {
                 self.wave_frame += 1;
-                if self.wave_frame % WAVEFORM_DECIM == 0 {
+                if self.wave_frame.is_multiple_of(WAVEFORM_DECIM) {
                     self.wave_out.push_frame(l, s);
                 }
             }

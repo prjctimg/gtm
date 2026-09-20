@@ -20,7 +20,7 @@ use crate::audio::buffer::{DecodeControl, SharedRingBuffer};
 use crate::audio::eq::EqGains;
 use crate::audio::stretch::{SpeedControl, TimeStretchSource};
 use crate::audio::symphonia::SymphoniaSource;
-use crate::audio::wave::{WaveformShared, WAVEFORM_DECIM};
+use crate::audio::wave::{WAVEFORM_DECIM, WaveformShared};
 
 // ---------------------------------------------------------------------------
 // EQ helpers (moved from eq.rs EqSource: processing on decode thread)

@@ -23,7 +23,7 @@ use crate::audio::eq::{EqGains, EqSource, ReverbSource};
 use crate::audio::mono::MonoSource;
 use crate::audio::stretch::{SpeedControl, TimeStretchSource};
 use crate::audio::symphonia::{StreamingReopen, SymphoniaSource};
-use crate::audio::wave::{WaveformShared, WAVEFORM_FRESHNESS};
+use crate::audio::wave::{WAVEFORM_FRESHNESS, WaveformShared};
 use crate::shared::global::{EqPreset, ReverbConfig};
 use crate::shared::{MAX_VOLUME, volume_ratio};
 

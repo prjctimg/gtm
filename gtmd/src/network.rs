@@ -23,10 +23,10 @@ const CONNECT_TIMEOUT: Duration = Duration::from_millis(1500);
 const TARGETS: &[&str] = &["1.1.1.1:443", "gstatic.com:443"];
 
 async fn tcp_ok(target: &str) -> bool {
-    match tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(target)).await {
-        Ok(Ok(_)) => true,
-        _ => false,
-    }
+    matches!(
+        tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(target)).await,
+        Ok(Ok(_))
+    )
 }
 
 /// Return true when any generic target is reachable. Bounded: at most
