@@ -134,14 +134,15 @@ impl SpotifyManager {
 
     /// Record a link error for the Settings UI (e.g. a failed OAuth flow).
     pub fn set_error(&mut self, err: String) {
-        if !self.linked() {
-            self.error = Some(err);
-        }
+        self.error = Some(err);
     }
 
-    /// Current OAuth access token, if a client is linked.
+    /// Current OAuth access token, if a client is linked. Refreshes an expired
+    /// token first so librespot never connects with a stale credential;
+    /// bounded so a stalled refresh fails fast instead of blocking the caller.
     pub async fn access_token(&self) -> Option<String> {
-        let client = self.client.as_ref()?;
+        let client = self.client.clone()?;
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), client.auto_reauth()).await;
         let arc = client.get_token();
         let guard = arc.lock().await.ok()?;
         let token: &rspotify::Token = (*guard).as_ref()?;
@@ -171,6 +172,20 @@ impl SpotifyManager {
             .iter()
             .find(|p| p.id == id)
             .map(|p| p.tracks.clone())
+    }
+
+    /// Look up duration in seconds for a Spotify track URI across cached playlists.
+    pub fn find_track_duration(&self, uri: &str) -> Option<f64> {
+        for p in &self.playlists {
+            for t in &p.tracks {
+                if t.uri.as_deref() == Some(uri) {
+                    if let Some(ms) = t.duration_ms {
+                        return Some(ms as f64 / 1000.0);
+                    }
+                }
+            }
+        }
+        None
     }
 
     /// Poll the Web API for the current playback device and playing state.
@@ -287,6 +302,16 @@ impl SpotifyManager {
         debug!("fetched {} spotify playlists for {:?}", metas.len(), user);
 
         let mut playlists = Vec::new();
+        let saved = Self::fetch_saved_tracks(&client).await;
+        if !saved.is_empty() {
+            playlists.push(SpotifyPlaylist {
+                id: "liked-songs".to_string(),
+                name: "Liked Songs".to_string(),
+                owner: user.clone().unwrap_or_default(),
+                tracks: saved,
+            });
+        }
+
         for meta in &metas {
             // Per-playlist failures are already tolerated inside
             // `fetch_playlist_tracks`; an unparseable playlist only logs.
@@ -308,6 +333,26 @@ impl SpotifyManager {
         self.error = None;
         self.user = user;
         self.playlists = playlists;
+    }
+
+    async fn fetch_saved_tracks(client: &AuthCodePkceSpotify) -> Vec<SpotifyTrack> {
+        let mut saved = Vec::new();
+        let mut stream = client.current_user_saved_tracks(None);
+        while let Some(item) = stream.next().await {
+            match item {
+                Ok(item) => {
+                    if let Some(mut track) = track_from_playable(&PlayableItem::Track(item.track)) {
+                        track.index = saved.len();
+                        saved.push(track);
+                    }
+                }
+                Err(e) => {
+                    warn!("spotify saved tracks: {e}");
+                    break;
+                }
+            }
+        }
+        saved
     }
 
     async fn fetch_playlist_tracks(

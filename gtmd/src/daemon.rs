@@ -2163,7 +2163,11 @@ impl Spotify {
             spotify.can_stream().await && uri.is_some()
         };
         if can_stream && let Some(uri) = uri.clone() {
-            Spotify::queue_stream(inner, &uri, name, artists, album, None).await?;
+            let duration = {
+                let spotify = inner.spotify.lock().await;
+                spotify.find_track_duration(&uri)
+            };
+            Spotify::queue_stream(inner, &uri, name, artists, album, duration).await?;
             return Ok(DaemonRes::Ok);
         }
 

@@ -56,6 +56,7 @@ fn new_spectrum_shared() -> SpectrumShared {
 
 #[derive(Clone)]
 struct StreamTarget {
+    uri: String,
     tx: std::sync::mpsc::SyncSender<Vec<f32>>,
 }
 
@@ -293,19 +294,25 @@ impl StreamManager {
             },
         );
 
-        // Event pump: end-of-track / stop / unavailable mark the channel as
+        // Event pump: end-of-track / unavailable mark the channel as
         // finished so the rodio source drains out and the mixer advances the
-        // queue exactly like a local file would.
+        // queue exactly like a local file would. Stopped events are excluded
+        // so loading a new track does not clear the replacement target.
         let events = player.get_player_event_channel();
         let target = self.target.clone();
         tokio::spawn(async move {
             let mut events = events;
             while let Some(event) = events.recv().await {
                 match event {
-                    PlayerEvent::EndOfTrack { .. }
-                    | PlayerEvent::Stopped { .. }
-                    | PlayerEvent::Unavailable { .. } => {
-                        target.lock().unwrap().take();
+                    PlayerEvent::EndOfTrack { track_id, .. }
+                    | PlayerEvent::Unavailable { track_id, .. } => {
+                        let mut guard = target.lock().unwrap();
+                        if let Ok(uri) = track_id.to_uri()
+                            && let Some(t) = guard.as_ref()
+                            && t.uri == uri
+                        {
+                            guard.take();
+                        }
                     }
                     _ => {}
                 }
@@ -352,7 +359,10 @@ impl StreamManager {
 
         self.clear_target();
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHANNEL_CAPACITY);
-        *self.target.lock().unwrap() = Some(StreamTarget { tx });
+        *self.target.lock().unwrap() = Some(StreamTarget {
+            uri: uri.to_string(),
+            tx,
+        });
 
         self.current_uri = Some(uri.to_string());
         {

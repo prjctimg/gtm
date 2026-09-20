@@ -236,7 +236,7 @@ async fn write_response(stream: &mut tokio::net::TcpStream, status: &str, body: 
     let _ = stream
         .write_all(
             format!(
-                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: text/plain\r\n\r\n{body}",
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{body}",
                 body.len()
             )
             .as_bytes(),
