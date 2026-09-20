@@ -78,13 +78,16 @@ impl SpotifyManager {
         self.client.is_some()
     }
 
-    /// Read the token file and set up the client + cached playlists.
+    /// Read the token file and build a usable client WITHOUT any network I/O.
+    /// Playlist sync and the playback probe run in the daemon's background
+    /// tasks so startup (and the OAuth picker) never block on the network
+    /// while holding the manager mutex. `linked()` becomes true on return.
     pub async fn load(&mut self) -> Result<(), String> {
         let raw = tokio::fs::read_to_string(self.token_path())
             .await
             .map_err(|e| format!("read token file: {e}"))?;
         let token = parse_token(&raw)?;
-        self.init_client(token).await
+        self.set_client(token).await
     }
 
     /// Accept a token (plain access token or full Token JSON), persist it with
@@ -142,7 +145,8 @@ impl SpotifyManager {
     /// bounded so a stalled refresh fails fast instead of blocking the caller.
     pub async fn access_token(&self) -> Option<String> {
         let client = self.client.clone()?;
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), client.auto_reauth()).await;
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_secs(10), client.auto_reauth()).await;
         let arc = client.get_token();
         let guard = arc.lock().await.ok()?;
         let token: &rspotify::Token = (*guard).as_ref()?;
@@ -381,6 +385,10 @@ impl SpotifyManager {
     /// playlists. `linked()` becomes true immediately so the TUI can close its
     /// OAuth picker and start loading playlists while the sync runs in the
     /// background. Returns once the client is ready.
+    ///
+    /// The eager profile/playback probes below are bounded (10s each) so a
+    /// stalled network delays the picker-close event by seconds, never
+    /// indefinitely; the background sync refreshes both when it finishes.
     pub async fn link(&mut self, raw: &str) -> Result<(), String> {
         let token = parse_token(raw)?;
         self.save_token(&token)?;
@@ -392,14 +400,16 @@ impl SpotifyManager {
         // soon as the picker closes; the playlist sync continues in the
         // background and refreshes the cache when it finishes.
         if let Some(client) = self.client.clone()
-            && let Ok(me) = client.me().await
+            && let Ok(Ok(me)) =
+                tokio::time::timeout(std::time::Duration::from_secs(10), client.me()).await
         {
             self.user = me.display_name.or_else(|| Some(me.id.as_ref().to_string()));
         }
         // Probe `/me/player` right after linking so `premium` is set before any
         // play command arrives (playlists sync purely via the Web API and never
         // implied Premium).
-        self.refresh_playback().await;
+        let _ =
+            tokio::time::timeout(std::time::Duration::from_secs(10), self.refresh_playback()).await;
         Ok(())
     }
 

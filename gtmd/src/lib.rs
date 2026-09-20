@@ -18,6 +18,7 @@ pub mod lastfm;
 pub mod library;
 pub mod lyrics;
 pub mod musicbrainz;
+pub mod network;
 pub mod oauth;
 pub mod podcast;
 pub mod queue;

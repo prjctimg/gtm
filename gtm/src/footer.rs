@@ -16,7 +16,7 @@ use chrono::Local;
 
 use crate::app::App;
 use crate::theme::{AppTheme, readable_fg};
-use crate::ui::{Render, use_nerd_fonts};
+use crate::ui::{Render, provider_icon, use_nerd_fonts};
 
 /// Namespace for per-module footer rendering.
 pub struct Footer;
@@ -83,6 +83,8 @@ pub enum FooterModule {
     Time,
     Multiselect,
     Download,
+    Network,
+    Source,
 }
 
 impl FooterModule {
@@ -109,6 +111,8 @@ impl FooterModule {
             FooterModule::Time => "Time",
             FooterModule::Multiselect => "Multiselect",
             FooterModule::Download => "Download",
+            FooterModule::Network => "Network",
+            FooterModule::Source => "Source",
         }
     }
 
@@ -136,6 +140,8 @@ impl FooterModule {
             "Time" => FooterModule::Time,
             "Multiselect" => FooterModule::Multiselect,
             "Download" => FooterModule::Download,
+            "Network" => FooterModule::Network,
+            "Source" => FooterModule::Source,
             _ => return None,
         })
     }
@@ -178,6 +184,8 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::Time,
                 FooterModule::System,
                 FooterModule::Multiselect,
+                FooterModule::Network,
+                FooterModule::Source,
             ],
         },
         // Bare minimum for termux or very small viewports.
@@ -210,6 +218,8 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::Time,
                 FooterModule::System,
                 FooterModule::Multiselect,
+                FooterModule::Network,
+                FooterModule::Source,
             ],
         },
     ]
@@ -736,6 +746,33 @@ impl Footer {
         }
         Some(Local::now().format(&app.footer_time_format).to_string())
     }
+
+    /// Generic connectivity indicator driven by the daemon's bounded TCP
+    /// probes (`None` = not probed yet, hidden until the first result lands).
+    fn network(app: &App) -> Option<String> {
+        match app.state.network_online {
+            None => None,
+            Some(true) => Some("Online".into()),
+            Some(false) => Some("Offline".into()),
+        }
+    }
+
+    /// Active remote-provider indicator. Shown only while a remote stream is
+    /// the current track (`spotify:`, `subsonic://`, `podcast://`, `radio://`,
+    /// `http(s)://`, `youtube:` and the legacy `/audio/spotify|youtube`
+    /// cache paths); local files render nothing so the module stays hidden.
+    fn source(app: &App) -> Option<String> {
+        let path = app.state.current_track.as_ref().map(|t| t.path.as_str())?;
+        let (icon_key, label) = classify_remote_source(path)?;
+        if use_nerd_fonts() {
+            match provider_icon(icon_key) {
+                Some(g) => Some(format!("{g} {label}")),
+                None => Some(label.to_string()),
+            }
+        } else {
+            Some(label.to_string())
+        }
+    }
 }
 
 // ─── Module dispatch ───────────────────────────────────────────────────
@@ -763,6 +800,8 @@ fn module_color(m: FooterModule, theme: &AppTheme) -> Color {
         FooterModule::Time => theme.tertiary_accent,
         FooterModule::Multiselect => theme.warning,
         FooterModule::Download => theme.secondary_accent,
+        FooterModule::Network => theme.secondary_accent,
+        FooterModule::Source => theme.tertiary_accent,
     }
 }
 
@@ -788,6 +827,8 @@ fn module_text(m: FooterModule, app: &App) -> Option<String> {
         FooterModule::Time => Footer::time(app),
         FooterModule::Multiselect => Footer::multiselect(app),
         FooterModule::Download => Footer::download(app),
+        FooterModule::Network => Footer::network(app),
+        FooterModule::Source => Footer::source(app),
     }
 }
 
@@ -817,6 +858,41 @@ pub fn format_uptime(secs: f64) -> String {
     } else {
         format!("{}s", s)
     }
+}
+
+/// Classify a track path as a remote provider stream. Returns the
+/// `provider_icon` lookup key plus the short display label, or `None` for
+/// local playback (the `Source` footer module hides itself then).
+///
+/// Mirrors the daemon's `parse_remote_path` schemes plus the native
+/// `spotify:` librespot URI, `youtube:` IDs, resolved `http(s)://` stream
+/// URLs (YouTube/Stream), and the legacy `/audio/spotify|youtube` cache
+/// paths the now-playing pane already treats as provider output.
+fn classify_remote_source(path: &str) -> Option<(&'static str, &'static str)> {
+    if path.starts_with("spotify:") || path.contains("/audio/spotify") {
+        return Some(("Spotify", "Spotify"));
+    }
+    if path.starts_with("subsonic://") {
+        return Some(("Subsonic/Navidrome", "Subsonic"));
+    }
+    if path.starts_with("podcast://") {
+        return Some(("Podcast", "Podcast"));
+    }
+    if path.starts_with("radio://") {
+        return Some(("Radio", "Radio"));
+    }
+    if path.starts_with("youtube:") || path.contains("/audio/youtube") {
+        return Some(("YouTube", "YouTube"));
+    }
+    if path.starts_with("http://") || path.starts_with("https://") {
+        let lower = path.to_ascii_lowercase();
+        if lower.contains("youtube") || lower.contains("youtu.be") || lower.contains("googlevideo")
+        {
+            return Some(("YouTube", "YouTube"));
+        }
+        return Some(("Radio", "Stream"));
+    }
+    None
 }
 
 /// Get platform mascot/icon for the current OS.
@@ -883,6 +959,8 @@ mod tests {
             FooterModule::SleepTimer,
             FooterModule::Notification,
             FooterModule::Download,
+            FooterModule::Network,
+            FooterModule::Source,
         ] {
             let s = m.as_str();
             assert_eq!(FooterModule::from_str_lossy(s), Some(m));
@@ -918,5 +996,40 @@ mod tests {
         assert_eq!(preset.left, vec!["Playback", "Queue"]);
         let built = parse_module_list(&preset.left);
         assert_eq!(built, vec![FooterModule::Playback, FooterModule::Queue]);
+    }
+
+    #[test]
+    fn remote_source_classifier() {
+        // Remote providers classify; local files never do.
+        assert_eq!(
+            classify_remote_source("spotify:track:abc"),
+            Some(("Spotify", "Spotify"))
+        );
+        assert_eq!(
+            classify_remote_source("subsonic://track123"),
+            Some(("Subsonic/Navidrome", "Subsonic"))
+        );
+        assert_eq!(
+            classify_remote_source("podcast://feed/3"),
+            Some(("Podcast", "Podcast"))
+        );
+        assert_eq!(
+            classify_remote_source("radio://station-id"),
+            Some(("Radio", "Radio"))
+        );
+        assert_eq!(
+            classify_remote_source("youtube:video-id"),
+            Some(("YouTube", "YouTube"))
+        );
+        assert_eq!(
+            classify_remote_source("https://example.com/stream.mp3"),
+            Some(("Radio", "Stream"))
+        );
+        assert_eq!(
+            classify_remote_source("https://rr1.googlevideo.com/videoplayback?x=1"),
+            Some(("YouTube", "YouTube"))
+        );
+        assert!(classify_remote_source("/music/artist/album.flac").is_none());
+        assert!(classify_remote_source("").is_none());
     }
 }

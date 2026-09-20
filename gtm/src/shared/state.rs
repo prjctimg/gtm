@@ -212,6 +212,12 @@ pub struct DaemonState {
     pub scrobble: ScrobbleConfig,
     #[serde(default)]
     pub audio_levels: Vec<f32>,
+    /// Last known generic internet connectivity (`None` = not probed yet).
+    /// Probed daemon-side via bounded TCP connects (1.1.1.1:443, then
+    /// gstatic.com:443) and broadcast via `NetworkStatusChanged`. Independent
+    /// of any provider link state; the footer `Network` module reads this.
+    #[serde(default)]
+    pub network_online: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

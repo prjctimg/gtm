@@ -54,6 +54,7 @@ use crate::deferred_mixer::DeferredMixer;
 use crate::lastfm::LastfmManager;
 use crate::library::{Library, extract_metadata};
 use crate::lyrics::{LyricsManager, lrc_to_text, meta_from_filename};
+use crate::network;
 use crate::oauth::OauthFlow;
 use crate::podcast::PodcastManager;
 use crate::queue;
@@ -1863,6 +1864,13 @@ impl Spotify {
                     // Immediately tell the TUI the account is linked so the
                     // picker closes and playlist loading commences.
                     let _ = inner2.event_tx.send(DaemonEvent::SpotifyStatusChanged);
+                    // The charts registry is built before any token exists, so
+                    // register the Spotify provider now that a client is ready
+                    // (idempotent: a no-op when already registered).
+                    {
+                        let mut charts = inner2.charts.lock().await;
+                        charts.ensure_spotify(inner2.spotify.clone());
+                    }
                     // Background playlist sync. It pages every playlist on a
                     // cloned client so the manager mutex is never held across
                     // the network pass; no artificial timeout here — the first
@@ -1876,14 +1884,26 @@ impl Spotify {
                         };
                         match SpotifyManager::run_sync(client).await {
                             Ok((user, playlists)) => {
-                                let mut spotify = inner3.spotify.lock().await;
-                                // Guard: the user may have unlinked while we
-                                // paginated; do not resurrect credentials.
-                                if spotify.linked() {
-                                    let count = playlists.len();
-                                    spotify.commit_sync(user, playlists);
-                                    spotify.refresh_playback().await;
-                                    info!("spotify playlists synced ({:?} playlists)", count);
+                                {
+                                    let mut spotify = inner3.spotify.lock().await;
+                                    // Guard: the user may have unlinked while we
+                                    // paginated; do not resurrect credentials.
+                                    if spotify.linked() {
+                                        let count = playlists.len();
+                                        spotify.commit_sync(user, playlists);
+                                        info!("spotify playlists synced ({:?} playlists)", count);
+                                    }
+                                }
+                                // Bounded playback probe off the commit lock.
+                                {
+                                    let mut spotify = inner3.spotify.lock().await;
+                                    if spotify.linked() {
+                                        let _ = tokio::time::timeout(
+                                            Duration::from_secs(10),
+                                            spotify.refresh_playback(),
+                                        )
+                                        .await;
+                                    }
                                 }
                             }
                             Err(e) => {
@@ -4497,22 +4517,128 @@ impl Daemon {
 
         let spotify_inner = Arc::clone(&self.inner);
         tokio::spawn(async move {
-            let mut spotify = spotify_inner.spotify.lock().await;
-            if spotify.has_token_file() {
-                match spotify.load().await {
-                    Ok(()) => info!("spotify auto-synced on startup"),
-                    Err(e) => warn!("spotify auto-sync failed: {e}"),
+            // Local-only link: read the token file and build the client with
+            // no network I/O, so startup never stalls on a stalled network
+            // while holding the manager mutex. The playlist sync runs below
+            // in the background with retry-forever backoff.
+            let linked = {
+                let mut spotify = spotify_inner.spotify.lock().await;
+                if !spotify.has_token_file() {
+                    false
+                } else {
+                    match spotify.load().await {
+                        Ok(()) => {
+                            info!("spotify client ready on startup");
+                            true
+                        }
+                        Err(e) => {
+                            warn!("spotify startup link failed: {e}");
+                            spotify.set_error(format!("startup link failed: {e}"));
+                            false
+                        }
+                    }
                 }
-                spotify.refresh_playback().await;
+            };
+            if linked {
+                // The charts registry is built before any token is loaded, so
+                // register the Spotify provider now that a client exists.
+                {
+                    let mut charts = spotify_inner.charts.lock().await;
+                    charts.ensure_spotify(spotify_inner.spotify.clone());
+                }
+                let _ = spotify_inner
+                    .event_tx
+                    .send(DaemonEvent::SpotifyStatusChanged);
+                // Background playlist sync with retry-forever backoff: the
+                // first attempt after boot routinely fails (no network yet,
+                // sleeping laptop) and must never give up — a later recovery
+                // auto-heals via the success event below. The manager mutex
+                // is only ever held for the brief client clone / commit swap,
+                // never across the network pass.
+                let sync_inner = Arc::clone(&spotify_inner);
+                tokio::spawn(async move {
+                    let mut delay_secs: u64 = 5;
+                    loop {
+                        let client = { sync_inner.spotify.lock().await.sync_client() };
+                        let Some(client) = client else {
+                            // Unlinked while backing off; do not resurrect.
+                            return;
+                        };
+                        match SpotifyManager::run_sync(client).await {
+                            Ok((user, playlists)) => {
+                                {
+                                    let mut spotify = sync_inner.spotify.lock().await;
+                                    if spotify.linked() {
+                                        let count = playlists.len();
+                                        spotify.commit_sync(user, playlists);
+                                        info!("spotify playlists synced ({count} playlists)");
+                                    }
+                                }
+                                // Bounded playback probe outside the commit
+                                // lock so `/me/player` never blocks other
+                                // Spotify commands.
+                                {
+                                    let mut spotify = sync_inner.spotify.lock().await;
+                                    if spotify.linked() {
+                                        let _ = tokio::time::timeout(
+                                            Duration::from_secs(10),
+                                            spotify.refresh_playback(),
+                                        )
+                                        .await;
+                                    }
+                                }
+                                let _ = sync_inner.event_tx.send(DaemonEvent::SpotifyStatusChanged);
+                                return;
+                            }
+                            Err(e) => {
+                                warn!(
+                                    "spotify startup sync failed: {e} — retrying in {delay_secs}s"
+                                );
+                                tokio::time::sleep(Duration::from_secs(delay_secs)).await;
+                                delay_secs = (delay_secs * 2).min(300);
+                            }
+                        }
+                    }
+                });
+            } else {
+                // The TUI only refreshes its Spotify pane when it hears this
+                // event, so re-announce even when nothing linked; otherwise
+                // the pane stays stale until another event happens.
+                let _ = spotify_inner
+                    .event_tx
+                    .send(DaemonEvent::SpotifyStatusChanged);
             }
-            drop(spotify);
-            // The TUI only refreshes its Spotify pane when it hears this event,
-            // so re-announce after the startup auto-sync; otherwise playlists
-            // remain stale until a link or another event happens.
-            let _ = spotify_inner
-                .event_tx
-                .send(DaemonEvent::SpotifyStatusChanged);
         });
+
+        // Generic connectivity probes for the footer `Network` module. Always
+        // on from first boot (independent of any provider link), generic hosts
+        // only, bounded per probe; low-power mode pauses probing. Broadcasts
+        // only on change so the event channel stays quiet when stable.
+        if !self.inner.config.test_mode {
+            let net_inner = Arc::clone(&self.inner);
+            tokio::spawn(async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(30));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                let mut last: Option<bool> = None;
+                loop {
+                    interval.tick().await;
+                    if net_inner.state.read().await.low_power {
+                        continue;
+                    }
+                    let online = network::probe_online().await;
+                    if last != Some(online) {
+                        last = Some(online);
+                        {
+                            let mut state = net_inner.state.write().await;
+                            state.network_online = Some(online);
+                        }
+                        let _ = net_inner
+                            .event_tx
+                            .send(DaemonEvent::NetworkStatusChanged { online });
+                    }
+                }
+            });
+        }
 
         let provider_inner = Arc::clone(&self.inner);
         tokio::spawn(async move {

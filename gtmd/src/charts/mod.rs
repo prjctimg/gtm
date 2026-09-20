@@ -20,6 +20,15 @@ impl ChartsRegistry {
         self.providers.push(Box::new(SpotifyCharts::new(spotify)));
     }
 
+    /// Register the Spotify charts provider exactly once. The registry is
+    /// built in `Daemon::new` before any token is loaded, so the startup and
+    /// OAuth-link paths re-register here once the client is actually ready.
+    pub fn ensure_spotify(&mut self, spotify: std::sync::Arc<tokio::sync::Mutex<SpotifyManager>>) {
+        if self.get("spotify").is_none() {
+            self.add_spotify(spotify);
+        }
+    }
+
     pub fn sources(&self) -> Vec<ChartSource> {
         self.providers
             .iter()

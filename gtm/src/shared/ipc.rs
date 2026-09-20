@@ -1559,6 +1559,11 @@ pub enum DaemonEvent {
     /// it, `None`).
     #[serde(rename = "radio_title_changed")]
     RadioTitleChanged { title: Option<String> },
+    /// Generic internet connectivity changed, as measured by the daemon's
+    /// bounded TCP probes (1.1.1.1:443, then gstatic.com:443). Independent of
+    /// any provider link state; drives the footer `Network` module.
+    #[serde(rename = "network_status_changed")]
+    NetworkStatusChanged { online: bool },
     #[serde(rename = "heartbeat")]
     Heartbeat,
 }

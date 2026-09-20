@@ -291,6 +291,9 @@ impl DaemonState {
             DaemonEvent::RadioTitleChanged { title } => {
                 self.radio_title = title.clone();
             }
+            DaemonEvent::NetworkStatusChanged { online } => {
+                self.network_online = Some(*online);
+            }
             DaemonEvent::EqEnabledChanged { enabled } => {
                 self.audio.eq_enabled = *enabled;
             }
