@@ -565,16 +565,14 @@ impl DecodeThread {
                 // visualizer modes. Reverb's stereo pair path (which reads
                 // ahead and `continue`s) never reaches this tap; those frames
                 // simply don't contribute, matching the spectrum behaviour.
-                let is_left = channels == 1 || (sample_count - 1) % 2 == 0;
+                let is_left = channels == 1 || (sample_count - 1).is_multiple_of(2);
                 let pair = if channels == 1 {
                     Some((final_sample, final_sample))
                 } else if is_left {
                     wave_left = Some(final_sample);
                     None
-                } else if let Some(l) = wave_left.take() {
-                    Some((l, final_sample))
                 } else {
-                    None
+                    wave_left.take().map(|l| (l, final_sample))
                 };
                 if let Some((l, r)) = pair {
                     wave_frames += 1;

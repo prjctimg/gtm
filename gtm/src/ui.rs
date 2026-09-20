@@ -955,8 +955,11 @@ impl Render {
         {
             app.visualizer.tick(
                 app.state.status == PlaybackStatus::Playing,
-                vis_a.width,
+                vis_a.width.saturating_sub(2),
+                vis_a.height.saturating_sub(1),
                 &app.state.audio_levels,
+                &app.state.wave_samples,
+                app.state.wave_stereo,
             );
             let vis_header = Paragraph::new(Line::from(Span::styled(
                 " ",
@@ -6904,6 +6907,159 @@ impl Pickers {
                             (b * 120.0 + 40.0) as u8,
                             (120.0 - b * 80.0) as u8,
                         );
+                        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+                    }
+                    lines.push(Line::from(spans));
+                }
+            }
+            VisualizerPreset::BarsDot => {
+                for row in 0..2 {
+                    let mut spans = Vec::with_capacity(w);
+                    for &b in bars.iter().take(w) {
+                        let level = (b * 7.0) as u32;
+                        let ch = if row == 0 {
+                            match level {
+                                6.. => '⣿',
+                                4.. => '⣷',
+                                2.. => '⣧',
+                                1.. => '⠇',
+                                _ => '⠀',
+                            }
+                        } else {
+                            match level {
+                                4.. => '⣿',
+                                2.. => '⡇',
+                                1.. => '⠁',
+                                _ => '⠀',
+                            }
+                        };
+                        spans.push(Span::styled(
+                            ch.to_string(),
+                            Style::default().fg(app.theme.accent),
+                        ));
+                    }
+                    lines.push(Line::from(spans));
+                }
+            }
+            VisualizerPreset::ClassicPeak => {
+                for row in 0..2 {
+                    let mut spans = Vec::with_capacity(w);
+                    for &b in bars.iter().take(w) {
+                        let (ch, color) = if row == 0 {
+                            if b > 0.78 {
+                                ('⎺', app.theme.accent)
+                            } else {
+                                (' ', app.theme.bg)
+                            }
+                        } else if b > 0.35 {
+                            ('▏', app.theme.fg_bright)
+                        } else {
+                            (' ', app.theme.bg)
+                        };
+                        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+                    }
+                    lines.push(Line::from(spans));
+                }
+            }
+            VisualizerPreset::Columns => {
+                for row in 0..2 {
+                    let mut spans = Vec::with_capacity(w);
+                    for &b in bars.iter().take(w) {
+                        let (ch, color) = if row == 0 {
+                            if b > 0.55 {
+                                ('█', app.theme.warning)
+                            } else {
+                                (' ', app.theme.bg)
+                            }
+                        } else if b > 0.05 {
+                            ('█', app.theme.accent)
+                        } else {
+                            (' ', app.theme.bg)
+                        };
+                        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+                    }
+                    lines.push(Line::from(spans));
+                }
+            }
+            VisualizerPreset::Wave => {
+                // One-dot braille sweep: dot row follows the sine, column
+                // alternates for sub-cell horizontal resolution.
+                const ONE_DOT: [char; 8] = ['⠁', '⠂', '⠄', '⡀', '⠈', '⠐', '⠠', '⣀'];
+                for _ in 0..2 {
+                    let mut spans = Vec::with_capacity(w);
+                    for i in 0..w {
+                        let t = i as f64 / w.max(1) as f64;
+                        let v = (t * std::f64::consts::TAU * 1.5).sin();
+                        let y_dot = ((1.0 - v) * 1.5) as usize;
+                        let ch = ONE_DOT[y_dot.min(3) + if i % 2 == 0 { 0 } else { 4 }];
+                        spans.push(Span::styled(
+                            ch.to_string(),
+                            Style::default().fg(app.theme.accent),
+                        ));
+                    }
+                    lines.push(Line::from(spans));
+                }
+            }
+            VisualizerPreset::Stereo => {
+                let meter = w.saturating_sub(3);
+                for (lane, label) in [(0usize, "L "), (1usize, "R ")] {
+                    let mut spans = vec![Span::styled(
+                        label,
+                        Style::default()
+                            .fg(app.theme.fg_dim)
+                            .add_modifier(ratatui::style::Modifier::BOLD),
+                    )];
+                    for (x, &b) in bars.iter().take(meter).enumerate() {
+                        let lvl = if lane == 0 { b } else { b * 0.72 };
+                        let filled = (lvl * meter as f32) as usize;
+                        let (ch, color) = if x < filled {
+                            ('█', app.theme.accent)
+                        } else if x == filled && x < meter {
+                            ('▌', app.theme.secondary_accent)
+                        } else if x == meter.saturating_sub(1) && lvl > 0.8 {
+                            ('·', app.theme.accent)
+                        } else {
+                            (' ', app.theme.bg)
+                        };
+                        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+                    }
+                    lines.push(Line::from(spans));
+                }
+            }
+            VisualizerPreset::Retro => {
+                for row in 0..3 {
+                    let mut spans = Vec::with_capacity(w);
+                    for i in 0..w {
+                        let center = i as f64 / w.max(1) as f64;
+                        let dist = (center - 0.5).abs() * 2.0;
+                        let (ch, color) = match row {
+                            0 if dist < 0.62 => ('⠛', app.theme.accent),
+                            0 => (' ', app.theme.bg),
+                            1 => ('▔', app.theme.fg_dim),
+                            _ if dist < 0.4 => ('⣀', app.theme.fg_dim),
+                            _ if dist < 0.75 => ('⣀', app.theme.secondary_accent),
+                            _ => ('⣀', app.theme.tertiary_accent),
+                        };
+                        spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
+                    }
+                    lines.push(Line::from(spans));
+                }
+            }
+            VisualizerPreset::Flame => {
+                for row in 0..2 {
+                    let mut spans = Vec::with_capacity(w);
+                    for &b in bars.iter().take(w) {
+                        let (ch, color) = if row == 0 {
+                            if b > 0.6 {
+                                ('⠛', app.theme.warning)
+                            } else if b > 0.25 {
+                                ('⠉', app.theme.secondary_accent)
+                            } else {
+                                (' ', app.theme.bg)
+                            }
+                        } else {
+                            ('⣀', app.theme.accent)
+                        };
                         spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
                     }
                     lines.push(Line::from(spans));

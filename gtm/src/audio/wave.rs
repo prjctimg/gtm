@@ -58,7 +58,7 @@ impl WaveformShared {
         let mut s = self.0.lock().unwrap();
         let mut samples = samples;
         samples.truncate(WAVEFORM_CAP);
-        if samples.len() % 2 != 0 {
+        if !samples.len().is_multiple_of(2) {
             samples.pop();
         }
         s.samples = samples;
