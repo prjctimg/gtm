@@ -2873,9 +2873,9 @@ fn fill_pane(f: &mut ratatui::Frame, area: Rect, app: &App) {
     );
 }
 
-const SETTINGS_ICONS_NERD: &[&str] = &["\u{f16a}", "\u{f04b}", "\u{f013}", "\u{f04c7}"];
-const SETTINGS_ICONS_ASCII: &[&str] = &["YT", "▶", "⚙", "★"];
-const SETTINGS_CATEGORIES: &[&str] = &["YouTube", "Playback", "System", "Spotify"];
+const SETTINGS_ICONS_NERD: &[&str] = &["\u{f16a}", "\u{f04b}", "\u{f013}", "\u{f04c7}", "\u{f001}"];
+const SETTINGS_ICONS_ASCII: &[&str] = &["YT", "▶", "⚙", "★", "DZ"];
+const SETTINGS_CATEGORIES: &[&str] = &["YouTube", "Playback", "System", "Spotify", "Deezer"];
 
 // ─── Overlay Rendering ───
 
@@ -3148,6 +3148,7 @@ impl Pickers {
             PickerId::SubsonicAlbums => Self::render_subsonic_albums(f, picker_area, app),
             PickerId::SubsonicAlbumTracks => Self::render_album_tracks(f, picker_area, app),
             PickerId::SubsonicSetup => Self::render_subsonic_setup(f, picker_area, app),
+            PickerId::DeezerArl => Self::render_deezer_arl(f, picker_area, app),
             PickerId::PodcastFeeds => Self::render_podcast_feeds(f, picker_area, app),
             PickerId::PodcastEpisodes => Self::render_podcast_episodes(f, picker_area, app),
             PickerId::PodcastSubscribe => Self::render_podcast_subscribe(f, picker_area, app),
@@ -4460,6 +4461,35 @@ impl Pickers {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
+    fn render_deezer_arl(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let block = Self::picker_panel(app, " Deezer ARL ", None);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let arl = app.deezer.arl_input.clone();
+        let mut lines = vec![Line::from(Span::styled(
+            " ARL token (192 chars, from DEEZER account settings): ",
+            Style::default().fg(app.theme.fg_dim),
+        ))];
+        lines.push(Line::from(vec![
+            Span::styled(" ", Style::default().fg(app.theme.fg)),
+            Span::styled(
+                arl,
+                Style::default()
+                    .fg(app.theme.fg_bright)
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
+            match cursor_span_style(app) {
+                Some(style) => Span::styled(" ", style),
+                None => Span::raw(""),
+            },
+        ]));
+        lines.push(Line::from(Span::styled(
+            " enables full-track streaming with live Blowfish decryption; empty Enter clears the token",
+            Style::default().fg(app.theme.fg_dim),
+        )));
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+
     fn render_radio_search(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let mut rows = Vec::new();
         for s in &app.radio_search_picks() {
@@ -4960,6 +4990,9 @@ impl Pickers {
                     "Unlink         Enter".to_string(),
                     format!("Device         {device_label}"),
                 ]
+            }
+            4 => {
+                vec!["ARL Token   Enter  ▶".to_string()]
             }
             _ => vec![],
         };

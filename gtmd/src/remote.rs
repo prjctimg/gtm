@@ -11,6 +11,8 @@ use std::time::Duration;
 use gtm::audio::symphonia::StreamingReopen;
 use tracing::warn;
 
+use blowfish::cipher::KeyInit;
+
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -157,6 +159,131 @@ impl Read for IcyReader {
             self.audio_remaining = self.metaint;
         }
         Ok(filled)
+    }
+}
+
+/// Deezer's 2048-byte Blowfish-CBC per-chunk encryption for full-track MP3s:
+/// every third 2048-byte chunk (index 0, 3, 6, ...) of the byte stream is
+/// Blowfish-encrypted in CBC mode with the fixed dzr IV, and the partial
+/// final chunk (if any) is plaintext. Reading through this wrapper decrypts
+/// on the fly so symphonia decodes plain MP3.
+///
+/// Chunk indices count from the stream start, so a reopened reader (seek /
+/// reconnect) must re-wrap the fresh transport with a fresh, empty reader —
+/// [`BlowfishReopen`] does exactly that.
+pub struct BlowfishReader {
+    inner: Box<dyn Read + Send>,
+    cipher: blowfish::Blowfish,
+    /// Decrypted bytes ready to be served, drained front-to-back.
+    pending: Vec<u8>,
+    /// Index of the next 2048-byte chunk read from `inner` (0-based).
+    chunk: u64,
+    eof: bool,
+}
+
+/// Size of one Deezer cipher chunk.
+const DZR_CHUNK: usize = 2048;
+/// Fixed CBC IV used for every encrypted Deezer chunk (dzr/deemix convention).
+const DZR_IV: [u8; 8] = [0, 1, 2, 3, 4, 5, 6, 7];
+
+/// Build a `Blowfish` instance for a derived Deezer track key (16 bytes is
+/// always a valid Blowfish key size).
+pub fn blowfish_cipher(key: [u8; 16]) -> blowfish::Blowfish {
+    blowfish::Blowfish::new_from_slice(&key).expect("16-byte deezer key")
+}
+
+/// Blowfish-CBC decrypt one 2048-byte chunk in place (fixed IV, blocks
+/// chained across the chunk).
+fn decrypt_deezer_chunk(cipher: &blowfish::Blowfish, chunk: &mut [u8]) {
+    use blowfish::cipher::BlockDecrypt;
+    use blowfish::cipher::generic_array::GenericArray;
+    let mut prev = DZR_IV;
+    for i in (0..chunk.len()).step_by(8) {
+        let mut ct = [0u8; 8];
+        ct.copy_from_slice(&chunk[i..i + 8]);
+        let mut blk = GenericArray::clone_from_slice(&ct);
+        cipher.decrypt_block(&mut blk);
+        for (j, b) in blk.iter().enumerate() {
+            chunk[i + j] = b ^ prev[j];
+        }
+        prev = ct;
+    }
+}
+
+impl BlowfishReader {
+    pub fn new(inner: Box<dyn Read + Send>, cipher: blowfish::Blowfish) -> Self {
+        Self {
+            inner,
+            cipher,
+            pending: Vec::new(),
+            chunk: 0,
+            eof: false,
+        }
+    }
+}
+
+impl Read for BlowfishReader {
+    fn read(&mut self, out: &mut [u8]) -> std::io::Result<usize> {
+        // Serve any decrypted remainder first; symphonia asks for small
+        // buffers, so a single chunk typically fills several reads.
+        if !self.pending.is_empty() {
+            let n = out.len().min(self.pending.len());
+            out[..n].copy_from_slice(&self.pending[..n]);
+            self.pending.drain(..n);
+            return Ok(n);
+        }
+        if self.eof {
+            return Ok(0);
+        }
+        // Pull one raw 2048-byte chunk from the transport; a short read at
+        // EOF is a plaintext tail, so only full chunks are decrypted.
+        let mut raw = [0u8; DZR_CHUNK];
+        let mut filled = 0;
+        while filled < DZR_CHUNK {
+            match self.inner.read(&mut raw[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) => return Err(e),
+            }
+        }
+        if filled == 0 {
+            self.eof = true;
+            return Ok(0);
+        }
+        if self.chunk % 3 == 0 && filled == DZR_CHUNK {
+            decrypt_deezer_chunk(&self.cipher, &mut raw);
+        }
+        self.chunk += 1;
+        let n = out.len().min(filled);
+        out[..n].copy_from_slice(&raw[..n]);
+        if n < filled {
+            self.pending.extend_from_slice(&raw[n..filled]);
+        }
+        Ok(n)
+    }
+}
+
+/// Re-opener for Deezer's encrypting CDN transport: every reconnect wraps the
+/// fresh reader in a fresh decrypting layer so per-chunk alignment (counted
+/// from stream start) stays intact.
+pub struct BlowfishReopen {
+    inner: HttpReopen,
+    cipher: blowfish::Blowfish,
+}
+
+impl BlowfishReopen {
+    pub fn new(url: impl Into<String>, cipher: blowfish::Blowfish) -> Self {
+        Self {
+            inner: HttpReopen::new(url),
+            cipher,
+        }
+    }
+}
+
+impl StreamingReopen for BlowfishReopen {
+    fn try_reopen(&self) -> Option<Box<dyn Read + Send>> {
+        let inner = self.inner.try_reopen()?;
+        Some(Box::new(BlowfishReader::new(inner, self.cipher.clone())))
     }
 }
 

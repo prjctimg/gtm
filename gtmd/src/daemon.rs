@@ -34,7 +34,8 @@ use gtm::shared::ipc::{
 };
 use gtm::shared::playlist::{M3u8Format, PlaylistFormat, PlsFormat};
 use gtm::shared::secret::{
-    LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, delete_secret, get_secret, set_secret,
+    DEEZER_ARL, LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, delete_secret, get_secret,
+    set_secret,
 };
 use gtm::shared::spotify::SpotifyTrack;
 use gtm::shared::track::TrackInfo;
@@ -49,7 +50,7 @@ use crate::cleaner::{
 };
 use crate::config::DaemonConfig;
 use crate::cover::{CoverCache, CoverProvider};
-use crate::deezer::DeezerSearch;
+use crate::deezer::{DeezerSearch, DeezerStream};
 use crate::deferred_mixer::DeferredMixer;
 use crate::lastfm::LastfmManager;
 use crate::library::{Library, extract_metadata};
@@ -96,6 +97,11 @@ enum RemoteKind {
     YtDlp {
         url: String,
     },
+    /// Deezer track: ARL-authenticated full MP3 (Blowfish-chunk-decrypted CDN
+    /// stream) with a 30s public-preview fallback when no ARL is configured.
+    Deezer {
+        track_id: u64,
+    },
 }
 
 /// Hostname → provider label for URLs handled by yt-dlp's extractors. Only
@@ -128,6 +134,35 @@ fn ytdlp_label(url: &str) -> Option<&'static str> {
     }
 }
 
+/// Map a Deezer web track URL (`deezer.com/track/<id>`) to the canonical
+/// `deezer://track/<id>` provider path so pasted links play like native
+/// paths. Returns `None` for non-track Deezer pages.
+fn deezer_link_path(url: &str) -> Option<String> {
+    let host = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim_start_matches("www.")
+        .to_ascii_lowercase();
+    if host != "deezer.com" && !host.ends_with(".deezer.com") {
+        return None;
+    }
+    // Skip the scheme + host, keep the path before any query/fragment.
+    let rest = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let path = rest.split(['?', '#']).next().unwrap_or(rest);
+    let mut parts = path.split('/').filter(|p| !p.is_empty());
+    parts.next()?; // host segment (www.deezer.com | deezer.com | xx.deezer.com)
+    if parts.next()? != "track" {
+        return None;
+    }
+    let id = parts.next()?.parse::<u64>().ok()?;
+    Some(format!("deezer://track/{id}"))
+}
+
 fn parse_remote_path(path: &str) -> Option<RemoteKind> {
     if let Some(id) = path.strip_prefix("subsonic://") {
         return Some(RemoteKind::Subsonic {
@@ -152,6 +187,15 @@ fn parse_remote_path(path: &str) -> Option<RemoteKind> {
             station_name,
         });
     }
+    if let Some(id) = path.strip_prefix("deezer://track/") {
+        if let Ok(track_id) = id.parse::<u64>() {
+            return Some(RemoteKind::Deezer { track_id });
+        }
+    }
+    if let Some(path) = deezer_link_path(path) {
+        let track_id = path.trim_start_matches("deezer://track/").parse().ok()?;
+        return Some(RemoteKind::Deezer { track_id });
+    }
     if ytdlp_label(path).is_some() {
         return Some(RemoteKind::YtDlp { url: path.into() });
     }
@@ -161,19 +205,32 @@ fn parse_remote_path(path: &str) -> Option<RemoteKind> {
     None
 }
 
+/// Result of resolving a provider remote path into a playable transport.
+struct RemoteResolved {
+    url: String,
+    /// Whether the transport is live (non-seekable) radio/stream.
+    live: bool,
+    /// Blowfish-CBC per-2048-chunk decryption key for the stream body
+    /// (Deezer full-track MP3); `None` for plain streams and previews.
+    blowfish: Option<[u8; 16]>,
+}
+
 /// Resolve a synthetic remote path into its playable HTTP stream URL, plus
 /// whether it is a live (non-seekable) transport. Backed by the owning
 /// provider manager so the TUI never needs a fetch library of its own.
-async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<(String, bool), CoreError> {
+async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<RemoteResolved, CoreError> {
     let kind = parse_remote_path(path)
         .ok_or_else(|| CoreError::Daemon(format!("{path} is not a remote provider path")))?;
-    let url = match &kind {
+    let (url, blowfish) = match &kind {
         RemoteKind::Subsonic { track_id } => {
             let subsonic = inner.subsonic.lock().await;
             if !subsonic.configured() {
                 return Err(CoreError::Daemon("subsonic server not configured".into()));
             }
-            subsonic.stream_url(track_id).map_err(CoreError::Daemon)?
+            (
+                subsonic.stream_url(track_id).map_err(CoreError::Daemon)?,
+                None,
+            )
         }
         RemoteKind::Podcast {
             feed_id,
@@ -181,7 +238,7 @@ async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<(String, bool
         } => {
             let mut podcast = inner.podcast.lock().await;
             match podcast.episode_at(feed_id, *episode_index) {
-                Some(ep) => ep.url.clone(),
+                Some(ep) => (ep.url.clone(), None),
                 None => {
                     // Daemon restarted since the feed was browsed; refresh the
                     // feed once so replay/next still resolves.
@@ -189,16 +246,19 @@ async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<(String, bool
                         .refresh_feed(feed_id)
                         .await
                         .map_err(|e| CoreError::Daemon(format!("podcast feed: {e}")))?;
-                    podcast
-                        .episode_at(feed_id, *episode_index)
-                        .ok_or_else(|| CoreError::Daemon("podcast episode missing".into()))?
-                        .url
-                        .clone()
+                    (
+                        podcast
+                            .episode_at(feed_id, *episode_index)
+                            .ok_or_else(|| CoreError::Daemon("podcast episode missing".into()))?
+                            .url
+                            .clone(),
+                        None,
+                    )
                 }
             }
         }
         RemoteKind::Radio { station_id, .. } => {
-            if let Some(index) = gtm::shared::custom::parse_custom_id(station_id) {
+            let url = if let Some(index) = gtm::shared::custom::parse_custom_id(station_id) {
                 gtm::shared::custom::station_by_index(index)
                     .map_err(CoreError::Daemon)?
                     .ok_or_else(|| CoreError::Daemon(format!("no custom station {index}")))?
@@ -210,17 +270,30 @@ async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<(String, bool
                     .await
                     .map_err(|e| CoreError::Daemon(format!("radio lookup: {e}")))?
                     .url_resolved
-            }
+            };
+            (url, None)
         }
-        RemoteKind::Stream { url } => url.clone(),
+        RemoteKind::Stream { url } => (url.clone(), None),
         RemoteKind::YtDlp { url } => {
             let mut yt = inner.youtube.lock().await;
             let (_, direct) = yt.resolve_info(url).await.map_err(CoreError::Daemon)?;
-            direct
+            (direct, None)
+        }
+        RemoteKind::Deezer { track_id } => {
+            let mut deezer = inner.deezer.lock().await;
+            let resolved = deezer
+                .resolve_track(*track_id)
+                .await
+                .map_err(CoreError::Daemon)?;
+            (resolved.url, resolved.blowfish)
         }
     };
     let live = matches!(kind, RemoteKind::Radio { .. } | RemoteKind::Stream { .. });
-    Ok((url, live))
+    Ok(RemoteResolved {
+        url,
+        live,
+        blowfish,
+    })
 }
 
 /// Blocking HTTP open of a remote stream. Runs on a blocking thread; returns
@@ -279,15 +352,31 @@ fn decode_remote_reader(
     live: bool,
     start_pos: f64,
     title_slot: Option<remote::IcySlot>,
+    key: Option<[u8; 16]>,
 ) -> AudioResult<Box<dyn rodio::Source<Item = f32> + Send>> {
     let reader = open_remote_reader(&url, live, title_slot.clone())?;
+    // Deezer full-track MP3 bodies are Blowfish-CBC-encrypted per 2048-byte
+    // chunk; wrap the transport in a decrypting reader when a key is present.
+    let reader: Box<dyn std::io::Read + Send> = match key {
+        Some(k) => Box::new(remote::BlowfishReader::new(
+            reader,
+            remote::blowfish_cipher(k),
+        )),
+        None => reader,
+    };
     // Live streams reconnect from scratch (same URL, fresh ICY negotiation);
     // seeks stay disabled for them at the symphonia level, but the re-opener
     // lets a dropped connection resume instead of ending the source.
     let reopen: Option<Box<dyn StreamingReopen>> = if live {
         Some(Box::new(remote::LiveReopen::new(url, title_slot)))
     } else {
-        Some(Box::new(remote::HttpReopen::new(url)))
+        match key {
+            Some(k) => Some(Box::new(remote::BlowfishReopen::new(
+                url,
+                remote::blowfish_cipher(k),
+            ))),
+            None => Some(Box::new(remote::HttpReopen::new(url))),
+        }
     };
     AudioMixer::decode_reader(reader, reopen, start_pos)
 }
@@ -734,7 +823,8 @@ impl Cmd {
         auto_advanced: bool,
     ) -> Result<DaemonRes, CoreError> {
         inner.play_session.fetch_add(1, Ordering::Release);
-        let (url, live) = resolve_remote(inner, path).await?;
+        let resolved = resolve_remote(inner, path).await?;
+        let (url, live, key) = (resolved.url, resolved.live, resolved.blowfish);
         let kind = parse_remote_path(path)
             .ok_or_else(|| CoreError::Daemon(format!("{path} is not a remote provider path")))?;
 
@@ -775,7 +865,7 @@ impl Cmd {
         let icy_slot = inner.icy_title.clone();
         let dur = {
             let decoded = tokio::task::spawn_blocking(move || {
-                decode_remote_reader(url, live, start, Some(icy_slot))
+                decode_remote_reader(url, live, start, Some(icy_slot), key)
             })
             .await
             .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
@@ -809,6 +899,7 @@ impl Cmd {
                         let label = ytdlp_label(url).unwrap_or("YouTube");
                         (label, label, label)
                     }
+                    RemoteKind::Deezer { .. } => ("Deezer Track", "Deezer", "Deezer"),
                 };
                 TrackInfo {
                     path: path.to_string(),
@@ -906,6 +997,21 @@ impl Cmd {
     /// queue so `next` rotates through them.
     pub async fn play_url_stream(inner: &DaemonInner, url: &str) -> Result<DaemonRes, CoreError> {
         inner.play_session.fetch_add(1, Ordering::Release);
+        // Deezer web track links resolve through the provider (full-track ARL
+        // streaming or 30s preview) and decrypt in the decode pipeline.
+        if let Some(path) = deezer_link_path(url) {
+            {
+                let mut state = inner.state.write().await;
+                state.queue.push(TrackInfo {
+                    path: path.clone(),
+                    title: "Deezer Track".to_string(),
+                    artist: "Deezer".to_string(),
+                    album: "Deezer".to_string(),
+                    ..Default::default()
+                });
+            }
+            return Cmd::play(inner, &path, 0.0, false).await;
+        }
         // yt-dlp family URLs (SoundCloud, Bandcamp, Mixcloud, ...) resolve to
         // a direct CDN audio URL through the extractor; the queue entry keeps
         // the extracted title so the now-playing pane shows real names.
@@ -4096,6 +4202,7 @@ struct DaemonInner {
     youtube: Arc<tokio::sync::Mutex<YoutubeManager>>,
     spotify: Arc<tokio::sync::Mutex<SpotifyManager>>,
     subsonic: tokio::sync::Mutex<SubsonicManager>,
+    deezer: tokio::sync::Mutex<DeezerStream>,
     podcast: tokio::sync::Mutex<PodcastManager>,
     radio: tokio::sync::Mutex<RadioBrowserManager>,
     /// Chart providers registry (Spotify first; Deezer/Tidal later).
@@ -4446,6 +4553,7 @@ impl Daemon {
                 config_dir.clone(),
             ))),
             subsonic: tokio::sync::Mutex::new(SubsonicManager::new(config_dir.clone())),
+            deezer: tokio::sync::Mutex::new(DeezerStream::from_keyring()),
             podcast: tokio::sync::Mutex::new(PodcastManager::new(config_dir)),
             radio: tokio::sync::Mutex::new(RadioBrowserManager::new()),
             charts: tokio::sync::Mutex::new(ChartsRegistry::empty()),
@@ -5457,6 +5565,15 @@ impl Daemon {
                 username,
                 password,
             } => Subsonic::configure(inner, server, username, password).await,
+            DaemonReq::SetDeezerArl { arl } => {
+                inner.deezer.lock().await.set_arl(arl);
+                if arl.trim().is_empty() {
+                    delete_secret(DEEZER_ARL);
+                } else {
+                    set_secret(DEEZER_ARL, arl.trim());
+                }
+                Ok(DaemonRes::Ok)
+            }
             DaemonReq::SubsonicClear => Subsonic::clear(inner).await,
             DaemonReq::SubsonicStatus => Subsonic::status(inner).await,
             DaemonReq::SubsonicPing => Subsonic::ping(inner).await,
@@ -5962,10 +6079,11 @@ impl Daemon {
         let is_remote = parse_remote_path(&path).is_some();
         let decoded = if is_remote {
             match resolve_remote(inner, &path).await {
-                Ok((url, live)) => {
+                Ok(resolved) => {
+                    let (url, live, key) = (resolved.url, resolved.live, resolved.blowfish);
                     let start = 0.0;
                     tokio::task::spawn_blocking(move || {
-                        decode_remote_reader(url, live, start, None)
+                        decode_remote_reader(url, live, start, None, key)
                     })
                     .await
                 }
@@ -6759,4 +6877,47 @@ fn run_metadata_sync(
         std::thread::sleep(Duration::from_millis(50));
     }
     Ok((synced, total))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn deezer_link_parsing() {
+        // Web track URLs map to the canonical provider path.
+        assert_eq!(
+            deezer_link_path("https://www.deezer.com/track/3135556"),
+            Some("deezer://track/3135556".to_string())
+        );
+        assert_eq!(
+            deezer_link_path("https://deezer.com/track/3135556?utm_source=test"),
+            Some("deezer://track/3135556".to_string())
+        );
+        assert_eq!(
+            deezer_link_path("http://www.deezer.com/track/3135556"),
+            Some("deezer://track/3135556".to_string())
+        );
+        // Non-track pages and foreign hosts stay unhandled.
+        assert_eq!(deezer_link_path("https://www.deezer.com/album/123"), None);
+        assert_eq!(deezer_link_path("https://www.deezer.com/track/abc"), None);
+        assert_eq!(deezer_link_path("https://example.com/track/3135556"), None);
+    }
+
+    #[test]
+    fn parse_remote_deezer() {
+        assert!(matches!(
+            parse_remote_path("deezer://track/3135556"),
+            Some(RemoteKind::Deezer { track_id: 3135556 })
+        ));
+        assert!(matches!(
+            parse_remote_path("https://www.deezer.com/track/3135556"),
+            Some(RemoteKind::Deezer { .. })
+        ));
+        // Non-Deezer http URLs still parse as plain streams.
+        assert!(matches!(
+            parse_remote_path("https://stream.example.com/radio.mp3"),
+            Some(RemoteKind::Stream { .. })
+        ));
+    }
 }

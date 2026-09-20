@@ -23,6 +23,8 @@ pub const SUBSONIC_KEY: &str = "subsonic_credentials";
 pub const LASTFM_API_KEY: &str = "lastfm_api_key";
 /// Keychain/username for the Last.fm API secret.
 pub const LASTFM_API_SECRET: &str = "lastfm_api_secret";
+/// Keychain/username for the Deezer streaming ARL token.
+pub const DEEZER_ARL: &str = "deezer_arl";
 
 fn fallback_dir() -> PathBuf {
     let base = dirs::config_dir().unwrap_or_else(|| {

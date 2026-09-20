@@ -343,7 +343,7 @@ fn build_keybindings(overrides: &std::collections::HashMap<String, String>) -> K
     defaults
 }
 
-pub const NUM_SETTINGS_CATEGORIES: usize = 4;
+pub const NUM_SETTINGS_CATEGORIES: usize = 5;
 pub const LIBRARY_CATEGORIES: &[&str] = &[
     "All Tracks",
     "Liked",
@@ -739,6 +739,20 @@ pub struct SubsonicView {
     pub form_focus: usize,
 }
 
+/// Deezer streaming settings (single ARL token field).
+pub struct DeezerView {
+    /// Draft ARL token for the `DeezerArl` input form.
+    pub arl_input: String,
+}
+
+impl Default for DeezerView {
+    fn default() -> Self {
+        Self {
+            arl_input: String::new(),
+        }
+    }
+}
+
 /// `gtm setup` wizard state, grouped under `App::setup`.
 #[derive(Default)]
 pub struct SetupView {
@@ -916,6 +930,7 @@ pub struct App {
     pub spotify: SpotifyView,
     pub charts: ChartsView,
     pub subsonic: SubsonicView,
+    pub deezer: DeezerView,
     pub setup: SetupView,
     pub podcast: PodcastView,
     pub radio: RadioView,
@@ -1471,6 +1486,7 @@ impl App {
             },
             charts: ChartsView::default(),
             subsonic: SubsonicView::default(),
+            deezer: DeezerView::default(),
             podcast: PodcastView::default(),
             radio: RadioView::default(),
             cookie_file: None,
@@ -3872,6 +3888,11 @@ impl App {
                     });
                 }
             }
+            PickerId::DeezerArl => {
+                // Start the form with a clean draft; the ARL is re-entered
+                // when re-configuring.
+                self.deezer.arl_input.clear();
+            }
             PickerId::SubsonicSetup => {
                 if let Some(st) = self.subsonic.status.clone().filter(|st| st.configured) {
                     self.subsonic.form_server = st.server.unwrap_or_default();
@@ -5021,6 +5042,7 @@ impl App {
             1 => 6,  // Playback: Repeat, Shuffle, Crossfade, EQ Enabled, Reverb, Cover Source
             2 => 14, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme, Reactive Intensity, Hide Footer, Clear Lyrics Cache, Clear Cover Cache, Notification Settings, Theme Mode
             3 => 7,  // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Device
+            4 => 1,  // Deezer: ARL Token
             _ => 0,
         }
     }
@@ -5732,6 +5754,7 @@ impl App {
             PickerId::SubsonicAlbums => self.subsonic.albums.len(),
             PickerId::SubsonicAlbumTracks => self.subsonic.album_tracks.len(),
             PickerId::SubsonicSetup => 3,
+            PickerId::DeezerArl => 1,
             PickerId::PodcastFeeds => self.podcast.feeds.len(),
             PickerId::PodcastEpisodes => self.podcast.episodes.len(),
             PickerId::PodcastSubscribe => 1,
@@ -8373,6 +8396,12 @@ impl App {
                                 self.hide_footer = !self.hide_footer;
                                 save_prefs(&self.current_prefs());
                             }
+                            4 => {
+                                if opt == 0 {
+                                    self.pickers.open(PickerId::DeezerArl);
+                                    self.on_picker_opened(PickerId::DeezerArl);
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -8720,6 +8749,47 @@ impl App {
                             }
                         }
                     });
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ─── Deezer ARL form ───
+        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::DeezerArl)) {
+            match key.code {
+                KeyCode::Char(c) => {
+                    if !c.is_control() {
+                        self.deezer.arl_input.push(c);
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.deezer.arl_input.pop();
+                }
+                KeyCode::Esc => {
+                    self.pickers.close_top();
+                }
+                KeyCode::Enter => {
+                    let arl = self.deezer.arl_input.clone();
+                    let saved = !arl.trim().is_empty();
+                    let value = arl.clone();
+                    let c = self.client.clone();
+                    let ipc_tx = self.ipc_tx.clone();
+                    self.pickers.close_top();
+                    tokio::spawn(async move {
+                        if let Err(e) = c.deezer().set_arl(&value).await {
+                            self_err(&ipc_tx, format!("deezer ARL: {e}"));
+                        }
+                    });
+                    let (msg, kind) = if saved {
+                        (
+                            format!("Deezer ARL saved ({} chars)", arl.trim().chars().count()),
+                            NotificationKind::Success,
+                        )
+                    } else {
+                        ("Deezer ARL cleared".to_string(), NotificationKind::Info)
+                    };
+                    self.notify_typed("Deezer", msg, kind, false, NotifType::Prefs);
                 }
                 _ => {}
             }

@@ -912,6 +912,9 @@ pub(crate) fn classify_remote_source(path: &str) -> Option<(&'static str, &'stat
     if path.starts_with("radio://") {
         return Some(("Radio", "Radio"));
     }
+    if path.starts_with("deezer://") {
+        return Some(("Deezer", "Deezer"));
+    }
     if path.starts_with("youtube:") || path.contains("/audio/youtube") {
         return Some(("YouTube", "YouTube"));
     }
@@ -923,6 +926,16 @@ pub(crate) fn classify_remote_source(path: &str) -> Option<(&'static str, &'stat
         if lower.contains("youtube") || lower.contains("youtu.be") || lower.contains("googlevideo")
         {
             return Some(("YouTube", "YouTube"));
+        }
+        let host = lower
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .split(['/', '?', '#'])
+            .next()
+            .unwrap_or("")
+            .trim_start_matches("www.");
+        if host == "deezer.com" || host.ends_with(".deezer.com") {
+            return Some(("Deezer", "Deezer"));
         }
         return Some(("Radio", "Stream"));
     }
@@ -1050,6 +1063,14 @@ mod tests {
         assert_eq!(
             classify_remote_source("radio://station-id"),
             Some(("Radio", "Radio"))
+        );
+        assert_eq!(
+            classify_remote_source("deezer://track/12345678"),
+            Some(("Deezer", "Deezer"))
+        );
+        assert_eq!(
+            classify_remote_source("https://www.deezer.com/track/12345678"),
+            Some(("Deezer", "Deezer"))
         );
         assert_eq!(
             classify_remote_source("youtube:video-id"),

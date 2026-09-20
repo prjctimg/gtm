@@ -37,6 +37,8 @@ pub enum PickerId {
     SubsonicAlbumTracks,
     /// Subsonic server setup (URL, user, password).
     SubsonicSetup,
+    /// Deezer streaming ARL token input form.
+    DeezerArl,
     PodcastFeeds,
     /// Episode list of a selected podcast feed.
     PodcastEpisodes,

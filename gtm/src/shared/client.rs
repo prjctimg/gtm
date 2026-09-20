@@ -518,6 +518,10 @@ impl DaemonClient {
         Radio { client: self }
     }
 
+    pub fn deezer(&self) -> Deezer<'_> {
+        Deezer { client: self }
+    }
+
     pub fn charts(&self) -> Charts<'_> {
         Charts { client: self }
     }
@@ -1479,6 +1483,20 @@ impl<'a> Podcast<'a> {
 }
 
 /// Client helpers for the Radio Browser directory.
+/// Deezer streaming settings client.
+pub struct Deezer<'a> {
+    client: &'a DaemonClient,
+}
+
+impl<'a> Deezer<'a> {
+    /// Store the streaming ARL token (or clear it when `arl` is empty).
+    pub async fn set_arl(&self, arl: &str) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::SetDeezerArl { arl: arl.into() })
+            .await
+    }
+}
+
 pub struct Radio<'a> {
     client: &'a DaemonClient,
 }

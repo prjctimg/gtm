@@ -424,6 +424,11 @@ pub enum DaemonReq {
         username: String,
         password: String,
     },
+    /// Store (or clear, when empty) the Deezer streaming ARL token. Persisted
+    /// via the OS keychain so full-track streaming survives daemon restarts.
+    SetDeezerArl {
+        arl: String,
+    },
     /// Forget the Subsonic server configuration.
     SubsonicClear,
     SubsonicStatus,
@@ -604,6 +609,7 @@ impl DaemonReq {
             DaemonReq::SetAudioDevice { .. } => "set_audio_device",
             DaemonReq::ClearCache { .. } => "clear_cache",
             DaemonReq::SubsonicConfigure { .. } => "subsonic_configure",
+            DaemonReq::SetDeezerArl { .. } => "set_deezer_arl",
             DaemonReq::SubsonicClear => "subsonic_clear",
             DaemonReq::SubsonicStatus => "subsonic_status",
             DaemonReq::SubsonicPing => "subsonic_ping",
@@ -1109,6 +1115,14 @@ impl DaemonReq {
                     username: x.username,
                     password: x.password,
                 }
+            }
+            "set_deezer_arl" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    arl: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SetDeezerArl { arl: x.arl }
             }
             "subsonic_clear" => DaemonReq::SubsonicClear,
             "subsonic_status" => DaemonReq::SubsonicStatus,
