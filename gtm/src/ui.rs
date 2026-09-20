@@ -14,7 +14,8 @@ use crate::app::{
 };
 use crate::extensions::ExtensionId;
 use crate::footer::{
-    draw as footer_draw, format_duration, format_uptime, read_proc_mem, render as footer_render,
+    classify_remote_source, draw as footer_draw, format_duration, format_uptime, read_proc_mem,
+    render as footer_render,
 };
 use crate::mouse::MouseZone;
 use crate::picker::{Picker, PickerId, PickerSource};
@@ -2735,6 +2736,10 @@ pub(crate) fn provider_icon(name: &str) -> Option<&'static str> {
         "Podcast" => Some("\u{f0994}"),            // nf-md-podcast
         "Radio" => Some("\u{f0439}"),              // nf-md-radio
         "Subsonic/Navidrome" => Some("\u{f048b}"), // nf-md-server
+        "SoundCloud" => Some("\u{f1be}"),          // nf-fa-soundcloud
+        "Bandcamp" => Some("\u{f2d5}"),            // nf-fa-bandcamp
+        "Mixcloud" => Some("\u{f289}"),            // nf-fa-mixcloud
+        "Twitch" => Some("\u{f1e8}"),              // nf-fa-twitch
         "Last.fm" => Some("\u{f001}"),             // nf-md-music (no brand glyph in font)
         "Local" => Some("\u{f0a0}"),               // nf-fa-hdd
         _ => None,
@@ -5182,7 +5187,8 @@ fn source_label(use_nerd: bool, source: &str) -> String {
         match source {
             "Spotify" => " ♫ Spotify",
             "YouTube" => " ▶ YouTube",
-            _ => " ♪ Local",
+            "Local" => " ♪ Local",
+            other => other,
         }
         .into()
     }
@@ -5227,6 +5233,8 @@ fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                 "Spotify"
             } else if track.path.contains("/audio/youtube") || track.path.starts_with("youtube:") {
                 "YouTube"
+            } else if let Some((src, _)) = classify_remote_source(&track.path) {
+                src
             } else {
                 "Local"
             };

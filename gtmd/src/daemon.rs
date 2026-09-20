@@ -91,6 +91,41 @@ enum RemoteKind {
     Stream {
         url: String,
     },
+    /// yt-dlp extractor URLs (SoundCloud, Bandcamp, Mixcloud, ...): the URL
+    /// resolves to a direct CDN audio URL through the yt-dlp subprocess.
+    YtDlp {
+        url: String,
+    },
+}
+
+/// Hostname → provider label for URLs handled by yt-dlp's extractors. Only
+/// these known hosts are treated as yt-dlp input; every other http URL stays
+/// a plain stream.
+fn ytdlp_label(url: &str) -> Option<&'static str> {
+    let host = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim_start_matches("www.")
+        .to_ascii_lowercase();
+    if host == "youtube.com" || host.ends_with(".youtube.com") || host == "youtu.be" {
+        return Some("YouTube");
+    }
+    if host == "bandcamp.com" || host.ends_with(".bandcamp.com") {
+        return Some("Bandcamp");
+    }
+    match host.as_str() {
+        "soundcloud.com" => Some("SoundCloud"),
+        "mixcloud.com" => Some("Mixcloud"),
+        "music.163.com" => Some("Netease"),
+        "bilibili.com" | "m.bilibili.com" => Some("Bilibili"),
+        "vimeo.com" | "player.vimeo.com" => Some("Vimeo"),
+        "twitch.tv" => Some("Twitch"),
+        "audiomack.com" => Some("Audiomack"),
+        _ => None,
+    }
 }
 
 fn parse_remote_path(path: &str) -> Option<RemoteKind> {
@@ -116,6 +151,9 @@ fn parse_remote_path(path: &str) -> Option<RemoteKind> {
             station_id,
             station_name,
         });
+    }
+    if ytdlp_label(path).is_some() {
+        return Some(RemoteKind::YtDlp { url: path.into() });
     }
     if path.starts_with("http://") || path.starts_with("https://") {
         return Some(RemoteKind::Stream { url: path.into() });
@@ -175,6 +213,11 @@ async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<(String, bool
             }
         }
         RemoteKind::Stream { url } => url.clone(),
+        RemoteKind::YtDlp { url } => {
+            let mut yt = inner.youtube.lock().await;
+            let (_, direct) = yt.resolve_info(url).await.map_err(CoreError::Daemon)?;
+            direct
+        }
     };
     let live = matches!(kind, RemoteKind::Radio { .. } | RemoteKind::Stream { .. });
     Ok((url, live))
@@ -762,6 +805,10 @@ impl Cmd {
                         station_name: name, ..
                     } => (name.as_str(), "Radio", "Radio"),
                     RemoteKind::Stream { .. } => ("Stream", "Internet Radio", "Stream"),
+                    RemoteKind::YtDlp { url } => {
+                        let label = ytdlp_label(url).unwrap_or("YouTube");
+                        (label, label, label)
+                    }
                 };
                 TrackInfo {
                     path: path.to_string(),
@@ -859,6 +906,26 @@ impl Cmd {
     /// queue so `next` rotates through them.
     pub async fn play_url_stream(inner: &DaemonInner, url: &str) -> Result<DaemonRes, CoreError> {
         inner.play_session.fetch_add(1, Ordering::Release);
+        // yt-dlp family URLs (SoundCloud, Bandcamp, Mixcloud, ...) resolve to
+        // a direct CDN audio URL through the extractor; the queue entry keeps
+        // the extracted title so the now-playing pane shows real names.
+        if let Some(label) = ytdlp_label(url) {
+            let (title, direct) = match inner.youtube.lock().await.resolve_info(url).await {
+                Ok(v) => v,
+                Err(e) => return Ok(DaemonRes::Error { message: e }),
+            };
+            {
+                let mut state = inner.state.write().await;
+                state.queue.push(TrackInfo {
+                    path: direct.clone(),
+                    title,
+                    artist: label.to_string(),
+                    album: label.to_string(),
+                    ..Default::default()
+                });
+            }
+            return Cmd::play(inner, &direct, 0.0, false).await;
+        }
         let url_owned = url.to_string();
         let fetched =
             tokio::task::spawn_blocking(move || -> Result<(String, Vec<String>), String> {

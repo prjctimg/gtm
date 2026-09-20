@@ -860,15 +860,46 @@ pub fn format_uptime(secs: f64) -> String {
     }
 }
 
+/// Hostname → provider label for yt-dlp extractor URLs. The client mirror of
+/// the daemon's classifier: only these hosts are yt-dlp input; every other
+/// http URL stays a plain stream.
+fn ytdlp_label(url: &str) -> Option<&'static str> {
+    let host = url
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .trim_start_matches("www.")
+        .to_ascii_lowercase();
+    if host == "youtube.com" || host.ends_with(".youtube.com") || host == "youtu.be" {
+        return Some("YouTube");
+    }
+    if host == "bandcamp.com" || host.ends_with(".bandcamp.com") {
+        return Some("Bandcamp");
+    }
+    match host.as_str() {
+        "soundcloud.com" => Some("SoundCloud"),
+        "mixcloud.com" => Some("Mixcloud"),
+        "music.163.com" => Some("Netease"),
+        "bilibili.com" | "m.bilibili.com" => Some("Bilibili"),
+        "vimeo.com" | "player.vimeo.com" => Some("Vimeo"),
+        "twitch.tv" => Some("Twitch"),
+        "audiomack.com" => Some("Audiomack"),
+        _ => None,
+    }
+}
+
 /// Classify a track path as a remote provider stream. Returns the
 /// `provider_icon` lookup key plus the short display label, or `None` for
 /// local playback (the `Source` footer module hides itself then).
 ///
 /// Mirrors the daemon's `parse_remote_path` schemes plus the native
-/// `spotify:` librespot URI, `youtube:` IDs, resolved `http(s)://` stream
-/// URLs (YouTube/Stream), and the legacy `/audio/spotify|youtube` cache
-/// paths the now-playing pane already treats as provider output.
-fn classify_remote_source(path: &str) -> Option<(&'static str, &'static str)> {
+/// `spotify:` librespot URI, `youtube:` IDs, yt-dlp extractor hosts,
+/// resolved `http(s)://` stream URLs (YouTube/Stream), and the legacy
+/// `/audio/spotify|youtube` cache paths the now-playing pane already treats
+/// as provider output.
+pub(crate) fn classify_remote_source(path: &str) -> Option<(&'static str, &'static str)> {
     if path.starts_with("spotify:") || path.contains("/audio/spotify") {
         return Some(("Spotify", "Spotify"));
     }
@@ -883,6 +914,9 @@ fn classify_remote_source(path: &str) -> Option<(&'static str, &'static str)> {
     }
     if path.starts_with("youtube:") || path.contains("/audio/youtube") {
         return Some(("YouTube", "YouTube"));
+    }
+    if let Some(label) = ytdlp_label(path) {
+        return Some((label, label));
     }
     if path.starts_with("http://") || path.starts_with("https://") {
         let lower = path.to_ascii_lowercase();
@@ -1020,6 +1054,22 @@ mod tests {
         assert_eq!(
             classify_remote_source("youtube:video-id"),
             Some(("YouTube", "YouTube"))
+        );
+        assert_eq!(
+            classify_remote_source("https://www.youtube.com/watch?v=abc"),
+            Some(("YouTube", "YouTube"))
+        );
+        assert_eq!(
+            classify_remote_source("https://soundcloud.com/user/track"),
+            Some(("SoundCloud", "SoundCloud"))
+        );
+        assert_eq!(
+            classify_remote_source("https://music.bandcamp.com/album/x"),
+            Some(("Bandcamp", "Bandcamp"))
+        );
+        assert_eq!(
+            classify_remote_source("https://www.mixcloud.com/user/upload/"),
+            Some(("Mixcloud", "Mixcloud"))
         );
         assert_eq!(
             classify_remote_source("https://example.com/stream.mp3"),

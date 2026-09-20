@@ -563,45 +563,11 @@ impl YoutubeManager {
     /// yt-dlp's maintained extractor (fresh PO tokens and signature handling),
     /// so the returned CDN URL is not a stale, HTTP-403'd one.
     pub async fn resolve_stream(&mut self, url: &str) -> Result<StreamInfo, String> {
-        let _permit = self
-            .semaphore
-            .acquire()
-            .await
-            .map_err(|e| format!("semaphore: {e}"))?;
-
-        let mut args: Vec<std::ffi::OsString> = vec![
-            "-g".into(),
-            "-f".into(),
-            "bestaudio[ext=m4a]/bestaudio".into(),
-        ];
-        args.extend(self.ytdlp_auth_args());
-        args.push(url.to_string().into());
-
-        let output = timeout(SEARCH_TIMEOUT, Command::new("yt-dlp").args(&args).output())
-            .await
-            .map_err(|_| "resolve timeout".to_string())?
-            .map_err(|e| format!("yt-dlp: {e}"))?;
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            let detail = stderr
-                .lines()
-                .rev()
-                .find(|l| !l.trim().is_empty())
-                .unwrap_or("unknown error");
-            let hint = if detail.contains("403") || detail.contains("Forbidden") {
-                " (try setting a cookie file in Settings → YouTube)"
-            } else {
-                ""
-            };
-            return Err(format!("yt-dlp resolve failed: {detail}{hint}"));
-        }
-
-        let direct = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let auth = self.ytdlp_auth_args();
+        let direct = resolve_ytdlp(&self.semaphore, &auth, url, &["-g"]).await?;
         if direct.is_empty() {
             return Err("empty stream URL".to_string());
         }
-
         Ok(StreamInfo {
             url: direct,
             title: url.to_string(),
@@ -609,6 +575,76 @@ impl YoutubeManager {
             duration: 0.0,
         })
     }
+
+    /// Resolve any yt-dlp-supported URL into its rendered title and a direct
+    /// audio URL in a single extractor pass — the yt-dlp provider family
+    /// (SoundCloud, Bandcamp, Mixcloud, ...).
+    pub async fn resolve_info(&mut self, url: &str) -> Result<(String, String), String> {
+        let auth = self.ytdlp_auth_args();
+        let out = resolve_ytdlp(
+            &self.semaphore,
+            &auth,
+            url,
+            &["--print", "%(title)s", "--print", "%(url)s"],
+        )
+        .await?;
+        let mut lines = out.lines();
+        let title = lines
+            .next()
+            .filter(|l| !l.trim().is_empty())
+            .unwrap_or(url)
+            .to_string();
+        let direct = lines.next().unwrap_or("").trim().to_string();
+        if direct.is_empty() {
+            return Err("empty stream URL".to_string());
+        }
+        Ok((title, direct))
+    }
+}
+
+/// One-shot yt-dlp extraction of `url`'s audio stream with extra flags,
+/// returning trimmed stdout (a direct URL with `-g`, or requested `--print`
+/// fields). Failures surface the last stderr line plus the cookie hint.
+async fn resolve_ytdlp(
+    semaphore: &Semaphore,
+    auth: &[std::ffi::OsString],
+    url: &str,
+    extra: &[&str],
+) -> Result<String, String> {
+    let _permit = semaphore
+        .acquire()
+        .await
+        .map_err(|e| format!("semaphore: {e}"))?;
+
+    let mut args: Vec<std::ffi::OsString> = vec![
+        "--no-playlist".into(),
+        "-f".into(),
+        "bestaudio[ext=m4a]/bestaudio".into(),
+    ];
+    args.extend(extra.iter().map(|s| std::ffi::OsString::from(*s)));
+    args.extend(auth.iter().cloned());
+    args.push(url.to_string().into());
+
+    let output = timeout(SEARCH_TIMEOUT, Command::new("yt-dlp").args(&args).output())
+        .await
+        .map_err(|_| "resolve timeout".to_string())?
+        .map_err(|e| format!("yt-dlp: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let detail = stderr
+            .lines()
+            .rev()
+            .find(|l| !l.trim().is_empty())
+            .unwrap_or("unknown error");
+        let hint = if detail.contains("403") || detail.contains("Forbidden") {
+            " (try setting a cookie file in Settings → YouTube)"
+        } else {
+            ""
+        };
+        return Err(format!("yt-dlp resolve failed: {detail}{hint}"));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// Download a YouTube URL into `dest_dir` under `prefix.<ext>` using yt-dlp,
