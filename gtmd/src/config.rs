@@ -108,12 +108,10 @@ impl DaemonConfig {
         };
 
         let socket_pulse_path = if let Some(ref s) = args.socket {
+            // Mirror the client and `resolve_pulse_socket`: replace the socket
+            // extension with `pulse` so both ends agree on the path.
             let mut p = PathBuf::from(s);
-            let name = p
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "gtmd.sock".into());
-            p.set_file_name(format!("{name}.pulse"));
+            p.set_extension("pulse");
             p
         } else {
             resolve_pulse_socket()
