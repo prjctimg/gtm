@@ -27,7 +27,6 @@ REPO="prjctimg/gtm.rs"
 NC='\033[0m'
 MUTED='\033[0;2m'
 RED='\033[0;31m'
-ORANGE='\033[38;5;214m'
 GREEN='\033[0;32m'
 BOLD='\033[1m'
 
@@ -42,7 +41,7 @@ Options:
   -v, --version <ver>   Install a specific version (e.g. 0.2.73)
       --nightly         Install the latest nightly prerelease
   -p, --prefix <dir>    Install prefix for the tarball (default: \$HOME/.local)
-  -y, --yes             Non-interactive (accepted for compatibility)
+  -y, --yes             Non-interactive: never prompt (e.g. to enable gtmd)
 
 When run from inside a release archive this file installs the bundled
 binaries, man pages, completions, systemd unit, desktop entry and icon.
@@ -55,19 +54,18 @@ EOF
 }
 
 # Logging helpers — all go to stderr so `install.sh | tee log` stays usable.
+# Stage outcomes are reported with a single colour-coded ✔ / ✘ marker.
 info() { printf "${MUTED}%s${NC}\n" "$*" >&2; }
 log() { printf "${NC}%s\n" "$*" >&2; }
-ok() { printf "${GREEN}%s${NC}\n" "$*" >&2; }
-warn() { printf "${ORANGE}%s${NC}\n" "$*" >&2; }
+ok() { printf "${GREEN}✔${NC} %s\n" "$*" >&2; }
+fail() { printf "${RED}✘${NC} %s\n" "$*" >&2; }
 die() {
-  printf "${RED}%s${NC}\n" "$*" >&2
+  printf "${RED}✘ %s${NC}\n" "$*" >&2
   exit 1
 }
 need() {
   command -v "$1" >/dev/null 2>&1 || die "requires '$1' — install it first, or download a release archive manually"
 }
-# Colourised header for an install step with emoji (binaries, man pages, …).
-step() { printf "${BOLD}${GREEN}==>${NC} ${BOLD}%s${NC}\n" "$*" >&2; }
 
 # Download a URL with a simple message. The progress indicator was removed
 # because it was showing incorrect file size and downloaded size.
@@ -81,6 +79,7 @@ download_simple() {
 VERSION=""
 CHANNEL="stable"
 PREFIX="${PREFIX:-$HOME/.local}"
+ASSUME_YES=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -109,6 +108,7 @@ while [[ $# -gt 0 ]]; do
       fi
       ;;
     -y | --yes)
+      ASSUME_YES=1
       shift
       ;;
     *)
@@ -212,7 +212,6 @@ bootstrap_install() {
   need tar
 
   detect_platform
-  info "platform: ${OS}/${ARCH} → ${PLATFORM}"
 
   local tag
   if [ "${CHANNEL}" = "nightly" ]; then
@@ -245,19 +244,17 @@ bootstrap_install() {
   BOOTSTRAP_TMPDIR="$(mktemp -d)" || die "mktemp failed"
   trap 'rm -rf "${BOOTSTRAP_TMPDIR:?}"' EXIT
 
-  log "📥 downloading ${archive_name}..."
+  log "downloading ${archive_name}"
   if ! download_simple "${url}" "${BOOTSTRAP_TMPDIR}/${archive_name}"; then
     die "download failed: ${url}"
   fi
-  ok "  downloaded ${archive_name}"
+  ok "downloaded ${archive_name}"
 
-  info "extracting ${archive_name}..."
   tar -xzf "${BOOTSTRAP_TMPDIR}/${archive_name}" -C "${BOOTSTRAP_TMPDIR}"
 
   local extracted_dir="${BOOTSTRAP_TMPDIR}/${archive_name%.tar.gz}"
-  [ -d "${extracted_dir}" ] || die "archive did not extract to ${extracted_dir}"
+  [ -d "${extracted_dir}" ] || die "archive did not extract correctly"
 
-  info "running installer from the archive..."
   (
     cd "${extracted_dir}"
     ./install.sh "$@"
@@ -305,38 +302,29 @@ install_from_archive() {
     powershell_comp_dir="${POWERSHELL_COMPLETION_DIR:-${datadir}/powershell/Modules}"
   fi
 
-  log "installing to ${prefix} (bin: ${bindir})"
-  log ""
-
   # Binaries
   if [ ! -d "bin" ]; then
     die "archive is missing its bin/ directory"
   fi
   mkdir -p "${bindir}"
-  step "📦 binaries"
   for name in gtm gtmd; do
-    if [ -f "bin/${name}" ]; then
-      install -m 0755 "bin/${name}" "${bindir}/${name}"
-      ok "  ${name} -> ${bindir}/${name}"
-    else
-      warn "missing bin/${name} — skipping"
-    fi
+    [ -f "bin/${name}" ] || die "archive is missing bin/${name}"
+    install -m 0755 "bin/${name}" "${bindir}/${name}"
   done
+  ok "binaries"
 
   # Man pages
   if [ -d "man/man1" ]; then
-    step "📖 man pages"
     mkdir -p "${mandir}"
     for f in man/man1/*.1; do
       [ -f "${f}" ] || continue
       install -m 0644 "${f}" "${mandir}/$(basename "${f}")"
     done
-    ok "  ${mandir}/"
+    ok "man pages"
   fi
 
   # Completions — place each file into the conventional directory for its shell.
   if [ -d "completions" ]; then
-    step "⌨️  shell completions"
     for f in completions/*; do
       [ -f "${f}" ] || continue
       base="$(basename "${f}")"
@@ -363,44 +351,61 @@ install_from_archive() {
           ;;
       esac
     done
-    ok "completions -> ${bash_comp_dir}, ${zsh_comp_dir}, ${fish_comp_dir}, ..."
+    ok "shell completions"
   fi
 
   # systemd user unit (Linux only — not macOS/Android)
+  local systemd_unit=""
   if [ "${OS}" = "linux" ] && [ -f "systemd/gtmd.service" ]; then
-    step "⚙️  systemd user unit"
     mkdir -p "${systemd_dir}"
     install -m 0644 "systemd/gtmd.service" "${systemd_dir}/gtmd.service"
-    ok "  ${systemd_dir}/gtmd.service"
-    log "enable with: systemctl --user enable --now gtmd"
-  elif [ -f "systemd/gtmd.service" ]; then
-    info "skipping systemd unit (no systemd on ${OS})"
+    systemd_unit="${systemd_dir}/gtmd.service"
+    ok "systemd user unit"
   fi
 
   # Desktop entry + icon
   if [ -f "desktop/gtm.desktop" ]; then
-    step "🖥️  desktop entry"
     mkdir -p "${applications_dir}"
     install -m 0644 "desktop/gtm.desktop" "${applications_dir}/gtm.desktop"
-    ok "  ${applications_dir}/gtm.desktop"
+    ok "desktop entry"
   fi
   if [ -f "icons/gtm.svg" ]; then
-    step "🎨  icon"
     mkdir -p "${icons_dir}"
     install -m 0644 "icons/gtm.svg" "${icons_dir}/gtm.svg"
-    ok "  ${icons_dir}/gtm.svg"
+    ok "icon"
   fi
 
   ok "installation complete"
+
+  # Everything is in place: offer to enable and start the daemon. Interactive
+  # terminals only; `-y` / non-interactive runs skip this without enabling.
+  if [ -n "${systemd_unit}" ] && [ "${ASSUME_YES}" != 1 ] && [ -t 0 ] \
+    && command -v systemctl >/dev/null 2>&1; then
+    local reply=""
+    printf "${BOLD}Enable and start the gtm daemon now? [y/N] ${NC}" >&2
+    read -r reply || reply=""
+    case "${reply}" in
+      [yY] | [yY][eE][sS])
+        systemctl --user daemon-reload 2>/dev/null || true
+        if systemctl --user enable --now gtmd 2>/dev/null; then
+          ok "gtmd enabled and started"
+        else
+          fail "could not enable gtmd"
+        fi
+        ;;
+      *) ;;
+    esac
+  fi
+
   if ! echo ":${PATH}:" | grep -q ":${bindir}:"; then
-    warn "${bindir} is not in your \$PATH — adding it to your shell profiles..."
+    info "${bindir} is not in your \$PATH — adding it to your shell profiles..."
 
     # bash: ~/.bashrc
     if [ -f "${HOME}/.bashrc" ] && ! grep -q "export PATH=.*${bindir//\//\\/}" "${HOME}/.bashrc" 2>/dev/null; then
       echo "" >> "${HOME}/.bashrc"
       echo "# Added by gtm installer" >> "${HOME}/.bashrc"
       echo "export PATH=\"${bindir}:\$PATH\"" >> "${HOME}/.bashrc"
-      ok "  added to ~/.bashrc"
+      ok "added PATH to ~/.bashrc"
     fi
 
     # zsh: ~/.zshrc
@@ -408,7 +413,7 @@ install_from_archive() {
       echo "" >> "${HOME}/.zshrc"
       echo "# Added by gtm installer" >> "${HOME}/.zshrc"
       echo "export PATH=\"${bindir}:\$PATH\"" >> "${HOME}/.zshrc"
-      ok "  added to ~/.zshrc"
+      ok "added PATH to ~/.zshrc"
     fi
 
     # fish: ~/.config/fish/config.fish
@@ -417,15 +422,15 @@ install_from_archive() {
       echo "" >> "${fish_config}"
       echo "# Added by gtm installer" >> "${fish_config}"
       echo "fish_add_path ${bindir}" >> "${fish_config}"
-      ok "  added to ~/.config/fish/config.fish"
+      ok "added PATH to ~/.config/fish/config.fish"
     elif [ ! -f "${fish_config}" ]; then
       mkdir -p "${HOME}/.config/fish"
       echo "# Added by gtm installer" > "${fish_config}"
       echo "fish_add_path ${bindir}" >> "${fish_config}"
-      ok "  created ~/.config/fish/config.fish with PATH"
+      ok "added PATH to ~/.config/fish/config.fish"
     fi
 
-    log "Restart your shell or run: source ~/.bashrc (or ~/.zshrc / source ~/.config/fish/config.fish)"
+    info "Restart your shell or source your shell profile to pick up the PATH change"
   fi
 }
 
