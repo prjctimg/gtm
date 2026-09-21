@@ -11,6 +11,7 @@ use crate::shared::client::{DaemonClient, LastfmStatus};
 use crate::shared::custom::CustomRadioStation;
 use crate::shared::global::{DaemonState, EqPreset, PlaybackStatus, RepeatMode};
 use crate::shared::ipc::{CacheKind, DaemonEvent, DaemonRes, HealthReport, SyncKind};
+use crate::shared::log::log;
 use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 use crate::shared::radio::{RadioCountry, RadioStation, RadioTag};
 use crate::shared::secret::{SPOTIFY_CLIENT_ID, get_secret, set_secret};
@@ -417,7 +418,7 @@ pub enum InputMode {
     Searching,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NotificationKind {
     Info,
     Success,
@@ -1080,6 +1081,9 @@ enum IpcResult {
     SpotifyOauthUrl(String),
     /// A hard failure of the OAuth flow (daemon could not even start it).
     SpotifyOauthError(String),
+    /// The browser could not be opened automatically. The authorize URL is
+    /// shown inline in the picker, so this is recorded without a floating card.
+    SpotifyOauthFallback(String),
     LibraryTracks(Vec<TrackInfo>),
     MostPlayed(Vec<TrackInfo>),
     RecentlyPlayed(Vec<TrackInfo>),
@@ -1177,8 +1181,9 @@ async fn open_browser(url: &str) -> bool {
     false
 }
 
-/// Open the OAuth URL in a browser, and surface it as a Spotify notification
-/// plus an error if no opener worked. Non-blocking.
+/// Open the OAuth URL in a browser. When no opener works the authorize URL is
+/// already rendered inline in the Spotify link picker, so only a quiet
+/// fallback notice is recorded (no floating card). Non-blocking.
 fn try_open_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResult>) {
     let url = url.to_string();
     let ipc_tx = ipc_tx.clone();
@@ -1186,15 +1191,10 @@ fn try_open_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResult>) {
         if open_browser(&url).await {
             return;
         }
-        // All openers failed: surface the URL in the TUI so it can be copied.
-        let _ = ipc_tx.send(IpcResult::Notification(
-            "Spotify".to_string(),
-            format!("Open this URL in your browser to authorize gtm:\n{url}"),
-            NotificationKind::Info,
-            NotifType::Spotify,
-        ));
-        let _ = ipc_tx.send(IpcResult::SpotifyOauthError(
-            "Could not open a browser automatically — copy the URL from the notification".into(),
+        // All openers failed: point at the URL shown inline in the picker.
+        let _ = ipc_tx.send(IpcResult::SpotifyOauthFallback(
+            "Could not open a browser automatically — copy the authorize URL shown in this picker"
+                .into(),
         ));
     });
 }
@@ -1959,7 +1959,7 @@ impl App {
             "System",
             format!("Cover source: {}", label),
             NotificationKind::Info,
-            false,
+            true,
             NotifType::Prefs,
         );
     }
@@ -2773,7 +2773,15 @@ impl App {
                         self.notify_typed(&title, msg, kind, trivial, ntype);
                     }
                     IpcResult::Error(e) => {
-                        self.notify(e, NotificationKind::Error);
+                        // Generic failures go to the log file and the
+                        // notifications picker instead of a floating card.
+                        self.notify_typed(
+                            "Error",
+                            e,
+                            NotificationKind::Error,
+                            true,
+                            NotifType::System,
+                        );
                     }
                     IpcResult::YtDownloadProgress {
                         id,
@@ -2968,6 +2976,19 @@ impl App {
                             e,
                             NotificationKind::Error,
                             false,
+                            NotifType::Spotify,
+                        );
+                    }
+                    IpcResult::SpotifyOauthFallback(e) => {
+                        // Browser auto-open failed but the authorize URL is
+                        // already inline in the picker; record quietly.
+                        self.spotify.oauth_error = Some(e.clone());
+                        self.spotify.oauth_pending = false;
+                        self.notify_titled(
+                            "Spotify",
+                            e,
+                            NotificationKind::Info,
+                            true,
                             NotifType::Spotify,
                         );
                     }
@@ -3300,13 +3321,15 @@ impl App {
         }
     }
 
+    /// System notice that never interrupts with a floating card: it is kept in
+    /// the notifications picker (and the log file for errors) only.
     pub fn notify(&mut self, message: impl Into<String>, kind: NotificationKind) {
         let title = match kind {
             NotificationKind::Info | NotificationKind::Warning => "System",
             NotificationKind::Success => "Success",
             NotificationKind::Error => "Error",
         };
-        self.notify_typed(title, message, kind, false, NotifType::System);
+        self.notify_typed(title, message, kind, true, NotifType::System);
     }
 
     pub fn notify_titled(
@@ -3332,6 +3355,11 @@ impl App {
         ntype: NotifType,
     ) {
         let message = message.into();
+        // Every error is persisted to the log file regardless of whether its
+        // category surfaces a floating card, so failures stay reviewable.
+        if kind == NotificationKind::Error {
+            log(&format!("{title}: {message}"));
+        }
         self.notification_history.insert(
             0,
             NotificationRecord {
@@ -4004,22 +4032,7 @@ impl App {
                 c.lastfm().unlove().await
             };
             match result {
-                Ok(()) => {
-                    let _ = ipc_tx.send(IpcResult::Notification(
-                        "Last.fm".to_string(),
-                        if love {
-                            "Track loved ♥ — scrobbling now".to_string()
-                        } else {
-                            "Track un-loved".to_string()
-                        },
-                        if love {
-                            NotificationKind::Success
-                        } else {
-                            NotificationKind::Info
-                        },
-                        NotifType::Lastfm,
-                    ));
-                }
+                Ok(()) => {}
                 Err(e) => {
                     let _ = ipc_tx.send(IpcResult::Error(format!("Last.fm love failed: {e}")));
                 }
@@ -4040,22 +4053,7 @@ impl App {
                 .set_config(enabled, None, None, None, None, None)
                 .await
             {
-                Ok(()) => {
-                    let _ = ipc_tx.send(IpcResult::Notification(
-                        "Last.fm".to_string(),
-                        if enabled {
-                            "Scrobbling enabled".to_string()
-                        } else {
-                            "Scrobbling paused for this session".to_string()
-                        },
-                        if enabled {
-                            NotificationKind::Success
-                        } else {
-                            NotificationKind::Info
-                        },
-                        NotifType::Lastfm,
-                    ));
-                }
+                Ok(()) => {}
                 Err(e) => {
                     let _ = ipc_tx.send(IpcResult::Error(format!("Last.fm toggle failed: {e}")));
                 }
@@ -4609,6 +4607,13 @@ impl App {
     /// Virtual action rows (Play All / Shuffle) prepended to a Spotify playlist
     /// drill-down track list.
     pub const SPOTIFY_PLAYLIST_ROWS: usize = 2;
+
+    /// Shared guard text for "add" actions that need a playlist drilled down.
+    pub const NEED_PLAYLIST_FOR_ADD: &'static str = "Open the playlist first to add its tracks";
+
+    /// Shared guard text for "remove" actions that only work in a playlist view.
+    pub const PLAYLIST_VIEW_ONLY_REMOVE: &'static str =
+        "Remove from list only available in playlist view";
 
     /// True while the right pane is showing the track list of a Spotify
     /// playlist (drilled down from the Spotify playlists category).
@@ -6365,14 +6370,7 @@ impl App {
                             ));
                             tokio::spawn(async move {
                                 match c.spotify().play_all(&playlist_id, true).await {
-                                    Ok(()) => {
-                                        let _ = ipc_tx2.send(IpcResult::Notification(
-                                            "Spotify".to_string(),
-                                            "Shuffling playlist".to_string(),
-                                            NotificationKind::Success,
-                                            NotifType::Spotify,
-                                        ));
-                                    }
+                                    Ok(()) => {}
                                     Err(e) => {
                                         let _ = ipc_tx2.send(IpcResult::Error(format!(
                                             "Spotify shuffle failed: {e}"
@@ -6763,18 +6761,7 @@ impl App {
                                         tokio::spawn(async move {
                                             match c.spotify().play_all(&playlist_id, shuffle).await
                                             {
-                                                Ok(()) => {
-                                                    let _ = ipc_tx2.send(IpcResult::Notification(
-                                                        "Spotify".to_string(),
-                                                        if shuffle {
-                                                            "Shuffling playlist".to_string()
-                                                        } else {
-                                                            "Playing playlist".to_string()
-                                                        },
-                                                        NotificationKind::Success,
-                                                        NotifType::Spotify,
-                                                    ));
-                                                }
+                                                Ok(()) => {}
                                                 Err(e) => {
                                                     let _ = ipc_tx2.send(IpcResult::Error(
                                                         format!("Spotify play-all failed: {e}"),
@@ -6798,15 +6785,7 @@ impl App {
                                                 .resolve(&playlist_id, track_index)
                                                 .await
                                             {
-                                                Ok(()) => {
-                                                    let _ = ipc_tx2.send(IpcResult::Notification(
-                                                        "Spotify".to_string(),
-                                                        "Spotify track resolved & queued"
-                                                            .to_string(),
-                                                        NotificationKind::Success,
-                                                        NotifType::Spotify,
-                                                    ));
-                                                }
+                                                Ok(()) => {}
                                                 Err(e) => {
                                                     let _ = ipc_tx2.send(IpcResult::Error(
                                                         format!("Spotify resolve failed: {e}"),
@@ -7123,7 +7102,7 @@ impl App {
                             if self.library_category == 4 && self.browse_detail.is_none() {
                                 self.notify_typed(
                                     "System",
-                                    "Open the playlist first to add its tracks",
+                                    Self::NEED_PLAYLIST_FOR_ADD,
                                     NotificationKind::Info,
                                     false,
                                     NotifType::NowPlaying,
@@ -7203,7 +7182,7 @@ impl App {
                             if self.library_category == 4 && self.browse_detail.is_none() {
                                 self.notify_typed(
                                     "System",
-                                    "Open the playlist first to add its tracks",
+                                    Self::NEED_PLAYLIST_FOR_ADD,
                                     NotificationKind::Info,
                                     false,
                                     NotifType::NowPlaying,
@@ -7333,7 +7312,7 @@ impl App {
                             } else {
                                 self.notify_typed(
                                     "System",
-                                    "Remove from list only available in playlist view",
+                                    Self::PLAYLIST_VIEW_ONLY_REMOVE,
                                     NotificationKind::Info,
                                     false,
                                     NotifType::NowPlaying,
@@ -7612,7 +7591,7 @@ impl App {
                         "System",
                         "Only single tracks can be downloaded",
                         NotificationKind::Info,
-                        false,
+                        true,
                         NotifType::Downloads,
                     );
                     return;
@@ -7663,7 +7642,7 @@ impl App {
                     "System",
                     "No track selected to download",
                     NotificationKind::Info,
-                    false,
+                    true,
                     NotifType::Downloads,
                 );
             }
@@ -8142,7 +8121,7 @@ impl App {
                                         "System",
                                         format!("Cookie file: {display}"),
                                         NotificationKind::Info,
-                                        false,
+                                        true,
                                         NotifType::Prefs,
                                     );
                                 }
@@ -8825,7 +8804,7 @@ impl App {
                             "Subsonic",
                             "Server URL and username are required",
                             NotificationKind::Info,
-                            false,
+                            true,
                             NotifType::Subsonic,
                         );
                         return;
@@ -9510,7 +9489,7 @@ impl App {
                                     "System",
                                     "Type to search your synced Spotify playlists",
                                     NotificationKind::Info,
-                                    false,
+                                    true,
                                     NotifType::Spotify,
                                 );
                             } else {
@@ -9532,12 +9511,6 @@ impl App {
                                             let is_album =
                                                 track.kind == Some(SpotifySearchKind::Album);
                                             tokio::spawn(async move {
-                                                let _ = ipc_tx2.send(IpcResult::Notification(
-                                                    "Spotify".to_string(),
-                                                    format!("Fetching {label} tracks..."),
-                                                    NotificationKind::Info,
-                                                    NotifType::Spotify,
-                                                ));
                                                 let result = if is_album {
                                                     c2.spotify().album_tracks(&uri).await
                                                 } else {
@@ -9553,10 +9526,8 @@ impl App {
                                                         ));
                                                     }
                                                     Ok(tracks) => {
-                                                        let total = tracks.len();
-                                                        let mut queued = 0;
                                                         for t in &tracks {
-                                                            if c2
+                                                            let _ = c2
                                                                 .spotify()
                                                                 .resolve_track(
                                                                     &t.name,
@@ -9566,22 +9537,8 @@ impl App {
                                                                         .unwrap_or(""),
                                                                     t.uri.clone(),
                                                                 )
-                                                                .await
-                                                                .is_ok()
-                                                            {
-                                                                queued += 1;
-                                                            }
+                                                                .await;
                                                         }
-                                                        let _ =
-                                                            ipc_tx2.send(IpcResult::Notification(
-                                                                "Spotify".to_string(),
-                                                                format!(
-                                                                    "Queued {queued}/{total} \
-                                                                     tracks from: {label}"
-                                                                ),
-                                                                NotificationKind::Success,
-                                                                NotifType::Spotify,
-                                                            ));
                                                     }
                                                     Err(e) => {
                                                         let _ = ipc_tx2.send(IpcResult::Error(
@@ -9606,19 +9563,7 @@ impl App {
                                                     )
                                                     .await
                                                 {
-                                                    Ok(()) => {
-                                                        let _ =
-                                                            ipc_tx2.send(IpcResult::Notification(
-                                                                "Spotify".to_string(),
-                                                                format!(
-                                                                    "Queued: {} - {}",
-                                                                    track_clone.artists,
-                                                                    track_clone.name
-                                                                ),
-                                                                NotificationKind::Success,
-                                                                NotifType::Spotify,
-                                                            ));
-                                                    }
+                                                    Ok(()) => {}
                                                     Err(e) => {
                                                         let _ = ipc_tx2.send(IpcResult::Error(
                                                             format!("Spotify resolve failed: {e}"),
@@ -9631,17 +9576,7 @@ impl App {
                                 } else {
                                     tokio::spawn(async move {
                                         match c.spotify().resolve(&playlist_id, track_index).await {
-                                            Ok(()) => {
-                                                let _ = ipc_tx.send(IpcResult::Notification(
-                                                    "Spotify".to_string(),
-                                                    format!(
-                                                        "Queued: {} - {}",
-                                                        track.artists, track.name
-                                                    ),
-                                                    NotificationKind::Success,
-                                                    NotifType::Spotify,
-                                                ));
-                                            }
+                                            Ok(()) => {}
                                             Err(e) => {
                                                 let _ = ipc_tx.send(IpcResult::Error(format!(
                                                     "Spotify resolve failed: {e}"
@@ -9750,7 +9685,7 @@ impl App {
                                     "System",
                                     format!("Progress: {}", self.progress_style.name()),
                                     NotificationKind::Info,
-                                    false,
+                                    true,
                                     NotifType::Playback,
                                 );
                             }
@@ -9771,7 +9706,7 @@ impl App {
                                     "System",
                                     format!("Footer preset: {name}"),
                                     NotificationKind::Info,
-                                    false,
+                                    true,
                                     NotifType::Playback,
                                 );
                             }
@@ -9909,7 +9844,7 @@ impl App {
                                             "System",
                                             format!("Visualizer: {}", state),
                                             NotificationKind::Info,
-                                            false,
+                                            true,
                                             NotifType::Playback,
                                         );
                                     }
@@ -10063,7 +9998,7 @@ impl App {
                                         } else {
                                             self.notify_typed(
                                                 "System",
-                                                "Remove from list only available in playlist view",
+                                                Self::PLAYLIST_VIEW_ONLY_REMOVE,
                                                 NotificationKind::Info,
                                                 false,
                                                 NotifType::NowPlaying,

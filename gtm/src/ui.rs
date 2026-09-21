@@ -206,13 +206,6 @@ impl Render {
     fn notification_overlay(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let now = std::time::Instant::now();
 
-        // Absolutely never draw cover art (or any floating card) on top of an
-        // active picker/floating window. With a picker on screen we skip the
-        // whole overlay so images can't leak over it.
-        if app.pickers.is_open() {
-            return;
-        }
-
         let slide_duration_ms: f32 = 300.0;
         for n in &mut app.notifications {
             if n.animation_progress < 1.0 {
@@ -230,22 +223,25 @@ impl Render {
         let padding = 1u16;
         let gap = 1u16;
 
-        let mut y_bottom = area.y + area.height - padding;
+        // Cards anchor to the top-center of the screen and stack downward.
+        let center_x = |w: u16| area.x + area.width.saturating_sub(w) / 2;
+        let mut y_top = area.y + padding;
 
-        if app.upnext.is_some() {
+        // The Up Next card sits at the very top; it carries cover art, so it is
+        // skipped while a picker is open to keep images from leaking over it.
+        if app.upnext.is_some() && !app.pickers.is_open() {
             let card_w = 42u16;
             let card_h = 7u16;
-            let card_x = area.x + area.width.saturating_sub(card_w + padding);
-            let card_y = y_bottom.saturating_sub(card_h);
-            if card_y >= area.y {
+            let card_x = center_x(card_w);
+            if y_top.saturating_add(card_h) <= area.bottom() {
                 let card_area = Rect {
                     x: card_x,
-                    y: card_y,
+                    y: y_top,
                     width: card_w,
                     height: card_h,
                 };
                 Render::upnext_card(f, card_area, app);
-                y_bottom = card_y.saturating_sub(gap);
+                y_top = y_top.saturating_add(card_h + gap);
             }
         }
 
@@ -266,12 +262,12 @@ impl Render {
             let title_rows = if has_title { 2 } else { 0 };
             let card_h = line_count + padding * 2 + title_rows;
 
-            let card_y = y_bottom.saturating_sub(card_h);
-            if card_y < area.y {
+            let card_y = y_top;
+            if card_y.saturating_add(card_h) > area.bottom() {
                 break;
             }
 
-            let final_x = area.x + area.width.saturating_sub(max_notif_width + padding);
+            let final_x = center_x(max_notif_width);
             let start_x = area.x + area.width;
             let leaving = now.saturating_duration_since(n.expires_at);
             let x = if leaving > std::time::Duration::ZERO {
@@ -332,9 +328,10 @@ impl Render {
             let para = Paragraph::new(lines).style(Style::default().fg(app.theme.fg_bright));
             f.render_widget(para, inner);
 
-            y_bottom = card_y.saturating_sub(gap);
+            y_top = card_y.saturating_add(card_h + gap);
         }
 
+        let mut y_bar = area.y + padding;
         for n in volume.iter() {
             let bar_h = 10u16;
             let bar_w = 5u16;
@@ -353,8 +350,8 @@ impl Render {
                 (start_x as f32 + (final_x as f32 - start_x as f32) * progress) as u16
             };
 
-            let bar_y = y_bottom.saturating_sub(bar_h + 2);
-            if bar_y < area.y {
+            let bar_y = y_bar;
+            if bar_y.saturating_add(bar_h + 2) > area.bottom() {
                 break;
             }
             let bar_area = Rect {
@@ -397,7 +394,7 @@ impl Render {
                 .style(Style::default().fg(app.theme.fg_bright));
             f.render_widget(label, label_area);
 
-            y_bottom = bar_y.saturating_sub(gap);
+            y_bar = bar_y.saturating_add(bar_h + 2 + gap);
         }
     }
 
