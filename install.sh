@@ -54,18 +54,24 @@ EOF
 }
 
 # Logging helpers — all go to stderr so `install.sh | tee log` stays usable.
-# Stage outcomes are reported with a single colour-coded ✔ / ✘ marker.
+# Each stage prints its heading (emoji kept, no `==>`) followed by a single
+# colour-coded ✔ / ✘ marker for the outcome, like the download line below.
 info() { printf "${MUTED}%s${NC}\n" "$*" >&2; }
 log() { printf "${NC}%s\n" "$*" >&2; }
 ok() { printf "${GREEN}✔${NC} %s\n" "$*" >&2; }
 fail() { printf "${RED}✘${NC} %s\n" "$*" >&2; }
 die() {
-  printf "${RED}✘ %s${NC}\n" "$*" >&2
+  printf "${RED}%s${NC}\n" "$*" >&2
   exit 1
 }
 need() {
   command -v "$1" >/dev/null 2>&1 || die "requires '$1' — install it first, or download a release archive manually"
 }
+
+# Stage heading (no `==>`, no trailing newline) + outcome markers.
+stage() { printf "${BOLD}%s${NC}" "$*" >&2; }
+stage_ok() { printf " ${GREEN}✔${NC}\n" >&2; }
+stage_fail() { printf " ${RED}✘${NC}\n" >&2; }
 
 # Download a URL with a simple message. The progress indicator was removed
 # because it was showing incorrect file size and downloaded size.
@@ -244,7 +250,7 @@ bootstrap_install() {
   BOOTSTRAP_TMPDIR="$(mktemp -d)" || die "mktemp failed"
   trap 'rm -rf "${BOOTSTRAP_TMPDIR:?}"' EXIT
 
-  log "downloading ${archive_name}"
+  log "📥 downloading ${archive_name}"
   if ! download_simple "${url}" "${BOOTSTRAP_TMPDIR}/${archive_name}"; then
     die "download failed: ${url}"
   fi
@@ -302,77 +308,76 @@ install_from_archive() {
     powershell_comp_dir="${POWERSHELL_COMPLETION_DIR:-${datadir}/powershell/Modules}"
   fi
 
-  # Binaries
-  if [ ! -d "bin" ]; then
-    die "archive is missing its bin/ directory"
+  # ── Binaries ────────────────────────────────────────────────────────────────
+  if [ ! -d "bin" ] || [ ! -f "bin/gtm" ] || [ ! -f "bin/gtmd" ]; then
+    die "archive is missing its bin/ assets"
   fi
-  mkdir -p "${bindir}"
-  for name in gtm gtmd; do
-    [ -f "bin/${name}" ] || die "archive is missing bin/${name}"
-    install -m 0755 "bin/${name}" "${bindir}/${name}"
-  done
-  ok "binaries"
+  stage "📦 binaries"
+  if mkdir -p "${bindir}" \
+    && install -m 0755 "bin/gtm" "${bindir}/gtm" \
+    && install -m 0755 "bin/gtmd" "${bindir}/gtmd"; then
+    stage_ok
+  else
+    stage_fail
+    die "could not install binaries"
+  fi
 
-  # Man pages
+  # ── Man pages ───────────────────────────────────────────────────────────────
   if [ -d "man/man1" ]; then
-    mkdir -p "${mandir}"
-    for f in man/man1/*.1; do
-      [ -f "${f}" ] || continue
-      install -m 0644 "${f}" "${mandir}/$(basename "${f}")"
-    done
-    ok "man pages"
+    stage "📖 man pages"
+    if install_man_pages; then
+      stage_ok
+    else
+      stage_fail
+      die "could not install man pages"
+    fi
   fi
 
-  # Completions — place each file into the conventional directory for its shell.
+  # ── Completions ─────────────────────────────────────────────────────────────
   if [ -d "completions" ]; then
-    for f in completions/*; do
-      [ -f "${f}" ] || continue
-      base="$(basename "${f}")"
-      case "${base}" in
-        gtm.bash | gtmd.bash)
-          mkdir -p "${bash_comp_dir}"
-          install -m 0644 "${f}" "${bash_comp_dir}/${base%.bash}"
-          ;;
-        _gtm | _gtmd)
-          mkdir -p "${zsh_comp_dir}"
-          install -m 0644 "${f}" "${zsh_comp_dir}/${base}"
-          ;;
-        gtm.fish | gtmd.fish)
-          mkdir -p "${fish_comp_dir}"
-          install -m 0644 "${f}" "${fish_comp_dir}/${base}"
-          ;;
-        gtm.elv | gtmd.elv)
-          mkdir -p "${elvish_comp_dir}"
-          install -m 0644 "${f}" "${elvish_comp_dir}/${base}"
-          ;;
-        gtm.ps1 | gtmd.ps1)
-          mkdir -p "${powershell_comp_dir}"
-          install -m 0644 "${f}" "${powershell_comp_dir}/${base}"
-          ;;
-      esac
-    done
-    ok "shell completions"
+    stage "⌨️  shell completions"
+    if install_completions; then
+      stage_ok
+    else
+      stage_fail
+      die "could not install shell completions"
+    fi
   fi
 
-  # systemd user unit (Linux only — not macOS/Android)
+  # ── systemd user unit ───────────────────────────────────────────────────────
   local systemd_unit=""
   if [ "${OS}" = "linux" ] && [ -f "systemd/gtmd.service" ]; then
+    stage "⚙️  systemd user unit"
     mkdir -p "${systemd_dir}"
-    install -m 0644 "systemd/gtmd.service" "${systemd_dir}/gtmd.service"
-    systemd_unit="${systemd_dir}/gtmd.service"
-    ok "systemd user unit"
+    if install -m 0644 "systemd/gtmd.service" "${systemd_dir}/gtmd.service"; then
+      systemd_unit="${systemd_dir}/gtmd.service"
+      stage_ok
+    else
+      stage_fail
+      die "could not install the systemd unit"
+    fi
   fi
 
-  # Desktop entry + icon
+  # ── Desktop entry + icon ────────────────────────────────────────────────────
   if [ -f "desktop/gtm.desktop" ]; then
+    stage "🖥️  desktop entry"
     mkdir -p "${applications_dir}"
-    install -m 0644 "desktop/gtm.desktop" "${applications_dir}/gtm.desktop"
-    ok "desktop entry"
+    if install -m 0644 "desktop/gtm.desktop" "${applications_dir}/gtm.desktop"; then
+      stage_ok
+    else
+      stage_fail
+      die "could not install the desktop entry"
+    fi
   fi
   if [ -f "icons/gtm.svg" ]; then
+    stage "🎨 icon"
     mkdir -p "${icons_dir}"
-    install -m 0644 "icons/gtm.svg" "${icons_dir}/gtm.svg"
-    ok "icon"
+    if install -m 0644 "icons/gtm.svg" "${icons_dir}/gtm.svg"; then
+      stage_ok
+    else
+      stage_fail
+      die "could not install the icon"
+    fi
   fi
 
   ok "installation complete"
@@ -432,6 +437,49 @@ install_from_archive() {
 
     info "Restart your shell or source your shell profile to pick up the PATH change"
   fi
+}
+
+# Install every man page in man/man1/ into ${mandir}. Exits non-zero on error
+# so the surrounding stage can print its ✘ marker.
+install_man_pages() {
+  local f
+  mkdir -p "${mandir}" || return 1
+  for f in man/man1/*.1; do
+    [ -f "${f}" ] || continue
+    install -m 0644 "${f}" "${mandir}/$(basename "${f}")" || return 1
+  done
+}
+
+# Place each completion file into the conventional directory for its shell.
+# Exits non-zero on error so the surrounding stage can print its ✘ marker.
+install_completions() {
+  local f base
+  for f in completions/*; do
+    [ -f "${f}" ] || continue
+    base="$(basename "${f}")"
+    case "${base}" in
+      gtm.bash | gtmd.bash)
+        mkdir -p "${bash_comp_dir}" || return 1
+        install -m 0644 "${f}" "${bash_comp_dir}/${base%.bash}" || return 1
+        ;;
+      _gtm | _gtmd)
+        mkdir -p "${zsh_comp_dir}" || return 1
+        install -m 0644 "${f}" "${zsh_comp_dir}/${base}" || return 1
+        ;;
+      gtm.fish | gtmd.fish)
+        mkdir -p "${fish_comp_dir}" || return 1
+        install -m 0644 "${f}" "${fish_comp_dir}/${base}" || return 1
+        ;;
+      gtm.elv | gtmd.elv)
+        mkdir -p "${elvish_comp_dir}" || return 1
+        install -m 0644 "${f}" "${elvish_comp_dir}/${base}" || return 1
+        ;;
+      gtm.ps1 | gtmd.ps1)
+        mkdir -p "${powershell_comp_dir}" || return 1
+        install -m 0644 "${f}" "${powershell_comp_dir}/${base}" || return 1
+        ;;
+    esac
+  done
 }
 
 # ── Entry point ────────────────────────────────────────────────────────────────
