@@ -858,7 +858,7 @@ jobs:
           attempt=0
           while true; do
             if git diff --cached --quiet; then
-              git add -f BENCHMARK.md assets/fixtures
+              git add -f BENCHMARK.md stats.json assets/fixtures
             fi
             if git diff --cached --quiet; then
               echo "no benchmark changes to commit"
@@ -882,6 +882,7 @@ jobs:
           name: bench-results
           path: |
             BENCHMARK.md
+            stats.json
           if-no-files-found: error
 
   # Publishes the `gtm` crate to crates.io (the single workspace crate; the

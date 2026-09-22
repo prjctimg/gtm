@@ -2,8 +2,9 @@
 # Collect benchmark results for one release tag into .bench/<tag>.json
 # (a gitignored, ephemeral store) and then render them into BENCHMARK.md.
 # Previous releases are reconstructed from machine-readable comments embedded
-# in BENCHMARK.md by render.sh, so the committed doc is the single
-# permanent store — no JSON files are tracked.
+# in BENCHMARK.md by render.sh, so the committed doc plus stats.json are the
+# permanent store — stats.json is the only tracked JSON (the .bench/ directory
+# stays ephemeral).
 #
 #   scripts/bench/collect.sh <tag> [seconds]
 #

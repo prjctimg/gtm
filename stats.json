@@ -1,0 +1,895 @@
+{
+  "schema": 1,
+  "generated_at": "2026-09-22T14:00:05Z",
+  "run": {
+    "tag": "0.2.83+4cf395b+nightly",
+    "date": "2026-09-22T12:52:31Z",
+    "commit": "4cf395bbcf2a7d52ba25626f6c9c0878f2ffbee2",
+    "seconds": "152"
+  },
+  "previous": {
+    "tag": "0.2.83+4b2e7a0+nightly",
+    "date": "2026-09-21T17:23:46Z",
+    "commit": "4b2e7a071b8ff5d2a9cd97f407ba84ea758dc2a2"
+  },
+  "series": {
+    "peak_rss_kb": [
+      {
+        "tag": "0.2.83+cfe43fb+nightly",
+        "date": "2026-09-08T17:55:34Z",
+        "value": 19492
+      },
+      {
+        "tag": "0.2.83+3364103+nightly",
+        "date": "2026-09-08T20:00:21Z",
+        "value": 19860
+      },
+      {
+        "tag": "0.2.83+0ba44c5+nightly",
+        "date": "2026-09-09T05:31:12Z",
+        "value": 19512
+      },
+      {
+        "tag": "0.2.83+581b9eb+nightly",
+        "date": "2026-09-09T20:48:19Z",
+        "value": 20140
+      },
+      {
+        "tag": "0.2.83+7b6746d+nightly",
+        "date": "2026-09-10T06:06:28Z",
+        "value": 20036
+      },
+      {
+        "tag": "0.2.83+cf44858+nightly",
+        "date": "2026-09-10T09:49:45Z",
+        "value": 20640
+      },
+      {
+        "tag": "0.2.83+ab3350d+nightly",
+        "date": "2026-09-10T14:10:54Z",
+        "value": 20532
+      },
+      {
+        "tag": "0.2.83+0305f9a+nightly",
+        "date": "2026-09-10T20:16:24Z",
+        "value": 20376
+      },
+      {
+        "tag": "0.2.83+3a0a726+nightly",
+        "date": "2026-09-11T19:36:34Z",
+        "value": 20328
+      },
+      {
+        "tag": "0.2.83+487b302+nightly",
+        "date": "2026-09-11T20:00:04Z",
+        "value": 20268
+      },
+      {
+        "tag": "0.2.83+3e10016+nightly",
+        "date": "2026-09-12T13:00:32Z",
+        "value": 20628
+      },
+      {
+        "tag": "0.2.83+1d3fd86+nightly",
+        "date": "2026-09-13T09:36:04Z",
+        "value": 20840
+      },
+      {
+        "tag": "0.2.83+ff13d58+nightly",
+        "date": "2026-09-13T10:28:17Z",
+        "value": 20780
+      },
+      {
+        "tag": "0.2.83+dca7ff3+nightly",
+        "date": "2026-09-14T11:26:14Z",
+        "value": 20548
+      },
+      {
+        "tag": "0.2.83+d84752d+nightly",
+        "date": "2026-09-14T17:41:14Z",
+        "value": 17724
+      },
+      {
+        "tag": "0.2.83+03962c3+nightly",
+        "date": "2026-09-14T18:18:22Z",
+        "value": 17720
+      },
+      {
+        "tag": "0.2.83+72c64db+nightly",
+        "date": "2026-09-15T11:38:05Z",
+        "value": 17636
+      },
+      {
+        "tag": "0.2.83+9dbcbd3+nightly",
+        "date": "2026-09-15T17:16:24Z",
+        "value": 18152
+      },
+      {
+        "tag": "0.2.83+2e8f8c0+nightly",
+        "date": "2026-09-15T18:44:16Z",
+        "value": 17896
+      },
+      {
+        "tag": "0.2.83+6d5ffbc+nightly",
+        "date": "2026-09-15T20:51:28Z",
+        "value": 17840
+      },
+      {
+        "tag": "0.2.83+72e7f35+nightly",
+        "date": "2026-09-16T12:18:02Z",
+        "value": 18104
+      },
+      {
+        "tag": "0.2.83+354d495+nightly",
+        "date": "2026-09-17T14:09:54Z",
+        "value": 17792
+      },
+      {
+        "tag": "0.2.83+d780bd2+nightly",
+        "date": "2026-09-19T08:21:30Z",
+        "value": 17540
+      },
+      {
+        "tag": "0.2.83+29ca322+nightly",
+        "date": "2026-09-19T20:12:22Z",
+        "value": 17424
+      },
+      {
+        "tag": "0.2.83+0db6b8f+nightly",
+        "date": "2026-09-19T21:07:46Z",
+        "value": 17676
+      },
+      {
+        "tag": "0.2.83+e5d8a6f+nightly",
+        "date": "2026-09-19T23:02:14Z",
+        "value": 18272
+      },
+      {
+        "tag": "0.2.83+8d4ac02+nightly",
+        "date": "2026-09-20T01:13:52Z",
+        "value": 18240
+      },
+      {
+        "tag": "0.2.83+832e3c7+nightly",
+        "date": "2026-09-20T15:33:15Z",
+        "value": 18396
+      },
+      {
+        "tag": "0.2.83+b3cb5eb+nightly",
+        "date": "2026-09-20T21:32:49Z",
+        "value": 18152
+      },
+      {
+        "tag": "0.2.83+6b97229+nightly",
+        "date": "2026-09-21T16:38:05Z",
+        "value": 18068
+      },
+      {
+        "tag": "0.2.83+4b2e7a0+nightly",
+        "date": "2026-09-21T17:23:46Z",
+        "value": 18312
+      },
+      {
+        "tag": "0.2.83+4cf395b+nightly",
+        "date": "2026-09-22T12:52:31Z",
+        "value": 18272
+      }
+    ],
+    "mean_rss_kb": [
+      {
+        "tag": "0.2.83+cfe43fb+nightly",
+        "date": "2026-09-08T17:55:34Z",
+        "value": 19449
+      },
+      {
+        "tag": "0.2.83+3364103+nightly",
+        "date": "2026-09-08T20:00:21Z",
+        "value": 19817
+      },
+      {
+        "tag": "0.2.83+0ba44c5+nightly",
+        "date": "2026-09-09T05:31:12Z",
+        "value": 19469
+      },
+      {
+        "tag": "0.2.83+581b9eb+nightly",
+        "date": "2026-09-09T20:48:19Z",
+        "value": 20097
+      },
+      {
+        "tag": "0.2.83+7b6746d+nightly",
+        "date": "2026-09-10T06:06:28Z",
+        "value": 19993
+      },
+      {
+        "tag": "0.2.83+cf44858+nightly",
+        "date": "2026-09-10T09:49:45Z",
+        "value": 20597
+      },
+      {
+        "tag": "0.2.83+ab3350d+nightly",
+        "date": "2026-09-10T14:10:54Z",
+        "value": 20489
+      },
+      {
+        "tag": "0.2.83+0305f9a+nightly",
+        "date": "2026-09-10T20:16:24Z",
+        "value": 20333
+      },
+      {
+        "tag": "0.2.83+3a0a726+nightly",
+        "date": "2026-09-11T19:36:34Z",
+        "value": 20293
+      },
+      {
+        "tag": "0.2.83+487b302+nightly",
+        "date": "2026-09-11T20:00:04Z",
+        "value": 20233
+      },
+      {
+        "tag": "0.2.83+3e10016+nightly",
+        "date": "2026-09-12T13:00:32Z",
+        "value": 20593
+      },
+      {
+        "tag": "0.2.83+1d3fd86+nightly",
+        "date": "2026-09-13T09:36:04Z",
+        "value": 20805
+      },
+      {
+        "tag": "0.2.83+ff13d58+nightly",
+        "date": "2026-09-13T10:28:17Z",
+        "value": 20746
+      },
+      {
+        "tag": "0.2.83+dca7ff3+nightly",
+        "date": "2026-09-14T11:26:14Z",
+        "value": 20514
+      },
+      {
+        "tag": "0.2.83+d84752d+nightly",
+        "date": "2026-09-14T17:41:14Z",
+        "value": 17683
+      },
+      {
+        "tag": "0.2.83+03962c3+nightly",
+        "date": "2026-09-14T18:18:22Z",
+        "value": 17679
+      },
+      {
+        "tag": "0.2.83+72c64db+nightly",
+        "date": "2026-09-15T11:38:05Z",
+        "value": 17596
+      },
+      {
+        "tag": "0.2.83+9dbcbd3+nightly",
+        "date": "2026-09-15T17:16:24Z",
+        "value": 18113
+      },
+      {
+        "tag": "0.2.83+2e8f8c0+nightly",
+        "date": "2026-09-15T18:44:16Z",
+        "value": 17855
+      },
+      {
+        "tag": "0.2.83+6d5ffbc+nightly",
+        "date": "2026-09-15T20:51:28Z",
+        "value": 17800
+      },
+      {
+        "tag": "0.2.83+72e7f35+nightly",
+        "date": "2026-09-16T12:18:02Z",
+        "value": 18063
+      },
+      {
+        "tag": "0.2.83+354d495+nightly",
+        "date": "2026-09-17T14:09:54Z",
+        "value": 17751
+      },
+      {
+        "tag": "0.2.83+d780bd2+nightly",
+        "date": "2026-09-19T08:21:30Z",
+        "value": 17499
+      },
+      {
+        "tag": "0.2.83+29ca322+nightly",
+        "date": "2026-09-19T20:12:22Z",
+        "value": 17384
+      },
+      {
+        "tag": "0.2.83+0db6b8f+nightly",
+        "date": "2026-09-19T21:07:46Z",
+        "value": 17635
+      },
+      {
+        "tag": "0.2.83+e5d8a6f+nightly",
+        "date": "2026-09-19T23:02:14Z",
+        "value": 18232
+      },
+      {
+        "tag": "0.2.83+8d4ac02+nightly",
+        "date": "2026-09-20T01:13:52Z",
+        "value": 18200
+      },
+      {
+        "tag": "0.2.83+832e3c7+nightly",
+        "date": "2026-09-20T15:33:15Z",
+        "value": 18356
+      },
+      {
+        "tag": "0.2.83+b3cb5eb+nightly",
+        "date": "2026-09-20T21:32:49Z",
+        "value": 18112
+      },
+      {
+        "tag": "0.2.83+6b97229+nightly",
+        "date": "2026-09-21T16:38:05Z",
+        "value": 17996
+      },
+      {
+        "tag": "0.2.83+4b2e7a0+nightly",
+        "date": "2026-09-21T17:23:46Z",
+        "value": 18238
+      },
+      {
+        "tag": "0.2.83+4cf395b+nightly",
+        "date": "2026-09-22T12:52:31Z",
+        "value": 18231
+      }
+    ],
+    "rss_5s_kb": [
+      {
+        "tag": "0.2.83+cfe43fb+nightly",
+        "date": "2026-09-08T17:55:34Z",
+        "value": 19364
+      },
+      {
+        "tag": "0.2.83+3364103+nightly",
+        "date": "2026-09-08T20:00:21Z",
+        "value": 19732
+      },
+      {
+        "tag": "0.2.83+0ba44c5+nightly",
+        "date": "2026-09-09T05:31:12Z",
+        "value": 19384
+      },
+      {
+        "tag": "0.2.83+581b9eb+nightly",
+        "date": "2026-09-09T20:48:19Z",
+        "value": 20012
+      },
+      {
+        "tag": "0.2.83+7b6746d+nightly",
+        "date": "2026-09-10T06:06:28Z",
+        "value": 19908
+      },
+      {
+        "tag": "0.2.83+cf44858+nightly",
+        "date": "2026-09-10T09:49:45Z",
+        "value": 20512
+      },
+      {
+        "tag": "0.2.83+ab3350d+nightly",
+        "date": "2026-09-10T14:10:54Z",
+        "value": 20404
+      },
+      {
+        "tag": "0.2.83+0305f9a+nightly",
+        "date": "2026-09-10T20:16:24Z",
+        "value": 20248
+      },
+      {
+        "tag": "0.2.83+3a0a726+nightly",
+        "date": "2026-09-11T19:36:34Z",
+        "value": 20224
+      },
+      {
+        "tag": "0.2.83+487b302+nightly",
+        "date": "2026-09-11T20:00:04Z",
+        "value": 20164
+      },
+      {
+        "tag": "0.2.83+3e10016+nightly",
+        "date": "2026-09-12T13:00:32Z",
+        "value": 20524
+      },
+      {
+        "tag": "0.2.83+1d3fd86+nightly",
+        "date": "2026-09-13T09:36:04Z",
+        "value": 20736
+      },
+      {
+        "tag": "0.2.83+ff13d58+nightly",
+        "date": "2026-09-13T10:28:17Z",
+        "value": 20676
+      },
+      {
+        "tag": "0.2.83+dca7ff3+nightly",
+        "date": "2026-09-14T11:26:14Z",
+        "value": 20444
+      },
+      {
+        "tag": "0.2.83+d84752d+nightly",
+        "date": "2026-09-14T17:41:14Z",
+        "value": 17604
+      },
+      {
+        "tag": "0.2.83+03962c3+nightly",
+        "date": "2026-09-14T18:18:22Z",
+        "value": 17600
+      },
+      {
+        "tag": "0.2.83+72c64db+nightly",
+        "date": "2026-09-15T11:38:05Z",
+        "value": 17516
+      },
+      {
+        "tag": "0.2.83+9dbcbd3+nightly",
+        "date": "2026-09-15T17:16:24Z",
+        "value": 18032
+      },
+      {
+        "tag": "0.2.83+2e8f8c0+nightly",
+        "date": "2026-09-15T18:44:16Z",
+        "value": 17776
+      },
+      {
+        "tag": "0.2.83+6d5ffbc+nightly",
+        "date": "2026-09-15T20:51:28Z",
+        "value": 17720
+      },
+      {
+        "tag": "0.2.83+72e7f35+nightly",
+        "date": "2026-09-16T12:18:02Z",
+        "value": 17984
+      },
+      {
+        "tag": "0.2.83+354d495+nightly",
+        "date": "2026-09-17T14:09:54Z",
+        "value": 17672
+      },
+      {
+        "tag": "0.2.83+d780bd2+nightly",
+        "date": "2026-09-19T08:21:30Z",
+        "value": 17420
+      },
+      {
+        "tag": "0.2.83+29ca322+nightly",
+        "date": "2026-09-19T20:12:22Z",
+        "value": 17304
+      },
+      {
+        "tag": "0.2.83+0db6b8f+nightly",
+        "date": "2026-09-19T21:07:46Z",
+        "value": 17556
+      },
+      {
+        "tag": "0.2.83+e5d8a6f+nightly",
+        "date": "2026-09-19T23:02:14Z",
+        "value": 18152
+      },
+      {
+        "tag": "0.2.83+8d4ac02+nightly",
+        "date": "2026-09-20T01:13:52Z",
+        "value": 18120
+      },
+      {
+        "tag": "0.2.83+832e3c7+nightly",
+        "date": "2026-09-20T15:33:15Z",
+        "value": 18276
+      },
+      {
+        "tag": "0.2.83+b3cb5eb+nightly",
+        "date": "2026-09-20T21:32:49Z",
+        "value": 18032
+      },
+      {
+        "tag": "0.2.83+6b97229+nightly",
+        "date": "2026-09-21T16:38:05Z",
+        "value": 17880
+      },
+      {
+        "tag": "0.2.83+4b2e7a0+nightly",
+        "date": "2026-09-21T17:23:46Z",
+        "value": 18124
+      },
+      {
+        "tag": "0.2.83+4cf395b+nightly",
+        "date": "2026-09-22T12:52:31Z",
+        "value": 18152
+      }
+    ],
+    "cpu_ms": [
+      {
+        "tag": "0.2.83+cfe43fb+nightly",
+        "date": "2026-09-08T17:55:34Z",
+        "value": 120
+      },
+      {
+        "tag": "0.2.83+3364103+nightly",
+        "date": "2026-09-08T20:00:21Z",
+        "value": 120
+      },
+      {
+        "tag": "0.2.83+0ba44c5+nightly",
+        "date": "2026-09-09T05:31:12Z",
+        "value": 110
+      },
+      {
+        "tag": "0.2.83+581b9eb+nightly",
+        "date": "2026-09-09T20:48:19Z",
+        "value": 120
+      },
+      {
+        "tag": "0.2.83+7b6746d+nightly",
+        "date": "2026-09-10T06:06:28Z",
+        "value": 170
+      },
+      {
+        "tag": "0.2.83+cf44858+nightly",
+        "date": "2026-09-10T09:49:45Z",
+        "value": 100
+      },
+      {
+        "tag": "0.2.83+ab3350d+nightly",
+        "date": "2026-09-10T14:10:54Z",
+        "value": 90
+      },
+      {
+        "tag": "0.2.83+0305f9a+nightly",
+        "date": "2026-09-10T20:16:24Z",
+        "value": 120
+      },
+      {
+        "tag": "0.2.83+3a0a726+nightly",
+        "date": "2026-09-11T19:36:34Z",
+        "value": 100
+      },
+      {
+        "tag": "0.2.83+487b302+nightly",
+        "date": "2026-09-11T20:00:04Z",
+        "value": 100
+      },
+      {
+        "tag": "0.2.83+3e10016+nightly",
+        "date": "2026-09-12T13:00:32Z",
+        "value": 90
+      },
+      {
+        "tag": "0.2.83+1d3fd86+nightly",
+        "date": "2026-09-13T09:36:04Z",
+        "value": 120
+      },
+      {
+        "tag": "0.2.83+ff13d58+nightly",
+        "date": "2026-09-13T10:28:17Z",
+        "value": 130
+      },
+      {
+        "tag": "0.2.83+dca7ff3+nightly",
+        "date": "2026-09-14T11:26:14Z",
+        "value": 130
+      },
+      {
+        "tag": "0.2.83+d84752d+nightly",
+        "date": "2026-09-14T17:41:14Z",
+        "value": 110
+      },
+      {
+        "tag": "0.2.83+03962c3+nightly",
+        "date": "2026-09-14T18:18:22Z",
+        "value": 120
+      },
+      {
+        "tag": "0.2.83+72c64db+nightly",
+        "date": "2026-09-15T11:38:05Z",
+        "value": 130
+      },
+      {
+        "tag": "0.2.83+9dbcbd3+nightly",
+        "date": "2026-09-15T17:16:24Z",
+        "value": 80
+      },
+      {
+        "tag": "0.2.83+2e8f8c0+nightly",
+        "date": "2026-09-15T18:44:16Z",
+        "value": 120
+      },
+      {
+        "tag": "0.2.83+6d5ffbc+nightly",
+        "date": "2026-09-15T20:51:28Z",
+        "value": 130
+      },
+      {
+        "tag": "0.2.83+72e7f35+nightly",
+        "date": "2026-09-16T12:18:02Z",
+        "value": 70
+      },
+      {
+        "tag": "0.2.83+354d495+nightly",
+        "date": "2026-09-17T14:09:54Z",
+        "value": 100
+      },
+      {
+        "tag": "0.2.83+d780bd2+nightly",
+        "date": "2026-09-19T08:21:30Z",
+        "value": 130
+      },
+      {
+        "tag": "0.2.83+29ca322+nightly",
+        "date": "2026-09-19T20:12:22Z",
+        "value": 120
+      },
+      {
+        "tag": "0.2.83+0db6b8f+nightly",
+        "date": "2026-09-19T21:07:46Z",
+        "value": 130
+      },
+      {
+        "tag": "0.2.83+e5d8a6f+nightly",
+        "date": "2026-09-19T23:02:14Z",
+        "value": 120
+      },
+      {
+        "tag": "0.2.83+8d4ac02+nightly",
+        "date": "2026-09-20T01:13:52Z",
+        "value": 70
+      },
+      {
+        "tag": "0.2.83+832e3c7+nightly",
+        "date": "2026-09-20T15:33:15Z",
+        "value": 140
+      },
+      {
+        "tag": "0.2.83+b3cb5eb+nightly",
+        "date": "2026-09-20T21:32:49Z",
+        "value": 120
+      },
+      {
+        "tag": "0.2.83+6b97229+nightly",
+        "date": "2026-09-21T16:38:05Z",
+        "value": 70
+      },
+      {
+        "tag": "0.2.83+4b2e7a0+nightly",
+        "date": "2026-09-21T17:23:46Z",
+        "value": 160
+      },
+      {
+        "tag": "0.2.83+4cf395b+nightly",
+        "date": "2026-09-22T12:52:31Z",
+        "value": 110
+      }
+    ],
+    "t_ready_ms": [
+      {
+        "tag": "0.2.83+cfe43fb+nightly",
+        "date": "2026-09-08T17:55:34Z",
+        "value": 71
+      },
+      {
+        "tag": "0.2.83+3364103+nightly",
+        "date": "2026-09-08T20:00:21Z",
+        "value": 70
+      },
+      {
+        "tag": "0.2.83+0ba44c5+nightly",
+        "date": "2026-09-09T05:31:12Z",
+        "value": 71
+      },
+      {
+        "tag": "0.2.83+581b9eb+nightly",
+        "date": "2026-09-09T20:48:19Z",
+        "value": 69
+      },
+      {
+        "tag": "0.2.83+7b6746d+nightly",
+        "date": "2026-09-10T06:06:28Z",
+        "value": 71
+      },
+      {
+        "tag": "0.2.83+cf44858+nightly",
+        "date": "2026-09-10T09:49:45Z",
+        "value": 66
+      },
+      {
+        "tag": "0.2.83+ab3350d+nightly",
+        "date": "2026-09-10T14:10:54Z",
+        "value": 67
+      },
+      {
+        "tag": "0.2.83+0305f9a+nightly",
+        "date": "2026-09-10T20:16:24Z",
+        "value": 70
+      },
+      {
+        "tag": "0.2.83+3a0a726+nightly",
+        "date": "2026-09-11T19:36:34Z",
+        "value": 66
+      },
+      {
+        "tag": "0.2.83+487b302+nightly",
+        "date": "2026-09-11T20:00:04Z",
+        "value": 70
+      },
+      {
+        "tag": "0.2.83+3e10016+nightly",
+        "date": "2026-09-12T13:00:32Z",
+        "value": 67
+      },
+      {
+        "tag": "0.2.83+1d3fd86+nightly",
+        "date": "2026-09-13T09:36:04Z",
+        "value": 67
+      },
+      {
+        "tag": "0.2.83+ff13d58+nightly",
+        "date": "2026-09-13T10:28:17Z",
+        "value": 71
+      },
+      {
+        "tag": "0.2.83+dca7ff3+nightly",
+        "date": "2026-09-14T11:26:14Z",
+        "value": 71
+      },
+      {
+        "tag": "0.2.83+d84752d+nightly",
+        "date": "2026-09-14T17:41:14Z",
+        "value": 65
+      },
+      {
+        "tag": "0.2.83+03962c3+nightly",
+        "date": "2026-09-14T18:18:22Z",
+        "value": 70
+      },
+      {
+        "tag": "0.2.83+72c64db+nightly",
+        "date": "2026-09-15T11:38:05Z",
+        "value": 69
+      },
+      {
+        "tag": "0.2.83+9dbcbd3+nightly",
+        "date": "2026-09-15T17:16:24Z",
+        "value": 64
+      },
+      {
+        "tag": "0.2.83+2e8f8c0+nightly",
+        "date": "2026-09-15T18:44:16Z",
+        "value": 70
+      },
+      {
+        "tag": "0.2.83+6d5ffbc+nightly",
+        "date": "2026-09-15T20:51:28Z",
+        "value": 68
+      },
+      {
+        "tag": "0.2.83+72e7f35+nightly",
+        "date": "2026-09-16T12:18:02Z",
+        "value": 65
+      },
+      {
+        "tag": "0.2.83+354d495+nightly",
+        "date": "2026-09-17T14:09:54Z",
+        "value": 14
+      },
+      {
+        "tag": "0.2.83+d780bd2+nightly",
+        "date": "2026-09-19T08:21:30Z",
+        "value": 18
+      },
+      {
+        "tag": "0.2.83+29ca322+nightly",
+        "date": "2026-09-19T20:12:22Z",
+        "value": 17
+      },
+      {
+        "tag": "0.2.83+0db6b8f+nightly",
+        "date": "2026-09-19T21:07:46Z",
+        "value": 16
+      },
+      {
+        "tag": "0.2.83+e5d8a6f+nightly",
+        "date": "2026-09-19T23:02:14Z",
+        "value": 17
+      },
+      {
+        "tag": "0.2.83+8d4ac02+nightly",
+        "date": "2026-09-20T01:13:52Z",
+        "value": 12
+      },
+      {
+        "tag": "0.2.83+832e3c7+nightly",
+        "date": "2026-09-20T15:33:15Z",
+        "value": 18
+      },
+      {
+        "tag": "0.2.83+b3cb5eb+nightly",
+        "date": "2026-09-20T21:32:49Z",
+        "value": 17
+      },
+      {
+        "tag": "0.2.83+6b97229+nightly",
+        "date": "2026-09-21T16:38:05Z",
+        "value": 10
+      },
+      {
+        "tag": "0.2.83+4b2e7a0+nightly",
+        "date": "2026-09-21T17:23:46Z",
+        "value": 18
+      },
+      {
+        "tag": "0.2.83+4cf395b+nightly",
+        "date": "2026-09-22T12:52:31Z",
+        "value": 14
+      }
+    ]
+  },
+  "deltas": [
+    {
+      "fixture": "bench.flac",
+      "player": "gtm",
+      "metric": "peak_rss_kb",
+      "label": "peak RSS (kB)",
+      "previous": 18312,
+      "current": 18272,
+      "delta": -40,
+      "delta_pct": -0.22,
+      "regression": false
+    },
+    {
+      "fixture": "bench.flac",
+      "player": "gtm",
+      "metric": "mean_rss_kb",
+      "label": "mean RSS (kB)",
+      "previous": 18238,
+      "current": 18231,
+      "delta": -7,
+      "delta_pct": -0.04,
+      "regression": false
+    },
+    {
+      "fixture": "bench.flac",
+      "player": "gtm",
+      "metric": "cpu_ms",
+      "label": "CPU (ms)",
+      "previous": 160,
+      "current": 110,
+      "delta": -50,
+      "delta_pct": -31.25,
+      "regression": false
+    },
+    {
+      "fixture": "bench.flac",
+      "player": "gtm",
+      "metric": "rss_5s_kb",
+      "label": "RSS @5s (kB)",
+      "previous": 18124,
+      "current": 18152,
+      "delta": 28,
+      "delta_pct": 0.15,
+      "regression": true
+    }
+  ],
+  "runs": {
+    "gtm/bench.flac": {
+      "file_sha256": "c5e5c960cf59e5fdf3f3b68ea94a24d5f3d4b1122697e4e19d5ec5c1c3e175de",
+      "peak_rss_kb": 18272,
+      "mean_rss_kb": 18231,
+      "rss_5s_kb": 18152,
+      "cpu_ms": 110,
+      "t_ready_ms": 14,
+      "rss_p50_kb": 18272,
+      "rss_p95_kb": 18272
+    },
+    "gtm/bench.mp3": {
+      "file_sha256": "6bd083a60ca94245ffd8d1be73e4b83eaab0fb6eeb6648e214ca528563a0bbfd",
+      "peak_rss_kb": 18208,
+      "mean_rss_kb": 18189,
+      "rss_5s_kb": 18100,
+      "cpu_ms": 190,
+      "t_ready_ms": 14,
+      "rss_p50_kb": 18208,
+      "rss_p95_kb": 18208
+    }
+  }
+}

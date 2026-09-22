@@ -14,8 +14,11 @@
 #       - mermaid xychart: mean-RSS trend per release
 #       - mermaid xychart: t_ready (ms) start-latency trend per release
 #       - a results index table
+#       - `stats.json`: machine-readable series/deltas (differences vs the
+#         previous release) mappable to a visualization
 #     and then writes the equivalent markers back into the doc, so the
-#     committed BENCHMARK.md is the single permanent store (no JSON tracked).
+#     committed BENCHMARK.md plus stats.json are the permanent store (the only
+#     JSON tracked in git is `stats.json`; the `.bench/` files stay ephemeral).
 #
 # Requires: jq
 
@@ -198,6 +201,80 @@ for t in ${TAG_ORDER}; do
 done
 MARKERS="${MARKERS:1}"
 
+# ── 6. machine-readable stats.json (series + deltas, viz-ready) ───────────────
+# `series` mirrors the mermaid inputs above (one entry per release, keyed by
+# tag/date) plus t_ready; `deltas` are the headline this-vs-previous diff rows
+# with percentages and a regression flag; `runs` carries every metric of the
+# current release. Together they let any charting tool redraw the tables and
+# charts above without parsing Markdown.
+STATS_FILE="${REPO_DIR}/stats.json"
+
+SERIES_JSON="$(
+  jq -cs 'sort_by(.date) | {
+    peak_rss_kb: [.[] | {tag, date, value: (.runs["gtm/bench.flac"].peak_rss_kb // 0)}],
+    mean_rss_kb: [.[] | {tag, date, value: (.runs["gtm/bench.flac"].mean_rss_kb // 0)}],
+    rss_5s_kb:   [.[] | {tag, date, value: (.runs["gtm/bench.flac"].rss_5s_kb // 0)}],
+    cpu_ms:      [.[] | {tag, date, value: (.runs["gtm/bench.flac"].cpu_ms // 0)}],
+    t_ready_ms:  [.[] | {tag, date, value: (.runs["gtm/bench.flac"].t_ready_ms // 0)}]
+  }' "${HIST_FILES[@]}" 2>/dev/null || echo 'null'
+)"
+
+DELTA_ROWS=()
+for m in peak_rss_kb mean_rss_kb cpu_ms rss_5s_kb; do
+  this_v="$(metric "${THIS}" "${FLAC}" "${m}")"
+  prev_v=0
+  [ -n "${PREV_TAG}" ] && prev_v="$(metric "${PREV}" "${FLAC}" "${m}")"
+  [ "${prev_v}" -eq 0 ] 2>/dev/null && [ "${this_v}" -eq 0 ] 2>/dev/null && continue
+  label="${m}"
+  case "${m}" in
+    peak_rss_kb) label="peak RSS (kB)" ;;
+    mean_rss_kb) label="mean RSS (kB)" ;;
+    rss_5s_kb)   label="RSS @5s (kB)" ;;
+    cpu_ms)      label="CPU (ms)" ;;
+  esac
+  d=$((this_v - prev_v))
+  DELTA_ROWS+=("$(jq -nc \
+    --arg fixture "bench.flac" --arg player "gtm" \
+    --arg metric "${m}" --arg lbl "${label}" \
+    --argjson previous "${prev_v}" --argjson current "${this_v}" \
+    --argjson delta "${d}" \
+    --argjson delta_pct "$(awk -v p="${prev_v}" -v c="${this_v}" \
+      'BEGIN{ if (p==0) print "null"; else printf "%.2f", (c-p)/p*100 }')" \
+    --argjson regression "$(awk -v d="${d}" 'BEGIN{ print (d>0)?1:0 }')" \
+    '{fixture: $fixture, player: $player, metric: $metric, "label": $lbl,
+      previous: $previous, current: $current, delta: $delta,
+      delta_pct: $delta_pct, regression: ($regression == 1)}')")
+done
+if [ "${#DELTA_ROWS[@]}" -gt 0 ]; then
+  DELTAS_JSON="$(printf '%s\n' "${DELTA_ROWS[@]}" | jq -cs '.')"
+else
+  DELTAS_JSON='[]'
+fi
+
+if [ -n "${PREV_TAG}" ] && [ -f "${PREV}" ]; then
+  PREV_META="$(jq -c '{tag, date, commit}' "${PREV}")"
+else
+  PREV_META='null'
+fi
+
+jq -n \
+  --argjson schema 1 \
+  --arg generated_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --argjson run "$(jq -c '{tag, date, commit, seconds}' "${THIS}")" \
+  --argjson previous "${PREV_META}" \
+  --argjson series "${SERIES_JSON}" \
+  --argjson deltas "${DELTAS_JSON}" \
+  --argjson runs "$(jq -c '.runs' "${THIS}")" \
+  '{schema: $schema,
+    generated_at: $generated_at,
+    run: $run,
+    previous: $previous,
+    series: $series,
+    deltas: $deltas,
+    runs: $runs}' \
+  > "${STATS_FILE}"
+echo "wrote ${STATS_FILE}"
+
 THIS_TAG_SAFE="${THIS_TAG//|/}"
 THIS_COMMIT_SAFE="${THIS_COMMIT//|/}"
 THIS_DATE_SAFE="${THIS_DATE//|/}"
@@ -283,7 +360,9 @@ __MARKERS__
   trip to first playing state).
 - Harness: `scripts/bench/run.sh <player> <file> <seconds>`; collection:
   `scripts/bench/collect.sh <tag>` writes ephemeral results to `.bench/`; this
-  renderer: `scripts/bench/render.sh` publishes them into this file.
+  renderer: `scripts/bench/render.sh` publishes them into this file and emits
+  the machine-readable `stats.json` (series + this-vs-previous deltas) that is
+  committed alongside it for visualization tools.
 EOF
 )"
 
