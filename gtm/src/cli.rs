@@ -209,7 +209,9 @@ pub enum CliCommand {
     /// Search the library
     Search { query: String },
     /// Search YouTube / SoundCloud (`scsearch:`) / Bilibili (`bilisearch:`)
-    /// / Mixcloud (`mcsearch:`) via the daemon and print matching tracks
+    /// / Mixcloud (`mcsearch:`) via the daemon and print matching tracks.
+    /// Additional providers can be added with `GTM_YT_HOSTS` (see
+    /// `gtm::shared::yt`).
     YtSearch {
         #[arg(value_name = "QUERY")]
         query: String,

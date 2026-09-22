@@ -3752,32 +3752,23 @@ impl Pickers {
         };
 
         let mut lines: Vec<Line> = vec![search_line];
-        match app.pickers.top().map(|o| o.query.clone()).as_deref() {
-            Some(q) if q.starts_with("scsearch:") => {
-                lines.push(Line::from(Span::styled(
-                    " SoundCloud search (yt-dlp)",
-                    Style::default().fg(app.theme.fg_dim),
-                )));
-            }
-            Some(q) if q.starts_with("bilisearch:") => {
-                lines.push(Line::from(Span::styled(
-                    " Bilibili search (yt-dlp)",
-                    Style::default().fg(app.theme.fg_dim),
-                )));
-            }
-            Some(q) if q.starts_with("mcsearch:") => {
-                lines.push(Line::from(Span::styled(
-                    " Mixcloud search (yt-dlp)",
-                    Style::default().fg(app.theme.fg_dim),
-                )));
-            }
-            Some(q) if q.starts_with("ytsearch") => {
-                lines.push(Line::from(Span::styled(
-                    " YouTube Music search (yt-dlp)",
-                    Style::default().fg(app.theme.fg_dim),
-                )));
-            }
-            _ => {}
+        // Hint line for yt-dlp host searches. The host table is data-driven
+        // (see shared::yt): defaults plus `GTM_YT_HOSTS` overrides, so any
+        // configured provider's prefix gets a hint here.
+        if let Some(host) = app
+            .pickers
+            .top()
+            .map(|o| o.query.clone())
+            .as_deref()
+            .and_then(|q| {
+                crate::shared::yt::match_yt_host(q, &crate::shared::yt::yt_hosts())
+                    .map(|(_, h)| h.name.clone())
+            })
+        {
+            lines.push(Line::from(Span::styled(
+                format!(" {host} search (yt-dlp)"),
+                Style::default().fg(app.theme.fg_dim),
+            )));
         }
         if app.yt_results_cache.is_empty() && app.yt_search_loading {
             let lines_len = lines.len();

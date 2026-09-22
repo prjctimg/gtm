@@ -21,6 +21,7 @@ use tracing::debug;
 
 use gtm::shared::global::YTFilter;
 use gtm::shared::track::{StreamInfo, YTSearchResult};
+use gtm::shared::yt::{match_yt_host, yt_hosts};
 
 use crate::cleaner::clean_youtube_title;
 
@@ -1024,12 +1025,12 @@ async fn run_search(
     cancel_rx: oneshot::Receiver<()>,
     _permit: OwnedSemaphorePermit,
 ) -> Vec<YTSearchResult> {
-    // Provider source selector (`scsearch:`/`bilisearch:`/`mcsearch:`) mirrors
-    // the yt-dlp extractor prefixes cliamp exposes for its Youtube-family
-    // providers. The prefix is stripped here and fed back to yt-dlp's search
-    // extractor with a 10-hit limit.
-    if let Some((extractor, rest)) = search_extractor(query) {
-        let search_arg = format!("{extractor}:{rest}");
+    // Provider source selector (`scsearch:`/`bilisearch:`/`mcsearch:` and any
+    // `GTM_YT_HOSTS` additions) mirrors the yt-dlp extractor prefixes cliamp
+    // exposes for its Youtube-family providers. The prefix is stripped here
+    // and fed back to yt-dlp's search extractor with a 10-hit limit.
+    if let Some((rest, host)) = match_yt_host(query, &yt_hosts()) {
+        let search_arg = format!("{}:{rest}", host.extractor);
         return run_ytdlp_search(&search_arg, auth_args, cancel_rx).await;
     }
 
@@ -1086,26 +1087,6 @@ async fn run_search(
     }
     out.sort_by(|a, b| b.priority.cmp(&a.priority).then(b.views.cmp(&a.views)));
     out
-}
-
-/// Map a query that starts with a cliamp-style source selector into the
-/// matching yt-dlp search extractor. Returns `(extractor, rest_of_query)`.
-fn search_extractor(query: &str) -> Option<(&'static str, &str)> {
-    const PREFIXES: &[(&str, &str)] = &[
-        ("scsearch:", "scsearch10"),
-        ("bilisearch:", "bilisearch10"),
-        ("mcsearch:", "mcsearch10"),
-        ("ytsearch10:", "ytsearch10"),
-        ("ytsearch:", "ytsearch10"),
-    ];
-    for (prefix, extractor) in PREFIXES {
-        if let Some(rest) = query.strip_prefix(prefix)
-            && !rest.trim().is_empty()
-        {
-            return Some((extractor, rest.trim()));
-        }
-    }
-    None
 }
 
 /// Run a yt-dlp search-extractor query (`scsearch10:...`, `bilisearch10:...`,

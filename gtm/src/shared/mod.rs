@@ -24,6 +24,7 @@ pub mod track;
 pub mod tripwire;
 pub mod validate;
 pub mod wire;
+pub mod yt;
 
 pub use crate::shared::custom::CustomRadioStation;
 pub use chart::{ChartError, ChartPlaylist, ChartSource, ChartTrack};
