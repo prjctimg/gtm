@@ -56,7 +56,7 @@ use crate::lastfm::LastfmManager;
 use crate::library::{Library, extract_metadata};
 use crate::lyrics::{LyricsManager, lrc_to_text, meta_from_filename};
 use crate::network;
-use crate::oauth::OauthFlow;
+use crate::oauth::{OAUTH_TIMEOUT, OauthFlow, bind_callback};
 use crate::podcast::PodcastManager;
 use crate::queue;
 use crate::radio::RadioBrowserManager;
@@ -3122,21 +3122,88 @@ impl Lastfm {
         }
     }
 
+    /// Exchange a web-auth token for a (persisted) session key, clearing any
+    /// recorded link error. Shared by the IPC `authenticate` call and the
+    /// daemon-hosted OAuth flow task so both paths run the same exchange.
     pub async fn authenticate(inner: &DaemonInner, token: &str) -> Result<DaemonRes, CoreError> {
-        let mut lastfm = inner.lastfm.lock().await;
-        match tokio::time::timeout(Duration::from_secs(10), lastfm.authenticate(token)).await {
-            Ok(Ok(session_key)) => {
-                let mut state = inner.state.write().await;
-                state.scrobble.session_token = Some(session_key.clone());
-                drop(state);
-                Daemon::save_state(inner);
-                Ok(DaemonRes::Ok)
-            }
-            Ok(Err(e)) => Ok(DaemonRes::Error { message: e }),
-            Err(_elapsed) => Ok(DaemonRes::Error {
-                message: "Last.fm authentication timed out".into(),
-            }),
+        match Self::exchange_session(inner, token).await {
+            Ok(()) => Ok(DaemonRes::Ok),
+            Err(e) => Ok(DaemonRes::Error { message: e }),
         }
+    }
+
+    /// Start the Last.fm OAuth link flow entirely daemon-side: bind the
+    /// loopback callback *before* returning the authorize URL (so the redirect
+    /// never lands on a dead port), then capture the returning `token`,
+    /// exchange it for a session key, and push [`DaemonEvent::LastfmStatusChanged`]
+    /// so the TUI dismisses its prompt and proceeds to a playback-ready state
+    /// as soon as the exchange completes — no client-side polling, no
+    /// client-bound callback socket. Failures (timeout, exchange error) push
+    /// the same event with the reason carried by the next status poll. The
+    /// TUI's only hooks — start → url → status event — are identical to the
+    /// Spotify flow, so future providers plug into the same contract.
+    pub async fn oauth_start(inner: &Arc<DaemonInner>, port: u16) -> Result<DaemonRes, CoreError> {
+        let url = {
+            let lastfm = inner.lastfm.lock().await;
+            lastfm.auth_url().ok_or_else(|| {
+                CoreError::Daemon(
+                    "Last.fm API key/secret not configured; enter them in the setup form first"
+                        .into(),
+                )
+            })?
+        };
+        // Abort any previous pending flow so its listener socket is freed.
+        if let Some(handle) = inner.oauth_lastfm_task.lock().await.take() {
+            handle.abort();
+        }
+        // A fresh attempt starts clean: any error from an earlier (failed) flow
+        // must not leak into the status the new flow's completion event polls.
+        *inner.lastfm_error.lock().await = None;
+        let listener = bind_callback(port, OAUTH_TIMEOUT)
+            .await
+            .map_err(|e| CoreError::Daemon(format!("Last.fm callback server: {e}")))?;
+        let inner2 = Arc::clone(inner);
+        let handle = tokio::spawn(async move {
+            match listener.accept_param("token", None).await {
+                Ok(token) => match Lastfm::exchange_session(&inner2, token.trim()).await {
+                    Ok(()) => {
+                        info!("last.fm oauth link complete (session key stored)");
+                    }
+                    Err(e) => {
+                        warn!("last.fm oauth exchange failed: {e}");
+                        *inner2.lastfm_error.lock().await = Some(e);
+                    }
+                },
+                Err(e) => {
+                    warn!("last.fm oauth link failed: {e}");
+                    *inner2.lastfm_error.lock().await = Some(e);
+                }
+            }
+            // One status event covers both outcomes: `ready` dismisses the
+            // TUI prompt and proceeds; a `lastfm_error` reasons it inline.
+            let _ = inner2.event_tx.send(DaemonEvent::LastfmStatusChanged);
+        });
+        *inner.oauth_lastfm_task.lock().await = Some(handle);
+        Ok(DaemonRes::LastfmAuthUrlRes { url })
+    }
+
+    /// Exchange a token for a session key, persist it, and clear any recorded
+    /// link error.
+    async fn exchange_session(inner: &DaemonInner, token: &str) -> Result<(), String> {
+        let mut lastfm = inner.lastfm.lock().await;
+        let session_key =
+            match tokio::time::timeout(Duration::from_secs(10), lastfm.authenticate(token)).await {
+                Ok(Ok(key)) => key,
+                Ok(Err(e)) => return Err(e),
+                Err(_elapsed) => return Err("Last.fm authentication timed out".into()),
+            };
+        drop(lastfm);
+        let mut state = inner.state.write().await;
+        state.scrobble.session_token = Some(session_key);
+        drop(state);
+        Daemon::save_state(inner);
+        *inner.lastfm_error.lock().await = None;
+        Ok(())
     }
 
     pub async fn status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
@@ -3167,6 +3234,7 @@ impl Lastfm {
             session_token,
             ready,
             loved,
+            error: inner.lastfm_error.lock().await.clone(),
         })
     }
 
@@ -4201,6 +4269,14 @@ struct DaemonInner {
     /// Pending OAuth link flow task; aborted when a new flow starts or the
     /// user cancels.
     oauth_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Pending Last.fm OAuth link flow task (daemon-hosted loopback). Kept
+    /// separate from `oauth_task` so the Spotify and Last.fm flows never abort
+    /// each other.
+    oauth_lastfm_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Last.fm link failure surfaced through the next status poll (callback
+    /// timeout, token-exchange error, …). Cleared on a successful exchange so
+    /// the Setup picker can show the reason inline instead of hanging.
+    lastfm_error: tokio::sync::Mutex<Option<String>>,
     crossfade_loaded_for: tokio::sync::Mutex<Option<String>>,
     countdown_notified_for: tokio::sync::Mutex<Option<String>>,
     /// Wall-clock instant of the last `PositionChanged` broadcast. The 16ms
@@ -4548,6 +4624,8 @@ impl Daemon {
             charts: tokio::sync::Mutex::new(ChartsRegistry::empty()),
             stream: tokio::sync::Mutex::new(StreamManager::new()),
             oauth_task: tokio::sync::Mutex::new(None),
+            oauth_lastfm_task: tokio::sync::Mutex::new(None),
+            lastfm_error: tokio::sync::Mutex::new(None),
             crossfade_loaded_for: tokio::sync::Mutex::new(None),
             countdown_notified_for: tokio::sync::Mutex::new(None),
             last_pos_broadcast: tokio::sync::Mutex::new(None),
@@ -5544,6 +5622,7 @@ impl Daemon {
                 .await
             }
             DaemonReq::LastfmAuthUrl => Lastfm::auth_url(inner).await,
+            DaemonReq::LastfmOauthStart { port } => Lastfm::oauth_start(inner, *port).await,
             DaemonReq::LastfmAuthenticate { token } => Lastfm::authenticate(inner, token).await,
             DaemonReq::LastfmStatus => Lastfm::status(inner).await,
             DaemonReq::LastfmClear => Lastfm::clear(inner).await,

@@ -36,6 +36,12 @@ fn default_oauth_port() -> u16 {
     8990
 }
 
+/// Default local callback port for the Last.fm OAuth redirect when the caller
+/// doesn't specify one (mirrors `gtm::oauth::lastfm_callback_port`).
+fn default_lastfm_port() -> u16 {
+    8991
+}
+
 /// `/queue` sub-commands. Internally tagged via `action`, wire encoding is
 /// flat: `{"action":"add","path":"...","position":null}` per `commands.md`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -389,6 +395,13 @@ pub enum DaemonReq {
         min_play_pct: Option<f32>,
     },
     LastfmAuthUrl,
+    /// Start the daemon-hosted Last.fm OAuth loopback: the daemon binds the
+    /// callback port, returns the authorize URL, then captures the returning
+    /// `token`, exchanges it, and pushes a status event — the TUI never binds
+    /// or polls the callback itself.
+    LastfmOauthStart {
+        port: u16,
+    },
     LastfmAuthenticate {
         token: String,
     },
@@ -596,6 +609,7 @@ impl DaemonReq {
             DaemonReq::SpotifyTrackImage { .. } => "spotify_track_image",
             DaemonReq::LastfmSetConfig { .. } => "lastfm_set_config",
             DaemonReq::LastfmAuthUrl => "lastfm_auth_url",
+            DaemonReq::LastfmOauthStart { .. } => "lastfm_oauth_start",
             DaemonReq::LastfmAuthenticate { .. } => "lastfm_authenticate",
             DaemonReq::LastfmStatus => "lastfm_status",
             DaemonReq::LastfmClear => "lastfm_clear",
@@ -1055,6 +1069,15 @@ impl DaemonReq {
                 }
             }
             "lastfm_auth_url" => DaemonReq::LastfmAuthUrl,
+            "lastfm_oauth_start" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    #[serde(default = "default_lastfm_port")]
+                    port: u16,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::LastfmOauthStart { port: x.port }
+            }
             "lastfm_authenticate" => {
                 #[derive(Deserialize)]
                 struct Params {
@@ -1567,6 +1590,8 @@ pub enum DaemonEvent {
     /// Spotify link state changed (e.g. an OAuth link flow completed).
     #[serde(rename = "spotify_status_changed")]
     SpotifyStatusChanged,
+    #[serde(rename = "lastfm_status_changed")]
+    LastfmStatusChanged,
     #[serde(rename = "spectrum_changed")]
     SpectrumChanged { levels: Vec<f32> },
     /// Time-domain waveform ring (interleaved L/R) plus a stereo flag, for
@@ -1710,6 +1735,9 @@ pub enum DaemonRes {
         ready: bool,
         /// Whether the currently playing track is loved on Last.fm.
         loved: bool,
+        /// Link failure surfaced through the status poll (callback timeout,
+        /// token-exchange error). `None` when the flow is idle or succeeded.
+        error: Option<String>,
     },
     YtDownloadProgress {
         id: u64,
@@ -1824,12 +1852,14 @@ impl DaemonRes {
                 session_token,
                 ready,
                 loved,
+                error,
             } => Some(serde_json::json!({
                 "enabled": enabled,
                 "api_key": api_key,
                 "session_token": session_token,
                 "ready": ready,
                 "loved": loved,
+                "error": error,
             })),
             DaemonRes::YtDownloadProgress {
                 id,
@@ -1975,12 +2005,14 @@ impl DaemonRes {
                 session_token,
                 ready,
                 loved,
+                error,
             } => {
                 field!("enabled", &enabled);
                 field!("api_key", &api_key);
                 field!("session_token", &session_token);
                 field!("ready", &ready);
                 field!("loved", &loved);
+                field!("error", &error);
             }
             DaemonRes::YtDownloadProgress {
                 id,
@@ -2273,6 +2305,7 @@ impl DaemonRes {
                     .map(String::from),
                 ready: data.get("ready").and_then(|v| v.as_bool()).unwrap_or(false),
                 loved: data.get("loved").and_then(|v| v.as_bool()).unwrap_or(false),
+                error: data.get("error").and_then(|v| v.as_str()).map(String::from),
             },
             "yt_download_progress" => DaemonRes::YtDownloadProgress {
                 id: data.get("id").and_then(|v| v.as_u64()).unwrap_or(0),

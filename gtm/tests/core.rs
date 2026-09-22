@@ -486,6 +486,7 @@ fn res_lastfm_wire() {
                 session_token: Some("sess".into()),
                 ready: true,
                 loved: false,
+                error: None,
             },
         ),
     ];

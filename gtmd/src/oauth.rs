@@ -127,7 +127,7 @@ impl OauthFlow {
     }
 }
 
-/// A pre-bound loopback callback listener for a single [`OauthFlow`] link.
+/// A pre-bound loopback callback listener for a single OAuth link flow.
 pub struct OauthListener {
     listener: tokio::net::TcpListener,
     deadline: tokio::time::Instant,
@@ -135,9 +135,25 @@ pub struct OauthListener {
 
 impl OauthListener {
     /// Accept connections until one carries a `?code=` query with a matching
-    /// `state`, or [`OAUTH_TIMEOUT`] elapses so a forgotten flow does not hold
-    /// the socket forever.
+    /// `state`, or the deadline elapses so a forgotten flow does not hold the
+    /// socket forever. Spotify-specific thin wrapper over [`Self::accept_param`].
     async fn accept_token(self, expected_state: &str) -> Result<String, String> {
+        self.accept_param("code", Some(expected_state)).await
+    }
+
+    /// Accept connections until one carries the named query `param` (with a
+    /// matching `state` when one is expected), or the deadline elapses. The
+    /// 200 response is written *before* the value is returned, so the browser
+    /// always sees a live callback even if the daemon stalls afterwards.
+    /// Unrelated requests (favicons, prefetches) get a 404 and the loop keeps
+    /// waiting. This is the single callback contract every provider shares:
+    /// bind first, open the browser second, and complete the flow inside the
+    /// daemon instead of in the TUI's event loop.
+    pub async fn accept_param(
+        self,
+        param: &str,
+        expected_state: Option<&str>,
+    ) -> Result<String, String> {
         let OauthListener { listener, deadline } = self;
         loop {
             let accept = tokio::time::timeout_at(deadline, listener.accept()).await;
@@ -146,27 +162,27 @@ impl OauthListener {
                 Ok(Err(e)) => return Err(format!("accept: {e}")),
                 Err(_) => return Err("OAuth link timed out waiting for the browser".into()),
             };
-            match read_code(&mut stream, expected_state).await {
-                Ok(Some(code)) => {
+            match read_param(&mut stream, param, expected_state).await {
+                Ok(Some(value)) => {
                     write_response(
                         &mut stream,
                         "200 OK",
                         "gtm authenticated. You can close this tab.",
                     )
                     .await;
-                    return Ok(code);
+                    return Ok(value);
                 }
                 Ok(None) => {
                     write_response(&mut stream, "404 Not Found", "").await;
                 }
                 Err(msg) => {
-                    // Spotify rejected the flow (e.g. `error=invalid_scope`);
+                    // The provider rejected the flow (e.g. `error=invalid_scope`);
                     // tell the user in the browser tab and fail the link
                     // immediately instead of silently waiting out the timeout.
                     write_response(
                         &mut stream,
                         "400 Bad Request",
-                        &format!("Spotify authorization failed: {msg}"),
+                        &format!("OAuth authorization failed: {msg}"),
                     )
                     .await;
                     return Err(msg);
@@ -174,6 +190,24 @@ impl OauthListener {
             }
         }
     }
+}
+
+/// Bind a loopback callback listener for a provider flow. Binding succeeds
+/// *before* any authorize URL is handed out or the browser is opened, so a
+/// fast user never lands on a dead port. `timeout` bounds how long the
+/// returned listener waits for the browser redirect.
+pub async fn bind_callback(
+    port: u16,
+    timeout: std::time::Duration,
+) -> Result<OauthListener, String> {
+    let addr = SocketAddr::from(([127, 0, 0, 1], port));
+    let listener = tokio::net::TcpListener::bind(addr)
+        .await
+        .map_err(|e| format!("bind OAuth callback server to {addr}: {e}"))?;
+    Ok(OauthListener {
+        listener,
+        deadline: tokio::time::Instant::now() + timeout,
+    })
 }
 
 struct Pkce {
@@ -213,9 +247,10 @@ fn urlencode(s: &str) -> String {
     out
 }
 
-async fn read_code(
+async fn read_param(
     stream: &mut tokio::net::TcpStream,
-    expected_state: &str,
+    param: &str,
+    expected_state: Option<&str>,
 ) -> Result<Option<String>, String> {
     let mut reader = BufReader::new(stream);
     // The request head's first line is all we need.
@@ -229,32 +264,24 @@ async fn read_code(
         .split_whitespace()
         .nth(1)
         .ok_or_else(|| "malformed OAuth callback request".to_string())?;
-    code_from_redirect(target, expected_state)
+    param_from_redirect(target, param, expected_state)
 }
 
-async fn write_response(stream: &mut tokio::net::TcpStream, status: &str, body: &str) {
-    let _ = stream
-        .write_all(
-            format!(
-                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            )
-            .as_bytes(),
-        )
-        .await;
-    let _ = stream.flush().await;
-}
-
-/// Extract the `code` from a redirect target, but only when the `state` query
-/// value matches the one this flow issued. A mismatch is a CSRF signal and is
-/// rejected by returning `Ok(None)`.
+/// Extract `param` from a redirect target. When `expected_state` is given, the
+/// redirect must also carry a matching `state` query value; a mismatch is a
+/// CSRF signal and is rejected by returning `Ok(None)` (the acceptor keeps
+/// waiting for a genuine redirect).
 ///
-/// Returns `Err` when the redirect carries a Spotify `error`/`error_description`
+/// Returns `Err` when the redirect carries an `error`/`error_description`
 /// parameter (e.g. `error=invalid_scope`), so the failure surfaces immediately
 /// instead of silently 404-ing until the flow times out.
-fn code_from_redirect(target: &str, expected_state: &str) -> Result<Option<String>, String> {
+fn param_from_redirect(
+    target: &str,
+    param: &str,
+    expected_state: Option<&str>,
+) -> Result<Option<String>, String> {
     let query = target.split_once('?').map(|(_, q)| q).unwrap_or_default();
-    let mut code = None;
+    let mut value = None;
     let mut state = None;
     let mut error = None;
     let mut error_description = None;
@@ -263,7 +290,7 @@ fn code_from_redirect(target: &str, expected_state: &str) -> Result<Option<Strin
             continue;
         };
         match k {
-            "code" => code = Some(v.to_string()),
+            k if k == param => value = Some(percent_decode(v)),
             "state" => state = Some(v.to_string()),
             "error" => error = Some(percent_decode(v)),
             "error_description" => error_description = Some(percent_decode(v)),
@@ -277,13 +304,39 @@ fn code_from_redirect(target: &str, expected_state: &str) -> Result<Option<Strin
             .unwrap_or_default();
         return Err(format!("{kind}{detail}"));
     }
-    // Constant-time-ish comparison is not required for list equality here;
-    // exact string equality is sufficient to bind the code to our flow.
-    if state.as_deref() == Some(expected_state) {
-        Ok(code)
-    } else {
-        Ok(None)
+    match expected_state {
+        None => Ok(value),
+        Some(expected) => {
+            // Constant-time-ish comparison is not required for list equality
+            // here; exact string equality is sufficient to bind the value to
+            // our flow.
+            if state.as_deref() == Some(expected) {
+                Ok(value)
+            } else {
+                Ok(None)
+            }
+        }
     }
+}
+
+/// Back-compat wrapper over [`param_from_redirect`] for the Spotify `code`.
+/// Retained for the unit tests; production paths go through [`read_param`].
+#[cfg(test)]
+fn code_from_redirect(target: &str, expected_state: &str) -> Result<Option<String>, String> {
+    param_from_redirect(target, "code", Some(expected_state))
+}
+
+async fn write_response(stream: &mut tokio::net::TcpStream, status: &str, body: &str) {
+    let _ = stream
+        .write_all(
+            format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .as_bytes(),
+        )
+        .await;
+    let _ = stream.flush().await;
 }
 
 /// Decode `%XX` escapes in a query value (Spotify error descriptions contain
@@ -415,6 +468,30 @@ mod tests {
         // Missing state with a code is also rejected.
         assert_eq!(
             code_from_redirect("/login?code=abc123", "xyz").unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn param_extraction_generic() {
+        // Last.fm-style redirect carrying a `token` and no `state`.
+        assert_eq!(
+            param_from_redirect("/login?token=abc123", "token", None).unwrap(),
+            Some("abc123".to_string())
+        );
+        // Unrelated requests (favicons, prefetches) yield None and the
+        // acceptor keeps waiting for a genuine redirect.
+        assert_eq!(
+            param_from_redirect("/favicon.ico", "token", None).unwrap(),
+            None
+        );
+        // With an expected state, the param must arrive with a matching state.
+        assert_eq!(
+            param_from_redirect("/login?token=t&state=xyz", "token", Some("xyz")).unwrap(),
+            Some("t".to_string())
+        );
+        assert_eq!(
+            param_from_redirect("/login?token=t&state=evil", "token", Some("xyz")).unwrap(),
             None
         );
     }

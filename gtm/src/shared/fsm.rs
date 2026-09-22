@@ -372,6 +372,7 @@ impl DaemonState {
             | DaemonEvent::SleepTimerExpired
             | DaemonEvent::Custom { .. }
             | DaemonEvent::SpotifyStatusChanged
+            | DaemonEvent::LastfmStatusChanged
             | DaemonEvent::Heartbeat => {}
         }
         self.commit();

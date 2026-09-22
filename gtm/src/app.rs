@@ -42,7 +42,7 @@ use crate::keymap::{
     parse_key_event,
 };
 use crate::mouse::{MouseMap, MouseZone};
-use crate::oauth::bind_lastfm_callback;
+use crate::oauth::lastfm_callback_port;
 use crate::picker::{PickerId, PickerManager, PickerSource};
 use crate::progress::{ProgressSmoother, ProgressStyle};
 use crate::reactive::{ReactivePalette, derive_theme, extract_palette};
@@ -2299,6 +2299,7 @@ impl App {
             let mut had_sleep_expired = false;
             let mut had_sync_done = false;
             let mut had_spotify_change = false;
+            let mut had_lastfm_change = false;
             for ev in self.client.drain().await {
                 if let DaemonEvent::PlaybackStarted { .. } = &ev {
                     // The crossfade has begun: drop the Up Next countdown.
@@ -2344,6 +2345,12 @@ impl App {
                 // status + playlists so they appear without a restart.
                 if matches!(ev, DaemonEvent::SpotifyStatusChanged) {
                     had_spotify_change = true;
+                }
+                // The daemon finished the (daemon-hosted) Last.fm link flow —
+                // same completion contract as Spotify: picking up the status
+                // here dismisses the prompt and proceeds to a ready state.
+                if matches!(ev, DaemonEvent::LastfmStatusChanged) {
+                    had_lastfm_change = true;
                 }
                 // After a background metadata sync finishes, re-pull the
                 // library so scrubbed tags / fetched covers show up live.
@@ -2484,6 +2491,14 @@ impl App {
                 if let Ok(playlists) = self.client.spotify().playlists().await {
                     self.spotify.playlists = playlists;
                 }
+            }
+
+            // The daemon finished the (daemon-hosted) Last.fm link flow; pull
+            // the status the same way the Spotify hook does. The LastfmStatus
+            // IpcResult handler below dismisses the prompt on `ready` (or shows
+            // the failure reason), so no client-side callback polling exists.
+            if had_lastfm_change {
+                self.refresh_lastfm_status();
             }
 
             // Force a state refresh if no events received for 8s to prevent
@@ -2745,6 +2760,25 @@ impl App {
                     }
                     IpcResult::LastfmStatus(st) => {
                         let was_ready = self.setup.lastfm_status.as_ref().is_some_and(|s| s.ready);
+                        // A daemon-pushed failure (callback timeout, token
+                        // exchange error) while the prompt is waiting must
+                        // surface immediately: stop waiting, keep the picker
+                        // open and render the reason inline (a toast is
+                        // suppressed while a picker is open).
+                        if self.setup.lastfm_pending
+                            && let Some(err) = st.as_ref().and_then(|s| s.error.clone())
+                        {
+                            self.setup.lastfm_pending = false;
+                            self.setup.lastfm_auth_url = None;
+                            self.setup.lastfm_error = Some(err.clone());
+                            self.notify_titled(
+                                "Last.fm",
+                                err,
+                                NotificationKind::Error,
+                                false,
+                                NotifType::Lastfm,
+                            );
+                        }
                         self.setup.lastfm_status = st;
                         let now_ready = self.setup.lastfm_status.as_ref().is_some_and(|s| s.ready);
                         if now_ready
@@ -2768,10 +2802,10 @@ impl App {
                         }
                     }
                     IpcResult::LastfmAuthUrl(url) => {
-                        // Callback capture (bind, wait for the redirect, finish
-                        // the link) runs server-side in the Enter handler once
-                        // the port bound successfully; here we only surface the
-                        // URL so the user can paste it into a browser.
+                        // The daemon bound the callback port and started the
+                        // flow before answering, so the URL can be opened
+                        // safely; completion/failure arrives as a pushed status
+                        // event. Here we only surface the URL for display.
                         self.setup.lastfm_auth_url = Some(url);
                         self.setup.lastfm_pending = true;
                     }
@@ -8947,6 +8981,7 @@ impl App {
                         self.setup.lastfm_error = Some("API key and secret are required".into());
                         return;
                     }
+                    let port = lastfm_callback_port();
                     let c = self.client.clone();
                     let ipc_tx = self.ipc_tx.clone();
                     self.setup.lastfm_pending = true;
@@ -8957,89 +8992,29 @@ impl App {
                             .set_config(true, Some(api_key), Some(api_secret), None, None, None)
                             .await
                         {
-                            Ok(()) => match c.lastfm().auth_url().await {
+                            Ok(()) => match c.lastfm().oauth_start(port).await {
                                 Ok(url) => {
-                                    // Bind the callback port *before* opening
-                                    // the browser so the redirect after
-                                    // authorization never lands on a dead port.
-                                    match bind_lastfm_callback().await {
-                                        Ok(callback) => {
-                                            let c2 = c.clone();
-                                            let cap_tx = ipc_tx.clone();
-                                            tokio::spawn(async move {
-                                                match callback.wait_for_token().await {
-                                                    Ok(token) if token.is_empty() => {
-                                                        self_err(
-                                                            &cap_tx,
-                                                            "no Last.fm token provided".to_string(),
-                                                        );
-                                                    }
-                                                    Ok(token) => {
-                                                        match c2
-                                                            .lastfm()
-                                                            .authenticate(token.trim())
-                                                            .await
-                                                        {
-                                                            Ok(()) => {
-                                                                match c2.lastfm().status().await {
-                                                                    Ok(st) => {
-                                                                        let _ = cap_tx.send(
-                                                                            IpcResult::LastfmStatus(
-                                                                                Some(st),
-                                                                            ),
-                                                                        );
-                                                                    }
-                                                                    Err(e) => self_err(
-                                                                        &cap_tx,
-                                                                        format!(
-                                                                            "last.fm status failed: {e}"
-                                                                        ),
-                                                                    ),
-                                                                }
-                                                            }
-                                                            Err(e) => {
-                                                                let _ = cap_tx.send(
-                                                                    IpcResult::LastfmAuthError(
-                                                                        format!(
-                                                                            "Last.fm authorize failed: {e}"
-                                                                        ),
-                                                                    ),
-                                                                );
-                                                            }
-                                                        }
-                                                    }
-                                                    Err(e) => {
-                                                        let _ = cap_tx.send(
-                                                            IpcResult::LastfmAuthError(format!(
-                                                                "Last.fm callback failed: {e}"
-                                                            )),
-                                                        );
-                                                    }
-                                                }
-                                            });
-                                            let ipc_url = ipc_tx.clone();
-                                            let open_url = url.clone();
-                                            tokio::spawn(async move {
-                                                if !open_browser(&open_url).await {
-                                                    let _ = ipc_url.send(
-                                                        IpcResult::LastfmAuthError(
-                                                            "Could not open a browser automatically — copy the URL from the last.fm setup screen".into(),
-                                                        ),
-                                                    );
-                                                }
-                                            });
-                                            let _ = ipc_tx.send(IpcResult::LastfmAuthUrl(url));
-                                        }
-                                        Err(e) => {
-                                            let _ = ipc_tx.send(IpcResult::LastfmAuthError(
-                                                format!("Last.fm callback server: {e}"),
+                                    // The daemon bound the callback port before
+                                    // returning this URL, so the browser's
+                                    // redirect after authorization always lands
+                                    // on a live listener. Completion (or
+                                    // failure) arrives back as a status event
+                                    // pushed by the daemon — no client-side
+                                    // callback socket or polling.
+                                    let ipc_url = ipc_tx.clone();
+                                    let open_url = url.clone();
+                                    tokio::spawn(async move {
+                                        if !open_browser(&open_url).await {
+                                            let _ = ipc_url.send(IpcResult::LastfmAuthError(
+                                                "Could not open a browser automatically — copy the URL from the last.fm setup screen".into(),
                                             ));
                                         }
-                                    }
+                                    });
+                                    let _ = ipc_tx.send(IpcResult::LastfmAuthUrl(url));
                                 }
                                 Err(e) => {
                                     let _ = ipc_tx.send(IpcResult::LastfmAuthError(format!(
-                                        "Last.fm auth URL failed: {e}"
+                                        "Last.fm link failed: {e}"
                                     )));
                                 }
                             },
