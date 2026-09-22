@@ -657,6 +657,8 @@ pub enum PromptType {
     MultiselectDelete(Vec<i64>),
     MultiselectAddToQueue,
     MultiselectAddToPlaylist,
+    /// Remove a custom station from `radios.toml` by name.
+    RemoveCustomRadio(String),
     None,
 }
 
@@ -784,12 +786,74 @@ pub struct PodcastView {
     pub subscribe_url: String,
 }
 
-/// Which directory list the Radio Browse picker is showing.
+/// Which list the unified Radio picker is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum RadioBrowseKind {
+pub enum RadioSection {
+    /// Merged root list: Saved / Top / Tags / Countries with headers.
     #[default]
+    Root,
+    /// Stations of the tag/country in `RadioView::browse_topic`.
+    Stations,
+    /// Directory search results.
+    Results,
+}
+
+/// Which field the radio picker's query filters on. `Tab` cycles through.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RadioFilter {
+    #[default]
+    Name,
     Tags,
-    Countries,
+    Country,
+    Rating,
+}
+
+impl RadioFilter {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Name => "Name",
+            Self::Tags => "Tags",
+            Self::Country => "Country",
+            Self::Rating => "Rating",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Name => Self::Tags,
+            Self::Tags => Self::Country,
+            Self::Country => Self::Rating,
+            Self::Rating => Self::Name,
+        }
+    }
+}
+
+/// A selectable row in the unified Radio picker, mirroring how the
+/// `SearchLibrary` picker builds `LibraryPick` rows. Build once per frame
+/// (and per key event) from the active section and query filter, so the
+/// picker's selection index maps 1:1 into the rendered row list.
+#[derive(Debug, Clone)]
+pub enum RadioPick {
+    /// Section divider (label) in the merged Root view. Selecting it does nothing.
+    Header(&'static str),
+    /// Index into `radio.custom` (a saved station).
+    Custom(usize),
+    /// Index into the station list of the current section (`top` in the Root
+    /// view, `browse_stations`, or `search`).
+    Station(usize),
+    /// Index into `radio.browse_tags` (drill into its stations).
+    Tag(usize),
+    /// Index into `radio.browse_countries` (drill into its stations).
+    Country(usize),
+}
+
+/// How the `Stations` section was entered, so `r` can re-fetch the same
+/// directory query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RadioBrowseBy {
+    #[default]
+    Tag,
+    Country,
 }
 
 /// Radio Browser picker state, grouped under `App::radio`.
@@ -799,18 +863,22 @@ pub struct RadioView {
     pub search_pending: bool,
     pub top: Vec<RadioStation>,
     pub top_pending: bool,
-    /// Tag list (RadioBrowseList in `Tags` kind).
+    /// Tag list (Root/Tags section).
     pub browse_tags: Vec<RadioTag>,
-    /// Country list (RadioBrowseList in `Countries` kind).
+    /// Country list (Root/Countries section).
     pub browse_countries: Vec<RadioCountry>,
     pub browse_pending: bool,
-    /// Which list `RadioBrowseList` is showing.
-    pub browse_kind: RadioBrowseKind,
-    /// Tag/country selected at `RadioBrowseList`; stations live in
+    /// Tag/country selected at Tags/Countries; stations live in
     /// `browse_stations`.
     pub browse_topic: String,
+    /// How `Stations` was entered (by tag or by country).
+    pub browse_by: RadioBrowseBy,
     pub browse_stations: Vec<RadioStation>,
     pub browse_stations_pending: bool,
+    /// Which section of the unified picker is showing.
+    pub section: RadioSection,
+    /// Which field the picker query filters on.
+    pub filter: RadioFilter,
     /// Custom stations from `radios.toml` (1-based index = position + 1),
     /// mirrored into the left-pane Radio category.
     pub custom: Vec<CustomRadioStation>,
@@ -3950,27 +4018,10 @@ impl App {
                     self.fetch_podcast_episodes(feed_id);
                 }
             }
-            PickerId::RadioTop => {
-                self.radio.top_pending = true;
-                let c = self.client.clone();
-                let ipc_tx = self.ipc_tx.clone();
-                tokio::spawn(async move {
-                    match c.radio().top(50).await {
-                        Ok(s) => {
-                            let _ = ipc_tx.send(IpcResult::RadioTop(s));
-                        }
-                        Err(e) => {
-                            self_err(&ipc_tx, format!("radio top failed: {e}"));
-                        }
-                    }
-                });
-            }
-            PickerId::RadioBrowse => {}
-            PickerId::RadioBrowseList => {
-                self.fetch_browse_list();
-            }
-            PickerId::RadioBrowseStations => {
-                self.fetch_browse_stations();
+            PickerId::Radio => {
+                // Reopening always starts from the merged root view.
+                self.radio.section = RadioSection::Root;
+                self.seed_radio_picker(false);
             }
             PickerId::Setup => {
                 self.refresh_subsonic_status();
@@ -4135,6 +4186,7 @@ impl App {
     pub fn search_radio(&mut self, query: String) {
         self.radio.search.clear();
         self.radio.search_pending = true;
+        self.radio.section = RadioSection::Results;
         let c = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
@@ -4149,68 +4201,204 @@ impl App {
         });
     }
 
-    /// Filter radio search results based on the picker query (fuzzy substring search).
-    pub fn radio_search_picks(&self) -> Vec<RadioStation> {
-        let Some(top) = self.pickers.top() else {
-            return Vec::new();
-        };
-        let q = top.query.to_lowercase();
-        if q.is_empty() {
-            return self.radio.search.clone();
+    /// Match a directory station against the picker query on the active
+    /// filter field. Rating is a numeric votes threshold; the other fields are
+    /// case-insensitive substring matches.
+    fn station_matches_filter(station: &RadioStation, q: &str, filter: RadioFilter) -> bool {
+        match filter {
+            RadioFilter::Name => station.name.to_lowercase().contains(q),
+            RadioFilter::Tags => station.tags.to_lowercase().contains(q),
+            RadioFilter::Country => station.country.to_lowercase().contains(q),
+            RadioFilter::Rating => q.parse::<u64>().is_ok_and(|min| station.votes >= min),
         }
-        self.radio
-            .search
-            .iter()
-            .filter(|s| {
-                s.name.to_lowercase().contains(&q)
-                    || s.country.to_lowercase().contains(&q)
-                    || s.language.to_lowercase().contains(&q)
-                    || s.tags.to_lowercase().contains(&q)
-            })
-            .cloned()
-            .collect()
     }
 
-    /// (Re)load the tag or country list for the RadioBrowseList picker.
-    pub fn fetch_browse_list(&mut self) {
-        self.radio.browse_pending = true;
-        let (c, ipc_tx) = (self.client.clone(), self.ipc_tx.clone());
-        let kind = self.radio.browse_kind;
-        tokio::spawn(async move {
-            let r = match kind {
-                RadioBrowseKind::Tags => c.radio().tags(200).await.map(IpcResult::RadioTags),
-                RadioBrowseKind::Countries => c
-                    .radio()
-                    .countries(200)
-                    .await
-                    .map(IpcResult::RadioCountries),
-            };
-            match r {
-                Ok(ipc) => {
-                    let _ = ipc_tx.send(ipc);
+    /// Build the selectable row list for the unified Radio picker from the
+    /// active section and query filter. Mirrors the `LibraryPick` rows of the
+    /// SearchLibrary picker so selection indexes map 1:1 into the rendered
+    /// list. The Root view merges Saved / Top / Tags / Countries with section
+    /// headers (only non-empty sections at a given filter).
+    pub fn radio_picks(&self) -> Vec<RadioPick> {
+        let q = self
+            .pickers
+            .top()
+            .map(|o| o.query.trim().to_lowercase())
+            .unwrap_or_default();
+        let filter = self.radio.filter;
+        let matches =
+            |s: &RadioStation| q.is_empty() || Self::station_matches_filter(s, &q, filter);
+        match self.radio.section {
+            RadioSection::Stations => self
+                .radio
+                .browse_stations
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| matches(s))
+                .map(|(i, _)| RadioPick::Station(i))
+                .collect(),
+            RadioSection::Results => self
+                .radio
+                .search
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| matches(s))
+                .map(|(i, _)| RadioPick::Station(i))
+                .collect(),
+            RadioSection::Root => {
+                let mut rows: Vec<RadioPick> = Vec::new();
+                let custom_match = |s: &CustomRadioStation| {
+                    q.is_empty()
+                        || (filter == RadioFilter::Name
+                            && s.name.to_lowercase().contains(q.as_str()))
+                };
+                if self.radio.custom.iter().any(custom_match) {
+                    rows.push(RadioPick::Header("Saved"));
+                    rows.extend(
+                        self.radio
+                            .custom
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, s)| custom_match(s))
+                            .map(|(i, _)| RadioPick::Custom(i)),
+                    );
                 }
-                Err(e) => {
-                    self_err(&ipc_tx, format!("radio browse failed: {e}"));
+                if self.radio.top.iter().any(&matches) {
+                    rows.push(RadioPick::Header("Top"));
+                    rows.extend(
+                        self.radio
+                            .top
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, s)| matches(s))
+                            .map(|(i, _)| RadioPick::Station(i)),
+                    );
+                }
+                let tag_match = |t: &RadioTag| {
+                    q.is_empty()
+                        || (matches!(filter, RadioFilter::Name | RadioFilter::Tags)
+                            && t.name.to_lowercase().contains(q.as_str()))
+                };
+                if self.radio.browse_tags.iter().any(tag_match) {
+                    rows.push(RadioPick::Header("Tags"));
+                    rows.extend(
+                        self.radio
+                            .browse_tags
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, t)| tag_match(t))
+                            .map(|(i, _)| RadioPick::Tag(i)),
+                    );
+                }
+                let country_match = |c: &RadioCountry| {
+                    q.is_empty()
+                        || (matches!(filter, RadioFilter::Name | RadioFilter::Country)
+                            && c.name.to_lowercase().contains(q.as_str()))
+                };
+                if self.radio.browse_countries.iter().any(country_match) {
+                    rows.push(RadioPick::Header("Countries"));
+                    rows.extend(
+                        self.radio
+                            .browse_countries
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, c)| country_match(c))
+                            .map(|(i, _)| RadioPick::Country(i)),
+                    );
+                }
+                rows
+            }
+        }
+    }
+
+    /// Seed the unified Radio picker's remote lists (Top, Tags, Countries)
+    /// independently in the background, so a partial failure still populates
+    /// the rest. Skips lists that already loaded or are in flight unless
+    /// `force` is set (the `r` refresh key).
+    pub fn seed_radio_picker(&mut self, force: bool) {
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        if (force || self.radio.top.is_empty()) && !self.radio.top_pending {
+            self.radio.top_pending = true;
+            let c2 = c.clone();
+            let tx2 = ipc_tx.clone();
+            tokio::spawn(async move {
+                match c2.radio().top(50).await {
+                    Ok(s) => {
+                        let _ = tx2.send(IpcResult::RadioTop(s));
+                    }
+                    Err(e) => {
+                        self_err(&tx2, format!("radio top failed: {e}"));
+                    }
+                }
+            });
+        }
+        let lists_missing =
+            self.radio.browse_tags.is_empty() || self.radio.browse_countries.is_empty();
+        if (force || lists_missing) && !self.radio.browse_pending {
+            self.radio.browse_pending = true;
+            let tags_c = c.clone();
+            let tags_tx = ipc_tx.clone();
+            tokio::spawn(async move {
+                match tags_c.radio().tags(200).await {
+                    Ok(t) => {
+                        let _ = tags_tx.send(IpcResult::RadioTags(t));
+                    }
+                    Err(e) => {
+                        self_err(&tags_tx, format!("radio tags failed: {e}"));
+                    }
+                }
+            });
+            let countries_c = c.clone();
+            let countries_tx = ipc_tx.clone();
+            tokio::spawn(async move {
+                match countries_c.radio().countries(200).await {
+                    Ok(cs) => {
+                        let _ = countries_tx.send(IpcResult::RadioCountries(cs));
+                    }
+                    Err(e) => {
+                        self_err(&countries_tx, format!("radio countries failed: {e}"));
+                    }
+                }
+            });
+        }
+    }
+
+    /// Re-fetch whatever list the current picker section shows (the `r` key).
+    pub fn refresh_radio_section(&mut self) {
+        match self.radio.section {
+            RadioSection::Root => {
+                self.refresh_custom_stations();
+                self.seed_radio_picker(true);
+            }
+            RadioSection::Stations => self.fetch_browse_stations(),
+            RadioSection::Results => {
+                let q = self
+                    .pickers
+                    .top()
+                    .map_or(String::new(), |o| o.query.clone());
+                if !q.is_empty() {
+                    self.search_radio(q);
                 }
             }
-        });
+        }
     }
 
-    /// (Re)load the stations for the tag/country selected at RadioBrowseList.
+    /// (Re)load the stations for the tag/country selected from the Root view.
     pub fn fetch_browse_stations(&mut self) {
         self.radio.browse_stations.clear();
         self.radio.browse_stations_pending = true;
+        self.radio.section = RadioSection::Stations;
         let (c, ipc_tx) = (self.client.clone(), self.ipc_tx.clone());
         let topic = self.radio.browse_topic.clone();
-        let kind = self.radio.browse_kind;
+        let by = self.radio.browse_by;
         tokio::spawn(async move {
-            let r = match kind {
-                RadioBrowseKind::Tags => c
+            let r = match by {
+                RadioBrowseBy::Tag => c
                     .radio()
                     .stations_by_tag(&topic, 50)
                     .await
                     .map(IpcResult::RadioBrowseStations),
-                RadioBrowseKind::Countries => c
+                RadioBrowseBy::Country => c
                     .radio()
                     .stations_by_country(&topic, 50)
                     .await
@@ -4274,6 +4462,98 @@ impl App {
                     true,
                     NotifType::Prefs,
                 );
+            }
+        }
+    }
+
+    /// Enter on the unified Radio picker: activate the highlighted row —
+    /// play a station, drill into a tag/country, or run a directory search
+    /// when the current filter matches nothing.
+    fn radio_enter(&mut self) {
+        let picks = self.radio_picks();
+        let sel = self.pickers.top().map_or(0, |o| o.selected);
+        match picks.get(sel).cloned() {
+            Some(RadioPick::Custom(i)) => {
+                if let Some(station) = self.radio.custom.get(i).cloned() {
+                    let id = match station.uuid.as_deref() {
+                        Some(uuid) => uuid.to_string(),
+                        None => format!("custom:{}", i + 1),
+                    };
+                    let c = self.client.clone();
+                    self.pickers.close_top();
+                    tokio::spawn(async move {
+                        let _ = c.radio().play(&id, &station.name).await;
+                    });
+                }
+            }
+            Some(RadioPick::Station(i)) => {
+                let stations: &[RadioStation] = match self.radio.section {
+                    RadioSection::Stations => &self.radio.browse_stations,
+                    RadioSection::Results => &self.radio.search,
+                    RadioSection::Root => &self.radio.top,
+                };
+                if let Some(station) = stations.get(i).cloned() {
+                    let c = self.client.clone();
+                    self.pickers.close_top();
+                    tokio::spawn(async move {
+                        let _ = c.radio().play(&station.id, &station.name).await;
+                    });
+                }
+            }
+            Some(RadioPick::Tag(i)) => {
+                if let Some(tag) = self.radio.browse_tags.get(i).cloned() {
+                    self.radio.browse_by = RadioBrowseBy::Tag;
+                    self.radio.browse_topic = tag.name;
+                    self.fetch_browse_stations();
+                    if let Some(top) = self.pickers.top_mut() {
+                        top.selected = 0;
+                        top.viewport_offset = 0;
+                    }
+                }
+            }
+            Some(RadioPick::Country(i)) => {
+                if let Some(country) = self.radio.browse_countries.get(i).cloned() {
+                    self.radio.browse_by = RadioBrowseBy::Country;
+                    self.radio.browse_topic = country.name;
+                    self.fetch_browse_stations();
+                    if let Some(top) = self.pickers.top_mut() {
+                        top.selected = 0;
+                        top.viewport_offset = 0;
+                    }
+                }
+            }
+            Some(RadioPick::Header(_)) => {}
+            None => {
+                // No row to activate: the filtered view is empty (or only a
+                // header showed), so fall back to a directory search.
+                let q = self
+                    .pickers
+                    .top()
+                    .map_or(String::new(), |o| o.query.trim().to_string());
+                if !q.is_empty() && !self.radio.search_pending {
+                    self.search_radio(q);
+                }
+            }
+        }
+    }
+
+    /// Move the unified Radio picker's selection by one (wrapping), skipping
+    /// the non-actionable section header rows in the merged Root view.
+    fn move_radio_selection(&mut self, down: bool) {
+        let picks = self.radio_picks();
+        if picks.is_empty() {
+            return;
+        }
+        let Some(top) = self.pickers.top_mut() else {
+            return;
+        };
+        let step = if down { 1i64 } else { -1i64 };
+        let mut idx = top.selected as i64;
+        for _ in 0..picks.len() {
+            idx = (idx + step).rem_euclid(picks.len() as i64);
+            if !matches!(picks[idx as usize], RadioPick::Header(_)) {
+                top.selected = idx as usize;
+                return;
             }
         }
     }
@@ -5757,14 +6037,7 @@ impl App {
             PickerId::PodcastEpisodes => self.podcast.episodes.len(),
             PickerId::PodcastSubscribe => 1,
             PickerId::LoadStream => 1,
-            PickerId::RadioSearch => self.radio.search.len(),
-            PickerId::RadioTop => self.radio.top.len(),
-            PickerId::RadioBrowse => 2,
-            PickerId::RadioBrowseList => match self.radio.browse_kind {
-                RadioBrowseKind::Tags => self.radio.browse_tags.len(),
-                RadioBrowseKind::Countries => self.radio.browse_countries.len(),
-            },
-            PickerId::RadioBrowseStations => self.radio.browse_stations.len(),
+            PickerId::Radio => self.radio_picks().len(),
             _ => 0,
         }
     }
@@ -5953,6 +6226,17 @@ impl App {
                             top.selected = 0;
                             top.viewport_offset = 0;
                         }
+                    } else if self.pickers.top().is_some_and(|o| o.id == PickerId::Radio)
+                        && self.radio.section != RadioSection::Root
+                    {
+                        // Esc pops a radio drill-down (Stations / Results)
+                        // back to the merged root view; a second Esc closes.
+                        self.radio.section = RadioSection::Root;
+                        if let Some(top) = self.pickers.top_mut() {
+                            top.query.clear();
+                            top.selected = 0;
+                            top.viewport_offset = 0;
+                        }
                     } else {
                         self.close_picker();
                     }
@@ -6087,6 +6371,28 @@ impl App {
                                     msg,
                                     std::time::Instant::now() + std::time::Duration::from_secs(2),
                                 ));
+                            }
+                            PromptType::RemoveCustomRadio(name) => {
+                                match crate::shared::custom::remove_custom_station(&name) {
+                                    Ok(removed) => {
+                                        self.refresh_custom_stations();
+                                        self.notify_typed(
+                                            "System",
+                                            format!(
+                                                "Removed \"{}\" from custom stations",
+                                                removed.name
+                                            ),
+                                            NotificationKind::Success,
+                                            false,
+                                            NotifType::NowPlaying,
+                                        );
+                                    }
+                                    Err(e) => {
+                                        let _ = self.ipc_tx.send(IpcResult::Error(format!(
+                                            "Failed to remove custom station: {e}"
+                                        )));
+                                    }
+                                }
                             }
                             PromptType::None => {}
                         }
@@ -7308,6 +7614,31 @@ impl App {
                                             NotifType::NowPlaying,
                                         );
                                     }
+                                }
+                            } else if self.library_category == 6 {
+                                // Radio category: removing a custom station
+                                // edits radios.toml, so require confirmation.
+                                if let Some(station) =
+                                    self.radio.custom.get(self.list_pos()).cloned()
+                                {
+                                    self.pending_prompt = Some(PendingPrompt {
+                                        message: format!(
+                                            "Remove \"{}\" from custom stations? [y/N]",
+                                            station.name
+                                        ),
+                                        confirm_keys: vec![
+                                            KeyCode::Char('y'),
+                                            KeyCode::Char('Y'),
+                                            KeyCode::Enter,
+                                        ],
+                                        cancel_keys: vec![
+                                            KeyCode::Char('n'),
+                                            KeyCode::Char('N'),
+                                            KeyCode::Esc,
+                                            KeyCode::Char('q'),
+                                        ],
+                                        prompt_type: PromptType::RemoveCustomRadio(station.name),
+                                    });
                                 }
                             } else {
                                 self.notify_typed(
@@ -8982,106 +9313,66 @@ impl App {
             return;
         }
 
-        // ─── Radio search ───
-        if matches!(
-            self.pickers.top().map(|o| o.id),
-            Some(PickerId::RadioSearch)
-        ) {
+        // ─── Unified Radio picker (Alt+R) ───
+        // One picker over the merged root list (Saved / Top / Tags /
+        // Countries) with drill-down into tag/country stations and a
+        // filterable search box. Tab cycles the filter field, 's' saves a
+        // directory station, 'x' removes a saved station, 'r' refreshes the
+        // current section, Esc pops drill-downs back to root (handled in
+        // handle_key).
+        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::Radio)) {
             match key.code {
-                KeyCode::Char(c) => {
-                    if !c.is_control() {
-                        if let Some(top) = self.pickers.top_mut() {
-                            top.query.push(c);
-                        }
-                        self.radio.search.clear();
-                    }
-                }
-                KeyCode::Backspace => {
-                    if let Some(top) = self.pickers.top_mut() {
-                        top.query.pop();
-                    }
-                    self.radio.search.clear();
+                KeyCode::Tab => {
+                    self.radio.filter = self.radio.filter.next();
                 }
                 KeyCode::Enter => {
-                    let q = self
-                        .pickers
-                        .top()
-                        .map_or(String::new(), |o| o.query.clone());
-                    if self.radio.search_pending {
-                        return;
-                    }
-                    if self.radio.search.is_empty() {
-                        self.search_radio(q);
-                    } else {
-                        let sel = self.pickers.top().map_or(0, |o| o.selected);
-                        if let Some(station) = self.radio.search.get(sel).cloned() {
-                            let c = self.client.clone();
-                            self.pickers.close_top();
-                            tokio::spawn(async move {
-                                let _ = c.radio().play(&station.id, &station.name).await;
-                            });
-                        }
-                    }
-                }
-                KeyCode::Up | KeyCode::Down => {
-                    self.move_picker_selection(key.code == KeyCode::Down);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // ─── Radio top stations ───
-        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::RadioTop)) {
-            match key.code {
-                KeyCode::Enter => {
-                    let sel = self.pickers.top().map_or(0, |o| o.selected);
-                    if let Some(station) = self.radio.top.get(sel).cloned() {
-                        let c = self.client.clone();
-                        self.pickers.close_top();
-                        tokio::spawn(async move {
-                            let _ = c.radio().play(&station.id, &station.name).await;
-                        });
-                    }
+                    self.radio_enter();
                 }
                 KeyCode::Char('s') => {
+                    let picks = self.radio_picks();
                     let sel = self.pickers.top().map_or(0, |o| o.selected);
-                    if let Some(station) = self.radio.top.get(sel).cloned() {
+                    let station = match picks.get(sel) {
+                        Some(RadioPick::Station(i)) => match self.radio.section {
+                            RadioSection::Stations => self.radio.browse_stations.get(*i).cloned(),
+                            RadioSection::Results => self.radio.search.get(*i).cloned(),
+                            RadioSection::Root => self.radio.top.get(*i).cloned(),
+                        },
+                        _ => None,
+                    };
+                    if let Some(station) = station {
                         self.save_custom_station(&station);
                     }
                 }
+                KeyCode::Char('x') => {
+                    let picks = self.radio_picks();
+                    let sel = self.pickers.top().map_or(0, |o| o.selected);
+                    if let Some(RadioPick::Custom(i)) = picks.get(sel)
+                        && let Some(station) = self.radio.custom.get(*i)
+                    {
+                        // Prompt keys are intercepted in handle_key's normal
+                        // mode, so leave the picker before arming it.
+                        let name = station.name.clone();
+                        self.pickers.close_top();
+                        self.pending_prompt = Some(PendingPrompt {
+                            message: format!("Remove \"{name}\" from custom stations? [y/N]"),
+                            confirm_keys: vec![
+                                KeyCode::Char('y'),
+                                KeyCode::Char('Y'),
+                                KeyCode::Enter,
+                            ],
+                            cancel_keys: vec![
+                                KeyCode::Char('n'),
+                                KeyCode::Char('N'),
+                                KeyCode::Esc,
+                                KeyCode::Char('q'),
+                            ],
+                            prompt_type: PromptType::RemoveCustomRadio(name),
+                        });
+                    }
+                }
                 KeyCode::Char('r') => {
-                    self.radio.top.clear();
-                    self.radio.top_pending = true;
-                    let c = self.client.clone();
-                    let ipc_tx = self.ipc_tx.clone();
-                    tokio::spawn(async move {
-                        match c.radio().top(50).await {
-                            Ok(s) => {
-                                let _ = ipc_tx.send(IpcResult::RadioTop(s));
-                            }
-                            Err(e) => {
-                                self_err(&ipc_tx, format!("radio top failed: {e}"));
-                            }
-                        }
-                    });
+                    self.refresh_radio_section();
                 }
-                KeyCode::Up | KeyCode::Down => {
-                    self.move_picker_selection(key.code == KeyCode::Down);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // ─── Radio browse ───
-        // Root picker: type a query to search, or choose Tags / Countries to
-        // drill into the list.
-        if matches!(
-            self.pickers.top().map(|o| o.id),
-            Some(PickerId::RadioBrowse)
-        ) {
-            match key.code {
                 KeyCode::Char(c) => {
                     if !c.is_control()
                         && let Some(top) = self.pickers.top_mut()
@@ -9094,117 +9385,8 @@ impl App {
                         top.query.pop();
                     }
                 }
-                KeyCode::Enter => {
-                    let query = self
-                        .pickers
-                        .top()
-                        .map_or(String::new(), |o| o.query.clone());
-                    let q = query.trim().to_string();
-                    if q.is_empty() {
-                        let sel = self.pickers.top().map_or(0, |o| o.selected);
-                        self.radio.browse_kind = match sel {
-                            0 => RadioBrowseKind::Tags,
-                            _ => RadioBrowseKind::Countries,
-                        };
-                        self.radio.browse_topic.clear();
-                        self.radio.browse_tags.clear();
-                        self.radio.browse_countries.clear();
-                        self.radio.browse_stations.clear();
-                        self.pickers.open(PickerId::RadioBrowseList);
-                        self.on_picker_opened(PickerId::RadioBrowseList);
-                    } else if self.radio.search_pending {
-                        return;
-                    } else if self.radio.search.is_empty() {
-                        self.search_radio(q);
-                    } else {
-                        let picks = self.radio_search_picks();
-                        let sel = self.pickers.top().map_or(0, |o| o.selected);
-                        if let Some(station) = picks.get(sel).cloned() {
-                            let c = self.client.clone();
-                            self.pickers.close_top();
-                            tokio::spawn(async move {
-                                let _ = c.radio().play(&station.id, &station.name).await;
-                            });
-                        } else {
-                            self.search_radio(q);
-                        }
-                    }
-                }
                 KeyCode::Up | KeyCode::Down => {
-                    self.move_picker_selection(key.code == KeyCode::Down);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // ─── Radio browse list (tags / countries) ───
-        if matches!(
-            self.pickers.top().map(|o| o.id),
-            Some(PickerId::RadioBrowseList)
-        ) {
-            match key.code {
-                KeyCode::Enter => {
-                    if self.radio.browse_pending {
-                        return;
-                    }
-                    let sel = self.pickers.top().map_or(0, |o| o.selected);
-                    let picked = match self.radio.browse_kind {
-                        RadioBrowseKind::Tags => self
-                            .radio
-                            .browse_tags
-                            .get(sel)
-                            .map(|t| (t.name.clone(), t.station_count)),
-                        RadioBrowseKind::Countries => self
-                            .radio
-                            .browse_countries
-                            .get(sel)
-                            .map(|c| (c.name.clone(), c.station_count)),
-                    };
-                    if let Some((topic, _count)) = picked {
-                        self.radio.browse_topic = topic;
-                        self.pickers.open(PickerId::RadioBrowseStations);
-                        self.on_picker_opened(PickerId::RadioBrowseStations);
-                    }
-                }
-                KeyCode::Char('r') => {
-                    self.fetch_browse_list();
-                }
-                KeyCode::Up | KeyCode::Down => {
-                    self.move_picker_selection(key.code == KeyCode::Down);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // ─── Radio browse stations ───
-        if matches!(
-            self.pickers.top().map(|o| o.id),
-            Some(PickerId::RadioBrowseStations)
-        ) {
-            match key.code {
-                KeyCode::Enter => {
-                    let sel = self.pickers.top().map_or(0, |o| o.selected);
-                    if let Some(station) = self.radio.browse_stations.get(sel).cloned() {
-                        let c = self.client.clone();
-                        self.pickers.close_top();
-                        tokio::spawn(async move {
-                            let _ = c.radio().play(&station.id, &station.name).await;
-                        });
-                    }
-                }
-                KeyCode::Char('s') => {
-                    let sel = self.pickers.top().map_or(0, |o| o.selected);
-                    if let Some(station) = self.radio.browse_stations.get(sel).cloned() {
-                        self.save_custom_station(&station);
-                    }
-                }
-                KeyCode::Char('r') => {
-                    self.fetch_browse_stations();
-                }
-                KeyCode::Up | KeyCode::Down => {
-                    self.move_picker_selection(key.code == KeyCode::Down);
+                    self.move_radio_selection(key.code == KeyCode::Down);
                 }
                 _ => {}
             }
@@ -10064,8 +10246,8 @@ impl App {
                                 } else if action == "setup" {
                                     self.open_setup_picker(None);
                                 } else if action == "radio browse" {
-                                    self.pickers.open(PickerId::RadioBrowse);
-                                    self.on_picker_opened(PickerId::RadioBrowse);
+                                    self.pickers.open(PickerId::Radio);
+                                    self.on_picker_opened(PickerId::Radio);
                                 } else if action == "play stream url" {
                                     self.pickers.open(PickerId::LoadStream);
                                 }

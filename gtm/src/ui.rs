@@ -9,13 +9,13 @@ use std::path::PathBuf;
 
 use crate::app::{
     App, InputMode, LIBRARY_CATEGORIES, LibraryPick, NotifMode, NotifType, NotificationKind,
-    RadioBrowseKind, TrackInfoKind, folder_name, lyrics_are_synced, no_image_protocol,
+    RadioPick, RadioSection, TrackInfoKind, folder_name, lyrics_are_synced, no_image_protocol,
     setup_selection,
 };
 use crate::extensions::ExtensionId;
 use crate::footer::{
-    classify_remote_source, draw as footer_draw, format_duration, format_uptime, read_proc_mem,
-    render as footer_render,
+    classify_remote_source, draw as footer_draw, format_duration, format_uptime, is_live_stream,
+    read_proc_mem, render as footer_render,
 };
 use crate::mouse::MouseZone;
 use crate::picker::{Picker, PickerId, PickerSource};
@@ -267,23 +267,23 @@ impl Render {
                 break;
             }
 
-            let final_x = center_x(max_notif_width);
-            let start_x = area.x + area.width;
+            let final_y = card_y;
+            let start_y = area.y.saturating_sub(card_h + gap);
             let leaving = now.saturating_duration_since(n.expires_at);
-            let x = if leaving > std::time::Duration::ZERO {
+            let y = if leaving > std::time::Duration::ZERO {
                 let exit_progress = cubic_ease_in(
                     (leaving.as_millis() as f32 / NOTIFICATION_EXIT_DURATION.as_millis() as f32)
                         .min(1.0),
                 );
-                (final_x as f32 + (start_x as f32 - final_x as f32) * exit_progress) as u16
+                (final_y as f32 + (start_y as f32 - final_y as f32) * exit_progress) as u16
             } else {
                 let progress = cubic_ease_out(n.animation_progress);
-                (start_x as f32 + (final_x as f32 - start_x as f32) * progress) as u16
+                (start_y as f32 + (final_y as f32 - start_y as f32) * progress) as u16
             };
 
             let card_area = Rect {
-                x,
-                y: card_y,
+                x: center_x(max_notif_width),
+                y,
                 width: max_notif_width,
                 height: card_h,
             };
@@ -336,27 +336,26 @@ impl Render {
             let bar_h = 10u16;
             let bar_w = 5u16;
 
-            let final_x = area.x + area.width.saturating_sub(bar_w + padding);
-            let start_x = area.x + area.width;
+            let final_y = y_bar;
+            let start_y = area.y.saturating_sub(bar_h + 2 + gap);
             let leaving = now.saturating_duration_since(n.expires_at);
-            let x = if leaving > std::time::Duration::ZERO {
+            let y = if leaving > std::time::Duration::ZERO {
                 let exit_progress = cubic_ease_in(
                     (leaving.as_millis() as f32 / NOTIFICATION_EXIT_DURATION.as_millis() as f32)
                         .min(1.0),
                 );
-                (final_x as f32 + (start_x as f32 - final_x as f32) * exit_progress) as u16
+                (final_y as f32 + (start_y as f32 - final_y as f32) * exit_progress) as u16
             } else {
                 let progress = cubic_ease_out(n.animation_progress);
-                (start_x as f32 + (final_x as f32 - start_x as f32) * progress) as u16
+                (start_y as f32 + (final_y as f32 - start_y as f32) * progress) as u16
             };
 
-            let bar_y = y_bar;
-            if bar_y.saturating_add(bar_h + 2) > area.bottom() {
+            if y.saturating_add(bar_h + 2) > area.bottom() {
                 break;
             }
             let bar_area = Rect {
-                x,
-                y: bar_y,
+                x: area.x + area.width.saturating_sub(bar_w + padding),
+                y,
                 width: bar_w,
                 height: bar_h + 2,
             };
@@ -394,7 +393,7 @@ impl Render {
                 .style(Style::default().fg(app.theme.fg_bright));
             f.render_widget(label, label_area);
 
-            y_bar = bar_y.saturating_add(bar_h + 2 + gap);
+            y_bar = final_y.saturating_add(bar_h + 2 + gap);
         }
     }
 
@@ -738,13 +737,13 @@ impl Render {
                 };
                 let has_album = !track.album.is_empty();
 
-                // Progress: 1 row (available when dur > 0)
+                // Progress: 1 row (available when dur > 0 AND not a live stream)
                 let dur = if app.state.duration > 0.0 {
                     app.state.duration as u64
                 } else {
                     track.duration as u64
                 };
-                let has_progress = dur > 0;
+                let has_progress = dur > 0 && !is_live_stream(&track.path);
 
                 // Show cover + details side-by-side whenever there is enough
                 // horizontal room. On small-height terminals the cover is
@@ -2706,7 +2705,7 @@ const LIBRARY_ICONS_NERD: &[&str] = &[
     "\u{f03a}",
     "\u{f04c7}",
     "\u{f0439}", // Radio: nf-md-radio (official MDI)
-    "\u{f0122}", // Most Played: nf-md-chart_line (official MDI)
+    "\u{f0120}", // Most Played: nf-md-chart_bar (official MDI)
     "\u{f02da}", // Recently Played: nf-md-history (official MDI)
     "\u{f1da}",
     "\u{f04fb}", // Genres: nf-md-tag_multiple (official MDI)
@@ -2715,7 +2714,7 @@ const LIBRARY_ICONS_NERD: &[&str] = &[
 ];
 
 const LIBRARY_ICONS_ASCII: &[&str] = &[
-    "♫", "♥", "▤", "♪", "≡", "☊", "◉", "★", "◆", "♫", "◎", "▽", "#",
+    "♫", "♥", "▤", "♪", "≡", "☊", "◉", "▥", "◆", "♫", "◎", "▽", "#",
 ];
 
 pub(crate) fn use_nerd_fonts() -> bool {
@@ -3012,49 +3011,23 @@ impl Pickers {
             }
             PickerId::PodcastSubscribe => (56, 8),
             PickerId::LoadStream => (56, 8),
-            PickerId::RadioSearch => {
-                let n = app.radio.search.len();
+            PickerId::Radio => {
+                // One merged panel: height follows the filtered row count;
+                // width fits the longest name across every sub-list (custom
+                // stations, top stations, tags, countries).
+                let n = app.radio_picks().len();
                 let w = app
                     .radio
-                    .search
+                    .custom
                     .iter()
-                    .map(|s| s.name.len() as u16 + 40)
+                    .map(|s| s.name.len())
+                    .chain(app.radio.top.iter().map(|s| s.name.len()))
+                    .chain(app.radio.browse_tags.iter().map(|t| t.name.len()))
+                    .chain(app.radio.browse_countries.iter().map(|c| c.name.len()))
                     .max()
-                    .unwrap_or(60)
-                    .clamp(54, 88);
-                (w, (n as u16 + 6).clamp(18, 30))
-            }
-            PickerId::RadioTop => {
-                let n = app.radio.top.len();
-                let w = app
-                    .radio
-                    .top
-                    .iter()
-                    .map(|s| s.name.len() as u16 + 40)
-                    .max()
-                    .unwrap_or(60)
-                    .clamp(54, 88);
-                (w, (n as u16 + 6).clamp(18, 30))
-            }
-            PickerId::RadioBrowse => (40, 10),
-            PickerId::RadioBrowseList => {
-                let n = match app.radio.browse_kind {
-                    RadioBrowseKind::Tags => app.radio.browse_tags.len(),
-                    RadioBrowseKind::Countries => app.radio.browse_countries.len(),
-                };
-                (60, (n as u16 + 6).clamp(12, 30))
-            }
-            PickerId::RadioBrowseStations => {
-                let n = app.radio.browse_stations.len();
-                let w = app
-                    .radio
-                    .browse_stations
-                    .iter()
-                    .map(|s| s.name.len() as u16 + 40)
-                    .max()
-                    .unwrap_or(60)
-                    .clamp(54, 88);
-                (w, (n as u16 + 6).clamp(18, 30))
+                    .map_or(64, |v| v as u16 + 48)
+                    .clamp(64, 100);
+                (w, (n as u16 + 9).clamp(16, 36))
             }
             _ => (56, 22),
         }
@@ -3093,11 +3066,7 @@ impl Pickers {
                     | PickerId::SubsonicAlbumTracks
                     | PickerId::PodcastFeeds
                     | PickerId::PodcastEpisodes
-                    | PickerId::RadioSearch
-                    | PickerId::RadioTop
-                    | PickerId::RadioBrowse
-                    | PickerId::RadioBrowseList
-                    | PickerId::RadioBrowseStations
+                    | PickerId::Radio
             );
             let picker_height = if scrolling {
                 let height_cap = (area.height.saturating_sub(2) / 2).max(10);
@@ -3150,11 +3119,7 @@ impl Pickers {
             PickerId::PodcastEpisodes => Self::render_podcast_episodes(f, picker_area, app),
             PickerId::PodcastSubscribe => Self::render_podcast_subscribe(f, picker_area, app),
             PickerId::LoadStream => Self::render_load_stream(f, picker_area, app),
-            PickerId::RadioSearch => Self::render_radio_search(f, picker_area, app),
-            PickerId::RadioTop => Self::render_radio_top(f, picker_area, app),
-            PickerId::RadioBrowse => Self::render_radio_browse(f, picker_area, app),
-            PickerId::RadioBrowseList => Self::render_browse_list(f, picker_area, app),
-            PickerId::RadioBrowseStations => Self::render_browse_stations(f, picker_area, app),
+            PickerId::Radio => Self::render_radio(f, picker_area, app),
             PickerId::Setup => Self::render_setup(f, picker_area, app),
             PickerId::LastfmAuth => Self::render_lastfm_setup(f, picker_area, app),
             PickerId::SpotifyLink => {
@@ -3473,6 +3438,26 @@ impl Pickers {
         title: impl Into<Cow<'a, str>>,
         help: Option<&'a str>,
     ) -> Block<'a> {
+        // The "Esc" affordance lives at the top-right corner, inline with the
+        // picker title. A hint that *ends* with an "Esc: …" token gets that
+        // token lifted up there; pickers with mid-hint Esc phrasing or no hint
+        // at all show a bare "Esc" and keep their full bottom hint.
+        let (bottom_hint, esc_label) = match help {
+            Some(h) => {
+                let trimmed = h.trim_end();
+                match trimmed.rfind("Esc:") {
+                    Some(pos) if !trimmed[pos + 4..].contains(':') => {
+                        let esc = trimmed[pos..].trim().to_string();
+                        (Some(trimmed[..pos].trim_end()), Some(esc))
+                    }
+                    _ => (Some(trimmed), None),
+                }
+            }
+            None => (None, None),
+        };
+        let bottom_hint = bottom_hint.filter(|h| !h.is_empty());
+        let esc_label = esc_label.unwrap_or_else(|| "Esc".to_string());
+
         let mut block = Block::default()
             .title(Line::from(Span::styled(
                 title.into(),
@@ -3480,6 +3465,13 @@ impl Pickers {
                     .fg(app.theme.accent)
                     .add_modifier(Modifier::BOLD),
             )))
+            .title(
+                Line::from(Span::styled(
+                    esc_label,
+                    Style::default().fg(app.theme.fg_dim),
+                ))
+                .right_aligned(),
+            )
             .padding(Padding {
                 left: 1,
                 right: 1,
@@ -3491,22 +3483,11 @@ impl Pickers {
             } else {
                 app.float_bg()
             }));
-        match help {
-            Some(h) => {
-                block = block.title_bottom(Line::from(Span::styled(
-                    h,
-                    Style::default().fg(app.theme.fg_dim),
-                )));
-            }
-            None => {
-                block = block.title_bottom(
-                    Line::from(Span::styled(
-                        " \u{2699} ",
-                        Style::default().fg(app.theme.fg_dim),
-                    ))
-                    .right_aligned(),
-                );
-            }
+        if let Some(h) = bottom_hint {
+            block = block.title_bottom(Line::from(Span::styled(
+                h,
+                Style::default().fg(app.theme.fg_dim),
+            )));
         }
         block
     }
@@ -4487,167 +4468,159 @@ impl Pickers {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
-    fn render_radio_search(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let mut rows = Vec::new();
-        for s in &app.radio_search_picks() {
-            rows.push(Self::radio_row(s));
-        }
-        let mut prepend = vec![Self::picker_query_line(app)];
-        if app.radio.search_pending {
-            prepend.push(Line::from(Span::styled(
-                " searching\u{2026}",
-                Style::default().fg(app.theme.fg_dim),
-            )));
-        }
-        Self::render_scroll_rows(
-            f,
-            area,
-            app,
-            " Radio search ",
-            "",
-            prepend,
-            rows,
-            "type a query, then Enter",
-        );
-    }
+    fn render_radio(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let picks = app.radio_picks();
+        let total = picks.len();
+        let sel = app
+            .pickers
+            .top()
+            .map_or(0, |o| o.selected.min(total.saturating_sub(1)));
 
-    fn render_radio_top(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let mut rows = Vec::new();
-        for s in &app.radio.top {
-            rows.push(Self::radio_row(s));
-        }
-        Self::render_scroll_rows(
-            f,
-            area,
-            app,
-            "Top Radio Stations",
-            "s: save   r: refresh   Esc: close",
-            Vec::new(),
-            rows,
-            if app.radio.top_pending {
-                " loading stations\u{2026}"
-            } else {
-                "no stations"
-            },
-        );
-    }
-
-    fn render_radio_browse(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
-        let q = query.to_lowercase();
-
-        let mut rows = Vec::new();
-        if !q.is_empty() {
-            let filtered: Vec<_> = app
-                .radio
-                .search
-                .iter()
-                .filter(|s| {
-                    s.name.to_lowercase().contains(&q)
-                        || s.country.to_lowercase().contains(&q)
-                        || s.tags.to_lowercase().contains(&q)
-                })
-                .collect();
-            for s in &filtered {
-                rows.push(Self::radio_row(s));
-            }
-        } else {
-            rows.push("\u{1f3f7}\u{fe0f} Tags\u{2003}\u{2139}\u{fe0f} browse a genre".to_string());
-            rows.push("\u{1f30f} Countries\u{2003}\u{2139}\u{fe0f} browse by country".to_string());
-            for t in &app.radio.browse_tags {
-                rows.push(format!("\u{1f3f7}\u{fe0f} {} stations", t.name));
-            }
-            for c in &app.radio.browse_countries {
-                rows.push(format!("\u{1f30f} {} stations", c.name));
-            }
-        }
-
-        let mut prepend = vec![Self::picker_query_line(app)];
-        if app.radio.search_pending {
-            prepend.push(Line::from(Span::styled(
-                " searching\u{2026}",
-                Style::default().fg(app.theme.fg_dim),
-            )));
-        }
-        Self::render_scroll_rows(
-            f,
-            area,
-            app,
-            " Radio ",
-            "",
-            prepend,
-            rows,
-            "type a query or browse tags",
-        );
-    }
-
-    fn render_browse_list(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let kind = app.radio.browse_kind;
-        let mut rows = Vec::new();
-        match kind {
-            RadioBrowseKind::Tags => {
-                for t in &app.radio.browse_tags {
-                    rows.push(format!(
-                        "\u{1f3f7}\u{fe0f} {}\u{2003}\u{2139}\u{fe0f} {} stations",
-                        t.name, t.station_count
-                    ));
-                }
-            }
-            RadioBrowseKind::Countries => {
-                for c in &app.radio.browse_countries {
-                    rows.push(format!(
-                        "\u{1f30f} {}\u{2003}\u{2139}\u{fe0f} {} stations",
-                        c.name, c.station_count
-                    ));
-                }
-            }
-        }
-        let (title, hint) = match kind {
-            RadioBrowseKind::Tags => (
-                " Radio browse: tags ",
-                " Enter: stations   r: refresh   Esc: close",
+        let (title, pending, empty_msg) = match app.radio.section {
+            RadioSection::Root => (
+                " Radio ".to_string(),
+                app.radio.top_pending || app.radio.browse_pending,
+                "no stations yet \u{2014} press r to refresh",
             ),
-            RadioBrowseKind::Countries => (
-                " Radio browse: countries ",
-                " Enter: stations   r: refresh   Esc: close",
+            RadioSection::Stations => (
+                format!(" Radio: {} ", app.radio.browse_topic),
+                app.radio.browse_stations_pending,
+                "no stations",
+            ),
+            RadioSection::Results => (
+                " Radio search ".to_string(),
+                app.radio.search_pending,
+                "type a query, then Enter",
             ),
         };
-        Self::render_scroll_rows(
-            f,
-            area,
-            app,
-            title,
-            hint,
-            Vec::new(),
-            rows,
-            if app.radio.browse_pending {
-                " loading\u{2026}"
-            } else {
-                "empty"
-            },
+        // The trailing Esc token is auto-lifted to the panel's top-right
+        // corner by picker_panel.
+        let hint = format!(
+            "Tab: filter {}   Enter: play   s: save   x: remove   r: refresh   Esc: close",
+            app.radio.filter.label()
         );
-    }
 
-    fn render_browse_stations(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let mut rows = Vec::new();
-        for s in &app.radio.browse_stations {
-            rows.push(Self::radio_row(s));
+        let block = Self::picker_panel(app, title, Some(&hint));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let mut prepend = vec![Self::picker_query_line(app)];
+        if pending {
+            prepend.push(Line::from(Span::styled(
+                " loading\u{2026}",
+                Style::default().fg(app.theme.fg_dim),
+            )));
         }
-        let title = format!(" Radio: {} ", app.radio.browse_topic);
-        Self::render_scroll_rows(
-            f,
-            area,
-            app,
-            &title,
-            "s: save   r: refresh   Esc: close",
-            Vec::new(),
-            rows,
-            if app.radio.browse_stations_pending {
-                " loading stations\u{2026}"
+
+        let visible = inner.height.saturating_sub(prepend.len() as u16).max(1) as usize;
+        let (s, e) = if total > 0 {
+            if let Some(top) = app.pickers.top_mut() {
+                let (a, b) = step_viewport(top.viewport_offset, sel, visible, total);
+                top.viewport_offset = a;
+                (a, b)
             } else {
-                "no stations"
-            },
-        );
+                (0, total)
+            }
+        } else {
+            (0, 0)
+        };
+
+        let station_at = |i: usize| -> Option<&RadioStation> {
+            match app.radio.section {
+                RadioSection::Stations => app.radio.browse_stations.get(i),
+                RadioSection::Results => app.radio.search.get(i),
+                RadioSection::Root => app.radio.top.get(i),
+            }
+        };
+
+        let mut lines = prepend;
+        if total == 0 {
+            lines.push(Line::from(Span::styled(
+                empty_msg.to_string(),
+                Style::default().fg(app.theme.fg_dim),
+            )));
+        }
+        for (k, pick) in picks[s..e].iter().enumerate() {
+            let i = s + k;
+            let (text, is_header) = match pick {
+                RadioPick::Header(label) => (
+                    format!(" \u{2500}\u{2500} {} \u{2500}\u{2500}", label),
+                    true,
+                ),
+                RadioPick::Custom(idx) => app
+                    .radio
+                    .custom
+                    .get(*idx)
+                    .map(|s| {
+                        (
+                            format!("{} {}\u{2003}\u{2714} saved", "\u{1f3a7}", s.name),
+                            false,
+                        )
+                    })
+                    .unwrap_or_default(),
+                RadioPick::Station(idx) => station_at(*idx)
+                    .map(|s| (Self::radio_row(s), false))
+                    .unwrap_or_default(),
+                RadioPick::Tag(idx) => app
+                    .radio
+                    .browse_tags
+                    .get(*idx)
+                    .map(|t| {
+                        (
+                            format!(
+                                "\u{1f3f7}\u{fe0f} {}\u{2003}\u{2139}\u{fe0f} {} stations",
+                                t.name, t.station_count
+                            ),
+                            false,
+                        )
+                    })
+                    .unwrap_or_default(),
+                RadioPick::Country(idx) => app
+                    .radio
+                    .browse_countries
+                    .get(*idx)
+                    .map(|c| {
+                        (
+                            format!(
+                                "\u{1f30d} {}\u{2003}\u{2139}\u{fe0f} {} stations",
+                                c.name, c.station_count
+                            ),
+                            false,
+                        )
+                    })
+                    .unwrap_or_default(),
+            };
+            let style = if is_header {
+                Style::default().fg(app.theme.muted_border)
+            } else if i == sel {
+                Style::default()
+                    .fg(app.theme.selection_fg_readable())
+                    .bg(app.theme.selection_bg)
+            } else {
+                Style::default().fg(app.theme.fg)
+            };
+            let prefix = if is_header {
+                "  "
+            } else if i == sel {
+                " > "
+            } else {
+                "   "
+            };
+            let row = if i == sel && !is_header {
+                format!("{prefix}{text}{}", " ".repeat(row_pad(&text, inner.width)))
+            } else {
+                format!("{prefix}{text}")
+            };
+            lines.push(Line::from(Span::styled(row, style)));
+            let row_rect = Rect {
+                x: inner.x,
+                y: inner.y + k as u16,
+                width: inner.width,
+                height: 1,
+            };
+            app.mouse_map.register(row_rect, MouseZone::PickerItem(i));
+        }
+        f.render_widget(Paragraph::new(lines), inner);
     }
 
     fn radio_row(s: &RadioStation) -> String {
@@ -5644,8 +5617,8 @@ impl CommandPalette {
                 hint: "setup",
             },
             Command {
-                icon: "\u{f043b} Radio Browse",
-                keys: "Alt+T",
+                icon: "\u{f043b} Radio Browser",
+                keys: "Alt+R",
                 hint: "radio browse",
             },
             Command {
@@ -5894,8 +5867,8 @@ impl CommandPalette {
                 hint: "setup",
             },
             Command {
-                icon: "\u{1f3f7}\u{fe0f} Radio Browse",
-                keys: "Alt+T",
+                icon: "\u{1f3f7}\u{fe0f} Radio Browser",
+                keys: "Alt+R",
                 hint: "radio browse",
             },
         ]
@@ -5937,8 +5910,7 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   Alt+S       Spotify"),
     ("", "   Alt+U       Subsonic Search"),
     ("", "   Alt+P       Podcasts"),
-    ("", "   Alt+R       Top Radio Stations"),
-    ("", "   Alt+T       Radio Browse"),
+    ("", "   Alt+R       Radio Browser"),
     ("", "   Alt+O       Play Stream URL"),
     ("topic", "── Playlists ──"),
     ("", "   e           Rename Playlist (overview)"),

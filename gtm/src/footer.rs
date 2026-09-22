@@ -687,6 +687,9 @@ impl Footer {
 
     fn progress(app: &App) -> Option<String> {
         let track = app.state.current_track.as_ref()?;
+        if is_live_stream(&track.path) {
+            return None;
+        }
         let pos = app.display_position as u64;
         let dur = if app.state.duration > 0.0 {
             app.state.duration as u64
@@ -749,11 +752,18 @@ impl Footer {
 
     /// Generic connectivity indicator driven by the daemon's bounded TCP
     /// probes (`None` = not probed yet, hidden until the first result lands).
+    /// Rendered as an icon: wifi / banned-wifi in Nerd mode, filled / hollow
+    /// dot otherwise.
     fn network(app: &App) -> Option<String> {
+        let (icon, fallback) = if use_nerd_fonts() {
+            ("\u{f1eb}", "\u{f05e}") // nf-fa-wifi / nf-fa-ban
+        } else {
+            ("\u{25cf}", "\u{25cb}") // ● / ○
+        };
         match app.state.network_online {
             None => None,
-            Some(true) => Some("Online".into()),
-            Some(false) => Some("Offline".into()),
+            Some(true) => Some(icon.into()),
+            Some(false) => Some(fallback.into()),
         }
     }
 
@@ -940,6 +950,13 @@ pub(crate) fn classify_remote_source(path: &str) -> Option<(&'static str, &'stat
         return Some(("Radio", "Stream"));
     }
     None
+}
+
+/// True when the path identifies a live/infinite stream: `radio://` stations
+/// and bare `http(s)://` stream URLs (LoadStream). These have no track
+/// length, so progress timestamps and progress bars must not be rendered.
+pub(crate) fn is_live_stream(path: &str) -> bool {
+    path.starts_with("radio://") || matches!(classify_remote_source(path), Some(("Radio", _)))
 }
 
 /// Get platform mascot/icon for the current OS.

@@ -3019,39 +3019,12 @@ impl Radio {
     pub async fn play(
         inner: &DaemonInner,
         station_id: &str,
-        station_name: &str,
+        _station_name: &str,
     ) -> Result<DaemonRes, CoreError> {
-        // Fresh name from the directory (authoritative); the caller-provided
-        // name is only a fallback for the queue display.
-        let name = {
-            if let Some(index) = gtm::shared::custom::parse_custom_id(station_id) {
-                match gtm::shared::custom::station_by_index(index) {
-                    Ok(Some(st)) => st.name,
-                    _ => station_name.to_string(),
-                }
-            } else {
-                let radio = inner.radio.lock().await;
-                match radio.by_uuid(station_id).await {
-                    Ok(st) => st.name,
-                    Err(_) => station_name.to_string(),
-                }
-            }
-        };
+        // Don't push radio into the queue - live streams don't belong there.
+        // play_remote() builds the TrackInfo from the Radio kind's station_id,
+        // so the playlist-name fallback is no longer needed.
         let path = format!("radio://{station_id}");
-        let track = TrackInfo {
-            id: 0,
-            path: path.clone(),
-            title: name,
-            artist: "Radio".into(),
-            album: "Radio Browser".into(),
-            duration: 0.0,
-            ..Default::default()
-        };
-        {
-            let mut state = inner.state.write().await;
-            state.queue.push(track);
-        }
-        Daemon::push_queue_state(inner).await;
         Cmd::play(inner, &path, 0.0, false).await
     }
 }

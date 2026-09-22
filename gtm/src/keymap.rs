@@ -640,14 +640,7 @@ pub fn default_keybindings() -> Keybindings {
             (
                 KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT),
                 BoundCommand {
-                    action: KeyboardAction::OpenOverlay(PickerId::RadioTop),
-                    contexts: vec![KeyContext::Normal],
-                },
-            ),
-            (
-                KeyEvent::new(KeyCode::Char('t'), KeyModifiers::ALT),
-                BoundCommand {
-                    action: KeyboardAction::OpenOverlay(PickerId::RadioBrowse),
+                    action: KeyboardAction::OpenOverlay(PickerId::Radio),
                     contexts: vec![KeyContext::Normal],
                 },
             ),
@@ -903,9 +896,8 @@ impl KeyboardAction {
                 KeyboardAction::OpenOverlay(PickerId::SubsonicSearch)
             }
             "open_podcast" | "open_podcasts" => KeyboardAction::OpenOverlay(PickerId::PodcastFeeds),
-            "open_radio" | "open_radios" => KeyboardAction::OpenOverlay(PickerId::RadioTop),
-            "open_radio_browse" | "browse_radio" => {
-                KeyboardAction::OpenOverlay(PickerId::RadioBrowse)
+            "open_radio" | "open_radios" | "open_radio_browse" | "browse_radio" => {
+                KeyboardAction::OpenOverlay(PickerId::Radio)
             }
             "open_notifications" | "notifications" => {
                 KeyboardAction::OpenOverlay(PickerId::Notifications)

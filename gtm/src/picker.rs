@@ -44,16 +44,9 @@ pub enum PickerId {
     PodcastEpisodes,
     /// Podcast feed subscribe form (URL input).
     PodcastSubscribe,
-    RadioSearch,
-    /// Top-voted stations from the Radio Browser directory.
-    RadioTop,
-    /// Radio Browser browse entry: browse by tag or by country.
-    RadioBrowse,
-    /// Tag or country list picked at `RadioBrowse`.
-    RadioBrowseList,
-    /// Stations carrying the tag / from the country selected at
-    /// `RadioBrowseList`.
-    RadioBrowseStations,
+    /// Unified Radio Browser picker (Alt+R): saved stations, top stations,
+    /// tags/countries drill-down, and a search box filtered by field.
+    Radio,
     /// Play an arbitrary HTTP(S) stream URL (Alt+O).
     LoadStream,
     /// `gtm setup` entry: choose which service to configure.
