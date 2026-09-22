@@ -42,6 +42,8 @@ pub struct YoutubeManager {
     cookie_file: Option<PathBuf>,
     /// Browser cookies source forwarded to yt-dlp as `--cookies-from-browser`
     /// (e.g. `chrome`, `firefox`, `brave`). Takes precedence over `cookie_file`.
+    /// When neither is configured, a browser is auto-detected from its standard
+    /// cookie location (see [`detect_browser_cookie_source`]).
     cookie_source: Option<String>,
     /// JS interpreter forwarded to yt-dlp as `--js-runtime`.
     js_runtime: Option<String>,
@@ -98,6 +100,137 @@ impl Default for YoutubeManager {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Chromium-family cookie DB locations under `~/.config` (Linux). Each row is
+/// `(yt-dlp browser name, path relative to the config dir)`. The store moved
+/// from `Default/Cookies` to `Default/Network/Cookies` in newer versions, so
+/// both are probed per browser.
+#[cfg(target_os = "linux")]
+const LINUX_BROWSER_COOKIES: &[(&str, &str)] = &[
+    ("chrome", "google-chrome/Default/Network/Cookies"),
+    ("chrome", "google-chrome/Default/Cookies"),
+    ("chromium", "chromium/Default/Network/Cookies"),
+    ("chromium", "chromium/Default/Cookies"),
+    (
+        "brave",
+        "BraveSoftware/Brave-Browser/Default/Network/Cookies",
+    ),
+    ("brave", "BraveSoftware/Brave-Browser/Default/Cookies"),
+    ("edge", "microsoft-edge/Default/Network/Cookies"),
+    ("edge", "microsoft-edge/Default/Cookies"),
+    ("vivaldi", "vivaldi/Default/Network/Cookies"),
+    ("vivaldi", "vivaldi/Default/Cookies"),
+    ("opera", "opera/Cookies"),
+    ("opera", "opera/Default/Cookies"),
+];
+
+/// Chromium-family cookie DB locations under `~/Library/Application Support`
+/// (macOS), plus Safari's binary cookie store which lives elsewhere.
+#[cfg(target_os = "macos")]
+const MACOS_BROWSER_COOKIES: &[(&str, &str)] = &[
+    ("chrome", "Google/Chrome/Default/Network/Cookies"),
+    ("chrome", "Google/Chrome/Default/Cookies"),
+    ("chromium", "Chromium/Default/Network/Cookies"),
+    ("chromium", "Chromium/Default/Cookies"),
+    (
+        "brave",
+        "BraveSoftware/Brave-Browser/Default/Network/Cookies",
+    ),
+    ("brave", "BraveSoftware/Brave-Browser/Default/Cookies"),
+    ("edge", "Microsoft Edge/Default/Network/Cookies"),
+    ("edge", "Microsoft Edge/Default/Cookies"),
+    ("vivaldi", "Vivaldi/Default/Network/Cookies"),
+    ("vivaldi", "Vivaldi/Default/Cookies"),
+    ("opera", "com.operasoftware.Opera/Cookies"),
+    ("opera", "com.operasoftware.Opera/Default/Cookies"),
+];
+
+/// Chromium-family cookie DB locations under `%LOCALAPPDATA%` (Windows).
+#[cfg(target_os = "windows")]
+const WINDOWS_BROWSER_COOKIES: &[(&str, &str)] = &[
+    ("chrome", "Google/Chrome/User Data/Default/Network/Cookies"),
+    ("chrome", "Google/Chrome/User Data/Default/Cookies"),
+    ("edge", "Microsoft/Edge/User Data/Default/Network/Cookies"),
+    ("edge", "Microsoft/Edge/User Data/Default/Cookies"),
+    (
+        "brave",
+        "BraveSoftware/Brave-Browser/User Data/Default/Network/Cookies",
+    ),
+    (
+        "brave",
+        "BraveSoftware/Brave-Browser/User Data/Default/Cookies",
+    ),
+    ("chromium", "Chromium/User Data/Default/Network/Cookies"),
+    ("chromium", "Chromium/User Data/Default/Cookies"),
+    ("vivaldi", "Vivaldi/User Data/Default/Network/Cookies"),
+    ("vivaldi", "Vivaldi/User Data/Default/Cookies"),
+    ("opera", "Opera Software/Opera Stable/Network/Cookies"),
+    ("opera", "Opera Software/Opera Stable/Cookies"),
+];
+
+/// True when any Firefox profile under `root` ships a local cookie database.
+fn profile_has_cookies(root: &Path) -> bool {
+    std::fs::read_dir(root)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().is_dir())
+        .any(|e| e.path().join("cookies.sqlite").exists())
+}
+
+/// Locate the cookie store of an installed major browser in its standard
+/// per-OS location. Returns the browser name yt-dlp accepts for
+/// `--cookies-from-browser` (e.g. `chrome`, `brave`, `firefox`, `edge`).
+#[cfg(target_os = "linux")]
+fn detect_browser_cookie_source() -> Option<&'static str> {
+    let home = dirs::home_dir()?;
+    let base = dirs::config_dir().unwrap_or_else(|| home.join(".config"));
+    for (name, rel) in LINUX_BROWSER_COOKIES {
+        if base.join(rel).exists() {
+            return Some(*name);
+        }
+    }
+    profile_has_cookies(&home.join(".mozilla/firefox")).then_some("firefox")
+}
+
+#[cfg(target_os = "macos")]
+fn detect_browser_cookie_source() -> Option<&'static str> {
+    let home = dirs::home_dir()?;
+    let base = dirs::config_dir().unwrap_or_else(|| home.join("Library/Application Support"));
+    for (name, rel) in MACOS_BROWSER_COOKIES {
+        if base.join(rel).exists() {
+            return Some(*name);
+        }
+    }
+    if profile_has_cookies(&base.join("Firefox/Profiles")) {
+        return Some("firefox");
+    }
+    let safari =
+        home.join("Library/Containers/com.apple.Safari/Data/Library/Cookies/Cookies.binarycookies");
+    safari.exists().then_some("safari")
+}
+
+#[cfg(target_os = "windows")]
+fn detect_browser_cookie_source() -> Option<&'static str> {
+    let base = PathBuf::from(std::env::var_os("LOCALAPPDATA")?);
+    for (name, rel) in WINDOWS_BROWSER_COOKIES {
+        if base.join(rel).exists() {
+            return Some(*name);
+        }
+    }
+    if let Some(appdata) = std::env::var_os("APPDATA")
+        && profile_has_cookies(&PathBuf::from(appdata).join("Mozilla/Firefox/Profiles"))
+    {
+        return Some("firefox");
+    }
+    None
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+fn detect_browser_cookie_source() -> Option<&'static str> {
+    None
 }
 
 impl YoutubeManager {
@@ -201,6 +334,11 @@ impl YoutubeManager {
     /// precedence over a cookie file), otherwise `--cookies <file>`, plus
     /// `--js-runtime` when configured. yt-dlp refuses both `--cookies` forms at
     /// the same time, so at most one cookie flag is emitted.
+    ///
+    /// When nothing is configured, the cookie store of an installed major
+    /// browser is auto-detected from its standard location and passed via
+    /// `--cookies-from-browser`, so YouTube playback/downloads work out of the
+    /// box instead of failing with HTTP 403.
     fn ytdlp_auth_args(&self) -> Vec<std::ffi::OsString> {
         let mut args: Vec<std::ffi::OsString> = Vec::new();
         if let Some(source) = &self.cookie_source {
@@ -209,6 +347,9 @@ impl YoutubeManager {
         } else if let Some(path) = &self.cookie_file {
             args.push("--cookies".into());
             args.push(path.as_os_str().into());
+        } else if let Some(browser) = detect_browser_cookie_source() {
+            args.push("--cookies-from-browser".into());
+            args.push(browser.into());
         }
         if let Some(runtime) = &self.js_runtime {
             args.push("--js-runtime".into());
@@ -638,7 +779,7 @@ async fn resolve_ytdlp(
             .find(|l| !l.trim().is_empty())
             .unwrap_or("unknown error");
         let hint = if detail.contains("403") || detail.contains("Forbidden") {
-            " (try setting a cookie file in Settings → YouTube)"
+            " (cookies unavailable: set a logged-in cookies.txt in Settings → YouTube)"
         } else {
             ""
         };
@@ -690,7 +831,7 @@ pub(crate) async fn download_into(
             .find(|l| !l.trim().is_empty())
             .unwrap_or("unknown error");
         let hint = if detail.contains("403") || detail.contains("Forbidden") {
-            " (try setting a cookie file in Settings → YouTube)"
+            " (cookies unavailable: set a logged-in cookies.txt in Settings → YouTube)"
         } else {
             ""
         };
