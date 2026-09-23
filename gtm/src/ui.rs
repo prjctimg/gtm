@@ -2972,6 +2972,8 @@ pub(crate) fn provider_icon(name: &str) -> Option<&'static str> {
         "Podcast" => Some("\u{f0994}"),            // nf-md-podcast
         "Radio" => Some("\u{f0439}"),              // nf-md-radio
         "Subsonic/Navidrome" => Some("\u{f048b}"), // nf-md-server
+        "Deezer" => Some("\u{f0387}"),             // nf-md-music_note (logo is a note)
+        "Tidal" => Some("\u{f0f2e}"),              // nf-md-wave (logo is a wave)
         "SoundCloud" => Some("\u{f1be}"),          // nf-fa-soundcloud
         "Bandcamp" => Some("\u{f2d5}"),            // nf-fa-bandcamp
         "Mixcloud" => Some("\u{f289}"),            // nf-fa-mixcloud
@@ -3165,7 +3167,7 @@ fn fill_pane(f: &mut ratatui::Frame, area: Rect, app: &App) {
     );
 }
 
-const SETTINGS_ICONS_NERD: &[&str] = &["\u{f16a}", "\u{f04b}", "\u{f013}", "\u{f04c7}", "\u{f001}"];
+const SETTINGS_ICONS_NERD: &[&str] = &["\u{f167}", "\u{f04b}", "\u{f013}", "\u{f04c7}", "\u{f0387}"];
 const SETTINGS_ICONS_ASCII: &[&str] = &["YT", "▶", "⚙", "★", "DZ"];
 const SETTINGS_CATEGORIES: &[&str] = &["YouTube", "Playback", "System", "Spotify", "Deezer"];
 
@@ -3182,7 +3184,7 @@ fn service_icon_glyph(icon_style: &str, service: &str) -> &'static str {
         "Last.fm" => "\u{1f3b5}",
         "Subsonic/Navidrome" => "\u{1f5a5}\u{fe0f}",
         "Deezer" => "\u{1f3b6}",
-        "YouTube" => "\u{1f4fa}",
+        "YouTube" => "\u{25b6}\u{fe0f}", // same ▶️ as command palette's emoji YouTube Search
         "Tidal" => "\u{1f30a}",
         _ => "",
     }
