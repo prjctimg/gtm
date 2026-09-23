@@ -2276,6 +2276,7 @@ impl Spotify {
         inner: &DaemonInner,
         playlist_id: &str,
         track_index: usize,
+        play: bool,
     ) -> Result<DaemonRes, CoreError> {
         let track = {
             let spotify = inner.spotify.lock().await;
@@ -2312,6 +2313,7 @@ impl Spotify {
                 &spotify_artist,
                 &spotify_album,
                 duration,
+                play,
             )
             .await;
             return Ok(DaemonRes::Ok);
@@ -2354,7 +2356,10 @@ impl Spotify {
             drop(state);
             w
         };
-        if was_empty {
+        // Start playback reliably: on an empty queue, and always when the
+        // caller asked to play (Enter) — `Cmd::play` stops the current source
+        // first, so switching from another source is smooth.
+        if was_empty || play {
             let _ = Cmd::play(inner, &path, 0.0, false).await;
         }
 
@@ -2420,6 +2425,7 @@ impl Spotify {
         artists: &str,
         album: &str,
         uri: &Option<String>,
+        play: bool,
     ) -> Result<DaemonRes, CoreError> {
         let can_stream = {
             let spotify = inner.spotify.lock().await;
@@ -2430,7 +2436,7 @@ impl Spotify {
                 let spotify = inner.spotify.lock().await;
                 spotify.find_track_duration(&uri)
             };
-            Spotify::queue_stream(inner, &uri, name, artists, album, duration).await?;
+            Spotify::queue_stream(inner, &uri, name, artists, album, duration, play).await?;
             return Ok(DaemonRes::Ok);
         }
 
@@ -2461,7 +2467,10 @@ impl Spotify {
             drop(state);
             w
         };
-        if was_empty {
+        // Start playback reliably: on an empty queue, and always when the
+        // caller asked to play (Enter) — `Cmd::play` stops the current source
+        // first, so switching from another source is smooth.
+        if was_empty || play {
             let _ = Cmd::play(inner, &path, 0.0, false).await;
         }
 
@@ -2481,8 +2490,8 @@ impl Spotify {
 
     /// Enqueue a native `spotify:track:` URI into the user queue with the
     /// given title/artist/album metadata, pre-warm the cover cache for the
-    /// album, and start playback immediately when the queue was empty. Mirrors
-    /// the Premium branch of `resolve`.
+    /// album, and start playback when the queue was empty or the caller asked
+    /// to play. Mirrors the Premium branch of `resolve`.
     async fn queue_stream(
         inner: &DaemonInner,
         uri: &str,
@@ -2490,6 +2499,7 @@ impl Spotify {
         artist: &str,
         album: &str,
         duration: Option<f64>,
+        play: bool,
     ) -> Result<DaemonRes, CoreError> {
         let was_empty = {
             let mut state = inner.state.write().await;
@@ -2506,7 +2516,10 @@ impl Spotify {
             drop(state);
             w
         };
-        if was_empty {
+        // Start playback reliably: on an empty queue, and always when the
+        // caller asked to play (Enter) — `Cmd::play` stops the current source
+        // first, so switching from another source is smooth.
+        if was_empty || play {
             let _ = Cmd::play(inner, uri, 0.0, false).await;
         }
 
@@ -5747,7 +5760,8 @@ impl Daemon {
             DaemonReq::SpotifyResolve {
                 playlist_id,
                 track_index,
-            } => Spotify::resolve(inner, playlist_id, *track_index).await,
+                play,
+            } => Spotify::resolve(inner, playlist_id, *track_index, *play).await,
             DaemonReq::SpotifySearchWeb { query } => Spotify::search_web(inner, query).await,
             DaemonReq::SpotifyAlbumTracks { uri } => Spotify::album_tracks(inner, uri).await,
             DaemonReq::SpotifyArtistTopTracks { uri } => {
@@ -5758,7 +5772,8 @@ impl Daemon {
                 artists,
                 album,
                 uri,
-            } => Spotify::resolve_track(inner, name, artists, album, uri).await,
+                play,
+            } => Spotify::resolve_track(inner, name, artists, album, uri, *play).await,
             DaemonReq::SpotifyPlayAll {
                 playlist_id,
                 shuffle,

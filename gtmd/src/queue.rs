@@ -28,6 +28,30 @@ pub fn resolve_track(path: &str) -> TrackInfo {
         .unwrap_or("")
         .to_string();
 
+    // Remote provider URIs (e.g. `spotify:track:...`) have no filesystem
+    // metadata: label them by provider instead of surfacing the raw URI in
+    // the queue / now-playing widget. Streaming code (queue_stream, remote
+    // resolve) overwrites this with the real title once playback starts.
+    if path_str.starts_with("spotify:") {
+        return TrackInfo {
+            id: 0,
+            path: path_str,
+            title: "Spotify Track".into(),
+            artist: String::new(),
+            album: String::new(),
+            duration: 0.0,
+            track_number: None,
+            genre: String::new(),
+            year: None,
+            bitrate: None,
+            samplerate: None,
+            hash: String::new(),
+            cover_path: None,
+            favourite: false,
+            ..Default::default()
+        };
+    }
+
     if let Ok((meta, hash)) = extract_metadata(&path_str, None) {
         return TrackInfo {
             id: 0,

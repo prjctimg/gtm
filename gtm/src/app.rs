@@ -1171,6 +1171,9 @@ pub struct App {
     pub track_popup_cover: Option<Vec<u8>>,
     pub popup_cover_stateful: Option<StatefulProtocol>,
     popup_slot: FetchSlot<i64>,
+    /// In-flight fetch slot for the Spotify drill-down popup cover, keyed by
+    /// the track's album-image URL instead of a local library id.
+    spotify_popup_slot: FetchSlot<String>,
     /// Cover art for the SearchLibrary picker preview window.
     pub picker_preview_cover: Option<Vec<u8>>,
     pub picker_preview_stateful: Option<StatefulProtocol>,
@@ -1212,6 +1215,9 @@ enum IpcResult {
     MetadataCoverArt(Option<Vec<u8>>, i64, u64),
     ArtistCoverArt(Option<Vec<u8>>, String, u64),
     SpotifyPreviewCover(Option<Vec<u8>>, String, u64),
+    /// Album cover bytes for the highlighted Spotify drill-down row, keyed by
+    /// its image URL (guarded via `spotify_popup_slot`).
+    SpotifyPopupCover(Option<Vec<u8>>, String, u64),
     CoverPicker(Option<Picker>),
     Lyrics(Option<LrcData>, u64),
     /// Authorize URL produced by the daemon's OAuth flow. Kept separate from
@@ -1562,6 +1568,8 @@ impl App {
         self.popup_cover_stateful = None;
         self.popup_slot.id = None;
         self.popup_slot.version = None;
+        self.spotify_popup_slot.id = None;
+        self.spotify_popup_slot.version = None;
     }
 
     pub async fn new(
@@ -1785,6 +1793,7 @@ impl App {
             track_popup_cover: None,
             popup_cover_stateful: None,
             popup_slot: FetchSlot::default(),
+            spotify_popup_slot: FetchSlot::default(),
             picker_preview_cover: None,
             picker_preview_stateful: None,
             picker_slot: FetchSlot::default(),
@@ -1831,8 +1840,7 @@ impl App {
         match service.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
             Some("spotify") => {
                 self.setup.selection = 0;
-                self.pickers.open(PickerId::SpotifyLink);
-                self.open_spotify_link();
+                self.open_spotify_link_form();
             }
             Some("lastfm" | "last.fm") => {
                 self.setup.selection = 1;
@@ -1867,25 +1875,26 @@ impl App {
         }
     }
 
-    /// Kick off the Spotify OAuth browser flow, opening the picker and
-    /// requesting the authorize URL from the daemon. An explicit client id in
-    /// `link_input` wins; otherwise a previously stored client id is reused so
-    /// re-linking (and the Alt+s shortcut) never forces a re-paste.
-    pub fn open_spotify_link(&mut self) {
-        let client_id = if self.spotify.link_input.trim().is_empty() {
-            get_secret(SPOTIFY_CLIENT_ID)
+    /// Open the SpotifyLink picker with the client-id form pre-seeded from a
+    /// previously stored client id (so re-linking never forces a re-paste).
+    /// This does NOT start the OAuth flow: the picker must render the client-id
+    /// input so the user can review or replace the id before pressing Enter
+    /// (the Enter handler starts the flow, falling back to the public librespot
+    /// client id when the field is empty).
+    pub fn open_spotify_link_form(&mut self) {
+        if self.spotify.link_input.trim().is_empty()
+            && let Some(cid) = get_secret(SPOTIFY_CLIENT_ID)
                 .filter(|cid| !cid.trim().is_empty())
-                .unwrap_or_else(|| LIBRESPOT_CLIENT_ID.to_string())
-        } else {
-            self.spotify.link_input.trim().to_string()
-        };
-        let port = self
-            .spotify
-            .oauth_port
-            .trim()
-            .parse::<u16>()
-            .unwrap_or(8990);
-        self.start_spotify_oauth(client_id, port);
+        {
+            self.spotify.link_input = cid;
+        }
+        self.spotify.oauth_port = "8990".to_string();
+        self.spotify.link_field = 0;
+        // No pending flow: the picker shows the input form, not a waiting view.
+        self.spotify.oauth_pending = false;
+        self.spotify.oauth_url = None;
+        self.spotify.oauth_error = None;
+        self.pickers.open(PickerId::SpotifyLink);
     }
 
     /// Start the Spotify OAuth PKCE flow for `client_id` on `port` and watch it
@@ -3268,6 +3277,15 @@ impl App {
                             self.popup_cover_sync();
                         }
                     }
+                    IpcResult::SpotifyPopupCover(cover, url, fetch_gen) => {
+                        if !no_image_protocol()
+                            && self.spotify_popup_slot.id.as_deref() == Some(&url)
+                            && self.spotify_popup_slot.version == Some(fetch_gen)
+                        {
+                            self.track_popup_cover = cover;
+                            self.popup_cover_sync();
+                        }
+                    }
                     IpcResult::UpNextCover(cover, track_id, fetch_gen) => {
                         if !no_image_protocol()
                             && self.upnext.as_ref().is_some_and(|u| {
@@ -4079,6 +4097,15 @@ impl App {
             return;
         }
 
+        if kind == TrackInfoKind::SpotifyTrack {
+            // Spotify drill-down rows: the cover is the selected track's
+            // album-image URL (no local library id), fetched on every cursor
+            // move so scrolling the list loads cover art.
+            self.popup_track_id = None;
+            self.fetch_spotify_popup_cover();
+            return;
+        }
+
         let Some((tid, path)) = maybe_track else {
             self.clear_popup_cover();
             return;
@@ -4125,6 +4152,49 @@ impl App {
                 && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64)
             {
                 let _ = ipc_tx.send(IpcResult::PopupCoverArt(Some(bytes), tid, fetch_gen));
+            }
+        });
+    }
+
+    /// Fetch the album cover for the highlighted Spotify drill-down row from
+    /// the track's album-image URL, so scrolling the playlist loads cover art.
+    /// Generation-guarded by URL via `spotify_popup_slot` (stale replies from
+    /// earlier rows are dropped).
+    fn fetch_spotify_popup_cover(&mut self) {
+        let Some(track) = self.selected_spotify_track().cloned() else {
+            self.clear_popup_cover();
+            return;
+        };
+        let Some(url) = track.image_url.clone() else {
+            self.clear_popup_cover();
+            return;
+        };
+        if self.spotify_popup_slot.id.as_deref() == Some(&url)
+            && self.spotify_popup_slot.version.is_some()
+        {
+            return;
+        }
+        if no_image_protocol() {
+            return;
+        }
+        let fetch_gen = self.next_cover_gen();
+        self.spotify_popup_slot.id = Some(url.clone());
+        self.spotify_popup_slot.version = Some(fetch_gen);
+        self.track_popup_cover = None;
+        self.popup_cover_stateful = None;
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            match client.spotify().track_image(&url).await {
+                Ok(Some(b64)) => {
+                    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
+                        let _ =
+                            ipc_tx.send(IpcResult::SpotifyPopupCover(Some(bytes), url, fetch_gen));
+                    }
+                }
+                Ok(None) | Err(_) => {
+                    let _ = ipc_tx.send(IpcResult::SpotifyPopupCover(None, url, fetch_gen));
+                }
             }
         });
     }
@@ -4367,12 +4437,12 @@ impl App {
     pub fn on_picker_opened(&mut self, id: PickerId) {
         match id {
             PickerId::SpotifySearch => {
-                // Alt+s on an unlinked account opens the browser OAuth flow
-                // automatically, exactly like the Setup → Spotify walkthrough:
-                // the picker becomes the "waiting for login" view instead of a
-                // manual access-token paste form.
+                // Alt+s on an unlinked account hands off to the client-id
+                // form instead of auto-starting the OAuth flow: the picker
+                // must show the client-ID input first (Enter starts the flow).
                 if self.spotify.status.as_ref().is_none_or(|s| !s.linked) {
-                    self.open_spotify_link();
+                    self.close_picker();
+                    self.open_spotify_link_form();
                 }
             }
             PickerId::SubsonicSearch => {
@@ -5558,8 +5628,10 @@ impl App {
     /// Preload the cover art for the tracks a short scroll ahead of the cursor
     /// so fast scrolling (e.g. holding an arrow key) warms the daemon's
     /// disk/LRU cache and the on-selection fetch becomes a cache hit. Fires in
-    /// the background and never blocks the UI or surfaces errors.
+    /// the background and never blocks the UI or surfaces errors. Also warms
+    /// Spotify drill-down album covers via their image URLs.
     pub fn preload_upcoming_covers(&mut self) {
+        self.preload_upcoming_spotify_covers();
         let pos = self.list_pos();
         let mut ids = Vec::new();
         for off in 1..=3 {
@@ -5576,6 +5648,38 @@ impl App {
                 // Errors (track without cover / daemon lookup fail) are fine:
                 // a warm miss is simply skipped next time.
                 let _ = client.art().cover(id).await;
+            }
+        });
+    }
+
+    /// Preload the album-cover URLs of Spotify drill-down rows a short scroll
+    /// ahead of the cursor so fast scrolling warms the daemon's image cache
+    /// (covers are keyed by URL, not by a local library id). Fires in the
+    /// background and never blocks the UI or surfaces errors.
+    fn preload_upcoming_spotify_covers(&mut self) {
+        if !self.in_spotify_playlist() {
+            return;
+        }
+        let pos = self.list_pos();
+        let tracks = &self.spotify.playlist_tracks_cache;
+        let mut urls = Vec::new();
+        for off in 1..=3 {
+            let idx = (pos + off).saturating_sub(Self::SPOTIFY_PLAYLIST_ROWS);
+            if let Some(t) = tracks.get(idx)
+                && let Some(url) = t.image_url.clone()
+                && !urls.contains(&url)
+            {
+                urls.push(url);
+            }
+        }
+        if urls.is_empty() {
+            return;
+        }
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            for url in urls {
+                // A warm miss is simply skipped next time.
+                let _ = client.spotify().track_image(&url).await;
             }
         });
     }
@@ -7718,7 +7822,9 @@ impl App {
                                     }
                                     if let Some(track) = self.selected_spotify_track().cloned() {
                                         // Resolve the track to a playable local
-                                        // stream and enqueue it.
+                                        // stream, enqueue it, and start playback
+                                        // (Enter = play intent; the daemon stops
+                                        // the current source before switching).
                                         let playlist_id =
                                             self.browse_detail.clone().unwrap_or_default();
                                         let track_index = track.index;
@@ -7727,7 +7833,7 @@ impl App {
                                         tokio::spawn(async move {
                                             match c
                                                 .spotify()
-                                                .resolve(&playlist_id, track_index)
+                                                .resolve(&playlist_id, track_index, true)
                                                 .await
                                             {
                                                 Ok(()) => {}
@@ -8644,10 +8750,13 @@ impl App {
                                 &track.artists,
                                 track.album.as_deref().unwrap_or(""),
                                 track.uri.clone(),
+                                false,
                             )
                             .await
                     } else {
-                        c.spotify().resolve(&playlist_id, track_index).await
+                        c.spotify()
+                            .resolve(&playlist_id, track_index, false)
+                            .await
                     };
                     match res {
                         Ok(()) => {
@@ -10365,12 +10474,13 @@ impl App {
                         PickerId::SpotifySearch => {
                             let not_linked = self.spotify.status.as_ref().is_none_or(|s| !s.linked);
                             if not_linked {
-                                // No manual token-paste path: always run the
-                                // browser OAuth flow so the access token carries
-                                // a refresh_token and playlists auto-sync.
-                                if !self.spotify.oauth_pending {
-                                    self.open_spotify_link();
-                                }
+                                // No manual token-paste path: hand off to the
+                                // client-id form (Enter there starts the
+                                // browser OAuth flow, so the access token
+                                // carries a refresh_token and playlists
+                                // auto-sync).
+                                self.close_picker();
+                                self.open_spotify_link_form();
                             } else if self.spotify.search_results.is_empty() {
                                 self.notify_typed(
                                     "System",
@@ -10413,7 +10523,12 @@ impl App {
                                                         ));
                                                     }
                                                     Ok(tracks) => {
-                                                        for t in &tracks {
+                                                        for (n, t) in tracks.iter().enumerate() {
+                                                            // Enter = play: the
+                                                            // first track starts
+                                                            // playback immediately
+                                                            // (switching source);
+                                                            // the rest queue behind.
                                                             let _ = c2
                                                                 .spotify()
                                                                 .resolve_track(
@@ -10423,6 +10538,7 @@ impl App {
                                                                         .as_deref()
                                                                         .unwrap_or(""),
                                                                     t.uri.clone(),
+                                                                    n == 0,
                                                                 )
                                                                 .await;
                                                         }
@@ -10445,8 +10561,12 @@ impl App {
                                                     .resolve_track(
                                                         &track_clone.name,
                                                         &track_clone.artists,
-                                                        track_clone.album.as_deref().unwrap_or(""),
+                                                        track_clone
+                                                            .album
+                                                            .as_deref()
+                                                            .unwrap_or(""),
                                                         track_clone.uri.clone(),
+                                                        true,
                                                     )
                                                     .await
                                                 {
@@ -10462,7 +10582,11 @@ impl App {
                                     }
                                 } else {
                                     tokio::spawn(async move {
-                                        match c.spotify().resolve(&playlist_id, track_index).await {
+                                        match c
+                                            .spotify()
+                                            .resolve(&playlist_id, track_index, true)
+                                            .await
+                                        {
                                             Ok(()) => {}
                                             Err(e) => {
                                                 let _ = ipc_tx.send(IpcResult::Error(format!(

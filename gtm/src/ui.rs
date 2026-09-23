@@ -933,10 +933,16 @@ impl Render {
                 let cover_w = cover_h * 2;
 
                 let display_title = if track.title.is_empty() {
-                    std::path::Path::new(&track.path)
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default()
+                    // Never surface a raw provider URI (e.g. a queued
+                    // `spotify:track:` entry) as the title.
+                    if track.path.starts_with("spotify:") {
+                        "Spotify Track".to_string()
+                    } else {
+                        std::path::Path::new(&track.path)
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().to_string())
+                            .unwrap_or_default()
+                    }
                 } else {
                     track.title.clone()
                 };
@@ -1358,7 +1364,11 @@ impl Render {
                     .min(tracks.len());
                 let stop = end.saturating_sub(ACTION_ROWS).min(tracks.len());
                 for (i, tr) in tracks[start..stop].iter().enumerate() {
-                    let real_i = app.list_scroll + i;
+                    // True cursor row of this track: the two virtual action
+                    // rows (Play All / Shuffle) sit above the track list, so
+                    // the highlight must never alias onto an action row
+                    // (which previously produced two highlighters at once).
+                    let real_i = ACTION_ROWS + start + i;
                     let is_sel = real_i == sel && !left_focus;
                     let is_multiselected = app.multiselect_mode
                         && tr.uri.as_deref().is_some_and(|u| app.row_is_selected(u));

@@ -1113,12 +1113,14 @@ impl<'a> Spotify<'a> {
     }
 
     /// Resolve a Spotify playlist track to a playable local stream and append
-    /// it to the user queue.
-    pub async fn resolve(&self, playlist_id: &str, track_index: usize) -> Result<()> {
+    /// it to the user queue. With `play` it starts playing immediately
+    /// (switching the active source) instead of only queueing.
+    pub async fn resolve(&self, playlist_id: &str, track_index: usize, play: bool) -> Result<()> {
         self.client
             .send_ok(DaemonReq::SpotifyResolve {
                 playlist_id: playlist_id.into(),
                 track_index,
+                play,
             })
             .await
     }
@@ -1167,13 +1169,15 @@ impl<'a> Spotify<'a> {
     /// Resolve a Spotify track (by metadata) to a playable stream and append
     /// it to the user queue. With a known `spotify:track:` URI on a Premium
     /// account the track streams natively via librespot instead of a YouTube
-    /// match.
+    /// match. With `play` it starts playing immediately (switching the active
+    /// source) instead of only queueing.
     pub async fn resolve_track(
         &self,
         name: &str,
         artists: &str,
         album: &str,
         uri: Option<String>,
+        play: bool,
     ) -> Result<()> {
         self.client
             .send_ok(DaemonReq::SpotifyResolveTrack {
@@ -1181,6 +1185,7 @@ impl<'a> Spotify<'a> {
                 artists: artists.into(),
                 album: album.into(),
                 uri,
+                play,
             })
             .await
     }

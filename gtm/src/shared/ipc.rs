@@ -366,6 +366,10 @@ pub enum DaemonReq {
     SpotifyResolve {
         playlist_id: String,
         track_index: usize,
+        /// When true the resolved track starts playing immediately (switching
+        /// the active source), instead of merely being appended to the queue.
+        #[serde(default)]
+        play: bool,
     },
     SpotifySearchWeb {
         query: String,
@@ -387,6 +391,10 @@ pub enum DaemonReq {
         /// search hits), enabling native librespot streaming on Premium.
         #[serde(default)]
         uri: Option<String>,
+        /// When true the resolved track starts playing immediately (switching
+        /// the active source), instead of merely being appended to the queue.
+        #[serde(default)]
+        play: bool,
     },
     /// Play every track of a synced Spotify playlist. `shuffle` randomises the
     /// track order before enqueueing so `S` on a playlist becomes "shuffle all".
@@ -1014,11 +1022,14 @@ impl DaemonReq {
                 struct Params {
                     playlist_id: String,
                     track_index: usize,
+                    #[serde(default)]
+                    play: bool,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SpotifyResolve {
                     playlist_id: x.playlist_id,
                     track_index: x.track_index,
+                    play: x.play,
                 }
             }
             "spotify_search_web" => {
@@ -1053,6 +1064,8 @@ impl DaemonReq {
                     album: String,
                     #[serde(default)]
                     uri: Option<String>,
+                    #[serde(default)]
+                    play: bool,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SpotifyResolveTrack {
@@ -1060,6 +1073,7 @@ impl DaemonReq {
                     artists: x.artists,
                     album: x.album,
                     uri: x.uri,
+                    play: x.play,
                 }
             }
             "spotify_play_all" => {
