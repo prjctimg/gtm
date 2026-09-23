@@ -20,7 +20,7 @@ use crate::footer::{
 use crate::mouse::MouseZone;
 use crate::picker::{Picker, PickerId, PickerSource};
 use crate::progress::{ProgressStyle, render_progress, render_progress_styled, render_ratio};
-use crate::shared::daemon::ensure_daemon_running;
+use crate::shared::daemon::{ensure_daemon_running, ensure_daemon_version};
 use crate::shared::global::{EqPreset, PlaybackStatus};
 use crate::shared::ipc::HealthStatus;
 use crate::shared::log::redirect_stderr;
@@ -2701,6 +2701,7 @@ pub fn run_tui(
         color_eyre::install()?;
 
         ensure_daemon_running(&socket_path).await?;
+        ensure_daemon_version(&socket_path).await?;
 
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();

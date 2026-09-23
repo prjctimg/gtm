@@ -133,6 +133,83 @@ pub async fn ensure_daemon_running(socket_path: &Path) -> Result<(), String> {
     let pulse_path = socket_path.with_extension("pulse");
     let _ = std::fs::remove_file(&pulse_path);
 
+    spawn_daemon(socket_path).await
+}
+
+/// Probe whether the running daemon understands the `tidal_status` IPC that
+/// the Tidal setup flow depends on. Daemons predating that command answer
+/// `unknown command: tidal_status`; any other reply (a status object or an
+/// unrelated error) means the command exists. A busy or unresponsive daemon
+/// is treated as compatible (the regular IPC layer surfaces real errors), so
+/// a healthy daemon is never restarted on a probe timeout.
+async fn probe_tidal_status(socket_path: &Path) -> bool {
+    let Ok(mut stream) = tokio::net::UnixStream::connect(socket_path).await else {
+        return true;
+    };
+    let Ok(req) = serde_json::to_string(&WireReq {
+        id: 1,
+        cmd: "tidal_status".to_string(),
+        params: serde_json::to_value(DaemonReq::TidalStatus).unwrap_or_default(),
+    }) else {
+        return true;
+    };
+    if stream.write_all(format!("{req}\n").as_bytes()).await.is_err() {
+        return true;
+    }
+    let mut buf = [0u8; 1024];
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(800),
+        stream.read(&mut buf),
+    )
+    .await
+    {
+        Ok(Ok(n)) if n > 0 => {
+            let text = String::from_utf8_lossy(&buf[..n]);
+            !text.contains("unknown command")
+        }
+        _ => true,
+    }
+}
+
+/// Ensure the running daemon matches this client's IPC feature set. An old
+/// daemon can't answer the Tidal link-status command (`tidal_status`); when
+/// the probe catches one, the daemon is restarted from this client's own
+/// `gtmd` binary so the protocol always matches. Call after
+/// [`ensure_daemon_running`].
+pub async fn ensure_daemon_version(socket_path: &Path) -> Result<(), String> {
+    if probe_tidal_status(socket_path).await {
+        return Ok(());
+    }
+
+    // Outdated daemon: stop it (escalating to SIGKILL) and spawn a fresh one.
+    if let Some(pid) = read_daemon_pid()
+        && pid_is_alive(pid)
+    {
+        terminate_daemon(pid);
+        for _ in 0..30 {
+            if !pid_is_alive(pid) {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+        if pid_is_alive(pid) {
+            // SAFETY: well-formed pid/signal passed to the OS kill syscall.
+            unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+        }
+    }
+    let _ = std::fs::remove_file(socket_path);
+    let _ = std::fs::remove_file(socket_path.with_extension("pulse"));
+
+    spawn_daemon(socket_path).await?;
+    if probe_tidal_status(socket_path).await {
+        Ok(())
+    } else {
+        Err("gtmd is too old to serve Tidal setup; restart it and try again".into())
+    }
+}
+
+/// Spawn a fresh `gtmd` at `socket_path` and wait for it to answer a ping.
+async fn spawn_daemon(socket_path: &Path) -> Result<(), String> {
     if let Some(parent) = socket_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }

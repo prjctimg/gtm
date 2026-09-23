@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use crate::shared::client::{DaemonClient, LastfmStatus};
-use crate::shared::daemon::ensure_daemon_running;
+use crate::shared::daemon::{ensure_daemon_running, ensure_daemon_version};
 use crate::shared::global::{PlaybackStatus, RepeatMode};
 use crate::shared::ipc::DaemonRes;
 use crate::shared::ipc::HealthStatus;
@@ -493,6 +493,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
         // daemon it is meant to stop, so those two skip the ensure step.
         if !matches!(cmd, CliCommand::Ping | CliCommand::Quit) {
             ensure_daemon_running(&socket_path).await?;
+            ensure_daemon_version(&socket_path).await?;
         }
 
         let client = DaemonClient::connect(&socket_path)
