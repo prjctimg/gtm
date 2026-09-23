@@ -2705,7 +2705,10 @@ impl Tidal {
         if cid.is_empty() {
             return Err(CoreError::Daemon("empty tidal client id".into()));
         }
-        if cid.len() > 64 || !cid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        if cid.len() > 64
+            || !cid
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
         {
             return Err(CoreError::Daemon(format!(
                 "invalid tidal client id — get one from https://developer.tidal.com and \
@@ -6338,7 +6341,9 @@ impl Daemon {
         }
         if path.starts_with("http://") || path.starts_with("https://") {
             let lower = path.to_ascii_lowercase();
-            if lower.contains("youtube") || lower.contains("youtu.be") || lower.contains("googlevideo")
+            if lower.contains("youtube")
+                || lower.contains("youtu.be")
+                || lower.contains("googlevideo")
             {
                 return false;
             }

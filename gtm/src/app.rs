@@ -794,7 +794,9 @@ pub struct SetupView {
 
 /// Selected row of the `gtm setup` service chooser.
 pub fn setup_selection(app: &App) -> (usize, &'static str) {
-    let names = ["spotify", "lastfm", "subsonic", "deezer", "youtube", "tidal"];
+    let names = [
+        "spotify", "lastfm", "subsonic", "deezer", "youtube", "tidal",
+    ];
     let sel = app.setup.selection.min(5);
     (sel, names[sel])
 }
@@ -3067,11 +3069,7 @@ impl App {
                         );
                     }
                     IpcResult::TidalStatus(st) => {
-                        let was_linked = self
-                            .setup
-                            .tidal_status
-                            .as_ref()
-                            .is_some_and(|s| s.linked);
+                        let was_linked = self.setup.tidal_status.as_ref().is_some_and(|s| s.linked);
                         // A daemon-pushed failure (callback timeout, token
                         // exchange error) while the prompt is waiting must
                         // surface immediately: stop waiting, keep the picker
@@ -4497,8 +4495,8 @@ impl App {
                 // Seed the form with the previously stored client id (if any)
                 // so re-linking never forces a re-paste.
                 if self.setup.tidal_client_id.trim().is_empty()
-                    && let Some(cid) = get_secret(TIDAL_CLIENT_ID)
-                        .filter(|cid| !cid.trim().is_empty())
+                    && let Some(cid) =
+                        get_secret(TIDAL_CLIENT_ID).filter(|cid| !cid.trim().is_empty())
                 {
                     self.setup.tidal_client_id = cid;
                 }
@@ -5459,10 +5457,10 @@ impl App {
     /// Toggle the row at `index` (Tab in Select mode). Rows without a
     /// selectable key (non-track views) are ignored.
     fn toggle_row(&mut self, index: usize) {
-        if let Some(key) = self.select_key_at(index) {
-            if !self.selected_keys.remove(&key) {
-                self.selected_keys.insert(key);
-            }
+        if let Some(key) = self.select_key_at(index)
+            && !self.selected_keys.remove(&key)
+        {
+            self.selected_keys.insert(key);
         }
     }
 
@@ -7218,7 +7216,11 @@ impl App {
                         ));
                     }
                     Some(KeyboardAction::ToggleZen) => {
-                        self.set_last_action(if self.zen { "Leave Zen Mode" } else { "Zen Mode" });
+                        self.set_last_action(if self.zen {
+                            "Leave Zen Mode"
+                        } else {
+                            "Zen Mode"
+                        });
                         self.zen = !self.zen;
                         if self.zen {
                             // One surface at a time: start on the lyrics
@@ -8240,10 +8242,7 @@ impl App {
                                             .filter(|&id| Some(id) != cursor_id)
                                             .collect()
                                     } else {
-                                        filtered
-                                            .get(pos)
-                                            .map(|t| vec![t.id])
-                                            .unwrap_or_default()
+                                        filtered.get(pos).map(|t| vec![t.id]).unwrap_or_default()
                                     };
                                     if ids.is_empty() {
                                         return true;
@@ -8848,8 +8847,7 @@ impl App {
                 // checkbox. They never adjust the time.
                 KeyCode::Up | KeyCode::Char('j') => {
                     let n = 9;
-                    self.sleep_timer.focus =
-                        (self.sleep_timer.focus + n - 1) % n;
+                    self.sleep_timer.focus = (self.sleep_timer.focus + n - 1) % n;
                     return;
                 }
                 KeyCode::Down | KeyCode::Char('k') => {
@@ -9760,7 +9758,10 @@ impl App {
         }
 
         // ─── YouTube cookie-file form ───
-        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::YoutubeSetup)) {
+        if matches!(
+            self.pickers.top().map(|o| o.id),
+            Some(PickerId::YoutubeSetup)
+        ) {
             match key.code {
                 KeyCode::Char(c) => {
                     if !c.is_control() {
@@ -9784,9 +9785,7 @@ impl App {
                     self.cookie_file = new_path.clone();
                     let c = self.client.clone();
                     let cf = new_path.clone();
-                    let display = new_path
-                        .clone()
-                        .unwrap_or_else(|| "(none)".to_string());
+                    let display = new_path.clone().unwrap_or_else(|| "(none)".to_string());
                     self.pickers.close_top();
                     tokio::spawn(async move {
                         let _ = c.yt().set_config(None, cf, None, None, None).await;
@@ -10812,15 +10811,14 @@ impl App {
                                     if !self.library_pane_focus {
                                         // Single row: its play target. Batch:
                                         // the whole key-based selection.
-                                        let targets = if self.multiselect_mode
-                                            && self.selected_count() > 0
-                                        {
-                                            self.selected_play_targets()
-                                        } else {
-                                            self.play_target_at(self.list_pos())
-                                                .into_iter()
-                                                .collect()
-                                        };
+                                        let targets =
+                                            if self.multiselect_mode && self.selected_count() > 0 {
+                                                self.selected_play_targets()
+                                            } else {
+                                                self.play_target_at(self.list_pos())
+                                                    .into_iter()
+                                                    .collect()
+                                            };
                                         let mut added = 0;
                                         for target in targets {
                                             let c = self.client.clone();
@@ -10840,16 +10838,15 @@ impl App {
                                     }
                                 } else if action == "add to playlist" {
                                     if !self.library_pane_focus {
-                                        let indices: Vec<i64> = if self.multiselect_mode
-                                            && self.selected_count() > 0
-                                        {
-                                            self.selected_library_ids()
-                                        } else {
-                                            self.filtered_tracks()
-                                                .get(self.list_pos())
-                                                .map(|t| vec![t.id])
-                                                .unwrap_or_default()
-                                        };
+                                        let indices: Vec<i64> =
+                                            if self.multiselect_mode && self.selected_count() > 0 {
+                                                self.selected_library_ids()
+                                            } else {
+                                                self.filtered_tracks()
+                                                    .get(self.list_pos())
+                                                    .map(|t| vec![t.id])
+                                                    .unwrap_or_default()
+                                            };
                                         if !indices.is_empty() {
                                             self.pending_track_ids = indices;
                                             self.playlist_creating = false;

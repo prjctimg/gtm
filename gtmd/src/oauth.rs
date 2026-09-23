@@ -457,14 +457,7 @@ async fn exchange_code(
     verifier: &str,
     redirect_uri: &str,
 ) -> Result<String, String> {
-    exchange_code_at(
-        SPOTIFY_TOKEN_URL,
-        code,
-        client_id,
-        verifier,
-        redirect_uri,
-    )
-    .await
+    exchange_code_at(SPOTIFY_TOKEN_URL, code, client_id, verifier, redirect_uri).await
 }
 
 /// Tidal's token endpoint accepts the same authorization-code body as

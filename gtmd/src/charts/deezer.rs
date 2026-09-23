@@ -90,8 +90,8 @@ impl ChartProvider for DeezerCharts {
         let id: u64 = chart_id
             .parse()
             .map_err(|_| ChartError::Parse(format!("invalid deezer chart id: {chart_id}")))?;
-        let tracks: TrackList = Self::get_json(&format!("{DEEZER_API}/chart/{id}/tracks?limit=100"))
-            .await?;
+        let tracks: TrackList =
+            Self::get_json(&format!("{DEEZER_API}/chart/{id}/tracks?limit=100")).await?;
 
         let out = tracks
             .data

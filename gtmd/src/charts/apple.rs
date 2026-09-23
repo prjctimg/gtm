@@ -64,9 +64,7 @@ impl AppleCharts {
     /// Fetch the RSS feed for the country/genre chart and return the raw
     /// entries with their iTunes track ids (for the follow-up lookup call).
     async fn fetch_entries(cc: &str, genre: Option<u64>) -> Result<Vec<RssEntry>, ChartError> {
-        let mut url = format!(
-            "https://itunes.apple.com/{cc}/rss/topsongs/limit=100"
-        );
+        let mut url = format!("https://itunes.apple.com/{cc}/rss/topsongs/limit=100");
         if let Some(gid) = genre {
             url.push_str(&format!("/genre={gid}"));
         }
@@ -78,7 +76,9 @@ impl AppleCharts {
         })
     }
 
-    async fn lookup(ids: &[String]) -> Result<std::collections::HashMap<String, LookupTrack>, ChartError> {
+    async fn lookup(
+        ids: &[String],
+    ) -> Result<std::collections::HashMap<String, LookupTrack>, ChartError> {
         let mut tracks = std::collections::HashMap::new();
         // The lookup API accepts up to 200 comma-separated ids per request;
         // a 100-track chart always fits in one.
@@ -139,10 +139,14 @@ impl ChartProvider for AppleCharts {
 
     async fn chart_tracks(&self, chart_id: &str) -> Result<Vec<ChartTrack>, ChartError> {
         let Some((cc, rest)) = chart_id.split_once('|') else {
-            return Err(ChartError::Parse(format!("invalid apple chart id: {chart_id}")));
+            return Err(ChartError::Parse(format!(
+                "invalid apple chart id: {chart_id}"
+            )));
         };
         if cc.is_empty() {
-            return Err(ChartError::Parse(format!("invalid apple chart id: {chart_id}")));
+            return Err(ChartError::Parse(format!(
+                "invalid apple chart id: {chart_id}"
+            )));
         }
         let genre = if rest == "songs" {
             None
@@ -152,7 +156,7 @@ impl ChartProvider for AppleCharts {
                 Err(_) => {
                     return Err(ChartError::Parse(format!(
                         "invalid apple chart id: {chart_id}"
-                    )))
+                    )));
                 }
             }
         };
@@ -160,7 +164,11 @@ impl ChartProvider for AppleCharts {
         let entries = Self::fetch_entries(cc, genre).await?;
         let ids: Vec<String> = entries
             .iter()
-            .filter_map(|e| e.id.as_ref().and_then(|i| i.attributes.as_ref()).and_then(|a| a.im_id.clone()))
+            .filter_map(|e| {
+                e.id.as_ref()
+                    .and_then(|i| i.attributes.as_ref())
+                    .and_then(|a| a.im_id.clone())
+            })
             .collect();
         let lookup = Self::lookup(&ids).await?;
 
@@ -188,24 +196,25 @@ impl ChartProvider for AppleCharts {
             let artists = detail
                 .and_then(|d| d.artist_name.clone())
                 .or_else(|| {
-                    entry.title.as_ref().and_then(|t| {
-                        t.label.split_once(" - ").map(|(_, a)| a.to_string())
-                    })
+                    entry
+                        .title
+                        .as_ref()
+                        .and_then(|t| t.label.split_once(" - ").map(|(_, a)| a.to_string()))
                 })
                 .unwrap_or_default();
-            let album = detail
-                .and_then(|d| d.collection_name.clone())
-                .or_else(|| {
-                    entry
-                        .collection
-                        .as_ref()
-                        .and_then(|c| c.name.as_ref())
-                        .map(|n| n.label.clone())
-                });
+            let album = detail.and_then(|d| d.collection_name.clone()).or_else(|| {
+                entry
+                    .collection
+                    .as_ref()
+                    .and_then(|c| c.name.as_ref())
+                    .map(|n| n.label.clone())
+            });
             let cover = detail
                 .and_then(|d| d.artwork_url100.clone())
                 .map(|u| upgrade_artwork(&u));
-            let uri = detail.and_then(|d| d.preview_url.clone()).unwrap_or_default();
+            let uri = detail
+                .and_then(|d| d.preview_url.clone())
+                .unwrap_or_default();
 
             tracks.push(ChartTrack {
                 index: i,

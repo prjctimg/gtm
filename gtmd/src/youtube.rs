@@ -391,13 +391,7 @@ impl YoutubeManager {
     /// [`SEARCH_TIMEOUT`] (more under rate-limit backoff); holding the
     /// `YoutubeManager` mutex across that would stall unrelated requests such
     /// as `YtDownload` behind the lock.
-    pub fn yt_extras(
-        &self,
-    ) -> (
-        Vec<std::ffi::OsString>,
-        Arc<Semaphore>,
-        Arc<Mutex<Instant>>,
-    ) {
+    pub fn yt_extras(&self) -> (Vec<std::ffi::OsString>, Arc<Semaphore>, Arc<Mutex<Instant>>) {
         (
             self.ytdlp_auth_args(),
             self.semaphore.clone(),
@@ -787,8 +781,8 @@ impl YoutubeManager {
     /// [`resolve_stream_ytdlp`] with [`YoutubeManager::yt_extras`] instead.
     pub async fn resolve_stream(&mut self, url: &str) -> Result<StreamInfo, String> {
         let auth = self.ytdlp_auth_args();
-        let direct = resolve_stream_ytdlp(&self.semaphore, &self.last_ytdlp_launch, &auth, url)
-            .await?;
+        let direct =
+            resolve_stream_ytdlp(&self.semaphore, &self.last_ytdlp_launch, &auth, url).await?;
         Ok(StreamInfo {
             url: direct,
             title: url.to_string(),
@@ -853,7 +847,7 @@ async fn resolve_ytdlp(
             .unwrap_or("unknown error")
             .to_string();
         if is_rate_limited(&stderr) && attempt < YTDLP_RATE_LIMIT_RETRIES {
-            let backoff = YTDLP_RATE_LIMIT_BACKOFF * (1u32 << attempt) as u32;
+            let backoff = YTDLP_RATE_LIMIT_BACKOFF * (1u32 << attempt);
             debug!("yt-dlp rate limited; retrying in {}s", backoff.as_secs());
             tokio::time::sleep(backoff).await;
             continue;
@@ -1012,8 +1006,11 @@ pub(crate) async fn download_into(
             .unwrap_or("unknown error")
             .to_string();
         if is_rate_limited(&stderr) && attempt < YTDLP_RATE_LIMIT_RETRIES {
-            let backoff = YTDLP_RATE_LIMIT_BACKOFF * (1u32 << attempt) as u32;
-            debug!("yt-dlp download rate limited; retrying in {}s", backoff.as_secs());
+            let backoff = YTDLP_RATE_LIMIT_BACKOFF * (1u32 << attempt);
+            debug!(
+                "yt-dlp download rate limited; retrying in {}s",
+                backoff.as_secs()
+            );
             tokio::time::sleep(backoff).await;
             continue;
         }

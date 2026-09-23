@@ -579,10 +579,7 @@ impl Render {
         let Some(ref lyrics) = app.lyrics.current else {
             let msg = if app.lyrics.fetching {
                 Line::from(vec![
-                    Span::styled(
-                        "Fetching lyrics ",
-                        Style::default().fg(app.theme.accent),
-                    ),
+                    Span::styled("Fetching lyrics ", Style::default().fg(app.theme.accent)),
                     Span::styled(
                         opencode_spinner(app.frame_count as usize),
                         Style::default()
@@ -1363,9 +1360,8 @@ impl Render {
                 for (i, tr) in tracks[start..stop].iter().enumerate() {
                     let real_i = app.list_scroll + i;
                     let is_sel = real_i == sel && !left_focus;
-                    let is_multiselected =
-                        app.multiselect_mode
-                            && tr.uri.as_deref().is_some_and(|u| app.row_is_selected(u));
+                    let is_multiselected = app.multiselect_mode
+                        && tr.uri.as_deref().is_some_and(|u| app.row_is_selected(u));
                     let label = tr.name.clone();
                     let avail = pane_w.saturating_sub(2);
                     let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
@@ -1444,8 +1440,7 @@ impl Render {
                     let is_current =
                         app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
                     let is_sel = real_i == sel && !left_focus;
-                    let is_multiselected =
-                        app.multiselect_mode && app.row_is_selected(&track.path);
+                    let is_multiselected = app.multiselect_mode && app.row_is_selected(&track.path);
                     let label = track.title.clone();
                     let avail = pane_w.saturating_sub(2);
                     let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
@@ -1883,8 +1878,8 @@ impl Render {
                     for (i, track) in chart_tracks[app.list_scroll..end].iter().enumerate() {
                         let real_i = app.list_scroll + i;
                         let is_sel = real_i == sel && !left_focus;
-                        let is_multiselected = app.multiselect_mode
-                            && app.row_is_selected(&track.uri);
+                        let is_multiselected =
+                            app.multiselect_mode && app.row_is_selected(&track.uri);
                         let avail = pane_w.saturating_sub(2);
                         let label = track.title.clone();
                         let display_label =
@@ -1972,8 +1967,7 @@ impl Render {
                     let is_current =
                         app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
                     let is_sel = real_i == sel && !left_focus;
-                    let is_multiselected =
-                        app.multiselect_mode && app.row_is_selected(&track.path);
+                    let is_multiselected = app.multiselect_mode && app.row_is_selected(&track.path);
                     let label = track.title.clone();
                     let avail = pane_w.saturating_sub(2);
                     let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
@@ -2436,8 +2430,7 @@ impl Render {
             for (real_i, track) in rows[win_start..end].iter().enumerate() {
                 let real_i = win_start + real_i;
                 let is_sel = real_i == sel;
-                let is_multiselected =
-                    app.multiselect_mode && app.row_is_selected(&track.path);
+                let is_multiselected = app.multiselect_mode && app.row_is_selected(&track.path);
                 let prefix = if is_sel { " > " } else { "   " };
                 let label = if track.title.is_empty() {
                     std::path::Path::new(&track.path)
@@ -6814,7 +6807,7 @@ impl Pickers {
         let quick_opts = [5u32, 10, 15, 30, 60, 90, 120];
         let mut spans: Vec<Span> = vec![Span::styled("  ", Style::default())];
         for (i, &m) in quick_opts.iter().enumerate() {
-            let focused = focus >= 1 && focus <= 7 && focus - 1 == i;
+            let focused = (1..=7).contains(&focus) && focus - 1 == i;
             let style = if focused {
                 Style::default()
                     .fg(app.theme.selection_fg_readable())
@@ -6840,10 +6833,7 @@ impl Pickers {
             "[ ]"
         };
         lines.push(Line::from(vec![Span::styled(
-            format!(
-                "  {} End playback immediately when the time is up",
-                boxed
-            ),
+            format!("  {} End playback immediately when the time is up", boxed),
             focus_style(app, focus == 8),
         )]));
         lines.push(Line::from(""));
