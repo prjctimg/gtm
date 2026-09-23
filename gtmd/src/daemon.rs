@@ -2415,6 +2415,19 @@ impl Spotify {
         Ok(DaemonRes::SpotifyTracksRes { tracks })
     }
 
+    /// Resolve a web-search playlist result (a `spotify:playlist:` URI) to its
+    /// track list.
+    pub async fn web_playlist_tracks(inner: &DaemonInner, uri: &str) -> Result<DaemonRes, CoreError> {
+        let tracks = {
+            let spotify = inner.spotify.lock().await;
+            match spotify.playlist_tracks_web(uri).await {
+                Ok(tracks) => tracks,
+                Err(e) => return Ok(DaemonRes::Error { message: e }),
+            }
+        };
+        Ok(DaemonRes::SpotifyTracksRes { tracks })
+    }
+
     /// Resolve a Spotify track into a playable stream and append it to the
     /// user queue. On a Premium account an accompanying `spotify:track:` URI
     /// streams natively via librespot; everyone else falls back to the top
@@ -4652,6 +4665,7 @@ fn is_spotify_slow(req: &DaemonReq) -> bool {
             | DaemonReq::SpotifyResolveTrack { .. }
             | DaemonReq::SpotifyAlbumTracks { .. }
             | DaemonReq::SpotifyArtistTopTracks { .. }
+            | DaemonReq::SpotifyWebPlaylistTracks { .. }
     )
 }
 
@@ -5766,6 +5780,9 @@ impl Daemon {
             DaemonReq::SpotifyAlbumTracks { uri } => Spotify::album_tracks(inner, uri).await,
             DaemonReq::SpotifyArtistTopTracks { uri } => {
                 Spotify::artist_top_tracks(inner, uri).await
+            }
+            DaemonReq::SpotifyWebPlaylistTracks { uri } => {
+                Spotify::web_playlist_tracks(inner, uri).await
             }
             DaemonReq::SpotifyResolveTrack {
                 name,

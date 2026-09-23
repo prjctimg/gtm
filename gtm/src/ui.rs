@@ -3577,7 +3577,7 @@ impl Pickers {
                     let mut lines: Vec<Line> = vec![search_line];
                     if query.is_empty() {
                         lines.push(Line::from(Span::styled(
-                            "  Type to search tracks, albums & artists...",
+                            "  Type to search tracks, albums, playlists & artists...",
                             Style::default().fg(app.theme.fg_dim),
                         )));
                     } else if total == 0 {
@@ -3592,6 +3592,7 @@ impl Pickers {
                             let tag = match track.kind {
                                 Some(SpotifySearchKind::Album) => Some("[Album]"),
                                 Some(SpotifySearchKind::Artist) => Some("[Artist]"),
+                                Some(SpotifySearchKind::Playlist) => Some("[Playlist]"),
                                 _ => None,
                             };
                             let body = match track.kind {
@@ -3717,6 +3718,15 @@ impl Pickers {
                             }
                             Some(SpotifySearchKind::Artist) => {
                                 push("Artist", &track.name);
+                            }
+                            Some(SpotifySearchKind::Playlist) => {
+                                push("Playlist", &track.name);
+                                if !track.artists.is_empty() {
+                                    push("Owner", &track.artists);
+                                }
+                                if let Some(ref album) = track.album {
+                                    push("Tracks", album);
+                                }
                             }
                             _ => {
                                 push("Track", &track.name);

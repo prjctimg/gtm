@@ -1166,6 +1166,19 @@ impl<'a> Spotify<'a> {
         }
     }
 
+    /// Resolve a web-search playlist result to its full track list.
+    pub async fn web_playlist_tracks(&self, uri: &str) -> Result<Vec<SpotifyTrack>> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::SpotifyWebPlaylistTracks { uri: uri.into() })
+            .await?;
+        match res {
+            DaemonRes::SpotifyTracksRes { tracks, .. } => Ok(tracks),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
     /// Resolve a Spotify track (by metadata) to a playable stream and append
     /// it to the user queue. With a known `spotify:track:` URI on a Premium
     /// account the track streams natively via librespot instead of a YouTube

@@ -530,6 +530,7 @@ impl SpotifyManager {
         let mut idx = tracks.len();
         let album_limit = (limit / 3).max(5);
         let artist_limit = (limit / 4).max(4);
+        let playlist_limit = (limit / 4).max(4);
 
         // Album results.
         if let Ok(rspotify::model::SearchResult::Albums(page)) = client
@@ -585,6 +586,35 @@ impl SpotifyManager {
                     uri: Some(format!("spotify:artist:{}", a.id)),
                     image_url: pick_largest_image(&a.images),
                     kind: Some(SpotifySearchKind::Artist),
+                });
+                idx += 1;
+            }
+        }
+
+        // Playlist results. The owner display name rides in `artists` and the
+        // track count in `album` so the TUI can render both without another
+        // round-trip.
+        if let Ok(rspotify::model::SearchResult::Playlists(page)) = client
+            .search(
+                query,
+                SearchType::Playlist,
+                None,
+                None,
+                Some(playlist_limit),
+                None,
+            )
+            .await
+        {
+            for a in &page.items {
+                tracks.push(SpotifyTrack {
+                    index: idx,
+                    name: a.name.clone(),
+                    artists: a.owner.display_name.clone().unwrap_or_default(),
+                    album: Some(format!("{} tracks", a.items.total)),
+                    duration_ms: None,
+                    uri: Some(format!("spotify:playlist:{}", a.id)),
+                    image_url: pick_largest_image(&a.images),
+                    kind: Some(SpotifySearchKind::Playlist),
                 });
                 idx += 1;
             }
@@ -693,6 +723,30 @@ impl SpotifyManager {
                 if tracks.len() as u32 >= target {
                     break;
                 }
+            }
+        }
+        Ok(tracks)
+    }
+
+    /// Resolve a web-search playlist result (a `spotify:playlist:` URI) to its
+    /// track list so the TUI can queue and play it.
+    pub async fn playlist_tracks_web(&self, uri: &str) -> Result<Vec<SpotifyTrack>, String> {
+        let Some(client) = self.client.as_ref() else {
+            return Err("spotify not linked".into());
+        };
+        let playlist_id =
+            rspotify::model::PlaylistId::from_uri(uri).map_err(|e| format!("bad playlist uri: {e}"))?;
+        let page = client
+            .playlist_items_manual(playlist_id, None, None, Some(50), Some(0))
+            .await
+            .map_err(|e| format!("playlist tracks: {e}"))?;
+        let mut tracks = Vec::new();
+        for item in page.items {
+            if let Some(playable) = item.item.as_ref()
+                && let Some(mut track) = track_from_playable(playable)
+            {
+                track.index = tracks.len();
+                tracks.push(track);
             }
         }
         Ok(tracks)

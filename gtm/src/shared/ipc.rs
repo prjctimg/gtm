@@ -379,6 +379,11 @@ pub enum DaemonReq {
     SpotifyAlbumTracks {
         uri: String,
     },
+    /// Resolve a playlist found by web search to its track list, so the TUI
+    /// can queue and play it (mirrors `SpotifyAlbumTracks`).
+    SpotifyWebPlaylistTracks {
+        uri: String,
+    },
     /// Resolve an artist found by web search to their top tracks.
     SpotifyArtistTopTracks {
         uri: String,
@@ -644,6 +649,7 @@ impl DaemonReq {
             DaemonReq::SpotifyResolve { .. } => "spotify_resolve",
             DaemonReq::SpotifySearchWeb { .. } => "spotify_search_web",
             DaemonReq::SpotifyAlbumTracks { .. } => "spotify_album_tracks",
+            DaemonReq::SpotifyWebPlaylistTracks { .. } => "spotify_web_playlist_tracks",
             DaemonReq::SpotifyArtistTopTracks { .. } => "spotify_artist_top_tracks",
             DaemonReq::SpotifyResolveTrack { .. } => "spotify_resolve_track",
             DaemonReq::SpotifyPlayAll { .. } => "spotify_play_all",
@@ -1047,6 +1053,14 @@ impl DaemonReq {
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SpotifyAlbumTracks { uri: x.uri }
+            }
+            "spotify_web_playlist_tracks" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    uri: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SpotifyWebPlaylistTracks { uri: x.uri }
             }
             "spotify_artist_top_tracks" => {
                 #[derive(Deserialize)]
@@ -2275,7 +2289,8 @@ impl DaemonRes {
             "spotify_search_web"
             | "spotify_playlist_tracks"
             | "spotify_album_tracks"
-            | "spotify_artist_top_tracks" => {
+            | "spotify_artist_top_tracks"
+            | "spotify_web_playlist_tracks" => {
                 match serde_json::from_value::<Vec<SpotifyTrack>>(field(&data, "tracks")) {
                     Ok(tracks) => DaemonRes::SpotifyTracksRes { tracks },
                     Err(_) => DaemonRes::Value { value: data },

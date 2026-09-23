@@ -50,7 +50,8 @@ impl SpotifyPlaylist {
 }
 
 /// What kind of object a Spotify web-search result represents. Tracks stream
-/// directly; albums/artists resolve to their track lists on the daemon.
+/// directly; albums/artists/playlists resolve to their track lists on the
+/// daemon.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SpotifySearchKind {
     /// A searchable single track.
@@ -60,6 +61,8 @@ pub enum SpotifySearchKind {
     Album,
     /// A searchable artist; resolves to the artist's top tracks.
     Artist,
+    /// A searchable playlist; resolves to the playlist's track list.
+    Playlist,
 }
 
 /// A single track inside a Spotify playlist.

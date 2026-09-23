@@ -10500,18 +10500,27 @@ impl App {
                                 if playlist_id == "web" {
                                     match track.kind {
                                         Some(SpotifySearchKind::Album)
-                                        | Some(SpotifySearchKind::Artist) => {
+                                        | Some(SpotifySearchKind::Artist)
+                                        | Some(SpotifySearchKind::Playlist) => {
                                             let c2 = c.clone();
                                             let ipc_tx2 = ipc_tx.clone();
                                             let uri = track.uri.clone().unwrap_or_default();
                                             let label = track.name.clone();
-                                            let is_album =
-                                                track.kind == Some(SpotifySearchKind::Album);
+                                            let kind = track.kind;
                                             tokio::spawn(async move {
-                                                let result = if is_album {
-                                                    c2.spotify().album_tracks(&uri).await
-                                                } else {
-                                                    c2.spotify().artist_top_tracks(&uri).await
+                                                let result = match kind {
+                                                    Some(SpotifySearchKind::Album) => {
+                                                        c2.spotify().album_tracks(&uri).await
+                                                    }
+                                                    Some(SpotifySearchKind::Artist) => {
+                                                        c2.spotify().artist_top_tracks(&uri).await
+                                                    }
+                                                    Some(SpotifySearchKind::Playlist) => {
+                                                        c2.spotify().web_playlist_tracks(&uri).await
+                                                    }
+                                                    _ => Err(CoreError::Daemon(
+                                                        "unsupported spotify result kind".into(),
+                                                    )),
                                                 };
                                                 match result {
                                                     Ok(tracks) if tracks.is_empty() => {
