@@ -53,6 +53,12 @@ pub enum PickerId {
     Setup,
     /// Last.fm setup form (API key/secret) plus the OAuth browser flow.
     LastfmAuth,
+    /// YouTube cookie-file path form (`gtm setup` → YouTube). Single text
+    /// input, Enter commits to the daemon's yt-dlp config (empty clears).
+    YoutubeSetup,
+    /// Tidal OAuth link form (client id + loopback port) with the
+    /// daemon-hosted browser flow.
+    TidalLink,
 }
 
 /// Which list a fuzzy-finder picker searches. `Tab` cycles through these.

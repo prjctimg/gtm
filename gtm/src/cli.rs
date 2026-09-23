@@ -1121,7 +1121,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                 .map_err(|e| e.to_string()),
             CliCommand::Config { .. } => unreachable!(),
             CliCommand::SleepTimer { minutes } => client
-                .set_sleep_timer(*minutes)
+                .set_sleep_timer(*minutes, true)
                 .await
                 .map(|()| format!("sleep timer set for {minutes} min"))
                 .map_err(|e| e.to_string()),

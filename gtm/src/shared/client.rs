@@ -31,6 +31,7 @@ use crate::shared::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::shared::subsonic::{
     SubsonicAlbum, SubsonicSearchResults, SubsonicStatus, SubsonicTrack,
 };
+use crate::shared::tidal::TidalStatus;
 use crate::shared::track;
 use crate::shared::wire;
 
@@ -463,8 +464,12 @@ impl DaemonClient {
         .await
     }
 
-    pub async fn set_sleep_timer(&self, minutes: u32) -> Result<()> {
-        self.send_ok(DaemonReq::SetSleepTimer { minutes }).await
+    pub async fn set_sleep_timer(&self, minutes: u32, stop_immediately: bool) -> Result<()> {
+        self.send_ok(DaemonReq::SetSleepTimer {
+            minutes,
+            stop_immediately,
+        })
+        .await
     }
 
     pub async fn cancel_sleep_timer(&self) -> Result<()> {
@@ -528,6 +533,10 @@ impl DaemonClient {
 
     pub fn lastfm(&self) -> Lastfm<'_> {
         Lastfm { client: self }
+    }
+
+    pub fn tidal(&self) -> Tidal<'_> {
+        Tidal { client: self }
     }
 
     pub fn favourites(&self) -> Favourites<'_> {
@@ -1206,6 +1215,59 @@ impl<'a> Spotify<'a> {
     fn status_from(res: DaemonRes) -> Result<SpotifyStatus> {
         match res {
             DaemonRes::SpotifyStatusRes { status, .. } => Ok(status),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+}
+
+/// Tidal integration client: daemon-hosted OAuth PKCE link flow plus status/
+/// unlinking, mirroring the Spotify contract (start → authorize URL →
+/// `tidal_status_changed` event → re-pull status).
+pub struct Tidal<'a> {
+    client: &'a DaemonClient,
+}
+
+impl<'a> Tidal<'a> {
+    /// Start the Tidal OAuth PKCE link flow. Returns the authorize URL the
+    /// user must open in a browser; completion is signalled via the
+    /// `tidal_status_changed` daemon event. `port` selects the local redirect
+    /// port so a previously-registered Tidal redirect URI works.
+    pub async fn oauth_start(&self, client_id: &str, port: u16) -> Result<String> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::TidalOauthStart {
+                client_id: client_id.into(),
+                port,
+            })
+            .await?;
+        match res {
+            DaemonRes::TidalOauthStarted { url } => Ok(url),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
+    /// Abort a pending Tidal OAuth link flow (shuts down the callback server).
+    pub async fn oauth_cancel(&self) -> Result<()> {
+        self.client.send_ok(DaemonReq::TidalCancelOauth).await
+    }
+
+    /// Unlink the Tidal account and delete the stored token.
+    pub async fn clear(&self) -> Result<TidalStatus> {
+        let res = self.client.send_raw(DaemonReq::TidalClear).await?;
+        Self::status_from(res)
+    }
+
+    /// Current Tidal link status.
+    pub async fn status(&self) -> Result<TidalStatus> {
+        let res = self.client.send_raw(DaemonReq::TidalStatus).await?;
+        Self::status_from(res)
+    }
+
+    fn status_from(res: DaemonRes) -> Result<TidalStatus> {
+        match res {
+            DaemonRes::TidalStatusRes { status, .. } => Ok(status),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
             _ => Err(unexpected(&res)),
         }

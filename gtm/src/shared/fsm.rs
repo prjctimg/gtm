@@ -279,6 +279,11 @@ impl DaemonState {
             DaemonEvent::SleepTimerTick { remaining_secs } => {
                 self.sleep_timer = Some(*remaining_secs);
             }
+            // The timer expired but defers the stop to the current track's
+            // natural end; mirror the daemon clearing its own countdown.
+            DaemonEvent::Custom { name, .. } if name == "sleep_timer_deferred" => {
+                self.sleep_timer = None;
+            }
             DaemonEvent::TrackEnded => {
                 self.status = PlaybackStatus::Stopped;
                 self.current_track = None;
@@ -373,6 +378,7 @@ impl DaemonState {
             | DaemonEvent::Custom { .. }
             | DaemonEvent::SpotifyStatusChanged
             | DaemonEvent::LastfmStatusChanged
+            | DaemonEvent::TidalStatusChanged
             | DaemonEvent::Heartbeat => {}
         }
         self.commit();

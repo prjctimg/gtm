@@ -1,5 +1,7 @@
 // Chart providers registry — dynamically lists configured sources.
 
+mod apple;
+mod deezer;
 mod spotify;
 
 use crate::spotify::SpotifyManager;
@@ -14,6 +16,14 @@ impl ChartsRegistry {
         Self {
             providers: Vec::new(),
         }
+    }
+
+    /// Register the free, unauthenticated chart providers (iTunes RSS,
+    /// Deezer public API). These never go away: they need no token, so they
+    /// are usable from the very first daemon start.
+    pub fn add_free_defaults(&mut self) {
+        self.providers.push(Box::new(deezer::DeezerCharts::new()));
+        self.providers.push(Box::new(apple::AppleCharts::new()));
     }
 
     pub fn add_spotify(&mut self, spotify: std::sync::Arc<tokio::sync::Mutex<SpotifyManager>>) {

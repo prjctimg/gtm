@@ -46,6 +46,9 @@ pub enum KeyboardAction {
     SpeedUp,
     SpeedDown,
     ToggleLowPower,
+    /// Fullscreen "Zen mode" showing one of the enlarged-cover + progress,
+    /// lyrics, or visualizer surfaces at a time (`z`).
+    ToggleZen,
     SeekForward,
     SeekBackward,
     ToggleShuffle,
@@ -367,11 +370,11 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Low-power mode: z
+            // Zen mode: z (low-power mode was unbound)
             (
                 KeyCode::Char('z').into(),
                 BoundCommand {
-                    action: KeyboardAction::ToggleLowPower,
+                    action: KeyboardAction::ToggleZen,
                     contexts: vec![KeyContext::Normal],
                 },
             ),
@@ -848,6 +851,7 @@ impl KeyboardAction {
             "speed_up" => KeyboardAction::SpeedUp,
             "speed_down" => KeyboardAction::SpeedDown,
             "toggle_low_power" | "low_power" => KeyboardAction::ToggleLowPower,
+            "toggle_zen" | "zen" => KeyboardAction::ToggleZen,
             "seek_forward" | "seek_fwd" => KeyboardAction::SeekForward,
             "seek_backward" | "seek_back" => KeyboardAction::SeekBackward,
             "toggle_shuffle" | "shuffle" => KeyboardAction::ToggleShuffle,

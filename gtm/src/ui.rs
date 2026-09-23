@@ -9,13 +9,13 @@ use std::path::PathBuf;
 
 use crate::app::{
     App, InputMode, LIBRARY_CATEGORIES, LibraryPick, NotifMode, NotifType, NotificationKind,
-    RadioPick, RadioSection, TrackInfoKind, folder_name, lyrics_are_synced, no_image_protocol,
-    setup_selection,
+    RadioPick, RadioSection, TrackInfoKind, ZenSurface, folder_name, lyrics_are_synced,
+    no_image_protocol, setup_selection,
 };
 use crate::extensions::ExtensionId;
 use crate::footer::{
     classify_remote_source, draw as footer_draw, format_duration, format_uptime, is_live_stream,
-    read_proc_mem, render as footer_render,
+    render as footer_render,
 };
 use crate::mouse::MouseZone;
 use crate::picker::{Picker, PickerId, PickerSource};
@@ -26,8 +26,9 @@ use crate::shared::ipc::HealthStatus;
 use crate::shared::log::redirect_stderr;
 use crate::shared::radio::RadioStation;
 use crate::shared::resolve_command_socket;
+use crate::shared::secret::{DEEZER_ARL, get_secret};
 use crate::shared::spotify::SpotifySearchKind;
-use crate::shared::track::TrackInfo;
+use crate::shared::track::{LrcData, TrackInfo};
 use crate::theme::blend_colors;
 pub use crate::theme::readable_fg;
 use crate::visualizer::VisualizerPreset;
@@ -404,6 +405,218 @@ impl Render {
             return;
         }
         Render::library(f, area, app);
+    }
+
+    /// Zen mode: render exactly one fullscreen surface at a time — the
+    /// enlarged cover + centered progress, the visualizer, or the lyrics.
+    fn zen(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        match app.zen_surface {
+            ZenSurface::Cover => Render::zen_cover(f, area, app),
+            ZenSurface::Visualizer => Render::zen_visualizer(f, area, app),
+            ZenSurface::Lyrics => Render::zen_lyrics(f, area, app),
+        }
+    }
+
+    /// Centered "title — artist" header used by the Zen cover and lyrics
+    /// surfaces.
+    fn zen_track_header(f: &mut ratatui::Frame, app: &App, track: &TrackInfo, area: Rect) {
+        let title = if track.title.is_empty() {
+            std::path::Path::new(&track.path)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default()
+        } else {
+            track.title.clone()
+        };
+        let artist = if track.artist.is_empty() {
+            String::new()
+        } else {
+            format!("  \u{2014}  {}", track.artist)
+        };
+        let header = Line::from(vec![
+            Span::styled(
+                title,
+                Style::default()
+                    .fg(app.theme.secondary_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(artist, Style::default().fg(app.theme.fg)),
+        ]);
+        f.render_widget(Paragraph::new(header).alignment(Alignment::Center), area);
+    }
+
+    /// Zen surface 1: enlarged cover art centered on screen with the track
+    /// title above and the progress bar / elapsed time centered underneath.
+    fn zen_cover(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let track = app.state.current_track.clone();
+        let vchunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([
+                Constraint::Length(2),
+                Constraint::Min(0),
+                Constraint::Length(5),
+            ])
+            .split(area);
+
+        if let Some(t) = &track {
+            Render::zen_track_header(f, app, t, vchunks[0]);
+        }
+
+        // Enlarged cover centered in the middle band. Half-block art keeps
+        // the image square at a 1:2 cell aspect, so width = height * 2.
+        let mid = vchunks[1];
+        let max_w = mid.width.saturating_sub(4);
+        let max_h = mid.height.saturating_sub(2);
+        let mut w = max_w.min(max_h.saturating_mul(2));
+        let mut h = w / 2;
+        if h > max_h {
+            h = max_h;
+            w = h.saturating_mul(2);
+        }
+        h = h.max(1);
+        w = w.max(2);
+        let cover_area = Rect {
+            x: mid.x + mid.width.saturating_sub(w) / 2,
+            y: mid.y + mid.height.saturating_sub(h) / 2,
+            width: w,
+            height: h,
+        };
+        Render::cover(
+            f,
+            cover_area,
+            app.np_cover.stateful.as_mut(),
+            app.np_cover.image.as_deref(),
+            app.theme.fg_dim,
+            Some(" \u{266b} "),
+        );
+
+        // Centered progress bar with elapsed / total underneath; hidden for
+        // live streams (mirrors the now-playing pane).
+        let prog = vchunks[2];
+        let dur = if app.state.duration > 0.0 {
+            app.state.duration as u64
+        } else {
+            track.as_ref().map_or(0, |t| t.duration as u64)
+        };
+        let live = track.as_ref().is_some_and(|t| is_live_stream(&t.path));
+        if dur > 0 && !live {
+            let pos = app.display_position as u64;
+            let ratio = (pos as f64 / dur as f64).clamp(0.0, 1.0);
+            let bar_w = (prog.width as usize).min(64).saturating_sub(2).max(4);
+            let bar = Render::progress_variant(ratio, bar_w, app);
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    bar,
+                    Style::default().fg(app.theme.secondary_accent),
+                )))
+                .alignment(Alignment::Center),
+                prog,
+            );
+            let time = format!(" {} / {}", format_duration(pos), format_duration(dur));
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    time,
+                    Style::default().fg(app.theme.fg_dim),
+                )))
+                .alignment(Alignment::Center),
+                Rect {
+                    x: prog.x,
+                    y: prog.y + 2,
+                    width: prog.width,
+                    height: 1,
+                },
+            );
+        }
+    }
+
+    /// Zen surface 2: the audio visualizer stretched across the full screen.
+    fn zen_visualizer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        if !app.visualizer.is_enabled() {
+            let msg = Paragraph::new(Line::from(Span::styled(
+                "Visualizer disabled \u{2014} press Ctrl+V to enable",
+                Style::default().fg(app.theme.fg_dim),
+            )))
+            .alignment(Alignment::Center);
+            f.render_widget(msg, area);
+            return;
+        }
+        let inner = Rect {
+            x: area.x + 1,
+            y: area.y + 1,
+            width: area.width.saturating_sub(2),
+            height: area.height.saturating_sub(2),
+        };
+        app.visualizer.tick(
+            app.state.status == PlaybackStatus::Playing,
+            inner.width,
+            inner.height,
+            &app.state.audio_levels,
+            &app.state.wave_samples,
+            app.state.wave_stereo,
+        );
+        if let Some(lines) = app.visualizer.render(inner, &app.theme) {
+            f.render_widget(lines, inner);
+        }
+    }
+
+    /// Zen surface 3: full-screen lyrics for the active track, sharing the
+    /// exact same body rendering as the normal lyrics pane.
+    fn zen_lyrics(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        if let Some(t) = app.state.current_track.clone() {
+            Render::zen_track_header(
+                f,
+                app,
+                &t,
+                Rect {
+                    x: area.x,
+                    y: area.y,
+                    width: area.width,
+                    height: 1,
+                },
+            );
+        }
+
+        let Some(ref lyrics) = app.lyrics.current else {
+            let msg = if app.lyrics.fetching {
+                Line::from(vec![
+                    Span::styled(
+                        "Fetching lyrics ",
+                        Style::default().fg(app.theme.accent),
+                    ),
+                    Span::styled(
+                        opencode_spinner(app.frame_count as usize),
+                        Style::default()
+                            .fg(app.theme.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ])
+            } else {
+                Line::from(Span::styled(
+                    "Press [l] to search",
+                    Style::default().fg(app.theme.fg_dim),
+                ))
+            };
+            f.render_widget(Paragraph::new(msg).alignment(Alignment::Center), area);
+            return;
+        };
+
+        if lyrics.lines.is_empty() {
+            f.render_widget(
+                Paragraph::new("No lyrics found")
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(app.theme.fg_dim)),
+                area,
+            );
+            return;
+        }
+
+        let body = Rect {
+            x: area.x.saturating_add(2),
+            y: area.y.saturating_add(3),
+            width: area.width.saturating_sub(4),
+            height: area.height.saturating_sub(4),
+        };
+        Render::lyrics_body(f, body, app, lyrics);
     }
 
     fn footer_help(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -1151,7 +1364,8 @@ impl Render {
                     let real_i = app.list_scroll + i;
                     let is_sel = real_i == sel && !left_focus;
                     let is_multiselected =
-                        app.multiselect_mode && app.selected_indices.contains(&real_i);
+                        app.multiselect_mode
+                            && tr.uri.as_deref().is_some_and(|u| app.row_is_selected(u));
                     let label = tr.name.clone();
                     let avail = pane_w.saturating_sub(2);
                     let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
@@ -1231,7 +1445,7 @@ impl Render {
                         app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
                     let is_sel = real_i == sel && !left_focus;
                     let is_multiselected =
-                        app.multiselect_mode && app.selected_indices.contains(&real_i);
+                        app.multiselect_mode && app.row_is_selected(&track.path);
                     let label = track.title.clone();
                     let avail = pane_w.saturating_sub(2);
                     let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
@@ -1567,7 +1781,7 @@ impl Render {
                     lines.extend(empty_hint_lines(
                         app,
                         "No chart sources available",
-                        "Hint: link Spotify in Settings to enable charts",
+                        "Hint: free charts (Deezer/iTunes) load automatically",
                     ));
                 } else {
                     for (i, src) in sources[app.list_scroll..end].iter().enumerate() {
@@ -1669,20 +1883,28 @@ impl Render {
                     for (i, track) in chart_tracks[app.list_scroll..end].iter().enumerate() {
                         let real_i = app.list_scroll + i;
                         let is_sel = real_i == sel && !left_focus;
+                        let is_multiselected = app.multiselect_mode
+                            && app.row_is_selected(&track.uri);
                         let avail = pane_w.saturating_sub(2);
                         let label = track.title.clone();
                         let display_label =
                             scroll_text(&label, avail, app.footer_title_scroll, is_sel);
                         let artists = &track.artists;
                         let prefix = if is_sel { " > " } else { "   " };
+                        let checkbox = if is_multiselected { "☑ " } else { "" };
                         let style = if is_sel {
                             Style::default()
                                 .fg(app.theme.selection_fg_readable())
                                 .bg(app.theme.selection_bg)
+                        } else if is_multiselected {
+                            Style::default().fg(app.theme.accent)
                         } else {
                             Style::default().fg(app.theme.fg)
                         };
-                        let row = format!("{}{} — {}", prefix, display_label, artists);
+                        let row = format!(
+                            "{}{}{} \u{2014} {}",
+                            prefix, checkbox, display_label, artists
+                        );
                         let row = if is_sel {
                             let pad = row_pad(&row, panes[1].width);
                             format!("{row}{}", " ".repeat(pad))
@@ -1751,7 +1973,7 @@ impl Render {
                         app.state.current_track.as_ref().map(|t| t.id) == Some(track.id);
                     let is_sel = real_i == sel && !left_focus;
                     let is_multiselected =
-                        app.multiselect_mode && app.selected_indices.contains(&real_i);
+                        app.multiselect_mode && app.row_is_selected(&track.path);
                     let label = track.title.clone();
                     let avail = pane_w.saturating_sub(2);
                     let display_label = scroll_text(&label, avail, app.footer_title_scroll, is_sel);
@@ -2042,6 +2264,14 @@ impl Render {
             }
         };
 
+        Render::lyrics_body(f, lyrics_inner, app, lyrics);
+    }
+
+    /// Body of the lyrics pane: wrap the lyric lines, emphasize the active
+    /// line (with karaoke word timing when available) and scroll to the
+    /// anchor. Shared by the normal lyrics pane and the Zen-mode fullscreen
+    /// lyrics surface so both render identically.
+    fn lyrics_body(f: &mut ratatui::Frame, lyrics_inner: Rect, app: &App, lyrics: &LrcData) {
         let total = lyrics.lines.len();
         let width = lyrics_inner.width.max(1) as usize;
         let synced = lyrics_are_synced(&lyrics.lines);
@@ -2207,7 +2437,7 @@ impl Render {
                 let real_i = win_start + real_i;
                 let is_sel = real_i == sel;
                 let is_multiselected =
-                    app.multiselect_mode && app.selected_indices.contains(&real_i);
+                    app.multiselect_mode && app.row_is_selected(&track.path);
                 let prefix = if is_sel { " > " } else { "   " };
                 let label = if track.title.is_empty() {
                     std::path::Path::new(&track.path)
@@ -2524,6 +2754,13 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
         f.render_widget(msg, area);
         return;
     }
+    // Zen mode: exactly one fullscreen surface at a time — no chrome,
+    // no footer, no pickers.
+    if app.zen {
+        Render::zen(f, area, app);
+        app.track_anim_trigger = false;
+        return;
+    }
     f.render_widget(
         ratatui::widgets::Block::default()
             .style(ratatui::style::Style::default().bg(app.surface_bg())),
@@ -2705,7 +2942,7 @@ const LIBRARY_ICONS_NERD: &[&str] = &[
     "\u{f03a}",
     "\u{f04c7}",
     "\u{f0439}", // Radio: nf-md-radio (official MDI)
-    "\u{f0120}", // Most Played: nf-md-chart_bar (official MDI)
+    "\u{f0128}", // Most Played: nf-md-chart_bar (verified: U+F0120 was tray-arrow-down)
     "\u{f02da}", // Recently Played: nf-md-history (official MDI)
     "\u{f1da}",
     "\u{f04fb}", // Genres: nf-md-tag_multiple (official MDI)
@@ -2861,6 +3098,62 @@ fn spotify_waiting_lines(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
+/// Tidal variant of [`spotify_waiting_lines`]: waiting state plus inline
+/// failure/URL for the `TidalLink` picker during the daemon-hosted OAuth flow.
+fn tidal_waiting_lines(app: &App) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    if app.setup.tidal_pending {
+        lines.push(Line::from(Span::styled(
+            "Waiting for you to finish login in your browser…",
+            Style::default().fg(app.theme.fg_bright),
+        )));
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "A browser window should have opened to authorize gtm.",
+            Style::default().fg(app.theme.fg_dim),
+        )));
+        lines.push(Line::from(Span::styled(
+            "Once you approve, the account links automatically.",
+            Style::default().fg(app.theme.fg_dim),
+        )));
+        lines.push(Line::from(Span::styled(
+            "Still stuck? Your app must list this exact Redirect URI:",
+            Style::default().fg(app.theme.fg_dim),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "http://127.0.0.1:{}/login   (127.0.0.1, not localhost)",
+                app.setup.tidal_port.parse::<u16>().unwrap_or(8992)
+            ),
+            Style::default().fg(app.theme.accent),
+        )));
+        lines.push(Line::from(""));
+    }
+    if let Some(err) = app.setup.tidal_error.as_deref() {
+        lines.push(Line::from(Span::styled(
+            err.to_string(),
+            Style::default().fg(app.theme.error),
+        )));
+        lines.push(Line::from(""));
+    }
+    if let Some(url) = app.setup.tidal_url.as_deref() {
+        lines.push(Line::from(Span::styled(
+            "If your browser did not open, copy this URL:",
+            Style::default().fg(app.theme.fg_dim),
+        )));
+        lines.push(Line::from(Span::styled(
+            url.to_string(),
+            Style::default().fg(app.theme.accent),
+        )));
+        lines.push(Line::from(""));
+    }
+    lines.push(Line::from(Span::styled(
+        "Press Esc to cancel.",
+        Style::default().fg(app.theme.fg_dim),
+    )));
+    lines
+}
+
 fn fill_pane(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(
         ratatui::widgets::Block::default()
@@ -2885,6 +3178,9 @@ fn service_icon_glyph(icon_style: &str, service: &str) -> &'static str {
         "Spotify" => "\u{1f3a7}",
         "Last.fm" => "\u{1f3b5}",
         "Subsonic/Navidrome" => "\u{1f5a5}\u{fe0f}",
+        "Deezer" => "\u{1f3b6}",
+        "YouTube" => "\u{1f4fa}",
+        "Tidal" => "\u{1f30a}",
         _ => "",
     }
 }
@@ -2985,8 +3281,10 @@ impl Pickers {
                 )
             }
             PickerId::SubsonicSetup => (56, 12),
-            PickerId::Setup => (56, 14),
+            PickerId::Setup => (58, 24),
             PickerId::LastfmAuth => (60, 16),
+            PickerId::YoutubeSetup => (58, 8),
+            PickerId::TidalLink => (60, 16),
             PickerId::PodcastFeeds => {
                 let w = app
                     .podcast
@@ -3122,6 +3420,8 @@ impl Pickers {
             PickerId::Radio => Self::render_radio(f, picker_area, app),
             PickerId::Setup => Self::render_setup(f, picker_area, app),
             PickerId::LastfmAuth => Self::render_lastfm_setup(f, picker_area, app),
+            PickerId::YoutubeSetup => Self::render_youtube_setup(f, picker_area, app),
+            PickerId::TidalLink => Self::render_tidal_link(f, picker_area, app),
             PickerId::SpotifyLink => {
                 let block = Self::picker_panel(app, " Spotify Link ", None);
                 let inner = block.inner(picker_area);
@@ -3439,24 +3739,24 @@ impl Pickers {
         help: Option<&'a str>,
     ) -> Block<'a> {
         // The "Esc" affordance lives at the top-right corner, inline with the
-        // picker title. A hint that *ends* with an "Esc: …" token gets that
-        // token lifted up there; pickers with mid-hint Esc phrasing or no hint
-        // at all show a bare "Esc" and keep their full bottom hint.
-        let (bottom_hint, esc_label) = match help {
+        // picker title. Any trailing "Esc: …" token is lifted off the hint and
+        // the chip itself is always the bare "Esc" label, padded with two
+        // spaces either side so it reads as a button.
+        let bottom_hint = match help {
             Some(h) => {
                 let trimmed = h.trim_end();
                 match trimmed.rfind("Esc:") {
                     Some(pos) if !trimmed[pos + 4..].contains(':') => {
-                        let esc = trimmed[pos..].trim().to_string();
-                        (Some(trimmed[..pos].trim_end()), Some(esc))
+                        Some(trimmed[..pos].trim_end())
                     }
-                    _ => (Some(trimmed), None),
+                    _ => Some(trimmed),
                 }
             }
-            None => (None, None),
+            None => None,
         };
         let bottom_hint = bottom_hint.filter(|h| !h.is_empty());
-        let esc_label = esc_label.unwrap_or_else(|| "Esc".to_string());
+        // Always a bare "Esc" — never "Esc: close" — with 2-space padding.
+        let esc_label = "  Esc  ".to_string();
 
         let mut block = Block::default()
             .title(Line::from(Span::styled(
@@ -3795,7 +4095,18 @@ impl Pickers {
                 Some(a) => format!("{a} - {}", r.title),
                 None => r.title.clone(),
             };
-            let content = format!("{prefix}{}{} [{}]", icon, display, dur);
+            let mut content = format!("{prefix}{}{} [{}]", icon, display, dur);
+            // Inline download status: a download started for this row shows
+            // on the row itself (the finished event is the only toast).
+            if app.downloading_urls.contains(&r.url) {
+                let dl = app
+                    .downloads
+                    .values()
+                    .find(|d| d.url == r.url)
+                    .map(|d| d.percent.clamp(0.0, 100.0) as u64)
+                    .unwrap_or(0);
+                content.push_str(&format!(" → ⤓ {dl}%"));
+            }
             let style = if i == sel {
                 Style::default()
                     .fg(app.theme.selection_fg_readable())
@@ -4190,10 +4501,52 @@ impl Pickers {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let services: [(&str, &str); 3] = [
-            ("Spotify", "OAuth link"),
-            ("Last.fm", "API key + OAuth"),
-            ("Subsonic/Navidrome", "server + credentials"),
+        // (name, description, live status)
+        let deezer_arl = get_secret(DEEZER_ARL).is_some();
+        let tidal_linked = app.setup.tidal_status.as_ref().is_some_and(|s| s.linked);
+        let services: [(&str, &str, String); 6] = [
+            ("Spotify", "OAuth link", {
+                if app.spotify.status.as_ref().is_some_and(|s| s.linked) {
+                    "✓ linked".to_string()
+                } else {
+                    "not linked".to_string()
+                }
+            }),
+            ("Last.fm", "API key + OAuth", {
+                if app.setup.lastfm_status.as_ref().is_some_and(|s| s.ready) {
+                    "✓ ready".to_string()
+                } else {
+                    "not linked".to_string()
+                }
+            }),
+            ("Subsonic/Navidrome", "server + credentials", {
+                if app.subsonic.status.as_ref().is_some_and(|s| s.configured) {
+                    "✓ configured".to_string()
+                } else {
+                    "not configured".to_string()
+                }
+            }),
+            ("Deezer", "ARL token", {
+                if deezer_arl {
+                    "✓ ARL stored".to_string()
+                } else {
+                    "no ARL".to_string()
+                }
+            }),
+            ("YouTube", "cookie file", {
+                if app.cookie_file.is_some() {
+                    "✓ cookies set".to_string()
+                } else {
+                    "no cookies".to_string()
+                }
+            }),
+            ("Tidal", "OAuth link", {
+                if tidal_linked {
+                    "✓ linked".to_string()
+                } else {
+                    "not linked".to_string()
+                }
+            }),
         ];
         let (sel, _) = setup_selection(app);
         let mut lines = Vec::new();
@@ -4202,7 +4555,7 @@ impl Pickers {
             Style::default().fg(app.theme.fg_dim),
         )));
         lines.push(Line::from(""));
-        for (i, (name, desc)) in services.iter().enumerate() {
+        for (i, (name, desc, status)) in services.iter().enumerate() {
             let style = if i == sel {
                 Style::default()
                     .fg(app.theme.accent)
@@ -4217,6 +4570,8 @@ impl Pickers {
                     style,
                 ),
                 Span::styled(*desc, Style::default().fg(app.theme.fg_dim)),
+                Span::styled("  · ", Style::default().fg(app.theme.fg_dim)),
+                Span::styled(status.as_str(), style),
             ]));
         }
         f.render_widget(Paragraph::new(lines), inner);
@@ -4457,6 +4812,130 @@ impl Pickers {
             Style::default().fg(app.theme.fg_dim),
         )));
         f.render_widget(Paragraph::new(lines), inner);
+    }
+
+    /// YouTube cookie-file path form (single text input). The daemon's yt-dlp
+    /// uses the file to lift age/consent restrictions; Enter with an empty box
+    /// clears the configured path.
+    fn render_youtube_setup(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let block = Self::picker_panel(app, " YouTube Cookies ", None);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        let path = app.setup.youtube_cookie_input.clone();
+        let mut lines = vec![Line::from(vec![
+            Span::styled("  ", Style::default().fg(app.theme.fg)),
+            Span::styled(
+                "Cookie file path (Netscape format, e.g. ~/.cookies/youtube.txt):",
+                Style::default().fg(app.theme.fg_dim),
+            ),
+        ])];
+        lines.push(Line::from(vec![
+            Span::styled(" ", Style::default().fg(app.theme.fg)),
+            Span::styled(
+                path,
+                Style::default()
+                    .fg(app.theme.fg_bright)
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
+            match cursor_span_style(app) {
+                Some(style) => Span::styled(" ", style),
+                None => Span::raw(""),
+            },
+        ]));
+        lines.push(Line::from(Span::styled(
+            " lets yt-dlp / the daemon access age-restricted and member-only media; empty Enter clears it",
+            Style::default().fg(app.theme.fg_dim),
+        )));
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+
+    /// Tidal OAuth link form: Client ID + loopback port, mirroring the
+    /// Spotify link picker. Enter starts the daemon-hosted PKCE flow; an empty
+    /// Client ID with no stored id leaves the form open (there is no built-in
+    /// fallback id — Tidal's community web id redirects to the site, not a
+    /// loopback URI, so a user-registered id is always required).
+    fn render_tidal_link(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let block = Self::picker_panel(app, " Tidal Link ", None);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        if app.setup.tidal_pending || app.setup.tidal_error.is_some() {
+            let p = Paragraph::new(tidal_waiting_lines(app));
+            f.render_widget(p, inner);
+        } else {
+            let input_cursor = cursor_span_style(app);
+            let mut lines = vec![
+                Line::from(Span::styled(
+                    "Enter your Tidal app Client ID, then press Enter.",
+                    Style::default().fg(app.theme.fg),
+                )),
+                Line::from(Span::styled(
+                    "Tab switches field; a browser opens to authorize gtm.",
+                    Style::default().fg(app.theme.fg_dim),
+                )),
+                Line::from(""),
+            ];
+
+            // Client ID field (active = field 0). Masked so the secret isn't
+            // echoed to the terminal while typing.
+            let cid_active = app.setup.tidal_field == 0;
+            let cid_label = if cid_active {
+                app.theme.fg_bright
+            } else {
+                app.theme.fg_dim
+            };
+            let cid_text = if app.setup.tidal_client_id.is_empty() {
+                "[ client id ]".to_string()
+            } else {
+                "•".repeat(app.setup.tidal_client_id.chars().count())
+            };
+            let mut cid_spans = vec![
+                Span::styled(" Client ID: ", Style::default().fg(cid_label)),
+                Span::styled(cid_text, Style::default().fg(app.theme.accent)),
+            ];
+            if cid_active && let Some(cur) = input_cursor {
+                cid_spans.push(Span::styled(" ", cur));
+            }
+            lines.push(Line::from(cid_spans));
+
+            // Port field (active = field 1)
+            let port_active = app.setup.tidal_field == 1;
+            let port_label = if port_active {
+                app.theme.fg_bright
+            } else {
+                app.theme.fg_dim
+            };
+            let mut port_spans = vec![
+                Span::styled(" Port:      ", Style::default().fg(port_label)),
+                Span::styled(
+                    app.setup.tidal_port.clone(),
+                    Style::default().fg(app.theme.accent),
+                ),
+            ];
+            if port_active && let Some(cur) = input_cursor {
+                port_spans.push(Span::styled(" ", cur));
+            }
+            lines.push(Line::from(port_spans));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                format!(
+                    "Redirect URI to register: http://127.0.0.1:{}/login",
+                    app.setup.tidal_port.parse::<u16>().unwrap_or(8992)
+                ),
+                Style::default().fg(app.theme.fg_bright),
+            )));
+            lines.push(Line::from(Span::styled(
+                "Use 127.0.0.1 (not localhost). Create a Client ID + Redirect URI at",
+                Style::default().fg(app.theme.fg_dim),
+            )));
+            lines.push(Line::from(Span::styled(
+                "https://developer.tidal.com (Client ID = short alphanumeric string).",
+                Style::default().fg(app.theme.fg_dim),
+            )));
+
+            let p = Paragraph::new(lines);
+            f.render_widget(p, inner);
+        }
     }
 
     fn render_radio(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
@@ -5883,7 +6362,7 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   ,           Seek Backward"),
     ("", "   + / -       Volume Up / Down"),
     ("", "   > / <       Speed Up / Down (pitch-preserving)"),
-    ("", "   z           Toggle Low-Power Mode"),
+    ("", "   z           Zen Mode (cover / lyrics / visualizer)"),
     ("", "   m           Mute Toggle"),
     ("", "   Alt+1       Mono Toggle"),
     ("", "   *           Love / Un-love on Last.fm"),
@@ -5944,34 +6423,9 @@ impl Pickers {
 
         let version = option_env!("CARGO_PKG_VERSION").unwrap_or("0.1.0");
         let commit = option_env!("VERGEN_GIT_SHA").unwrap_or("unknown");
-        let build_date = option_env!("VERGEN_BUILD_DATE").unwrap_or("unknown");
         // Nightly CI builds bake a `+nightly` suffix into `CARGO_PKG_VERSION`;
         // surface that so users can tell a nightly build from a release.
         let nightly = version.contains("+nightly");
-        let lib_count = app.tracks_cache.len();
-        let queue_count = app.queue.cache.len();
-
-        let arch = std::env::consts::ARCH;
-        let cpus = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
-        let mem_kb = read_proc_mem();
-        let mem_str = mem_kb
-            .map(|kb| {
-                if kb > 1024 * 1024 {
-                    format!("{} GB", kb / (1024 * 1024))
-                } else {
-                    format!("{} MB", kb / 1024)
-                }
-            })
-            .unwrap_or_else(|| "unknown".into());
-        // Compiler/linker provenance.
-        let compiler = option_env!("VERGEN_RUSTC_SEMVER").unwrap_or("unknown");
-        let linker = option_env!("GTM_LINKER").unwrap_or("unknown");
-        // Audio / rendering backends (unused after removing backends line).
-        let _ratatui_ver = option_env!("GTM_RATATUI_VERSION").unwrap_or("unknown");
-        let _rodio_ver = option_env!("GTM_RODIO_VERSION").unwrap_or("unknown");
-        let _symphonia_ver = option_env!("GTM_SYMPHONIA_VERSION").unwrap_or("unknown");
 
         let lines = vec![
             Line::from(Span::styled(
@@ -6001,94 +6455,6 @@ impl Pickers {
                     if nightly { " (nightly)" } else { "" }
                 ),
                 Style::default().fg(app.theme.fg),
-            )),
-            Line::from(Span::styled(
-                format!("   Date:    {}", build_date),
-                Style::default().fg(app.theme.fg),
-            )),
-            Line::from(Span::styled(
-                format!("   Compiler: {}", compiler),
-                Style::default().fg(app.theme.fg),
-            )),
-            Line::from(Span::styled(
-                format!("   Linker:  {}", linker),
-                Style::default().fg(app.theme.fg),
-            )),
-            Line::from(Span::styled(
-                format!(
-                    "   System:   {} {} \u{2022} {} CPU \u{2022} {} RAM",
-                    std::env::consts::OS,
-                    arch,
-                    cpus,
-                    mem_str
-                ),
-                Style::default().fg(app.theme.fg),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                " Status",
-                Style::default().fg(app.theme.fg_dim),
-            )),
-            Line::from(Span::styled(
-                format!("   Playing:  {:?}", app.state.status),
-                Style::default().fg(app.theme.warning),
-            )),
-            Line::from(Span::styled(
-                format!("   Volume:   {}%", app.state.volume),
-                Style::default().fg(app.theme.volume_color(app.state.volume)),
-            )),
-            Line::from(Span::styled(
-                format!(
-                    "   Queue:    {} {}",
-                    queue_count,
-                    plural(queue_count, "track", "tracks")
-                ),
-                Style::default().fg(app.theme.fg_bright),
-            )),
-            Line::from(Span::styled(
-                format!(
-                    "   Library:  {} {}",
-                    lib_count,
-                    plural(lib_count, "track", "tracks")
-                ),
-                Style::default().fg(app.theme.fg_bright),
-            )),
-            Line::from(Span::styled(
-                format!(
-                    "   Shuffle:  {}",
-                    if app.state.shuffle { "ON" } else { "OFF" }
-                ),
-                Style::default().fg(app.theme.fg_bright),
-            )),
-            Line::from(Span::styled(
-                format!("   Repeat:   {:?}", app.state.repeat),
-                Style::default().fg(app.theme.fg_bright),
-            )),
-            Line::from(Span::styled(
-                format!("   Speed:    {:.2}x", app.state.audio.speed),
-                Style::default().fg(app.theme.fg_bright),
-            )),
-            Line::from(Span::styled(
-                format!(
-                    "   LowPower: {}",
-                    if app.state.low_power { "ON" } else { "OFF" }
-                ),
-                Style::default().fg(if app.state.low_power {
-                    app.theme.warning
-                } else {
-                    app.theme.fg_bright
-                }),
-            )),
-            Line::from(Span::styled(
-                format!(
-                    "   Device:   {}",
-                    app.state
-                        .audio
-                        .audio_device
-                        .clone()
-                        .unwrap_or_else(|| "Default".into())
-                ),
-                Style::default().fg(app.theme.fg_bright),
             )),
         ];
 
@@ -6382,23 +6748,35 @@ impl Pickers {
 
         let is_active = app.sleep_timer.remaining.is_some();
         let help = if is_active {
-            "↑/j: +5   ↓/k: -5   h/-: -1   l/+: +1   i: input   Enter: set   c: cancel   Esc: close"
+            "↑/↓: option   ←/→ or h/l: ±5   -/+: ±1   i: input   Enter: set   c: cancel"
         } else {
-            "↑/j: +5   ↓/k: -5   h/-: -1   l/+: +1   i: input   Enter: set   Esc: close"
+            "↑/↓: option   ←/→ or h/l: ±5   -/+: ±1   i: input   Enter: set"
         };
         let block = Self::picker_panel(app, " Sleep Timer ", Some(help));
         let inner = block.inner(area);
         f.render_widget(block, area);
 
         let mins = app.sleep_timer.minutes;
+        let focus = app.sleep_timer.focus;
+
+        let focus_style = |app: &App, active: bool| {
+            if active {
+                Style::default()
+                    .fg(app.theme.selection_fg_readable())
+                    .bg(app.theme.selection_bg)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.fg)
+            }
+        };
 
         let mut lines: Vec<Line> = Vec::new();
 
+        // Row 0: the time slider (focus 0). Left/Right and h/l adjust it;
+        // Enter arms the timer with the current minutes.
         lines.push(Line::from(vec![Span::styled(
             format!("  Timer: {} minutes", mins),
-            Style::default()
-                .fg(app.theme.fg)
-                .add_modifier(Modifier::BOLD),
+            focus_style(app, focus == 0),
         )]));
         lines.push(Line::from(""));
 
@@ -6430,10 +6808,19 @@ impl Pickers {
         ]));
         lines.push(Line::from(""));
 
+        // Rows 1..=7: quick presets. `focus - 1` indexes into this list, and
+        // the focused chip is highlighted (the value matches `mins` whenever
+        // the user adjusted the slider to a preset).
         let quick_opts = [5u32, 10, 15, 30, 60, 90, 120];
         let mut spans: Vec<Span> = vec![Span::styled("  ", Style::default())];
-        for &m in quick_opts.iter() {
-            let style = if m == mins {
+        for (i, &m) in quick_opts.iter().enumerate() {
+            let focused = focus >= 1 && focus <= 7 && focus - 1 == i;
+            let style = if focused {
+                Style::default()
+                    .fg(app.theme.selection_fg_readable())
+                    .bg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else if m == mins {
                 Style::default()
                     .fg(app.theme.selection_fg_readable())
                     .bg(app.theme.selection_bg)
@@ -6444,6 +6831,21 @@ impl Pickers {
             spans.push(Span::styled(format!("[{}m] ", m), style));
         }
         lines.push(Line::from(spans));
+        lines.push(Line::from(""));
+
+        // Row 8: the "stop immediately" checkbox.
+        let boxed = if app.sleep_timer.stop_immediately {
+            "[x]"
+        } else {
+            "[ ]"
+        };
+        lines.push(Line::from(vec![Span::styled(
+            format!(
+                "  {} End playback immediately when the time is up",
+                boxed
+            ),
+            focus_style(app, focus == 8),
+        )]));
         lines.push(Line::from(""));
 
         if is_active && let Some(remaining) = app.sleep_timer.remaining {

@@ -483,8 +483,8 @@ pub fn draw(f: &mut Frame, area: Rect, out: &FooterRenderOutput) {
 
 impl Footer {
     fn multiselect(app: &App) -> Option<String> {
-        if app.multiselect_mode && !app.selected_indices.is_empty() {
-            Some(format!("[{} selected]", app.selected_indices.len()))
+        if app.multiselect_mode && !app.selected_keys.is_empty() {
+            Some(format!("[{} selected]", app.selected_keys.len()))
         } else {
             None
         }
@@ -773,14 +773,14 @@ impl Footer {
     /// cache paths); local files render nothing so the module stays hidden.
     fn source(app: &App) -> Option<String> {
         let path = app.state.current_track.as_ref().map(|t| t.path.as_str())?;
-        let (icon_key, label) = classify_remote_source(path)?;
+        let (icon_key, _label) = classify_remote_source(path)?;
+        // Only the provider glyph is shown (the source title adds no signal
+        // next to the now-playing pane). Without Nerd Fonts there is no glyph,
+        // so the module stays hidden rather than degrading to text.
         if use_nerd_fonts() {
-            match provider_icon(icon_key) {
-                Some(g) => Some(format!("{g} {label}")),
-                None => Some(label.to_string()),
-            }
+            provider_icon(icon_key).map(|g| g.to_string())
         } else {
-            Some(label.to_string())
+            None
         }
     }
 }
@@ -977,17 +977,6 @@ fn platform_icon() -> &'static str {
             _ => "?",
         }
     }
-}
-
-pub(crate) fn read_proc_mem() -> Option<u64> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    for line in status.lines() {
-        if let Some(rest) = line.strip_prefix("VmRSS:") {
-            let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
-            return Some(kb);
-        }
-    }
-    None
 }
 
 #[cfg(test)]

@@ -12,6 +12,7 @@ use crate::shared::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::shared::subsonic::{
     SubsonicAlbum, SubsonicSearchResults, SubsonicStatus, SubsonicTrack,
 };
+use crate::shared::tidal::TidalStatus;
 use crate::shared::track::{LrcData, Playlist, StreamInfo, TrackInfo, YTSearchResult};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -40,6 +41,18 @@ fn default_oauth_port() -> u16 {
 /// doesn't specify one (mirrors `gtm::oauth::lastfm_callback_port`).
 fn default_lastfm_port() -> u16 {
     8991
+}
+
+/// Default local callback port for the Tidal OAuth redirect when the caller
+/// doesn't specify one.
+fn default_tidal_port() -> u16 {
+    8992
+}
+
+/// Serde default: sleep timer hard-stops at zero unless the caller opts in to
+/// letting the current track finish.
+fn default_true() -> bool {
+    true
 }
 
 /// `/queue` sub-commands. Internally tagged via `action`, wire encoding is
@@ -412,8 +425,28 @@ pub enum DaemonReq {
     LastfmLove,
     /// Un-love the current track on Last.fm.
     LastfmUnlove,
+    /// Start the Tidal OAuth link flow: the daemon binds the loopback callback
+    /// port, returns the authorize URL, then captures the returning `code`,
+    /// exchanges it for an access token, and pushes a status event. Mirrors
+    /// the Spotify/Last.fm daemon-hosted contract.
+    TidalOauthStart {
+        client_id: String,
+        /// Loopback redirect port. Defaults to 8992.
+        #[serde(default = "default_tidal_port")]
+        port: u16,
+    },
+    /// Abort a pending Tidal OAuth link flow (frees the callback port).
+    TidalCancelOauth,
+    /// Current Tidal link status.
+    TidalStatus,
+    /// Unlink the Tidal account and delete the stored token.
+    TidalClear,
     SetSleepTimer {
         minutes: u32,
+        /// `true` (default): stop playback the moment the countdown hits zero.
+        /// `false`: let the current finite track play out to its natural end
+        /// first (endless streams always stop immediately — they have no end).
+        stop_immediately: bool,
     },
     CancelSleepTimer,
     /// Enter / leave low-power mode (pauses playback, eases up on background work).
@@ -615,6 +648,10 @@ impl DaemonReq {
             DaemonReq::LastfmClear => "lastfm_clear",
             DaemonReq::LastfmLove => "lastfm_love",
             DaemonReq::LastfmUnlove => "lastfm_unlove",
+            DaemonReq::TidalOauthStart { .. } => "tidal_oauth_start",
+            DaemonReq::TidalCancelOauth => "tidal_cancel_oauth",
+            DaemonReq::TidalStatus => "tidal_status",
+            DaemonReq::TidalClear => "tidal_clear",
             DaemonReq::SetSleepTimer { .. } => "set_sleep_timer",
             DaemonReq::CancelSleepTimer => "cancel_sleep_timer",
             DaemonReq::SetLowPower { .. } => "set_low_power",
@@ -1090,13 +1127,34 @@ impl DaemonReq {
             "lastfm_clear" => DaemonReq::LastfmClear,
             "lastfm_love" => DaemonReq::LastfmLove,
             "lastfm_unlove" => DaemonReq::LastfmUnlove,
+            "tidal_oauth_start" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    client_id: String,
+                    #[serde(default = "default_tidal_port")]
+                    port: u16,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::TidalOauthStart {
+                    client_id: x.client_id,
+                    port: x.port,
+                }
+            }
+            "tidal_cancel_oauth" => DaemonReq::TidalCancelOauth,
+            "tidal_status" => DaemonReq::TidalStatus,
+            "tidal_clear" => DaemonReq::TidalClear,
             "set_sleep_timer" => {
                 #[derive(Deserialize)]
                 struct Params {
                     minutes: u32,
+                    #[serde(default = "default_true")]
+                    stop_immediately: bool,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SetSleepTimer { minutes: x.minutes }
+                DaemonReq::SetSleepTimer {
+                    minutes: x.minutes,
+                    stop_immediately: x.stop_immediately,
+                }
             }
             "cancel_sleep_timer" => DaemonReq::CancelSleepTimer,
             "set_low_power" => {
@@ -1592,6 +1650,9 @@ pub enum DaemonEvent {
     SpotifyStatusChanged,
     #[serde(rename = "lastfm_status_changed")]
     LastfmStatusChanged,
+    /// Tidal link state changed (e.g. an OAuth link flow completed).
+    #[serde(rename = "tidal_status_changed")]
+    TidalStatusChanged,
     #[serde(rename = "spectrum_changed")]
     SpectrumChanged { levels: Vec<f32> },
     /// Time-domain waveform ring (interleaved L/R) plus a stereo flag, for
@@ -1646,6 +1707,15 @@ pub enum DaemonRes {
     },
     /// OAuth link flow started; the user must open this URL in a browser.
     SpotifyOauthStarted {
+        url: String,
+    },
+    /// Current Tidal link status.
+    TidalStatusRes {
+        status: TidalStatus,
+    },
+    /// Tidal OAuth link flow started; the user must open this URL in a
+    /// browser. Completion is pushed back via `tidal_status_changed`.
+    TidalOauthStarted {
         url: String,
     },
     SpotifyPlaylistsRes {
@@ -1787,6 +1857,8 @@ impl DaemonRes {
                 Some(serde_json::json!({ "playlists": playlists }))
             }
             DaemonRes::SpotifyOauthStarted { url } => Some(serde_json::json!({ "url": url })),
+            DaemonRes::TidalStatusRes { status } => Some(serde_json::json!({ "status": status })),
+            DaemonRes::TidalOauthStarted { url } => Some(serde_json::json!({ "url": url })),
             DaemonRes::SpotifyTracksRes { tracks } => Some(serde_json::json!({ "tracks": tracks })),
             DaemonRes::SpotifyImageRes { data } => Some(serde_json::json!({ "data": data })),
             DaemonRes::SubsonicStatusRes { status } => {
@@ -1957,6 +2029,8 @@ impl DaemonRes {
             DaemonRes::Lyrics { lyrics } => field!("lyrics", &lyrics),
             DaemonRes::SpotifyStatusRes { status } => field!("status", &status),
             DaemonRes::SpotifyOauthStarted { url } => field!("url", &url),
+            DaemonRes::TidalStatusRes { status } => field!("status", &status),
+            DaemonRes::TidalOauthStarted { url } => field!("url", &url),
             DaemonRes::SpotifyPlaylistsRes { playlists } => field!("playlists", &playlists),
             DaemonRes::SpotifyTracksRes { tracks } => field!("tracks", &tracks),
             DaemonRes::SpotifyImageRes { data } => field!("data", &data),
@@ -2199,6 +2273,15 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
+            "tidal_status" | "tidal_clear" => {
+                match serde_json::from_value::<TidalStatus>(field(&data, "status")) {
+                    Ok(status) => DaemonRes::TidalStatusRes { status },
+                    Err(_) => DaemonRes::Value { value: data },
+                }
+            }
+            "tidal_oauth_start" => DaemonRes::TidalOauthStarted {
+                url: field_str(&data, "url").to_string(),
+            },
             "spotify_track_image" => {
                 match serde_json::from_value::<Option<String>>(field(&data, "data")) {
                     Ok(data) => DaemonRes::SpotifyImageRes { data },

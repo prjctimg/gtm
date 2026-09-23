@@ -8,13 +8,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use innertube_rs::{Innertube, SessionOptions};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time::timeout;
 use tracing::debug;
@@ -28,6 +28,19 @@ use crate::cleaner::clean_youtube_title;
 const SEARCH_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_CONCURRENT: usize = 2;
 
+/// Minimum gap enforced between yt-dlp subprocess launches. YouTube treats a
+/// rapid succession of extractor runs (stream resolve + download + search +
+/// playlist fetch) as a request burst and answers HTTP 429, which is exactly
+/// the "failed to stream or download the selected track" symptom. Every
+/// yt-dlp invocation site shares this launch gate, so subprocesses start at
+/// least this far apart even when several tasks fire at once.
+const YTDLP_MIN_LAUNCH_GAP: Duration = Duration::from_millis(1500);
+/// A rate-limited (HTTP 429 / "Too Many Requests") yt-dlp run is retried this
+/// many times with exponential backoff before the failure is surfaced.
+const YTDLP_RATE_LIMIT_RETRIES: usize = 2;
+/// Base backoff for the first rate-limit retry (doubled per attempt).
+const YTDLP_RATE_LIMIT_BACKOFF: Duration = Duration::from_secs(6);
+
 /// Owns the interactive InnerTube search pipeline. Each new search cancels any
 /// in-flight one and bumps a generation counter, so results published by a
 /// superseded search are discarded by [`YoutubeManager::poll_results`].
@@ -40,6 +53,10 @@ pub struct YoutubeManager {
     cancel: Option<oneshot::Sender<()>>,
     active_task: Option<JoinHandle<()>>,
     semaphore: Arc<Semaphore>,
+    /// Shared yt-dlp launch gate (see [`YTDLP_MIN_LAUNCH_GAP`]). Cloned into
+    /// spawned tasks and handed to the daemon so every yt-dlp site — resolve,
+    /// download, search, playlist fetch — goes through the same throttle.
+    last_ytdlp_launch: Arc<Mutex<Instant>>,
     cookie_file: Option<PathBuf>,
     /// Browser cookies source forwarded to yt-dlp as `--cookies-from-browser`
     /// (e.g. `chrome`, `firefox`, `brave`). Takes precedence over `cookie_file`.
@@ -249,6 +266,8 @@ impl YoutubeManager {
             cancel: None,
             active_task: None,
             semaphore: Arc::new(Semaphore::new(MAX_CONCURRENT)),
+            // Pre-stamped so the very first launch is not delayed.
+            last_ytdlp_launch: Arc::new(Mutex::new(Instant::now() - YTDLP_MIN_LAUNCH_GAP)),
             cookie_file: None,
             cookie_source: None,
             js_runtime: None,
@@ -366,6 +385,26 @@ impl YoutubeManager {
         self.ytdlp_auth_args()
     }
 
+    /// Hand the daemon everything it needs to run a yt-dlp resolve *outside*
+    /// the manager lock: the auth/cookie flags, the shared concurrency permit,
+    /// and the shared launch gate (all cheap clones). Resolving takes up to
+    /// [`SEARCH_TIMEOUT`] (more under rate-limit backoff); holding the
+    /// `YoutubeManager` mutex across that would stall unrelated requests such
+    /// as `YtDownload` behind the lock.
+    pub fn yt_extras(
+        &self,
+    ) -> (
+        Vec<std::ffi::OsString>,
+        Arc<Semaphore>,
+        Arc<Mutex<Instant>>,
+    ) {
+        (
+            self.ytdlp_auth_args(),
+            self.semaphore.clone(),
+            self.last_ytdlp_launch.clone(),
+        )
+    }
+
     async fn start_impl(&mut self, query: &str, _filter: Option<YTFilter>) -> Result<u64, String> {
         self.cancel_current();
         let generation = self.generation.fetch_add(1, Ordering::SeqCst) + 1;
@@ -377,6 +416,7 @@ impl YoutubeManager {
         let (cancel_tx, cancel_rx) = oneshot::channel();
         self.cancel = Some(cancel_tx);
         let semaphore = self.semaphore.clone();
+        let gate = self.last_ytdlp_launch.clone();
         let res_tx = self.results_tx.clone();
         let q = query.to_string();
         let auth_args = self.ytdlp_auth_args();
@@ -385,7 +425,7 @@ impl YoutubeManager {
                 Ok(p) => p,
                 Err(_) => return,
             };
-            let results = run_search(&client, &q, auth_args, cancel_rx, permit).await;
+            let results = run_search(&client, &q, auth_args, gate, cancel_rx, permit).await;
             let _ = res_tx.send((generation, results));
         });
         self.active_task = Some(handle);
@@ -463,6 +503,11 @@ impl YoutubeManager {
         let auth_args = self.ytdlp_auth_args();
         let download_dir = self.download_dir.clone();
         let progress_tx = self.download_progress_tx.clone();
+        let semaphore = self.semaphore.clone();
+        let gate = self.last_ytdlp_launch.clone();
+        // Captures the tail of yt-dlp's stderr so the failure toast can tell
+        // rate-limit (429) and cookie (403) failures apart from other errors.
+        let stderr_capture = Arc::new(std::sync::Mutex::new(String::new()));
 
         let url_for_spawn = url.clone();
         let title_for_spawn = title.clone();
@@ -484,6 +529,31 @@ impl YoutubeManager {
                 rate_bps: None,
                 eta_secs: None,
             });
+
+            // Join the shared yt-dlp launch queue (permit + spacing gate) so a
+            // download can never pile on top of an in-flight resolve/search in
+            // a burst that trips YouTube's rate limiter.
+            let permit = match semaphore.acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => {
+                    let _ = progress_tx.send(DownloadProgress {
+                        id: download_id,
+                        url: url_for_spawn.clone(),
+                        title: name,
+                        progress: 0.0,
+                        status: DownloadStatus::Failed,
+                        error: Some("yt-dlp queue closed".to_string()),
+                        file_path: None,
+                        downloaded_bytes: None,
+                        total_bytes: None,
+                        rate_bps: None,
+                        eta_secs: None,
+                    });
+                    return;
+                }
+            };
+            gate_ytdlp_launch(&gate).await;
+            let _permit = permit;
 
             let output_template = download_dir
                 .join("%(title)s.%(ext)s")
@@ -536,6 +606,7 @@ impl YoutubeManager {
                         download_id,
                         url_for_spawn.clone(),
                         name.clone(),
+                        None,
                     ))
                 })
                 .unwrap_or_else(|| tokio::spawn(async {}));
@@ -549,6 +620,7 @@ impl YoutubeManager {
                         download_id,
                         url_for_spawn.clone(),
                         name.clone(),
+                        Some(stderr_capture.clone()),
                     ))
                 })
                 .unwrap_or_else(|| tokio::spawn(async {}));
@@ -578,7 +650,13 @@ impl YoutubeManager {
                                 .max_by_key(|p| p.metadata().ok().and_then(|m| m.modified().ok()));
                             (file, String::new())
                         }
-                        Ok(status) => (None, format!("yt-dlp exited with {status}")),
+                        Ok(status) => (
+                            None,
+                            format!(
+                                "yt-dlp exited with {status}{}",
+                                ytdlp_failure_detail(&stderr_capture)
+                            ),
+                        ),
                         Err(e) => (None, format!("yt-dlp error: {e}")),
                     }
                 }
@@ -666,13 +744,14 @@ impl YoutubeManager {
 
         let auth_args = self.ytdlp_auth_args();
         let semaphore = self.semaphore.clone();
+        let gate = self.last_ytdlp_launch.clone();
         let res_tx = self.playlist_tx.clone();
         let handle = tokio::spawn(async move {
             let permit = match semaphore.acquire_owned().await {
                 Ok(p) => p,
                 Err(_) => return,
             };
-            let results = run_playlist_fetch(&url, auth_args, cancel_rx, permit).await;
+            let results = run_playlist_fetch(&url, auth_args, gate, cancel_rx, permit).await;
             let _ = res_tx.send((url, results));
         });
         self.playlist_task = Some(handle);
@@ -703,13 +782,13 @@ impl YoutubeManager {
 
     /// Resolve a YouTube watch URL into a playable direct audio stream using
     /// yt-dlp's maintained extractor (fresh PO tokens and signature handling),
-    /// so the returned CDN URL is not a stale, HTTP-403'd one.
+    /// so the returned CDN URL is not a stale, HTTP-403'd one. Callers that
+    /// cannot afford to hold the manager lock across the run should use
+    /// [`resolve_stream_ytdlp`] with [`YoutubeManager::yt_extras`] instead.
     pub async fn resolve_stream(&mut self, url: &str) -> Result<StreamInfo, String> {
         let auth = self.ytdlp_auth_args();
-        let direct = resolve_ytdlp(&self.semaphore, &auth, url, &["-g"]).await?;
-        if direct.is_empty() {
-            return Err("empty stream URL".to_string());
-        }
+        let direct = resolve_stream_ytdlp(&self.semaphore, &self.last_ytdlp_launch, &auth, url)
+            .await?;
         Ok(StreamInfo {
             url: direct,
             title: url.to_string(),
@@ -723,80 +802,152 @@ impl YoutubeManager {
     /// (SoundCloud, Bandcamp, Mixcloud, ...).
     pub async fn resolve_info(&mut self, url: &str) -> Result<(String, String), String> {
         let auth = self.ytdlp_auth_args();
-        let out = resolve_ytdlp(
-            &self.semaphore,
-            &auth,
-            url,
-            &["--print", "%(title)s", "--print", "%(url)s"],
-        )
-        .await?;
-        let mut lines = out.lines();
-        let title = lines
-            .next()
-            .filter(|l| !l.trim().is_empty())
-            .unwrap_or(url)
-            .to_string();
-        let direct = lines.next().unwrap_or("").trim().to_string();
-        if direct.is_empty() {
-            return Err("empty stream URL".to_string());
-        }
-        Ok((title, direct))
+        resolve_info_ytdlp(&self.semaphore, &self.last_ytdlp_launch, &auth, url).await
     }
 }
 
 /// One-shot yt-dlp extraction of `url`'s audio stream with extra flags,
 /// returning trimmed stdout (a direct URL with `-g`, or requested `--print`
-/// fields). Failures surface the last stderr line plus the cookie hint.
+/// fields). Run through the shared launch gate so concurrent resolves,
+/// downloads and searches never burst YouTube's rate limiter; a 429/"Too
+/// Many Requests" reply is retried with exponential backoff. Failures surface
+/// the last stderr line plus a targeted hint.
 async fn resolve_ytdlp(
     semaphore: &Semaphore,
+    gate: &Arc<Mutex<Instant>>,
     auth: &[std::ffi::OsString],
     url: &str,
     extra: &[&str],
 ) -> Result<String, String> {
-    let _permit = semaphore
+    let permit = semaphore
         .acquire()
         .await
         .map_err(|e| format!("semaphore: {e}"))?;
 
-    let mut args: Vec<std::ffi::OsString> = vec![
+    let mut base_args: Vec<std::ffi::OsString> = vec![
         "--no-playlist".into(),
         "-f".into(),
         "bestaudio[ext=m4a]/bestaudio".into(),
     ];
-    args.extend(extra.iter().map(|s| std::ffi::OsString::from(*s)));
-    args.extend(auth.iter().cloned());
-    args.push(url.to_string().into());
+    base_args.extend(extra.iter().map(|s| std::ffi::OsString::from(*s)));
+    base_args.extend(auth.iter().cloned());
 
-    let output = timeout(SEARCH_TIMEOUT, Command::new("yt-dlp").args(&args).output())
-        .await
-        .map_err(|_| "resolve timeout".to_string())?
-        .map_err(|e| format!("yt-dlp: {e}"))?;
+    let mut last_detail = String::from("unknown error");
+    for attempt in 0..=YTDLP_RATE_LIMIT_RETRIES {
+        gate_ytdlp_launch(gate).await;
+        let mut args = base_args.clone();
+        args.push(url.to_string().into());
+        let output = timeout(SEARCH_TIMEOUT, Command::new("yt-dlp").args(&args).output())
+            .await
+            .map_err(|_| "resolve timeout".to_string())?
+            .map_err(|e| format!("yt-dlp: {e}"))?;
 
-    if !output.status.success() {
+        if output.status.success() {
+            return Ok(String::from_utf8_lossy(&output.stdout).trim().to_string());
+        }
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let detail = stderr
+        last_detail = stderr
             .lines()
             .rev()
             .find(|l| !l.trim().is_empty())
-            .unwrap_or("unknown error");
-        let hint = if detail.contains("403") || detail.contains("Forbidden") {
-            " (cookies unavailable: set a logged-in cookies.txt in Settings → YouTube)"
-        } else {
-            ""
-        };
-        return Err(format!("yt-dlp resolve failed: {detail}{hint}"));
+            .unwrap_or("unknown error")
+            .to_string();
+        if is_rate_limited(&stderr) && attempt < YTDLP_RATE_LIMIT_RETRIES {
+            let backoff = YTDLP_RATE_LIMIT_BACKOFF * (1u32 << attempt) as u32;
+            debug!("yt-dlp rate limited; retrying in {}s", backoff.as_secs());
+            tokio::time::sleep(backoff).await;
+            continue;
+        }
+        break;
     }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    drop(permit);
+    let hint = if last_detail.contains("403") || last_detail.contains("Forbidden") {
+        " (cookies unavailable: set a logged-in cookies.txt in Settings → YouTube)"
+    } else if last_detail.contains("429") || last_detail.contains("Too Many Requests") {
+        " (YouTube rate limit: wait a moment, then retry)"
+    } else {
+        ""
+    };
+    Err(format!("yt-dlp resolve failed: {last_detail}{hint}"))
+}
+
+/// True when a yt-dlp stderr dump indicates the rate limiter fired.
+fn is_rate_limited(stderr: &str) -> bool {
+    stderr.contains("429") || stderr.to_ascii_lowercase().contains("too many requests")
+}
+
+/// Hold the shared launch gate until at least [`YTDLP_MIN_LAUNCH_GAP`] has
+/// elapsed since the previous yt-dlp subprocess start, then stamp the new
+/// start time. Because the gate stays held across the wait, callers are
+/// served one at a time: launches land exactly `MIN_LAUNCH_GAP` apart even
+/// when resolve/download/search/playlist tasks fire in the same instant.
+async fn gate_ytdlp_launch(gate: &Arc<Mutex<Instant>>) {
+    let mut guard = gate.lock().await;
+    let since = Instant::now().saturating_duration_since(*guard);
+    if since < YTDLP_MIN_LAUNCH_GAP {
+        tokio::time::sleep(YTDLP_MIN_LAUNCH_GAP - since).await;
+    }
+    *guard = Instant::now();
+}
+
+/// Lock-free yt-dlp `-g` resolve of a YouTube watch URL into a direct audio
+/// URL. Callers (the daemon's playback path) clone the shared semaphore and
+/// launch gate from [`YoutubeManager::yt_extras`] and pass them in instead of
+/// holding the `YoutubeManager` mutex across the yt-dlp run.
+pub async fn resolve_stream_ytdlp(
+    semaphore: &Semaphore,
+    gate: &Arc<Mutex<Instant>>,
+    auth: &[std::ffi::OsString],
+    url: &str,
+) -> Result<String, String> {
+    let direct = resolve_ytdlp(semaphore, gate, auth, url, &["-g"]).await?;
+    if direct.is_empty() {
+        return Err("empty stream URL".to_string());
+    }
+    Ok(direct)
+}
+
+/// Lock-free resolve of any yt-dlp-supported URL into its rendered title and
+/// a direct audio URL via `--print` (SoundCloud, Bandcamp, Mixcloud, ...).
+pub async fn resolve_info_ytdlp(
+    semaphore: &Semaphore,
+    gate: &Arc<Mutex<Instant>>,
+    auth: &[std::ffi::OsString],
+    url: &str,
+) -> Result<(String, String), String> {
+    let out = resolve_ytdlp(
+        semaphore,
+        gate,
+        auth,
+        url,
+        &["--print", "%(title)s", "--print", "%(url)s"],
+    )
+    .await?;
+    let mut lines = out.lines();
+    let title = lines
+        .next()
+        .filter(|l| !l.trim().is_empty())
+        .unwrap_or(url)
+        .to_string();
+    let direct = lines.next().unwrap_or("").trim().to_string();
+    if direct.is_empty() {
+        return Err("empty stream URL".to_string());
+    }
+    Ok((title, direct))
 }
 
 /// Download a YouTube URL into `dest_dir` under `prefix.<ext>` using yt-dlp,
 /// so authenticated/PO-token extraction succeeds instead of answering HTTP 403.
-/// Returns the path of the produced audio file.
+/// Returns the path of the produced audio file. Joins the shared yt-dlp launch
+/// queue (permit + spacing gate) and retries rate-limited runs with backoff so
+/// the Spotify fallback cache cannot burst the extractor either.
 pub(crate) async fn download_into(
     url: &str,
     dest_dir: &Path,
     prefix: &str,
     auth: &[std::ffi::OsString],
+    semaphore: &Semaphore,
+    gate: &Arc<Mutex<Instant>>,
 ) -> Result<PathBuf, String> {
     tokio::fs::create_dir_all(dest_dir)
         .await
@@ -806,67 +957,90 @@ pub(crate) async fn download_into(
         .to_string_lossy()
         .into_owned();
 
-    let mut args: Vec<std::ffi::OsString> = vec![
+    let mut base_args: Vec<std::ffi::OsString> = vec![
         "-f".into(),
         "bestaudio[ext=m4a]/bestaudio".into(),
         "--no-playlist".into(),
         "-o".into(),
         template.into(),
     ];
-    args.extend(auth.iter().cloned());
-    args.push(url.to_string().into());
+    base_args.extend(auth.iter().cloned());
 
-    let output = timeout(
-        Duration::from_secs(180),
-        Command::new("yt-dlp").args(&args).output(),
-    )
-    .await
-    .map_err(|_| "download timed out".to_string())?
-    .map_err(|e| format!("yt-dlp: {e}"))?;
+    let permit = semaphore
+        .acquire()
+        .await
+        .map_err(|e| format!("semaphore: {e}"))?;
 
-    if !output.status.success() {
+    let mut last_detail = String::from("unknown error");
+    for attempt in 0..=YTDLP_RATE_LIMIT_RETRIES {
+        gate_ytdlp_launch(gate).await;
+        let mut args = base_args.clone();
+        args.push(url.to_string().into());
+        let output = timeout(
+            Duration::from_secs(180),
+            Command::new("yt-dlp").args(&args).output(),
+        )
+        .await
+        .map_err(|_| "download timed out".to_string())?
+        .map_err(|e| format!("yt-dlp: {e}"))?;
+
+        if output.status.success() {
+            let produced = std::fs::read_dir(dest_dir)
+                .ok()
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| {
+                    let name = p
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                    name.starts_with(prefix) && !name.ends_with(".part")
+                })
+                .max_by_key(|p| p.metadata().ok().and_then(|m| m.modified().ok()));
+            if let Some(path) = produced {
+                return Ok(path);
+            }
+            return Err("yt-dlp produced no file".to_string());
+        }
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let detail = stderr
+        last_detail = stderr
             .lines()
             .rev()
             .find(|l| !l.trim().is_empty())
-            .unwrap_or("unknown error");
-        let hint = if detail.contains("403") || detail.contains("Forbidden") {
-            " (cookies unavailable: set a logged-in cookies.txt in Settings → YouTube)"
-        } else {
-            ""
-        };
-        return Err(format!("yt-dlp download failed: {detail}{hint}"));
+            .unwrap_or("unknown error")
+            .to_string();
+        if is_rate_limited(&stderr) && attempt < YTDLP_RATE_LIMIT_RETRIES {
+            let backoff = YTDLP_RATE_LIMIT_BACKOFF * (1u32 << attempt) as u32;
+            debug!("yt-dlp download rate limited; retrying in {}s", backoff.as_secs());
+            tokio::time::sleep(backoff).await;
+            continue;
+        }
+        break;
     }
-
-    let produced = std::fs::read_dir(dest_dir)
-        .ok()
-        .into_iter()
-        .flatten()
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            let name = p
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            name.starts_with(prefix) && !name.ends_with(".part")
-        })
-        .max_by_key(|p| p.metadata().ok().and_then(|m| m.modified().ok()));
-    match produced {
-        Some(path) => Ok(path),
-        None => Err("yt-dlp produced no file".to_string()),
-    }
+    drop(permit);
+    let hint = if last_detail.contains("403") || last_detail.contains("Forbidden") {
+        " (cookies unavailable: set a logged-in cookies.txt in Settings → YouTube)"
+    } else if last_detail.contains("429") || last_detail.contains("Too Many Requests") {
+        " (YouTube rate limit: wait a moment, then retry)"
+    } else {
+        ""
+    };
+    Err(format!("yt-dlp download failed: {last_detail}{hint}"))
 }
 
 /// Parse `[download] 42.3% of ...` progress lines emitted by yt-dlp with
-/// `--newline` and publish them on the download progress channel.
+/// `--newline` and publish them on the download progress channel. When
+/// `capture` is set (stderr pipe), the raw text is also retained (bounded to
+/// the last few dozen lines) so a failed run can report the real reason.
 async fn spawn_progress_reader<R>(
     reader: R,
     progress_tx: mpsc::UnboundedSender<DownloadProgress>,
     download_id: u64,
     url: String,
     title: String,
+    capture: Option<Arc<std::sync::Mutex<String>>>,
 ) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
@@ -886,8 +1060,41 @@ async fn spawn_progress_reader<R>(
                 rate_bps: fields.rate_bps,
                 eta_secs: fields.eta_secs,
             });
+        } else if let Some(cap) = &capture {
+            let mut guard = cap.lock().unwrap();
+            guard.push_str(&line);
+            guard.push('\n');
+            let mut kept: Vec<&str> = guard.lines().collect();
+            if kept.len() > 40 {
+                kept.drain(..kept.len() - 40);
+            }
+            *guard = format!("{}\n", kept.join("\n"));
         }
     }
+}
+
+/// Last non-empty stderr line captured from a failed yt-dlp run, with a
+/// rate-limit/cookie hint appended when the text matches those failure modes.
+fn ytdlp_failure_detail(capture: &std::sync::Mutex<String>) -> String {
+    let stderr = { capture.lock().unwrap().clone() };
+    let last = stderr
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if last.is_empty() {
+        return String::new();
+    }
+    let hint = if last.contains("403") || last.contains("Forbidden") {
+        " (cookies unavailable: set a logged-in cookies.txt in Settings → YouTube)"
+    } else if last.contains("429") || last.contains("Too Many Requests") {
+        " (YouTube rate limit: wait a moment, then retry)"
+    } else {
+        ""
+    };
+    format!(": {last}{hint}")
 }
 
 struct YtDlpLine {
@@ -1022,6 +1229,7 @@ async fn run_search(
     client: &Innertube,
     query: &str,
     auth_args: Vec<std::ffi::OsString>,
+    gate: Arc<Mutex<Instant>>,
     cancel_rx: oneshot::Receiver<()>,
     _permit: OwnedSemaphorePermit,
 ) -> Vec<YTSearchResult> {
@@ -1031,7 +1239,7 @@ async fn run_search(
     // and fed back to yt-dlp's search extractor with a 10-hit limit.
     if let Some((rest, host)) = match_yt_host(query, &yt_hosts()) {
         let search_arg = format!("{}:{rest}", host.extractor);
-        return run_ytdlp_search(&search_arg, auth_args, cancel_rx).await;
+        return run_ytdlp_search(&search_arg, auth_args, gate, cancel_rx).await;
     }
 
     let search_arg = if query.starts_with("http://") || query.starts_with("https://") {
@@ -1095,6 +1303,7 @@ async fn run_search(
 async fn run_ytdlp_search(
     search_arg: &str,
     auth_args: Vec<std::ffi::OsString>,
+    gate: Arc<Mutex<Instant>>,
     cancel_rx: oneshot::Receiver<()>,
 ) -> Vec<YTSearchResult> {
     let mut args: Vec<std::ffi::OsString> = vec![
@@ -1107,6 +1316,7 @@ async fn run_ytdlp_search(
     args.push(search_arg.to_string().into());
 
     let fetch = async {
+        gate_ytdlp_launch(&gate).await;
         let output =
             match timeout(SEARCH_TIMEOUT, Command::new("yt-dlp").args(&args).output()).await {
                 Ok(res) => res.map_err(|e| format!("yt-dlp: {e}"))?,
@@ -1156,6 +1366,7 @@ async fn run_ytdlp_search(
 async fn run_playlist_fetch(
     url: &str,
     auth_args: Vec<std::ffi::OsString>,
+    gate: Arc<Mutex<Instant>>,
     cancel_rx: oneshot::Receiver<()>,
     _permit: OwnedSemaphorePermit,
 ) -> Vec<YTSearchResult> {
@@ -1168,6 +1379,7 @@ async fn run_playlist_fetch(
     args.push(url.to_string().into());
 
     let fetch = async {
+        gate_ytdlp_launch(&gate).await;
         let output =
             match timeout(SEARCH_TIMEOUT, Command::new("yt-dlp").args(&args).output()).await {
                 Ok(res) => res.map_err(|e| format!("yt-dlp: {e}"))?,

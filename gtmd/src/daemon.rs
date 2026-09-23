@@ -34,11 +34,12 @@ use gtm::shared::ipc::{
 };
 use gtm::shared::playlist::{M3u8Format, PlaylistFormat, PlsFormat};
 use gtm::shared::secret::{
-    DEEZER_ARL, LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, delete_secret, get_secret,
-    set_secret,
+    DEEZER_ARL, LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, TIDAL_CLIENT_ID,
+    TIDAL_TOKEN_KEY, delete_secret, get_secret, set_secret,
 };
 use gtm::shared::spotify::SpotifyTrack;
-use gtm::shared::track::TrackInfo;
+use gtm::shared::tidal::TidalStatus;
+use gtm::shared::track::{StreamInfo, TrackInfo};
 use gtm::shared::wire;
 use gtm::shared::{CoreError, MetadataPatch};
 #[cfg(feature = "pulseaudio")]
@@ -56,7 +57,7 @@ use crate::lastfm::LastfmManager;
 use crate::library::{Library, extract_metadata};
 use crate::lyrics::{LyricsManager, lrc_to_text, meta_from_filename};
 use crate::network;
-use crate::oauth::{OAUTH_TIMEOUT, OauthFlow, bind_callback};
+use crate::oauth::{OAUTH_TIMEOUT, OauthFlow, TidalFlow, bind_callback};
 use crate::podcast::PodcastManager;
 use crate::queue;
 use crate::radio::RadioBrowserManager;
@@ -276,8 +277,18 @@ async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<RemoteResolve
         RemoteKind::Stream { url } => (url.clone(), None),
         #[cfg(feature = "youtube")]
         RemoteKind::YtDlp { url } => {
-            let mut yt = inner.youtube.lock().await;
-            let (_, direct) = yt.resolve_info(url).await.map_err(CoreError::Daemon)?;
+            // Resolve via yt-dlp without holding the `YoutubeManager` mutex
+            // (extraction can take up to SEARCH_TIMEOUT, more under
+            // rate-limit backoff; holding the lock would stall `YtDownload`
+            // until the client's IPC timeout). The shared semaphore + launch
+            // gate still serialize the run against every other yt-dlp site.
+            let (auth, sem, gate) = {
+                let yt = inner.youtube.lock().await;
+                yt.yt_extras()
+            };
+            let (_, direct) = crate::youtube::resolve_info_ytdlp(&sem, &gate, &auth, url)
+                .await
+                .map_err(CoreError::Daemon)?;
             (direct, None)
         }
         #[cfg(not(feature = "youtube"))]
@@ -1025,10 +1036,15 @@ impl Cmd {
         if let Some(label) = ytdlp_label(url) {
             #[cfg(feature = "youtube")]
             {
-                let (title, direct) = match inner.youtube.lock().await.resolve_info(url).await {
-                    Ok(v) => v,
-                    Err(e) => return Ok(DaemonRes::Error { message: e }),
+                let (auth, sem, gate) = {
+                    let yt = inner.youtube.lock().await;
+                    yt.yt_extras()
                 };
+                let (title, direct) =
+                    match crate::youtube::resolve_info_ytdlp(&sem, &gate, &auth, url).await {
+                        Ok(v) => v,
+                        Err(e) => return Ok(DaemonRes::Error { message: e }),
+                    };
                 {
                     let mut state = inner.state.write().await;
                     state.queue.push(TrackInfo {
@@ -1656,6 +1672,7 @@ impl Cmd {
     pub async fn set_sleep_timer(
         inner: &Arc<DaemonInner>,
         minutes: u32,
+        stop_immediately: bool,
     ) -> Result<DaemonRes, CoreError> {
         let total_secs = minutes * 60;
         // Invalidate any previously scheduled timer before arming a new one;
@@ -1664,6 +1681,9 @@ impl Cmd {
             .sleep_gen
             .fetch_add(1, Ordering::SeqCst)
             .wrapping_add(1);
+        // Re-arming supersedes any pending stop-at-track-end from the previous
+        // timer.
+        inner.sleep_stop_at_track_end.store(false, Ordering::SeqCst);
         let event_tx = inner.event_tx.clone();
         let state = inner.state.clone();
 
@@ -1691,25 +1711,40 @@ impl Cmd {
             if inner.sleep_gen.load(Ordering::SeqCst) != timer_gen {
                 return;
             }
+            // With "stop immediately" unchecked and a finite track playing, the
+            // timer defers: playback keeps running until that track ends
+            // naturally, then `AudioEvent::Finished` performs the stop. Radio
+            // and bare stream URLs have no end, so they always stop now.
+            let (endless, status) = {
+                let s = state.read().await;
+                (
+                    s.current_track
+                        .as_ref()
+                        .map(|t| Daemon::path_is_live_stream(&t.path))
+                        .unwrap_or(true),
+                    s.status,
+                )
+            };
+            if !stop_immediately && !endless && status == PlaybackStatus::Playing {
+                inner.sleep_stop_at_track_end.store(true, Ordering::SeqCst);
+                {
+                    let mut s = state.write().await;
+                    s.sleep_timer = None;
+                    s.version += 1;
+                }
+                let _ = event_tx.send(DaemonEvent::Custom {
+                    name: "sleep_timer_deferred".into(),
+                    data: std::collections::HashMap::from([(
+                        "note".into(),
+                        "Stopping at end of current track".into(),
+                    )]),
+                });
+                return;
+            }
             // Expiry must actually silence the output, not just flip the
             // status flag: stop the mixer and any Web (Spotify) stream, then
             // report the state change.
-            {
-                let mut mixer = inner.mixer.lock().await;
-                let _ = mixer.stop();
-                let speed = inner.state.read().await.audio.speed;
-                mixer.set_speed(speed);
-            }
-            inner.stream.lock().await.reset();
-            *inner.crossfade_loaded_for.lock().await = None;
-            {
-                let mut s = state.write().await;
-                s.status = PlaybackStatus::Stopped;
-                s.sleep_timer = None;
-                s.version += 1;
-            }
-            let _ = event_tx.send(DaemonEvent::PlaybackStopped);
-            let _ = event_tx.send(DaemonEvent::SleepTimerExpired);
+            Daemon::sleep_timer_expiry_stop(&inner).await;
         });
 
         Ok(DaemonRes::Ok)
@@ -1719,6 +1754,7 @@ impl Cmd {
         // Bump the generation so the armed countdown (if any) backs out on its
         // next tick instead of stopping playback underneath us.
         inner.sleep_gen.fetch_add(1, Ordering::SeqCst);
+        inner.sleep_stop_at_track_end.store(false, Ordering::SeqCst);
         let mut state = inner.state.write().await;
         state.sleep_timer = None;
         state.version += 1;
@@ -1737,6 +1773,7 @@ impl Cmd {
             state.set_low_power(enabled)?;
         }
         inner.sleep_gen.fetch_add(1, Ordering::SeqCst);
+        inner.sleep_stop_at_track_end.store(false, Ordering::SeqCst);
         if enabled {
             let was_playing = {
                 let state = inner.state.read().await;
@@ -1934,9 +1971,18 @@ impl Yt {
     }
 
     pub async fn resolve_stream(inner: &DaemonInner, url: &str) -> Result<DaemonRes, CoreError> {
-        match inner.youtube.lock().await.resolve_stream(url).await {
-            Ok(info) => Ok(DaemonRes::StreamInfo {
-                info: Box::new(info),
+        let (auth, sem, gate) = {
+            let yt = inner.youtube.lock().await;
+            yt.yt_extras()
+        };
+        match crate::youtube::resolve_stream_ytdlp(&sem, &gate, &auth, url).await {
+            Ok(direct) => Ok(DaemonRes::StreamInfo {
+                info: Box::new(StreamInfo {
+                    url: direct,
+                    title: url.to_string(),
+                    ext: "m4a".to_string(),
+                    duration: 0.0,
+                }),
             }),
             Err(e) => Ok(DaemonRes::Error { message: e }),
         }
@@ -1960,9 +2006,17 @@ async fn spotify_yt_fallback(
             Ok(Some((_, mut results))) if !results.is_empty() => results.remove(0),
             _ => return Err("no youtube results for track".to_string()),
         };
-        let auth = yt.auth_args();
+        let (auth, sem, gate) = yt.yt_extras();
         drop(yt);
-        Daemon::download_to_cache(&inner.config.cache_dir, cache_key, &top.url, auth).await
+        Daemon::download_to_cache(
+            &inner.config.cache_dir,
+            cache_key,
+            &top.url,
+            auth,
+            sem,
+            gate,
+        )
+        .await
     }
 }
 
@@ -2624,6 +2678,100 @@ impl Spotify {
         }
         .map(|bytes| base64::engine::general_purpose::STANDARD.encode(&bytes));
         Ok(DaemonRes::SpotifyImageRes { data })
+    }
+}
+
+/// Tidal integration: daemon-hosted OAuth PKCE link flow, mirroring
+/// `Spotify::oauth_start` but against Tidal's authorize/token endpoints.
+/// The community "web" client id cannot be used as a blank-input fallback
+/// (its redirect is `listen.tidal.com/login/auth`, not loopback), so the flow
+/// requires a client id the user registered with
+/// `http://127.0.0.1:{port}/login` as a Redirect URI — validation is relaxed
+/// (any non-empty id ≤64 chars) to accommodate Tidal's short alphanumeric ids.
+struct Tidal;
+
+impl Tidal {
+    pub async fn oauth_start(
+        inner: &Arc<DaemonInner>,
+        client_id: &str,
+        port: u16,
+    ) -> Result<DaemonRes, CoreError> {
+        // Abort any previous pending flow so its listener socket is freed.
+        if let Some(handle) = inner.oauth_tidal_task.lock().await.take() {
+            handle.abort();
+        }
+
+        let cid = client_id.trim();
+        if cid.is_empty() {
+            return Err(CoreError::Daemon("empty tidal client id".into()));
+        }
+        if cid.len() > 64 || !cid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
+            return Err(CoreError::Daemon(format!(
+                "invalid tidal client id — get one from https://developer.tidal.com and \
+                 list http://127.0.0.1:{port}/login as a Redirect URI \
+                 (127.0.0.1, not localhost) or the link fails silently in the browser"
+            )));
+        }
+        // Persist the client id in the OS keychain so future links can reuse
+        // it without the user pasting it again.
+        set_secret(TIDAL_CLIENT_ID, cid);
+        let flow = TidalFlow::new(cid, port);
+        // Bind the loopback callback server *before* returning the URL so the
+        // browser always opens to a live listener.
+        let listener = flow
+            .listen()
+            .await
+            .map_err(|e| CoreError::Daemon(format!("Tidal callback server: {e}")))?;
+        let url = flow.authorize_url();
+
+        let inner2 = Arc::clone(inner);
+        let handle = tokio::spawn(async move {
+            match flow.wait_token(listener).await {
+                Ok(token) => {
+                    set_secret(TIDAL_TOKEN_KEY, &token);
+                    info!("tidal oauth link complete (token stored)");
+                    *inner2.tidal_error.lock().await = None;
+                }
+                Err(e) => {
+                    warn!("tidal oauth link failed: {e}");
+                    *inner2.tidal_error.lock().await = Some(e);
+                }
+            }
+            let _ = inner2.event_tx.send(DaemonEvent::TidalStatusChanged);
+        });
+        *inner.oauth_tidal_task.lock().await = Some(handle);
+
+        Ok(DaemonRes::TidalOauthStarted { url })
+    }
+
+    pub async fn oauth_cancel(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        if let Some(handle) = inner.oauth_tidal_task.lock().await.take() {
+            handle.abort();
+            info!("tidal oauth link flow cancelled");
+        }
+        Ok(DaemonRes::Ok)
+    }
+
+    pub async fn clear(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        delete_secret(TIDAL_TOKEN_KEY);
+        delete_secret(TIDAL_CLIENT_ID);
+        *inner.tidal_error.lock().await = None;
+        Ok(DaemonRes::TidalStatusRes {
+            status: TidalStatus {
+                linked: false,
+                error: None,
+            },
+        })
+    }
+
+    pub async fn status(inner: &Arc<DaemonInner>) -> Result<DaemonRes, CoreError> {
+        Ok(DaemonRes::TidalStatusRes {
+            status: TidalStatus {
+                linked: get_secret(TIDAL_TOKEN_KEY).is_some(),
+                error: inner.tidal_error.lock().await.clone(),
+            },
+        })
     }
 }
 
@@ -4277,6 +4425,13 @@ struct DaemonInner {
     /// timeout, token-exchange error, …). Cleared on a successful exchange so
     /// the Setup picker can show the reason inline instead of hanging.
     lastfm_error: tokio::sync::Mutex<Option<String>>,
+    /// Pending Tidal OAuth link flow task; kept separate so the Spotify,
+    /// Last.fm, and Tidal flows never abort each other.
+    oauth_tidal_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    /// Tidal link failure surfaced through the next status poll (callback
+    /// timeout, token-exchange error, …). Cleared on a successful exchange so
+    /// the Setup picker can show the reason inline instead of hanging.
+    tidal_error: tokio::sync::Mutex<Option<String>>,
     crossfade_loaded_for: tokio::sync::Mutex<Option<String>>,
     countdown_notified_for: tokio::sync::Mutex<Option<String>>,
     /// Wall-clock instant of the last `PositionChanged` broadcast. The 16ms
@@ -4293,6 +4448,12 @@ struct DaemonInner {
     /// bumps it so any previously scheduled timer observes the mismatch and
     /// backs out without racing the new one; `cancel_sleep_timer` also bumps.
     sleep_gen: Arc<AtomicU64>,
+    /// Set when the sleep timer expires with "stop immediately" disabled and a
+    /// finite track is playing. Playback keeps running until that track ends
+    /// naturally (`AudioEvent::Finished`), at which point the daemon stops and
+    /// reports `SleepTimerExpired` instead of auto-advancing. Cleared whenever
+    /// the user re-arms/cancels the timer or manually starts new playback.
+    sleep_stop_at_track_end: Arc<AtomicBool>,
     /// Monotonic counter bumped on every play/stop path. Crossfade tasks
     /// capture it at spawn time and abort if it has changed, preventing a
     /// stale auto-advance from overwriting a user-initiated playback switch.
@@ -4626,11 +4787,14 @@ impl Daemon {
             oauth_task: tokio::sync::Mutex::new(None),
             oauth_lastfm_task: tokio::sync::Mutex::new(None),
             lastfm_error: tokio::sync::Mutex::new(None),
+            oauth_tidal_task: tokio::sync::Mutex::new(None),
+            tidal_error: tokio::sync::Mutex::new(None),
             crossfade_loaded_for: tokio::sync::Mutex::new(None),
             countdown_notified_for: tokio::sync::Mutex::new(None),
             last_pos_broadcast: tokio::sync::Mutex::new(None),
             icy_title: Arc::new(std::sync::Mutex::new(None)),
             sleep_gen: Arc::new(AtomicU64::new(0)),
+            sleep_stop_at_track_end: Arc::new(AtomicBool::new(false)),
             play_session: Arc::new(AtomicU64::new(0)),
             health: Arc::new(HealthTracker::new(audio_backend_name)),
             active_clients: AtomicUsize::new(0),
@@ -4644,9 +4808,12 @@ impl Daemon {
             sync_progress: Arc::new(SyncProgress::default()),
         });
 
-        // Initialize charts registry with Spotify provider if configured
+        // Initialize charts registry with Spotify provider if configured.
+        // The free (no-auth) providers are always registered so Top Charts
+        // works even before any account is linked.
         {
             let mut charts = inner.charts.lock().await;
+            charts.add_free_defaults();
             let spotify_mgr = inner.spotify.lock().await;
             if spotify_mgr.linked() {
                 charts.add_spotify(inner.spotify.clone());
@@ -5628,6 +5795,12 @@ impl Daemon {
             DaemonReq::LastfmClear => Lastfm::clear(inner).await,
             DaemonReq::LastfmLove => Lastfm::love(inner).await,
             DaemonReq::LastfmUnlove => Lastfm::unlove(inner).await,
+            DaemonReq::TidalOauthStart { client_id, port } => {
+                Tidal::oauth_start(inner, client_id, *port).await
+            }
+            DaemonReq::TidalCancelOauth => Tidal::oauth_cancel(inner).await,
+            DaemonReq::TidalStatus => Tidal::status(inner).await,
+            DaemonReq::TidalClear => Tidal::clear(inner).await,
             DaemonReq::SubsonicConfigure {
                 server,
                 username,
@@ -5699,7 +5872,10 @@ impl Daemon {
             DaemonReq::RadioByCountry { country, limit } => {
                 Radio::by_country(inner, country, *limit).await
             }
-            DaemonReq::SetSleepTimer { minutes } => Cmd::set_sleep_timer(inner, *minutes).await,
+            DaemonReq::SetSleepTimer {
+                minutes,
+                stop_immediately,
+            } => Cmd::set_sleep_timer(inner, *minutes, *stop_immediately).await,
             DaemonReq::CancelSleepTimer => Cmd::cancel_sleep_timer(inner).await,
             DaemonReq::SetLowPower { enabled } => Cmd::set_low_power(inner, *enabled).await,
             DaemonReq::GetLowPower => Cmd::get_low_power(inner).await,
@@ -6102,6 +6278,9 @@ impl Daemon {
 
     async fn stop_playback(inner: &DaemonInner) {
         inner.play_session.fetch_add(1, Ordering::Release);
+        // A pending stop-at-track-end sleep timer no longer applies once the
+        // user has explicitly stopped playback.
+        inner.sleep_stop_at_track_end.store(false, Ordering::SeqCst);
         {
             let mut mixer = inner.mixer.lock().await;
             let _ = mixer.stop();
@@ -6125,6 +6304,57 @@ impl Daemon {
         inner.scrobble.lock().await.start("", 0.0);
         drop(state);
         Self::push_event(inner, DaemonEvent::TrackEnded);
+    }
+
+    /// Shared sleep-timer expiry shutdown: silence the mixer and any Web
+    /// (Spotify/yt-dlp) stream, reset the transport, and report the state
+    /// change. Used by the immediate expiry path and by the deferred
+    /// stop-at-track-end path once the current finite track finishes.
+    async fn sleep_timer_expiry_stop(inner: &DaemonInner) {
+        {
+            let mut mixer = inner.mixer.lock().await;
+            let _ = mixer.stop();
+            let speed = inner.state.read().await.audio.speed;
+            mixer.set_speed(speed);
+        }
+        inner.stream.lock().await.reset();
+        *inner.crossfade_loaded_for.lock().await = None;
+        {
+            let mut s = inner.state.write().await;
+            s.status = PlaybackStatus::Stopped;
+            s.sleep_timer = None;
+            s.version += 1;
+        }
+        Self::push_event(inner, DaemonEvent::PlaybackStopped);
+        Self::push_event(inner, DaemonEvent::SleepTimerExpired);
+    }
+
+    /// Mirrors the client's `is_live_stream`: `radio://` stations and bare
+    /// `http(s)://` stream URLs (LoadStream) have no defined track end, so a
+    /// deferred (stop-at-end-of-track) sleep timer must not wait for one.
+    fn path_is_live_stream(path: &str) -> bool {
+        if path.starts_with("radio://") {
+            return true;
+        }
+        if path.starts_with("http://") || path.starts_with("https://") {
+            let lower = path.to_ascii_lowercase();
+            if lower.contains("youtube") || lower.contains("youtu.be") || lower.contains("googlevideo")
+            {
+                return false;
+            }
+            let host = lower
+                .trim_start_matches("https://")
+                .trim_start_matches("http://")
+                .split(['/', '?', '#'])
+                .next()
+                .unwrap_or("")
+                .trim_start_matches("www.");
+            if host == "deezer.com" || host.ends_with(".deezer.com") {
+                return false;
+            }
+            return true;
+        }
+        false
     }
 
     async fn try_start_crossfade(inner: &DaemonInner, track: &TrackInfo) -> bool {
@@ -6348,6 +6578,16 @@ impl Daemon {
 
         match ev {
             AudioEvent::Position(pos) => {
+                // A deferred (stop-at-track-end) sleep timer is armed and the
+                // current finite track is within the crossfade window: promotion
+                // would revive playback via the standby source, defeating the
+                // deferral. Stop instead — the track's natural end is imminent.
+                if inner.sleep_stop_at_track_end.load(Ordering::SeqCst)
+                    && inner.crossfade_loaded_for.lock().await.is_some()
+                {
+                    Daemon::sleep_timer_expiry_stop(inner).await;
+                    return;
+                }
                 if inner.crossfade_loaded_for.lock().await.is_some()
                     && !inner.mixer.lock().await.is_crossfading()
                 {
@@ -6426,6 +6666,7 @@ impl Daemon {
                     && dur > 0.0
                     && (dur - pos) <= cf.duration_secs as f64 + 0.15
                     && let Some(track) = &next
+                    && !inner.sleep_stop_at_track_end.load(Ordering::SeqCst)
                 {
                     let _ = Self::try_start_crossfade(inner, track).await;
                 }
@@ -6459,6 +6700,12 @@ impl Daemon {
                     tokio::spawn(async move {
                         Self::retry_live_stream(&inner, &path, session).await;
                     });
+                    return;
+                }
+                // Deferred sleep timer: the current finite track just ended
+                // naturally, so stop instead of advancing to the next track.
+                if inner.sleep_stop_at_track_end.swap(false, Ordering::SeqCst) {
+                    Self::sleep_timer_expiry_stop(inner).await;
                     return;
                 }
                 let was_crossfading = inner.crossfade_loaded_for.lock().await.is_some();
@@ -6555,11 +6802,22 @@ impl Daemon {
         prefix: &str,
         url: &str,
         auth: Vec<std::ffi::OsString>,
+        sem: std::sync::Arc<tokio::sync::Semaphore>,
+        gate: std::sync::Arc<tokio::sync::Mutex<std::time::Instant>>,
     ) -> Result<String, String> {
         let max_retries = 3u32;
         let mut last_err = String::new();
         for attempt in 1..=max_retries {
-            match Self::try_cache_download(cache_dir, prefix, url, auth.clone()).await {
+            match Self::try_cache_download(
+                cache_dir,
+                prefix,
+                url,
+                auth.clone(),
+                sem.clone(),
+                gate.clone(),
+            )
+            .await
+            {
                 Ok(path) => return Ok(path),
                 Err(e) => {
                     last_err = e;
@@ -6578,6 +6836,8 @@ impl Daemon {
         prefix: &str,
         url: &str,
         auth: Vec<std::ffi::OsString>,
+        sem: std::sync::Arc<tokio::sync::Semaphore>,
+        gate: std::sync::Arc<tokio::sync::Mutex<std::time::Instant>>,
     ) -> Result<String, String> {
         let dir = cache_dir.join("spotify");
         tokio::fs::create_dir_all(&dir)
@@ -6591,7 +6851,7 @@ impl Daemon {
                 }
             }
         }
-        let path = download_into(url, &dir, prefix, &auth).await?;
+        let path = download_into(url, &dir, prefix, &auth, &sem, &gate).await?;
         Ok(path.to_string_lossy().into_owned())
     }
 }

@@ -14,7 +14,7 @@ use crate::shared::ipc::{CacheKind, DaemonEvent, DaemonRes, HealthReport, SyncKi
 use crate::shared::log::log;
 use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 use crate::shared::radio::{RadioCountry, RadioStation, RadioTag};
-use crate::shared::secret::{SPOTIFY_CLIENT_ID, get_secret, set_secret};
+use crate::shared::secret::{SPOTIFY_CLIENT_ID, TIDAL_CLIENT_ID, get_secret, set_secret};
 use crate::shared::spotify::{
     LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifySearchKind, SpotifyStatus, SpotifyTrack,
 };
@@ -22,6 +22,7 @@ use crate::shared::state::{ThemeMode, TrackSort};
 use crate::shared::subsonic::{
     SubsonicAlbum, SubsonicSearchResults, SubsonicStatus, SubsonicTrack,
 };
+use crate::shared::tidal::{TIDAL_DEFAULT_PORT, TidalStatus};
 use crate::shared::track::{LrcData, LrcLine, Playlist, TrackInfo, YTSearchResult};
 use crate::shared::{CoreError, MAX_SPEED, MAX_VOLUME, MIN_SPEED, MetadataPatch};
 use crossterm::event::{self, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
@@ -232,14 +233,16 @@ fn default_preset_name() -> String {
     "Default".into()
 }
 
-/// Default per-type notification modes: everything Floating.
+/// Default per-type notification modes: everything Footer. The floating
+/// surface is reserved for the Up Next card, so out-of-the-box nothing else
+/// floats; users who want a category to float opt in from the settings.
 fn default_notification_modes() -> std::collections::HashMap<String, String> {
     NotifType::ALL
         .iter()
         .map(|t| {
             (
                 t.as_str().to_string(),
-                NotifMode::Floating.as_str().to_string(),
+                NotifMode::Footer.as_str().to_string(),
             )
         })
         .collect()
@@ -441,11 +444,12 @@ pub enum NotifType {
     Podcast,
     Radio,
     Lastfm,
+    Tidal,
     System,
 }
 
 impl NotifType {
-    pub const ALL: [NotifType; 11] = [
+    pub const ALL: [NotifType; 12] = [
         NotifType::Playback,
         NotifType::Prefs,
         NotifType::NowPlaying,
@@ -456,6 +460,7 @@ impl NotifType {
         NotifType::Podcast,
         NotifType::Radio,
         NotifType::Lastfm,
+        NotifType::Tidal,
         NotifType::System,
     ];
 
@@ -471,6 +476,7 @@ impl NotifType {
             NotifType::Podcast => "Podcast",
             NotifType::Radio => "Radio",
             NotifType::Lastfm => "Last.fm",
+            NotifType::Tidal => "Tidal",
             NotifType::System => "System / Errors",
         }
     }
@@ -487,6 +493,7 @@ impl NotifType {
             NotifType::Podcast => "podcast",
             NotifType::Radio => "radio",
             NotifType::Lastfm => "lastfm",
+            NotifType::Tidal => "tidal",
             NotifType::System => "system",
         }
     }
@@ -503,6 +510,7 @@ impl NotifType {
             "podcast" => NotifType::Podcast,
             "radio" => NotifType::Radio,
             "lastfm" => NotifType::Lastfm,
+            "tidal" => NotifType::Tidal,
             _ => NotifType::System,
         }
     }
@@ -614,6 +622,12 @@ pub struct SleepTimerState {
     pub minutes: u32,
     pub input_mode: bool,
     pub input_buf: String,
+    /// "End playback immediately when the time is up" checkbox (default
+    /// checked). Off defers the stop to the natural end of the current
+    /// finite track; radio/endless streams always stop immediately.
+    pub stop_immediately: bool,
+    /// Focused row within the picker for Up/Down option navigation.
+    pub focus: usize,
 }
 
 pub struct MetadataEditState {
@@ -752,7 +766,7 @@ pub struct DeezerView {
 /// `gtm setup` wizard state, grouped under `App::setup`.
 #[derive(Default)]
 pub struct SetupView {
-    /// Currently highlighted service in the Setup chooser (0..=2).
+    /// Currently highlighted service in the Setup chooser (0..=5).
     pub selection: usize,
     /// Last.fm form fields (masked while typing) and flow state.
     pub lastfm_api_key: String,
@@ -764,12 +778,24 @@ pub struct SetupView {
     /// Authorization URL for manual copy when no browser can be opened.
     pub lastfm_auth_url: Option<String>,
     pub lastfm_error: Option<String>,
+    /// YouTube cookie-file draft for the `YoutubeSetup` form.
+    pub youtube_cookie_input: String,
+    /// Tidal link form fields and flow state (mirrors the Spotify link view).
+    pub tidal_client_id: String,
+    pub tidal_port: String,
+    pub tidal_field: usize,
+    /// True while waiting for the loopback callback after the browser opened.
+    pub tidal_pending: bool,
+    pub tidal_status: Option<TidalStatus>,
+    /// Authorization URL for manual copy when no browser can be opened.
+    pub tidal_url: Option<String>,
+    pub tidal_error: Option<String>,
 }
 
 /// Selected row of the `gtm setup` service chooser.
 pub fn setup_selection(app: &App) -> (usize, &'static str) {
-    let names = ["spotify", "lastfm", "subsonic"];
-    let sel = app.setup.selection.min(2);
+    let names = ["spotify", "lastfm", "subsonic", "deezer", "youtube", "tidal"];
+    let sel = app.setup.selection.min(5);
     (sel, names[sel])
 }
 
@@ -903,6 +929,35 @@ pub struct QueueView {
 }
 
 /// Lyrics pane UI state, grouped under `App::lyrics`.
+/// Which Zen-mode surface is shown. Only one is visible at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZenSurface {
+    /// Enlarged cover art with the track progress centered underneath.
+    Cover,
+    /// Full-screen audio visualizer.
+    Visualizer,
+    /// Full-screen lyrics for the active track.
+    Lyrics,
+}
+
+impl ZenSurface {
+    fn next(self) -> ZenSurface {
+        match self {
+            ZenSurface::Cover => ZenSurface::Visualizer,
+            ZenSurface::Visualizer => ZenSurface::Lyrics,
+            ZenSurface::Lyrics => ZenSurface::Cover,
+        }
+    }
+
+    fn prev(self) -> ZenSurface {
+        match self {
+            ZenSurface::Cover => ZenSurface::Lyrics,
+            ZenSurface::Visualizer => ZenSurface::Cover,
+            ZenSurface::Lyrics => ZenSurface::Visualizer,
+        }
+    }
+}
+
 pub struct LyricsView {
     pub current: Option<LrcData>,
     pub scroll: usize,
@@ -1017,6 +1072,10 @@ pub struct App {
     /// Live download progress (keyed by daemon download id), surfaced in the
     /// footer Download module.
     pub downloads: std::collections::HashMap<u64, DownloadProgressView>,
+    /// URLs with a download in flight. Kept so the YT search list can render
+    /// "Download started" inline on the row (the toast is only for the
+    /// finished event). Cleared when a terminal status arrives.
+    pub downloading_urls: std::collections::HashSet<String>,
     pub pending_delete: Option<(i64, String)>,
     /// Pending prompt for confirmations that require user input
     pub pending_prompt: Option<PendingPrompt>,
@@ -1078,7 +1137,12 @@ pub struct App {
     pub visualizer: AudioVisualizer,
     /// Config-driven component registry (`[extensions]` in the TUI config).
     pub extensions: ExtensionsConfig,
-    pub selected_indices: std::collections::HashSet<usize>,
+    /// Stable selection keys (library file path / chart URI) of the rows
+    /// selected in Select mode. Every mutation and every batch operation
+    /// routes through these keys, and operations re-resolve them against the
+    /// current visible list at call time, so stale or shifted indices can
+    /// never make a batch op act on the wrong track or silently fail.
+    pub selected_keys: std::collections::HashSet<String>,
     pending_motion: Option<char>,
     pub pending_track_ids: Vec<i64>,
     /// Id of a freshly-created playlist awaiting track selection.
@@ -1119,6 +1183,10 @@ pub struct App {
     // stale responses and `id == 0` reuse across different tracks.
     next_cover_gen: u64,
     pub lyrics: LyricsView,
+    /// Zen-mode flag: fullscreen cover/lyrics/visualizer surfaces.
+    pub zen: bool,
+    /// The active Zen-mode surface (only one is rendered at a time).
+    pub zen_surface: ZenSurface,
     pub show_health_panel: bool,
     pub report_health: bool,
     pub health_report: Option<HealthReport>,
@@ -1200,12 +1268,22 @@ enum IpcResult {
     RadioBrowseStations(Vec<RadioStation>),
     ChartsLoaded(Vec<crate::shared::chart::ChartPlaylist>),
     ChartTracksLoaded(Vec<crate::shared::chart::ChartTrack>),
+    ChartsSources(Vec<crate::shared::chart::ChartSource>),
     /// Last.fm link status refreshed after a setup action completes.
     LastfmStatus(Option<LastfmStatus>),
     /// Authorization URL produced by the daemon's Last.fm auth flow.
     LastfmAuthUrl(String),
     /// Hard failure of the Last.fm setup flow.
     LastfmAuthError(String),
+    /// Tidal link status refreshed after a setup action completes.
+    TidalStatus(TidalStatus),
+    /// Authorization URL produced by the daemon's Tidal OAuth flow.
+    TidalOauthUrl(String),
+    /// Hard failure of the Tidal setup flow (daemon could not even start it).
+    TidalOauthError(String),
+    /// The browser could not be opened automatically; the authorize URL is
+    /// rendered inline in the Tidal link picker, so this is recorded quietly.
+    TidalOauthFallback(String),
 }
 
 /// Send a background-task error into the TUI event stream as an Error
@@ -1267,6 +1345,22 @@ fn try_open_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResult>) {
     });
 }
 
+/// Tidal variant of [`try_open_browser`]: same quiet fallback, routed to the
+/// Tidal link picker's inline error slot.
+fn try_open_tidal_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResult>) {
+    let url = url.to_string();
+    let ipc_tx = ipc_tx.clone();
+    tokio::spawn(async move {
+        if open_browser(&url).await {
+            return;
+        }
+        let _ = ipc_tx.send(IpcResult::TidalOauthFallback(
+            "Could not open a browser automatically — copy the authorize URL shown in this picker"
+                .into(),
+        ));
+    });
+}
+
 /// Validate a typed Spotify client id before starting the PKCE flow, and
 /// remind the user of the redirect-URI requirement: when the URI is missing
 /// from the app dashboard the flow fails silently inside the browser (see
@@ -1278,6 +1372,30 @@ fn client_id_error(client_id: &str, port: u16) -> Option<String> {
             "This doesn't look like a valid Spotify Client ID (32 hex chars).\n\
              Also make sure your app lists http://127.0.0.1:{port}/login as a\n\
              Redirect URI (127.0.0.1, not localhost) or the link fails silently."
+        ));
+    }
+    None
+}
+
+/// Validate a typed Tidal client id before starting the PKCE flow. Tidal ids
+/// are short alphanumeric strings (not Spotify's 32-hex format), so the rule
+/// is deliberately relaxed: non-empty and ≤64 chars of ASCII alphanumerics
+/// (dash/underscore tolerated). The redirect-URI requirement is the same as
+/// Spotify's: the id's registered Redirect URI must match the loopback port.
+fn tidal_client_id_error(client_id: &str, port: u16) -> Option<String> {
+    if client_id.trim().is_empty() {
+        return None; // handled by open_tidal_link (form stays open)
+    }
+    if client_id.len() > 64
+        || !client_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Some(format!(
+            "This doesn't look like a valid Tidal Client ID.\n\
+             Get one from https://developer.tidal.com and make sure your app\n\
+             lists http://127.0.0.1:{port}/login as a Redirect URI\n\
+             (127.0.0.1, not localhost) or the link fails silently."
         ));
     }
     None
@@ -1368,7 +1486,7 @@ pub enum TuiCommand {
     RemoveTrack(i64),
     RemoveFromPlaylist(i64, i64),
     FetchLyrics,
-    SetSleepTimer(u32),
+    SetSleepTimer(u32, bool),
     CancelSleepTimer,
     CheckHealth,
 }
@@ -1522,6 +1640,7 @@ impl App {
             browse_detail: None,
             yt_results_cache: Vec::new(),
             downloads: std::collections::HashMap::new(),
+            downloading_urls: std::collections::HashSet::new(),
             playlist_cache: Vec::new(),
             most_played_cache: Vec::new(),
             recently_played_cache: Vec::new(),
@@ -1573,6 +1692,8 @@ impl App {
                 minutes: 30,
                 input_mode: false,
                 input_buf: String::new(),
+                stop_immediately: true,
+                focus: 0,
             },
             np_cover: NowPlayingCoverState {
                 image: None,
@@ -1636,7 +1757,7 @@ impl App {
                 v
             },
             extensions: prefs.extensions.clone(),
-            selected_indices: std::collections::HashSet::new(),
+            selected_keys: std::collections::HashSet::new(),
             pending_motion: None,
             pending_track_ids: Vec::new(),
             pending_playlist_id: None,
@@ -1681,6 +1802,8 @@ impl App {
                 manual_scroll: false,
                 offset_secs: 0.0,
             },
+            zen: false,
+            zen_surface: ZenSurface::Cover,
             show_health_panel: false,
             report_health: false,
             health_report: None,
@@ -1718,6 +1841,22 @@ impl App {
                 self.setup.selection = 2;
                 self.pickers.open(PickerId::SubsonicSetup);
                 self.on_picker_opened(PickerId::SubsonicSetup);
+            }
+            Some("deezer") => {
+                self.setup.selection = 3;
+                self.pickers.open(PickerId::DeezerArl);
+                self.on_picker_opened(PickerId::DeezerArl);
+            }
+            Some("youtube") | Some("yt") => {
+                self.setup.selection = 4;
+                self.pickers.open(PickerId::YoutubeSetup);
+                self.on_picker_opened(PickerId::YoutubeSetup);
+            }
+            Some("tidal") => {
+                self.setup.selection = 5;
+                self.pickers.open(PickerId::TidalLink);
+                self.on_picker_opened(PickerId::TidalLink);
+                self.open_tidal_link();
             }
             _ => {
                 self.pickers.open(PickerId::Setup);
@@ -1782,6 +1921,72 @@ impl App {
                 Err(e) => {
                     let _ = ipc_tx.send(IpcResult::SpotifyOauthError(format!(
                         "Spotify link failed: {e}"
+                    )));
+                }
+            }
+        });
+    }
+
+    /// Kick off the Tidal OAuth browser flow, requesting the authorize URL
+    /// from the daemon. An explicit client id in `setup.tidal_client_id` wins;
+    /// otherwise a previously stored client id is reused. There is no built-in
+    /// fallback id (Tidal's community "web" client id redirects to
+    /// `listen.tidal.com/login/auth`, not a loopback URI), so with neither a
+    /// typed nor a stored id the picker just stays open as a form.
+    pub fn open_tidal_link(&mut self) {
+        let client_id = if self.setup.tidal_client_id.trim().is_empty() {
+            get_secret(TIDAL_CLIENT_ID)
+                .filter(|cid| !cid.trim().is_empty())
+                .unwrap_or_default()
+        } else {
+            self.setup.tidal_client_id.trim().to_string()
+        };
+        if client_id.is_empty() {
+            return;
+        }
+        let port = self
+            .setup
+            .tidal_port
+            .trim()
+            .parse::<u16>()
+            .unwrap_or(TIDAL_DEFAULT_PORT);
+        self.start_tidal_oauth(client_id, port);
+    }
+
+    /// Start the Tidal OAuth PKCE flow for `client_id` on `port` and watch it
+    /// in the background. Validates the client id first; an invalid id or a
+    /// missing redirect-URI registration is reported inline instead of
+    /// silently dying in the browser.
+    fn start_tidal_oauth(&mut self, client_id: String, port: u16) {
+        if let Some(err) = tidal_client_id_error(&client_id, port) {
+            self.setup.tidal_error = Some(err);
+            self.setup.tidal_pending = false;
+            self.setup.tidal_client_id.clear();
+            return;
+        }
+        set_secret(TIDAL_CLIENT_ID, &client_id);
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        self.setup.tidal_client_id.clear();
+        self.setup.tidal_pending = true;
+        self.setup.tidal_url = None;
+        self.setup.tidal_error = None;
+        tokio::spawn(async move {
+            match c.tidal().oauth_start(&client_id, port).await {
+                Ok(url) => {
+                    let _ = ipc_tx.send(IpcResult::TidalOauthUrl(url.clone()));
+                    let _ = ipc_tx.send(IpcResult::Notification(
+                        "Tidal".to_string(),
+                        "Authorize gtm in your browser, then the account links automatically…"
+                            .to_string(),
+                        NotificationKind::Info,
+                        NotifType::Tidal,
+                    ));
+                    try_open_tidal_browser(&url, &ipc_tx);
+                }
+                Err(e) => {
+                    let _ = ipc_tx.send(IpcResult::TidalOauthError(format!(
+                        "Tidal link failed: {e}"
                     )));
                 }
             }
@@ -1997,12 +2202,10 @@ impl App {
         self.theme_index = idx;
         self.apply_reactive();
         save_prefs(&self.current_prefs());
-        self.notify_typed(
+        self.notify_silent(
             "Theme",
             format!("Theme mode: {}", theme_mode_label(&self.theme_mode)),
             NotificationKind::Info,
-            true,
-            NotifType::Prefs,
         );
     }
 
@@ -2072,12 +2275,10 @@ impl App {
         self.reactive_theme_intensity = STEPS[next];
         self.apply_reactive();
         save_prefs(&self.current_prefs());
-        self.notify_titled(
+        self.notify_silent(
             "Reactive Theme",
             format!("Intensity: {:.0}%", self.reactive_theme_intensity * 100.0),
             NotificationKind::Info,
-            true,
-            NotifType::Prefs,
         );
     }
 
@@ -2109,24 +2310,20 @@ impl App {
         } else {
             ""
         };
-        self.notify_titled(
+        self.notify_silent(
             "Theme",
             format!("Theme: {}{}", name, light),
             NotificationKind::Info,
-            true,
-            NotifType::Prefs,
         );
     }
 
     /// Cycle the library track list sort order and persist the selection.
     fn cycle_track_sort(&mut self) {
         self.track_sort = self.track_sort.next();
-        self.notify_titled(
+        self.notify_silent(
             "Sort",
             format!("Sorting by: {}", self.track_sort.label()),
             NotificationKind::Info,
-            true,
-            NotifType::Prefs,
         );
         save_prefs(&self.current_prefs());
     }
@@ -2300,6 +2497,7 @@ impl App {
             let mut had_sync_done = false;
             let mut had_spotify_change = false;
             let mut had_lastfm_change = false;
+            let mut had_tidal_change = false;
             for ev in self.client.drain().await {
                 if let DaemonEvent::PlaybackStarted { .. } = &ev {
                     // The crossfade has begun: drop the Up Next countdown.
@@ -2352,8 +2550,30 @@ impl App {
                 if matches!(ev, DaemonEvent::LastfmStatusChanged) {
                     had_lastfm_change = true;
                 }
+                // The daemon finished the Tidal OAuth link flow — same contract
+                // as Spotify/Last.fm: re-pull the status so the picker can
+                // dismiss or surface the failure inline.
+                if matches!(ev, DaemonEvent::TidalStatusChanged) {
+                    had_tidal_change = true;
+                }
                 // After a background metadata sync finishes, re-pull the
                 // library so scrubbed tags / fetched covers show up live.
+                if let DaemonEvent::Custom { name, data } = &ev
+                    && name == "sleep_timer_deferred"
+                {
+                    // The timer expired with "stop immediately" unchecked: the
+                    // daemon keeps playing until the current track ends. Clear
+                    // the countdown and surface the deferral in the footer.
+                    self.sleep_timer.remaining = None;
+                    let note = data
+                        .get("note")
+                        .cloned()
+                        .unwrap_or_else(|| "Stopping at end of current track".into());
+                    self.footer_notification = Some((
+                        note,
+                        std::time::Instant::now() + std::time::Duration::from_secs(3),
+                    ));
+                }
                 if let DaemonEvent::Custom { name, data } = &ev
                     && name == "sync_done"
                     && data.get("kind").is_some_and(|k| k == "metadata")
@@ -2499,6 +2719,11 @@ impl App {
             // the failure reason), so no client-side callback polling exists.
             if had_lastfm_change {
                 self.refresh_lastfm_status();
+            }
+
+            // Same completion contract for the Tidal link flow.
+            if had_tidal_change {
+                self.refresh_tidal_status();
             }
 
             // Force a state refresh if no events received for 8s to prevent
@@ -2753,10 +2978,31 @@ impl App {
                         self.radio.browse_stations_pending = false;
                     }
                     IpcResult::ChartsLoaded(charts) => {
+                        // A stale selected source index (e.g. Spotify got
+                        // unlinked between fetches) must never crash the
+                        // picker: if the new list has no such row, reset the
+                        // drill-down to Level 0.
+                        if let Some(src) = self.charts.selected_source
+                            && src >= charts.len()
+                        {
+                            self.charts.selected_source = None;
+                            self.charts.selected_chart = None;
+                        }
                         self.charts.charts = charts;
                     }
                     IpcResult::ChartTracksLoaded(tracks) => {
                         self.charts.chart_tracks = tracks;
+                    }
+                    IpcResult::ChartsSources(sources) => {
+                        if let Some(src) = self.charts.selected_source
+                            && src >= sources.len()
+                        {
+                            self.charts.selected_source = None;
+                            self.charts.selected_chart = None;
+                            self.charts.charts.clear();
+                            self.charts.chart_tracks.clear();
+                        }
+                        self.charts.sources = sources;
                     }
                     IpcResult::LastfmStatus(st) => {
                         let was_ready = self.setup.lastfm_status.as_ref().is_some_and(|s| s.ready);
@@ -2820,6 +3066,87 @@ impl App {
                             NotifType::Lastfm,
                         );
                     }
+                    IpcResult::TidalStatus(st) => {
+                        let was_linked = self
+                            .setup
+                            .tidal_status
+                            .as_ref()
+                            .is_some_and(|s| s.linked);
+                        // A daemon-pushed failure (callback timeout, token
+                        // exchange error) while the prompt is waiting must
+                        // surface immediately: stop waiting, keep the picker
+                        // open and render the reason inline (a toast is
+                        // suppressed while a picker is open).
+                        if self.setup.tidal_pending
+                            && let Some(err) = st.error.clone()
+                        {
+                            self.setup.tidal_pending = false;
+                            self.setup.tidal_url = None;
+                            self.setup.tidal_error = Some(err.clone());
+                            self.notify_titled(
+                                "Tidal",
+                                err,
+                                NotificationKind::Error,
+                                false,
+                                NotifType::Tidal,
+                            );
+                        }
+                        self.setup.tidal_status = Some(st);
+                        if self.setup.tidal_status.as_ref().is_some_and(|s| s.linked)
+                            && !was_linked
+                            && self
+                                .pickers
+                                .top()
+                                .is_some_and(|o| o.id == PickerId::TidalLink)
+                        {
+                            self.setup.tidal_pending = false;
+                            self.setup.tidal_url = None;
+                            self.setup.tidal_error = None;
+                            self.notify_titled(
+                                "Tidal",
+                                "Tidal linked — account ready",
+                                NotificationKind::Success,
+                                false,
+                                NotifType::Tidal,
+                            );
+                            self.close_picker();
+                        }
+                    }
+                    IpcResult::TidalOauthUrl(url) => {
+                        // The daemon bound the callback port and started the
+                        // flow before answering, so the URL can be opened
+                        // safely; completion/failure arrives as a pushed status
+                        // event. Here we only surface the URL for display.
+                        self.setup.tidal_url = Some(url);
+                        self.setup.tidal_pending = true;
+                    }
+                    IpcResult::TidalOauthError(e) => {
+                        let e = e.to_string();
+                        self.setup.tidal_pending = false;
+                        self.setup.tidal_error = Some(e.clone());
+                        // Keep the picker open so the error stays visible; Esc
+                        // closes it (clearing the flow state below).
+                        self.notify_titled(
+                            "Tidal",
+                            e,
+                            NotificationKind::Error,
+                            false,
+                            NotifType::Tidal,
+                        );
+                    }
+                    IpcResult::TidalOauthFallback(e) => {
+                        // Browser auto-open failed but the authorize URL is
+                        // already inline in the picker; record quietly.
+                        self.setup.tidal_error = Some(e.clone());
+                        self.setup.tidal_pending = false;
+                        self.notify_titled(
+                            "Tidal",
+                            e,
+                            NotificationKind::Info,
+                            true,
+                            NotifType::Tidal,
+                        );
+                    }
                     IpcResult::LibraryTracks(tracks) => {
                         self.tracks_cache = tracks;
                         self.tracks_cache_gen = self.tracks_cache_gen.wrapping_add(1);
@@ -2863,16 +3190,19 @@ impl App {
                         }
                     }
                     IpcResult::Notification(title, msg, kind, ntype) => {
-                        // Petty flow acknowledgements (add/remove playlist,
-                        // playlist creation hand-off, cache clears) surface in
-                        // the footer or history instead of floating cards that
-                        // interrupt the view.
-                        let trivial = (title == "Playlist"
-                            && (msg.starts_with("Tracks added to playlist")
-                                || msg.starts_with("Removed from playlist")
-                                || msg.starts_with("Created ")))
-                            || title == "Cache";
-                        self.notify_typed(&title, msg, kind, trivial, ntype);
+                        // Petty flow acknowledgements (playlist add/remove,
+                        // cache clears, etc.) must not interrupt: the playlist
+                        // notices surface in the footer as before, while cache
+                        // clears are fully silent and only recorded in history.
+                        if title == "Cache" {
+                            self.notify_silent(&title, msg, kind);
+                        } else {
+                            let trivial = title == "Playlist"
+                                && (msg.starts_with("Tracks added to playlist")
+                                    || msg.starts_with("Removed from playlist")
+                                    || msg.starts_with("Created "));
+                            self.notify_typed(&title, msg, kind, trivial, ntype);
+                        }
                     }
                     IpcResult::Error(e) => {
                         // Generic failures go to the log file and the
@@ -2901,6 +3231,7 @@ impl App {
                             matches!(status.as_str(), "completed" | "failed" | "cancelled");
                         if terminal {
                             self.downloads.remove(&id);
+                            self.downloading_urls.remove(&url);
                         } else {
                             let last = self.downloads.get(&id).cloned();
                             let smooth = if let Some(last) = last
@@ -3423,15 +3754,88 @@ impl App {
         }
     }
 
-    /// System notice that never interrupts with a floating card: it is kept in
-    /// the notifications picker (and the log file for errors) only.
+    /// Keys handled while Zen mode is active. Tab / Shift-Tab cycle the
+    /// fullscreen surface (cover → visualizer → lyrics), `l` toggles the
+    /// lyrics surface (fetching them first when needed), Space toggles
+    /// playback, and z/Esc/q leave Zen mode. Every other key is swallowed
+    /// so browsing/quit motions can't disturb the view.
+    fn zen_key(&mut self, key: event::KeyEvent) {
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('z') => {
+                self.zen = false;
+                self.set_last_action("Leave Zen Mode");
+            }
+            KeyCode::Tab => {
+                self.zen_surface = self.zen_surface.next();
+                self.set_last_action("Zen: Next Surface");
+            }
+            KeyCode::BackTab => {
+                self.zen_surface = self.zen_surface.prev();
+                self.set_last_action("Zen: Prev Surface");
+            }
+            KeyCode::Char('l') => {
+                if self.zen_surface == ZenSurface::Lyrics {
+                    self.zen_surface = ZenSurface::Cover;
+                } else {
+                    self.zen_surface = ZenSurface::Lyrics;
+                    if self.lyrics.current.is_none() && !self.lyrics.fetching {
+                        self.lyrics.fetching = true;
+                        self.send_high(TuiCommand::FetchLyrics);
+                    }
+                }
+            }
+            KeyCode::Char(' ') => match self.state.status {
+                PlaybackStatus::Playing => self.send_high(TuiCommand::Pause),
+                PlaybackStatus::Paused => self.send_high(TuiCommand::PlayPause),
+                PlaybackStatus::Stopped => {
+                    if !self.queue.cache.is_empty() {
+                        let idx = self.queue.cursor.min(self.queue.cache.len() - 1);
+                        let path = self.queue.cache[idx].path.clone();
+                        self.send_high(TuiCommand::Play(path));
+                    }
+                }
+            },
+            _ => {}
+        }
+    }
+
+    /// System notice that is only recorded in history (and the log file for
+    /// errors): it never pops a floating card nor writes a footer line. Used
+    /// for petty confirmations (extension-disabled, theme/sort changes,
+    /// favourite toggles, cache clears, radio saves) that only need an audit
+    /// trail.
     pub fn notify(&mut self, message: impl Into<String>, kind: NotificationKind) {
         let title = match kind {
             NotificationKind::Info | NotificationKind::Warning => "System",
             NotificationKind::Success => "Success",
             NotificationKind::Error => "Error",
         };
-        self.notify_typed(title, message, kind, true, NotifType::System);
+        self.notify_silent(title, message, kind);
+    }
+
+    /// Record a notice in history only — never a floating card, never a
+    /// footer line — regardless of the category's configured mode. Errors are
+    /// still persisted to the log file so failures stay reviewable.
+    pub fn notify_silent(
+        &mut self,
+        title: &str,
+        message: impl Into<String>,
+        kind: NotificationKind,
+    ) {
+        let message = message.into();
+        if kind == NotificationKind::Error {
+            log(&format!("{title}: {message}"));
+        }
+        self.notification_history.insert(
+            0,
+            NotificationRecord {
+                title: title.to_string(),
+                message: message.clone(),
+                kind: kind.clone(),
+                at: std::time::Instant::now(),
+            },
+        );
+        self.notification_history.truncate(50);
     }
 
     pub fn notify_titled(
@@ -4078,9 +4482,39 @@ impl App {
                             self_err(&ipc_tx, format!("spotify status failed: {e}"));
                         }
                     }
+                    match c.tidal().status().await {
+                        Ok(st) => {
+                            let _ = ipc_tx.send(IpcResult::TidalStatus(st));
+                        }
+                        Err(e) => {
+                            self_err(&ipc_tx, format!("tidal status failed: {e}"));
+                        }
+                    }
                 });
             }
             PickerId::LastfmAuth => self.refresh_lastfm_status(),
+            PickerId::TidalLink => {
+                // Seed the form with the previously stored client id (if any)
+                // so re-linking never forces a re-paste.
+                if self.setup.tidal_client_id.trim().is_empty()
+                    && let Some(cid) = get_secret(TIDAL_CLIENT_ID)
+                        .filter(|cid| !cid.trim().is_empty())
+                {
+                    self.setup.tidal_client_id = cid;
+                }
+                if self.setup.tidal_port.trim().is_empty() {
+                    self.setup.tidal_port = TIDAL_DEFAULT_PORT.to_string();
+                }
+                self.refresh_tidal_status();
+            }
+            PickerId::YoutubeSetup => {
+                // Seed the form with the currently configured cookie path so
+                // the user sees whether a file is set (Enter without edits
+                // keeps it, Backspace clears it).
+                if let Some(path) = self.cookie_file.clone() {
+                    self.setup.youtube_cookie_input = path;
+                }
+            }
             _ => {}
         }
     }
@@ -4096,6 +4530,22 @@ impl App {
                 }
                 Err(e) => {
                     self_err(&ipc_tx, format!("last.fm status failed: {e}"));
+                }
+            }
+        });
+    }
+
+    /// Re-pull the Tidal link status into the setup view.
+    pub fn refresh_tidal_status(&mut self) {
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            match c.tidal().status().await {
+                Ok(st) => {
+                    let _ = ipc_tx.send(IpcResult::TidalStatus(st));
+                }
+                Err(e) => {
+                    self_err(&ipc_tx, format!("tidal status failed: {e}"));
                 }
             }
         });
@@ -4464,12 +4914,11 @@ impl App {
         if self.radio.custom.iter().any(|s| {
             s.uuid.as_deref() == Some(&station.id) || s.name.eq_ignore_ascii_case(&station.name)
         }) {
-            self.notify_titled(
+            // Radio save confirmations are fully silent (history only).
+            self.notify_silent(
                 "Radio",
                 format!("Already saved \"{}\"", station.name),
                 NotificationKind::Info,
-                true,
-                NotifType::Prefs,
             );
             return;
         }
@@ -4480,12 +4929,11 @@ impl App {
         ) {
             Ok(_) => {
                 self.refresh_custom_stations();
-                self.notify_titled(
+                // Radio save confirmations are fully silent (history only).
+                self.notify_silent(
                     "Radio",
                     format!("Saved \"{}\" to custom stations", station.name),
                     NotificationKind::Success,
-                    true,
-                    NotifType::Prefs,
                 );
             }
             Err(e) => {
@@ -4631,7 +5079,7 @@ impl App {
     fn reset_library_view(&mut self, category: usize, detail: Option<String>) {
         self.browse_detail = detail;
         self.library_category = category.min(LIBRARY_CATEGORIES.len() - 1);
-        self.selected_indices.clear();
+        self.clear_selection();
         self.playlist_tracks_cache.clear();
         self.spotify.playlist_tracks_cache.clear();
         match self.library_category {
@@ -4639,9 +5087,27 @@ impl App {
             7 => self.fetch_list_tracks(7),
             8 => self.fetch_list_tracks(8),
             9 => self.fetch_list_tracks(9),
+            12 => self.fetch_chart_sources(),
             _ => {}
         }
         self.set_list_pos(0);
+    }
+
+    /// Re-pull the Top Charts source list (free providers always answer; the
+    /// Spotify row appears/disappears with its link state).
+    fn fetch_chart_sources(&mut self) {
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            match c.charts().sources().await {
+                Ok(sources) => {
+                    let _ = ipc_tx.send(IpcResult::ChartsSources(sources));
+                }
+                Err(e) => {
+                    self_err(&ipc_tx, format!("chart sources failed: {e}"));
+                }
+            }
+        });
     }
 
     fn fetch_list_tracks(&mut self, category: usize) {
@@ -4900,6 +5366,16 @@ impl App {
     /// Length of the list currently visible in the library right pane,
     /// depending on the active category and drill-down state.
     pub fn library_list_len(&self) -> usize {
+        if self.library_category == 12 {
+            // Top Charts is a three-level tree: sources / charts / tracks.
+            if self.charts.selected_chart.is_some() {
+                return self.charts.chart_tracks.len();
+            }
+            if self.charts.selected_source.is_some() {
+                return self.charts.charts.len();
+            }
+            return self.charts.sources.len();
+        }
         if self.browse_detail.is_some() {
             if self.library_category == 5 {
                 return self.spotify_playlist_rows();
@@ -4916,6 +5392,117 @@ impl App {
             11 => self.unique_folders().len(),
             _ => self.filtered_tracks().len(),
         }
+    }
+
+    // ─── Select-mode helpers ─────────────────────────────────────────────
+    //
+    // Select mode tracks rows by stable identity (the library file path, or
+    // the playable URI for streamed chart tracks) rather than by list index.
+    // Batch operations re-resolve those keys against the *current* visible
+    // list at call time, so a filter change, a sorted/refreshed list, or an
+    // index shift after a deletion can never make an operation act on the
+    // wrong track or silently fail.
+
+    /// The rows the right pane currently lists, as (selection key, play
+    /// target, library id). Views whose rows aren't tracks (chart source /
+    /// chart levels, Spotify browse, radio stations, playlist overview)
+    /// return an empty vector so Select mode can't act on the wrong list.
+    fn selectable_rows(&self) -> Vec<(String, String, Option<i64>)> {
+        if self.library_category == 12 {
+            // Charts Level 2: a chart's tracks, selected by playable URI.
+            if self.charts.selected_chart.is_some() {
+                return self
+                    .charts
+                    .chart_tracks
+                    .iter()
+                    .map(|t| (t.uri.clone(), t.uri.clone(), None))
+                    .collect();
+            }
+            return Vec::new();
+        }
+        // Spotify browse and radio stations render non-library rows.
+        if self.library_category == 5 || self.library_category == 6 {
+            return Vec::new();
+        }
+        // Playlist overview rows are playlists, not tracks.
+        if self.library_category == 4 && self.browse_detail.is_none() {
+            return Vec::new();
+        }
+        self.filtered_tracks()
+            .iter()
+            .map(|t| (t.path.clone(), t.path.clone(), Some(t.id)))
+            .collect()
+    }
+
+    /// Stable selection key of the row at `index` in the active pane.
+    fn select_key_at(&self, index: usize) -> Option<String> {
+        self.selectable_rows().get(index).map(|r| r.0.clone())
+    }
+
+    /// Play target (path/URI) of the row at `index` in the active pane.
+    fn play_target_at(&self, index: usize) -> Option<String> {
+        self.selectable_rows().get(index).map(|r| r.1.clone())
+    }
+
+    /// True when the row identified by `key` is part of the Select-mode
+    /// selection. Used by the renderer so the highlight follows the stable
+    /// selection even if the visible list shifts.
+    pub fn row_is_selected(&self, key: &str) -> bool {
+        self.selected_keys.contains(key)
+    }
+
+    /// Number of currently selected rows.
+    pub fn selected_count(&self) -> usize {
+        self.selected_keys.len()
+    }
+
+    /// Toggle the row at `index` (Tab in Select mode). Rows without a
+    /// selectable key (non-track views) are ignored.
+    fn toggle_row(&mut self, index: usize) {
+        if let Some(key) = self.select_key_at(index) {
+            if !self.selected_keys.remove(&key) {
+                self.selected_keys.insert(key);
+            }
+        }
+    }
+
+    /// Add the row at `index` to the selection without toggling.
+    fn add_row_selection(&mut self, index: usize) {
+        if let Some(key) = self.select_key_at(index) {
+            self.selected_keys.insert(key);
+        }
+    }
+
+    /// Clear the Select-mode selection entirely.
+    fn clear_selection(&mut self) {
+        self.selected_keys.clear();
+    }
+
+    /// Play targets of every selected row, re-resolved against the active
+    /// pane at call time. Stale keys (rows no longer visible) drop out, so
+    /// the operation acts exactly on what is still there.
+    fn selected_play_targets(&self) -> Vec<String> {
+        if self.selected_keys.is_empty() {
+            return Vec::new();
+        }
+        self.selectable_rows()
+            .into_iter()
+            .filter(|(key, _, _)| self.selected_keys.contains(key))
+            .map(|(_, target, _)| target)
+            .collect()
+    }
+
+    /// Library ids of every selected row. Rows without a library id (streamed
+    /// chart tracks) are skipped.
+    fn selected_library_ids(&self) -> Vec<i64> {
+        if self.selected_keys.is_empty() {
+            return Vec::new();
+        }
+        self.selectable_rows()
+            .into_iter()
+            .filter(|(key, _, _)| self.selected_keys.contains(key))
+            .filter_map(|(_, _, id)| id)
+            .collect()
     }
 
     /// Virtual action rows (Play All / Shuffle) prepended to a Spotify playlist
@@ -5568,13 +6155,9 @@ impl App {
                 });
             }
             TuiCommand::YtDownload { url, title, artist } => {
-                self.notify_titled(
-                    "YouTube",
-                    "Download started…",
-                    NotificationKind::Info,
-                    false,
-                    NotifType::Downloads,
-                );
+                // "Download started" renders inline on the YT list row; the
+                // finished event is the only download toast.
+                self.downloading_urls.insert(url.clone());
                 let ipc = ipc_tx.clone();
                 let client2 = self.client.clone();
                 tokio::spawn(async move {
@@ -5886,11 +6469,11 @@ impl App {
                     }
                 });
             }
-            TuiCommand::SetSleepTimer(minutes) => {
+            TuiCommand::SetSleepTimer(minutes, stop_immediately) => {
                 let client = self.client.clone();
                 let ipc_tx = self.ipc_tx.clone();
                 tokio::spawn(async move {
-                    if let Err(e) = client.set_sleep_timer(minutes).await {
+                    if let Err(e) = client.set_sleep_timer(minutes, stop_immediately).await {
                         let _ = ipc_tx.send(IpcResult::Error(e.to_string()));
                     }
                 });
@@ -5939,7 +6522,7 @@ impl App {
             PickerId::YTSearch => self.yt_results_cache.len().saturating_sub(1),
             PickerId::SearchLibrary => self.search_library_picks().len().saturating_sub(1),
             PickerId::Equalizer => EQ_PRESETS.len().saturating_sub(1),
-            PickerId::SleepTimer => 6,
+            PickerId::SleepTimer => 8,
             PickerId::Crossfade => 13,
             PickerId::VisualizerPreset => VisualizerPreset::all().len().saturating_sub(1),
             PickerId::FooterPreset => self.footer_presets.len().saturating_sub(1),
@@ -6009,7 +6592,7 @@ impl App {
             PickerId::YTSearch => self.yt_results_cache.len(),
             PickerId::SearchLibrary => self.search_library_picks().len(),
             PickerId::Equalizer => EQ_PRESETS.len(),
-            PickerId::SleepTimer => 7,
+            PickerId::SleepTimer => 9,
             PickerId::Crossfade => 14,
             PickerId::VisualizerPreset => VisualizerPreset::all().len(),
             PickerId::FooterPreset => self.footer_presets.len(),
@@ -6342,21 +6925,19 @@ impl App {
                                 });
                             }
                             PromptType::MultiselectAddToQueue => {
-                                let tracks = self.filtered_tracks();
-                                let indices: Vec<usize> =
-                                    self.selected_indices.iter().copied().collect();
+                                // Resolve the selection against the current
+                                // pane so a shifted list can't queue the
+                                // wrong tracks (or none).
+                                let targets = self.selected_play_targets();
                                 let mut added = 0;
-                                for idx in indices {
-                                    if let Some(track) = tracks.get(idx) {
-                                        let c = self.client.clone();
-                                        let path = track.path.clone();
-                                        tokio::spawn(async move {
-                                            let _ = c.queue().add(&path, None).await;
-                                        });
-                                        added += 1;
-                                    }
+                                for target in targets {
+                                    let c = self.client.clone();
+                                    tokio::spawn(async move {
+                                        let _ = c.queue().add(&target, None).await;
+                                    });
+                                    added += 1;
                                 }
-                                self.selected_indices.clear();
+                                self.clear_selection();
                                 self.multiselect_mode = false;
                                 self.fetch_queue().await;
                                 self.footer_notification = Some((
@@ -6365,16 +6946,11 @@ impl App {
                                 ));
                             }
                             PromptType::MultiselectAddToPlaylist => {
-                                let tracks = self.filtered_tracks();
-                                let indices: Vec<i64> = self
-                                    .selected_indices
-                                    .iter()
-                                    .filter_map(|i| tracks.get(*i).map(|t| t.id))
-                                    .collect();
+                                let indices = self.selected_library_ids();
+                                self.clear_selection();
+                                self.multiselect_mode = false;
                                 if !indices.is_empty() {
                                     self.pending_track_ids = indices;
-                                    self.selected_indices.clear();
-                                    self.multiselect_mode = false;
                                     self.playlist_creating = false;
                                     self.pickers.open(PickerId::PlaylistSelect);
                                 }
@@ -6394,7 +6970,7 @@ impl App {
                                 {
                                     let _ = ipc_tx.send(IpcResult::LibraryTracks(*tracks));
                                 }
-                                self.selected_indices.clear();
+                                self.clear_selection();
                                 self.multiselect_mode = false;
                                 let msg = if deleted == 1 {
                                     "Deleted 1 track".to_string()
@@ -6443,6 +7019,14 @@ impl App {
                     self.show_health_panel = false;
                     return true;
                 }
+                // Zen mode: only a small set of keys acts — Tab/Shift-Tab
+                // cycle the surface, l toggles lyrics, Space toggles
+                // playback, and z/Esc/q leave. Everything else is swallowed
+                // so the fullscreen surfaces are never disturbed.
+                if self.zen {
+                    self.zen_key(key);
+                    return true;
+                }
                 // Handle gg (vim-style double-press) for jump to start
                 if key.code == KeyCode::Char('g') && !self.library_pane_focus {
                     if self.pending_motion == Some('g') {
@@ -6460,14 +7044,12 @@ impl App {
                 // In multiselect mode, Tab toggles selection and advances
                 if key.code == KeyCode::Tab && self.multiselect_mode && !self.library_pane_focus {
                     let pos = self.list_pos();
-                    if self.selected_indices.contains(&pos) {
-                        self.selected_indices.remove(&pos);
-                    } else {
-                        self.selected_indices.insert(pos);
-                    }
-                    let max = self.filtered_tracks().len().saturating_sub(1);
+                    self.toggle_row(pos);
+                    // Advance by one row in the *current* pane list (track
+                    // lists, playlist tracks, chart tracks alike).
+                    let max = self.library_list_len().saturating_sub(1);
                     self.set_list_pos((pos + 1).min(max));
-                    let count = self.selected_indices.len();
+                    let count = self.selected_count();
                     self.notify_typed(
                         "System",
                         format!("{count} selected"),
@@ -6550,10 +7132,8 @@ impl App {
                     }
                     Some(KeyboardAction::Next) => {
                         self.set_last_action("Next");
-                        if self.multiselect_mode && !self.selected_indices.is_empty() {
-                            let indices: Vec<usize> =
-                                self.selected_indices.iter().copied().collect();
-                            let count = indices.len();
+                        if self.multiselect_mode && self.selected_count() > 0 {
+                            let count = self.selected_count();
                             self.pending_prompt = Some(PendingPrompt {
                                 message: format!("Queue {count} selected track(s)? [y/N]"),
                                 confirm_keys: vec![
@@ -6575,10 +7155,8 @@ impl App {
                     }
                     Some(KeyboardAction::Prev) => {
                         self.set_last_action("Previous");
-                        if self.multiselect_mode && !self.selected_indices.is_empty() {
-                            let indices: Vec<usize> =
-                                self.selected_indices.iter().copied().collect();
-                            let count = indices.len();
+                        if self.multiselect_mode && self.selected_count() > 0 {
+                            let count = self.selected_count();
                             self.pending_prompt = Some(PendingPrompt {
                                 message: format!("Queue {count} selected track(s)? [y/N]"),
                                 confirm_keys: vec![
@@ -6638,6 +7216,21 @@ impl App {
                             msg.to_string(),
                             std::time::Instant::now() + std::time::Duration::from_secs(2),
                         ));
+                    }
+                    Some(KeyboardAction::ToggleZen) => {
+                        self.set_last_action(if self.zen { "Leave Zen Mode" } else { "Zen Mode" });
+                        self.zen = !self.zen;
+                        if self.zen {
+                            // One surface at a time: start on the lyrics
+                            // surface when lyrics were already open,
+                            // otherwise the enlarged cover + progress.
+                            self.zen_surface = if self.lyrics.show {
+                                ZenSurface::Lyrics
+                            } else {
+                                ZenSurface::Cover
+                            };
+                            self.dismiss_track_popup();
+                        }
                     }
                     Some(KeyboardAction::SeekForward) => {
                         self.set_last_action("Seek Forward");
@@ -6792,18 +7385,30 @@ impl App {
                                 }
                             }
                             _ => {
+                                if self.library_category == 12 {
+                                    // Chart tracks are streamed — they have no
+                                    // library id to favourite.
+                                    self.notify_typed(
+                                        "System",
+                                        "Chart tracks are streamed \u{2014} not in your library",
+                                        NotificationKind::Info,
+                                        false,
+                                        NotifType::NowPlaying,
+                                    );
+                                    return true;
+                                }
                                 // Track row (flat list / detail / Liked): toggle the
                                 // highlighted track, or the whole selection in
                                 // multiselect mode (excluding the highlighted row).
                                 let filtered = self.filtered_tracks();
-                                if self.multiselect_mode && !self.selected_indices.is_empty() {
+                                if self.multiselect_mode && self.selected_count() > 0 {
                                     let pos = self.list_pos();
+                                    let cursor_id =
+                                        self.selectable_rows().get(pos).and_then(|r| r.2);
                                     let ids: Vec<i64> = self
-                                        .selected_indices
-                                        .iter()
-                                        .copied()
-                                        .filter(|&i| i != pos)
-                                        .filter_map(|i| filtered.get(i).map(|t| t.id))
+                                        .selected_library_ids()
+                                        .into_iter()
+                                        .filter(|&id| Some(id) != cursor_id)
                                         .collect();
                                     if ids.is_empty() {
                                         (Vec::new(), String::new())
@@ -6844,12 +7449,10 @@ impl App {
                         }
                         if !label.is_empty() {
                             let verb = if new_fav { "added to" } else { "removed from" };
-                            self.notify_typed(
+                            self.notify_silent(
                                 "System",
                                 format!("{label}: {verb} favourites"),
                                 NotificationKind::Info,
-                                false,
-                                NotifType::Playback,
                             );
                         }
                     }
@@ -7044,7 +7647,7 @@ impl App {
                             let pos = self.list_pos().saturating_sub(1);
                             self.set_list_pos(pos);
                             self.update_track_popup();
-                            self.selected_indices.insert(pos);
+                            self.add_row_selection(pos);
                         }
                     }
                     Some(KeyboardAction::MultiselectDown) => {
@@ -7054,7 +7657,7 @@ impl App {
                             self.set_list_pos(pos);
                             self.update_track_popup();
                             self.preload_upcoming_covers();
-                            self.selected_indices.insert(pos);
+                            self.add_row_selection(pos);
                         }
                     }
                     Some(KeyboardAction::Top) => {
@@ -7356,23 +7959,30 @@ impl App {
                                         prompt_type: PromptType::MultiselectDelete(ids),
                                     });
                                 }
+                            } else if self.library_category == 12 {
+                                // Chart tracks are streamed — nothing in the
+                                // library to delete.
+                                self.notify_typed(
+                                    "System",
+                                    "Charts are streamed \u{2014} not in your library",
+                                    NotificationKind::Info,
+                                    false,
+                                    NotifType::NowPlaying,
+                                );
                             } else {
                                 let tracks = self.filtered_tracks();
                                 let pos = self.list_pos();
-                                let selected: Vec<usize> =
-                                    if self.multiselect_mode && !self.selected_indices.is_empty() {
-                                        self.selected_indices
-                                            .iter()
-                                            .copied()
-                                            .filter(|&i| i != pos)
-                                            .collect()
-                                    } else {
-                                        Vec::new()
-                                    };
-                                if self.multiselect_mode && !selected.is_empty() {
-                                    let ids: Vec<i64> = selected
-                                        .iter()
-                                        .filter_map(|&i| tracks.get(i).map(|t| t.id))
+                                if self.multiselect_mode && self.selected_count() > 0 {
+                                    // Batch delete of the selection (minus the
+                                    // highlighted row, as before), re-resolved
+                                    // by stable key so a shifted list can't
+                                    // delete the wrong tracks.
+                                    let cursor_id =
+                                        self.selectable_rows().get(pos).and_then(|r| r.2);
+                                    let ids: Vec<i64> = self
+                                        .selected_library_ids()
+                                        .into_iter()
+                                        .filter(|&id| Some(id) != cursor_id)
                                         .collect();
                                     if !ids.is_empty() {
                                         self.pending_prompt = Some(PendingPrompt {
@@ -7420,9 +8030,21 @@ impl App {
                     }
                     Some(KeyboardAction::ToggleMultiselect) => {
                         if !self.library_pane_focus {
+                            // Charts Level 0/1 list sources/charts, not tracks —
+                            // there is nothing to select until a chart opens.
+                            if self.library_category == 12 && self.charts.selected_chart.is_none() {
+                                self.notify_typed(
+                                    "System",
+                                    "Select a chart first to multiselect its tracks",
+                                    NotificationKind::Info,
+                                    false,
+                                    NotifType::NowPlaying,
+                                );
+                                return true;
+                            }
                             self.multiselect_mode = !self.multiselect_mode;
                             if !self.multiselect_mode {
-                                self.selected_indices.clear();
+                                self.clear_selection();
                             }
                             let msg = if self.multiselect_mode {
                                 "Multiselect ON"
@@ -7469,15 +8091,8 @@ impl App {
                                     std::time::Instant::now() + std::time::Duration::from_secs(2),
                                 ));
                             } else {
-                                let tracks = self.filtered_tracks();
-                                let indices: Vec<usize> =
-                                    if self.multiselect_mode && !self.selected_indices.is_empty() {
-                                        self.selected_indices.iter().copied().collect()
-                                    } else {
-                                        vec![self.list_pos()]
-                                    };
-                                if self.multiselect_mode && !self.selected_indices.is_empty() {
-                                    let count = indices.len();
+                                let count = self.selected_count();
+                                if self.multiselect_mode && count > 0 {
                                     self.pending_prompt = Some(PendingPrompt {
                                         message: format!("Add {count} tracks to queue? [y/N]"),
                                         confirm_keys: vec![
@@ -7494,16 +8109,15 @@ impl App {
                                         prompt_type: PromptType::MultiselectAddToQueue,
                                     });
                                 } else {
+                                    // Single row: its play target — the library
+                                    // path or the streamed chart URI.
                                     let mut added = 0;
-                                    for idx in indices {
-                                        if let Some(track) = tracks.get(idx) {
-                                            let c = self.client.clone();
-                                            let path = track.path.clone();
-                                            tokio::spawn(async move {
-                                                let _ = c.queue().add(&path, None).await;
-                                            });
-                                            added += 1;
-                                        }
+                                    if let Some(target) = self.play_target_at(self.list_pos()) {
+                                        let c = self.client.clone();
+                                        tokio::spawn(async move {
+                                            let _ = c.queue().add(&target, None).await;
+                                        });
+                                        added += 1;
                                     }
                                     self.fetch_queue().await;
                                     self.footer_notification = Some((
@@ -7535,12 +8149,11 @@ impl App {
                                 // Album/artist row: add every cached track in
                                 // the album/artist to the playlist.
                                 ids
-                            } else if self.multiselect_mode && !self.selected_indices.is_empty() {
-                                let tracks = self.filtered_tracks();
-                                self.selected_indices
-                                    .iter()
-                                    .filter_map(|i| tracks.get(*i).map(|t| t.id))
-                                    .collect()
+                            } else if self.multiselect_mode && self.selected_count() > 0 {
+                                // Re-resolve the selection by stable key; only
+                                // library tracks (which have an id) can be put
+                                // into a playlist.
+                                self.selected_library_ids()
                             } else {
                                 let tracks = self.filtered_tracks();
                                 tracks
@@ -7556,7 +8169,17 @@ impl App {
                                     self.playlist_creating = false;
                                     self.pickers.open(PickerId::PlaylistSelect);
                                 }
-                            } else if self.multiselect_mode && !self.selected_indices.is_empty() {
+                            } else if self.multiselect_mode && self.selected_count() > 0 {
+                                if indices.is_empty() {
+                                    self.notify_typed(
+                                        "System",
+                                        "Selected tracks are streamed \u{2014} only library tracks can go into playlists",
+                                        NotificationKind::Info,
+                                        false,
+                                        NotifType::NowPlaying,
+                                    );
+                                    return true;
+                                }
                                 let count = indices.len();
                                 self.pending_prompt = Some(PendingPrompt {
                                     message: format!("Add {count} tracks to playlist? [y/N]"),
@@ -7577,6 +8200,14 @@ impl App {
                                 self.pending_track_ids = indices;
                                 self.playlist_creating = false;
                                 self.pickers.open(PickerId::PlaylistSelect);
+                            } else if self.library_category == 12 {
+                                self.notify_typed(
+                                    "System",
+                                    "Chart tracks are streamed \u{2014} not in your library",
+                                    NotificationKind::Info,
+                                    false,
+                                    NotifType::NowPlaying,
+                                );
                             }
                         }
                     }
@@ -7596,28 +8227,34 @@ impl App {
                                     let client = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
                                     let pos = self.list_pos();
-                                    let indices: Vec<usize> = if self.multiselect_mode
-                                        && !self.selected_indices.is_empty()
+                                    // Batch remove re-resolved by stable key so a
+                                    // shifted playlist list can't remove the
+                                    // wrong rows.
+                                    let ids: Vec<i64> = if self.multiselect_mode
+                                        && self.selected_count() > 0
                                     {
-                                        self.selected_indices
-                                            .iter()
-                                            .copied()
-                                            .filter(|&i| i != pos)
+                                        let cursor_id =
+                                            self.selectable_rows().get(pos).and_then(|r| r.2);
+                                        self.selected_library_ids()
+                                            .into_iter()
+                                            .filter(|&id| Some(id) != cursor_id)
                                             .collect()
                                     } else {
-                                        vec![pos]
+                                        filtered
+                                            .get(pos)
+                                            .map(|t| vec![t.id])
+                                            .unwrap_or_default()
                                     };
-                                    if indices.is_empty() {
+                                    if ids.is_empty() {
                                         return true;
                                     }
                                     let mut removed = 0;
-                                    for idx in indices {
-                                        if let Some(t) = filtered.get(idx)
-                                            && client
-                                                .library()
-                                                .remove_from_playlist(playlist_id, t.id)
-                                                .await
-                                                .is_ok()
+                                    for id in ids {
+                                        if client
+                                            .library()
+                                            .remove_from_playlist(playlist_id, id)
+                                            .await
+                                            .is_ok()
                                         {
                                             removed += 1;
                                         }
@@ -7633,7 +8270,7 @@ impl App {
                                         {
                                             let _ = ipc_tx.send(IpcResult::PlaylistTracks(*tracks));
                                         }
-                                        self.selected_indices.clear();
+                                        self.clear_selection();
                                         self.multiselect_mode = false;
                                         let msg = if removed == 1 {
                                             "Removed from playlist".to_string()
@@ -7674,6 +8311,16 @@ impl App {
                                         prompt_type: PromptType::RemoveCustomRadio(station.name),
                                     });
                                 }
+                            } else if self.library_category == 12 {
+                                // Chart tracks are streamed — nothing in the
+                                // library to remove.
+                                self.notify_typed(
+                                    "System",
+                                    "Charts are streamed \u{2014} not in your library",
+                                    NotificationKind::Info,
+                                    false,
+                                    NotifType::NowPlaying,
+                                );
                             } else {
                                 self.notify_typed(
                                     "System",
@@ -7707,6 +8354,18 @@ impl App {
                                     }
                                     return true;
                                 }
+                                return true;
+                            }
+                            if self.library_category == 12 {
+                                // Chart tracks are streamed — they have no
+                                // library metadata to edit.
+                                self.notify_typed(
+                                    "System",
+                                    "Chart tracks are streamed \u{2014} not in your library",
+                                    NotificationKind::Info,
+                                    false,
+                                    NotifType::NowPlaying,
+                                );
                                 return true;
                             }
                             let ids = if self.library_category == 2 || self.library_category == 3 {
@@ -7805,10 +8464,13 @@ impl App {
                                         self.charts.chart_tracks.clear();
                                         self.set_list_pos(0);
                                     } else if self.charts.selected_source.is_some() {
-                                        // Level 1 -> Level 0
+                                        // Level 1 -> Level 0: refetch so a
+                                        // freshly linked Spotify shows up.
                                         self.charts.selected_source = None;
                                         self.charts.charts.clear();
+                                        self.charts.chart_tracks.clear();
                                         self.set_list_pos(0);
+                                        self.fetch_chart_sources();
                                     }
                                 }
                             }
@@ -7848,6 +8510,12 @@ impl App {
                     self.spotify.oauth_pending = false;
                     self.spotify.oauth_url = None;
                     self.spotify.oauth_error = None;
+                }
+                PickerId::TidalLink => {
+                    // Closing the link picker ends any pending/cancelled flow.
+                    self.setup.tidal_pending = false;
+                    self.setup.tidal_url = None;
+                    self.setup.tidal_error = None;
                 }
                 PickerId::SpotifySearch => self.spotify.search_results.clear(),
                 PickerId::EditMetadata => {
@@ -8171,32 +8839,30 @@ impl App {
                     self.sleep_timer.minutes = 30;
                     self.sleep_timer.input_mode = false;
                     self.sleep_timer.input_buf.clear();
+                    self.sleep_timer.focus = 0;
                     self.pickers.close_top();
                     return;
                 }
-                // Arrows adjust the sleep time: Up/Down step ±5 min, Left/Right
-                // leave the picker like Esc.
-                KeyCode::Left | KeyCode::Right => {
-                    self.sleep_timer.remaining = None;
-                    self.sleep_timer.minutes = 30;
-                    self.sleep_timer.input_mode = false;
-                    self.sleep_timer.input_buf.clear();
-                    self.pickers.close_top();
-                    return;
-                }
+                // Up/Down (and vim j/k) navigate the option rows: the time
+                // slider, the seven quick presets, then the immediate-stop
+                // checkbox. They never adjust the time.
                 KeyCode::Up | KeyCode::Char('j') => {
-                    self.sleep_timer.minutes = (self.sleep_timer.minutes + 5).min(180);
+                    let n = 9;
+                    self.sleep_timer.focus =
+                        (self.sleep_timer.focus + n - 1) % n;
                     return;
                 }
                 KeyCode::Down | KeyCode::Char('k') => {
+                    let n = 9;
+                    self.sleep_timer.focus = (self.sleep_timer.focus + 1) % n;
+                    return;
+                }
+                // Side arrows adjust the time like h/l do.
+                KeyCode::Left | KeyCode::Char('h') => {
                     self.sleep_timer.minutes = self.sleep_timer.minutes.saturating_sub(5);
                     return;
                 }
-                KeyCode::Char('h') => {
-                    self.sleep_timer.minutes = self.sleep_timer.minutes.saturating_sub(5);
-                    return;
-                }
-                KeyCode::Char('l') => {
+                KeyCode::Right | KeyCode::Char('l') => {
                     self.sleep_timer.minutes = (self.sleep_timer.minutes + 5).min(180);
                     return;
                 }
@@ -8209,14 +8875,35 @@ impl App {
                     return;
                 }
                 KeyCode::Enter => {
+                    // Row 8 is the immediate-stop checkbox: Enter toggles it
+                    // and keeps the picker open.
+                    if self.sleep_timer.focus == 8 {
+                        self.sleep_timer.stop_immediately = !self.sleep_timer.stop_immediately;
+                        return;
+                    }
+                    // Rows 1..=7 are the quick presets: selecting one sets the
+                    // minutes. Row 0 (slider) uses the current minutes.
+                    if (1..=7).contains(&self.sleep_timer.focus) {
+                        let presets = [5u32, 10, 15, 30, 60, 90, 120];
+                        if let Some(&m) = presets.get(self.sleep_timer.focus - 1) {
+                            self.sleep_timer.minutes = m;
+                        }
+                    }
                     let mins = self.sleep_timer.minutes;
+                    let stop_now = self.sleep_timer.stop_immediately;
                     self.sleep_timer.remaining = Some(mins as u64);
-                    self.send_high(TuiCommand::SetSleepTimer(mins));
+                    self.send_high(TuiCommand::SetSleepTimer(mins, stop_now));
                     self.footer_notification = Some((
                         format!("Sleep timer set: {} min", mins),
                         std::time::Instant::now() + std::time::Duration::from_secs(2),
                     ));
                     self.pickers.close_top();
+                    return;
+                }
+                KeyCode::Char(' ') => {
+                    if self.sleep_timer.focus == 8 {
+                        self.sleep_timer.stop_immediately = !self.sleep_timer.stop_immediately;
+                    }
                     return;
                 }
                 KeyCode::Char('i') => {
@@ -8936,7 +9623,7 @@ impl App {
         if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::Setup)) {
             match key.code {
                 KeyCode::Up | KeyCode::Down => {
-                    let n = 3;
+                    let n = 6;
                     self.setup.selection = (self.setup.selection as i32
                         + if key.code == KeyCode::Down { 1 } else { -1 })
                     .rem_euclid(n) as usize;
@@ -9066,6 +9753,50 @@ impl App {
                         ("Deezer ARL cleared".to_string(), NotificationKind::Info)
                     };
                     self.notify_typed("Deezer", msg, kind, false, NotifType::Prefs);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        // ─── YouTube cookie-file form ───
+        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::YoutubeSetup)) {
+            match key.code {
+                KeyCode::Char(c) => {
+                    if !c.is_control() {
+                        self.setup.youtube_cookie_input.push(c);
+                    }
+                }
+                KeyCode::Backspace => {
+                    self.setup.youtube_cookie_input.pop();
+                }
+                KeyCode::Esc => {
+                    self.pickers.close_top();
+                }
+                KeyCode::Enter => {
+                    let path = self.setup.youtube_cookie_input.clone();
+                    let trimmed = path.trim();
+                    let new_path = if trimmed.is_empty() {
+                        None
+                    } else {
+                        Some(trimmed.to_string())
+                    };
+                    self.cookie_file = new_path.clone();
+                    let c = self.client.clone();
+                    let cf = new_path.clone();
+                    let display = new_path
+                        .clone()
+                        .unwrap_or_else(|| "(none)".to_string());
+                    self.pickers.close_top();
+                    tokio::spawn(async move {
+                        let _ = c.yt().set_config(None, cf, None, None, None).await;
+                    });
+                    let (msg, kind) = if trimmed.is_empty() {
+                        ("Cookie file cleared".to_string(), NotificationKind::Info)
+                    } else {
+                        (format!("Cookie file: {display}"), NotificationKind::Info)
+                    };
+                    self.notify_typed("System", msg, kind, true, NotifType::Prefs);
                 }
                 _ => {}
             }
@@ -9763,6 +10494,13 @@ impl App {
                             // the daemon reports the link completed.
                             self.start_spotify_oauth(client_id, port);
                         }
+                        PickerId::TidalLink => {
+                            // Start the flow with the typed client id (or the
+                            // previously stored one). Unlike Spotify there is
+                            // no built-in fallback id, so an empty form stays
+                            // open for input.
+                            self.open_tidal_link();
+                        }
                         PickerId::Queue => {
                             if !self.queue.cache.is_empty() {
                                 let idx = top.selected.min(self.queue.cache.len() - 1);
@@ -9948,6 +10686,7 @@ impl App {
                                 } else if action == "eq" {
                                     self.pickers.open(PickerId::Equalizer);
                                 } else if action == "sleeptimer" {
+                                    self.sleep_timer.focus = 0;
                                     self.pickers.open(PickerId::SleepTimer);
                                 } else if action == "themepicker" {
                                     self.pickers.open_with_selection(
@@ -10056,7 +10795,7 @@ impl App {
                                     if !self.library_pane_focus {
                                         self.multiselect_mode = !self.multiselect_mode;
                                         if !self.multiselect_mode {
-                                            self.selected_indices.clear();
+                                            self.clear_selection();
                                         }
                                         let msg = if self.multiselect_mode {
                                             "Multiselect ON: use v/a/x to queue"
@@ -10071,24 +10810,24 @@ impl App {
                                     }
                                 } else if action == "add to queue" {
                                     if !self.library_pane_focus {
-                                        let tracks = self.filtered_tracks();
-                                        let indices: Vec<usize> = if self.multiselect_mode
-                                            && !self.selected_indices.is_empty()
+                                        // Single row: its play target. Batch:
+                                        // the whole key-based selection.
+                                        let targets = if self.multiselect_mode
+                                            && self.selected_count() > 0
                                         {
-                                            self.selected_indices.iter().copied().collect()
+                                            self.selected_play_targets()
                                         } else {
-                                            vec![self.list_pos()]
+                                            self.play_target_at(self.list_pos())
+                                                .into_iter()
+                                                .collect()
                                         };
                                         let mut added = 0;
-                                        for idx in indices {
-                                            if let Some(track) = tracks.get(idx) {
-                                                let c = self.client.clone();
-                                                let path = track.path.clone();
-                                                tokio::spawn(async move {
-                                                    let _ = c.queue().add(&path, None).await;
-                                                });
-                                                added += 1;
-                                            }
+                                        for target in targets {
+                                            let c = self.client.clone();
+                                            tokio::spawn(async move {
+                                                let _ = c.queue().add(&target, None).await;
+                                            });
+                                            added += 1;
                                         }
                                         self.fetch_queue().await;
                                         self.notify_typed(
@@ -10101,16 +10840,12 @@ impl App {
                                     }
                                 } else if action == "add to playlist" {
                                     if !self.library_pane_focus {
-                                        let tracks = self.filtered_tracks();
                                         let indices: Vec<i64> = if self.multiselect_mode
-                                            && !self.selected_indices.is_empty()
+                                            && self.selected_count() > 0
                                         {
-                                            self.selected_indices
-                                                .iter()
-                                                .filter_map(|i| tracks.get(*i).map(|t| t.id))
-                                                .collect()
+                                            self.selected_library_ids()
                                         } else {
-                                            tracks
+                                            self.filtered_tracks()
                                                 .get(self.list_pos())
                                                 .map(|t| vec![t.id])
                                                 .unwrap_or_default()
@@ -10119,11 +10854,35 @@ impl App {
                                             self.pending_track_ids = indices;
                                             self.playlist_creating = false;
                                             self.pickers.open(PickerId::PlaylistSelect);
+                                        } else if self.multiselect_mode {
+                                            self.notify_typed(
+                                                "System",
+                                                "Selected tracks are streamed \u{2014} only library tracks can go into playlists",
+                                                NotificationKind::Info,
+                                                false,
+                                                NotifType::NowPlaying,
+                                            );
+                                        } else if self.library_category == 12 {
+                                            self.notify_typed(
+                                                "System",
+                                                "Chart tracks are streamed \u{2014} not in your library",
+                                                NotificationKind::Info,
+                                                false,
+                                                NotifType::NowPlaying,
+                                            );
                                         }
                                     }
                                 } else if action == "delete from list" {
                                     if !self.library_pane_focus {
-                                        if self.library_category == 4
+                                        if self.library_category == 12 {
+                                            self.notify_typed(
+                                                "System",
+                                                "Charts are streamed \u{2014} not in your library",
+                                                NotificationKind::Info,
+                                                false,
+                                                NotifType::NowPlaying,
+                                            );
+                                        } else if self.library_category == 4
                                             && self.browse_detail.is_some()
                                         {
                                             let filtered = self.filtered_tracks();
@@ -10169,43 +10928,56 @@ impl App {
                                     }
                                 } else if action == "edit metadata" {
                                     if !self.library_pane_focus {
-                                        let track_data = {
-                                            let tracks = self.filtered_tracks();
-                                            tracks.get(self.list_pos()).map(|t| {
-                                                (
-                                                    t.id,
-                                                    t.title.clone(),
-                                                    t.artist.clone(),
-                                                    t.album.clone(),
-                                                    t.genre.clone(),
-                                                    t.year,
-                                                    t.track_number,
-                                                )
-                                            })
-                                        };
-                                        if let Some((
-                                            id,
-                                            title,
-                                            artist,
-                                            album,
-                                            genre,
-                                            year,
-                                            track_num,
-                                        )) = track_data
-                                        {
-                                            self.metadata.edit_track_ids = vec![id];
-                                            self.metadata.fields = [
+                                        if self.library_category == 12 {
+                                            // Chart tracks are streamed — they
+                                            // have no library metadata to edit.
+                                            self.notify_typed(
+                                                "System",
+                                                "Chart tracks are streamed \u{2014} not in your library",
+                                                NotificationKind::Info,
+                                                false,
+                                                NotifType::NowPlaying,
+                                            );
+                                        } else {
+                                            let track_data = {
+                                                let tracks = self.filtered_tracks();
+                                                tracks.get(self.list_pos()).map(|t| {
+                                                    (
+                                                        t.id,
+                                                        t.title.clone(),
+                                                        t.artist.clone(),
+                                                        t.album.clone(),
+                                                        t.genre.clone(),
+                                                        t.year,
+                                                        t.track_number,
+                                                    )
+                                                })
+                                            };
+                                            if let Some((
+                                                id,
                                                 title,
                                                 artist,
                                                 album,
-                                                String::new(),
                                                 genre,
-                                                year.map_or(String::new(), |y| y.to_string()),
-                                                track_num.map_or(String::new(), |n| n.to_string()),
-                                            ];
-                                            self.metadata.field_idx = 0;
-                                            self.pickers.open(PickerId::EditMetadata);
-                                            self.fetch_metadata_cover();
+                                                year,
+                                                track_num,
+                                            )) = track_data
+                                            {
+                                                self.metadata.edit_track_ids = vec![id];
+                                                self.metadata.fields = [
+                                                    title,
+                                                    artist,
+                                                    album,
+                                                    String::new(),
+                                                    genre,
+                                                    year.map_or(String::new(), |y| y.to_string()),
+                                                    track_num
+                                                        .map_or(String::new(), |n| n.to_string()),
+                                                ];
+                                                self.metadata.field_idx = 0;
+                                                self.pickers.open(PickerId::EditMetadata);
+                                                self.fetch_metadata_cover();
+                                            }
                                         }
                                     }
                                 } else if action == "toggle help" {
@@ -10598,6 +11370,13 @@ impl App {
                                 self.spotify.oauth_port.push(c);
                             }
                         }
+                        PickerId::TidalLink => {
+                            if self.setup.tidal_field == 0 {
+                                self.setup.tidal_client_id.push(c);
+                            } else {
+                                self.setup.tidal_port.push(c);
+                            }
+                        }
                         PickerId::PlaylistSelect if self.playlist_creating => {
                             top.query.push(c);
                         }
@@ -10625,6 +11404,8 @@ impl App {
                         self.metadata.field_idx = (self.metadata.field_idx + 1) % 7;
                     } else if top.id == PickerId::SpotifyLink {
                         self.spotify.link_field = (self.spotify.link_field + 1) % 2;
+                    } else if top.id == PickerId::TidalLink {
+                        self.setup.tidal_field = (self.setup.tidal_field + 1) % 2;
                     }
                 }
             }
@@ -10650,6 +11431,13 @@ impl App {
                                 self.spotify.link_input.pop();
                             } else {
                                 self.spotify.oauth_port.pop();
+                            }
+                        }
+                        PickerId::TidalLink => {
+                            if self.setup.tidal_field == 0 {
+                                self.setup.tidal_client_id.pop();
+                            } else {
+                                self.setup.tidal_port.pop();
                             }
                         }
                         PickerId::PlaylistSelect if self.playlist_creating => {
@@ -10690,6 +11478,13 @@ impl App {
                         self.spotify.link_input.push_str(text);
                     } else {
                         self.spotify.oauth_port.push_str(text);
+                    }
+                }
+                PickerId::TidalLink => {
+                    if self.setup.tidal_field == 0 {
+                        self.setup.tidal_client_id.push_str(text);
+                    } else {
+                        self.setup.tidal_port.push_str(text);
                     }
                 }
                 PickerId::EditMetadata => {
