@@ -1883,8 +1883,7 @@ impl App {
     /// client id when the field is empty).
     pub fn open_spotify_link_form(&mut self) {
         if self.spotify.link_input.trim().is_empty()
-            && let Some(cid) = get_secret(SPOTIFY_CLIENT_ID)
-                .filter(|cid| !cid.trim().is_empty())
+            && let Some(cid) = get_secret(SPOTIFY_CLIENT_ID).filter(|cid| !cid.trim().is_empty())
         {
             self.spotify.link_input = cid;
         }
@@ -8759,9 +8758,7 @@ impl App {
                             )
                             .await
                     } else {
-                        c.spotify()
-                            .resolve(&playlist_id, track_index, false)
-                            .await
+                        c.spotify().resolve(&playlist_id, track_index, false).await
                     };
                     match res {
                         Ok(()) => {
@@ -10575,10 +10572,7 @@ impl App {
                                                     .resolve_track(
                                                         &track_clone.name,
                                                         &track_clone.artists,
-                                                        track_clone
-                                                            .album
-                                                            .as_deref()
-                                                            .unwrap_or(""),
+                                                        track_clone.album.as_deref().unwrap_or(""),
                                                         track_clone.uri.clone(),
                                                         true,
                                                     )

@@ -734,8 +734,8 @@ impl SpotifyManager {
         let Some(client) = self.client.as_ref() else {
             return Err("spotify not linked".into());
         };
-        let playlist_id =
-            rspotify::model::PlaylistId::from_uri(uri).map_err(|e| format!("bad playlist uri: {e}"))?;
+        let playlist_id = rspotify::model::PlaylistId::from_uri(uri)
+            .map_err(|e| format!("bad playlist uri: {e}"))?;
         let page = client
             .playlist_items_manual(playlist_id, None, None, Some(50), Some(0))
             .await

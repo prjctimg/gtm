@@ -2417,7 +2417,10 @@ impl Spotify {
 
     /// Resolve a web-search playlist result (a `spotify:playlist:` URI) to its
     /// track list.
-    pub async fn web_playlist_tracks(inner: &DaemonInner, uri: &str) -> Result<DaemonRes, CoreError> {
+    pub async fn web_playlist_tracks(
+        inner: &DaemonInner,
+        uri: &str,
+    ) -> Result<DaemonRes, CoreError> {
         let tracks = {
             let spotify = inner.spotify.lock().await;
             match spotify.playlist_tracks_web(uri).await {

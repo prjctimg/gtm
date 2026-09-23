@@ -153,16 +153,15 @@ async fn probe_tidal_status(socket_path: &Path) -> bool {
     }) else {
         return true;
     };
-    if stream.write_all(format!("{req}\n").as_bytes()).await.is_err() {
+    if stream
+        .write_all(format!("{req}\n").as_bytes())
+        .await
+        .is_err()
+    {
         return true;
     }
     let mut buf = [0u8; 1024];
-    match tokio::time::timeout(
-        std::time::Duration::from_millis(800),
-        stream.read(&mut buf),
-    )
-    .await
-    {
+    match tokio::time::timeout(std::time::Duration::from_millis(800), stream.read(&mut buf)).await {
         Ok(Ok(n)) if n > 0 => {
             let text = String::from_utf8_lossy(&buf[..n]);
             !text.contains("unknown command")

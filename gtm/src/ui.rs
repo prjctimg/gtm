@@ -3168,7 +3168,8 @@ fn fill_pane(f: &mut ratatui::Frame, area: Rect, app: &App) {
     );
 }
 
-const SETTINGS_ICONS_NERD: &[&str] = &["\u{f167}", "\u{f04b}", "\u{f013}", "\u{f04c7}", "\u{f0387}"];
+const SETTINGS_ICONS_NERD: &[&str] =
+    &["\u{f167}", "\u{f04b}", "\u{f013}", "\u{f04c7}", "\u{f0387}"];
 const SETTINGS_ICONS_ASCII: &[&str] = &["YT", "▶", "⚙", "★", "DZ"];
 const SETTINGS_CATEGORIES: &[&str] = &["YouTube", "Playback", "System", "Spotify", "Deezer"];
 
