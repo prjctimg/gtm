@@ -38,13 +38,18 @@ pub const OAUTH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(12
 /// Default redirect URI used when no port override is supplied.
 pub const DEFAULT_REDIRECT_URI: &str = "http://127.0.0.1:8990/login";
 
-/// Scopes required for playlist sync plus playback control. The user-profile
-/// scopes let us read the display name/product. Note there is deliberately NO
-/// `offline_access` here: Spotify does not define that scope (it rejected the
-/// whole authorize request with `error=invalid_scope`), and Spotify's
-/// authorization-code flow grants a `refresh_token` regardless, so tokens can
-/// still be renewed after `expires_in`.
+/// Scopes required for playlist sync plus native playback control. The
+/// user-profile scopes let us read the display name/product. `streaming` and
+/// `app-remote-control` unlock Spotify Connect-style control and — critically —
+/// let the librespot streaming bridge authenticate a playback session with the
+/// access token (login5 rejects tokens that lack `streaming`). Note there is
+/// deliberately NO `offline_access` here: Spotify does not define that scope
+/// (it rejected the whole authorize request with `error=invalid_scope`), and
+/// Spotify's authorization-code flow grants a `refresh_token` regardless, so
+/// tokens can still be renewed after `expires_in`.
 const OAUTH_SCOPES: &[&str] = &[
+    "streaming",
+    "app-remote-control",
     "user-read-playback-state",
     "user-modify-playback-state",
     "user-read-currently-playing",

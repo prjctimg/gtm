@@ -43,6 +43,13 @@ const CHANNEL_CAPACITY: usize = 64;
 /// falls back to silence instead of freezing on the last frame.
 const SPECTRUM_FRESHNESS: Duration = Duration::from_millis(300);
 
+/// Hard ceiling for the librespot session handshake. Without it, a rejected
+/// access token or unreachable access points make librespot retry across up
+/// to 6 APs (token auth performs a double connect per attempt), which can
+/// stall the whole IPC reply past its budget and surface as a misleading
+/// "IPC response timeout". Failing fast returns a readable error instead.
+const STREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+
 type SpectrumShared = Arc<Mutex<(std::time::Instant, Vec<f32>)>>;
 
 fn new_spectrum_shared() -> SpectrumShared {
@@ -308,10 +315,36 @@ impl StreamManager {
         };
 
         let session = Session::new(session_config, Some(cache));
-        session
-            .connect(Credentials::with_access_token(token), true)
-            .await
-            .map_err(|e| format!("spotify connect: {e}"))?;
+        // Bound the handshake hard — see STREAM_CONNECT_TIMEOUT.
+        let connected = tokio::time::timeout(
+            STREAM_CONNECT_TIMEOUT,
+            session.connect(Credentials::with_access_token(token), true),
+        )
+        .await
+        .map_err(|_| {
+            format!(
+                "spotify connect timed out after {}s — check network / access-point reachability",
+                STREAM_CONNECT_TIMEOUT.as_secs()
+            )
+        })?;
+        connected.map_err(|e| {
+            let msg = e.to_string();
+            let low = msg.to_ascii_lowercase();
+            if ["login", "token", "auth", "credential"]
+                .iter()
+                .any(|k| low.contains(k))
+            {
+                // A rejected access token (missing `streaming` scope, expired,
+                // or issued for a different client) is the common failure;
+                // point at the fix instead of the raw low-level error.
+                format!(
+                    "spotify connect rejected — re-link your Spotify account \
+                     (re-authorize, leaving the client id empty for the default app): {msg}"
+                )
+            } else {
+                format!("spotify connect: {msg}")
+            }
+        })?;
         info!("librespot session connected");
 
         let player = Player::new(
