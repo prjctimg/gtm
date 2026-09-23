@@ -753,7 +753,8 @@ impl Footer {
     /// Generic connectivity indicator driven by the daemon's bounded TCP
     /// probes (`None` = not probed yet, hidden until the first result lands).
     /// Rendered as an icon: wifi / banned-wifi in Nerd mode, filled / hollow
-    /// dot otherwise.
+    /// dot otherwise. A trailing space matches the icon+space convention of
+    /// the download module so the glyph does not crowd the badge edge.
     fn network(app: &App) -> Option<String> {
         let (icon, fallback) = if use_nerd_fonts() {
             ("\u{f1eb}", "\u{f05e}") // nf-fa-wifi / nf-fa-ban
@@ -762,8 +763,8 @@ impl Footer {
         };
         match app.state.network_online {
             None => None,
-            Some(true) => Some(icon.into()),
-            Some(false) => Some(fallback.into()),
+            Some(true) => Some(format!("{icon} ")),
+            Some(false) => Some(format!("{fallback} ")),
         }
     }
 

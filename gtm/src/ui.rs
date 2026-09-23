@@ -2969,7 +2969,7 @@ pub(crate) fn use_nerd_fonts() -> bool {
 pub(crate) fn provider_icon(name: &str) -> Option<&'static str> {
     match name {
         "Spotify" => Some("\u{f04c7}"),            // nf-md-spotify
-        "YouTube" => Some("\u{f167}"),             // nf-fa-youtube
+        "YouTube" => Some("\u{f16a}"),             // nf-fa-youtube
         "Podcast" => Some("\u{f0994}"),            // nf-md-podcast
         "Radio" => Some("\u{f0439}"),              // nf-md-radio
         "Subsonic/Navidrome" => Some("\u{f048b}"), // nf-md-server
@@ -3169,7 +3169,7 @@ fn fill_pane(f: &mut ratatui::Frame, area: Rect, app: &App) {
 }
 
 const SETTINGS_ICONS_NERD: &[&str] =
-    &["\u{f167}", "\u{f04b}", "\u{f013}", "\u{f04c7}", "\u{f0387}"];
+    &["\u{f16a}", "\u{f04b}", "\u{f013}", "\u{f04c7}", "\u{f0387}"];
 const SETTINGS_ICONS_ASCII: &[&str] = &["YT", "▶", "⚙", "★", "DZ"];
 const SETTINGS_CATEGORIES: &[&str] = &["YouTube", "Playback", "System", "Spotify", "Deezer"];
 
@@ -4028,7 +4028,7 @@ impl Pickers {
     fn render_yt_search(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let block = Self::picker_panel(
             app,
-            " \u{f167} Search ",
+            " \u{f16a} Search ",
             Some(" Enter: play   Ctrl+D: download   Ctrl+A: queue   Esc: close"),
         );
         let inner = block.inner(area);
@@ -5964,7 +5964,7 @@ impl CommandPalette {
                 hint: "queue",
             },
             Command {
-                icon: "\u{f167} YouTube Search",
+                icon: "\u{f16a} YouTube Search",
                 keys: "Alt+Y",
                 hint: "youtube",
             },
@@ -6682,13 +6682,31 @@ impl Pickers {
                         height: header_h,
                     },
                 );
+                // Reserve one trailing row (when the preview pane is tall
+                // enough) for the copy hint.
+                let hint_h = u16::from(preview_area.height >= 4);
                 let msg_area = Rect {
                     x: preview_area.x,
                     y: preview_area.y + header_h,
                     width: preview_area.width,
-                    height: preview_area.height.saturating_sub(header_h),
+                    height: preview_area.height.saturating_sub(header_h + hint_h),
                 };
                 f.render_widget(preview_para, msg_area);
+                if hint_h > 0 {
+                    let hint = Paragraph::new(Line::from(Span::styled(
+                        " y — copy notification to clipboard",
+                        Style::default().fg(app.theme.fg_dim),
+                    )));
+                    f.render_widget(
+                        hint,
+                        Rect {
+                            x: preview_area.x,
+                            y: preview_area.y + preview_area.height - hint_h,
+                            width: preview_area.width,
+                            height: hint_h,
+                        },
+                    );
+                }
             }
         }
     }
