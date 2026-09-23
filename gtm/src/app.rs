@@ -701,6 +701,13 @@ pub struct SpotifyView {
     pub search_results: Vec<(String, String, SpotifyTrack)>,
     pub link_input: String,
     pub token_input: String,
+    /// True while a playlist sync spawned by the TUI is in flight; guards
+    /// against duplicate auto-syncs stacking up.
+    pub sync_pending: bool,
+    /// True once a TUI-side sync completed successfully. The pane only
+    /// auto-syncs once per process (when the cache is empty on open); manual
+    /// Settings -> Sync always works regardless.
+    pub synced_once: bool,
     /// True while the OAuth browser flow is pending; the SpotifyLink picker
     /// shows a "waiting for you to finish login" state until linked.
     pub oauth_pending: bool,
@@ -1258,6 +1265,10 @@ enum IpcResult {
     HealthReport(HealthReport),
     SpotifyStatus(SpotifyStatus),
     SpotifyPlaylists(Vec<SpotifyPlaylist>),
+    /// A TUI-spawned playlist sync finished; `true` = success, `false` =
+    /// failure (an `Error` result carries the reason). Clears the in-flight
+    /// guard and arms the "synced once" latch on success.
+    SpotifySyncFinished(bool),
     SpotifyTracks(Vec<SpotifyTrack>),
     SpotifySearchWebResults(u64, Vec<SpotifyTrack>),
     ReactivePalette(Option<ReactivePalette>),
@@ -1298,6 +1309,41 @@ enum IpcResult {
 /// (surfaced in the notification history).
 fn self_err(ipc_tx: &mpsc::UnboundedSender<IpcResult>, msg: String) {
     let _ = ipc_tx.send(IpcResult::Error(msg));
+}
+
+/// Copy `text` to the system clipboard without adding a clipboard dependency:
+/// feed it to the platform's canonical CLI (`wl-copy` on Wayland, `xclip` on
+/// X11, `pbcopy`/`clip` elsewhere). The payload is written to stdin and the
+/// tool detaches itself to serve the selection, so this never blocks the UI
+/// loop. Best-effort: an unavailable tool surfaces as a readable error.
+fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    let tool: &str = if cfg!(target_os = "macos") {
+        "pbcopy"
+    } else if cfg!(target_os = "windows") {
+        "clip"
+    } else if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        "wl-copy"
+    } else if std::env::var_os("DISPLAY").is_some() {
+        "xclip"
+    } else {
+        // No display env exported (e.g. some WSL / ssh setups): still try the
+        // most common name so it works when the tool is on PATH anyway.
+        "wl-copy"
+    };
+    let mut child = std::process::Command::new(tool)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("`{tool}` unavailable: {e}"))?;
+    {
+        use std::io::Write as _;
+        let mut stdin = child.stdin.take().ok_or("clipboard stdin unavailable")?;
+        stdin
+            .write_all(text.as_bytes())
+            .map_err(|e| format!("write to `{tool}`: {e}"))?;
+    } // stdin dropped -> EOF; wl-copy/xclip detach and serve the selection.
+    Ok(())
 }
 
 /// Best-effort browser open for an OAuth authorize URL. Tries the OS default
@@ -1663,6 +1709,8 @@ impl App {
                 search_results: Vec::new(),
                 link_input: String::new(),
                 token_input: String::new(),
+                sync_pending: false,
+                synced_once: false,
                 oauth_pending: false,
                 oauth_url: None,
                 oauth_error: None,
@@ -3441,6 +3489,12 @@ impl App {
                         );
                     }
                     IpcResult::SpotifyPlaylists(p) => self.spotify.playlists = p,
+                    IpcResult::SpotifySyncFinished(ok) => {
+                        if ok {
+                            self.spotify.synced_once = true;
+                        }
+                        self.spotify.sync_pending = false;
+                    }
                     IpcResult::SpotifyTracks(t) => self.spotify.playlist_tracks_cache = t,
                     IpcResult::SpotifySearchWebResults(seq, tracks) => {
                         if seq != self.spotify.web_seq {
@@ -5162,7 +5216,63 @@ impl App {
             12 => self.fetch_chart_sources(),
             _ => {}
         }
+        // Spotify pane: self-heal an empty playlist cache with a single
+        // background sync so playlists appear without visiting Settings.
+        if self.library_category == 5 {
+            self.maybe_auto_sync_spotify();
+        }
         self.set_list_pos(0);
+    }
+
+    /// Fire one background playlist sync when the Spotify pane opens with an
+    /// empty cache (linked accounts only). Latch `synced_once` prevents
+    /// re-triggering on every pane visit (accounts can legitimately have zero
+    /// playlists); the daemon additionally auto-syncs at startup with
+    /// retry-forever backoff, so this is a second net, not the primary.
+    fn maybe_auto_sync_spotify(&mut self) {
+        let linked = self.spotify.status.as_ref().is_some_and(|s| s.linked);
+        if linked && !self.spotify.synced_once && self.spotify.playlists.is_empty() {
+            self.trigger_spotify_sync(false);
+        }
+    }
+
+    /// Kick a TUI-side playlist sync. `notify` toggles the completion toast
+    /// (manual Settings -> Sync yes, pane auto-fill no). The daemon caches the
+    /// results; on success the fresh playlist list is re-pulled and handed
+    /// back so the pane refreshes immediately instead of only after the next
+    /// status event.
+    fn trigger_spotify_sync(&mut self, notify: bool) {
+        if self.spotify.sync_pending {
+            return;
+        }
+        self.spotify.sync_pending = true;
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            match c.spotify().sync().await {
+                Ok(()) => {
+                    if notify {
+                        let _ = ipc_tx.send(IpcResult::Notification(
+                            "Spotify".to_string(),
+                            "Spotify sync complete".to_string(),
+                            NotificationKind::Success,
+                            NotifType::Spotify,
+                        ));
+                    }
+                    // Re-pull the cache so the playlist pane reflects the sync
+                    // without a restart (the manual flow previously toasted
+                    // but left the list stale).
+                    if let Ok(playlists) = c.spotify().playlists().await {
+                        let _ = ipc_tx.send(IpcResult::SpotifyPlaylists(playlists));
+                    }
+                    let _ = ipc_tx.send(IpcResult::SpotifySyncFinished(true));
+                }
+                Err(e) => {
+                    let _ = ipc_tx.send(IpcResult::Error(format!("Spotify sync: {e}")));
+                    let _ = ipc_tx.send(IpcResult::SpotifySyncFinished(false));
+                }
+            }
+        });
     }
 
     /// Re-pull the Top Charts source list (free providers always answer; the
@@ -8713,6 +8823,38 @@ impl App {
 
         let tx = self.cmd_tx();
 
+        // Notifications picker: 'y' copies the highlighted notification's text
+        // (title + message) to the clipboard so error messages are easy to grab.
+        if key.code == KeyCode::Char('y')
+            && !key.modifiers.contains(KeyModifiers::CONTROL)
+            && self
+                .pickers
+                .top()
+                .is_some_and(|o| o.id == PickerId::Notifications)
+        {
+            let sel = self.pickers.top().map_or(0, |o| o.selected);
+            if let Some(rec) = self.notification_history.get(sel) {
+                let text = format!("{}: {}", rec.title, rec.message);
+                match copy_to_clipboard(&text) {
+                    Ok(()) => self.notify_typed(
+                        "System",
+                        "Notification copied to clipboard",
+                        NotificationKind::Success,
+                        true,
+                        NotifType::System,
+                    ),
+                    Err(e) => self.notify_typed(
+                        "System",
+                        format!("Copy failed: {e}"),
+                        NotificationKind::Error,
+                        true,
+                        NotifType::System,
+                    ),
+                }
+            }
+            return;
+        }
+
         // Ctrl+D in SpotifySearch picker: download the selected track via YouTube
         if key.modifiers.contains(KeyModifiers::CONTROL)
             && key.code == KeyCode::Char('d')
@@ -9471,25 +9613,7 @@ impl App {
                                     self.pickers.open(PickerId::SpotifyLink);
                                 }
                                 4 => {
-                                    let c = self.client.clone();
-                                    let ipc_tx = self.ipc_tx.clone();
-                                    tokio::spawn(async move {
-                                        match c.spotify().sync().await {
-                                            Ok(()) => {
-                                                let _ = ipc_tx.send(IpcResult::Notification(
-                                                    "Spotify".to_string(),
-                                                    "Spotify sync complete".to_string(),
-                                                    NotificationKind::Success,
-                                                    NotifType::Spotify,
-                                                ));
-                                            }
-                                            Err(e) => {
-                                                let _ = ipc_tx.send(IpcResult::Error(format!(
-                                                    "Spotify sync: {e}"
-                                                )));
-                                            }
-                                        }
-                                    });
+                                    self.trigger_spotify_sync(true);
                                 }
                                 5 => {
                                     let c = self.client.clone();
