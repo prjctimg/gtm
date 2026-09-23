@@ -51,7 +51,7 @@ use crate::theme::{AppTheme, ThemeEntry, blend_colors, chadrula, detect_os_theme
 use crate::ui;
 use crate::ui::{
     CROSSFADE_DURATIONS, Command, CommandPalette, HELP_LINES, cover_provider_label,
-    theme_mode_label,
+    theme_mode_label, use_nerd_fonts,
 };
 use crate::visualizer::{AudioVisualizer, VisualizerPreset};
 
@@ -3951,7 +3951,12 @@ impl App {
         }
         let now = std::time::Instant::now();
         if mode == NotifMode::Footer {
-            self.notify_footer(format!("Vol {volume}"));
+            let icon = if use_nerd_fonts() {
+                "\u{f057e} " // nf-md-volume-high
+            } else {
+                "\u{1f50a} " // 🔊
+            };
+            self.notify_footer(format!("{icon}{volume}%"));
             return;
         }
         if let Some(existing) = self

@@ -172,7 +172,6 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::Speed,
                 FooterModule::LowPower,
                 FooterModule::Mono,
-                FooterModule::Device,
                 FooterModule::EqPreset,
                 FooterModule::KeyAction,
                 FooterModule::Notification,
@@ -662,7 +661,7 @@ impl Footer {
             let icon = if use_nerd_fonts() {
                 "\u{f062e} "
             } else {
-                "EQ:"
+                "EQ: "
             };
             Some(format!("{icon}{}", app.state.audio.eq_preset.label()))
         } else {
@@ -738,9 +737,10 @@ impl Footer {
         name.to_string()
     }
 
-    fn system(app: &App) -> String {
-        let backend = Footer::backend(app);
-        format!("{} {}", platform_icon(), backend)
+    fn system(_app: &App) -> String {
+        // The platform mascot alone: the output device/audio backend text is
+        // a separate `Device`/`Backend` module users can add to their preset.
+        platform_icon().to_string()
     }
     /// Render the current wall-clock time using the user's strftime-style format.
     fn time(app: &App) -> Option<String> {

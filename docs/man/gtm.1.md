@@ -411,6 +411,12 @@ $XDG_CONFIG_HOME/gtm/radios.toml
 :   Custom radio stations added with **radio add** (defaults to
     `~/.config/gtm/radios.toml`).
 
+$XDG_CONFIG_HOME/gtm/footer.toml
+:   Optional user footer presets. Built-in presets are **Default**, **Minimal**
+    and **Full**; the Default footer shows the platform icon (`System`) instead
+    of the audio output device or backend — add the `Device` or `Backend`
+    module to a preset when that detail is needed.
+
 # SEE ALSO
 
 **gtmd**(1), **gtmd-ipc**(1)
