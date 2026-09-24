@@ -378,6 +378,7 @@ fn req_parse_spotify() {
             DaemonReq::SpotifyResolve {
                 playlist_id,
                 track_index,
+                ..
             } => {
                 assert_eq!(playlist_id, "37i9dQZEVX");
                 assert_eq!(track_index, 3);
@@ -419,6 +420,7 @@ fn res_spotify_wire() {
         device: Some("Test Speaker".into()),
         playlists: 2,
         tracks: 5,
+        needs_relink: false,
         error: None,
     };
     let playlist = SpotifyPlaylist {
