@@ -2190,7 +2190,7 @@ impl Spotify {
         };
         if let Some(uri) = stream_uri {
             let duration = track.duration_ms.map(|ms| ms as f64 / 1000.0);
-            let _ = Spotify::queue_stream(
+            return Spotify::queue_stream(
                 inner,
                 &uri,
                 &spotify_title,
@@ -2200,7 +2200,6 @@ impl Spotify {
                 play,
             )
             .await;
-            return Ok(DaemonRes::Ok);
         }
 
         let query = if track.artists.is_empty() {
@@ -2420,7 +2419,7 @@ impl Spotify {
         // caller asked to play (Enter) — `Cmd::play` stops the current source
         // first, so switching from another source is smooth.
         if was_empty || play {
-            let _ = Cmd::play(inner, uri, 0.0, false).await;
+            Cmd::play(inner, uri, 0.0, false).await?;
         }
 
         {
@@ -2498,7 +2497,7 @@ impl Spotify {
                     read.queue.first().map(|t| t.path.clone())
                 };
                 if let Some(uri) = first {
-                    let _ = Cmd::play(inner, &uri, 0.0, false).await;
+                    Cmd::play(inner, &uri, 0.0, false).await?;
                 }
             }
             Daemon::push_queue_state(inner).await;
