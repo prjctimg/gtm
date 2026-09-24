@@ -3436,8 +3436,11 @@ impl Pickers {
                         Span::styled(" ", cursor_style.unwrap_or_default()),
                     ]);
 
-                    let sel = app.pickers.top().map_or(0, |o| o.selected);
                     let total = app.spotify.search_results.len();
+                    let sel = app
+                        .pickers
+                        .top()
+                        .map_or(0, |o| o.selected.min(total.saturating_sub(1)));
                     let preview_h: u16 = if total > 0 { 7 } else { 0 };
                     let visible = inner.height.saturating_sub(preview_h) as usize;
                     let (scroll_start, scroll_end) = if total > 0 {
