@@ -35,6 +35,8 @@ pub enum KeyboardAction {
 
     // Filter
     EnterFilter,
+    /// Contextual search: picks the search backend matching the focused list.
+    Search,
 
     // Playback
     PlayPause,
@@ -502,11 +504,12 @@ pub fn default_keybindings() -> Keybindings {
                     contexts: vec![KeyContext::Normal],
                 },
             ),
-            // Filter mode: Ctrl+F (the '/' key now opens the library search picker)
+            // Filter mode: Ctrl+F (the '/' key opens the search picker that
+            // matches whichever list is focused)
             (
                 KeyCode::Char('/').into(),
                 BoundCommand {
-                    action: KeyboardAction::OpenOverlay(PickerId::SearchLibrary),
+                    action: KeyboardAction::Search,
                     contexts: vec![KeyContext::Normal],
                 },
             ),
@@ -566,7 +569,7 @@ pub fn default_keybindings() -> Keybindings {
             (
                 KeyEvent::new(KeyCode::Char('/'), KeyModifiers::ALT),
                 BoundCommand {
-                    action: KeyboardAction::OpenOverlay(PickerId::SearchLibrary),
+                    action: KeyboardAction::Search,
                     contexts: vec![KeyContext::Normal],
                 },
             ),
@@ -835,6 +838,7 @@ impl KeyboardAction {
             "select" | "enter" => KeyboardAction::Select,
             "delete" | "del" => KeyboardAction::Delete,
             "enter_filter" | "filter" => KeyboardAction::EnterFilter,
+            "search" => KeyboardAction::Search,
             "play_pause" | "toggle_playback" => KeyboardAction::PlayPause,
             "next" => KeyboardAction::Next,
             "prev" | "previous" => KeyboardAction::Prev,
@@ -882,9 +886,7 @@ impl KeyboardAction {
             // Overlay openers
             "open_queue" => KeyboardAction::OpenOverlay(PickerId::Queue),
             "open_yt_search" | "open_youtube" => KeyboardAction::OpenOverlay(PickerId::YTSearch),
-            "open_search" | "open_library_search" => {
-                KeyboardAction::OpenOverlay(PickerId::SearchLibrary)
-            }
+            "open_search" | "open_library_search" => KeyboardAction::Search,
             "open_settings" | "settings" => KeyboardAction::OpenOverlay(PickerId::Settings),
             "open_spotify_search" | "open_spotify" => {
                 KeyboardAction::OpenOverlay(PickerId::SpotifySearch)

@@ -1748,6 +1748,17 @@ impl App {
 
     /// Open the `gtm setup` walkthrough, either the service chooser or the
     /// matching setup picker directly. Called from `gtm setup SERVICE`.
+    /// Search picker matching the focused list. The library search covers the
+    /// local library; provider categories open their own provider's search so
+    /// `/` always searches what the user is looking at.
+    pub fn search_picker(&self) -> PickerId {
+        match LIBRARY_CATEGORIES.get(self.library_category).copied() {
+            Some("Spotify") => PickerId::SpotifySearch,
+            Some("Radio") => PickerId::Radio,
+            _ => PickerId::SearchLibrary,
+        }
+    }
+
     pub fn open_setup_picker(&mut self, service: Option<&str>) {
         match service.map(|s| s.trim().to_ascii_lowercase()).as_deref() {
             Some("spotify") => {
@@ -6867,6 +6878,12 @@ impl App {
                             );
                             return true;
                         }
+                        self.pickers.open(id);
+                        self.dismiss_track_popup();
+                        self.on_picker_opened(id);
+                    }
+                    Some(KeyboardAction::Search) => {
+                        let id = self.search_picker();
                         self.pickers.open(id);
                         self.dismiss_track_popup();
                         self.on_picker_opened(id);

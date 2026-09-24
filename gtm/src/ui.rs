@@ -5531,9 +5531,9 @@ impl CommandPalette {
                 hint: "toggle scrobbling",
             },
             Command {
-                icon: "\u{f057a} Search Track",
+                icon: "\u{f057a} Search",
                 keys: "/",
-                hint: "search",
+                hint: "search this list",
             },
             Command {
                 icon: "\u{f057a} Search Library",
@@ -5776,9 +5776,9 @@ impl CommandPalette {
                 hint: "toggle scrobbling",
             },
             Command {
-                icon: "\u{1f50d} Search Track",
+                icon: "\u{1f50d} Search",
                 keys: "/",
-                hint: "search",
+                hint: "search this list",
             },
             Command {
                 icon: "\u{1f50e} Search Library",
@@ -5972,7 +5972,7 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("topic", "── Navigation ──"),
     ("", "   Tab         Switch Pane"),
     ("", "   Shift+Tab   Switch Pane (back)"),
-    ("", "   /           Search Track"),
+    ("", "   /           Search (context-aware)"),
     ("", "   Alt+Q       Queue"),
     ("", "   Alt+/       Search Library"),
     ("", "   Alt+Y       YouTube Search"),
