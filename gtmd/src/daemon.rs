@@ -4163,6 +4163,26 @@ impl DaemonInner {
     }
 }
 
+/// Keychain entries owned by streaming providers that gtm no longer supports.
+/// Deleting a missing key is a no-op, so calling this on every start is safe.
+const RETIRED_PROVIDER_SECRET_KEYS: &[&str] = &[
+    "subsonic_credentials",
+    "deezer_arl",
+    "tidal_client_id",
+    "tidal_token",
+];
+
+/// Drop keychain entries left behind by removed providers. Their commands and
+/// readers are gone, so the values can never be used again and would otherwise
+/// sit in the OS keyring (or the config-dir file fallback) indefinitely. This
+/// also covers secrets written by older builds before the removal, which no
+/// config migration can reach.
+fn purge_retired_provider_secrets() {
+    for key in RETIRED_PROVIDER_SECRET_KEYS {
+        delete_secret(key);
+    }
+}
+
 pub struct Daemon {
     inner: Arc<DaemonInner>,
     listener: UnixListener,
@@ -4683,6 +4703,8 @@ impl Daemon {
                 }
             });
         }
+
+        purge_retired_provider_secrets();
 
         let provider_inner = Arc::clone(&self.inner);
         tokio::spawn(async move {
