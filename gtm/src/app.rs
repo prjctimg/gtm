@@ -39,7 +39,7 @@ use crate::keymap::{
     parse_key_event,
 };
 use crate::mouse::{MouseMap, MouseZone};
-use crate::oauth::lastfm_callback_port;
+use crate::oauth::{lastfm_callback_port, open_browser};
 use crate::picker::{PickerId, PickerManager, PickerSource};
 use crate::progress::{ProgressSmoother, ProgressStyle};
 use crate::reactive::{ReactivePalette, derive_theme, extract_palette};
@@ -688,7 +688,6 @@ pub struct SpotifyView {
     pub playlist_tracks_cache: Vec<SpotifyTrack>,
     pub search_results: Vec<(String, String, SpotifyTrack)>,
     pub link_input: String,
-    pub token_input: String,
     /// True while a playlist sync spawned by the TUI is in flight; guards
     /// against duplicate auto-syncs stacking up.
     pub sync_pending: bool,
@@ -1170,14 +1169,6 @@ enum IpcResult {
     SpotifyPopupCover(Option<Vec<u8>>, String, u64),
     CoverPicker(Option<Picker>),
     Lyrics(Option<LrcData>, u64),
-    /// Authorize URL produced by the daemon's OAuth flow. Kept separate from
-    /// `Notification` so the SpotifyLink picker can render it inline.
-    SpotifyOauthUrl(String),
-    /// A hard failure of the OAuth flow (daemon could not even start it).
-    SpotifyOauthError(String),
-    /// The browser could not be opened automatically. The authorize URL is
-    /// shown inline in the picker, so this is recorded without a floating card.
-    SpotifyOauthFallback(String),
     LibraryTracks(Vec<TrackInfo>),
     MostPlayed(Vec<TrackInfo>),
     RecentlyPlayed(Vec<TrackInfo>),
@@ -1228,10 +1219,14 @@ enum IpcResult {
     ChartsSources(Vec<crate::shared::chart::ChartSource>),
     /// Last.fm link status refreshed after a setup action completes.
     LastfmStatus(Option<LastfmStatus>),
-    /// Authorization URL produced by the daemon's Last.fm auth flow.
-    LastfmAuthUrl(String),
-    /// Hard failure of the Last.fm setup flow.
-    LastfmAuthError(String),
+    /// Authorize URL produced by a provider's OAuth flow. Kept separate from
+    /// `Notification` so the link picker can render it inline.
+    AuthUrl(&'static str, String),
+    /// A hard failure of an OAuth flow (the daemon could not even start it).
+    AuthError(&'static str, String),
+    /// The browser could not be opened automatically. The authorize URL is
+    /// shown inline in the picker, so this is recorded without a floating card.
+    AuthFallback(String),
 }
 
 /// Send a background-task error into the TUI event stream as an Error
@@ -1275,44 +1270,9 @@ fn copy_to_clipboard(text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Best-effort browser open for an OAuth authorize URL. Tries the OS default
-/// opener (via `webbrowser`) then common launchers, each timeout-guarded so a
-/// wedged launcher never blocks a runtime worker or the UI.
-async fn open_browser(url: &str) -> bool {
-    // Prefer the OS default browser opener, which is cross-platform. Guard
-    // it with a timeout: a wedged `xdg-open`-style launcher must not leave
-    // the flow looking dead.
-    let opened = tokio::time::timeout(Duration::from_secs(3), async {
-        tokio::task::spawn_blocking({
-            let url = url.to_string();
-            move || webbrowser::open(&url)
-        })
-        .await
-    })
-    .await;
-    if let Ok(Ok(Ok(_))) = opened {
-        return true;
-    }
-    // Fallback to common launchers when the `webbrowser` crate can't
-    // resolve one (e.g. minimal containers / WSL).
-    for prog in ["xdg-open", "open", "start"] {
-        match tokio::process::Command::new(prog)
-            .arg(url)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .await
-        {
-            Ok(st) if st.success() => return true,
-            _ => continue,
-        }
-    }
-    false
-}
-
 /// Open the OAuth URL in a browser. When no opener works the authorize URL is
-/// already rendered inline in the Spotify link picker, so only a quiet
-/// fallback notice is recorded (no floating card). Non-blocking.
+/// already rendered inline in the link picker, so only a quiet fallback notice
+/// is recorded (no floating card). Non-blocking.
 fn try_open_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResult>) {
     let url = url.to_string();
     let ipc_tx = ipc_tx.clone();
@@ -1321,7 +1281,7 @@ fn try_open_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResult>) {
             return;
         }
         // All openers failed: point at the URL shown inline in the picker.
-        let _ = ipc_tx.send(IpcResult::SpotifyOauthFallback(
+        let _ = ipc_tx.send(IpcResult::AuthFallback(
             "Could not open a browser automatically — copy the authorize URL shown in this picker"
                 .into(),
         ));
@@ -1597,7 +1557,6 @@ impl App {
                 playlist_tracks_cache: Vec::new(),
                 search_results: Vec::new(),
                 link_input: String::new(),
-                token_input: String::new(),
                 sync_pending: false,
                 synced_once: false,
                 oauth_pending: false,
@@ -1837,7 +1796,7 @@ impl App {
         tokio::spawn(async move {
             match c.spotify().oauth_start(&client_id, port).await {
                 Ok(url) => {
-                    let _ = ipc_tx.send(IpcResult::SpotifyOauthUrl(url.clone()));
+                    let _ = ipc_tx.send(IpcResult::AuthUrl("Spotify", url.clone()));
                     let _ = ipc_tx.send(IpcResult::Notification(
                         "Spotify".to_string(),
                         "Authorize gtm in your browser, then playlists sync automatically…"
@@ -1848,9 +1807,10 @@ impl App {
                     try_open_browser(&url, &ipc_tx);
                 }
                 Err(e) => {
-                    let _ = ipc_tx.send(IpcResult::SpotifyOauthError(format!(
-                        "Spotify link failed: {e}"
-                    )));
+                    let _ = ipc_tx.send(IpcResult::AuthError(
+                        "Spotify",
+                        format!("Spotify link failed: {e}"),
+                    ));
                 }
             }
         });
@@ -2885,7 +2845,7 @@ impl App {
                             self.close_picker();
                         }
                     }
-                    IpcResult::LastfmAuthUrl(url) => {
+                    IpcResult::AuthUrl("Last.fm", url) => {
                         // The daemon bound the callback port and started the
                         // flow before answering, so the URL can be opened
                         // safely; completion/failure arrives as a pushed status
@@ -2893,17 +2853,30 @@ impl App {
                         self.setup.lastfm_auth_url = Some(url);
                         self.setup.lastfm_pending = true;
                     }
-                    IpcResult::LastfmAuthError(e) => {
-                        self.setup.lastfm_pending = false;
-                        self.setup.lastfm_error = Some(e.clone());
-                        self.notify_titled(
-                            "Last.fm",
-                            e,
-                            NotificationKind::Error,
-                            false,
-                            NotifType::Lastfm,
-                        );
-                    }
+                    IpcResult::AuthError(provider, e) => match provider {
+                        "Last.fm" => {
+                            self.setup.lastfm_pending = false;
+                            self.setup.lastfm_error = Some(e.clone());
+                            self.notify_titled(
+                                "Last.fm",
+                                e,
+                                NotificationKind::Error,
+                                false,
+                                NotifType::Lastfm,
+                            );
+                        }
+                        _ => {
+                            self.spotify.oauth_pending = false;
+                            self.spotify.oauth_error = Some(e.clone());
+                            self.notify_titled(
+                                "Spotify",
+                                e,
+                                NotificationKind::Error,
+                                false,
+                                NotifType::Spotify,
+                            );
+                        }
+                    },
                     IpcResult::LibraryTracks(tracks) => {
                         self.tracks_cache = tracks;
                         self.tracks_cache_gen = self.tracks_cache_gen.wrapping_add(1);
@@ -3160,25 +3133,12 @@ impl App {
                         self.show_health_panel = std::mem::take(&mut self.report_health);
                     }
                     IpcResult::SpotifyStatus(s) => self.spotify.status = Some(s),
-                    IpcResult::SpotifyOauthUrl(url) => {
+                    IpcResult::AuthUrl("Spotify", url) => {
                         self.spotify.oauth_url = Some(url);
                         self.spotify.oauth_error = None;
                     }
-                    IpcResult::SpotifyOauthError(e) => {
-                        let e = e.to_string();
-                        self.spotify.oauth_error = Some(e.clone());
-                        self.spotify.oauth_pending = false;
-                        // Keep the picker open so the error and URL stay
-                        // visible; Esc closes it (clearing the state below).
-                        self.notify_titled(
-                            "Spotify",
-                            e,
-                            NotificationKind::Error,
-                            false,
-                            NotifType::Spotify,
-                        );
-                    }
-                    IpcResult::SpotifyOauthFallback(e) => {
+                    IpcResult::AuthUrl(_, _) => {}
+                    IpcResult::AuthFallback(e) => {
                         // Browser auto-open failed but the authorize URL is
                         // already inline in the picker; record quietly.
                         self.spotify.oauth_error = Some(e.clone());
@@ -9257,23 +9217,26 @@ impl App {
                                     let open_url = url.clone();
                                     tokio::spawn(async move {
                                         if !open_browser(&open_url).await {
-                                            let _ = ipc_url.send(IpcResult::LastfmAuthError(
+                                            let _ = ipc_url.send(IpcResult::AuthError(
+                                                "Last.fm",
                                                 "Could not open a browser automatically — copy the URL from the last.fm setup screen".into(),
                                             ));
                                         }
                                     });
-                                    let _ = ipc_tx.send(IpcResult::LastfmAuthUrl(url));
+                                    let _ = ipc_tx.send(IpcResult::AuthUrl("Last.fm", url));
                                 }
                                 Err(e) => {
-                                    let _ = ipc_tx.send(IpcResult::LastfmAuthError(format!(
-                                        "Last.fm link failed: {e}"
-                                    )));
+                                    let _ = ipc_tx.send(IpcResult::AuthError(
+                                        "Last.fm",
+                                        format!("Last.fm link failed: {e}"),
+                                    ));
                                 }
                             },
                             Err(e) => {
-                                let _ = ipc_tx.send(IpcResult::LastfmAuthError(format!(
-                                    "saving Last.fm config failed: {e}"
-                                )));
+                                let _ = ipc_tx.send(IpcResult::AuthError(
+                                    "Last.fm",
+                                    format!("saving Last.fm config failed: {e}"),
+                                ));
                             }
                         }
                     });

@@ -1,7 +1,7 @@
 // Copyright (c) 2026
 // Author: prjctimg <prjctimg@outlook.com>
-// OAuth loopback capture helpers shared by the CLI wizard and the TUI setup
-// flows (Last.fm token callback).
+// OAuth browser launch and loopback capture helpers shared by the CLI wizard
+// and the TUI setup flows.
 //
 // This is free software released under the GPL-3.0 license.
 
@@ -11,6 +11,41 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Default Last.fm loopback callback port.
 pub const LASTFM_CALLBACK_PORT: u16 = 8991;
+
+/// Best-effort browser open for an OAuth authorize URL. Tries the OS default
+/// opener (via `webbrowser`) then common launchers, each timeout-guarded so a
+/// wedged launcher never blocks a runtime worker or the UI.
+pub async fn open_browser(url: &str) -> bool {
+    // Prefer the OS default browser opener, which is cross-platform. Guard
+    // it with a timeout: a wedged `xdg-open`-style launcher must not leave
+    // the flow looking dead.
+    let opened = tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::task::spawn_blocking({
+            let url = url.to_string();
+            move || webbrowser::open(&url)
+        })
+        .await
+    })
+    .await;
+    if let Ok(Ok(Ok(_))) = opened {
+        return true;
+    }
+    // Fallback to common launchers when the `webbrowser` crate can't
+    // resolve one (e.g. minimal containers / WSL).
+    for prog in ["xdg-open", "open", "start"] {
+        match tokio::process::Command::new(prog)
+            .arg(url)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .await
+        {
+            Ok(st) if st.success() => return true,
+            _ => continue,
+        }
+    }
+    false
+}
 
 /// Callback port resolved from `$GTM_LASTFM_PORT`, falling back to
 /// [`LASTFM_CALLBACK_PORT`].
