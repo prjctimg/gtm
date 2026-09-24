@@ -174,6 +174,10 @@ fn default_cover_cache_mb() -> u64 {
 /// On-disk cover cache budget in MiB, shared with the daemon.
 const COVER_CACHE_STEPS: [u64; 5] = [128, 256, 512, 1024, 2048];
 
+/// Keystroke settle time before a provider search fires. Short enough to feel
+/// live while still collapsing a fast typist's burst into one request.
+const SEARCH_DEBOUNCE_MS: u64 = 250;
+
 /// How long each About-window visualization preset stays up.
 pub const ABOUT_VIZ_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
 
@@ -651,6 +655,45 @@ pub struct UpNextNotif {
     pub cover_fetch_gen: Option<u64>,
 }
 
+/// Fuzzy subsequence match: every byte of `q` appears in order in `hay`.
+/// Used by every fuzzy-finder (library search, themes, command palette) so
+/// filtering behaviour is identical across pickers.
+/// Spotify search rows matching the picker's `PickerSource` filter. Both the
+/// item count and the renderer read through this so they cannot disagree.
+impl App {
+    pub fn spot_picks(&self) -> Vec<usize> {
+        let src = self.pickers.top().map_or(PickerSource::All, |o| o.source);
+        self.spotify
+            .search_results
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, _, t))| match src {
+                PickerSource::All => true,
+                PickerSource::Tracks => t.kind.is_none(),
+                PickerSource::Artists => t.kind == Some(SpotifySearchKind::Artist),
+                PickerSource::Albums => t.kind == Some(SpotifySearchKind::Album),
+                PickerSource::Playlists => t.kind == Some(SpotifySearchKind::Playlist),
+                PickerSource::Radio => false,
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+}
+
+pub(crate) fn fuzzy_match(q: &str, hay: &str) -> bool {
+    let q = q.to_lowercase();
+    if q.is_empty() {
+        return true;
+    }
+    let mut qi = 0usize;
+    for ch in hay.to_lowercase().chars() {
+        if qi < q.len() && ch == q.as_bytes()[qi] as char {
+            qi += 1;
+        }
+    }
+    qi == q.len()
+}
+
 /// One row in the SearchLibrary fuzzy-finder, resolved from a `PickerSource`.
 #[derive(Debug, Clone)]
 pub enum LibraryPick {
@@ -744,6 +787,9 @@ pub struct SpotifyView {
     pub playlist_tracks_cache: Vec<SpotifyTrack>,
     pub search_results: Vec<(String, String, SpotifyTrack)>,
     pub link_input: String,
+    /// True while a Spotify web search is in flight, so the picker can show a
+    /// spinner instead of "No results found".
+    pub search_loading: bool,
     /// True while a playlist sync spawned by the TUI is in flight; guards
     /// against duplicate auto-syncs stacking up.
     pub sync_pending: bool,
@@ -1630,6 +1676,7 @@ impl App {
                 oauth_port: "8990".to_string(),
                 link_field: 0,
                 search_debounce: None,
+                search_loading: false,
                 web_seq: 0,
                 preview_cover: None,
                 preview_cover_stateful: None,
@@ -3317,6 +3364,7 @@ impl App {
                                 track,
                             ));
                         }
+                        self.spotify.search_loading = false;
                     }
                 }
             }
@@ -4260,6 +4308,7 @@ impl App {
         self.spotify.preview_cover = None;
         self.spotify.preview_cover_stateful = None;
         if q.is_empty() {
+            self.spotify.search_loading = false;
             return;
         }
         for pl in &self.spotify.playlists {
@@ -4288,6 +4337,7 @@ impl App {
         let c = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         let seq = self.spotify.web_seq;
+        self.spotify.search_loading = true;
         tokio::spawn(async move {
             match c.spotify().search_web(&query).await {
                 Ok(tracks) => {
@@ -5739,17 +5789,16 @@ impl App {
             self.spotify.preview_fetch.version = None;
             return;
         }
-        if self.spotify.search_results.is_empty() {
+        let picks = self.spot_picks();
+        if picks.is_empty() {
             self.spotify.preview_cover = None;
             self.spotify.preview_cover_stateful = None;
             self.spotify.preview_fetch.id = None;
             self.spotify.preview_fetch.version = None;
             return;
         }
-        let sel = top
-            .selected
-            .min(self.spotify.search_results.len().saturating_sub(1));
-        let Some(url) = self.spotify.search_results[sel].2.image_url.clone() else {
+        let sel = top.selected.min(picks.len() - 1);
+        let Some(url) = self.spotify.search_results[picks[sel]].2.image_url.clone() else {
             self.spotify.preview_cover = None;
             self.spotify.preview_cover_stateful = None;
             self.spotify.preview_fetch.id = None;
@@ -6448,49 +6497,17 @@ impl App {
             PickerId::NotificationSettings => NotifType::ALL.len().saturating_sub(1),
             PickerId::PlaylistSelect => self.playlist_cache.len(),
             PickerId::PlaylistTrackSelect => self.tracks_cache.len().saturating_sub(1),
-            PickerId::ThemePicker => {
-                let q = query.to_lowercase();
-                if q.is_empty() {
-                    self.themes.len()
-                } else {
-                    self.themes
-                        .iter()
-                        .filter(|entry| {
-                            let lower = entry.name.to_lowercase();
-                            let mut qi = 0usize;
-                            for ch in lower.chars() {
-                                if qi < q.len() && ch == q.as_bytes()[qi] as char {
-                                    qi += 1;
-                                }
-                            }
-                            qi == q.len()
-                        })
-                        .count()
-                }
-                .saturating_sub(1)
-            }
-            PickerId::CommandPalette => {
-                let commands = CommandPalette::commands(&self.icon_style);
-                let q = query.to_lowercase();
-                if q.is_empty() {
-                    commands.len()
-                } else {
-                    commands
-                        .iter()
-                        .filter(|c| {
-                            let lower = c.icon.to_lowercase();
-                            let mut qi = 0usize;
-                            for ch in lower.chars() {
-                                if qi < q.len() && ch == q.as_bytes()[qi] as char {
-                                    qi += 1;
-                                }
-                            }
-                            qi == q.len()
-                        })
-                        .count()
-                }
-                .saturating_sub(1)
-            }
+            PickerId::ThemePicker => self
+                .themes
+                .iter()
+                .filter(|entry| fuzzy_match(&query, &entry.name))
+                .count()
+                .saturating_sub(1),
+            PickerId::CommandPalette => CommandPalette::commands(&self.icon_style)
+                .iter()
+                .filter(|c| fuzzy_match(&query, &c.icon))
+                .count()
+                .saturating_sub(1),
             _ => usize::MAX,
         };
         if let Some(top) = self.pickers.top_mut() {
@@ -6508,7 +6525,7 @@ impl App {
             PickerId::Queue => self.queue.cache.len(),
             PickerId::YTSearch => self.yt_results_cache.len(),
             PickerId::SearchLibrary => self.search_library_picks().len(),
-            PickerId::SpotifySearch => self.spotify.search_results.len(),
+            PickerId::SpotifySearch => self.spot_picks().len(),
             PickerId::Equalizer => EQ_PRESETS.len(),
             PickerId::SleepTimer => 9,
             PickerId::Crossfade => 14,
@@ -6519,47 +6536,15 @@ impl App {
             PickerId::NotificationSettings => NotifType::ALL.len(),
             PickerId::PlaylistSelect => self.playlist_cache.len() + 1,
             PickerId::PlaylistTrackSelect => self.tracks_cache.len(),
-            PickerId::ThemePicker => {
-                let q = query.to_lowercase();
-                if q.is_empty() {
-                    self.themes.len()
-                } else {
-                    self.themes
-                        .iter()
-                        .filter(|entry| {
-                            let lower = entry.name.to_lowercase();
-                            let mut qi = 0usize;
-                            for ch in lower.chars() {
-                                if qi < q.len() && ch == q.as_bytes()[qi] as char {
-                                    qi += 1;
-                                }
-                            }
-                            qi == q.len()
-                        })
-                        .count()
-                }
-            }
-            PickerId::CommandPalette => {
-                let commands = CommandPalette::commands(&self.icon_style);
-                let q = query.to_lowercase();
-                if q.is_empty() {
-                    commands.len()
-                } else {
-                    commands
-                        .iter()
-                        .filter(|c| {
-                            let lower = c.icon.to_lowercase();
-                            let mut qi = 0usize;
-                            for ch in lower.chars() {
-                                if qi < q.len() && ch == q.as_bytes()[qi] as char {
-                                    qi += 1;
-                                }
-                            }
-                            qi == q.len()
-                        })
-                        .count()
-                }
-            }
+            PickerId::ThemePicker => self
+                .themes
+                .iter()
+                .filter(|entry| fuzzy_match(&query, &entry.name))
+                .count(),
+            PickerId::CommandPalette => CommandPalette::commands(&self.icon_style)
+                .iter()
+                .filter(|c| fuzzy_match(&query, &c.icon))
+                .count(),
             PickerId::PodcastFeeds => self.podcast.feeds.len(),
             PickerId::PodcastEpisodes => self.podcast.episodes.len(),
             PickerId::PodcastSubscribe => 1,
@@ -10002,7 +9987,11 @@ impl App {
                                     NotifType::Spotify,
                                 );
                             } else {
-                                let idx = top.selected.min(self.spotify.search_results.len() - 1);
+                                let picks = self.spot_picks();
+                                if picks.is_empty() {
+                                    return;
+                                }
+                                let idx = picks[top.selected.min(picks.len() - 1)];
                                 let (playlist_id, _, track) =
                                     self.spotify.search_results[idx].clone();
                                 let track_index = track.index;
@@ -10991,8 +10980,10 @@ impl App {
                                 // re-search after the debounce elapses.
                                 self.spotify.search_results.clear();
                                 self.spotify.web_seq = self.spotify.web_seq.wrapping_add(1);
-                                self.spotify.search_debounce =
-                                    Some(std::time::Instant::now() + Duration::from_millis(500));
+                                self.spotify.search_debounce = Some(
+                                    std::time::Instant::now()
+                                        + Duration::from_millis(SEARCH_DEBOUNCE_MS),
+                                );
                             }
                         }
                         PickerId::SpotifyLink => {
@@ -11015,7 +11006,9 @@ impl App {
             }
             KeyCode::Tab => {
                 if let Some(top) = self.pickers.top_mut() {
-                    if top.id == PickerId::SearchLibrary {
+                    if matches!(top.id, PickerId::SearchLibrary | PickerId::SpotifySearch) {
+                        // Both search pickers share the same filter model, so
+                        // Tab narrows results the same way in either.
                         top.source = top.source.next();
                         top.selected = 0;
                         top.viewport_offset = 0;
@@ -11025,6 +11018,8 @@ impl App {
                         self.artist_cover = None;
                         self.artist_cover_stateful = None;
                         self.artist_slot.id = None;
+                        self.spotify.preview_fetch.id = None;
+                        self.spotify.preview_fetch.version = None;
                     } else if top.id == PickerId::EditMetadata {
                         self.metadata.field_idx = (self.metadata.field_idx + 1) % 7;
                     } else if top.id == PickerId::SpotifyLink {
@@ -11045,8 +11040,10 @@ impl App {
                                 top.query.pop();
                                 self.spotify.search_results.clear();
                                 self.spotify.web_seq = self.spotify.web_seq.wrapping_add(1);
-                                self.spotify.search_debounce =
-                                    Some(std::time::Instant::now() + Duration::from_millis(500));
+                                self.spotify.search_debounce = Some(
+                                    std::time::Instant::now()
+                                        + Duration::from_millis(SEARCH_DEBOUNCE_MS),
+                                );
                             }
                         }
                         PickerId::SpotifyLink => {
@@ -11085,8 +11082,9 @@ impl App {
                         top.query.push_str(text);
                         self.spotify.search_results.clear();
                         self.spotify.web_seq = self.spotify.web_seq.wrapping_add(1);
-                        self.spotify.search_debounce =
-                            Some(std::time::Instant::now() + Duration::from_millis(500));
+                        self.spotify.search_debounce = Some(
+                            std::time::Instant::now() + Duration::from_millis(SEARCH_DEBOUNCE_MS),
+                        );
                     }
                 }
                 PickerId::SpotifyLink => {

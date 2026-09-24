@@ -7,6 +7,7 @@
 use std::borrow::Cow;
 use std::path::PathBuf;
 
+use crate::app::fuzzy_match;
 use crate::app::{
     App, InputMode, LIBRARY_CATEGORIES, LibraryPick, NotifMode, NotifType, NotificationKind,
     RadioPick, RadioSection, TrackInfoKind, ZenSurface, folder_name, lyrics_are_synced,
@@ -3390,7 +3391,9 @@ impl Pickers {
                 } else {
                     Some(" Enter: play   Ctrl+D: download   Esc: close")
                 };
-                let block = Self::picker_panel(app, " \u{f04c7} Search ", help);
+                let src = app.pickers.top().map_or(PickerSource::All, |o| o.source);
+                let title = format!(" \u{f04c7} Search: {} ", src.label());
+                let block = Self::picker_panel(app, &title, help);
                 let inner = block.inner(picker_area);
                 f.render_widget(block, picker_area);
 
@@ -3427,7 +3430,8 @@ impl Pickers {
                         Span::styled(" ", cursor_style.unwrap_or_default()),
                     ]);
 
-                    let total = app.spotify.search_results.len();
+                    let picks = app.spot_picks();
+                    let total = picks.len();
                     let sel = app
                         .pickers
                         .top()
@@ -3459,13 +3463,19 @@ impl Pickers {
                             "  Type to search tracks, albums, playlists & artists...",
                             Style::default().fg(app.theme.fg_dim),
                         )));
+                    } else if app.spotify.search_loading {
+                        lines.push(Line::from(Span::styled(
+                            "  Searching…",
+                            Style::default().fg(app.theme.fg_dim),
+                        )));
                     } else if total == 0 {
                         lines.push(Line::from(Span::styled(
                             "  No results found",
                             Style::default().fg(app.theme.fg_dim),
                         )));
                     } else {
-                        for i in scroll_start..scroll_end {
+                        for row in scroll_start..scroll_end {
+                            let i = picks[row];
                             let (_, _pl_name, track) = &app.spotify.search_results[i];
                             let prefix = if i == sel { " > " } else { "   " };
                             let tag = match track.kind {
@@ -3486,7 +3496,7 @@ impl Pickers {
                                 "{prefix}{body} [{}]",
                                 tag.map(|t| t.to_string()).unwrap_or(dur)
                             );
-                            let style = if i == sel {
+                            let style = if row == sel {
                                 Style::default()
                                     .fg(app.theme.selection_fg_readable())
                                     .bg(app.theme.selection_bg)
@@ -3498,6 +3508,17 @@ impl Pickers {
                                 format!("{content}{}", " ".repeat(pad)),
                                 style,
                             )));
+                            // Register rows so clicking selects them, matching
+                            // the library search picker.
+                            app.mouse_map.register(
+                                Rect {
+                                    x: results_area.x,
+                                    y: results_area.y + 1 + row as u16,
+                                    width: results_area.width,
+                                    height: 1,
+                                },
+                                MouseZone::PickerItem(row),
+                            );
                         }
                     }
 
@@ -3530,7 +3551,7 @@ impl Pickers {
                             width: preview_area.width,
                             height: preview_area.height.saturating_sub(1),
                         };
-                        let (_, _, track) = &app.spotify.search_results[sel.min(total - 1)];
+                        let (_, _, track) = &app.spotify.search_results[picks[sel.min(total - 1)]];
                         let cover_w = 20u16.min(body.width.saturating_sub(24).max(8));
                         let (cover_area, meta_area) =
                             if (app.spotify.preview_cover_stateful.is_some()
@@ -6492,25 +6513,11 @@ impl Pickers {
         let commands = CommandPalette::commands(&app.icon_style);
 
         let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
-        let q = query.to_lowercase();
-        let filtered: Vec<usize> = if q.is_empty() {
-            (0..commands.len()).collect()
-        } else {
-            commands
-                .iter()
-                .enumerate()
-                .filter_map(|(i, c)| {
-                    let lower = c.icon.to_lowercase();
-                    let mut qi = 0usize;
-                    for ch in lower.chars() {
-                        if qi < q.len() && ch == q.as_bytes()[qi] as char {
-                            qi += 1;
-                        }
-                    }
-                    if qi == q.len() { Some(i) } else { None }
-                })
-                .collect()
-        };
+        let filtered: Vec<usize> = commands
+            .iter()
+            .enumerate()
+            .filter_map(|(i, c)| fuzzy_match(&query, &c.icon).then_some(i))
+            .collect();
 
         let block = Self::picker_panel(app, " Commands ", None);
         let inner = block.inner(area);
@@ -6523,7 +6530,7 @@ impl Pickers {
             Span::styled(" ", cursor_style.unwrap_or_default()),
         ]);
 
-        let show_groups = q.is_empty();
+        let show_groups = query.is_empty();
         let mut rows: Vec<(Option<&'static str>, Option<usize>)> = Vec::new();
         if show_groups {
             let mut acc = 0usize;
@@ -7098,26 +7105,12 @@ impl Pickers {
 
     fn render_theme(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let query = app.pickers.top().map_or(String::new(), |o| o.query.clone());
-        let q = query.to_lowercase();
-
-        let filtered: Vec<_> = if q.is_empty() {
-            app.themes.iter().enumerate().collect()
-        } else {
-            app.themes
-                .iter()
-                .enumerate()
-                .filter(|(_, entry)| {
-                    let lower = entry.name.to_lowercase();
-                    let mut qi = 0usize;
-                    for ch in lower.chars() {
-                        if qi < q.len() && ch == q.as_bytes()[qi] as char {
-                            qi += 1;
-                        }
-                    }
-                    qi == q.len()
-                })
-                .collect()
-        };
+        let filtered: Vec<_> = app
+            .themes
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| fuzzy_match(&query, &entry.name))
+            .collect();
 
         let total = filtered.len();
         let sel = app
