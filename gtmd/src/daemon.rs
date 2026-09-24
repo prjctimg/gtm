@@ -5971,6 +5971,13 @@ impl Daemon {
             return false;
         }
         let path = track.path.clone();
+        // librespot keeps a single player per session, and `StreamManager::load`
+        // tears the current one down, so a spotify: URI cannot be pre-decoded
+        // for standby without dropping the playing track. Crossfade is skipped
+        // for it and the normal advance path plays it instead.
+        if path.starts_with("spotify:") {
+            return false;
+        }
         let is_remote = parse_remote_path(&path).is_some();
         let decoded = if is_remote {
             match resolve_remote(inner, &path).await {
