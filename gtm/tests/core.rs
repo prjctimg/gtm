@@ -363,6 +363,11 @@ fn req_parse_spotify() {
             serde_json::json!({ "image_url": "https://i.scdn.co/image/abc" }),
             "spotify_track_image",
         ),
+        (
+            "spotify_play_pause",
+            serde_json::json!({}),
+            "spotify_play_pause",
+        ),
     ];
     for (cmd, params, expected) in cases {
         let req = DaemonReq::parse_cmd(cmd, params.clone()).unwrap();
@@ -434,6 +439,12 @@ fn res_spotify_wire() {
     let cases: Vec<(&str, DaemonRes)> = vec![
         (
             "spotify_status",
+            DaemonRes::SpotifyStatusRes {
+                status: status.clone(),
+            },
+        ),
+        (
+            "spotify_play_pause",
             DaemonRes::SpotifyStatusRes {
                 status: status.clone(),
             },

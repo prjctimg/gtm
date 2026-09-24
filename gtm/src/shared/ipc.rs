@@ -2029,12 +2029,6 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "spotify_status" => {
-                match serde_json::from_value::<SpotifyStatus>(field(&data, "status")) {
-                    Ok(status) => DaemonRes::SpotifyStatusRes { status },
-                    Err(_) => DaemonRes::Value { value: data },
-                }
-            }
             "spotify_playlists" => {
                 match serde_json::from_value::<Vec<SpotifyPlaylist>>(field(&data, "playlists")) {
                     Ok(playlists) => DaemonRes::SpotifyPlaylistsRes { playlists },
@@ -2051,7 +2045,7 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "spotify_set_token" | "spotify_clear" => {
+            "spotify_status" | "spotify_set_token" | "spotify_clear" | "spotify_play_pause" => {
                 match serde_json::from_value::<SpotifyStatus>(field(&data, "status")) {
                     Ok(status) => DaemonRes::SpotifyStatusRes { status },
                     Err(_) => DaemonRes::Value { value: data },
