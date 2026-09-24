@@ -34,11 +34,9 @@ use gtm::shared::ipc::{
 };
 use gtm::shared::playlist::{M3u8Format, PlaylistFormat, PlsFormat};
 use gtm::shared::secret::{
-    DEEZER_ARL, LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, TIDAL_CLIENT_ID,
-    TIDAL_TOKEN_KEY, delete_secret, get_secret, set_secret,
+    LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, delete_secret, get_secret, set_secret,
 };
 use gtm::shared::spotify::SpotifyTrack;
-use gtm::shared::tidal::TidalStatus;
 use gtm::shared::track::{StreamInfo, TrackInfo};
 use gtm::shared::wire;
 use gtm::shared::{CoreError, MetadataPatch};
@@ -51,20 +49,19 @@ use crate::cleaner::{
 };
 use crate::config::DaemonConfig;
 use crate::cover::{CoverCache, CoverProvider};
-use crate::deezer::{DeezerSearch, DeezerStream};
+use crate::deezer::DeezerSearch;
 use crate::deferred_mixer::DeferredMixer;
 use crate::lastfm::LastfmManager;
 use crate::library::{Library, extract_metadata};
 use crate::lyrics::{LyricsManager, lrc_to_text, meta_from_filename};
 use crate::network;
-use crate::oauth::{OAUTH_TIMEOUT, OauthFlow, TidalFlow, bind_callback};
+use crate::oauth::{OAUTH_TIMEOUT, OauthFlow, bind_callback};
 use crate::podcast::PodcastManager;
 use crate::queue;
 use crate::radio::RadioBrowserManager;
 use crate::remote;
 use crate::spotify::SpotifyManager;
 use crate::stream::StreamManager;
-use crate::subsonic::SubsonicManager;
 use crate::tags::{MetadataToWrite, write_tags};
 #[cfg(feature = "youtube")]
 use crate::youtube::{YoutubeManager, download_into};
@@ -79,9 +76,6 @@ const RESTART_THRESHOLD_SECS: f64 = 3.0;
 /// so the TUI never needs a fetch library. Only these synthetic schemes are
 /// treated as remote; everything else goes down the local-file path.
 enum RemoteKind {
-    Subsonic {
-        track_id: String,
-    },
     Podcast {
         feed_id: String,
         episode_index: usize,
@@ -97,11 +91,6 @@ enum RemoteKind {
     /// resolves to a direct CDN audio URL through the yt-dlp subprocess.
     YtDlp {
         url: String,
-    },
-    /// Deezer track: ARL-authenticated full MP3 (Blowfish-chunk-decrypted CDN
-    /// stream) with a 30s public-preview fallback when no ARL is configured.
-    Deezer {
-        track_id: u64,
     },
 }
 
@@ -135,41 +124,7 @@ fn ytdlp_label(url: &str) -> Option<&'static str> {
     }
 }
 
-/// Map a Deezer web track URL (`deezer.com/track/<id>`) to the canonical
-/// `deezer://track/<id>` provider path so pasted links play like native
-/// paths. Returns `None` for non-track Deezer pages.
-fn deezer_link_path(url: &str) -> Option<String> {
-    let host = url
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or("")
-        .trim_start_matches("www.")
-        .to_ascii_lowercase();
-    if host != "deezer.com" && !host.ends_with(".deezer.com") {
-        return None;
-    }
-    // Skip the scheme + host, keep the path before any query/fragment.
-    let rest = url
-        .trim_start_matches("https://")
-        .trim_start_matches("http://");
-    let path = rest.split(['?', '#']).next().unwrap_or(rest);
-    let mut parts = path.split('/').filter(|p| !p.is_empty());
-    parts.next()?; // host segment (www.deezer.com | deezer.com | xx.deezer.com)
-    if parts.next()? != "track" {
-        return None;
-    }
-    let id = parts.next()?.parse::<u64>().ok()?;
-    Some(format!("deezer://track/{id}"))
-}
-
 fn parse_remote_path(path: &str) -> Option<RemoteKind> {
-    if let Some(id) = path.strip_prefix("subsonic://") {
-        return Some(RemoteKind::Subsonic {
-            track_id: id.to_string(),
-        });
-    }
     if let Some(rest) = path.strip_prefix("podcast://") {
         let (feed_id, index) = rest.split_once('/').unwrap_or((rest, "0"));
         let episode_index = index.parse::<usize>().unwrap_or(0);
@@ -188,15 +143,6 @@ fn parse_remote_path(path: &str) -> Option<RemoteKind> {
             station_name,
         });
     }
-    if let Some(id) = path.strip_prefix("deezer://track/")
-        && let Ok(track_id) = id.parse::<u64>()
-    {
-        return Some(RemoteKind::Deezer { track_id });
-    }
-    if let Some(path) = deezer_link_path(path) {
-        let track_id = path.trim_start_matches("deezer://track/").parse().ok()?;
-        return Some(RemoteKind::Deezer { track_id });
-    }
     if ytdlp_label(path).is_some() {
         return Some(RemoteKind::YtDlp { url: path.into() });
     }
@@ -211,9 +157,6 @@ struct RemoteResolved {
     url: String,
     /// Whether the transport is live (non-seekable) radio/stream.
     live: bool,
-    /// Blowfish-CBC per-2048-chunk decryption key for the stream body
-    /// (Deezer full-track MP3); `None` for plain streams and previews.
-    blowfish: Option<[u8; 16]>,
 }
 
 /// Resolve a synthetic remote path into its playable HTTP stream URL, plus
@@ -222,24 +165,14 @@ struct RemoteResolved {
 async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<RemoteResolved, CoreError> {
     let kind = parse_remote_path(path)
         .ok_or_else(|| CoreError::Daemon(format!("{path} is not a remote provider path")))?;
-    let (url, blowfish) = match &kind {
-        RemoteKind::Subsonic { track_id } => {
-            let subsonic = inner.subsonic.lock().await;
-            if !subsonic.configured() {
-                return Err(CoreError::Daemon("subsonic server not configured".into()));
-            }
-            (
-                subsonic.stream_url(track_id).map_err(CoreError::Daemon)?,
-                None,
-            )
-        }
+    let url = match &kind {
         RemoteKind::Podcast {
             feed_id,
             episode_index,
         } => {
             let mut podcast = inner.podcast.lock().await;
             match podcast.episode_at(feed_id, *episode_index) {
-                Some(ep) => (ep.url.clone(), None),
+                Some(ep) => ep.url.clone(),
                 None => {
                     // Daemon restarted since the feed was browsed; refresh the
                     // feed once so replay/next still resolves.
@@ -247,19 +180,16 @@ async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<RemoteResolve
                         .refresh_feed(feed_id)
                         .await
                         .map_err(|e| CoreError::Daemon(format!("podcast feed: {e}")))?;
-                    (
-                        podcast
-                            .episode_at(feed_id, *episode_index)
-                            .ok_or_else(|| CoreError::Daemon("podcast episode missing".into()))?
-                            .url
-                            .clone(),
-                        None,
-                    )
+                    podcast
+                        .episode_at(feed_id, *episode_index)
+                        .ok_or_else(|| CoreError::Daemon("podcast episode missing".into()))?
+                        .url
+                        .clone()
                 }
             }
         }
         RemoteKind::Radio { station_id, .. } => {
-            let url = if let Some(index) = gtm::shared::custom::parse_custom_id(station_id) {
+            if let Some(index) = gtm::shared::custom::parse_custom_id(station_id) {
                 gtm::shared::custom::station_by_index(index)
                     .map_err(CoreError::Daemon)?
                     .ok_or_else(|| CoreError::Daemon(format!("no custom station {index}")))?
@@ -271,10 +201,9 @@ async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<RemoteResolve
                     .await
                     .map_err(|e| CoreError::Daemon(format!("radio lookup: {e}")))?
                     .url_resolved
-            };
-            (url, None)
+            }
         }
-        RemoteKind::Stream { url } => (url.clone(), None),
+        RemoteKind::Stream { url } => url.clone(),
         #[cfg(feature = "youtube")]
         RemoteKind::YtDlp { url } => {
             // Resolve via yt-dlp without holding the `YoutubeManager` mutex
@@ -289,7 +218,7 @@ async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<RemoteResolve
             let (_, direct) = crate::youtube::resolve_info_ytdlp(&sem, &gate, &auth, url)
                 .await
                 .map_err(CoreError::Daemon)?;
-            (direct, None)
+            direct
         }
         #[cfg(not(feature = "youtube"))]
         RemoteKind::YtDlp { .. } => {
@@ -297,21 +226,9 @@ async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<RemoteResolve
                 "youtube support is disabled in this build".into(),
             ));
         }
-        RemoteKind::Deezer { track_id } => {
-            let mut deezer = inner.deezer.lock().await;
-            let resolved = deezer
-                .resolve_track(*track_id)
-                .await
-                .map_err(CoreError::Daemon)?;
-            (resolved.url, resolved.blowfish)
-        }
     };
     let live = matches!(kind, RemoteKind::Radio { .. } | RemoteKind::Stream { .. });
-    Ok(RemoteResolved {
-        url,
-        live,
-        blowfish,
-    })
+    Ok(RemoteResolved { url, live })
 }
 
 /// Blocking HTTP open of a remote stream. Runs on a blocking thread; returns
@@ -370,31 +287,15 @@ fn decode_remote_reader(
     live: bool,
     start_pos: f64,
     title_slot: Option<remote::IcySlot>,
-    key: Option<[u8; 16]>,
 ) -> AudioResult<Box<dyn rodio::Source<Item = f32> + Send>> {
     let reader = open_remote_reader(&url, live, title_slot.clone())?;
-    // Deezer full-track MP3 bodies are Blowfish-CBC-encrypted per 2048-byte
-    // chunk; wrap the transport in a decrypting reader when a key is present.
-    let reader: Box<dyn std::io::Read + Send> = match key {
-        Some(k) => Box::new(remote::BlowfishReader::new(
-            reader,
-            remote::blowfish_cipher(k),
-        )),
-        None => reader,
-    };
     // Live streams reconnect from scratch (same URL, fresh ICY negotiation);
     // seeks stay disabled for them at the symphonia level, but the re-opener
     // lets a dropped connection resume instead of ending the source.
     let reopen: Option<Box<dyn StreamingReopen>> = if live {
         Some(Box::new(remote::LiveReopen::new(url, title_slot)))
     } else {
-        match key {
-            Some(k) => Some(Box::new(remote::BlowfishReopen::new(
-                url,
-                remote::blowfish_cipher(k),
-            ))),
-            None => Some(Box::new(remote::HttpReopen::new(url))),
-        }
+        Some(Box::new(remote::HttpReopen::new(url)))
     };
     AudioMixer::decode_reader(reader, reopen, start_pos)
 }
@@ -829,7 +730,7 @@ impl Cmd {
         Ok(DaemonRes::Ok)
     }
 
-    /// Play a synthetic remote path (`subsonic://`, `podcast://`, `radio://`)
+    /// Play a synthetic remote path (`podcast://`, `radio://`, `stream://`)
     /// by streaming the underlying HTTP URL through the native decoder. Reuses
     /// the same `load_active_decoded` pipeline as local files and Spotify, so
     /// EQ, speed, crossfade-standby and gapless handling all agree on the
@@ -842,7 +743,7 @@ impl Cmd {
     ) -> Result<DaemonRes, CoreError> {
         inner.play_session.fetch_add(1, Ordering::Release);
         let resolved = resolve_remote(inner, path).await?;
-        let (url, live, key) = (resolved.url, resolved.live, resolved.blowfish);
+        let (url, live) = (resolved.url, resolved.live);
         let kind = parse_remote_path(path)
             .ok_or_else(|| CoreError::Daemon(format!("{path} is not a remote provider path")))?;
 
@@ -872,8 +773,8 @@ impl Cmd {
         }
 
         // Fetch + probe the provider's stream off the async thread. Live radio
-        // does not reconnect for seeks; podcast/Subsonic streams do. Reset any
-        // stale live title before (re)connecting.
+        // does not reconnect for seeks; podcast streams do. Reset any stale
+        // live title before (re)connecting.
         *inner.icy_title.lock().unwrap() = None;
         {
             let mut state = inner.state.write().await;
@@ -883,7 +784,7 @@ impl Cmd {
         let icy_slot = inner.icy_title.clone();
         let dur = {
             let decoded = tokio::task::spawn_blocking(move || {
-                decode_remote_reader(url, live, start, Some(icy_slot), key)
+                decode_remote_reader(url, live, start, Some(icy_slot))
             })
             .await
             .map_err(|e| CoreError::Daemon(format!("spawn_blocking: {e}")))?
@@ -907,7 +808,6 @@ impl Cmd {
             }
             None => {
                 let (title, artist, album) = match &kind {
-                    RemoteKind::Subsonic { .. } => ("Subsonic Track", "Unknown Artist", "Subsonic"),
                     RemoteKind::Podcast { .. } => ("Podcast Episode", "Podcast", "Podcast"),
                     RemoteKind::Radio {
                         station_name: name, ..
@@ -917,7 +817,6 @@ impl Cmd {
                         let label = ytdlp_label(url).unwrap_or("YouTube");
                         (label, label, label)
                     }
-                    RemoteKind::Deezer { .. } => ("Deezer Track", "Deezer", "Deezer"),
                 };
                 TrackInfo {
                     path: path.to_string(),
@@ -1015,21 +914,6 @@ impl Cmd {
     /// queue so `next` rotates through them.
     pub async fn play_url_stream(inner: &DaemonInner, url: &str) -> Result<DaemonRes, CoreError> {
         inner.play_session.fetch_add(1, Ordering::Release);
-        // Deezer web track links resolve through the provider (full-track ARL
-        // streaming or 30s preview) and decrypt in the decode pipeline.
-        if let Some(path) = deezer_link_path(url) {
-            {
-                let mut state = inner.state.write().await;
-                state.queue.push(TrackInfo {
-                    path: path.clone(),
-                    title: "Deezer Track".to_string(),
-                    artist: "Deezer".to_string(),
-                    album: "Deezer".to_string(),
-                    ..Default::default()
-                });
-            }
-            return Cmd::play(inner, &path, 0.0, false).await;
-        }
         // yt-dlp family URLs (SoundCloud, Bandcamp, Mixcloud, ...) resolve to
         // a direct CDN audio URL through the extractor; the queue entry keeps
         // the extracted title so the now-playing pane shows real names.
@@ -2710,104 +2594,7 @@ impl Spotify {
     }
 }
 
-/// Tidal integration: daemon-hosted OAuth PKCE link flow, mirroring
-/// `Spotify::oauth_start` but against Tidal's authorize/token endpoints.
-/// The community "web" client id cannot be used as a blank-input fallback
-/// (its redirect is `listen.tidal.com/login/auth`, not loopback), so the flow
-/// requires a client id the user registered with
-/// `http://127.0.0.1:{port}/login` as a Redirect URI — validation is relaxed
-/// (any non-empty id ≤64 chars) to accommodate Tidal's short alphanumeric ids.
-struct Tidal;
-
-impl Tidal {
-    pub async fn oauth_start(
-        inner: &Arc<DaemonInner>,
-        client_id: &str,
-        port: u16,
-    ) -> Result<DaemonRes, CoreError> {
-        // Abort any previous pending flow so its listener socket is freed.
-        if let Some(handle) = inner.oauth_tidal_task.lock().await.take() {
-            handle.abort();
-        }
-
-        let cid = client_id.trim();
-        if cid.is_empty() {
-            return Err(CoreError::Daemon("empty tidal client id".into()));
-        }
-        if cid.len() > 64
-            || !cid
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-        {
-            return Err(CoreError::Daemon(format!(
-                "invalid tidal client id — get one from https://developer.tidal.com and \
-                 list http://127.0.0.1:{port}/login as a Redirect URI \
-                 (127.0.0.1, not localhost) or the link fails silently in the browser"
-            )));
-        }
-        // Persist the client id in the OS keychain so future links can reuse
-        // it without the user pasting it again.
-        set_secret(TIDAL_CLIENT_ID, cid);
-        let flow = TidalFlow::new(cid, port);
-        // Bind the loopback callback server *before* returning the URL so the
-        // browser always opens to a live listener.
-        let listener = flow
-            .listen()
-            .await
-            .map_err(|e| CoreError::Daemon(format!("Tidal callback server: {e}")))?;
-        let url = flow.authorize_url();
-
-        let inner2 = Arc::clone(inner);
-        let handle = tokio::spawn(async move {
-            match flow.wait_token(listener).await {
-                Ok(token) => {
-                    set_secret(TIDAL_TOKEN_KEY, &token);
-                    info!("tidal oauth link complete (token stored)");
-                    *inner2.tidal_error.lock().await = None;
-                }
-                Err(e) => {
-                    warn!("tidal oauth link failed: {e}");
-                    *inner2.tidal_error.lock().await = Some(e);
-                }
-            }
-            let _ = inner2.event_tx.send(DaemonEvent::TidalStatusChanged);
-        });
-        *inner.oauth_tidal_task.lock().await = Some(handle);
-
-        Ok(DaemonRes::TidalOauthStarted { url })
-    }
-
-    pub async fn oauth_cancel(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        if let Some(handle) = inner.oauth_tidal_task.lock().await.take() {
-            handle.abort();
-            info!("tidal oauth link flow cancelled");
-        }
-        Ok(DaemonRes::Ok)
-    }
-
-    pub async fn clear(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        delete_secret(TIDAL_TOKEN_KEY);
-        delete_secret(TIDAL_CLIENT_ID);
-        *inner.tidal_error.lock().await = None;
-        Ok(DaemonRes::TidalStatusRes {
-            status: TidalStatus {
-                linked: false,
-                error: None,
-            },
-        })
-    }
-
-    pub async fn status(inner: &Arc<DaemonInner>) -> Result<DaemonRes, CoreError> {
-        Ok(DaemonRes::TidalStatusRes {
-            status: TidalStatus {
-                linked: get_secret(TIDAL_TOKEN_KEY).is_some(),
-                error: inner.tidal_error.lock().await.clone(),
-            },
-        })
-    }
-}
-
-/// Chart providers (Spotify first; Deezer/Tidal slot in later via same trait).
+/// Chart providers (Spotify first; further sources plug in via the same trait).
 struct Charts;
 
 impl Charts {
@@ -2859,171 +2646,6 @@ impl Charts {
                 message: format!("charts tracks failed: {e}"),
             }),
         }
-    }
-}
-
-/// Navidrome / Subsonic server integration.
-struct Subsonic;
-
-impl Subsonic {
-    pub async fn configure(
-        inner: &DaemonInner,
-        server: &str,
-        username: &str,
-        password: &str,
-    ) -> Result<DaemonRes, CoreError> {
-        let mut subsonic = inner.subsonic.lock().await;
-        match subsonic
-            .set_config(
-                server.to_string(),
-                username.to_string(),
-                password.to_string(),
-            )
-            .await
-        {
-            Ok(_) => {
-                let status = subsonic.status();
-                Ok(DaemonRes::SubsonicStatusRes { status })
-            }
-            Err(e) => Err(CoreError::Daemon(e)),
-        }
-    }
-
-    pub async fn clear(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        inner.subsonic.lock().await.clear();
-        Ok(DaemonRes::Ok)
-    }
-
-    pub async fn status(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let status = inner.subsonic.lock().await.status();
-        Ok(DaemonRes::SubsonicStatusRes { status })
-    }
-
-    pub async fn ping(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let subsonic = inner.subsonic.lock().await;
-        if !subsonic.configured() {
-            return Err(CoreError::Daemon("subsonic server not configured".into()));
-        }
-        subsonic
-            .ping()
-            .await
-            .map(|_| DaemonRes::SubsonicPingRes {
-                message: "ping ok".into(),
-            })
-            .map_err(CoreError::Daemon)
-    }
-
-    pub async fn search(inner: &DaemonInner, query: &str) -> Result<DaemonRes, CoreError> {
-        let mut subsonic = inner.subsonic.lock().await;
-        if !subsonic.configured() {
-            return Err(CoreError::Daemon("subsonic server not configured".into()));
-        }
-        let results = subsonic.search(query).await.map_err(CoreError::Daemon)?;
-        Ok(DaemonRes::SubsonicSearchRes { results })
-    }
-
-    pub async fn albums(
-        inner: &DaemonInner,
-        offset: u64,
-        size: u64,
-    ) -> Result<DaemonRes, CoreError> {
-        let subsonic = inner.subsonic.lock().await;
-        let albums = subsonic
-            .albums(offset, size)
-            .await
-            .map_err(CoreError::Daemon)?;
-        Ok(DaemonRes::SubsonicAlbumsRes { albums })
-    }
-
-    pub async fn album_tracks(inner: &DaemonInner, album_id: &str) -> Result<DaemonRes, CoreError> {
-        let subsonic = inner.subsonic.lock().await;
-        let tracks = subsonic
-            .album_tracks(album_id)
-            .await
-            .map_err(CoreError::Daemon)?;
-        Ok(DaemonRes::SubsonicTracksRes { tracks })
-    }
-
-    pub async fn track_image(inner: &DaemonInner, track_id: &str) -> Result<DaemonRes, CoreError> {
-        let subsonic = inner.subsonic.lock().await;
-        let data = subsonic.cover_base64(track_id, 600).await;
-        Ok(DaemonRes::SpotifyImageRes { data })
-    }
-
-    /// Play a single Subsonic track natively. The synthetic path keeps the
-    /// daemon's queue/distplay consistent with the decoded session, and the
-    /// client-supplied metadata lands in the queue entry.
-    pub async fn play(
-        inner: &DaemonInner,
-        track_id: &str,
-        title: &str,
-        artist: &str,
-        album: &str,
-        duration_secs: Option<u64>,
-        _cover_url: Option<&str>,
-    ) -> Result<DaemonRes, CoreError> {
-        let path = format!("subsonic://{track_id}");
-        let track = TrackInfo {
-            id: 0,
-            path: path.clone(),
-            title: if title.trim().is_empty() {
-                "Subsonic Track".into()
-            } else {
-                title.to_string()
-            },
-            artist: if artist.trim().is_empty() {
-                "Unknown Artist".into()
-            } else {
-                artist.to_string()
-            },
-            album: album.to_string(),
-            duration: duration_secs.unwrap_or(0) as f64,
-            ..Default::default()
-        };
-        {
-            let mut state = inner.state.write().await;
-            let existing = state.queue.iter().position(|t| t.path == path);
-            match existing {
-                Some(i) => {
-                    state.queue[i] = track;
-                }
-                None => state.queue.push(track),
-            }
-        }
-        Daemon::push_queue_state(inner).await;
-        Cmd::play(inner, &path, 0.0, false).await
-    }
-
-    /// Enqueue every track of an album (with metadata) and play the first.
-    pub async fn play_album(inner: &DaemonInner, album_id: &str) -> Result<DaemonRes, CoreError> {
-        let tracks = {
-            let subsonic = inner.subsonic.lock().await;
-            subsonic
-                .album_tracks(album_id)
-                .await
-                .map_err(CoreError::Daemon)?
-        };
-        if tracks.is_empty() {
-            return Err(CoreError::Daemon("album has no tracks".into()));
-        }
-        let first = tracks[0].clone();
-        {
-            let mut state = inner.state.write().await;
-            state.queue.retain(|t| !t.path.starts_with("subsonic://"));
-            for t in tracks {
-                state.queue.push(TrackInfo {
-                    id: 0,
-                    path: format!("subsonic://{}", t.id),
-                    title: t.title,
-                    artist: t.artist,
-                    album: t.album,
-                    duration: t.duration_secs as f64,
-                    ..Default::default()
-                });
-            }
-        }
-        Daemon::push_queue_state(inner).await;
-        Cmd::play(inner, &format!("subsonic://{}", first.id), 0.0, false).await
     }
 }
 
@@ -4438,11 +4060,10 @@ struct DaemonInner {
     #[cfg(feature = "youtube")]
     youtube: Arc<tokio::sync::Mutex<YoutubeManager>>,
     spotify: Arc<tokio::sync::Mutex<SpotifyManager>>,
-    subsonic: tokio::sync::Mutex<SubsonicManager>,
-    deezer: tokio::sync::Mutex<DeezerStream>,
     podcast: tokio::sync::Mutex<PodcastManager>,
     radio: tokio::sync::Mutex<RadioBrowserManager>,
-    /// Chart providers registry (Spotify first; Deezer/Tidal later).
+    /// Chart providers registry (Spotify first; more sources plug in via the
+    /// same `ChartProvider` trait).
     charts: tokio::sync::Mutex<ChartsRegistry>,
     /// librespot streaming bridge for Premium Spotify playback.
     stream: tokio::sync::Mutex<StreamManager>,
@@ -4457,13 +4078,6 @@ struct DaemonInner {
     /// timeout, token-exchange error, …). Cleared on a successful exchange so
     /// the Setup picker can show the reason inline instead of hanging.
     lastfm_error: tokio::sync::Mutex<Option<String>>,
-    /// Pending Tidal OAuth link flow task; kept separate so the Spotify,
-    /// Last.fm, and Tidal flows never abort each other.
-    oauth_tidal_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
-    /// Tidal link failure surfaced through the next status poll (callback
-    /// timeout, token-exchange error, …). Cleared on a successful exchange so
-    /// the Setup picker can show the reason inline instead of hanging.
-    tidal_error: tokio::sync::Mutex<Option<String>>,
     crossfade_loaded_for: tokio::sync::Mutex<Option<String>>,
     countdown_notified_for: tokio::sync::Mutex<Option<String>>,
     /// Wall-clock instant of the last `PositionChanged` broadcast. The 16ms
@@ -4589,12 +4203,6 @@ fn is_read_only(req: &DaemonReq) -> bool {
             | DaemonReq::SpotifyArtistTopTracks { .. }
             | DaemonReq::SpotifyTrackImage { .. }
             | DaemonReq::LastfmStatus
-            | DaemonReq::SubsonicStatus
-            | DaemonReq::SubsonicPing
-            | DaemonReq::SubsonicSearch { .. }
-            | DaemonReq::SubsonicAlbums { .. }
-            | DaemonReq::SubsonicAlbumTracks { .. }
-            | DaemonReq::SubsonicCover { .. }
             | DaemonReq::PodcastFeeds
             | DaemonReq::PodcastEpisodes { .. }
             | DaemonReq::PodcastStatus
@@ -4647,8 +4255,6 @@ fn request_is_playback(req: &DaemonReq) -> bool {
             | DaemonReq::CancelSleepTimer
             | DaemonReq::SetAudioDevice { .. }
             | DaemonReq::SpotifyPlayPause
-            | DaemonReq::SubsonicPlay { .. }
-            | DaemonReq::SubsonicPlayAlbum { .. }
             | DaemonReq::PodcastPlay { .. }
             | DaemonReq::RadioPlay { .. }
     )
@@ -4811,8 +4417,6 @@ impl Daemon {
             spotify: Arc::new(tokio::sync::Mutex::new(SpotifyManager::new(
                 config_dir.clone(),
             ))),
-            subsonic: tokio::sync::Mutex::new(SubsonicManager::new(config_dir.clone())),
-            deezer: tokio::sync::Mutex::new(DeezerStream::from_keyring()),
             podcast: tokio::sync::Mutex::new(PodcastManager::new(config_dir)),
             radio: tokio::sync::Mutex::new(RadioBrowserManager::new()),
             charts: tokio::sync::Mutex::new(ChartsRegistry::empty()),
@@ -4820,8 +4424,6 @@ impl Daemon {
             oauth_task: tokio::sync::Mutex::new(None),
             oauth_lastfm_task: tokio::sync::Mutex::new(None),
             lastfm_error: tokio::sync::Mutex::new(None),
-            oauth_tidal_task: tokio::sync::Mutex::new(None),
-            tidal_error: tokio::sync::Mutex::new(None),
             crossfade_loaded_for: tokio::sync::Mutex::new(None),
             countdown_notified_for: tokio::sync::Mutex::new(None),
             last_pos_broadcast: tokio::sync::Mutex::new(None),
@@ -5084,11 +4686,8 @@ impl Daemon {
 
         let provider_inner = Arc::clone(&self.inner);
         tokio::spawn(async move {
-            let mut subsonic = provider_inner.subsonic.lock().await;
-            subsonic.load();
             let mut podcast = provider_inner.podcast.lock().await;
             podcast.load();
-            drop(subsonic);
             drop(podcast);
             Lastfm::restore_credentials(&provider_inner).await;
             Lastfm::set_retry_queue(&provider_inner).await;
@@ -5833,59 +5432,6 @@ impl Daemon {
             DaemonReq::LastfmClear => Lastfm::clear(inner).await,
             DaemonReq::LastfmLove => Lastfm::love(inner).await,
             DaemonReq::LastfmUnlove => Lastfm::unlove(inner).await,
-            DaemonReq::TidalOauthStart { client_id, port } => {
-                Tidal::oauth_start(inner, client_id, *port).await
-            }
-            DaemonReq::TidalCancelOauth => Tidal::oauth_cancel(inner).await,
-            DaemonReq::TidalStatus => Tidal::status(inner).await,
-            DaemonReq::TidalClear => Tidal::clear(inner).await,
-            DaemonReq::SubsonicConfigure {
-                server,
-                username,
-                password,
-            } => Subsonic::configure(inner, server, username, password).await,
-            DaemonReq::SetDeezerArl { arl } => {
-                inner.deezer.lock().await.set_arl(arl);
-                if arl.trim().is_empty() {
-                    delete_secret(DEEZER_ARL);
-                } else {
-                    set_secret(DEEZER_ARL, arl.trim());
-                }
-                Ok(DaemonRes::Ok)
-            }
-            DaemonReq::SubsonicClear => Subsonic::clear(inner).await,
-            DaemonReq::SubsonicStatus => Subsonic::status(inner).await,
-            DaemonReq::SubsonicPing => Subsonic::ping(inner).await,
-            DaemonReq::SubsonicSearch { query } => Subsonic::search(inner, query).await,
-            DaemonReq::SubsonicAlbums { offset, size } => {
-                Subsonic::albums(inner, *offset, *size).await
-            }
-            DaemonReq::SubsonicAlbumTracks { album_id } => {
-                Subsonic::album_tracks(inner, album_id).await
-            }
-            DaemonReq::SubsonicPlay {
-                track_id,
-                title,
-                artist,
-                album,
-                duration_secs,
-                cover_url,
-            } => {
-                Subsonic::play(
-                    inner,
-                    track_id,
-                    title,
-                    artist,
-                    album,
-                    *duration_secs,
-                    cover_url.as_deref(),
-                )
-                .await
-            }
-            DaemonReq::SubsonicPlayAlbum { album_id } => {
-                Subsonic::play_album(inner, album_id).await
-            }
-            DaemonReq::SubsonicCover { track_id } => Subsonic::track_image(inner, track_id).await,
             DaemonReq::PodcastAddFeed { url } => Podcast::add_feed(inner, url).await,
             DaemonReq::PodcastRemoveFeed { feed_id } => Podcast::remove_feed(inner, feed_id).await,
             DaemonReq::PodcastFeeds => Podcast::feeds(inner).await,
@@ -6382,16 +5928,6 @@ impl Daemon {
             {
                 return false;
             }
-            let host = lower
-                .trim_start_matches("https://")
-                .trim_start_matches("http://")
-                .split(['/', '?', '#'])
-                .next()
-                .unwrap_or("")
-                .trim_start_matches("www.");
-            if host == "deezer.com" || host.ends_with(".deezer.com") {
-                return false;
-            }
             return true;
         }
         false
@@ -6418,10 +5954,10 @@ impl Daemon {
         let decoded = if is_remote {
             match resolve_remote(inner, &path).await {
                 Ok(resolved) => {
-                    let (url, live, key) = (resolved.url, resolved.live, resolved.blowfish);
+                    let (url, live) = (resolved.url, resolved.live);
                     let start = 0.0;
                     tokio::task::spawn_blocking(move || {
-                        decode_remote_reader(url, live, start, None, key)
+                        decode_remote_reader(url, live, start, None)
                     })
                     .await
                 }
@@ -7252,40 +6788,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deezer_link_parsing() {
-        // Web track URLs map to the canonical provider path.
-        assert_eq!(
-            deezer_link_path("https://www.deezer.com/track/3135556"),
-            Some("deezer://track/3135556".to_string())
-        );
-        assert_eq!(
-            deezer_link_path("https://deezer.com/track/3135556?utm_source=test"),
-            Some("deezer://track/3135556".to_string())
-        );
-        assert_eq!(
-            deezer_link_path("http://www.deezer.com/track/3135556"),
-            Some("deezer://track/3135556".to_string())
-        );
-        // Non-track pages and foreign hosts stay unhandled.
-        assert_eq!(deezer_link_path("https://www.deezer.com/album/123"), None);
-        assert_eq!(deezer_link_path("https://www.deezer.com/track/abc"), None);
-        assert_eq!(deezer_link_path("https://example.com/track/3135556"), None);
-    }
-
-    #[test]
-    fn parse_remote_deezer() {
-        assert!(matches!(
-            parse_remote_path("deezer://track/3135556"),
-            Some(RemoteKind::Deezer { track_id: 3135556 })
-        ));
-        assert!(matches!(
-            parse_remote_path("https://www.deezer.com/track/3135556"),
-            Some(RemoteKind::Deezer { .. })
-        ));
-        // Non-Deezer http URLs still parse as plain streams.
+    fn parse_remote_streams() {
+        // Bare HTTP(S) URLs are plain streams.
         assert!(matches!(
             parse_remote_path("https://stream.example.com/radio.mp3"),
             Some(RemoteKind::Stream { .. })
         ));
+        // Synthetic podcast paths carry the feed id and episode index.
+        assert!(matches!(
+            parse_remote_path("podcast://feed-1/2"),
+            Some(RemoteKind::Podcast { .. })
+        ));
+        // Local paths are not remote at all.
+        assert!(parse_remote_path("/home/me/song.mp3").is_none());
     }
 }

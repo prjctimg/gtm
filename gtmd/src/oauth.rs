@@ -18,16 +18,6 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 const SPOTIFY_AUTHORIZE_URL: &str = "https://accounts.spotify.com/authorize";
 const SPOTIFY_TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 
-/// Tidal OAuth endpoints. Tidal's authorize page is
-/// `login.tidal.com/authorize` and its token endpoint lives on
-/// `auth.tidal.com` (not `login.tidal.com`).
-const TIDAL_AUTHORIZE_URL: &str = "https://login.tidal.com/authorize";
-const TIDAL_TOKEN_URL: &str = "https://auth.tidal.com/v1/oauth2/token";
-
-/// Scopes required for the Tidal link flow: access to the user's profile and
-/// the ability to write (love/playlist) actions on their behalf.
-const TIDAL_SCOPES: &[&str] = &["r_usr", "w_usr"];
-
 /// Default local redirect port served by [`OauthFlow::listen`].
 pub const DEFAULT_OAUTH_PORT: u16 = 8990;
 
@@ -131,85 +121,6 @@ impl OauthFlow {
     /// Bind the loopback callback socket now. Returning the authorize URL (or
     /// telling the caller the browser can be opened) should always happen
     /// *after* this succeeds; otherwise a fast user can land on a dead port.
-    pub async fn listen(&self) -> Result<OauthListener, String> {
-        let listener = tokio::net::TcpListener::bind(self.redirect_addr)
-            .await
-            .map_err(|e| format!("bind OAuth callback server to {}: {e}", self.redirect_addr))?;
-        Ok(OauthListener {
-            listener,
-            deadline: tokio::time::Instant::now() + OAUTH_TIMEOUT,
-        })
-    }
-}
-
-/// One pending Tidal OAuth link flow. Mirrors [`OauthFlow`] (PKCE S256,
-/// loopback `code` callback, daemon-hosted) but targets Tidal's authorize and
-/// token endpoints with Tidal's `r_usr w_usr` scopes. The clients are separate
-/// types because the two providers differ in more than the endpoint strings
-/// (Tidal's token exchange must echo `scope` and its authorize page sits on a
-/// different subdomain), and keeping them apart keeps the Spotify flow pinned.
-pub struct TidalFlow {
-    client_id: String,
-    pkce: Pkce,
-    redirect_uri: String,
-    redirect_addr: SocketAddr,
-    /// Anti-CSRF token, generated once and verified against the value echoed
-    /// back in the redirect (same contract as [`OauthFlow::state`]).
-    state: String,
-}
-
-impl TidalFlow {
-    pub fn new(client_id: impl Into<String>, port: u16) -> Self {
-        let host = "127.0.0.1";
-        let redirect_uri = format!("http://{host}:{port}/login");
-        let redirect_addr = format!("{host}:{port}")
-            .parse()
-            .expect("valid loopback redirect address");
-        Self {
-            client_id: client_id.into(),
-            pkce: Pkce::new_random(),
-            redirect_uri,
-            redirect_addr,
-            state: random_url_safe(16),
-        }
-    }
-
-    pub fn authorize_url(&self) -> String {
-        let state = self.state.clone();
-        let scope = TIDAL_SCOPES.join(" ");
-        let params = [
-            ("response_type", "code"),
-            ("client_id", self.client_id.as_str()),
-            ("redirect_uri", self.redirect_uri.as_str()),
-            ("scope", scope.as_str()),
-            ("code_challenge_method", "S256"),
-            ("code_challenge", self.pkce.challenge.as_str()),
-            ("state", state.as_str()),
-        ];
-        let query = params
-            .iter()
-            .map(|(k, v)| format!("{k}={}", urlencode(v)))
-            .collect::<Vec<_>>()
-            .join("&");
-        format!("{TIDAL_AUTHORIZE_URL}?{query}")
-    }
-
-    /// Serve one redirect, exchange the code via [`tidal_exchange_code`], and
-    /// return the serialized token. Same timeout/CSRF contract as
-    /// [`OauthFlow::wait_token`].
-    pub async fn wait_token(&self, listener: OauthListener) -> Result<String, String> {
-        let code = listener.accept_param("code", Some(&self.state)).await?;
-        tidal_exchange_code(
-            &code,
-            &self.client_id,
-            &self.pkce.verifier,
-            &self.redirect_uri,
-        )
-        .await
-    }
-
-    /// Bind the loopback callback socket now (must precede handing out the
-    /// authorize URL — see [`OauthFlow::listen`]).
     pub async fn listen(&self) -> Result<OauthListener, String> {
         let listener = tokio::net::TcpListener::bind(self.redirect_addr)
             .await
@@ -465,17 +376,6 @@ async fn exchange_code(
     exchange_code_at(SPOTIFY_TOKEN_URL, code, client_id, verifier, redirect_uri).await
 }
 
-/// Tidal's token endpoint accepts the same authorization-code body as
-/// Spotify's (PKCE public client, no secret) but lives on `auth.tidal.com`.
-async fn tidal_exchange_code(
-    code: &str,
-    client_id: &str,
-    verifier: &str,
-    redirect_uri: &str,
-) -> Result<String, String> {
-    exchange_code_at(TIDAL_TOKEN_URL, code, client_id, verifier, redirect_uri).await
-}
-
 async fn exchange_code_at(
     token_url: &str,
     code: &str,
@@ -643,19 +543,5 @@ mod tests {
         );
         assert_eq!(percent_decode("plain"), "plain");
         assert_eq!(percent_decode("bad%2Gz"), "bad%2Gz");
-    }
-
-    #[test]
-    fn tidal_flow_mirrors_spotify() {
-        let flow = TidalFlow::new("CzET4vdadNUFQ5JU", 8992);
-        assert_eq!(flow.redirect_uri, "http://127.0.0.1:8992/login");
-        let url = flow.authorize_url();
-        assert!(url.starts_with(TIDAL_AUTHORIZE_URL));
-        assert!(url.contains("client_id=CzET4vdadNUFQ5JU"));
-        assert!(url.contains("code_challenge_method=S256"));
-        assert!(url.contains("response_type=code"));
-        assert!(url.contains(&urlencode(&flow.redirect_uri)));
-        // Tidal's two scopes are joined into a single space-separated value.
-        assert!(url.contains("scope=r_usr%20w_usr"));
     }
 }

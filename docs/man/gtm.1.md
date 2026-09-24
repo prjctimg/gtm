@@ -241,27 +241,6 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 **spotify** *sync*
 :   Re-sync all playlists from the Web API.
 
-## Subsonic / Navidrome
-
-**subsonic** *configure* *server* *username* [*password*]
-:   Save server credentials and verify the connection. Omit *password* for
-    an interactive prompt.
-
-**subsonic** *clear*
-:   Forget stored Subsonic credentials.
-
-**subsonic** *status*
-:   Show the current Subsonic configuration state.
-
-**subsonic** *ping*
-:   Ping the server.
-
-**subsonic** *search* *query*
-:   Search the server's index.
-
-**subsonic** *play* *track_id*
-:   Play a track by its server-side id.
-
 ## Podcast
 
 **podcast** *add* *url*
@@ -322,8 +301,8 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 ## Setup
 
 **setup** [*service*] [**\--cli**]
-:   Interactive source setup. Without a *service* argument (`spotify`,
-    `lastfm`, or `subsonic`), a picker opens and every unconfigured source is
+:   Interactive source setup. Without a *service* argument (`spotify` or
+    `lastfm`), a picker opens and every unconfigured source is
     walked through in turn. OAuth steps (Spotify, Last.fm) open your browser
     and capture the callback response automatically; Last.fm's loopback
     capture falls back to pasting the token on stdin. With **\--cli**, run the

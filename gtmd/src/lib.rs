@@ -26,7 +26,6 @@ pub mod radio;
 pub mod remote;
 pub mod spotify;
 pub mod stream;
-pub mod subsonic;
 pub mod tags;
 #[cfg(feature = "youtube")]
 pub mod youtube;

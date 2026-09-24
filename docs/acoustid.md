@@ -48,7 +48,7 @@ Building blocks, all open source:
   pipeline converts to f32 already; Chromaprint wants s16 monophonic, so the
   tap is a resample step away.
 - **Lookup is a plain HTTP call** — gtmd already talks to YouTube, Spotify,
-  Deezer, Apple services; an AcoustID request is the same shape of work.
+  and Apple services; an AcoustID request is the same shape of work.
 
 ## 3. Feasibility assessment
 
@@ -74,7 +74,7 @@ flow). It does not require touching the audio rust-crate stack.
   or unreleased material → "no match", even though the track is right.
 - **API key.** The service is free for non-commercial apps but requires
   registering an application and shipping its key (same class of work as the
-  existing Spotify/Tidal/Deezer credentials, but *far less* auth machinery —
+  existing Spotify credentials, but *far less* auth machinery —
   no OAuth, no tokens, just a static key). Commercial use needs a paid plan via
   AcoustID OÜ.
 - **Accuracy on streams.** Fingerprinting the decoded output works for any

@@ -30,15 +30,6 @@ pub enum PickerId {
     Settings,
     Notifications,
     NotificationSettings,
-    SubsonicSearch,
-    /// Album browser of the configured Subsonic server.
-    SubsonicAlbums,
-    /// Track list of a selected Subsonic album.
-    SubsonicAlbumTracks,
-    /// Subsonic server setup (URL, user, password).
-    SubsonicSetup,
-    /// Deezer streaming ARL token input form.
-    DeezerArl,
     PodcastFeeds,
     /// Episode list of a selected podcast feed.
     PodcastEpisodes,
@@ -56,9 +47,6 @@ pub enum PickerId {
     /// YouTube cookie-file path form (`gtm setup` → YouTube). Single text
     /// input, Enter commits to the daemon's yt-dlp config (empty clears).
     YoutubeSetup,
-    /// Tidal OAuth link form (client id + loopback port) with the
-    /// daemon-hosted browser flow.
-    TidalLink,
 }
 
 /// Which list a fuzzy-finder picker searches. `Tab` cycles through these.

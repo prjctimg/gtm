@@ -1,7 +1,8 @@
 // Chart providers registry — dynamically lists configured sources.
+// New providers implement the `ChartProvider` trait (see gtm/src/shared/chart.rs)
+// and register themselves here; the client lists whatever `sources()` returns.
 
 mod apple;
-mod deezer;
 mod spotify;
 
 use crate::spotify::SpotifyManager;
@@ -18,11 +19,10 @@ impl ChartsRegistry {
         }
     }
 
-    /// Register the free, unauthenticated chart providers (iTunes RSS,
-    /// Deezer public API). These never go away: they need no token, so they
-    /// are usable from the very first daemon start.
+    /// Register the free, unauthenticated chart providers (iTunes RSS). These
+    /// never go away: they need no token, so they are usable from the very
+    /// first daemon start.
     pub fn add_free_defaults(&mut self) {
-        self.providers.push(Box::new(deezer::DeezerCharts::new()));
         self.providers.push(Box::new(apple::AppleCharts::new()));
     }
 

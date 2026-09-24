@@ -19,8 +19,6 @@ pub mod radio;
 pub mod secret;
 pub mod spotify;
 pub mod state;
-pub mod subsonic;
-pub mod tidal;
 pub mod track;
 pub mod tripwire;
 pub mod validate;
@@ -42,10 +40,6 @@ pub use playlist::{M3u8Format, PlaylistFormat, PlaylistFormatKind, PlsFormat};
 pub use podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 pub use radio::RadioStation;
 pub use spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
-pub use subsonic::{
-    SubsonicAlbum, SubsonicArtist, SubsonicSearchResults, SubsonicStatus, SubsonicTrack,
-};
-pub use tidal::TidalStatus;
 pub use track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
 
 pub type Result<T> = std::result::Result<T, CoreError>;

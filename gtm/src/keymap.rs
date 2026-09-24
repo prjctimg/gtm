@@ -620,13 +620,6 @@ pub fn default_keybindings() -> Keybindings {
                 },
             ),
             (
-                KeyEvent::new(KeyCode::Char('u'), KeyModifiers::ALT),
-                BoundCommand {
-                    action: KeyboardAction::OpenOverlay(PickerId::SubsonicSearch),
-                    contexts: vec![KeyContext::Normal],
-                },
-            ),
-            (
                 KeyEvent::new(KeyCode::Char('o'), KeyModifiers::ALT),
                 BoundCommand {
                     action: KeyboardAction::OpenOverlay(PickerId::LoadStream),
@@ -895,9 +888,6 @@ impl KeyboardAction {
             "open_settings" | "settings" => KeyboardAction::OpenOverlay(PickerId::Settings),
             "open_spotify_search" | "open_spotify" => {
                 KeyboardAction::OpenOverlay(PickerId::SpotifySearch)
-            }
-            "open_subsonic_search" | "open_subsonic" => {
-                KeyboardAction::OpenOverlay(PickerId::SubsonicSearch)
             }
             "open_podcast" | "open_podcasts" => KeyboardAction::OpenOverlay(PickerId::PodcastFeeds),
             "open_radio" | "open_radios" | "open_radio_browse" | "browse_radio" => {

@@ -56,10 +56,6 @@ mod tests {
                 "probe target must stay generic: {t}"
             );
             assert!(
-                !lower.contains("subsonic"),
-                "probe target must stay generic: {t}"
-            );
-            assert!(
                 !lower.contains("youtube"),
                 "probe target must stay generic: {t}"
             );

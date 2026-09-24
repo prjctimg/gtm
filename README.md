@@ -32,8 +32,8 @@ You can read about it in [this post.](https://prjctimg.me/blg/feature-rich-termi
 ## Features
 
 - **Background playback**: reattach to the client from anywhere in the terminal
-- **YouTube, Spotify, Deezer**: search & download from YouTube, sync
-  Spotify playlists, and fetch missing metadata/lyrics/cover art via Deezer.
+- **YouTube & Spotify**: search & download from YouTube and sync Spotify
+  playlists; missing metadata/cover art is backfilled from Deezer's public API.
 - **Crossfade**: gapless-ish transitions with a configurable duration.
 - **Lyrics**: automatic fetch from LRCLIB (default provider)
 - **Metadata sync**: backfill missing tags, cover art, and lyrics for local files

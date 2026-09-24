@@ -14,15 +14,11 @@ use crate::shared::ipc::{CacheKind, DaemonEvent, DaemonRes, HealthReport, SyncKi
 use crate::shared::log::log;
 use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 use crate::shared::radio::{RadioCountry, RadioStation, RadioTag};
-use crate::shared::secret::{SPOTIFY_CLIENT_ID, TIDAL_CLIENT_ID, get_secret, set_secret};
+use crate::shared::secret::{SPOTIFY_CLIENT_ID, get_secret, set_secret};
 use crate::shared::spotify::{
     LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifySearchKind, SpotifyStatus, SpotifyTrack,
 };
 use crate::shared::state::{ThemeMode, TrackSort};
-use crate::shared::subsonic::{
-    SubsonicAlbum, SubsonicSearchResults, SubsonicStatus, SubsonicTrack,
-};
-use crate::shared::tidal::{TIDAL_DEFAULT_PORT, TidalStatus};
 use crate::shared::track::{LrcData, LrcLine, Playlist, TrackInfo, YTSearchResult};
 use crate::shared::{CoreError, MAX_SPEED, MAX_VOLUME, MIN_SPEED, MetadataPatch};
 use crossterm::event::{self, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
@@ -347,7 +343,7 @@ fn build_keybindings(overrides: &std::collections::HashMap<String, String>) -> K
     defaults
 }
 
-pub const NUM_SETTINGS_CATEGORIES: usize = 5;
+pub const NUM_SETTINGS_CATEGORIES: usize = 4;
 pub const LIBRARY_CATEGORIES: &[&str] = &[
     "All Tracks",
     "Liked",
@@ -440,27 +436,23 @@ pub enum NotifType {
     Library,
     Downloads,
     Spotify,
-    Subsonic,
     Podcast,
     Radio,
     Lastfm,
-    Tidal,
     System,
 }
 
 impl NotifType {
-    pub const ALL: [NotifType; 12] = [
+    pub const ALL: [NotifType; 10] = [
         NotifType::Playback,
         NotifType::Prefs,
         NotifType::NowPlaying,
         NotifType::Library,
         NotifType::Downloads,
         NotifType::Spotify,
-        NotifType::Subsonic,
         NotifType::Podcast,
         NotifType::Radio,
         NotifType::Lastfm,
-        NotifType::Tidal,
         NotifType::System,
     ];
 
@@ -472,11 +464,9 @@ impl NotifType {
             NotifType::Library => "Library",
             NotifType::Downloads => "YouTube / Downloads",
             NotifType::Spotify => "Spotify",
-            NotifType::Subsonic => "Subsonic",
             NotifType::Podcast => "Podcast",
             NotifType::Radio => "Radio",
             NotifType::Lastfm => "Last.fm",
-            NotifType::Tidal => "Tidal",
             NotifType::System => "System / Errors",
         }
     }
@@ -489,11 +479,9 @@ impl NotifType {
             NotifType::Library => "library",
             NotifType::Downloads => "downloads",
             NotifType::Spotify => "spotify",
-            NotifType::Subsonic => "subsonic",
             NotifType::Podcast => "podcast",
             NotifType::Radio => "radio",
             NotifType::Lastfm => "lastfm",
-            NotifType::Tidal => "tidal",
             NotifType::System => "system",
         }
     }
@@ -506,11 +494,11 @@ impl NotifType {
             "library" => NotifType::Library,
             "downloads" => NotifType::Downloads,
             "spotify" => NotifType::Spotify,
-            "subsonic" => NotifType::Subsonic,
             "podcast" => NotifType::Podcast,
             "radio" => NotifType::Radio,
             "lastfm" => NotifType::Lastfm,
-            "tidal" => NotifType::Tidal,
+            // Unknown/legacy names (e.g. retired provider categories) fall
+            // back to the always-visible System bucket.
             _ => NotifType::System,
         }
     }
@@ -739,41 +727,10 @@ pub struct ChartsView {
     pub selected_chart: Option<usize>,
 }
 
-/// Subsonic (Navidrome) picker state, grouped under `App::subsonic`.
-#[derive(Default)]
-pub struct SubsonicView {
-    pub status: Option<SubsonicStatus>,
-    /// Results of the last server search (flattened into an ordered row list).
-    pub search_results: SubsonicSearchResults,
-    pub search_pending: bool,
-    pub albums: Vec<SubsonicAlbum>,
-    pub albums_pending: bool,
-    /// Track list of the album currently drilled into (`selected_album`).
-    pub album_tracks: Vec<SubsonicTrack>,
-    pub selected_album: Option<SubsonicAlbum>,
-    /// Cover base64 preview of the highlighted Subsonic track row.
-    pub cover_preview: Option<String>,
-    /// Track id whose cover was requested (in-flight marker: the daemon replies
-    /// with the base64 payload which replaces `cover_preview`).
-    pub cover_track_id: Option<String>,
-    /// Fields for the SubsonicSetup form.
-    pub form_server: String,
-    pub form_user: String,
-    pub form_password: String,
-    pub form_focus: usize,
-}
-
-/// Deezer streaming settings (single ARL token field).
-#[derive(Default)]
-pub struct DeezerView {
-    /// Draft ARL token for the `DeezerArl` input form.
-    pub arl_input: String,
-}
-
 /// `gtm setup` wizard state, grouped under `App::setup`.
 #[derive(Default)]
 pub struct SetupView {
-    /// Currently highlighted service in the Setup chooser (0..=5).
+    /// Currently highlighted service in the Setup chooser (0..=2).
     pub selection: usize,
     /// Last.fm form fields (masked while typing) and flow state.
     pub lastfm_api_key: String,
@@ -787,24 +744,12 @@ pub struct SetupView {
     pub lastfm_error: Option<String>,
     /// YouTube cookie-file draft for the `YoutubeSetup` form.
     pub youtube_cookie_input: String,
-    /// Tidal link form fields and flow state (mirrors the Spotify link view).
-    pub tidal_client_id: String,
-    pub tidal_port: String,
-    pub tidal_field: usize,
-    /// True while waiting for the loopback callback after the browser opened.
-    pub tidal_pending: bool,
-    pub tidal_status: Option<TidalStatus>,
-    /// Authorization URL for manual copy when no browser can be opened.
-    pub tidal_url: Option<String>,
-    pub tidal_error: Option<String>,
 }
 
 /// Selected row of the `gtm setup` service chooser.
 pub fn setup_selection(app: &App) -> (usize, &'static str) {
-    let names = [
-        "spotify", "lastfm", "subsonic", "deezer", "youtube", "tidal",
-    ];
-    let sel = app.setup.selection.min(5);
+    let names = ["spotify", "lastfm", "youtube"];
+    let sel = app.setup.selection.min(2);
     (sel, names[sel])
 }
 
@@ -1055,8 +1000,6 @@ pub struct App {
     pub playlist_tracks_cache: Vec<TrackInfo>,
     pub spotify: SpotifyView,
     pub charts: ChartsView,
-    pub subsonic: SubsonicView,
-    pub deezer: DeezerView,
     pub setup: SetupView,
     pub podcast: PodcastView,
     pub radio: RadioView,
@@ -1272,11 +1215,6 @@ enum IpcResult {
     SpotifyTracks(Vec<SpotifyTrack>),
     SpotifySearchWebResults(u64, Vec<SpotifyTrack>),
     ReactivePalette(Option<ReactivePalette>),
-    SubsonicStatus(Option<SubsonicStatus>),
-    SubsonicSearch(SubsonicSearchResults),
-    SubsonicAlbums(Vec<SubsonicAlbum>),
-    SubsonicAlbumTracks(Vec<SubsonicTrack>),
-    SubsonicCover(Option<String>),
     PodcastStatus(Option<PodcastStatus>),
     PodcastFeeds(Vec<PodcastFeed>),
     PodcastEpisodes(Vec<PodcastEpisode>),
@@ -1294,15 +1232,6 @@ enum IpcResult {
     LastfmAuthUrl(String),
     /// Hard failure of the Last.fm setup flow.
     LastfmAuthError(String),
-    /// Tidal link status refreshed after a setup action completes.
-    TidalStatus(TidalStatus),
-    /// Authorization URL produced by the daemon's Tidal OAuth flow.
-    TidalOauthUrl(String),
-    /// Hard failure of the Tidal setup flow (daemon could not even start it).
-    TidalOauthError(String),
-    /// The browser could not be opened automatically; the authorize URL is
-    /// rendered inline in the Tidal link picker, so this is recorded quietly.
-    TidalOauthFallback(String),
 }
 
 /// Send a background-task error into the TUI event stream as an Error
@@ -1399,22 +1328,6 @@ fn try_open_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResult>) {
     });
 }
 
-/// Tidal variant of [`try_open_browser`]: same quiet fallback, routed to the
-/// Tidal link picker's inline error slot.
-fn try_open_tidal_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResult>) {
-    let url = url.to_string();
-    let ipc_tx = ipc_tx.clone();
-    tokio::spawn(async move {
-        if open_browser(&url).await {
-            return;
-        }
-        let _ = ipc_tx.send(IpcResult::TidalOauthFallback(
-            "Could not open a browser automatically — copy the authorize URL shown in this picker"
-                .into(),
-        ));
-    });
-}
-
 /// Validate a typed Spotify client id before starting the PKCE flow, and
 /// remind the user of the redirect-URI requirement: when the URI is missing
 /// from the app dashboard the flow fails silently inside the browser (see
@@ -1426,30 +1339,6 @@ fn client_id_error(client_id: &str, port: u16) -> Option<String> {
             "This doesn't look like a valid Spotify Client ID (32 hex chars).\n\
              Also make sure your app lists http://127.0.0.1:{port}/login as a\n\
              Redirect URI (127.0.0.1, not localhost) or the link fails silently."
-        ));
-    }
-    None
-}
-
-/// Validate a typed Tidal client id before starting the PKCE flow. Tidal ids
-/// are short alphanumeric strings (not Spotify's 32-hex format), so the rule
-/// is deliberately relaxed: non-empty and ≤64 chars of ASCII alphanumerics
-/// (dash/underscore tolerated). The redirect-URI requirement is the same as
-/// Spotify's: the id's registered Redirect URI must match the loopback port.
-fn tidal_client_id_error(client_id: &str, port: u16) -> Option<String> {
-    if client_id.trim().is_empty() {
-        return None; // handled by open_tidal_link (form stays open)
-    }
-    if client_id.len() > 64
-        || !client_id
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
-    {
-        return Some(format!(
-            "This doesn't look like a valid Tidal Client ID.\n\
-             Get one from https://developer.tidal.com and make sure your app\n\
-             lists http://127.0.0.1:{port}/login as a Redirect URI\n\
-             (127.0.0.1, not localhost) or the link fails silently."
         ));
     }
     None
@@ -1723,8 +1612,6 @@ impl App {
                 preview_fetch: FetchSlot::default(),
             },
             charts: ChartsView::default(),
-            subsonic: SubsonicView::default(),
-            deezer: DeezerView::default(),
             podcast: PodcastView::default(),
             radio: RadioView::default(),
             cookie_file: None,
@@ -1895,26 +1782,10 @@ impl App {
                 self.pickers.open(PickerId::LastfmAuth);
                 self.on_picker_opened(PickerId::LastfmAuth);
             }
-            Some("subsonic") | Some("navidrome") => {
-                self.setup.selection = 2;
-                self.pickers.open(PickerId::SubsonicSetup);
-                self.on_picker_opened(PickerId::SubsonicSetup);
-            }
-            Some("deezer") => {
-                self.setup.selection = 3;
-                self.pickers.open(PickerId::DeezerArl);
-                self.on_picker_opened(PickerId::DeezerArl);
-            }
             Some("youtube") | Some("yt") => {
-                self.setup.selection = 4;
+                self.setup.selection = 2;
                 self.pickers.open(PickerId::YoutubeSetup);
                 self.on_picker_opened(PickerId::YoutubeSetup);
-            }
-            Some("tidal") => {
-                self.setup.selection = 5;
-                self.pickers.open(PickerId::TidalLink);
-                self.on_picker_opened(PickerId::TidalLink);
-                self.open_tidal_link();
             }
             _ => {
                 self.pickers.open(PickerId::Setup);
@@ -1979,72 +1850,6 @@ impl App {
                 Err(e) => {
                     let _ = ipc_tx.send(IpcResult::SpotifyOauthError(format!(
                         "Spotify link failed: {e}"
-                    )));
-                }
-            }
-        });
-    }
-
-    /// Kick off the Tidal OAuth browser flow, requesting the authorize URL
-    /// from the daemon. An explicit client id in `setup.tidal_client_id` wins;
-    /// otherwise a previously stored client id is reused. There is no built-in
-    /// fallback id (Tidal's community "web" client id redirects to
-    /// `listen.tidal.com/login/auth`, not a loopback URI), so with neither a
-    /// typed nor a stored id the picker just stays open as a form.
-    pub fn open_tidal_link(&mut self) {
-        let client_id = if self.setup.tidal_client_id.trim().is_empty() {
-            get_secret(TIDAL_CLIENT_ID)
-                .filter(|cid| !cid.trim().is_empty())
-                .unwrap_or_default()
-        } else {
-            self.setup.tidal_client_id.trim().to_string()
-        };
-        if client_id.is_empty() {
-            return;
-        }
-        let port = self
-            .setup
-            .tidal_port
-            .trim()
-            .parse::<u16>()
-            .unwrap_or(TIDAL_DEFAULT_PORT);
-        self.start_tidal_oauth(client_id, port);
-    }
-
-    /// Start the Tidal OAuth PKCE flow for `client_id` on `port` and watch it
-    /// in the background. Validates the client id first; an invalid id or a
-    /// missing redirect-URI registration is reported inline instead of
-    /// silently dying in the browser.
-    fn start_tidal_oauth(&mut self, client_id: String, port: u16) {
-        if let Some(err) = tidal_client_id_error(&client_id, port) {
-            self.setup.tidal_error = Some(err);
-            self.setup.tidal_pending = false;
-            self.setup.tidal_client_id.clear();
-            return;
-        }
-        set_secret(TIDAL_CLIENT_ID, &client_id);
-        let c = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        self.setup.tidal_client_id.clear();
-        self.setup.tidal_pending = true;
-        self.setup.tidal_url = None;
-        self.setup.tidal_error = None;
-        tokio::spawn(async move {
-            match c.tidal().oauth_start(&client_id, port).await {
-                Ok(url) => {
-                    let _ = ipc_tx.send(IpcResult::TidalOauthUrl(url.clone()));
-                    let _ = ipc_tx.send(IpcResult::Notification(
-                        "Tidal".to_string(),
-                        "Authorize gtm in your browser, then the account links automatically…"
-                            .to_string(),
-                        NotificationKind::Info,
-                        NotifType::Tidal,
-                    ));
-                    try_open_tidal_browser(&url, &ipc_tx);
-                }
-                Err(e) => {
-                    let _ = ipc_tx.send(IpcResult::TidalOauthError(format!(
-                        "Tidal link failed: {e}"
                     )));
                 }
             }
@@ -2555,7 +2360,6 @@ impl App {
             let mut had_sync_done = false;
             let mut had_spotify_change = false;
             let mut had_lastfm_change = false;
-            let mut had_tidal_change = false;
             for ev in self.client.drain().await {
                 if let DaemonEvent::PlaybackStarted { .. } = &ev {
                     // The crossfade has begun: drop the Up Next countdown.
@@ -2607,12 +2411,6 @@ impl App {
                 // here dismisses the prompt and proceeds to a ready state.
                 if matches!(ev, DaemonEvent::LastfmStatusChanged) {
                     had_lastfm_change = true;
-                }
-                // The daemon finished the Tidal OAuth link flow — same contract
-                // as Spotify/Last.fm: re-pull the status so the picker can
-                // dismiss or surface the failure inline.
-                if matches!(ev, DaemonEvent::TidalStatusChanged) {
-                    had_tidal_change = true;
                 }
                 // After a background metadata sync finishes, re-pull the
                 // library so scrubbed tags / fetched covers show up live.
@@ -2777,11 +2575,6 @@ impl App {
             // the failure reason), so no client-side callback polling exists.
             if had_lastfm_change {
                 self.refresh_lastfm_status();
-            }
-
-            // Same completion contract for the Tidal link flow.
-            if had_tidal_change {
-                self.refresh_tidal_status();
             }
 
             // Force a state refresh if no events received for 8s to prevent
@@ -2994,19 +2787,6 @@ impl App {
                             self.apply_reactive();
                         }
                     }
-                    IpcResult::SubsonicStatus(st) => self.subsonic.status = st,
-                    IpcResult::SubsonicSearch(res) => {
-                        self.subsonic.search_results = res;
-                        self.subsonic.search_pending = false;
-                    }
-                    IpcResult::SubsonicAlbums(a) => {
-                        self.subsonic.albums = a;
-                        self.subsonic.albums_pending = false;
-                    }
-                    IpcResult::SubsonicAlbumTracks(t) => {
-                        self.subsonic.album_tracks = t;
-                    }
-                    IpcResult::SubsonicCover(data) => self.subsonic.cover_preview = data,
                     IpcResult::PodcastStatus(st) => self.podcast.status = st,
                     IpcResult::PodcastFeeds(feeds) => {
                         self.podcast.feeds = feeds;
@@ -3122,83 +2902,6 @@ impl App {
                             NotificationKind::Error,
                             false,
                             NotifType::Lastfm,
-                        );
-                    }
-                    IpcResult::TidalStatus(st) => {
-                        let was_linked = self.setup.tidal_status.as_ref().is_some_and(|s| s.linked);
-                        // A daemon-pushed failure (callback timeout, token
-                        // exchange error) while the prompt is waiting must
-                        // surface immediately: stop waiting, keep the picker
-                        // open and render the reason inline (a toast is
-                        // suppressed while a picker is open).
-                        if self.setup.tidal_pending
-                            && let Some(err) = st.error.clone()
-                        {
-                            self.setup.tidal_pending = false;
-                            self.setup.tidal_url = None;
-                            self.setup.tidal_error = Some(err.clone());
-                            self.notify_titled(
-                                "Tidal",
-                                err,
-                                NotificationKind::Error,
-                                false,
-                                NotifType::Tidal,
-                            );
-                        }
-                        self.setup.tidal_status = Some(st);
-                        if self.setup.tidal_status.as_ref().is_some_and(|s| s.linked)
-                            && !was_linked
-                            && self
-                                .pickers
-                                .top()
-                                .is_some_and(|o| o.id == PickerId::TidalLink)
-                        {
-                            self.setup.tidal_pending = false;
-                            self.setup.tidal_url = None;
-                            self.setup.tidal_error = None;
-                            self.notify_titled(
-                                "Tidal",
-                                "Tidal linked — account ready",
-                                NotificationKind::Success,
-                                false,
-                                NotifType::Tidal,
-                            );
-                            self.close_picker();
-                        }
-                    }
-                    IpcResult::TidalOauthUrl(url) => {
-                        // The daemon bound the callback port and started the
-                        // flow before answering, so the URL can be opened
-                        // safely; completion/failure arrives as a pushed status
-                        // event. Here we only surface the URL for display.
-                        self.setup.tidal_url = Some(url);
-                        self.setup.tidal_pending = true;
-                    }
-                    IpcResult::TidalOauthError(e) => {
-                        let e = e.to_string();
-                        self.setup.tidal_pending = false;
-                        self.setup.tidal_error = Some(e.clone());
-                        // Keep the picker open so the error stays visible; Esc
-                        // closes it (clearing the flow state below).
-                        self.notify_titled(
-                            "Tidal",
-                            e,
-                            NotificationKind::Error,
-                            false,
-                            NotifType::Tidal,
-                        );
-                    }
-                    IpcResult::TidalOauthFallback(e) => {
-                        // Browser auto-open failed but the authorize URL is
-                        // already inline in the picker; record quietly.
-                        self.setup.tidal_error = Some(e.clone());
-                        self.setup.tidal_pending = false;
-                        self.notify_titled(
-                            "Tidal",
-                            e,
-                            NotificationKind::Info,
-                            true,
-                            NotifType::Tidal,
                         );
                     }
                     IpcResult::LibraryTracks(tracks) => {
@@ -4503,59 +4206,8 @@ impl App {
                     self.open_spotify_link_form();
                 }
             }
-            PickerId::SubsonicSearch => {
-                self.refresh_subsonic_status();
-                self.subsonic.search_results = SubsonicSearchResults::default();
-            }
-            PickerId::SubsonicAlbums => {
-                self.subsonic.albums.clear();
-                self.subsonic.albums_pending = true;
-                let c = self.client.clone();
-                let ipc_tx = self.ipc_tx.clone();
-                tokio::spawn(async move {
-                    match c.subsonic().albums(0, 200).await {
-                        Ok(a) => {
-                            let _ = ipc_tx.send(IpcResult::SubsonicAlbums(a));
-                        }
-                        Err(e) => {
-                            self_err(&ipc_tx, format!("subsonic albums failed: {e}"));
-                        }
-                    }
-                });
-            }
-            PickerId::SubsonicAlbumTracks => {
-                if let Some(album) = self.subsonic.selected_album.clone() {
-                    let album_id = album.id;
-                    let c = self.client.clone();
-                    let ipc_tx = self.ipc_tx.clone();
-                    let title = album.title;
-                    tokio::spawn(async move {
-                        match c.subsonic().album_tracks(&album_id).await {
-                            Ok(t) => {
-                                let _ = ipc_tx.send(IpcResult::SubsonicAlbumTracks(t));
-                            }
-                            Err(e) => {
-                                self_err(&ipc_tx, format!("subsonic album '{title}' failed: {e}"));
-                            }
-                        }
-                    });
-                }
-            }
-            PickerId::DeezerArl => {
-                // Start the form with a clean draft; the ARL is re-entered
-                // when re-configuring.
-                self.deezer.arl_input.clear();
-            }
-            PickerId::SubsonicSetup => {
-                if let Some(st) = self.subsonic.status.clone().filter(|st| st.configured) {
-                    self.subsonic.form_server = st.server.unwrap_or_default();
-                    self.subsonic.form_user = st.user.unwrap_or_default();
-                }
-                self.refresh_subsonic_status();
-            }
             PickerId::PodcastFeeds => {
                 self.podcast.feeds_pending = true;
-                self.refresh_subsonic_status();
                 let c = self.client.clone();
                 let ipc_tx = self.ipc_tx.clone();
                 tokio::spawn(async move {
@@ -4588,7 +4240,6 @@ impl App {
                 self.seed_radio_picker(false);
             }
             PickerId::Setup => {
-                self.refresh_subsonic_status();
                 let c = self.client.clone();
                 let ipc_tx = self.ipc_tx.clone();
                 tokio::spawn(async move {
@@ -4608,31 +4259,9 @@ impl App {
                             self_err(&ipc_tx, format!("spotify status failed: {e}"));
                         }
                     }
-                    match c.tidal().status().await {
-                        Ok(st) => {
-                            let _ = ipc_tx.send(IpcResult::TidalStatus(st));
-                        }
-                        Err(e) => {
-                            self_err(&ipc_tx, format!("tidal status failed: {e}"));
-                        }
-                    }
                 });
             }
             PickerId::LastfmAuth => self.refresh_lastfm_status(),
-            PickerId::TidalLink => {
-                // Seed the form with the previously stored client id (if any)
-                // so re-linking never forces a re-paste.
-                if self.setup.tidal_client_id.trim().is_empty()
-                    && let Some(cid) =
-                        get_secret(TIDAL_CLIENT_ID).filter(|cid| !cid.trim().is_empty())
-                {
-                    self.setup.tidal_client_id = cid;
-                }
-                if self.setup.tidal_port.trim().is_empty() {
-                    self.setup.tidal_port = TIDAL_DEFAULT_PORT.to_string();
-                }
-                self.refresh_tidal_status();
-            }
             PickerId::YoutubeSetup => {
                 // Seed the form with the currently configured cookie path so
                 // the user sees whether a file is set (Enter without edits
@@ -4656,22 +4285,6 @@ impl App {
                 }
                 Err(e) => {
                     self_err(&ipc_tx, format!("last.fm status failed: {e}"));
-                }
-            }
-        });
-    }
-
-    /// Re-pull the Tidal link status into the setup view.
-    pub fn refresh_tidal_status(&mut self) {
-        let c = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        tokio::spawn(async move {
-            match c.tidal().status().await {
-                Ok(st) => {
-                    let _ = ipc_tx.send(IpcResult::TidalStatus(st));
-                }
-                Err(e) => {
-                    self_err(&ipc_tx, format!("tidal status failed: {e}"));
                 }
             }
         });
@@ -4721,58 +4334,6 @@ impl App {
             }
         });
         self.refresh_lastfm_status();
-    }
-
-    pub fn refresh_subsonic_status(&mut self) {
-        let c = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        tokio::spawn(async move {
-            match c.subsonic().status().await {
-                Ok(st) => {
-                    let _ = ipc_tx.send(IpcResult::SubsonicStatus(Some(st)));
-                }
-                Err(e) => {
-                    self_err(&ipc_tx, format!("subsonic status failed: {e}"));
-                }
-            }
-        });
-    }
-
-    pub fn subsonic_search(&mut self, query: String) {
-        self.subsonic.search_results = SubsonicSearchResults::default();
-        self.subsonic.search_pending = true;
-        let c = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        tokio::spawn(async move {
-            match c.subsonic().search(&query).await {
-                Ok(res) => {
-                    let _ = ipc_tx.send(IpcResult::SubsonicSearch(res));
-                }
-                Err(e) => {
-                    self_err(&ipc_tx, format!("subsonic search failed: {e}"));
-                }
-            }
-        });
-    }
-
-    pub fn fetch_subsonic_cover(&mut self, track_id: String) {
-        if self.subsonic.cover_track_id.as_deref() == Some(track_id.as_str()) {
-            return;
-        }
-        self.subsonic.cover_track_id = Some(track_id.clone());
-        self.subsonic.cover_preview = None;
-        let c = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        tokio::spawn(async move {
-            match c.subsonic().cover(&track_id).await {
-                Ok(data) => {
-                    let _ = ipc_tx.send(IpcResult::SubsonicCover(data));
-                }
-                Err(e) => {
-                    self_err(&ipc_tx, format!("subsonic cover failed: {e}"));
-                }
-            }
-        });
     }
 
     pub fn fetch_podcast_episodes(&mut self, feed_id: String) {
@@ -6157,7 +5718,6 @@ impl App {
             1 => 6,  // Playback: Repeat, Shuffle, Crossfade, EQ Enabled, Reverb, Cover Source
             2 => 14, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme, Reactive Intensity, Hide Footer, Clear Lyrics Cache, Clear Cover Cache, Notification Settings, Theme Mode
             3 => 7,  // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Device
-            4 => 1,  // Deezer: ARL Token
             _ => 0,
         }
     }
@@ -6858,14 +6418,6 @@ impl App {
                         .count()
                 }
             }
-            PickerId::SubsonicSearch => {
-                let r = &self.subsonic.search_results;
-                r.artists.len() + r.albums.len() + r.tracks.len()
-            }
-            PickerId::SubsonicAlbums => self.subsonic.albums.len(),
-            PickerId::SubsonicAlbumTracks => self.subsonic.album_tracks.len(),
-            PickerId::SubsonicSetup => 3,
-            PickerId::DeezerArl => 1,
             PickerId::PodcastFeeds => self.podcast.feeds.len(),
             PickerId::PodcastEpisodes => self.podcast.episodes.len(),
             PickerId::PodcastSubscribe => 1,
@@ -6898,33 +6450,6 @@ impl App {
             } else {
                 top.selected -= 1;
             }
-        }
-    }
-
-    /// Track id of the Subsonic row currently highlighted in a Subsonic
-    /// picker (used for the cover-art preview).
-    fn subsonic_track_id(&self) -> Option<String> {
-        let top = self.pickers.top()?;
-        let rows_before_tracks =
-            self.subsonic.search_results.artists.len() + self.subsonic.search_results.albums.len();
-        match top.id {
-            PickerId::SubsonicSearch => {
-                if top.selected >= rows_before_tracks {
-                    self.subsonic
-                        .search_results
-                        .tracks
-                        .get(top.selected - rows_before_tracks)
-                        .map(|t| t.id.clone())
-                } else {
-                    None
-                }
-            }
-            PickerId::SubsonicAlbumTracks => self
-                .subsonic
-                .album_tracks
-                .get(top.selected)
-                .map(|t| t.id.clone()),
-            _ => None,
         }
     }
 
@@ -8730,12 +8255,6 @@ impl App {
                     self.spotify.oauth_url = None;
                     self.spotify.oauth_error = None;
                 }
-                PickerId::TidalLink => {
-                    // Closing the link picker ends any pending/cancelled flow.
-                    self.setup.tidal_pending = false;
-                    self.setup.tidal_url = None;
-                    self.setup.tidal_error = None;
-                }
                 PickerId::SpotifySearch => self.spotify.search_results.clear(),
                 PickerId::EditMetadata => {
                     self.metadata.cover = None;
@@ -9653,10 +9172,6 @@ impl App {
                                 self.hide_footer = !self.hide_footer;
                                 save_prefs(&self.current_prefs());
                             }
-                            4 if opt == 0 => {
-                                self.pickers.open(PickerId::DeezerArl);
-                                self.on_picker_opened(PickerId::DeezerArl);
-                            }
                             _ => {}
                         }
                     }
@@ -9667,196 +9182,11 @@ impl App {
             return;
         }
 
-        // ─── Subsonic search picker ───
-        if matches!(
-            self.pickers.top().map(|o| o.id),
-            Some(PickerId::SubsonicSearch)
-        ) {
-            match key.code {
-                KeyCode::Char(c) => {
-                    if !c.is_control() {
-                        if let Some(top) = self.pickers.top_mut() {
-                            top.query.push(c);
-                        }
-                        self.subsonic.search_results = SubsonicSearchResults::default();
-                        self.subsonic.cover_preview = None;
-                    }
-                }
-                KeyCode::Backspace => {
-                    if let Some(top) = self.pickers.top_mut() {
-                        top.query.pop();
-                    }
-                    self.subsonic.search_results = SubsonicSearchResults::default();
-                }
-                KeyCode::Enter => {
-                    let r = &self.subsonic.search_results;
-                    let n_artists = r.artists.len();
-                    let n_albums = r.albums.len();
-                    let n_tracks = r.tracks.len();
-                    let has_results = n_artists + n_albums + n_tracks > 0;
-                    let q = self
-                        .pickers
-                        .top()
-                        .map_or(String::new(), |o| o.query.clone());
-                    let sel = self.pickers.top().map_or(0, |o| o.selected);
-                    if self.subsonic.search_pending {
-                        return;
-                    }
-                    if q.is_empty() && !has_results {
-                        return;
-                    }
-                    if !has_results {
-                        self.subsonic_search(q);
-                        return;
-                    }
-                    if sel >= n_artists && sel < n_artists + n_albums {
-                        if let Some(album) = self
-                            .subsonic
-                            .search_results
-                            .albums
-                            .get(sel - n_artists)
-                            .cloned()
-                        {
-                            self.subsonic.selected_album = Some(album);
-                            self.subsonic.album_tracks.clear();
-                            self.pickers.open(PickerId::SubsonicAlbumTracks);
-                            let c = self.client.clone();
-                            let ipc_tx = self.ipc_tx.clone();
-                            let album_id = self
-                                .subsonic
-                                .selected_album
-                                .as_ref()
-                                .map(|a| a.id.clone())
-                                .unwrap_or_default();
-                            tokio::spawn(async move {
-                                match c.subsonic().album_tracks(&album_id).await {
-                                    Ok(t) => {
-                                        let _ = ipc_tx.send(IpcResult::SubsonicAlbumTracks(t));
-                                    }
-                                    Err(e) => {
-                                        self_err(&ipc_tx, format!("subsonic album failed: {e}"));
-                                    }
-                                }
-                            });
-                        }
-                        return;
-                    }
-                    if sel < n_artists + n_albums + n_tracks {
-                        let i = sel - n_artists - n_albums;
-                        if let Some(track) = self.subsonic.search_results.tracks.get(i).cloned() {
-                            let c = self.client.clone();
-                            self.pickers.close_top();
-                            tokio::spawn(async move {
-                                let _ = c.subsonic().play(&track).await;
-                            });
-                        }
-                    }
-                }
-                KeyCode::Up | KeyCode::Down => {
-                    self.move_picker_selection(key.code == KeyCode::Down);
-                    if let Some(track_id) = self.subsonic_track_id() {
-                        self.fetch_subsonic_cover(track_id);
-                    }
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // ─── Subsonic album browser ───
-        if matches!(
-            self.pickers.top().map(|o| o.id),
-            Some(PickerId::SubsonicAlbums)
-        ) {
-            match key.code {
-                KeyCode::Enter => {
-                    let sel = self.pickers.top().map_or(0, |o| o.selected);
-                    if let Some(album) = self.subsonic.albums.get(sel).cloned() {
-                        let album_id = album.id.clone();
-                        self.subsonic.selected_album = Some(album);
-                        self.subsonic.album_tracks.clear();
-                        self.pickers.open(PickerId::SubsonicAlbumTracks);
-                        let c = self.client.clone();
-                        let ipc_tx = self.ipc_tx.clone();
-                        tokio::spawn(async move {
-                            match c.subsonic().album_tracks(&album_id).await {
-                                Ok(t) => {
-                                    let _ = ipc_tx.send(IpcResult::SubsonicAlbumTracks(t));
-                                }
-                                Err(e) => {
-                                    self_err(&ipc_tx, format!("subsonic album failed: {e}"));
-                                }
-                            }
-                        });
-                    }
-                }
-                KeyCode::Char('r') => {
-                    self.subsonic.albums.clear();
-                    self.subsonic.albums_pending = true;
-                    let c = self.client.clone();
-                    let ipc_tx = self.ipc_tx.clone();
-                    tokio::spawn(async move {
-                        match c.subsonic().albums(0, 200).await {
-                            Ok(a) => {
-                                let _ = ipc_tx.send(IpcResult::SubsonicAlbums(a));
-                            }
-                            Err(e) => {
-                                self_err(&ipc_tx, format!("subsonic albums failed: {e}"));
-                            }
-                        }
-                    });
-                }
-                KeyCode::Up | KeyCode::Down => {
-                    self.move_picker_selection(key.code == KeyCode::Down);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // ─── Subsonic album track list ───
-        if matches!(
-            self.pickers.top().map(|o| o.id),
-            Some(PickerId::SubsonicAlbumTracks)
-        ) {
-            match key.code {
-                KeyCode::Enter => {
-                    let idx = self.pickers.top().map_or(0, |o| o.selected);
-                    if let Some(track) = self.subsonic.album_tracks.get(idx).cloned() {
-                        let c = self.client.clone();
-                        self.pickers.close_top();
-                        tokio::spawn(async move {
-                            let _ = c.subsonic().play(&track).await;
-                        });
-                    }
-                }
-                KeyCode::Char('a') => {
-                    if let Some(album_id) =
-                        self.subsonic.selected_album.as_ref().map(|a| a.id.clone())
-                    {
-                        let c = self.client.clone();
-                        self.pickers.close_top();
-                        tokio::spawn(async move {
-                            let _ = c.subsonic().play_album(&album_id).await;
-                        });
-                    }
-                }
-                KeyCode::Up | KeyCode::Down => {
-                    self.move_picker_selection(key.code == KeyCode::Down);
-                    if let Some(track_id) = self.subsonic_track_id() {
-                        self.fetch_subsonic_cover(track_id);
-                    }
-                }
-                _ => {}
-            }
-            return;
-        }
-
         // ─── gtm setup service chooser ───
         if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::Setup)) {
             match key.code {
                 KeyCode::Up | KeyCode::Down => {
-                    let n = 6;
+                    let n = 3;
                     self.setup.selection = (self.setup.selection as i32
                         + if key.code == KeyCode::Down { 1 } else { -1 })
                     .rem_euclid(n) as usize;
@@ -9951,47 +9281,6 @@ impl App {
             return;
         }
 
-        // ─── Deezer ARL form ───
-        if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::DeezerArl)) {
-            match key.code {
-                KeyCode::Char(c) => {
-                    if !c.is_control() {
-                        self.deezer.arl_input.push(c);
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.deezer.arl_input.pop();
-                }
-                KeyCode::Esc => {
-                    self.pickers.close_top();
-                }
-                KeyCode::Enter => {
-                    let arl = self.deezer.arl_input.clone();
-                    let saved = !arl.trim().is_empty();
-                    let value = arl.clone();
-                    let c = self.client.clone();
-                    let ipc_tx = self.ipc_tx.clone();
-                    self.pickers.close_top();
-                    tokio::spawn(async move {
-                        if let Err(e) = c.deezer().set_arl(&value).await {
-                            self_err(&ipc_tx, format!("deezer ARL: {e}"));
-                        }
-                    });
-                    let (msg, kind) = if saved {
-                        (
-                            format!("Deezer ARL saved ({} chars)", arl.trim().chars().count()),
-                            NotificationKind::Success,
-                        )
-                    } else {
-                        ("Deezer ARL cleared".to_string(), NotificationKind::Info)
-                    };
-                    self.notify_typed("Deezer", msg, kind, false, NotifType::Prefs);
-                }
-                _ => {}
-            }
-            return;
-        }
-
         // ─── YouTube cookie-file form ───
         if matches!(
             self.pickers.top().map(|o| o.id),
@@ -10031,64 +9320,6 @@ impl App {
                         (format!("Cookie file: {display}"), NotificationKind::Info)
                     };
                     self.notify_typed("System", msg, kind, true, NotifType::Prefs);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // ─── Subsonic setup form ───
-        if matches!(
-            self.pickers.top().map(|o| o.id),
-            Some(PickerId::SubsonicSetup)
-        ) {
-            match key.code {
-                KeyCode::Char(c) => {
-                    if !c.is_control() {
-                        match self.subsonic.form_focus {
-                            0 => self.subsonic.form_server.push(c),
-                            1 => self.subsonic.form_user.push(c),
-                            _ => self.subsonic.form_password.push(c),
-                        }
-                    }
-                }
-                KeyCode::Backspace => match self.subsonic.form_focus {
-                    0 => {
-                        self.subsonic.form_server.pop();
-                    }
-                    1 => {
-                        self.subsonic.form_user.pop();
-                    }
-                    _ => {
-                        self.subsonic.form_password.pop();
-                    }
-                },
-                KeyCode::Tab => {
-                    self.subsonic.form_focus = (self.subsonic.form_focus + 1) % 3;
-                }
-                KeyCode::Enter => {
-                    let server = self.subsonic.form_server.clone();
-                    let user = self.subsonic.form_user.clone();
-                    let password = self.subsonic.form_password.clone();
-                    if server.is_empty() || user.is_empty() {
-                        self.notify_typed(
-                            "Subsonic",
-                            "Server URL and username are required",
-                            NotificationKind::Info,
-                            true,
-                            NotifType::Subsonic,
-                        );
-                        return;
-                    }
-                    if self.subsonic.form_focus < 2 {
-                        self.subsonic.form_focus += 1;
-                    } else {
-                        let c = self.client.clone();
-                        self.pickers.close_top();
-                        tokio::spawn(async move {
-                            let _ = c.subsonic().configure(&server, &user, &password).await;
-                        });
-                    }
                 }
                 _ => {}
             }
@@ -10748,13 +9979,6 @@ impl App {
                             // Keep the picker open and show a waiting state until
                             // the daemon reports the link completed.
                             self.start_spotify_oauth(client_id, port);
-                        }
-                        PickerId::TidalLink => {
-                            // Start the flow with the typed client id (or the
-                            // previously stored one). Unlike Spotify there is
-                            // no built-in fallback id, so an empty form stays
-                            // open for input.
-                            self.open_tidal_link();
                         }
                         PickerId::Queue => {
                             if !self.queue.cache.is_empty() {
@@ -11623,13 +10847,6 @@ impl App {
                                 self.spotify.oauth_port.push(c);
                             }
                         }
-                        PickerId::TidalLink => {
-                            if self.setup.tidal_field == 0 {
-                                self.setup.tidal_client_id.push(c);
-                            } else {
-                                self.setup.tidal_port.push(c);
-                            }
-                        }
                         PickerId::PlaylistSelect if self.playlist_creating => {
                             top.query.push(c);
                         }
@@ -11657,8 +10874,6 @@ impl App {
                         self.metadata.field_idx = (self.metadata.field_idx + 1) % 7;
                     } else if top.id == PickerId::SpotifyLink {
                         self.spotify.link_field = (self.spotify.link_field + 1) % 2;
-                    } else if top.id == PickerId::TidalLink {
-                        self.setup.tidal_field = (self.setup.tidal_field + 1) % 2;
                     }
                 }
             }
@@ -11684,13 +10899,6 @@ impl App {
                                 self.spotify.link_input.pop();
                             } else {
                                 self.spotify.oauth_port.pop();
-                            }
-                        }
-                        PickerId::TidalLink => {
-                            if self.setup.tidal_field == 0 {
-                                self.setup.tidal_client_id.pop();
-                            } else {
-                                self.setup.tidal_port.pop();
                             }
                         }
                         PickerId::PlaylistSelect if self.playlist_creating => {
@@ -11731,13 +10939,6 @@ impl App {
                         self.spotify.link_input.push_str(text);
                     } else {
                         self.spotify.oauth_port.push_str(text);
-                    }
-                }
-                PickerId::TidalLink => {
-                    if self.setup.tidal_field == 0 {
-                        self.setup.tidal_client_id.push_str(text);
-                    } else {
-                        self.setup.tidal_port.push_str(text);
                     }
                 }
                 PickerId::EditMetadata => {

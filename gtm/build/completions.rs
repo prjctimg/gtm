@@ -235,21 +235,18 @@ enum Command {
     /// Spotify account and playback control
     #[command(subcommand)]
     Spotify(SpotifyAction),
-    /// Subsonic/Navidrome server access
-    #[command(subcommand)]
-    Subsonic(SubsonicAction),
     /// Podcast feed management and playback
     #[command(subcommand)]
     Podcast(PodcastAction),
     /// Internet radio via radio-browser.info
     #[command(subcommand)]
     Radio(RadioAction),
-    /// Walk through setting up integration sources (Spotify, Last.fm,
-    /// Subsonic/Navidrome). With no SERVICE argument every unconfigured
+    /// Walk through setting up integration sources (Spotify, Last.fm).
+    /// With no SERVICE argument every unconfigured
     /// source is visited; OAuth steps launch your browser and capture the
     /// response.
     Setup {
-        /// Service to configure: spotify | lastfm | subsonic
+        /// Service to configure: spotify | lastfm
         #[arg(value_name = "SERVICE")]
         service: Option<String>,
         /// Run the plain terminal wizard instead of the TUI
@@ -278,29 +275,6 @@ enum SpotifyAction {
     Status,
     /// Re-sync all playlists from the Web API
     Sync,
-}
-
-#[derive(Subcommand)]
-enum SubsonicAction {
-    /// Save server credentials and verify the connection
-    Configure {
-        /// Server URL, e.g. https://music.example.com/rest
-        server: String,
-        /// Subsonic username
-        username: String,
-        /// Password (interactive prompt when absent)
-        password: Option<String>,
-    },
-    /// Forget stored Subsonic credentials
-    Clear,
-    /// Show the current Subsonic configuration state
-    Status,
-    /// Ping the server
-    Ping,
-    /// Search the server's index
-    Search { query: String },
-    /// Play a track by its server-side id
-    Play { track_id: String },
 }
 
 #[derive(Subcommand)]

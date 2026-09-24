@@ -17,18 +17,13 @@ pub const SERVICE: &str = "gtm";
 pub const SPOTIFY_CLIENT_ID: &str = "spotify_client_id";
 /// Keychain/username for the Spotify OAuth token.
 pub const SPOTIFY_TOKEN_KEY: &str = "spotify_token";
-/// Keychain/username for the Subsonic (Navidrome) server credentials.
-pub const SUBSONIC_KEY: &str = "subsonic_credentials";
 /// Keychain/username for the Last.fm API key.
 pub const LASTFM_API_KEY: &str = "lastfm_api_key";
 /// Keychain/username for the Last.fm API secret.
 pub const LASTFM_API_SECRET: &str = "lastfm_api_secret";
-/// Keychain/username for the Deezer streaming ARL token.
-pub const DEEZER_ARL: &str = "deezer_arl";
-/// Keychain/username for the Tidal app client id.
-pub const TIDAL_CLIENT_ID: &str = "tidal_client_id";
-/// Keychain/username for the Tidal OAuth token.
-pub const TIDAL_TOKEN_KEY: &str = "tidal_token";
+// New streaming providers can add their own keychain keys here (e.g.
+// `pub const XX_CLIENT_ID: &str = "xx_client_id";`) — storage, fallback and
+// deletion all live in this module and need no per-provider changes.
 
 fn fallback_dir() -> PathBuf {
     let base = dirs::config_dir().unwrap_or_else(|| {

@@ -1,12 +1,13 @@
-// Chart data model shared by daemon ↔ client. Provider-agnostic so Deezer/Tidal
-// can slot in without UI/IPC changes.
+// Chart data model shared by daemon ↔ client. Provider-agnostic: new chart
+// sources implement the `ChartProvider` trait (gtmd/src/charts/) and appear in
+// the UI without any shared-crate changes.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ChartSource {
-    pub id: String,       // "spotify" | "deezer" | "tidal" ...
+    pub id: String,       // "spotify" | "apple" | <community provider id> ...
     pub display: String,  // human label e.g. "Spotify Charts"
     pub configured: bool, // has valid auth / is available
 }
@@ -29,7 +30,7 @@ pub struct ChartTrack {
     pub artists: String,
     pub album: Option<String>,
     pub duration_ms: Option<u64>,
-    pub uri: String, // provider-specific playable URI (spotify:track:..., deezer:track:...)
+    pub uri: String, // provider-specific playable URI (e.g. spotify:track:...)
     pub cover_url: Option<String>,
 }
 

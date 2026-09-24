@@ -4,7 +4,7 @@ Background audio daemon for [gtm](https://github.com/prjctimg/gtm.rs) — the
 feature-rich cross-platform terminal audio player.
 
 `gtmd` runs as a headless daemon: it owns the audio output (local files,
-YouTube, Spotify, radio, subsonic, podcasts), the library database, cover
+YouTube, Spotify, radio, podcasts), the library database, cover
 artwork and lyrics caching, scrobbling, and the MPRIS D-Bus interface. The
 `gtm` TUI/CLI connects to it over a Unix socket and drives playback through
 the IPC protocol defined in `gtm::shared::ipc`.

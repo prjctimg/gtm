@@ -20,13 +20,12 @@ use crate::footer::{
 use crate::mouse::MouseZone;
 use crate::picker::{Picker, PickerId, PickerSource};
 use crate::progress::{ProgressStyle, render_progress, render_progress_styled, render_ratio};
-use crate::shared::daemon::{ensure_daemon_running, ensure_daemon_version};
+use crate::shared::daemon::ensure_daemon_running;
 use crate::shared::global::{EqPreset, PlaybackStatus};
 use crate::shared::ipc::HealthStatus;
 use crate::shared::log::redirect_stderr;
 use crate::shared::radio::RadioStation;
 use crate::shared::resolve_command_socket;
-use crate::shared::secret::{DEEZER_ARL, get_secret};
 use crate::shared::spotify::SpotifySearchKind;
 use crate::shared::track::{LrcData, TrackInfo};
 use crate::theme::blend_colors;
@@ -1764,7 +1763,7 @@ impl Render {
             }
         } else if app.library_category == 12 {
             // Top Charts: three-level navigation
-            // Level 0: Chart sources (Spotify, future Deezer/Tidal)
+            // Level 0: Chart sources (Spotify, Apple Music, …)
             // Level 1: Charts for selected source
             // Level 2: Tracks for selected chart
             let sources = &app.charts.sources;
@@ -1786,7 +1785,7 @@ impl Render {
                     lines.extend(empty_hint_lines(
                         app,
                         "No chart sources available",
-                        "Hint: free charts (Deezer/iTunes) load automatically",
+                        "Hint: free charts (iTunes) load automatically",
                     ));
                 } else {
                     for (i, src) in sources[app.list_scroll..end].iter().enumerate() {
@@ -2701,7 +2700,6 @@ pub fn run_tui(
         color_eyre::install()?;
 
         ensure_daemon_running(&socket_path).await?;
-        ensure_daemon_version(&socket_path).await?;
 
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
@@ -2963,24 +2961,22 @@ pub(crate) fn use_nerd_fonts() -> bool {
 }
 
 /// Brand/source glyph for a provider name, verified against the glyphs present
-/// in the pinned JetBrainsMono Nerd Font (no tofu). Returns `None` for
-/// providers without a distinct glyph so callers can keep their own
-/// ASCII/emoji fallback.
+/// in the pinned JetBrainsMono Nerd Font (no tofu). Returns `None` for any
+/// provider without a distinct glyph — including community providers — so
+/// callers keep their own ASCII/emoji fallback and new providers never risk
+/// a tofu box.
 pub(crate) fn provider_icon(name: &str) -> Option<&'static str> {
     match name {
-        "Spotify" => Some("\u{f04c7}"),            // nf-md-spotify
-        "YouTube" => Some("\u{f16a}"),             // nf-fa-youtube
-        "Podcast" => Some("\u{f0994}"),            // nf-md-podcast
-        "Radio" => Some("\u{f0439}"),              // nf-md-radio
-        "Subsonic/Navidrome" => Some("\u{f048b}"), // nf-md-server
-        "Deezer" => Some("\u{f0387}"),             // nf-md-music_note (logo is a note)
-        "Tidal" => Some("\u{f0f2e}"),              // nf-md-wave (logo is a wave)
-        "SoundCloud" => Some("\u{f1be}"),          // nf-fa-soundcloud
-        "Bandcamp" => Some("\u{f2d5}"),            // nf-fa-bandcamp
-        "Mixcloud" => Some("\u{f289}"),            // nf-fa-mixcloud
-        "Twitch" => Some("\u{f1e8}"),              // nf-fa-twitch
-        "Last.fm" => Some("\u{f001}"),             // nf-md-music (no brand glyph in font)
-        "Local" => Some("\u{f0a0}"),               // nf-fa-hdd
+        "Spotify" => Some("\u{f04c7}"),   // nf-md-spotify
+        "YouTube" => Some("\u{f16a}"),    // nf-fa-youtube
+        "Podcast" => Some("\u{f0994}"),   // nf-md-podcast
+        "Radio" => Some("\u{f0439}"),     // nf-md-radio
+        "SoundCloud" => Some("\u{f1be}"), // nf-fa-soundcloud
+        "Bandcamp" => Some("\u{f2d5}"),   // nf-fa-bandcamp
+        "Mixcloud" => Some("\u{f289}"),   // nf-fa-mixcloud
+        "Twitch" => Some("\u{f1e8}"),     // nf-fa-twitch
+        "Last.fm" => Some("\u{f001}"),    // nf-md-music (no brand glyph in font)
+        "Local" => Some("\u{f0a0}"),      // nf-fa-hdd
         _ => None,
     }
 }
@@ -3067,12 +3063,12 @@ fn spotify_waiting_lines(app: &App) -> Vec<Line<'static>> {
             Style::default().fg(app.theme.fg_dim),
         )));
         lines.push(Line::from(Span::styled(
-            "Still stuck? Your app must list this exact Redirect URI:",
+            "Still stuck? Add this redirect to your app:",
             Style::default().fg(app.theme.fg_dim),
         )));
         lines.push(Line::from(Span::styled(
             format!(
-                "http://127.0.0.1:{}/login   (127.0.0.1, not localhost)",
+                "http://127.0.0.1:{}/login",
                 app.spotify.oauth_port.parse::<u16>().unwrap_or(8990)
             ),
             Style::default().fg(app.theme.accent),
@@ -3104,62 +3100,6 @@ fn spotify_waiting_lines(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
-/// Tidal variant of [`spotify_waiting_lines`]: waiting state plus inline
-/// failure/URL for the `TidalLink` picker during the daemon-hosted OAuth flow.
-fn tidal_waiting_lines(app: &App) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
-    if app.setup.tidal_pending {
-        lines.push(Line::from(Span::styled(
-            "Waiting for you to finish login in your browser…",
-            Style::default().fg(app.theme.fg_bright),
-        )));
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "A browser window should have opened to authorize gtm.",
-            Style::default().fg(app.theme.fg_dim),
-        )));
-        lines.push(Line::from(Span::styled(
-            "Once you approve, the account links automatically.",
-            Style::default().fg(app.theme.fg_dim),
-        )));
-        lines.push(Line::from(Span::styled(
-            "Still stuck? Your app must list this exact Redirect URI:",
-            Style::default().fg(app.theme.fg_dim),
-        )));
-        lines.push(Line::from(Span::styled(
-            format!(
-                "http://127.0.0.1:{}/login   (127.0.0.1, not localhost)",
-                app.setup.tidal_port.parse::<u16>().unwrap_or(8992)
-            ),
-            Style::default().fg(app.theme.accent),
-        )));
-        lines.push(Line::from(""));
-    }
-    if let Some(err) = app.setup.tidal_error.as_deref() {
-        lines.push(Line::from(Span::styled(
-            err.to_string(),
-            Style::default().fg(app.theme.error),
-        )));
-        lines.push(Line::from(""));
-    }
-    if let Some(url) = app.setup.tidal_url.as_deref() {
-        lines.push(Line::from(Span::styled(
-            "If your browser did not open, copy this URL:",
-            Style::default().fg(app.theme.fg_dim),
-        )));
-        lines.push(Line::from(Span::styled(
-            url.to_string(),
-            Style::default().fg(app.theme.accent),
-        )));
-        lines.push(Line::from(""));
-    }
-    lines.push(Line::from(Span::styled(
-        "Press Esc to cancel.",
-        Style::default().fg(app.theme.fg_dim),
-    )));
-    lines
-}
-
 fn fill_pane(f: &mut ratatui::Frame, area: Rect, app: &App) {
     f.render_widget(
         ratatui::widgets::Block::default()
@@ -3168,10 +3108,9 @@ fn fill_pane(f: &mut ratatui::Frame, area: Rect, app: &App) {
     );
 }
 
-const SETTINGS_ICONS_NERD: &[&str] =
-    &["\u{f16a}", "\u{f04b}", "\u{f013}", "\u{f04c7}", "\u{f0387}"];
-const SETTINGS_ICONS_ASCII: &[&str] = &["YT", "▶", "⚙", "★", "DZ"];
-const SETTINGS_CATEGORIES: &[&str] = &["YouTube", "Playback", "System", "Spotify", "Deezer"];
+const SETTINGS_ICONS_NERD: &[&str] = &["\u{f16a}", "\u{f04b}", "\u{f013}", "\u{f04c7}"];
+const SETTINGS_ICONS_ASCII: &[&str] = &["YT", "▶", "⚙", "★"];
+const SETTINGS_CATEGORIES: &[&str] = &["YouTube", "Playback", "System", "Spotify"];
 
 // ─── Overlay Rendering ───
 
@@ -3184,10 +3123,7 @@ fn service_icon_glyph(icon_style: &str, service: &str) -> &'static str {
     match service {
         "Spotify" => "\u{1f3a7}",
         "Last.fm" => "\u{1f3b5}",
-        "Subsonic/Navidrome" => "\u{1f5a5}\u{fe0f}",
-        "Deezer" => "\u{1f3b6}",
         "YouTube" => "\u{25b6}\u{fe0f}", // same ▶️ as command palette's emoji YouTube Search
-        "Tidal" => "\u{1f30a}",
         _ => "",
     }
 }
@@ -3247,51 +3183,9 @@ impl Pickers {
             PickerId::NotificationSettings => (60, 14),
             PickerId::ProgressStyle => (48, 18),
             PickerId::Settings => (64, 28),
-            PickerId::SubsonicSearch => {
-                let n = app.subsonic.search_results.artists.len()
-                    + app.subsonic.search_results.albums.len()
-                    + app.subsonic.search_results.tracks.len();
-                let w = app
-                    .subsonic
-                    .search_results
-                    .tracks
-                    .iter()
-                    .map(|t| t.artist.len() as u16 + t.title.len() as u16 + 14)
-                    .max()
-                    .unwrap_or(58)
-                    .clamp(48, 78);
-                (w, (n as u16 + 6).clamp(18, 30))
-            }
-            PickerId::SubsonicAlbums => {
-                let w = app
-                    .subsonic
-                    .albums
-                    .iter()
-                    .map(|a| a.title.len() as u16 + a.artist.len() as u16 + 16)
-                    .max()
-                    .unwrap_or(54)
-                    .clamp(50, 78);
-                (w, (app.subsonic.albums.len() as u16 + 6).clamp(18, 30))
-            }
-            PickerId::SubsonicAlbumTracks => {
-                let w = app
-                    .subsonic
-                    .album_tracks
-                    .iter()
-                    .map(|t| t.artist.len() as u16 + t.title.len() as u16 + 30)
-                    .max()
-                    .unwrap_or(60)
-                    .clamp(52, 84);
-                (
-                    w,
-                    (app.subsonic.album_tracks.len() as u16 + 6).clamp(18, 30),
-                )
-            }
-            PickerId::SubsonicSetup => (56, 12),
             PickerId::Setup => (58, 24),
             PickerId::LastfmAuth => (60, 16),
             PickerId::YoutubeSetup => (58, 8),
-            PickerId::TidalLink => (60, 16),
             PickerId::PodcastFeeds => {
                 let w = app
                     .podcast
@@ -3366,9 +3260,6 @@ impl Pickers {
                     | PickerId::PlaylistSelect
                     | PickerId::PlaylistTrackSelect
                     | PickerId::SpotifySearch
-                    | PickerId::SubsonicSearch
-                    | PickerId::SubsonicAlbums
-                    | PickerId::SubsonicAlbumTracks
                     | PickerId::PodcastFeeds
                     | PickerId::PodcastEpisodes
                     | PickerId::Radio
@@ -3415,11 +3306,6 @@ impl Pickers {
             PickerId::NotificationSettings => {
                 Self::render_notification_settings(f, picker_area, app)
             }
-            PickerId::SubsonicSearch => Self::render_subsonic_search(f, picker_area, app),
-            PickerId::SubsonicAlbums => Self::render_subsonic_albums(f, picker_area, app),
-            PickerId::SubsonicAlbumTracks => Self::render_album_tracks(f, picker_area, app),
-            PickerId::SubsonicSetup => Self::render_subsonic_setup(f, picker_area, app),
-            PickerId::DeezerArl => Self::render_deezer_arl(f, picker_area, app),
             PickerId::PodcastFeeds => Self::render_podcast_feeds(f, picker_area, app),
             PickerId::PodcastEpisodes => Self::render_podcast_episodes(f, picker_area, app),
             PickerId::PodcastSubscribe => Self::render_podcast_subscribe(f, picker_area, app),
@@ -3428,7 +3314,6 @@ impl Pickers {
             PickerId::Setup => Self::render_setup(f, picker_area, app),
             PickerId::LastfmAuth => Self::render_lastfm_setup(f, picker_area, app),
             PickerId::YoutubeSetup => Self::render_youtube_setup(f, picker_area, app),
-            PickerId::TidalLink => Self::render_tidal_link(f, picker_area, app),
             PickerId::SpotifyLink => {
                 let block = Self::picker_panel(app, " Spotify Link ", None);
                 let inner = block.inner(picker_area);
@@ -3494,17 +3379,13 @@ impl Pickers {
                     lines.push(Line::from(""));
                     lines.push(Line::from(Span::styled(
                         format!(
-                            "Redirect URI to register: http://127.0.0.1:{}/login",
+                            "Redirect: http://127.0.0.1:{}/login",
                             app.spotify.oauth_port.parse::<u16>().unwrap_or(8990)
                         ),
                         Style::default().fg(app.theme.fg_bright),
                     )));
                     lines.push(Line::from(Span::styled(
-                        "Use 127.0.0.1 (not localhost). Client ID = 32 hex chars from",
-                        Style::default().fg(app.theme.fg_dim),
-                    )));
-                    lines.push(Line::from(Span::styled(
-                        "your Spotify app dashboard (https://developer.spotify.com/dashboard).",
+                        "Register it in your Spotify app dashboard.",
                         Style::default().fg(app.theme.fg_dim),
                     )));
 
@@ -4273,7 +4154,7 @@ impl Pickers {
         }
     }
 
-    /// Prompt line shown at the top of query pickers (Subsonic search, radio).
+    /// Prompt line shown at the top of query pickers (radio search).
     fn picker_query_line(app: &App) -> Line<'static> {
         let q = app.pickers.top().map_or(String::new(), |o| o.query.clone());
         Line::from(vec![
@@ -4360,158 +4241,6 @@ impl Pickers {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
-    fn render_subsonic_search(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let r = &app.subsonic.search_results;
-        let mut rows = Vec::new();
-        for a in &r.artists {
-            rows.push(format!("\u{1f465} {}\u{2003}artist", a.name));
-        }
-        for a in &r.albums {
-            rows.push(format!("\u{1f4bf} {} - {}", a.title, a.artist));
-        }
-        for t in &r.tracks {
-            rows.push(format!(
-                "\u{266b} {} - {} [{}]",
-                t.artist,
-                t.title,
-                format_duration_short(t.duration_secs)
-            ));
-        }
-        let mut prepend = vec![Self::picker_query_line(app)];
-        if app.subsonic.search_pending {
-            prepend.push(Line::from(Span::styled(
-                " searching\u{2026}",
-                Style::default().fg(app.theme.fg_dim),
-            )));
-        }
-        Self::render_scroll_rows(
-            f,
-            area,
-            app,
-            "Subsonic Search",
-            "",
-            prepend,
-            rows,
-            "type a query, then Enter",
-        );
-    }
-
-    fn render_subsonic_albums(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let mut rows = Vec::new();
-        for a in &app.subsonic.albums {
-            rows.push(format!(
-                "\u{1f4bf} {} - {}\u{2003}[{}]",
-                a.title, a.artist, a.track_count
-            ));
-        }
-        let mut prepend = Vec::new();
-        if let Some(st) = app.subsonic.status.as_ref() {
-            prepend.push(Line::from(Span::styled(
-                format!(
-                    " \u{1f5a5}  {}@{}",
-                    st.user.as_deref().unwrap_or("?"),
-                    st.server.as_deref().unwrap_or("?")
-                ),
-                Style::default().fg(app.theme.fg_dim),
-            )));
-        }
-        Self::render_scroll_rows(
-            f,
-            area,
-            app,
-            "Subsonic Albums",
-            "",
-            prepend,
-            rows,
-            if app.subsonic.albums_pending {
-                " loading albums\u{2026}"
-            } else {
-                "no albums \u{2014} run `gtm subsonic configure` to set up the server"
-            },
-        );
-    }
-
-    fn render_album_tracks(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let mut rows = Vec::new();
-        for t in &app.subsonic.album_tracks {
-            rows.push(format!(
-                "\u{266b} {} - {} [{}]",
-                t.artist,
-                t.title,
-                format_duration_short(t.duration_secs)
-            ));
-        }
-        let title = app
-            .subsonic
-            .selected_album
-            .as_ref()
-            .map(|a| format!(" {} ", a.title))
-            .unwrap_or_else(|| " Album tracks ".into());
-        Self::render_scroll_rows(
-            f,
-            area,
-            app,
-            &title,
-            " Enter: play   a: play album   Esc: close",
-            Vec::new(),
-            rows,
-            "album has no tracks",
-        );
-    }
-
-    fn render_subsonic_setup(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Subsonic setup ", None);
-        let inner = block.inner(area);
-        f.render_widget(block, area);
-
-        let mut lines = Vec::new();
-        let focus = app.subsonic.form_focus;
-        for (idx, label) in [" Server URL ", " Username ", " Password "]
-            .iter()
-            .enumerate()
-        {
-            let value = match idx {
-                0 => app.subsonic.form_server.clone(),
-                1 => app.subsonic.form_user.clone(),
-                _ => "\u{2022}".repeat(app.subsonic.form_password.chars().count()),
-            };
-            let label_style = if idx == focus {
-                Style::default()
-                    .fg(app.theme.accent)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(app.theme.fg_dim)
-            };
-            let value_style = if idx == focus {
-                Style::default()
-                    .fg(app.theme.fg_bright)
-                    .add_modifier(Modifier::UNDERLINED)
-            } else {
-                Style::default().fg(app.theme.fg)
-            };
-            lines.push(Line::from(vec![
-                Span::styled(label.to_string(), label_style),
-                Span::styled(format!("[{value}]"), value_style),
-            ]));
-        }
-        match app.subsonic.status.as_ref() {
-            Some(st) if st.configured => {
-                lines.push(Line::from(Span::styled(
-                    "\u{2713} credentials saved \u{2014} Enter to update",
-                    Style::default().fg(app.theme.fg_dim),
-                )));
-            }
-            Some(_) => {
-                lines.push(Line::from(Span::styled(
-                    "\u{26a0} not configured \u{2014} Enter saves and validates",
-                    Style::default().fg(app.theme.fg_dim),
-                )));
-            }
-            None => {}
-        }
-        f.render_widget(Paragraph::new(lines), inner);
-    }
-
     /// `gtm setup` service chooser. Enter opens the matching setup flow.
     fn render_setup(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let block = Self::picker_panel(app, "Setup", None);
@@ -4519,9 +4248,7 @@ impl Pickers {
         f.render_widget(block, area);
 
         // (name, description, live status)
-        let deezer_arl = get_secret(DEEZER_ARL).is_some();
-        let tidal_linked = app.setup.tidal_status.as_ref().is_some_and(|s| s.linked);
-        let services: [(&str, &str, String); 6] = [
+        let services: [(&str, &str, String); 3] = [
             ("Spotify", "OAuth link", {
                 if app.spotify.status.as_ref().is_some_and(|s| s.linked) {
                     "✓ linked".to_string()
@@ -4536,32 +4263,11 @@ impl Pickers {
                     "not linked".to_string()
                 }
             }),
-            ("Subsonic/Navidrome", "server + credentials", {
-                if app.subsonic.status.as_ref().is_some_and(|s| s.configured) {
-                    "✓ configured".to_string()
-                } else {
-                    "not configured".to_string()
-                }
-            }),
-            ("Deezer", "ARL token", {
-                if deezer_arl {
-                    "✓ ARL stored".to_string()
-                } else {
-                    "no ARL".to_string()
-                }
-            }),
             ("YouTube", "cookie file", {
                 if app.cookie_file.is_some() {
                     "✓ cookies set".to_string()
                 } else {
                     "no cookies".to_string()
-                }
-            }),
-            ("Tidal", "OAuth link", {
-                if tidal_linked {
-                    "✓ linked".to_string()
-                } else {
-                    "not linked".to_string()
                 }
             }),
         ];
@@ -4802,35 +4508,6 @@ impl Pickers {
         f.render_widget(Paragraph::new(lines), inner);
     }
 
-    fn render_deezer_arl(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Deezer ARL ", None);
-        let inner = block.inner(area);
-        f.render_widget(block, area);
-        let arl = app.deezer.arl_input.clone();
-        let mut lines = vec![Line::from(Span::styled(
-            " ARL token (192 chars, from DEEZER account settings): ",
-            Style::default().fg(app.theme.fg_dim),
-        ))];
-        lines.push(Line::from(vec![
-            Span::styled(" ", Style::default().fg(app.theme.fg)),
-            Span::styled(
-                arl,
-                Style::default()
-                    .fg(app.theme.fg_bright)
-                    .add_modifier(Modifier::UNDERLINED),
-            ),
-            match cursor_span_style(app) {
-                Some(style) => Span::styled(" ", style),
-                None => Span::raw(""),
-            },
-        ]));
-        lines.push(Line::from(Span::styled(
-            " enables full-track streaming with live Blowfish decryption; empty Enter clears the token",
-            Style::default().fg(app.theme.fg_dim),
-        )));
-        f.render_widget(Paragraph::new(lines), inner);
-    }
-
     /// YouTube cookie-file path form (single text input). The daemon's yt-dlp
     /// uses the file to lift age/consent restrictions; Enter with an empty box
     /// clears the configured path.
@@ -4864,95 +4541,6 @@ impl Pickers {
             Style::default().fg(app.theme.fg_dim),
         )));
         f.render_widget(Paragraph::new(lines), inner);
-    }
-
-    /// Tidal OAuth link form: Client ID + loopback port, mirroring the
-    /// Spotify link picker. Enter starts the daemon-hosted PKCE flow; an empty
-    /// Client ID with no stored id leaves the form open (there is no built-in
-    /// fallback id — Tidal's community web id redirects to the site, not a
-    /// loopback URI, so a user-registered id is always required).
-    fn render_tidal_link(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        let block = Self::picker_panel(app, " Tidal Link ", None);
-        let inner = block.inner(area);
-        f.render_widget(block, area);
-
-        if app.setup.tidal_pending || app.setup.tidal_error.is_some() {
-            let p = Paragraph::new(tidal_waiting_lines(app));
-            f.render_widget(p, inner);
-        } else {
-            let input_cursor = cursor_span_style(app);
-            let mut lines = vec![
-                Line::from(Span::styled(
-                    "Enter your Tidal app Client ID, then press Enter.",
-                    Style::default().fg(app.theme.fg),
-                )),
-                Line::from(Span::styled(
-                    "Tab switches field; a browser opens to authorize gtm.",
-                    Style::default().fg(app.theme.fg_dim),
-                )),
-                Line::from(""),
-            ];
-
-            // Client ID field (active = field 0). Masked so the secret isn't
-            // echoed to the terminal while typing.
-            let cid_active = app.setup.tidal_field == 0;
-            let cid_label = if cid_active {
-                app.theme.fg_bright
-            } else {
-                app.theme.fg_dim
-            };
-            let cid_text = if app.setup.tidal_client_id.is_empty() {
-                "[ client id ]".to_string()
-            } else {
-                "•".repeat(app.setup.tidal_client_id.chars().count())
-            };
-            let mut cid_spans = vec![
-                Span::styled(" Client ID: ", Style::default().fg(cid_label)),
-                Span::styled(cid_text, Style::default().fg(app.theme.accent)),
-            ];
-            if cid_active && let Some(cur) = input_cursor {
-                cid_spans.push(Span::styled(" ", cur));
-            }
-            lines.push(Line::from(cid_spans));
-
-            // Port field (active = field 1)
-            let port_active = app.setup.tidal_field == 1;
-            let port_label = if port_active {
-                app.theme.fg_bright
-            } else {
-                app.theme.fg_dim
-            };
-            let mut port_spans = vec![
-                Span::styled(" Port:      ", Style::default().fg(port_label)),
-                Span::styled(
-                    app.setup.tidal_port.clone(),
-                    Style::default().fg(app.theme.accent),
-                ),
-            ];
-            if port_active && let Some(cur) = input_cursor {
-                port_spans.push(Span::styled(" ", cur));
-            }
-            lines.push(Line::from(port_spans));
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                format!(
-                    "Redirect URI to register: http://127.0.0.1:{}/login",
-                    app.setup.tidal_port.parse::<u16>().unwrap_or(8992)
-                ),
-                Style::default().fg(app.theme.fg_bright),
-            )));
-            lines.push(Line::from(Span::styled(
-                "Use 127.0.0.1 (not localhost). Create a Client ID + Redirect URI at",
-                Style::default().fg(app.theme.fg_dim),
-            )));
-            lines.push(Line::from(Span::styled(
-                "https://developer.tidal.com (Client ID = short alphanumeric string).",
-                Style::default().fg(app.theme.fg_dim),
-            )));
-
-            let p = Paragraph::new(lines);
-            f.render_widget(p, inner);
-        }
     }
 
     fn render_radio(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
@@ -5447,9 +5035,6 @@ impl Pickers {
                     "Unlink         Enter".to_string(),
                     format!("Device         {device_label}"),
                 ]
-            }
-            4 => {
-                vec!["ARL Token   Enter  ▶".to_string()]
             }
             _ => vec![],
         };
@@ -6395,7 +5980,6 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   Alt+/       Search Library"),
     ("", "   Alt+Y       YouTube Search"),
     ("", "   Alt+S       Spotify"),
-    ("", "   Alt+U       Subsonic Search"),
     ("", "   Alt+P       Podcasts"),
     ("", "   Alt+R       Radio Browser"),
     ("", "   Alt+O       Play Stream URL"),

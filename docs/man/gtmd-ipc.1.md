@@ -124,7 +124,7 @@ The daemon responds with:
 ## play
 
 Load a track by path and begin playback. `path` may be a local file, a
-`radio://`/`podcast://`/`subsonic://` provider path, or an `http(s)://` stream
+`radio://`/`podcast://` provider path, or an `http(s)://` stream
 URL (played as a live, non-seekable stream).
 
 ```json

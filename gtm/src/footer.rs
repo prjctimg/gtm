@@ -769,7 +769,7 @@ impl Footer {
     }
 
     /// Active remote-provider indicator. Shown only while a remote stream is
-    /// the current track (`spotify:`, `subsonic://`, `podcast://`, `radio://`,
+    /// the current track (`spotify:`, `podcast://`, `radio://`,
     /// `http(s)://`, `youtube:` and the legacy `/audio/spotify|youtube`
     /// cache paths); local files render nothing so the module stays hidden.
     fn source(app: &App) -> Option<String> {
@@ -914,17 +914,11 @@ pub(crate) fn classify_remote_source(path: &str) -> Option<(&'static str, &'stat
     if path.starts_with("spotify:") || path.contains("/audio/spotify") {
         return Some(("Spotify", "Spotify"));
     }
-    if path.starts_with("subsonic://") {
-        return Some(("Subsonic/Navidrome", "Subsonic"));
-    }
     if path.starts_with("podcast://") {
         return Some(("Podcast", "Podcast"));
     }
     if path.starts_with("radio://") {
         return Some(("Radio", "Radio"));
-    }
-    if path.starts_with("deezer://") {
-        return Some(("Deezer", "Deezer"));
     }
     if path.starts_with("youtube:") || path.contains("/audio/youtube") {
         return Some(("YouTube", "YouTube"));
@@ -937,16 +931,6 @@ pub(crate) fn classify_remote_source(path: &str) -> Option<(&'static str, &'stat
         if lower.contains("youtube") || lower.contains("youtu.be") || lower.contains("googlevideo")
         {
             return Some(("YouTube", "YouTube"));
-        }
-        let host = lower
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
-            .split(['/', '?', '#'])
-            .next()
-            .unwrap_or("")
-            .trim_start_matches("www.");
-        if host == "deezer.com" || host.ends_with(".deezer.com") {
-            return Some(("Deezer", "Deezer"));
         }
         return Some(("Radio", "Stream"));
     }
@@ -1060,24 +1044,12 @@ mod tests {
             Some(("Spotify", "Spotify"))
         );
         assert_eq!(
-            classify_remote_source("subsonic://track123"),
-            Some(("Subsonic/Navidrome", "Subsonic"))
-        );
-        assert_eq!(
             classify_remote_source("podcast://feed/3"),
             Some(("Podcast", "Podcast"))
         );
         assert_eq!(
             classify_remote_source("radio://station-id"),
             Some(("Radio", "Radio"))
-        );
-        assert_eq!(
-            classify_remote_source("deezer://track/12345678"),
-            Some(("Deezer", "Deezer"))
-        );
-        assert_eq!(
-            classify_remote_source("https://www.deezer.com/track/12345678"),
-            Some(("Deezer", "Deezer"))
         );
         assert_eq!(
             classify_remote_source("youtube:video-id"),

@@ -9,10 +9,6 @@ use crate::shared::playlist::PlaylistFormatKind;
 use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 use crate::shared::radio::{RadioCountry, RadioStation, RadioTag};
 use crate::shared::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
-use crate::shared::subsonic::{
-    SubsonicAlbum, SubsonicSearchResults, SubsonicStatus, SubsonicTrack,
-};
-use crate::shared::tidal::TidalStatus;
 use crate::shared::track::{LrcData, Playlist, StreamInfo, TrackInfo, YTSearchResult};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -41,12 +37,6 @@ fn default_oauth_port() -> u16 {
 /// doesn't specify one (mirrors `gtm::oauth::lastfm_callback_port`).
 fn default_lastfm_port() -> u16 {
     8991
-}
-
-/// Default local callback port for the Tidal OAuth redirect when the caller
-/// doesn't specify one.
-fn default_tidal_port() -> u16 {
-    8992
 }
 
 /// Serde default: sleep timer hard-stops at zero unless the caller opts in to
@@ -438,22 +428,6 @@ pub enum DaemonReq {
     LastfmLove,
     /// Un-love the current track on Last.fm.
     LastfmUnlove,
-    /// Start the Tidal OAuth link flow: the daemon binds the loopback callback
-    /// port, returns the authorize URL, then captures the returning `code`,
-    /// exchanges it for an access token, and pushes a status event. Mirrors
-    /// the Spotify/Last.fm daemon-hosted contract.
-    TidalOauthStart {
-        client_id: String,
-        /// Loopback redirect port. Defaults to 8992.
-        #[serde(default = "default_tidal_port")]
-        port: u16,
-    },
-    /// Abort a pending Tidal OAuth link flow (frees the callback port).
-    TidalCancelOauth,
-    /// Current Tidal link status.
-    TidalStatus,
-    /// Unlink the Tidal account and delete the stored token.
-    TidalClear,
     SetSleepTimer {
         minutes: u32,
         /// `true` (default): stop playback the moment the countdown hits zero.
@@ -476,48 +450,6 @@ pub enum DaemonReq {
     },
     ClearCache {
         what: CacheKind,
-    },
-    /// Configure a Navidrome/Subsonic server (validated by a ping).
-    SubsonicConfigure {
-        server: String,
-        username: String,
-        password: String,
-    },
-    /// Store (or clear, when empty) the Deezer streaming ARL token. Persisted
-    /// via the OS keychain so full-track streaming survives daemon restarts.
-    SetDeezerArl {
-        arl: String,
-    },
-    /// Forget the Subsonic server configuration.
-    SubsonicClear,
-    SubsonicStatus,
-    SubsonicPing,
-    SubsonicSearch {
-        query: String,
-    },
-    SubsonicAlbums {
-        offset: u64,
-        size: u64,
-    },
-    SubsonicAlbumTracks {
-        album_id: String,
-    },
-    /// Play a Subsonic track natively by streaming its `/rest/stream` URL.
-    SubsonicPlay {
-        track_id: String,
-        title: String,
-        artist: String,
-        album: String,
-        duration_secs: Option<u64>,
-        cover_url: Option<String>,
-    },
-    /// Enqueue every track of an album (metadata attached) and play the first.
-    SubsonicPlayAlbum {
-        album_id: String,
-    },
-    /// Base64 cover art bytes for a Subsonic track (via getCoverArt).
-    SubsonicCover {
-        track_id: String,
     },
     /// Subscribe to a podcast RSS/Atom feed.
     PodcastAddFeed {
@@ -564,7 +496,8 @@ pub enum DaemonReq {
         country: String,
         limit: u16,
     },
-    /// List available chart sources (Spotify, future Deezer/Tidal).
+    /// List available chart sources (Spotify, Apple Music; new providers plug
+    /// in via the `ChartProvider` trait and appear here automatically).
     ChartsSources,
     /// List charts from a specific source or all configured sources.
     ChartsList {
@@ -662,10 +595,6 @@ impl DaemonReq {
             DaemonReq::LastfmClear => "lastfm_clear",
             DaemonReq::LastfmLove => "lastfm_love",
             DaemonReq::LastfmUnlove => "lastfm_unlove",
-            DaemonReq::TidalOauthStart { .. } => "tidal_oauth_start",
-            DaemonReq::TidalCancelOauth => "tidal_cancel_oauth",
-            DaemonReq::TidalStatus => "tidal_status",
-            DaemonReq::TidalClear => "tidal_clear",
             DaemonReq::SetSleepTimer { .. } => "set_sleep_timer",
             DaemonReq::CancelSleepTimer => "cancel_sleep_timer",
             DaemonReq::SetLowPower { .. } => "set_low_power",
@@ -673,17 +602,6 @@ impl DaemonReq {
             DaemonReq::ListAudioDevices => "list_audio_devices",
             DaemonReq::SetAudioDevice { .. } => "set_audio_device",
             DaemonReq::ClearCache { .. } => "clear_cache",
-            DaemonReq::SubsonicConfigure { .. } => "subsonic_configure",
-            DaemonReq::SetDeezerArl { .. } => "set_deezer_arl",
-            DaemonReq::SubsonicClear => "subsonic_clear",
-            DaemonReq::SubsonicStatus => "subsonic_status",
-            DaemonReq::SubsonicPing => "subsonic_ping",
-            DaemonReq::SubsonicSearch { .. } => "subsonic_search",
-            DaemonReq::SubsonicAlbums { .. } => "subsonic_albums",
-            DaemonReq::SubsonicAlbumTracks { .. } => "subsonic_album_tracks",
-            DaemonReq::SubsonicPlay { .. } => "subsonic_play",
-            DaemonReq::SubsonicPlayAlbum { .. } => "subsonic_play_album",
-            DaemonReq::SubsonicCover { .. } => "subsonic_cover",
             DaemonReq::PodcastAddFeed { .. } => "podcast_add_feed",
             DaemonReq::PodcastRemoveFeed { .. } => "podcast_remove_feed",
             DaemonReq::PodcastFeeds => "podcast_feeds",
@@ -1155,22 +1073,6 @@ impl DaemonReq {
             "lastfm_clear" => DaemonReq::LastfmClear,
             "lastfm_love" => DaemonReq::LastfmLove,
             "lastfm_unlove" => DaemonReq::LastfmUnlove,
-            "tidal_oauth_start" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    client_id: String,
-                    #[serde(default = "default_tidal_port")]
-                    port: u16,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::TidalOauthStart {
-                    client_id: x.client_id,
-                    port: x.port,
-                }
-            }
-            "tidal_cancel_oauth" => DaemonReq::TidalCancelOauth,
-            "tidal_status" => DaemonReq::TidalStatus,
-            "tidal_clear" => DaemonReq::TidalClear,
             "set_sleep_timer" => {
                 #[derive(Deserialize)]
                 struct Params {
@@ -1210,101 +1112,6 @@ impl DaemonReq {
                 }
                 let x: Params = p(params)?;
                 DaemonReq::ClearCache { what: x.what }
-            }
-            "subsonic_configure" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    server: String,
-                    username: String,
-                    password: String,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SubsonicConfigure {
-                    server: x.server,
-                    username: x.username,
-                    password: x.password,
-                }
-            }
-            "set_deezer_arl" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    arl: String,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SetDeezerArl { arl: x.arl }
-            }
-            "subsonic_clear" => DaemonReq::SubsonicClear,
-            "subsonic_status" => DaemonReq::SubsonicStatus,
-            "subsonic_ping" => DaemonReq::SubsonicPing,
-            "subsonic_search" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    query: String,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SubsonicSearch { query: x.query }
-            }
-            "subsonic_albums" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    offset: u64,
-                    size: u64,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SubsonicAlbums {
-                    offset: x.offset,
-                    size: x.size,
-                }
-            }
-            "subsonic_album_tracks" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    album_id: String,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SubsonicAlbumTracks {
-                    album_id: x.album_id,
-                }
-            }
-            "subsonic_play" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    track_id: String,
-                    title: String,
-                    artist: String,
-                    album: String,
-                    duration_secs: Option<u64>,
-                    cover_url: Option<String>,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SubsonicPlay {
-                    track_id: x.track_id,
-                    title: x.title,
-                    artist: x.artist,
-                    album: x.album,
-                    duration_secs: x.duration_secs,
-                    cover_url: x.cover_url,
-                }
-            }
-            "subsonic_cover" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    track_id: String,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SubsonicCover {
-                    track_id: x.track_id,
-                }
-            }
-            "subsonic_play_album" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    album_id: String,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SubsonicPlayAlbum {
-                    album_id: x.album_id,
-                }
             }
             "podcast_add_feed" => {
                 #[derive(Deserialize)]
@@ -1678,9 +1485,6 @@ pub enum DaemonEvent {
     SpotifyStatusChanged,
     #[serde(rename = "lastfm_status_changed")]
     LastfmStatusChanged,
-    /// Tidal link state changed (e.g. an OAuth link flow completed).
-    #[serde(rename = "tidal_status_changed")]
-    TidalStatusChanged,
     #[serde(rename = "spectrum_changed")]
     SpectrumChanged { levels: Vec<f32> },
     /// Time-domain waveform ring (interleaved L/R) plus a stereo flag, for
@@ -1737,15 +1541,6 @@ pub enum DaemonRes {
     SpotifyOauthStarted {
         url: String,
     },
-    /// Current Tidal link status.
-    TidalStatusRes {
-        status: TidalStatus,
-    },
-    /// Tidal OAuth link flow started; the user must open this URL in a
-    /// browser. Completion is pushed back via `tidal_status_changed`.
-    TidalOauthStarted {
-        url: String,
-    },
     SpotifyPlaylistsRes {
         playlists: Vec<SpotifyPlaylist>,
     },
@@ -1755,22 +1550,6 @@ pub enum DaemonRes {
     /// Base64-encoded cover image bytes fetched from a Spotify CDN URL.
     SpotifyImageRes {
         data: Option<String>,
-    },
-    SubsonicStatusRes {
-        status: SubsonicStatus,
-    },
-    SubsonicSearchRes {
-        results: SubsonicSearchResults,
-    },
-    SubsonicAlbumsRes {
-        albums: Vec<SubsonicAlbum>,
-    },
-    SubsonicTracksRes {
-        tracks: Vec<SubsonicTrack>,
-    },
-    /// Ping succeeded against the configured server.
-    SubsonicPingRes {
-        message: String,
     },
     PodcastFeedsRes {
         feeds: Vec<PodcastFeed>,
@@ -1885,25 +1664,8 @@ impl DaemonRes {
                 Some(serde_json::json!({ "playlists": playlists }))
             }
             DaemonRes::SpotifyOauthStarted { url } => Some(serde_json::json!({ "url": url })),
-            DaemonRes::TidalStatusRes { status } => Some(serde_json::json!({ "status": status })),
-            DaemonRes::TidalOauthStarted { url } => Some(serde_json::json!({ "url": url })),
             DaemonRes::SpotifyTracksRes { tracks } => Some(serde_json::json!({ "tracks": tracks })),
             DaemonRes::SpotifyImageRes { data } => Some(serde_json::json!({ "data": data })),
-            DaemonRes::SubsonicStatusRes { status } => {
-                Some(serde_json::json!({ "status": status }))
-            }
-            DaemonRes::SubsonicSearchRes { results } => {
-                Some(serde_json::json!({ "results": results }))
-            }
-            DaemonRes::SubsonicAlbumsRes { albums } => {
-                Some(serde_json::json!({ "albums": albums }))
-            }
-            DaemonRes::SubsonicTracksRes { tracks } => {
-                Some(serde_json::json!({ "tracks": tracks }))
-            }
-            DaemonRes::SubsonicPingRes { message } => {
-                Some(serde_json::json!({ "message": message }))
-            }
             DaemonRes::PodcastFeedsRes { feeds } => Some(serde_json::json!({ "feeds": feeds })),
             DaemonRes::PodcastEpisodesRes {
                 feed_id,
@@ -2057,16 +1819,9 @@ impl DaemonRes {
             DaemonRes::Lyrics { lyrics } => field!("lyrics", &lyrics),
             DaemonRes::SpotifyStatusRes { status } => field!("status", &status),
             DaemonRes::SpotifyOauthStarted { url } => field!("url", &url),
-            DaemonRes::TidalStatusRes { status } => field!("status", &status),
-            DaemonRes::TidalOauthStarted { url } => field!("url", &url),
             DaemonRes::SpotifyPlaylistsRes { playlists } => field!("playlists", &playlists),
             DaemonRes::SpotifyTracksRes { tracks } => field!("tracks", &tracks),
             DaemonRes::SpotifyImageRes { data } => field!("data", &data),
-            DaemonRes::SubsonicStatusRes { status } => field!("status", &status),
-            DaemonRes::SubsonicSearchRes { results } => field!("results", &results),
-            DaemonRes::SubsonicAlbumsRes { albums } => field!("albums", &albums),
-            DaemonRes::SubsonicTracksRes { tracks } => field!("tracks", &tracks),
-            DaemonRes::SubsonicPingRes { message } => field!("message", &message),
             DaemonRes::PodcastFeedsRes { feeds } => field!("feeds", &feeds),
             DaemonRes::PodcastEpisodesRes {
                 feed_id,
@@ -2302,15 +2057,6 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "tidal_status" | "tidal_clear" => {
-                match serde_json::from_value::<TidalStatus>(field(&data, "status")) {
-                    Ok(status) => DaemonRes::TidalStatusRes { status },
-                    Err(_) => DaemonRes::Value { value: data },
-                }
-            }
-            "tidal_oauth_start" => DaemonRes::TidalOauthStarted {
-                url: field_str(&data, "url").to_string(),
-            },
             "spotify_track_image" => {
                 match serde_json::from_value::<Option<String>>(field(&data, "data")) {
                     Ok(data) => DaemonRes::SpotifyImageRes { data },
@@ -2320,39 +2066,6 @@ impl DaemonRes {
             "spotify_oauth_start" => DaemonRes::SpotifyOauthStarted {
                 url: field_str(&data, "url").to_string(),
             },
-            "subsonic_status" => {
-                match serde_json::from_value::<SubsonicStatus>(field(&data, "status")) {
-                    Ok(status) => DaemonRes::SubsonicStatusRes { status },
-                    Err(_) => DaemonRes::Value { value: data },
-                }
-            }
-            "subsonic_search" => {
-                match serde_json::from_value::<SubsonicSearchResults>(field(&data, "results")) {
-                    Ok(results) => DaemonRes::SubsonicSearchRes { results },
-                    Err(_) => DaemonRes::Value { value: data },
-                }
-            }
-            "subsonic_albums" => {
-                match serde_json::from_value::<Vec<SubsonicAlbum>>(field(&data, "albums")) {
-                    Ok(albums) => DaemonRes::SubsonicAlbumsRes { albums },
-                    Err(_) => DaemonRes::Value { value: data },
-                }
-            }
-            "subsonic_album_tracks" => {
-                match serde_json::from_value::<Vec<SubsonicTrack>>(field(&data, "tracks")) {
-                    Ok(tracks) => DaemonRes::SubsonicTracksRes { tracks },
-                    Err(_) => DaemonRes::Value { value: data },
-                }
-            }
-            "subsonic_ping" => DaemonRes::SubsonicPingRes {
-                message: field_str(&data, "message").to_string(),
-            },
-            "subsonic_cover" => {
-                match serde_json::from_value::<Option<String>>(field(&data, "data")) {
-                    Ok(data) => DaemonRes::SpotifyImageRes { data },
-                    Err(_) => DaemonRes::Value { value: data },
-                }
-            }
             "podcast_feeds" => {
                 match serde_json::from_value::<Vec<PodcastFeed>>(field(&data, "feeds")) {
                     Ok(feeds) => DaemonRes::PodcastFeedsRes { feeds },

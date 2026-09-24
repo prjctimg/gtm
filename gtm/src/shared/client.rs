@@ -28,10 +28,6 @@ use crate::shared::playlist::PlaylistFormatKind;
 use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
 use crate::shared::radio::{RadioCountry, RadioStation, RadioTag};
 use crate::shared::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
-use crate::shared::subsonic::{
-    SubsonicAlbum, SubsonicSearchResults, SubsonicStatus, SubsonicTrack,
-};
-use crate::shared::tidal::TidalStatus;
 use crate::shared::track;
 use crate::shared::wire;
 
@@ -511,10 +507,6 @@ impl DaemonClient {
         Spotify { client: self }
     }
 
-    pub fn subsonic(&self) -> Subsonic<'_> {
-        Subsonic { client: self }
-    }
-
     pub fn podcast(&self) -> Podcast<'_> {
         Podcast { client: self }
     }
@@ -523,20 +515,12 @@ impl DaemonClient {
         Radio { client: self }
     }
 
-    pub fn deezer(&self) -> Deezer<'_> {
-        Deezer { client: self }
-    }
-
     pub fn charts(&self) -> Charts<'_> {
         Charts { client: self }
     }
 
     pub fn lastfm(&self) -> Lastfm<'_> {
         Lastfm { client: self }
-    }
-
-    pub fn tidal(&self) -> Tidal<'_> {
-        Tidal { client: self }
     }
 
     pub fn favourites(&self) -> Favourites<'_> {
@@ -1239,66 +1223,14 @@ impl<'a> Spotify<'a> {
     }
 }
 
-/// Tidal integration client: daemon-hosted OAuth PKCE link flow plus status/
-/// unlinking, mirroring the Spotify contract (start → authorize URL →
-/// `tidal_status_changed` event → re-pull status).
-pub struct Tidal<'a> {
-    client: &'a DaemonClient,
-}
-
-impl<'a> Tidal<'a> {
-    /// Start the Tidal OAuth PKCE link flow. Returns the authorize URL the
-    /// user must open in a browser; completion is signalled via the
-    /// `tidal_status_changed` daemon event. `port` selects the local redirect
-    /// port so a previously-registered Tidal redirect URI works.
-    pub async fn oauth_start(&self, client_id: &str, port: u16) -> Result<String> {
-        let res = self
-            .client
-            .send_raw(DaemonReq::TidalOauthStart {
-                client_id: client_id.into(),
-                port,
-            })
-            .await?;
-        match res {
-            DaemonRes::TidalOauthStarted { url } => Ok(url),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(unexpected(&res)),
-        }
-    }
-
-    /// Abort a pending Tidal OAuth link flow (shuts down the callback server).
-    pub async fn oauth_cancel(&self) -> Result<()> {
-        self.client.send_ok(DaemonReq::TidalCancelOauth).await
-    }
-
-    /// Unlink the Tidal account and delete the stored token.
-    pub async fn clear(&self) -> Result<TidalStatus> {
-        let res = self.client.send_raw(DaemonReq::TidalClear).await?;
-        Self::status_from(res)
-    }
-
-    /// Current Tidal link status.
-    pub async fn status(&self) -> Result<TidalStatus> {
-        let res = self.client.send_raw(DaemonReq::TidalStatus).await?;
-        Self::status_from(res)
-    }
-
-    fn status_from(res: DaemonRes) -> Result<TidalStatus> {
-        match res {
-            DaemonRes::TidalStatusRes { status, .. } => Ok(status),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(unexpected(&res)),
-        }
-    }
-}
-
 /// Client helpers for the Top Charts feature (provider-agnostic).
 pub struct Charts<'a> {
     client: &'a DaemonClient,
 }
 
 impl<'a> Charts<'a> {
-    /// List available chart sources (Spotify, future Deezer/Tidal).
+    /// List available chart sources (Spotify, Apple Music; new providers plug
+    /// in via the `ChartProvider` trait and appear here automatically).
     pub async fn sources(&self) -> Result<Vec<crate::shared::chart::ChartSource>> {
         let res = self.client.send_raw(DaemonReq::ChartsSources).await?;
         match res {
@@ -1339,134 +1271,6 @@ impl<'a> Charts<'a> {
             .await?;
         match res {
             DaemonRes::ChartsTracksRes { tracks, .. } => Ok(tracks),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(unexpected(&res)),
-        }
-    }
-}
-
-/// Client helpers for the Navidrome/Subsonic server integration.
-pub struct Subsonic<'a> {
-    client: &'a DaemonClient,
-}
-
-impl<'a> Subsonic<'a> {
-    /// Validate and persist the server configuration. Returns the new status.
-    pub async fn configure(
-        &self,
-        server: &str,
-        username: &str,
-        password: &str,
-    ) -> Result<SubsonicStatus> {
-        let res = self
-            .client
-            .send_raw(DaemonReq::SubsonicConfigure {
-                server: server.into(),
-                username: username.into(),
-                password: password.into(),
-            })
-            .await?;
-        match res {
-            DaemonRes::SubsonicStatusRes { status, .. } => Ok(status),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(unexpected(&res)),
-        }
-    }
-
-    pub async fn clear(&self) -> Result<()> {
-        self.client.send_ok(DaemonReq::SubsonicClear).await
-    }
-
-    pub async fn status(&self) -> Result<SubsonicStatus> {
-        let res = self.client.send_raw(DaemonReq::SubsonicStatus).await?;
-        match res {
-            DaemonRes::SubsonicStatusRes { status, .. } => Ok(status),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(unexpected(&res)),
-        }
-    }
-
-    pub async fn ping(&self) -> Result<()> {
-        let res = self.client.send_raw(DaemonReq::SubsonicPing).await?;
-        match res {
-            DaemonRes::SubsonicPingRes { .. } => Ok(()),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(unexpected(&res)),
-        }
-    }
-
-    pub async fn search(&self, query: &str) -> Result<SubsonicSearchResults> {
-        let res = self
-            .client
-            .send_raw(DaemonReq::SubsonicSearch {
-                query: query.into(),
-            })
-            .await?;
-        match res {
-            DaemonRes::SubsonicSearchRes { results, .. } => Ok(results),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(unexpected(&res)),
-        }
-    }
-
-    pub async fn albums(&self, offset: u64, size: u64) -> Result<Vec<SubsonicAlbum>> {
-        let res = self
-            .client
-            .send_raw(DaemonReq::SubsonicAlbums { offset, size })
-            .await?;
-        match res {
-            DaemonRes::SubsonicAlbumsRes { albums, .. } => Ok(albums),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(unexpected(&res)),
-        }
-    }
-
-    pub async fn album_tracks(&self, album_id: &str) -> Result<Vec<SubsonicTrack>> {
-        let res = self
-            .client
-            .send_raw(DaemonReq::SubsonicAlbumTracks {
-                album_id: album_id.into(),
-            })
-            .await?;
-        match res {
-            DaemonRes::SubsonicTracksRes { tracks, .. } => Ok(tracks),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(unexpected(&res)),
-        }
-    }
-
-    pub async fn play(&self, track: &SubsonicTrack) -> Result<()> {
-        self.client
-            .send_ok(DaemonReq::SubsonicPlay {
-                track_id: track.id.clone(),
-                title: track.title.clone(),
-                artist: track.artist.clone(),
-                album: track.album.clone(),
-                duration_secs: Some(track.duration_secs),
-                cover_url: None,
-            })
-            .await
-    }
-
-    /// Enqueue every track of an album and play the first.
-    pub async fn play_album(&self, album_id: &str) -> Result<()> {
-        self.client
-            .send_ok(DaemonReq::SubsonicPlayAlbum {
-                album_id: album_id.into(),
-            })
-            .await
-    }
-
-    /// Base64 cover art for a track (used by the picker preview).
-    pub async fn cover(&self, track_id: &str) -> Result<Option<String>> {
-        let res = self
-            .client
-            .send_raw(DaemonReq::SubsonicCover {
-                track_id: track_id.into(),
-            })
-            .await?;
-        match res {
-            DaemonRes::SpotifyImageRes { data, .. } => Ok(data),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
             _ => Err(unexpected(&res)),
         }
@@ -1563,20 +1367,6 @@ impl<'a> Podcast<'a> {
 }
 
 /// Client helpers for the Radio Browser directory.
-/// Deezer streaming settings client.
-pub struct Deezer<'a> {
-    client: &'a DaemonClient,
-}
-
-impl<'a> Deezer<'a> {
-    /// Store the streaming ARL token (or clear it when `arl` is empty).
-    pub async fn set_arl(&self, arl: &str) -> Result<()> {
-        self.client
-            .send_ok(DaemonReq::SetDeezerArl { arl: arl.into() })
-            .await
-    }
-}
-
 pub struct Radio<'a> {
     client: &'a DaemonClient,
 }

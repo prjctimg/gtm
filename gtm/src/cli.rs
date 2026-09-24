@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::PathBuf;
 
 use crate::shared::client::{DaemonClient, LastfmStatus};
-use crate::shared::daemon::{ensure_daemon_running, ensure_daemon_version};
+use crate::shared::daemon::ensure_daemon_running;
 use crate::shared::global::{PlaybackStatus, RepeatMode};
 use crate::shared::ipc::DaemonRes;
 use crate::shared::ipc::HealthStatus;
@@ -19,8 +19,6 @@ use crate::shared::secret::{
     LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, get_secret, set_secret,
 };
 use crate::shared::spotify::SpotifyStatus;
-use crate::shared::subsonic::SubsonicStatus;
-use crate::shared::subsonic::SubsonicTrack;
 use crate::shared::track::LrcData;
 use clap::{Parser, Subcommand};
 use tokio::io::AsyncBufReadExt;
@@ -262,20 +260,17 @@ pub enum CliCommand {
     /// Spotify integration commands
     Spotify(SpotifyAction),
     #[command(subcommand)]
-    /// Navidrome / Subsonic server integration
-    Subsonic(SubsonicAction),
-    #[command(subcommand)]
     /// Podcast subscriptions (RSS/Atom)
     Podcast(PodcastAction),
     #[command(subcommand)]
     /// Internet radio directory (Radio Browser)
     Radio(RadioAction),
     /// Walk through setting up integration sources that need credentials
-    /// (Spotify, Last.fm, Subsonic/Navidrome). With no SERVICE argument the
+    /// (Spotify, Last.fm). With no SERVICE argument the
     /// TUI service chooser opens; OAuth steps launch your browser and capture
     /// the response.
     Setup {
-        /// Service to configure: spotify | lastfm | subsonic | navidrome
+        /// Service to configure: spotify | lastfm
         #[arg(value_name = "SERVICE")]
         service: Option<String>,
         /// Service to configure (long form of the positional SERVICE)
@@ -304,35 +299,6 @@ pub enum SpotifyAction {
     Status,
     /// Sync Spotify playlists to the library
     Sync,
-}
-
-#[derive(Subcommand)]
-pub enum SubsonicAction {
-    /// Save server credentials and validate the connection
-    Configure {
-        #[arg(value_name = "SERVER_URL")]
-        server: String,
-        #[arg(value_name = "USERNAME")]
-        username: String,
-        #[arg(value_name = "PASSWORD")]
-        password: Option<String>,
-    },
-    /// Forget the saved server credentials
-    Clear,
-    /// Show connection status
-    Status,
-    /// Verify connectivity to the server
-    Ping,
-    /// Search artists, albums and songs
-    Search {
-        #[arg(value_name = "QUERY")]
-        query: String,
-    },
-    /// Play a track found by search
-    Play {
-        #[arg(value_name = "TRACK_ID")]
-        track_id: String,
-    },
 }
 
 #[derive(Subcommand)]
@@ -493,7 +459,6 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
         // daemon it is meant to stop, so those two skip the ensure step.
         if !matches!(cmd, CliCommand::Ping | CliCommand::Quit) {
             ensure_daemon_running(&socket_path).await?;
-            ensure_daemon_version(&socket_path).await?;
         }
 
         let client = DaemonClient::connect(&socket_path)
@@ -1239,91 +1204,6 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     .map(|()| "spotify playlists synced".to_string())
                     .map_err(|e| e.to_string()),
             },
-            CliCommand::Subsonic(action) => match action {
-                SubsonicAction::Configure {
-                    server,
-                    username,
-                    password,
-                } => {
-                    let password = match password {
-                        Some(p) => p.to_string(),
-                        None => prompt("Password: ")?,
-                    };
-                    let st = client
-                        .subsonic()
-                        .configure(server, username, &password)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    Ok(format_subsonic_status(&st))
-                }
-                SubsonicAction::Clear => client
-                    .subsonic()
-                    .clear()
-                    .await
-                    .map(|()| "subsonic credentials cleared".to_string())
-                    .map_err(|e| e.to_string()),
-                SubsonicAction::Status => {
-                    let st = client
-                        .subsonic()
-                        .status()
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    Ok(format_subsonic_status(&st))
-                }
-                SubsonicAction::Ping => client
-                    .subsonic()
-                    .ping()
-                    .await
-                    .map(|()| "subsonic ping ok".to_string())
-                    .map_err(|e| e.to_string()),
-                SubsonicAction::Search { query } => {
-                    let res = client
-                        .subsonic()
-                        .search(query)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    for a in &res.artists {
-                        println!("artist  {}\t{}", a.id, a.name);
-                    }
-                    for a in &res.albums {
-                        println!(
-                            "album   {}\t{}\t{}",
-                            a.id,
-                            a.title,
-                            if a.artist.is_empty() {
-                                "unknown"
-                            } else {
-                                &a.artist
-                            }
-                        );
-                    }
-                    for t in &res.tracks {
-                        println!("track   {}\t{} - {}", t.id, t.artist, t.title);
-                    }
-                    Ok(format!(
-                        "{} artists, {} albums, {} songs",
-                        res.artists.len(),
-                        res.albums.len(),
-                        res.tracks.len()
-                    ))
-                }
-                SubsonicAction::Play { track_id } => {
-                    let track = SubsonicTrack {
-                        id: track_id.clone(),
-                        title: track_id.clone(),
-                        artist: String::new(),
-                        album: String::new(),
-                        duration_secs: 0,
-                        ..Default::default()
-                    };
-                    client
-                        .subsonic()
-                        .play(&track)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    Ok(format!("playing {track_id}"))
-                }
-            },
             CliCommand::Podcast(action) => match action {
                 PodcastAction::Add { url } => {
                     let feeds = client
@@ -1595,22 +1475,6 @@ fn format_spotify_status(st: &SpotifyStatus) -> String {
     out
 }
 
-fn format_subsonic_status(st: &SubsonicStatus) -> String {
-    let mut out = if st.configured {
-        format!(
-            "Configured for {}@{}",
-            st.user.as_deref().unwrap_or("?"),
-            st.server.as_deref().unwrap_or("?")
-        )
-    } else {
-        "Not configured".to_string()
-    };
-    if let Some(e) = st.error.as_deref() {
-        out += &format!(" | error: {e}");
-    }
-    out
-}
-
 fn format_duration(secs: u64) -> String {
     let h = secs / 3600;
     let m = (secs % 3600) / 60;
@@ -1641,15 +1505,13 @@ async fn setup_wizard(client: &DaemonClient, service: Option<&str>) -> Result<St
     match single.as_deref() {
         Some("spotify") => setup_spotify(client).await,
         Some("lastfm" | "last.fm") => setup_lastfm(client).await,
-        Some("subsonic" | "navidrome") => setup_subsonic(client).await,
         Some(other) => Err(format!(
-            "unknown service '{other}' (expected spotify, lastfm, or subsonic)"
+            "unknown service '{other}' (expected spotify or lastfm)"
         )),
         None => {
             let steps = [
                 ("Spotify", setup_spotify(client).await),
                 ("Last.fm", setup_lastfm(client).await),
-                ("Subsonic/Navidrome", setup_subsonic(client).await),
             ];
             let mut lines = Vec::new();
             for (name, result) in steps {
@@ -1810,33 +1672,6 @@ async fn setup_lastfm(client: &DaemonClient) -> Result<String, String> {
 
     let st = client.lastfm().status().await.map_err(|e| e.to_string())?;
     Ok(format_lastfm_status(&st))
-}
-
-/// Subsonic/Navidrome integration: collect server credentials and validate.
-async fn setup_subsonic(client: &DaemonClient) -> Result<String, String> {
-    let st = client
-        .subsonic()
-        .status()
-        .await
-        .map_err(|e| e.to_string())?;
-    if st.configured {
-        let msg = format_subsonic_status(&st);
-        if !confirm(&format!("{msg}. Reconfigure Subsonic? [y/N] "))? {
-            return Ok(msg);
-        }
-    }
-    let server = prompt("Subsonic/Navidrome server URL (https://host[:port]/rest): ")?;
-    if server.trim().is_empty() {
-        return Err("server URL is required".into());
-    }
-    let username = prompt("Username: ")?;
-    let password = masked_prompt("Password: ")?;
-    let st = client
-        .subsonic()
-        .configure(server.trim(), username.trim(), &password)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(format_subsonic_status(&st))
 }
 
 /// Wait for an OAuth token on the loopback callback port or accept a manual
