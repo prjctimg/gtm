@@ -6505,7 +6505,7 @@ impl App {
                 .saturating_sub(1),
             PickerId::CommandPalette => CommandPalette::commands(&self.icon_style)
                 .iter()
-                .filter(|c| fuzzy_match(&query, &c.icon))
+                .filter(|c| fuzzy_match(&query, c.icon))
                 .count()
                 .saturating_sub(1),
             _ => usize::MAX,
@@ -6543,7 +6543,7 @@ impl App {
                 .count(),
             PickerId::CommandPalette => CommandPalette::commands(&self.icon_style)
                 .iter()
-                .filter(|c| fuzzy_match(&query, &c.icon))
+                .filter(|c| fuzzy_match(&query, c.icon))
                 .count(),
             PickerId::PodcastFeeds => self.podcast.feeds.len(),
             PickerId::PodcastEpisodes => self.podcast.episodes.len(),
@@ -9302,7 +9302,7 @@ impl App {
                                     }
                                     self.pickers.open(PickerId::SpotifyLink);
                                 }
-                                8 | 9 | 10 | 11 => self.spot_ctrl(opt),
+                                8..=11 => self.spot_ctrl(opt),
                                 _ => {}
                             },
                             9 => {

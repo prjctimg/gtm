@@ -6516,7 +6516,7 @@ impl Pickers {
         let filtered: Vec<usize> = commands
             .iter()
             .enumerate()
-            .filter_map(|(i, c)| fuzzy_match(&query, &c.icon).then_some(i))
+            .filter_map(|(i, c)| fuzzy_match(&query, c.icon).then_some(i))
             .collect();
 
         let block = Self::picker_panel(app, " Commands ", None);
