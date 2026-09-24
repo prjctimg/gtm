@@ -174,6 +174,52 @@ fn default_cover_cache_mb() -> u64 {
 /// On-disk cover cache budget in MiB, shared with the daemon.
 const COVER_CACHE_STEPS: [u64; 5] = [128, 256, 512, 1024, 2048];
 
+/// How long each About-window visualization preset stays up.
+pub const ABOUT_VIZ_PERIOD: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Decorative About-window visualization: a rotating preset over a synthetic
+/// waveform. Purely cosmetic, so the tick never touches audio state.
+#[derive(Default)]
+pub struct AboutViz {
+    pub preset: usize,
+    pub bars: Vec<f32>,
+    pub phase: f32,
+    pub next_preset: Option<std::time::Instant>,
+}
+
+/// Cheap deterministic waveform sample (sum of sines plus a hashed ripple), so
+/// the About window animates identically on every platform without audio.
+fn about_sample(t: f32, i: usize) -> f32 {
+    let x = i as f32 * 0.22 + t;
+    let v = (x * 1.7).sin() * 0.5 + (x * 0.9 + 1.3).sin() * 0.3 + (x * 3.1).sin() * 0.2;
+    // Fold to a 0..1 envelope so every preset sees a plausible level.
+    ((v + 1.0) * 0.5).clamp(0.02, 1.0)
+}
+
+impl AboutViz {
+    /// Advance the synthetic waveform and rotate the preset every
+    /// [`ABOUT_VIZ_PERIOD`]. Frame-rate independent via the phase accumulator.
+    fn tick(&mut self, now: std::time::Instant) {
+        let next = *self.next_preset.get_or_insert(now + ABOUT_VIZ_PERIOD);
+        if now >= next {
+            self.preset = self.preset.wrapping_add(1);
+            self.phase = 0.0;
+            self.next_preset = Some(now + ABOUT_VIZ_PERIOD);
+            return;
+        }
+        // ~12 fps is plenty for a decorative loop and keeps this cheap.
+        let last = self.phase;
+        self.phase = (self.phase + 0.2) % 1000.0;
+        if self.phase < last {
+            return;
+        }
+        let n = self.bars.len().max(1);
+        for i in 0..n {
+            self.bars[i] = about_sample(self.phase * 0.1, i);
+        }
+    }
+}
+
 fn default_theme_name() -> String {
     "Chadrula".into()
 }
@@ -1026,6 +1072,9 @@ pub struct App {
     pub cover_cache_mb: u64,
     /// Last reported cover cache disk usage in bytes.
     pub cover_cache_bytes: u64,
+    /// About window: decorative visualization state (preset rotates, waveform
+    /// is synthetic so it animates even when nothing is playing).
+    pub about_viz: AboutViz,
     /// Whether to automatically fetch lyrics on track change
     pub auto_fetch_lyrics: bool,
     /// Icon style for command palette: "mdi" (Material Design Icons) or "emoji"
@@ -1600,6 +1649,7 @@ impl App {
             cover_provider: prefs.cover_provider.clone(),
             cover_cache_mb: prefs.cover_cache_mb,
             cover_cache_bytes: 0,
+            about_viz: AboutViz::default(),
             auto_fetch_lyrics: prefs.auto_fetch_lyrics,
             icon_style: prefs.icon_style.clone(),
             crossfade_duration: 6,
@@ -1748,6 +1798,17 @@ impl App {
 
     /// Open the `gtm setup` walkthrough, either the service chooser or the
     /// matching setup picker directly. Called from `gtm setup SERVICE`.
+    /// Advance the About window's decorative visualization.
+    pub fn tick_about_viz(&mut self, now: std::time::Instant) {
+        let width = 64usize;
+        if self.about_viz.bars.len() != width {
+            self.about_viz.bars = vec![0.0; width];
+        }
+        self.about_viz.tick(now);
+        // Cosmetic only, but the frame loop still needs to repaint.
+        self.data_dirty = true;
+    }
+
     /// Search picker matching the focused list. The library search covers the
     /// local library; provider categories open their own provider's search so
     /// `/` always searches what the user is looking at.
@@ -3248,6 +3309,9 @@ impl App {
             // Spotify web-search debounce: auto-search 500ms after the last
             // keystroke, mirroring the YT search behaviour above.
             let now = std::time::Instant::now();
+            if self.pickers.top().is_some_and(|t| t.id == PickerId::About) {
+                self.tick_about_viz(now);
+            }
             if let Some(deadline) = self.spotify.search_debounce
                 && now >= deadline
             {

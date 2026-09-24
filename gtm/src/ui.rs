@@ -6025,38 +6025,45 @@ impl Pickers {
         // surface that so users can tell a nightly build from a release.
         let nightly = version.contains("+nightly");
 
-        let lines = vec![
+        let mut lines = vec![
             Line::from(Span::styled(
-                format!(" gtm {version}"),
+                format!(
+                    "gtm {version} ({:.7}{})",
+                    commit,
+                    if nightly { " nightly" } else { "" }
+                ),
                 Style::default()
                     .fg(app.theme.accent)
                     .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
             Line::from(Span::styled(
-                " Copyright (C) 2026, prjctimg",
+                "Copyright (C) 2026, prjctimg",
                 Style::default().fg(app.theme.fg_dim),
             )),
             Line::from(Span::styled(
-                " License GPL-3.0",
+                "License GPL-3.0",
                 Style::default().fg(app.theme.fg_dim),
             )),
             Line::from(""),
-            Line::from(Span::styled(
-                " Build",
-                Style::default().fg(app.theme.fg_dim),
-            )),
-            Line::from(Span::styled(
-                format!(
-                    "   Commit:  {:.7}{}",
-                    commit,
-                    if nightly { " (nightly)" } else { "" }
-                ),
-                Style::default().fg(app.theme.fg),
-            )),
         ];
 
-        let p = Paragraph::new(lines).alignment(Alignment::Left);
+        // Decorative visualization under the text, cycling presets every 5s.
+        let presets = VisualizerPreset::all();
+        if !presets.is_empty() {
+            let preset = presets[app.about_viz.preset % presets.len()];
+            let width = inner.width.saturating_sub(2) as usize;
+            if width > 0 && inner.height as usize > lines.len() + 4 {
+                lines.extend(Self::visualizer_preview_lines(
+                    preset,
+                    &app.about_viz.bars,
+                    width as u16,
+                    app,
+                ));
+            }
+        }
+
+        let p = Paragraph::new(lines).alignment(Alignment::Center);
         f.render_widget(p, inner);
     }
 
