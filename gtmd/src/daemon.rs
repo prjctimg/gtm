@@ -625,12 +625,19 @@ impl Cmd {
                     message: "spotify streaming requires a Premium account".into(),
                 });
             }
-            if spotify.access_token().await.is_none() {
+            if spotify.needs_relink() {
                 return Ok(DaemonRes::Error {
-                    message: "spotify access token unavailable; re-link the account".into(),
+                    message: "spotify token lacks the streaming scope; re-link the account".into(),
                 });
             }
-            let token = spotify.access_token().await.unwrap_or_default();
+            let token = match spotify.access_token().await {
+                Ok(t) => t,
+                Err(e) => {
+                    return Ok(DaemonRes::Error {
+                        message: format!("{e}; re-link the account"),
+                    });
+                }
+            };
             let state = inner.state.read().await;
             let hint = state
                 .queue
@@ -1216,10 +1223,15 @@ impl Cmd {
     ) -> Result<DaemonRes, CoreError> {
         let (token, config_dir) = {
             let spotify = inner.spotify.lock().await;
-            (
-                spotify.access_token().await.unwrap_or_default(),
-                inner.config.config_dir.clone(),
-            )
+            let token = match spotify.access_token().await {
+                Ok(t) => t,
+                Err(e) => {
+                    return Ok(DaemonRes::Error {
+                        message: format!("{e}; re-link the account"),
+                    });
+                }
+            };
+            (token, inner.config.config_dir.clone())
         };
         let source = {
             let mut stream = inner.stream.lock().await;

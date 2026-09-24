@@ -30,6 +30,9 @@ const TOKEN_ACCESS_PERMS: u32 = 0o600;
 /// Per-request `limit` ceiling for `/v1/search` (10 since Spotify's February
 /// 2026 migration, previously 50).
 const SEARCH_MAX: u32 = 10;
+/// OAuth scope required for librespot native playback. Tokens issued before it
+/// was requested keep working for the Web API but cannot stream audio.
+const SCOPE_STREAMING: &str = "streaming";
 
 /// Owns the Spotify Web API client, its token file, and the playlist cache.
 ///
@@ -49,6 +52,8 @@ pub struct SpotifyManager {
     /// Name of the active playback device, if known.
     device: Option<String>,
     playlists: Vec<SpotifyPlaylist>,
+    /// Scopes granted by the stored token, snapshotted when the client is built.
+    scopes: std::collections::HashSet<String>,
     error: Option<String>,
 }
 
@@ -62,6 +67,7 @@ impl SpotifyManager {
             playing: false,
             device: None,
             playlists: Vec::new(),
+            scopes: std::collections::HashSet::new(),
             error: None,
         }
     }
@@ -134,6 +140,7 @@ impl SpotifyManager {
             device: self.device.clone(),
             playlists: self.playlists.len(),
             tracks,
+            needs_relink: self.needs_relink(),
             error: self.error.clone(),
         }
     }
@@ -146,20 +153,48 @@ impl SpotifyManager {
     /// Current OAuth access token, if a client is linked. Refreshes an expired
     /// token first so librespot never connects with a stale credential;
     /// bounded so a stalled refresh fails fast instead of blocking the caller.
-    pub async fn access_token(&self) -> Option<String> {
-        let client = self.client.clone()?;
-        let _ =
-            tokio::time::timeout(std::time::Duration::from_secs(10), client.auto_reauth()).await;
+    ///
+    /// Refresh failures are reported rather than swallowed: a token that could
+    /// not be refreshed is not a usable credential, and returning it anyway
+    /// turns every downstream call into a confusing network error.
+    pub async fn access_token(&self) -> Result<String, String> {
+        let client = self
+            .client
+            .clone()
+            .ok_or_else(|| "spotify not linked".to_string())?;
+        match tokio::time::timeout(std::time::Duration::from_secs(10), client.auto_reauth()).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => return Err(format!("spotify token refresh failed: {e}")),
+            Err(_) => return Err("spotify token refresh timed out".to_string()),
+        }
         let arc = client.get_token();
-        let guard = arc.lock().await.ok()?;
-        let token: &rspotify::Token = (*guard).as_ref()?;
-        Some(token.access_token.clone())
+        let guard = arc
+            .lock()
+            .await
+            .map_err(|_| "spotify token lock poisoned".to_string())?;
+        let token: &rspotify::Token = (*guard)
+            .as_ref()
+            .ok_or_else(|| "spotify token missing".to_string())?;
+        Ok(token.access_token.clone())
+    }
+
+    /// True when the stored token grants `scope`. Scopes can only be widened by
+    /// re-linking, so a missing one is reported to the user instead of failing
+    /// later inside librespot.
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.scopes.iter().any(|s| s == scope)
+    }
+
+    /// Whether the linked token predates the `streaming` scope and therefore
+    /// needs a fresh link before native playback can work.
+    pub fn needs_relink(&self) -> bool {
+        self.linked() && !self.has_scope(SCOPE_STREAMING)
     }
 
     /// Whether native librespot streaming is possible: linked account with
     /// an access token and a Premium subscription.
     pub async fn can_stream(&self) -> bool {
-        self.access_token().await.is_some() && self.premium
+        self.access_token().await.is_ok() && self.premium
     }
 
     /// Whether the linked account is a Premium subscriber (probed via the
@@ -419,6 +454,10 @@ impl SpotifyManager {
     /// once this returns.
     async fn set_client(&mut self, token: Token) -> Result<(), String> {
         let refreshable = token.refresh_token.is_some();
+        // Scopes are fixed at authorization time and cannot be widened by a
+        // refresh, so snapshot them here: the token itself lives behind an
+        // async mutex that cannot be inspected synchronously.
+        self.scopes = token.scopes.clone();
         let client_id = get_secret(SPOTIFY_CLIENT_ID).unwrap_or_default();
         // Fall back to librespot's public desktop client id when the user
         // linked with a plain pasted access token (which never stores a
@@ -805,7 +844,7 @@ impl SpotifyManager {
     }
 
     async fn download_image(&self, url: &str) -> Option<Vec<u8>> {
-        let token = self.access_token().await?;
+        let token = self.access_token().await.ok()?;
         let resp = reqwest::Client::new()
             .get(url)
             .bearer_auth(&token)
@@ -897,7 +936,7 @@ fn parse_token(raw: &str) -> Result<Token, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{TOKEN_ACCESS_PERMS, parse_token};
+    use super::{SCOPE_STREAMING, TOKEN_ACCESS_PERMS, parse_token};
 
     #[test]
     fn token_plain() {
@@ -924,5 +963,21 @@ mod tests {
     #[test]
     fn token_owner_only() {
         assert_eq!(TOKEN_ACCESS_PERMS, 0o600);
+    }
+
+    #[test]
+    fn scope_round_trip() {
+        let json =
+            r#"{"access_token":"abc","expires_in":3600,"scope":"streaming playlist-read-private"}"#;
+        let tok = parse_token(json).expect("token json should parse");
+        assert!(tok.scopes.contains(SCOPE_STREAMING));
+        assert!(tok.scopes.contains("playlist-read-private"));
+        assert!(!tok.scopes.contains("user-modify-playback-state"));
+    }
+
+    #[test]
+    fn scope_absent_is_unlinked_for_streaming() {
+        let tok = parse_token("BQC8xYt0aBcDeFgHiJkLmNoPqRsTuVwXyZ").expect("plain token parses");
+        assert!(!tok.scopes.contains(SCOPE_STREAMING));
     }
 }

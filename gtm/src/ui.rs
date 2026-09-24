@@ -5009,6 +5009,8 @@ impl Pickers {
                 let user = st.user.as_deref().unwrap_or("(none)");
                 let status_label = if !st.linked {
                     connected.to_string()
+                } else if st.needs_relink {
+                    "Relink required".to_string()
                 } else if let Some(err) = st.error.as_deref() {
                     let mut e = err.chars().take(28).collect::<String>();
                     if err.chars().count() > 28 {

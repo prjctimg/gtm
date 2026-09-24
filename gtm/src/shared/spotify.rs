@@ -30,6 +30,10 @@ pub struct SpotifyStatus {
     pub playlists: usize,
     /// Total number of tracks across all synced playlists.
     pub tracks: usize,
+    /// Whether the stored token lacks the `streaming` scope and must be
+    /// re-linked before native playback works. Scopes cannot be widened by
+    /// refreshing, so this only clears after a fresh authorization.
+    pub needs_relink: bool,
     /// Most recent error message, if the link or sync failed.
     pub error: Option<String>,
 }
