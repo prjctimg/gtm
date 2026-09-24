@@ -5031,6 +5031,10 @@ impl Pickers {
                     "Sync Now       Enter".to_string(),
                     "Unlink         Enter".to_string(),
                     format!("Device         {device_label}"),
+                    "Next            Enter".to_string(),
+                    "Previous        Enter".to_string(),
+                    format!("Shuffle     {}  ▶", if st.shuffle { "On" } else { "Off" }),
+                    format!("Repeat     {}  ▶", st.repeat),
                 ]
             }
             _ => vec![],

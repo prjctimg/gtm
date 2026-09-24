@@ -26,6 +26,13 @@ pub struct SpotifyStatus {
     pub playing: bool,
     /// Name of the active playback device, if the Web API reported one.
     pub device: Option<String>,
+    /// Spotify device id, which the `/me/player` control endpoints require
+    /// (distinct from the display name above).
+    pub device_id: Option<String>,
+    /// Shuffle state of the active device, as last reported by `/me/player`.
+    pub shuffle: bool,
+    /// Repeat state of the active device (`off`/`track`/`context`).
+    pub repeat: String,
     /// Number of synced playlists currently cached by the daemon.
     pub playlists: usize,
     /// Total number of tracks across all synced playlists.

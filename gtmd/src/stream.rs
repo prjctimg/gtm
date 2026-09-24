@@ -456,4 +456,42 @@ impl StreamManager {
         self.player = None;
         self.session_token = None;
     }
+
+    /// Resume the librespot player after a pause. The mixer is the transport
+    /// authority, so this only needs to tell the player to keep feeding.
+    pub fn resume(&mut self) {
+        if let Some(player) = self.player.as_ref() {
+            player.play();
+        }
+    }
+
+    /// Pause the librespot player. Pausing the mixer alone only backpressures
+    /// the decoder; pausing the player also stops the network stream.
+    pub fn pause(&mut self) {
+        if let Some(player) = self.player.as_ref() {
+            player.pause();
+        }
+    }
+
+    /// Seek within the loaded track. Returns false when there is no live
+    /// session, so the caller can fall back to reloading the stream.
+    pub fn seek(&mut self, pos_ms: u32) -> bool {
+        let Some(player) = self.player.as_ref() else {
+            return false;
+        };
+        if player.is_invalid() {
+            return false;
+        }
+        player.seek(pos_ms);
+        true
+    }
+
+    /// True when the librespot session is gone or the player went stale, in
+    /// which case the next load must rebuild it.
+    pub fn is_dead(&self) -> bool {
+        match self.player.as_ref() {
+            None => true,
+            Some(p) => p.is_invalid(),
+        }
+    }
 }

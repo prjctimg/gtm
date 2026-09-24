@@ -992,6 +992,9 @@ impl Cmd {
 
             if is_paused && !path.is_empty() {
                 inner.mixer.lock().await.play()?;
+                if path.starts_with("spotify:") {
+                    inner.stream.lock().await.resume();
+                }
                 let mut state = inner.state.write().await;
                 let track = match state.current_track.clone() {
                     Some(t) => t,
@@ -1039,6 +1042,18 @@ impl Cmd {
             mixer.pause()?;
             mixer.current_position()
         };
+        // Pause the librespot player too: pausing only the mixer leaves the
+        // network stream decoding into a full channel.
+        let streaming = inner
+            .state
+            .read()
+            .await
+            .current_track
+            .as_ref()
+            .is_some_and(|t| t.path.starts_with("spotify:"));
+        if streaming {
+            inner.stream.lock().await.pause();
+        }
         let mut state = inner.state.write().await;
         state.pause()?;
         state.time_pos = pos;
@@ -1183,8 +1198,9 @@ impl Cmd {
         Ok(DaemonRes::Ok)
     }
 
-    /// Seek within a streamed Spotify track: reload the stream at the new
-    /// position (librespot re-decodes from the nearest chunk boundary).
+    /// Reload a streamed Spotify track at the new position. Used when the
+    /// in-place player seek is unavailable (no live session), since librespot
+    /// otherwise re-decodes from the nearest chunk boundary.
     async fn seek_stream(
         inner: &DaemonInner,
         uri_path: &str,
@@ -1192,6 +1208,23 @@ impl Cmd {
         total_duration: f64,
         was_paused: bool,
     ) -> Result<DaemonRes, CoreError> {
+        // Prefer an in-place player seek: it keeps the buffer and avoids a full
+        // reconnect. Fall through to the reload when the session is gone.
+        {
+            let mut stream = inner.stream.lock().await;
+            if !stream.is_dead() && stream.seek((pos.max(0.0) * 1000.0) as u32) {
+                drop(stream);
+                if was_paused {
+                    inner.stream.lock().await.pause();
+                }
+                let mut state = inner.state.write().await;
+                state.seek(pos)?;
+                drop(state);
+                Daemon::push_event(inner, DaemonEvent::PositionChanged { time_pos: pos });
+                return Ok(DaemonRes::Ok);
+            }
+        }
+
         let (token, config_dir) = {
             let spotify = inner.spotify.lock().await;
             let token = match spotify.access_token().await {
@@ -1906,6 +1939,19 @@ async fn spotify_yt_fallback(
 
 struct Spotify;
 
+/// One Spotify Connect transport command, dispatched by
+/// [`Spotify::connect_ctrl`] so every control shares the same status refresh
+/// and error mapping.
+enum ConnectCmd {
+    PlayPause,
+    Next,
+    Previous,
+    Seek(u32),
+    Shuffle(bool),
+    Repeat(String),
+    Volume(u8),
+}
+
 impl Spotify {
     pub async fn set_token(inner: &DaemonInner, token: &str) -> Result<DaemonRes, CoreError> {
         let mut spotify = inner.spotify.lock().await;
@@ -2082,8 +2128,24 @@ impl Spotify {
     }
 
     pub async fn play_pause(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+        Self::connect_ctrl(inner, ConnectCmd::PlayPause).await
+    }
+
+    /// Run one Spotify Connect control and answer with the refreshed status.
+    /// Every control shares the same locking, error mapping and response shape;
+    /// only the Web API call differs.
+    async fn connect_ctrl(inner: &DaemonInner, cmd: ConnectCmd) -> Result<DaemonRes, CoreError> {
         let mut spotify = inner.spotify.lock().await;
-        match spotify.play_pause().await {
+        let res = match cmd {
+            ConnectCmd::PlayPause => spotify.play_pause().await,
+            ConnectCmd::Next => spotify.next().await,
+            ConnectCmd::Previous => spotify.previous().await,
+            ConnectCmd::Seek(pos) => spotify.seek(pos).await,
+            ConnectCmd::Shuffle(on) => spotify.set_shuffle(on).await,
+            ConnectCmd::Repeat(ref mode) => spotify.set_repeat(mode).await,
+            ConnectCmd::Volume(pct) => spotify.set_volume(pct).await,
+        };
+        match res {
             Ok(()) => Ok(DaemonRes::SpotifyStatusRes {
                 status: spotify.status(),
             }),
@@ -4276,6 +4338,12 @@ fn request_is_playback(req: &DaemonReq) -> bool {
             | DaemonReq::CancelSleepTimer
             | DaemonReq::SetAudioDevice { .. }
             | DaemonReq::SpotifyPlayPause
+            | DaemonReq::SpotifyNext
+            | DaemonReq::SpotifyPrevious
+            | DaemonReq::SpotifySeek { .. }
+            | DaemonReq::SpotifyShuffle { .. }
+            | DaemonReq::SpotifyRepeat { .. }
+            | DaemonReq::SpotifyVolume { .. }
             | DaemonReq::PodcastPlay { .. }
             | DaemonReq::RadioPlay { .. }
     )
@@ -5415,6 +5483,20 @@ impl Daemon {
             DaemonReq::SpotifyClear => Spotify::clear(inner).await,
             DaemonReq::SpotifyStatus => Spotify::status(inner).await,
             DaemonReq::SpotifyPlayPause => Spotify::play_pause(inner).await,
+            DaemonReq::SpotifyNext => Spotify::connect_ctrl(inner, ConnectCmd::Next).await,
+            DaemonReq::SpotifyPrevious => Spotify::connect_ctrl(inner, ConnectCmd::Previous).await,
+            DaemonReq::SpotifySeek { pos_secs } => {
+                Spotify::connect_ctrl(inner, ConnectCmd::Seek(*pos_secs)).await
+            }
+            DaemonReq::SpotifyShuffle { on } => {
+                Spotify::connect_ctrl(inner, ConnectCmd::Shuffle(*on)).await
+            }
+            DaemonReq::SpotifyRepeat { mode } => {
+                Spotify::connect_ctrl(inner, ConnectCmd::Repeat(mode.clone())).await
+            }
+            DaemonReq::SpotifyVolume { percent } => {
+                Spotify::connect_ctrl(inner, ConnectCmd::Volume(*percent)).await
+            }
             DaemonReq::SpotifySync => Spotify::sync(inner).await,
             DaemonReq::SpotifyPlaylists => Spotify::playlists(inner).await,
             DaemonReq::SpotifyPlaylistTracks { id } => Spotify::playlist_tracks(inner, id).await,

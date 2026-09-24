@@ -354,6 +354,22 @@ pub enum DaemonReq {
     SpotifyClear,
     SpotifyStatus,
     SpotifyPlayPause,
+    /// Spotify Connect transport controls, driving the active Web API device
+    /// rather than the local librespot session.
+    SpotifyNext,
+    SpotifyPrevious,
+    SpotifySeek {
+        pos_secs: u32,
+    },
+    SpotifyShuffle {
+        on: bool,
+    },
+    SpotifyRepeat {
+        mode: String,
+    },
+    SpotifyVolume {
+        percent: u8,
+    },
     SpotifySync,
     SpotifyPlaylists,
     SpotifyPlaylistTracks {
@@ -584,6 +600,12 @@ impl DaemonReq {
             DaemonReq::SpotifyClear => "spotify_clear",
             DaemonReq::SpotifyStatus => "spotify_status",
             DaemonReq::SpotifyPlayPause => "spotify_play_pause",
+            DaemonReq::SpotifyNext => "spotify_next",
+            DaemonReq::SpotifyPrevious => "spotify_previous",
+            DaemonReq::SpotifySeek { .. } => "spotify_seek",
+            DaemonReq::SpotifyShuffle { .. } => "spotify_shuffle",
+            DaemonReq::SpotifyRepeat { .. } => "spotify_repeat",
+            DaemonReq::SpotifyVolume { .. } => "spotify_volume",
             DaemonReq::SpotifySync => "spotify_sync",
             DaemonReq::SpotifyPlaylists => "spotify_playlists",
             DaemonReq::SpotifyPlaylistTracks { .. } => "spotify_playlist_tracks",
@@ -948,6 +970,42 @@ impl DaemonReq {
             "spotify_clear" => DaemonReq::SpotifyClear,
             "spotify_status" => DaemonReq::SpotifyStatus,
             "spotify_play_pause" => DaemonReq::SpotifyPlayPause,
+            "spotify_next" => DaemonReq::SpotifyNext,
+            "spotify_previous" => DaemonReq::SpotifyPrevious,
+            "spotify_seek" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    pos_secs: u32,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SpotifySeek {
+                    pos_secs: x.pos_secs,
+                }
+            }
+            "spotify_shuffle" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    on: bool,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SpotifyShuffle { on: x.on }
+            }
+            "spotify_repeat" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    mode: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SpotifyRepeat { mode: x.mode }
+            }
+            "spotify_volume" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    percent: u8,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SpotifyVolume { percent: x.percent }
+            }
             "spotify_sync" => DaemonReq::SpotifySync,
             "spotify_playlists" => DaemonReq::SpotifyPlaylists,
             "spotify_playlist_tracks" => {
@@ -2108,7 +2166,9 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "spotify_status" | "spotify_set_token" | "spotify_clear" | "spotify_play_pause" => {
+            "spotify_status" | "spotify_set_token" | "spotify_clear" | "spotify_play_pause"
+            | "spotify_next" | "spotify_previous" | "spotify_seek" | "spotify_shuffle"
+            | "spotify_repeat" | "spotify_volume" => {
                 match serde_json::from_value::<SpotifyStatus>(field(&data, "status")) {
                     Ok(status) => DaemonRes::SpotifyStatusRes { status },
                     Err(_) => DaemonRes::Value { value: data },

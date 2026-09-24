@@ -1087,6 +1087,56 @@ impl<'a> Spotify<'a> {
         Self::status_from(res)
     }
 
+    /// Skip to the next track on the active Spotify device.
+    pub async fn next(&self) -> Result<SpotifyStatus> {
+        let res = self.client.send_raw(DaemonReq::SpotifyNext).await?;
+        Self::status_from(res)
+    }
+
+    /// Skip to the previous track on the active Spotify device.
+    pub async fn previous(&self) -> Result<SpotifyStatus> {
+        let res = self.client.send_raw(DaemonReq::SpotifyPrevious).await?;
+        Self::status_from(res)
+    }
+
+    /// Seek the active Spotify device to `pos_secs`.
+    pub async fn seek(&self, pos_secs: u32) -> Result<SpotifyStatus> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::SpotifySeek { pos_secs })
+            .await?;
+        Self::status_from(res)
+    }
+
+    /// Toggle shuffle on the active Spotify device.
+    pub async fn set_shuffle(&self, on: bool) -> Result<SpotifyStatus> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::SpotifyShuffle { on })
+            .await?;
+        Self::status_from(res)
+    }
+
+    /// Set repeat on the active Spotify device (`off`/`track`/`context`).
+    pub async fn set_repeat(&self, mode: &str) -> Result<SpotifyStatus> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::SpotifyRepeat {
+                mode: mode.to_string(),
+            })
+            .await?;
+        Self::status_from(res)
+    }
+
+    /// Set the active Spotify device's volume (0-100).
+    pub async fn set_volume(&self, percent: u8) -> Result<SpotifyStatus> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::SpotifyVolume { percent })
+            .await?;
+        Self::status_from(res)
+    }
+
     /// Re-sync all playlists from the Spotify Web API.
     pub async fn sync(&self) -> Result<()> {
         self.client.send_ok(DaemonReq::SpotifySync).await

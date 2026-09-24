@@ -1809,6 +1809,44 @@ impl App {
         self.data_dirty = true;
     }
 
+    /// Run one Spotify Connect control from the Settings panel and feed the
+    /// refreshed status back into the view, so the row text updates in place.
+    fn spot_ctrl(&mut self, opt: usize) {
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        let st = self.spotify.status.clone().unwrap_or_default();
+        let (label, res) = match opt {
+            8 => ("next", 0),
+            9 => ("previous", 1),
+            10 => ("shuffle", 2),
+            _ => ("repeat", 3),
+        };
+        tokio::spawn(async move {
+            let out = match res {
+                0 => c.spotify().next().await,
+                1 => c.spotify().previous().await,
+                2 => c.spotify().set_shuffle(!st.shuffle).await,
+                _ => {
+                    // off → context → track → off
+                    let next = match st.repeat.as_str() {
+                        "off" => "context",
+                        "context" => "track",
+                        _ => "off",
+                    };
+                    c.spotify().set_repeat(next).await
+                }
+            };
+            match out {
+                Ok(status) => {
+                    let _ = ipc_tx.send(IpcResult::SpotifyStatus(status));
+                }
+                Err(e) => {
+                    let _ = ipc_tx.send(IpcResult::Error(format!("Spotify {label}: {e}")));
+                }
+            }
+        });
+    }
+
     /// Search picker matching the focused list. The library search covers the
     /// local library; provider categories open their own provider's search so
     /// `/` always searches what the user is looking at.
@@ -5787,7 +5825,7 @@ impl App {
             0 => 4,  // YouTube: Cookie Source, Cookie File, JS Runtime, Auto Download
             1 => 6,  // Playback: Repeat, Shuffle, Crossfade, EQ Enabled, Reverb, Cover Source
             2 => 15, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme, Reactive Intensity, Hide Footer, Clear Lyrics Cache, Clear Cover Cache, Cover Cache Size, Notification Settings, Theme Mode
-            3 => 7,  // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Device
+            3 => 11, // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Device, Next, Previous, Shuffle, Repeat
             _ => 0,
         }
     }
@@ -9279,6 +9317,7 @@ impl App {
                                     }
                                     self.pickers.open(PickerId::SpotifyLink);
                                 }
+                                8 | 9 | 10 | 11 => self.spot_ctrl(opt),
                                 _ => {}
                             },
                             9 => {

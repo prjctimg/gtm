@@ -13,7 +13,7 @@ use futures::StreamExt;
 use rspotify::AuthCodePkceSpotify;
 use rspotify::clients::{BaseClient, OAuthClient};
 use rspotify::model::{
-    AdditionalType, AlbumId, AlbumType, ArtistId, PlayableItem, SearchType, Token,
+    AdditionalType, AlbumId, AlbumType, ArtistId, PlayableItem, RepeatState, SearchType, Token,
 };
 use rspotify::{CallbackError, Config, Credentials, OAuth, TokenCallback};
 use tracing::{debug, info, warn};
@@ -51,6 +51,12 @@ pub struct SpotifyManager {
     playing: bool,
     /// Name of the active playback device, if known.
     device: Option<String>,
+    /// Spotify device id, which the `/me/player` control endpoints require
+    /// (distinct from the display name).
+    device_id: Option<String>,
+    /// Shuffle/repeat state of the active device, mirrored from `/me/player`.
+    shuffle: bool,
+    repeat: String,
     playlists: Vec<SpotifyPlaylist>,
     /// Scopes granted by the stored token, snapshotted when the client is built.
     scopes: std::collections::HashSet<String>,
@@ -66,6 +72,9 @@ impl SpotifyManager {
             premium: false,
             playing: false,
             device: None,
+            device_id: None,
+            shuffle: false,
+            repeat: "off".to_string(),
             playlists: Vec::new(),
             scopes: std::collections::HashSet::new(),
             error: None,
@@ -138,6 +147,9 @@ impl SpotifyManager {
             premium: self.premium,
             playing: self.playing,
             device: self.device.clone(),
+            device_id: self.device_id.clone(),
+            shuffle: self.shuffle,
+            repeat: self.repeat.clone(),
             playlists: self.playlists.len(),
             tracks,
             needs_relink: self.needs_relink(),
@@ -238,6 +250,7 @@ impl SpotifyManager {
         let Some(client) = self.client.as_ref() else {
             self.playing = false;
             self.device = None;
+            self.device_id = None;
             return;
         };
         match client
@@ -247,11 +260,18 @@ impl SpotifyManager {
             Ok(Some(ctx)) => {
                 self.playing = ctx.is_playing;
                 self.device = Some(ctx.device.name.clone());
+                // The control endpoints take a device *id*, not the display
+                // name; keeping both lets the UI show a label and the daemon
+                // address the right device.
+                self.device_id = ctx.device.id.clone();
+                self.shuffle = ctx.shuffle_state;
+                self.repeat = <&str>::from(ctx.repeat_state).to_string();
                 self.premium = true;
             }
             Ok(None) => {
                 self.playing = false;
                 self.device = None;
+                self.device_id = None;
                 self.premium = true;
             }
             Err(e) => {
@@ -276,7 +296,7 @@ impl SpotifyManager {
             return Err("spotify not linked".to_string());
         }
         self.refresh_playback().await;
-        let device = self.device.clone();
+        let device = self.device_id.clone();
         let client = self
             .client
             .as_ref()
@@ -287,6 +307,104 @@ impl SpotifyManager {
             client.resume_playback(device.as_deref(), None).await
         };
         res.map_err(|e| format!("{e}"))?;
+        self.refresh_playback().await;
+        Ok(())
+    }
+
+    /// Skip to the next track on the active Spotify device.
+    pub async fn next(&mut self) -> Result<(), String> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "spotify not linked".to_string())?;
+        let device = self.device_id.clone();
+        client
+            .next_track(device.as_deref())
+            .await
+            .map_err(|e| format!("{e}"))?;
+        self.refresh_playback().await;
+        Ok(())
+    }
+
+    /// Skip to the previous track on the active Spotify device.
+    pub async fn previous(&mut self) -> Result<(), String> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "spotify not linked".to_string())?;
+        let device = self.device_id.clone();
+        client
+            .previous_track(device.as_deref())
+            .await
+            .map_err(|e| format!("{e}"))?;
+        self.refresh_playback().await;
+        Ok(())
+    }
+
+    /// Seek the active Spotify device to `pos_secs`.
+    pub async fn seek(&mut self, pos_secs: u32) -> Result<(), String> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "spotify not linked".to_string())?;
+        let device = self.device_id.clone();
+        client
+            .seek_track(
+                Duration::milliseconds(i64::from(pos_secs) * 1000),
+                device.as_deref(),
+            )
+            .await
+            .map_err(|e| format!("{e}"))?;
+        self.refresh_playback().await;
+        Ok(())
+    }
+
+    /// Set the active Spotify device's shuffle mode.
+    pub async fn set_shuffle(&mut self, on: bool) -> Result<(), String> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "spotify not linked".to_string())?;
+        let device = self.device_id.clone();
+        client
+            .shuffle(on, device.as_deref())
+            .await
+            .map_err(|e| format!("{e}"))?;
+        self.refresh_playback().await;
+        Ok(())
+    }
+
+    /// Set the active Spotify device's repeat mode (`off`/`track`/`context`).
+    pub async fn set_repeat(&mut self, mode: &str) -> Result<(), String> {
+        let state = match mode {
+            "track" => RepeatState::Track,
+            "context" => RepeatState::Context,
+            _ => RepeatState::Off,
+        };
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "spotify not linked".to_string())?;
+        let device = self.device_id.clone();
+        client
+            .repeat(state, device.as_deref())
+            .await
+            .map_err(|e| format!("{e}"))?;
+        self.refresh_playback().await;
+        Ok(())
+    }
+
+    /// Set the active Spotify device's volume (0-100).
+    pub async fn set_volume(&mut self, percent: u8) -> Result<(), String> {
+        let client = self
+            .client
+            .as_ref()
+            .ok_or_else(|| "spotify not linked".to_string())?;
+        let device = self.device_id.clone();
+        client
+            .volume(percent.min(100), device.as_deref())
+            .await
+            .map_err(|e| format!("{e}"))?;
         self.refresh_playback().await;
         Ok(())
     }
