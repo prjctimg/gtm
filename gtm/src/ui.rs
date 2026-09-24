@@ -73,29 +73,20 @@ impl Render {
             let album = u.track.album.clone();
             let has_album = !album.is_empty();
             let has_cover = u.cover.is_some();
-            let source = if u.track.path.contains("/audio/spotify")
-                || u.track.path.starts_with("spotify:")
-            {
-                "Spotify"
-            } else if u.track.path.contains("/audio/youtube")
-                || u.track.path.starts_with("youtube:")
-            {
-                "YouTube"
-            } else {
-                "Local"
-            };
+            // Provider comes from the shared classifier so the card, the footer
+            // source module and the daemon agree on what a path is.
+            let source = classify_remote_source(&u.track.path).map_or("Local", |(key, _)| key);
             let source_label: String = if use_nerd_fonts() {
                 match provider_icon(source) {
-                    Some(g) => format!(" {g} {source}"),
-                    None => " ♪ Local".to_string(),
+                    Some(g) => format!(" {g}"),
+                    None => " ♪".to_string(),
                 }
             } else {
                 match source {
-                    "Spotify" => " ♫ Spotify",
-                    "YouTube" => " ▶ YouTube",
-                    _ => " ♪ Local",
+                    "Spotify" => " ♫".to_string(),
+                    "YouTube" => " ▶".to_string(),
+                    _ => " ♪".to_string(),
                 }
-                .to_string()
             };
             (
                 display_title,

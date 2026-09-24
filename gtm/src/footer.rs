@@ -12,6 +12,7 @@ use ratatui::widgets::Paragraph;
 use std::borrow::Cow;
 
 use crate::shared::state::{PlaybackStatus, RepeatMode};
+use crate::shared::url::{is_youtube, ytdlp_label};
 use chrono::Local;
 
 use crate::app::App;
@@ -871,36 +872,6 @@ pub fn format_uptime(secs: f64) -> String {
     }
 }
 
-/// Hostname → provider label for yt-dlp extractor URLs. The client mirror of
-/// the daemon's classifier: only these hosts are yt-dlp input; every other
-/// http URL stays a plain stream.
-fn ytdlp_label(url: &str) -> Option<&'static str> {
-    let host = url
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or("")
-        .trim_start_matches("www.")
-        .to_ascii_lowercase();
-    if host == "youtube.com" || host.ends_with(".youtube.com") || host == "youtu.be" {
-        return Some("YouTube");
-    }
-    if host == "bandcamp.com" || host.ends_with(".bandcamp.com") {
-        return Some("Bandcamp");
-    }
-    match host.as_str() {
-        "soundcloud.com" => Some("SoundCloud"),
-        "mixcloud.com" => Some("Mixcloud"),
-        "music.163.com" => Some("Netease"),
-        "bilibili.com" | "m.bilibili.com" => Some("Bilibili"),
-        "vimeo.com" | "player.vimeo.com" => Some("Vimeo"),
-        "twitch.tv" => Some("Twitch"),
-        "audiomack.com" => Some("Audiomack"),
-        _ => None,
-    }
-}
-
 /// Classify a track path as a remote provider stream. Returns the
 /// `provider_icon` lookup key plus the short display label, or `None` for
 /// local playback (the `Source` footer module hides itself then).
@@ -927,9 +898,7 @@ pub(crate) fn classify_remote_source(path: &str) -> Option<(&'static str, &'stat
         return Some((label, label));
     }
     if path.starts_with("http://") || path.starts_with("https://") {
-        let lower = path.to_ascii_lowercase();
-        if lower.contains("youtube") || lower.contains("youtu.be") || lower.contains("googlevideo")
-        {
+        if is_youtube(path) {
             return Some(("YouTube", "YouTube"));
         }
         return Some(("Radio", "Stream"));

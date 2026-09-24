@@ -21,6 +21,7 @@ pub mod spotify;
 pub mod state;
 pub mod track;
 pub mod tripwire;
+pub mod url;
 pub mod validate;
 pub mod wire;
 pub mod yt;

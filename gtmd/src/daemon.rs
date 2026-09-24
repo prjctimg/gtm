@@ -38,6 +38,7 @@ use gtm::shared::secret::{
 };
 use gtm::shared::spotify::SpotifyTrack;
 use gtm::shared::track::{StreamInfo, TrackInfo};
+use gtm::shared::url::{is_youtube, ytdlp_label};
 use gtm::shared::wire;
 use gtm::shared::{CoreError, MetadataPatch};
 #[cfg(feature = "pulseaudio")]
@@ -92,36 +93,6 @@ enum RemoteKind {
     YtDlp {
         url: String,
     },
-}
-
-/// Hostname → provider label for URLs handled by yt-dlp's extractors. Only
-/// these known hosts are treated as yt-dlp input; every other http URL stays
-/// a plain stream.
-fn ytdlp_label(url: &str) -> Option<&'static str> {
-    let host = url
-        .trim_start_matches("https://")
-        .trim_start_matches("http://")
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or("")
-        .trim_start_matches("www.")
-        .to_ascii_lowercase();
-    if host == "youtube.com" || host.ends_with(".youtube.com") || host == "youtu.be" {
-        return Some("YouTube");
-    }
-    if host == "bandcamp.com" || host.ends_with(".bandcamp.com") {
-        return Some("Bandcamp");
-    }
-    match host.as_str() {
-        "soundcloud.com" => Some("SoundCloud"),
-        "mixcloud.com" => Some("Mixcloud"),
-        "music.163.com" => Some("Netease"),
-        "bilibili.com" | "m.bilibili.com" => Some("Bilibili"),
-        "vimeo.com" | "player.vimeo.com" => Some("Vimeo"),
-        "twitch.tv" => Some("Twitch"),
-        "audiomack.com" => Some("Audiomack"),
-        _ => None,
-    }
 }
 
 fn parse_remote_path(path: &str) -> Option<RemoteKind> {
@@ -5954,14 +5925,7 @@ impl Daemon {
             return true;
         }
         if path.starts_with("http://") || path.starts_with("https://") {
-            let lower = path.to_ascii_lowercase();
-            if lower.contains("youtube")
-                || lower.contains("youtu.be")
-                || lower.contains("googlevideo")
-            {
-                return false;
-            }
-            return true;
+            return !is_youtube(path);
         }
         false
     }
