@@ -39,6 +39,8 @@ pub struct DaemonConfig {
     pub allow_delete_files: bool,
     /// Artwork source preference, read from the TUI's config.toml.
     pub cover_provider: CoverProvider,
+    /// Combined on-disk cover cache budget in bytes, from `cover_cache_mb`.
+    pub cover_cache_bytes: u64,
 }
 
 #[derive(Parser, Debug)]
@@ -163,15 +165,23 @@ impl DaemonConfig {
 
         // `cover_provider` lives in the same config.toml the gtm TUI edits.
         // Known keys are honored; anything unrecognized falls back to Auto.
-        let cover_provider = std::fs::read_to_string(config_dir.join("config.toml"))
+        let toml = std::fs::read_to_string(config_dir.join("config.toml"))
             .ok()
-            .and_then(|s| toml::from_str::<toml::Value>(&s).ok())
+            .and_then(|s| toml::from_str::<toml::Value>(&s).ok());
+        let cover_provider = toml
+            .as_ref()
             .and_then(|v| {
                 v.get("cover_provider")
                     .and_then(|p| p.as_str())
                     .map(CoverProvider::from_str_lossy)
             })
             .unwrap_or_default();
+        let cover_cache_bytes = toml
+            .as_ref()
+            .and_then(|v| v.get("cover_cache_mb").and_then(|m| m.as_integer()))
+            .filter(|mb| *mb > 0)
+            .map(|mb| (mb as u64) * 1024 * 1024)
+            .unwrap_or(crate::cover::DISK_CACHE_DEFAULT);
 
         DaemonConfig {
             socket_path,
@@ -186,6 +196,7 @@ impl DaemonConfig {
             audio_backend,
             allow_delete_files: true,
             cover_provider,
+            cover_cache_bytes,
         }
     }
 

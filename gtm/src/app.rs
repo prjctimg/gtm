@@ -144,6 +144,8 @@ pub struct Prefs {
     notification_modes: std::collections::HashMap<String, String>,
     #[serde(default = "default_cover_provider")]
     cover_provider: String,
+    #[serde(default = "default_cover_cache_mb")]
+    cover_cache_mb: u64,
     #[serde(default = "default_fetch_lyrics")]
     auto_fetch_lyrics: bool,
     #[serde(default = "default_icon_style")]
@@ -164,6 +166,13 @@ pub struct Prefs {
 fn default_cover_provider() -> String {
     "auto".into()
 }
+
+fn default_cover_cache_mb() -> u64 {
+    512
+}
+
+/// On-disk cover cache budget in MiB, shared with the daemon.
+const COVER_CACHE_STEPS: [u64; 5] = [128, 256, 512, 1024, 2048];
 
 fn default_theme_name() -> String {
     "Chadrula".into()
@@ -262,6 +271,7 @@ impl Default for Prefs {
             keybindings: std::collections::HashMap::new(),
             notification_modes: default_notification_modes(),
             cover_provider: default_cover_provider(),
+            cover_cache_mb: default_cover_cache_mb(),
             auto_fetch_lyrics: default_fetch_lyrics(),
             icon_style: default_icon_style(),
             hide_footer: false,
@@ -1012,6 +1022,10 @@ pub struct App {
     /// Cover provider preference (`auto`/`deezer`/`musicbrainz`/`spotify`),
     /// persisted in config.toml and consumed by the daemon for cover lookups.
     pub cover_provider: String,
+    /// On-disk cover cache budget in MiB, pushed to the daemon on change.
+    pub cover_cache_mb: u64,
+    /// Last reported cover cache disk usage in bytes.
+    pub cover_cache_bytes: u64,
     /// Whether to automatically fetch lyrics on track change
     pub auto_fetch_lyrics: bool,
     /// Icon style for command palette: "mdi" (Material Design Icons) or "emoji"
@@ -1227,6 +1241,8 @@ enum IpcResult {
     /// The browser could not be opened automatically. The authorize URL is
     /// shown inline in the picker, so this is recorded without a floating card.
     AuthFallback(String),
+    /// Live cover cache disk usage in bytes, for the Settings row.
+    CoverCacheStat(u64),
 }
 
 /// Send a background-task error into the TUI event stream as an Error
@@ -1582,6 +1598,8 @@ impl App {
                 .map(|(k, v)| (NotifType::from_str_lossy(&k), NotifMode::from_str_lossy(&v)))
                 .collect(),
             cover_provider: prefs.cover_provider.clone(),
+            cover_cache_mb: prefs.cover_cache_mb,
+            cover_cache_bytes: 0,
             auto_fetch_lyrics: prefs.auto_fetch_lyrics,
             icon_style: prefs.icon_style.clone(),
             crossfade_duration: 6,
@@ -1943,6 +1961,7 @@ impl App {
                 .map(|(t, m)| (t.as_str().to_string(), m.as_str().to_string()))
                 .collect(),
             cover_provider: self.cover_provider.clone(),
+            cover_cache_mb: self.cover_cache_mb,
             auto_fetch_lyrics: self.auto_fetch_lyrics,
             icon_style: self.icon_style.clone(),
             hide_footer: self.hide_footer,
@@ -2000,6 +2019,7 @@ impl App {
         self.pickers.open(PickerId::NotificationSettings);
         self.dismiss_track_popup();
         self.on_picker_opened(PickerId::NotificationSettings);
+        self.refresh_cover_stat();
     }
 
     /// Cycle the theme-following mode (auto → dark → light → manual → auto),
@@ -3054,6 +3074,12 @@ impl App {
                             self.picker_preview_cover = cover;
                             self.picker_preview_sync();
                             self.cover_art_dirty = true;
+                            // Release the guard on a miss so the same row can be
+                            // retried later instead of staying blank forever.
+                            if self.picker_preview_cover.is_none() {
+                                self.picker_slot.id = None;
+                                self.picker_slot.version = None;
+                            }
                         }
                     }
                     IpcResult::MetadataCoverArt(cover, track_id, fetch_gen) => {
@@ -3082,6 +3108,13 @@ impl App {
                         {
                             self.spotify.preview_cover = cover;
                             self.spotify_preview_sync();
+                            // A miss still counts as "answered": release the
+                            // guard so a later visit can retry instead of
+                            // being blocked forever by this generation.
+                            if self.spotify.preview_cover.is_none() {
+                                self.spotify.preview_fetch.id = None;
+                                self.spotify.preview_fetch.version = None;
+                            }
                         }
                     }
                     IpcResult::CoverPicker(picker) => {
@@ -3151,6 +3184,7 @@ impl App {
                             NotifType::Spotify,
                         );
                     }
+                    IpcResult::CoverCacheStat(bytes) => self.cover_cache_bytes = bytes,
                     IpcResult::SpotifyPlaylists(p) => self.spotify.playlists = p,
                     IpcResult::SpotifySyncFinished(ok) => {
                         if ok {
@@ -5313,7 +5347,8 @@ impl App {
         let client = self.client.clone();
         tokio::spawn(async move {
             for url in urls {
-                // A warm miss is simply skipped next time.
+                // The daemon persists this through the cover cache, so the next
+                // visit is served from disk. A miss is simply retried later.
                 let _ = client.spotify().track_image(&url).await;
             }
         });
@@ -5676,10 +5711,42 @@ impl App {
         match self.settings_category {
             0 => 4,  // YouTube: Cookie Source, Cookie File, JS Runtime, Auto Download
             1 => 6,  // Playback: Repeat, Shuffle, Crossfade, EQ Enabled, Reverb, Cover Source
-            2 => 14, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme, Reactive Intensity, Hide Footer, Clear Lyrics Cache, Clear Cover Cache, Notification Settings, Theme Mode
+            2 => 15, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme, Reactive Intensity, Hide Footer, Clear Lyrics Cache, Clear Cover Cache, Cover Cache Size, Notification Settings, Theme Mode
             3 => 7,  // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Device
             _ => 0,
         }
+    }
+
+    /// Step the on-disk cover cache budget to the next preset and push it to
+    /// the daemon, which prunes immediately if it is already over budget.
+    pub fn cycle_cover_cache(&mut self) {
+        let next = COVER_CACHE_STEPS
+            .iter()
+            .copied()
+            .find(|mb| *mb > self.cover_cache_mb)
+            .unwrap_or(COVER_CACHE_STEPS[0]);
+        self.cover_cache_mb = next;
+        let bytes = next * 1024 * 1024;
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            let _ = c.set_cover_cache(bytes).await;
+            if let Ok((disk, _, _)) = c.cover_cache_stat().await {
+                let _ = ipc_tx.send(IpcResult::CoverCacheStat(disk));
+            }
+        });
+        save_prefs(&self.current_prefs());
+    }
+
+    /// Ask the daemon for current cover cache usage so Settings can show it.
+    pub fn refresh_cover_stat(&mut self) {
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            if let Ok((disk, _, _)) = c.cover_cache_stat().await {
+                let _ = ipc_tx.send(IpcResult::CoverCacheStat(disk));
+            }
+        });
     }
 
     /// Cycle the visibility mode of the notification category selected in the
@@ -9059,9 +9126,12 @@ impl App {
                                     });
                                 }
                                 12 => {
-                                    self.open_settings_overlay();
+                                    self.cycle_cover_cache();
                                 }
                                 13 => {
+                                    self.open_settings_overlay();
+                                }
+                                14 => {
                                     self.cycle_theme_mode();
                                 }
                                 _ => {}

@@ -7,7 +7,7 @@
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use lru::LruCache;
@@ -31,9 +31,10 @@ const ARTIST_CACHE_SIZE: usize = 30;
 const DEEZER_API: &str = "https://api.deezer.com/search";
 const RATE_LIMIT_MS: u64 = 200;
 const MIN_COVER_DIM: u32 = 300;
-/// Upper bound for the on-disk `covers/` cache. Oldest files are pruned by
-/// mtime once the directory exceeds this, so the cache can't grow unbounded.
-const DISK_CACHE_CAP: u64 = 512 * 1024 * 1024;
+/// Default upper bound for the on-disk cover caches. User-configurable via
+/// `cover_cache_mb`; oldest-by-mtime files are pruned once the combined size of
+/// `covers/` and `artist_covers/` exceeds it.
+pub const DISK_CACHE_DEFAULT: u64 = 512 * 1024 * 1024;
 
 /// Which artwork source(s) to consult, in the requested order. `Auto` is the
 /// default: MusicBrainz/Cover Art Archive first, with Spotify preferred over
@@ -73,6 +74,8 @@ pub struct CoverCache {
     client: Client,
     /// Number of covers written to disk; used to throttle the size-prune walk.
     disk_writes: AtomicUsize,
+    /// Combined on-disk budget for `covers/` and `artist_covers/`.
+    disk_cap: AtomicU64,
 }
 
 impl CoverCache {
@@ -91,7 +94,33 @@ impl CoverCache {
             cache_dir,
             client: Client::new(),
             disk_writes: AtomicUsize::new(0),
+            disk_cap: AtomicU64::new(DISK_CACHE_DEFAULT),
         }
+    }
+
+    /// Change the on-disk budget and prune immediately if already over it.
+    pub fn set_disk_cap(&self, cap: u64) {
+        self.disk_cap.store(cap.max(1), Ordering::Relaxed);
+    }
+
+    /// Current on-disk budget in bytes.
+    pub fn disk_cap(&self) -> u64 {
+        self.disk_cap.load(Ordering::Relaxed)
+    }
+
+    /// Drop every in-memory entry. Used by the explicit cache clear so a
+    /// "cleared" cache really is empty without waiting for eviction.
+    pub async fn clear_mem(&self) {
+        self.memory.lock().await.clear();
+        self.artist_memory.lock().await.clear();
+        self.memory_bytes.store(0, Ordering::Relaxed);
+        self.artist_memory_bytes.store(0, Ordering::Relaxed);
+    }
+
+    /// Bytes currently held on disk by both cover directories.
+    pub async fn disk_use(&self) -> u64 {
+        self.disk_size(&self.cache_dir.join("covers")).await
+            + self.disk_size(&self.cache_dir.join("artist_covers")).await
     }
 
     /// Insert `cd` into the LRU, evicting least-recently-used entries once the
@@ -124,8 +153,8 @@ impl CoverCache {
         self.memory_bytes.load(Ordering::Relaxed) + self.artist_memory_bytes.load(Ordering::Relaxed)
     }
 
-    /// Write cover bytes to the album-cover disk cache, periodically pruning
-    /// oldest-by-mtime files once the directory exceeds `DISK_CACHE_CAP`.
+    /// Write cover bytes to a disk cache directory, periodically pruning
+    /// oldest-by-mtime files once the combined cache exceeds the budget.
     async fn store_disk(&self, path: &PathBuf, bytes: &[u8]) {
         if let Some(parent) = path.parent() {
             tokio::fs::create_dir_all(parent).await.ok();
@@ -142,28 +171,48 @@ impl CoverCache {
         }
     }
 
-    async fn prune_disk_cache(&self) {
-        let dir = self.cache_dir.join("covers");
-        let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
-            return;
+    async fn disk_size(&self, dir: &std::path::Path) -> u64 {
+        let Ok(mut entries) = tokio::fs::read_dir(dir).await else {
+            return 0;
         };
-        let mut files: Vec<(SystemTime, PathBuf, u64)> = Vec::new();
-        let mut total: u64 = 0;
+        let mut total = 0;
         while let Ok(Some(entry)) = entries.next_entry().await {
-            let path = entry.path();
             if let Ok(md) = entry.metadata().await
                 && md.is_file()
             {
                 total += md.len();
-                files.push((md.modified().unwrap_or(UNIX_EPOCH), path, md.len()));
             }
         }
-        if total <= DISK_CACHE_CAP {
+        total
+    }
+
+    /// Prune oldest-by-mtime files across both cover directories until the
+    /// total fits the configured budget. Artist images are pruned too, so the
+    /// cache cannot grow past the cap.
+    pub async fn prune_disk_cache(&self) {
+        let cap = self.disk_cap();
+        let mut files: Vec<(SystemTime, PathBuf, u64)> = Vec::new();
+        let mut total = 0u64;
+        for name in ["covers", "artist_covers"] {
+            let dir = self.cache_dir.join(name);
+            let Ok(mut entries) = tokio::fs::read_dir(&dir).await else {
+                continue;
+            };
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                if let Ok(md) = entry.metadata().await
+                    && md.is_file()
+                {
+                    total += md.len();
+                    files.push((md.modified().unwrap_or(UNIX_EPOCH), entry.path(), md.len()));
+                }
+            }
+        }
+        if total <= cap {
             return;
         }
         files.sort_by_key(|(mtime, _, _)| *mtime);
         for (_, path, len) in files {
-            if total <= DISK_CACHE_CAP {
+            if total <= cap {
                 break;
             }
             if tokio::fs::remove_file(&path).await.is_ok() {
@@ -252,12 +301,7 @@ impl CoverCache {
             data: bytes.clone(),
         };
         let disk = self.artist_disk_path(&key);
-        if let Some(parent) = disk.parent() {
-            tokio::fs::create_dir_all(parent).await.ok();
-        }
-        if let Err(e) = tokio::fs::write(&disk, &bytes).await {
-            warn!("Failed to write artist image to disk {disk:?}: {e}");
-        }
+        self.store_disk(&disk, &bytes).await;
         let mut mem = self.artist_memory.lock().await;
         Self::insert_mem(
             &mut mem,
@@ -270,6 +314,67 @@ impl CoverCache {
 
     fn disk_path(&self, key: &str) -> PathBuf {
         self.cache_dir.join("covers").join(format!("{key}.jpg"))
+    }
+
+    /// Stable key for a remote image URL, so provider artwork browsed in a
+    /// picker is persisted instead of re-downloaded on every visit.
+    pub fn url_key(url: &str) -> String {
+        let mut h = Sha256::new();
+        h.update(url.as_bytes());
+        format!("u{}", hex::encode(&h.finalize()[..8]))
+    }
+
+    /// Return cached bytes for `url`, fetching and persisting them on a miss.
+    /// `fetch` is only called when neither memory nor disk has the image.
+    pub async fn get_url<F, Fut>(&self, url: &str, fetch: F) -> Option<CoverData>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = Option<Vec<u8>>>,
+    {
+        if url.trim().is_empty() {
+            return None;
+        }
+        let key = Self::url_key(url);
+        {
+            let mut mem = self.memory.lock().await;
+            if let Some(c) = mem.get(&key) {
+                return Some(c.clone());
+            }
+        }
+        let disk = self.disk_path(&key);
+        if let Ok(data) = tokio::fs::read(&disk).await
+            && !Self::too_small(&data)
+        {
+            let cd = CoverData {
+                mime: "image/jpeg".to_string(),
+                data,
+            };
+            let mut mem = self.memory.lock().await;
+            Self::insert_mem(
+                &mut mem,
+                &self.memory_bytes,
+                MEMORY_BUDGET_BYTES,
+                key,
+                cd.clone(),
+            );
+            return Some(cd);
+        }
+        let raw = fetch().await?;
+        let data = Self::normalize(&raw).unwrap_or(raw);
+        let cd = CoverData {
+            mime: "image/jpeg".to_string(),
+            data: data.clone(),
+        };
+        self.store_disk(&disk, &data).await;
+        let mut mem = self.memory.lock().await;
+        Self::insert_mem(
+            &mut mem,
+            &self.memory_bytes,
+            MEMORY_BUDGET_BYTES,
+            key,
+            cd.clone(),
+        );
+        Some(cd)
     }
 
     pub async fn get(
@@ -407,16 +512,14 @@ impl CoverCache {
         }
         let deezer = DeezerSearch::new();
         let img_bytes = deezer.artist_image(artist).await?;
+        // Normalize before caching so the `.jpg` on disk always matches the
+        // `image/jpeg` mime, instead of storing raw PNG bytes under a jpg name.
+        let img_bytes = Self::normalize(&img_bytes).unwrap_or(img_bytes);
         let cd = CoverData {
             data: img_bytes.clone(),
             mime: "image/jpeg".to_string(),
         };
-        if let Some(parent) = disk.parent() {
-            tokio::fs::create_dir_all(parent).await.ok();
-        }
-        if let Err(e) = tokio::fs::write(&disk, &img_bytes).await {
-            warn!("Failed to write artist image to disk {disk:?}: {e}");
-        }
+        self.store_disk(&disk, &img_bytes).await;
         let mut mem = self.artist_memory.lock().await;
         Self::insert_mem(
             &mut mem,

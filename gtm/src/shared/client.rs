@@ -399,6 +399,25 @@ impl DaemonClient {
         .await
     }
 
+    /// Change the daemon's on-disk cover cache budget and prune to fit.
+    pub async fn set_cover_cache(&self, bytes: u64) -> Result<()> {
+        self.send_ok(DaemonReq::SetCoverCache { bytes }).await
+    }
+
+    /// Current cover cache usage, for the Settings display.
+    pub async fn cover_cache_stat(&self) -> Result<(u64, u64, u64)> {
+        let res = self.send_raw(DaemonReq::GetCoverCacheStat).await?;
+        match res {
+            DaemonRes::CoverCacheStat {
+                disk_bytes,
+                mem_bytes,
+                cap_bytes,
+            } => Ok((disk_bytes, mem_bytes, cap_bytes)),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
     pub async fn crossfade(&self, enabled: bool, duration_secs: u8) -> Result<()> {
         self.send_ok(DaemonReq::Crossfade {
             enabled,

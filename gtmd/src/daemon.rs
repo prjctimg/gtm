@@ -1691,6 +1691,14 @@ impl Cmd {
         })
         .await
         .map_err(|e| CoreError::Daemon(format!("clear cache task: {e}")))?;
+        if what == CacheKind::Covers {
+            // Drop the in-memory LRU too, otherwise the UI reports a cleared
+            // cache while the daemon keeps serving the old images from RAM.
+            let cache = inner.cover_cache().await;
+            if let Some(cc) = cache.as_ref() {
+                cc.clear_mem().await;
+            }
+        }
         Ok(DaemonRes::Ok)
     }
 
@@ -2564,14 +2572,23 @@ impl Spotify {
     }
 
     /// Fetch the raw bytes of a Spotify album-cover URL as base64 for the
-    /// search picker preview. `None` when the account is unlinked or the CDN
-    /// request fails.
+    /// search picker preview. Persisted in the cover cache so browsing a
+    /// playlist warms disk instead of re-downloading per visit.
     pub async fn track_image(inner: &DaemonInner, image_url: &str) -> Result<DaemonRes, CoreError> {
-        let data = {
+        let cache = inner.cover_cache().await;
+        let data = if let Some(cc) = cache.as_ref() {
+            let url = image_url.to_string();
+            cc.get_url(image_url, || async move {
+                let spotify = inner.spotify.lock().await;
+                spotify.image_by_url(&url).await
+            })
+            .await
+            .map(|cd| cd.data)
+        } else {
             let spotify = inner.spotify.lock().await;
             spotify.image_by_url(image_url).await
-        }
-        .map(|bytes| base64::engine::general_purpose::STANDARD.encode(&bytes));
+        };
+        let data = data.map(|bytes| base64::engine::general_purpose::STANDARD.encode(&bytes));
         Ok(DaemonRes::SpotifyImageRes { data })
     }
 }
@@ -4121,7 +4138,9 @@ impl DaemonInner {
     async fn cover_cache(&self) -> tokio::sync::MutexGuard<'_, Option<CoverCache>> {
         let mut guard = self.cover_cache.lock().await;
         if guard.is_none() {
-            *guard = Some(CoverCache::new(self.config.cache_dir.clone()));
+            let cache = CoverCache::new(self.config.cache_dir.clone());
+            cache.set_disk_cap(self.config.cover_cache_bytes);
+            *guard = Some(cache);
         }
         guard
     }
@@ -5361,6 +5380,28 @@ impl Daemon {
                 *inner.cover_provider_override.lock().await =
                     Some(CoverProvider::from_str_lossy(provider));
                 Ok(DaemonRes::Ok)
+            }
+            DaemonReq::SetCoverCache { bytes } => {
+                let cache = inner.cover_cache().await;
+                if let Some(cc) = cache.as_ref() {
+                    cc.set_disk_cap(*bytes);
+                    cc.prune_disk_cache().await;
+                }
+                Ok(DaemonRes::Ok)
+            }
+            DaemonReq::GetCoverCacheStat => {
+                let (disk_bytes, mem_bytes, cap_bytes) = {
+                    let cache = inner.cover_cache().await;
+                    match cache.as_ref() {
+                        Some(cc) => (cc.disk_use().await, cc.memory_use() as u64, cc.disk_cap()),
+                        None => (0, 0, inner.config.cover_cache_bytes),
+                    }
+                };
+                Ok(DaemonRes::CoverCacheStat {
+                    disk_bytes,
+                    mem_bytes,
+                    cap_bytes,
+                })
             }
             DaemonReq::GetLyrics { track_id, path } => {
                 Lyrics::get(inner, *track_id, path.clone()).await

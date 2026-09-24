@@ -329,6 +329,12 @@ pub enum DaemonReq {
     SetCoverProvider {
         provider: String,
     },
+    /// Change the combined on-disk cover cache budget and prune to fit.
+    SetCoverCache {
+        bytes: u64,
+    },
+    /// Current disk and memory usage of the cover caches.
+    GetCoverCacheStat,
     GetLyrics {
         track_id: i64,
         path: Option<String>,
@@ -568,6 +574,8 @@ impl DaemonReq {
             DaemonReq::GetCoverArt { .. } => "get_cover_art",
             DaemonReq::GetArtistCoverArt { .. } => "artist_cover_art",
             DaemonReq::SetCoverProvider { .. } => "set_cover_provider",
+            DaemonReq::SetCoverCache { .. } => "set_cover_cache",
+            DaemonReq::GetCoverCacheStat => "get_cover_cache_stat",
             DaemonReq::GetLyrics { .. } => "get_lyrics",
             DaemonReq::LyricsSearch { .. } => "lyrics_search",
             DaemonReq::SpotifySetToken { .. } => "spotify_set_token",
@@ -882,6 +890,15 @@ impl DaemonReq {
                     provider: x.provider,
                 }
             }
+            "set_cover_cache" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    bytes: u64,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SetCoverCache { bytes: x.bytes }
+            }
+            "get_cover_cache_stat" => DaemonReq::GetCoverCacheStat,
             "get_lyrics" => {
                 #[derive(Deserialize)]
                 struct Params {
@@ -1589,6 +1606,12 @@ pub enum DaemonRes {
     CoverArt {
         data: Option<String>,
     },
+    /// Live cover cache usage, shown in Settings.
+    CoverCacheStat {
+        disk_bytes: u64,
+        mem_bytes: u64,
+        cap_bytes: u64,
+    },
     SyncStatus {
         running: bool,
         kind: SyncKind,
@@ -1694,6 +1717,17 @@ impl DaemonRes {
                 Some(serde_json::json!({ "tracks": tracks }))
             }
             DaemonRes::CoverArt { data } => Some(serde_json::json!({ "data": data })),
+            DaemonRes::CoverCacheStat {
+                disk_bytes,
+                mem_bytes,
+                cap_bytes,
+            } => Some(serde_json::json!({
+                "stat": {
+                    "disk_bytes": disk_bytes,
+                    "mem_bytes": mem_bytes,
+                    "cap_bytes": cap_bytes,
+                }
+            })),
             DaemonRes::SyncStatus {
                 running,
                 kind,
@@ -1842,6 +1876,15 @@ impl DaemonRes {
             DaemonRes::ChartsLoaded { charts } => field!("charts", &charts),
             DaemonRes::ChartTracksLoaded { tracks } => field!("tracks", &tracks),
             DaemonRes::CoverArt { data } => field!("data", &data),
+            DaemonRes::CoverCacheStat {
+                disk_bytes,
+                mem_bytes,
+                cap_bytes,
+            } => {
+                field!("disk_bytes", &disk_bytes);
+                field!("mem_bytes", &mem_bytes);
+                field!("cap_bytes", &cap_bytes);
+            }
             DaemonRes::SyncStatus {
                 running,
                 kind,
@@ -2020,6 +2063,26 @@ impl DaemonRes {
             "get_cover_art" | "artist_cover_art" => {
                 match serde_json::from_value::<Option<String>>(field(&data, "data")) {
                     Ok(data) => DaemonRes::CoverArt { data },
+                    Err(_) => DaemonRes::Value { value: data },
+                }
+            }
+            "get_cover_cache_stat" => {
+                #[derive(serde::Deserialize)]
+                struct Stat {
+                    disk_bytes: u64,
+                    mem_bytes: u64,
+                    cap_bytes: u64,
+                }
+                match serde_json::from_value::<Stat>(field(&data, "stat")) {
+                    Ok(Stat {
+                        disk_bytes,
+                        mem_bytes,
+                        cap_bytes,
+                    }) => DaemonRes::CoverCacheStat {
+                        disk_bytes,
+                        mem_bytes,
+                        cap_bytes,
+                    },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }

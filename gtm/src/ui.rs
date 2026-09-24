@@ -4986,6 +4986,7 @@ impl Pickers {
                     ),
                     "Clear Lyrics Cache  Enter".to_string(),
                     "Clear Cover Cache    Enter  ▶".to_string(),
+                    format!("Cover Cache     {} MB  ▶", app.cover_cache_mb),
                     "Notification Settings  Enter  ▶".to_string(),
                     format!("Theme Mode     {}  ▶", theme_mode_label(&app.theme_mode)),
                 ]
