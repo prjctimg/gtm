@@ -2268,7 +2268,7 @@ impl Spotify {
     pub async fn search_web(inner: &DaemonInner, query: &str) -> Result<DaemonRes, CoreError> {
         let tracks = {
             let spotify = inner.spotify.lock().await;
-            spotify.search(query, 20).await
+            spotify.search(query, 20).await.map_err(CoreError::Daemon)?
         };
         Ok(DaemonRes::SpotifyTracksRes { tracks })
     }

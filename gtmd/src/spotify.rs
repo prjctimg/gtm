@@ -27,6 +27,9 @@ use gtm::shared::spotify::{
 
 const TOKEN_FILE: &str = "spotify.json";
 const TOKEN_ACCESS_PERMS: u32 = 0o600;
+/// Per-request `limit` ceiling for `/v1/search` (10 since Spotify's February
+/// 2026 migration, previously 50).
+const SEARCH_MAX: u32 = 10;
 
 /// Owns the Spotify Web API client, its token file, and the playlist cache.
 ///
@@ -497,130 +500,139 @@ impl SpotifyManager {
         Ok(())
     }
 
-    pub async fn search(&self, query: &str, limit: u32) -> Vec<SpotifyTrack> {
+    /// Search the catalog for tracks, albums, artists and playlists.
+    ///
+    /// [`SEARCH_MAX`] mirrors the per-request `limit` ceiling Spotify enforces
+    /// (10 since the February 2026 migration, down from 50); asking for more
+    /// makes the whole request fail, so the caller's budget is clamped here.
+    /// Each kind is queried independently and partial results are returned;
+    /// an error is only surfaced when every kind failed, so one bad query
+    /// cannot hide the other three.
+    pub async fn search(&self, query: &str, limit: u32) -> Result<Vec<SpotifyTrack>, String> {
         let Some(client) = self.client.as_ref() else {
-            return Vec::new();
+            return Err("spotify not linked".to_string());
         };
+        let limit = limit.clamp(1, SEARCH_MAX);
+        let sub = (limit / 2).max(3);
         let mut tracks: Vec<SpotifyTrack> = Vec::new();
+        let mut errs: Vec<String> = Vec::new();
 
         // Track results first (the most useful).
-        if let Ok(rspotify::model::SearchResult::Tracks(page)) = client
+        match client
             .search(query, SearchType::Track, None, None, Some(limit), None)
             .await
         {
-            tracks.extend(page.items.iter().enumerate().map(|(i, t)| {
-                SpotifyTrack {
-                    index: i,
-                    name: t.name.clone(),
-                    artists: t
-                        .artists
-                        .iter()
-                        .map(|a| a.name.clone())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    album: Some(t.album.name.clone()),
-                    duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
-                    uri: t.id.as_ref().map(|id| format!("spotify:track:{id}")),
-                    image_url: pick_largest_image(&t.album.images),
-                    kind: None,
-                }
-            }));
+            Ok(rspotify::model::SearchResult::Tracks(page)) => {
+                tracks.extend(page.items.iter().enumerate().map(|(i, t)| {
+                    SpotifyTrack {
+                        index: i,
+                        name: t.name.clone(),
+                        artists: t
+                            .artists
+                            .iter()
+                            .map(|a| a.name.clone())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        album: Some(t.album.name.clone()),
+                        duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
+                        uri: t.id.as_ref().map(|id| format!("spotify:track:{id}")),
+                        image_url: pick_largest_image(&t.album.images),
+                        kind: None,
+                    }
+                }));
+            }
+            Ok(_) => {}
+            Err(e) => errs.push(format!("tracks: {e}")),
         }
 
         let mut idx = tracks.len();
-        let album_limit = (limit / 3).max(5);
-        let artist_limit = (limit / 4).max(4);
-        let playlist_limit = (limit / 4).max(4);
 
         // Album results.
-        if let Ok(rspotify::model::SearchResult::Albums(page)) = client
-            .search(
-                query,
-                SearchType::Album,
-                None,
-                None,
-                Some(album_limit),
-                None,
-            )
+        match client
+            .search(query, SearchType::Album, None, None, Some(sub), None)
             .await
         {
-            for a in &page.items {
-                tracks.push(SpotifyTrack {
-                    index: idx,
-                    name: a.name.clone(),
-                    artists: a
-                        .artists
-                        .iter()
-                        .map(|a| a.name.clone())
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    album: Some(a.name.clone()),
-                    duration_ms: None,
-                    uri: a.id.as_ref().map(|id| format!("spotify:album:{id}")),
-                    image_url: pick_largest_image(&a.images),
-                    kind: Some(SpotifySearchKind::Album),
-                });
-                idx += 1;
+            Ok(rspotify::model::SearchResult::Albums(page)) => {
+                for a in &page.items {
+                    tracks.push(SpotifyTrack {
+                        index: idx,
+                        name: a.name.clone(),
+                        artists: a
+                            .artists
+                            .iter()
+                            .map(|a| a.name.clone())
+                            .collect::<Vec<_>>()
+                            .join(", "),
+                        album: Some(a.name.clone()),
+                        duration_ms: None,
+                        uri: a.id.as_ref().map(|id| format!("spotify:album:{id}")),
+                        image_url: pick_largest_image(&a.images),
+                        kind: Some(SpotifySearchKind::Album),
+                    });
+                    idx += 1;
+                }
             }
+            Ok(_) => {}
+            Err(e) => errs.push(format!("albums: {e}")),
         }
 
         // Artist results.
-        if let Ok(rspotify::model::SearchResult::Artists(page)) = client
-            .search(
-                query,
-                SearchType::Artist,
-                None,
-                None,
-                Some(artist_limit),
-                None,
-            )
+        match client
+            .search(query, SearchType::Artist, None, None, Some(sub), None)
             .await
         {
-            for a in &page.items {
-                tracks.push(SpotifyTrack {
-                    index: idx,
-                    name: a.name.clone(),
-                    artists: String::new(),
-                    album: None,
-                    duration_ms: None,
-                    uri: Some(format!("spotify:artist:{}", a.id)),
-                    image_url: pick_largest_image(&a.images),
-                    kind: Some(SpotifySearchKind::Artist),
-                });
-                idx += 1;
+            Ok(rspotify::model::SearchResult::Artists(page)) => {
+                for a in &page.items {
+                    tracks.push(SpotifyTrack {
+                        index: idx,
+                        name: a.name.clone(),
+                        artists: String::new(),
+                        album: None,
+                        duration_ms: None,
+                        uri: Some(format!("spotify:artist:{}", a.id)),
+                        image_url: pick_largest_image(&a.images),
+                        kind: Some(SpotifySearchKind::Artist),
+                    });
+                    idx += 1;
+                }
             }
+            Ok(_) => {}
+            Err(e) => errs.push(format!("artists: {e}")),
         }
 
         // Playlist results. The owner display name rides in `artists` and the
         // track count in `album` so the TUI can render both without another
         // round-trip.
-        if let Ok(rspotify::model::SearchResult::Playlists(page)) = client
-            .search(
-                query,
-                SearchType::Playlist,
-                None,
-                None,
-                Some(playlist_limit),
-                None,
-            )
+        match client
+            .search(query, SearchType::Playlist, None, None, Some(sub), None)
             .await
         {
-            for a in &page.items {
-                tracks.push(SpotifyTrack {
-                    index: idx,
-                    name: a.name.clone(),
-                    artists: a.owner.display_name.clone().unwrap_or_default(),
-                    album: Some(format!("{} tracks", a.items.total)),
-                    duration_ms: None,
-                    uri: Some(format!("spotify:playlist:{}", a.id)),
-                    image_url: pick_largest_image(&a.images),
-                    kind: Some(SpotifySearchKind::Playlist),
-                });
-                idx += 1;
+            Ok(rspotify::model::SearchResult::Playlists(page)) => {
+                for a in &page.items {
+                    tracks.push(SpotifyTrack {
+                        index: idx,
+                        name: a.name.clone(),
+                        artists: a.owner.display_name.clone().unwrap_or_default(),
+                        album: Some(format!("{} tracks", a.items.total)),
+                        duration_ms: None,
+                        uri: Some(format!("spotify:playlist:{}", a.id)),
+                        image_url: pick_largest_image(&a.images),
+                        kind: Some(SpotifySearchKind::Playlist),
+                    });
+                    idx += 1;
+                }
             }
+            Ok(_) => {}
+            Err(e) => errs.push(format!("playlists: {e}")),
         }
 
-        tracks
+        if tracks.is_empty() && !errs.is_empty() {
+            return Err(errs.join("; "));
+        }
+        if !errs.is_empty() {
+            warn!("spotify search partial failure: {}", errs.join("; "));
+        }
+        Ok(tracks)
     }
 
     /// Resolve a web-search album result to its track list.
