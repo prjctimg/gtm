@@ -41,6 +41,7 @@ use gtm::shared::track::{StreamInfo, TrackInfo};
 use gtm::shared::url::{is_youtube, ytdlp_label};
 use gtm::shared::wire;
 use gtm::shared::{CoreError, MetadataPatch};
+use rspotify::AuthCodePkceSpotify;
 #[cfg(feature = "pulseaudio")]
 use gtm::shared::{ensure_termux_pulse, is_termux};
 
@@ -61,7 +62,10 @@ use crate::podcast::PodcastManager;
 use crate::queue;
 use crate::radio::RadioBrowserManager;
 use crate::remote;
-use crate::spotify::SpotifyManager;
+use crate::spotify::{
+    SpotifyManager, access_token, album_cover, album_tracks, artist_image, artist_top, image_at,
+    search, web_playlist,
+};
 use crate::stream::StreamManager;
 use crate::tags::{MetadataToWrite, write_tags};
 #[cfg(feature = "youtube")]
@@ -584,41 +588,50 @@ impl Cmd {
         auto_advanced: bool,
     ) -> Result<DaemonRes, CoreError> {
         inner.play_session.fetch_add(1, Ordering::Release);
-        let (token, config_dir, duration_hint) = {
+        // Read every gate and the client under one lock, then refresh the token
+        // off-lock so a stalled Spotify request cannot block every other
+        // transport command.
+        let (client, premium, relink) = {
             let spotify = inner.spotify.lock().await;
-            if !spotify.linked() {
+            (
+                spotify.client(),
+                spotify.is_premium(),
+                spotify.needs_relink(),
+            )
+        };
+        let Some(client) = client else {
+            return Ok(DaemonRes::Error {
+                message: "spotify not linked".into(),
+            });
+        };
+        if !premium {
+            return Ok(DaemonRes::Error {
+                message: "spotify streaming requires a Premium account".into(),
+            });
+        }
+        if relink {
+            return Ok(DaemonRes::Error {
+                message: "spotify token lacks the streaming scope; re-link the account".into(),
+            });
+        }
+        let token = match access_token(&client).await {
+            Ok(t) => t,
+            Err(e) => {
                 return Ok(DaemonRes::Error {
-                    message: "spotify not linked".into(),
+                    message: format!("{e}; re-link the account"),
                 });
             }
-            if !spotify.is_premium() {
-                return Ok(DaemonRes::Error {
-                    message: "spotify streaming requires a Premium account".into(),
-                });
-            }
-            if spotify.needs_relink() {
-                return Ok(DaemonRes::Error {
-                    message: "spotify token lacks the streaming scope; re-link the account".into(),
-                });
-            }
-            let token = match spotify.access_token().await {
-                Ok(t) => t,
-                Err(e) => {
-                    return Ok(DaemonRes::Error {
-                        message: format!("{e}; re-link the account"),
-                    });
-                }
-            };
+        };
+        let duration_hint = {
             let state = inner.state.read().await;
-            let hint = state
+            state
                 .queue
                 .iter()
                 .find(|t| t.path == uri_path)
                 .map(|t| t.duration)
-                .filter(|d| *d > 0.0);
-            drop(state);
-            (token, inner.config.config_dir.clone(), hint)
+                .filter(|d| *d > 0.0)
         };
+        let config_dir = inner.config.config_dir.clone();
 
         {
             let mut mixer = inner.mixer.lock().await;
@@ -1225,18 +1238,19 @@ impl Cmd {
             }
         }
 
-        let (token, config_dir) = {
-            let spotify = inner.spotify.lock().await;
-            let token = match spotify.access_token().await {
-                Ok(t) => t,
-                Err(e) => {
-                    return Ok(DaemonRes::Error {
-                        message: format!("{e}; re-link the account"),
-                    });
-                }
-            };
-            (token, inner.config.config_dir.clone())
+        let client = match linked(inner).await {
+            Ok(client) => client,
+            Err(res) => return Ok(res),
         };
+        let token = match access_token(&client).await {
+            Ok(t) => t,
+            Err(e) => {
+                return Ok(DaemonRes::Error {
+                    message: format!("{e}; re-link the account"),
+                });
+            }
+        };
+        let config_dir = inner.config.config_dir.clone();
         let source = {
             let mut stream = inner.stream.lock().await;
             match stream
@@ -1939,6 +1953,33 @@ async fn spotify_yt_fallback(
 
 struct Spotify;
 
+/// Clone of the Web API client, or the "not linked" error reply. Callers must
+/// drop this before any `.await` that reaches Spotify: the manager mutex is
+/// also taken by the cover paths, and holding it across a network call is
+/// what wedged playback, cover art and search.
+async fn linked(inner: &DaemonInner) -> Result<AuthCodePkceSpotify, DaemonRes> {
+    match inner.spotify.lock().await.client() {
+        Some(client) => Ok(client),
+        None => Err(DaemonRes::Error {
+            message: "spotify not linked".into(),
+        }),
+    }
+}
+
+/// Whether a `spotify:track:` URI can stream natively right now: a linked
+/// Premium account with a usable access token. The manager lock is released
+/// before the token check, so this never pins it across a refresh.
+async fn can_stream(inner: &DaemonInner) -> bool {
+    let (premium, client) = {
+        let spotify = inner.spotify.lock().await;
+        (spotify.is_premium(), spotify.client())
+    };
+    match client {
+        Some(client) => premium && access_token(&client).await.is_ok(),
+        None => false,
+    }
+}
+
 /// One Spotify Connect transport command, dispatched by
 /// [`Spotify::connect_ctrl`] so every control shares the same status refresh
 /// and error mapping.
@@ -2042,7 +2083,7 @@ impl Spotify {
                     // minute on large libraries.
                     let inner3 = Arc::clone(&inner2);
                     tokio::spawn(async move {
-                        let client = { inner3.spotify.lock().await.sync_client() };
+                        let client = { inner3.spotify.lock().await.client() };
                         let Some(client) = client else {
                             return;
                         };
@@ -2157,13 +2198,9 @@ impl Spotify {
         // Clone the Web API client out of the manager, then paginate without
         // holding `inner.spotify`: a concurrent `SpotifyStatus`/
         // `SpotifyPlaylists` keeps working against the previous snapshot.
-        let client = match inner.spotify.lock().await.sync_client() {
-            Some(client) => client,
-            None => {
-                return Ok(DaemonRes::Error {
-                    message: "spotify not linked".into(),
-                });
-            }
+        let client = match linked(inner).await {
+            Ok(client) => client,
+            Err(res) => return Ok(res),
         };
         let res =
             tokio::time::timeout(Duration::from_secs(60), SpotifyManager::run_sync(client)).await;
@@ -2233,15 +2270,7 @@ impl Spotify {
         // Premium accounts stream natively via librespot; the queue entry
         // carries the `spotify:track:` URI and Cmd::play routes it to the
         // streaming bridge. Everyone else falls back to the YT match.
-        let stream_uri = {
-            let spotify = inner.spotify.lock().await;
-            if spotify.can_stream().await {
-                track.uri.clone()
-            } else {
-                None
-            }
-        };
-        if let Some(uri) = stream_uri {
+        if can_stream(inner).await && let Some(uri) = track.uri.clone() {
             let duration = track.duration_ms.map(|ms| ms as f64 / 1000.0);
             return Spotify::queue_stream(
                 inner,
@@ -2318,37 +2347,40 @@ impl Spotify {
     }
 
     pub async fn search_web(inner: &DaemonInner, query: &str) -> Result<DaemonRes, CoreError> {
-        let tracks = {
-            let spotify = inner.spotify.lock().await;
-            spotify.search(query, 20).await.map_err(CoreError::Daemon)?
+        let client = match linked(inner).await {
+            Ok(client) => client,
+            Err(res) => return Ok(res),
         };
+        let tracks = search(&client, query, 20)
+            .await
+            .map_err(CoreError::Daemon)?;
         Ok(DaemonRes::SpotifyTracksRes { tracks })
     }
 
     /// Resolve a web-search album result (an album `spotify:` URI) to its full
     /// track list so the TUI can queue and play it.
     pub async fn album_tracks(inner: &DaemonInner, uri: &str) -> Result<DaemonRes, CoreError> {
-        let tracks = {
-            let spotify = inner.spotify.lock().await;
-            match spotify.album_tracks(uri).await {
-                Ok(tracks) => tracks,
-                Err(e) => return Ok(DaemonRes::Error { message: e }),
-            }
+        let client = match linked(inner).await {
+            Ok(client) => client,
+            Err(res) => return Ok(res),
         };
-        Ok(DaemonRes::SpotifyTracksRes { tracks })
+        match album_tracks(&client, uri).await {
+            Ok(tracks) => Ok(DaemonRes::SpotifyTracksRes { tracks }),
+            Err(e) => Ok(DaemonRes::Error { message: e }),
+        }
     }
 
     /// Resolve a web-search artist result (an artist `spotify:` URI) to their
     /// top tracks.
     pub async fn artist_top_tracks(inner: &DaemonInner, uri: &str) -> Result<DaemonRes, CoreError> {
-        let tracks = {
-            let spotify = inner.spotify.lock().await;
-            match spotify.artist_top_tracks(uri).await {
-                Ok(tracks) => tracks,
-                Err(e) => return Ok(DaemonRes::Error { message: e }),
-            }
+        let client = match linked(inner).await {
+            Ok(client) => client,
+            Err(res) => return Ok(res),
         };
-        Ok(DaemonRes::SpotifyTracksRes { tracks })
+        match artist_top(&client, uri).await {
+            Ok(tracks) => Ok(DaemonRes::SpotifyTracksRes { tracks }),
+            Err(e) => Ok(DaemonRes::Error { message: e }),
+        }
     }
 
     /// Resolve a web-search playlist result (a `spotify:playlist:` URI) to its
@@ -2357,14 +2389,14 @@ impl Spotify {
         inner: &DaemonInner,
         uri: &str,
     ) -> Result<DaemonRes, CoreError> {
-        let tracks = {
-            let spotify = inner.spotify.lock().await;
-            match spotify.playlist_tracks_web(uri).await {
-                Ok(tracks) => tracks,
-                Err(e) => return Ok(DaemonRes::Error { message: e }),
-            }
+        let client = match linked(inner).await {
+            Ok(client) => client,
+            Err(res) => return Ok(res),
         };
-        Ok(DaemonRes::SpotifyTracksRes { tracks })
+        match web_playlist(&client, uri).await {
+            Ok(tracks) => Ok(DaemonRes::SpotifyTracksRes { tracks }),
+            Err(e) => Ok(DaemonRes::Error { message: e }),
+        }
     }
 
     /// Resolve a Spotify track into a playable stream and append it to the
@@ -2379,11 +2411,7 @@ impl Spotify {
         uri: &Option<String>,
         play: bool,
     ) -> Result<DaemonRes, CoreError> {
-        let can_stream = {
-            let spotify = inner.spotify.lock().await;
-            spotify.can_stream().await && uri.is_some()
-        };
-        if can_stream && let Some(uri) = uri.clone() {
+        if uri.is_some() && can_stream(inner).await && let Some(uri) = uri.clone() {
             let duration = {
                 let spotify = inner.spotify.lock().await;
                 spotify.find_track_duration(&uri)
@@ -2470,9 +2498,13 @@ impl Spotify {
         };
         // Start playback reliably: on an empty queue, and always when the
         // caller asked to play (Enter) — `Cmd::play` stops the current source
-        // first, so switching from another source is smooth.
-        if was_empty || play {
-            Cmd::play(inner, uri, 0.0, false).await?;
+        // first, so switching from another source is smooth. A rejected
+        // librespot handshake answers `Ok(Error)`, so surface it instead of
+        // reporting a successful queue for a track that never plays.
+        if (was_empty || play)
+            && let DaemonRes::Error { message } = Cmd::play(inner, uri, 0.0, false).await?
+        {
+            return Ok(DaemonRes::Error { message });
         }
 
         {
@@ -2512,10 +2544,7 @@ impl Spotify {
             fastrand::shuffle(&mut order);
         }
 
-        let can_stream = {
-            let spotify = inner.spotify.lock().await;
-            spotify.can_stream().await
-        };
+        let can_stream = can_stream(inner).await;
 
         if can_stream {
             let pairs: Vec<(String, SpotifyTrack)> = order
@@ -2637,18 +2666,21 @@ impl Spotify {
     /// search picker preview. Persisted in the cover cache so browsing a
     /// playlist warms disk instead of re-downloading per visit.
     pub async fn track_image(inner: &DaemonInner, image_url: &str) -> Result<DaemonRes, CoreError> {
+        // Clone the client before touching the cover cache: the cache guard
+        // must never be alive while the Spotify manager is locked, or this and
+        // `Cover::artist` acquire the two in opposite orders and deadlock.
+        let client = match linked(inner).await {
+            Ok(client) => client,
+            Err(res) => return Ok(res),
+        };
         let cache = inner.cover_cache().await;
-        let data = if let Some(cc) = cache.as_ref() {
-            let url = image_url.to_string();
-            cc.get_url(image_url, || async move {
-                let spotify = inner.spotify.lock().await;
-                spotify.image_by_url(&url).await
-            })
-            .await
-            .map(|cd| cd.data)
-        } else {
-            let spotify = inner.spotify.lock().await;
-            spotify.image_by_url(image_url).await
+        let data = match cache.as_ref() {
+            Some(cc) => {
+                cc.get_url(image_url, || image_at(&client, image_url))
+                    .await
+                    .map(|cd| cd.data)
+            }
+            None => image_at(&client, image_url).await,
         };
         let data = data.map(|bytes| base64::engine::general_purpose::STANDARD.encode(&bytes));
         Ok(DaemonRes::SpotifyImageRes { data })
@@ -3894,30 +3926,30 @@ impl Cover {
 
             // With Auto (the default) or an explicit Spotify preference, a
             // linked account supplies original 640x640 artwork ahead of the
-            // network fallbacks below.
-            let spotify_first = matches!(provider, CoverProvider::Auto | CoverProvider::Spotify)
-                && inner.spotify.lock().await.linked();
+            // network fallbacks below. Resolved with no lock held: taking the
+            // cover cache here and the Spotify manager inside it is the ABBA
+            // pair `Cover::artist` completes.
+            if matches!(provider, CoverProvider::Auto | CoverProvider::Spotify)
+                && let Ok(client) = linked(inner).await
+                && let Some(bytes) = tokio::time::timeout(
+                    Duration::from_secs(8),
+                    album_cover(&client, &artist, &album),
+                )
+                .await
+                .ok()
+                .flatten()
+            {
+                let mut guard = inner.cover_cache().await;
+                if let Some(ref mut cc) = *guard {
+                    cc.put(&artist, &album, bytes.clone()).await;
+                }
+                drop(guard);
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                return Ok(DaemonRes::CoverArt { data: Some(b64) });
+            }
 
             let mut guard = inner.cover_cache().await;
             if let Some(ref mut cache) = *guard {
-                if spotify_first {
-                    let bytes = tokio::time::timeout(Duration::from_secs(8), async {
-                        inner
-                            .spotify
-                            .lock()
-                            .await
-                            .album_cover(&artist, &album)
-                            .await
-                    })
-                    .await
-                    .ok()
-                    .flatten();
-                    if let Some(bytes) = bytes {
-                        cache.put(&artist, &album, bytes.clone()).await;
-                        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                        return Ok(DaemonRes::CoverArt { data: Some(b64) });
-                    }
-                }
                 let cover = tokio::time::timeout(
                     Duration::from_secs(5),
                     cache.get(&artist, &album, provider),
@@ -3998,23 +4030,25 @@ impl Cover {
             }
         }
 
-        // Spotify fallback for the artist portrait, cached for later use.
-        let spotify = inner.spotify.lock().await;
-        if spotify.linked() {
-            let bytes = tokio::time::timeout(Duration::from_secs(8), spotify.artist_image(artist))
-                .await
-                .ok()
-                .flatten();
-            if let Some(bytes) = bytes {
+        // Spotify fallback for the artist portrait. Fetched before the cache is
+        // retaken so the two locks are never held in the reverse order of
+        // `Cover::track`.
+        if let Ok(client) = linked(inner).await
+            && let Some(bytes) =
+                tokio::time::timeout(Duration::from_secs(8), artist_image(&client, artist))
+                    .await
+                    .ok()
+                    .flatten()
+        {
+            {
                 let mut guard = inner.cover_cache().await;
                 if let Some(ref mut cache) = *guard {
                     cache.put_artist_image(artist, bytes.clone()).await;
                 }
-                drop(guard);
-                return Ok(DaemonRes::CoverArt {
-                    data: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
-                });
             }
+            return Ok(DaemonRes::CoverArt {
+                data: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
+            });
         }
         Ok(DaemonRes::CoverArt { data: None })
     }
@@ -4692,7 +4726,7 @@ impl Daemon {
                 tokio::spawn(async move {
                     let mut delay_secs: u64 = 5;
                     loop {
-                        let client = { sync_inner.spotify.lock().await.sync_client() };
+                        let client = { sync_inner.spotify.lock().await.client() };
                         let Some(client) = client else {
                             // Unlinked while backing off; do not resurrect.
                             return;

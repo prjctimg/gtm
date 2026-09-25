@@ -3463,21 +3463,22 @@ impl Pickers {
                             "  Type to search tracks, albums, playlists & artists...",
                             Style::default().fg(app.theme.fg_dim),
                         )));
-                    } else if app.spotify.search_loading {
-                        lines.push(Line::from(Span::styled(
-                            "  Searching…",
-                            Style::default().fg(app.theme.fg_dim),
-                        )));
                     } else if total == 0 {
+                        // Only claim "no results" once the search has actually
+                        // answered; a pending one shows the spinner instead.
                         lines.push(Line::from(Span::styled(
-                            "  No results found",
+                            if app.spotify.search_loading {
+                                "  Searching…"
+                            } else {
+                                "  No results found"
+                            },
                             Style::default().fg(app.theme.fg_dim),
                         )));
                     } else {
                         for row in scroll_start..scroll_end {
                             let i = picks[row];
                             let (_, _pl_name, track) = &app.spotify.search_results[i];
-                            let prefix = if i == sel { " > " } else { "   " };
+                            let prefix = if row == sel { " > " } else { "   " };
                             let tag = match track.kind {
                                 Some(SpotifySearchKind::Album) => Some("[Album]"),
                                 Some(SpotifySearchKind::Artist) => Some("[Artist]"),
@@ -3513,7 +3514,7 @@ impl Pickers {
                             app.mouse_map.register(
                                 Rect {
                                     x: results_area.x,
-                                    y: results_area.y + 1 + row as u16,
+                                    y: results_area.y + 1 + (row - scroll_start) as u16,
                                     width: results_area.width,
                                     height: 1,
                                 },

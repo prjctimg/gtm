@@ -613,3 +613,62 @@ async fn oauth_start_url() {
     handle.abort();
     cleanup(&config);
 }
+
+/// Every command that reaches the Spotify manager or the cover cache must
+/// answer even when a sibling command is doing Spotify network work. These
+/// four ran concurrently and used to acquire `cover_cache` and `spotify` in
+/// opposite orders, deadlocking the daemon (no playback, no cover art, and
+/// searches whose results never reached the client).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn spotify_cover_concurrency() {
+    let (handle, config) = daemon_handle().await;
+    let (mut reader, mut writer) = connect(&config.socket_path).await;
+
+    // A bogus token still links the account, so every Spotify branch is
+    // entered and fails fast on the 401 instead of being skipped.
+    let _ = send_req(
+        &mut reader,
+        &mut writer,
+        &DaemonReq::SpotifySetToken {
+            token: "not-a-real-token".into(),
+        },
+    )
+    .await;
+
+    let mut tasks = Vec::new();
+    for req in [
+        DaemonReq::GetCoverArt {
+            track_id: 0,
+            path: Some("spotify:track:0000000000000000000000".into()),
+        },
+        DaemonReq::GetArtistCoverArt {
+            artist: "Some Artist".into(),
+        },
+        DaemonReq::SpotifySearchWeb {
+            query: "deadlock".into(),
+        },
+        DaemonReq::SpotifyTrackImage {
+            image_url: "https://i.scdn.co/image/ab67616d0000b273".into(),
+        },
+    ] {
+        let socket = config.socket_path.clone();
+        tasks.push(tokio::spawn(async move {
+            let (mut reader, mut writer) = connect(&socket).await;
+            send_req(&mut reader, &mut writer, &req).await
+        }));
+    }
+
+    for task in tasks {
+        let res = tokio::time::timeout(Duration::from_secs(30), task)
+            .await
+            .expect("command deadlocked against a concurrent spotify/cover request")
+            .expect("command task panicked");
+        assert!(
+            !matches!(&res, DaemonRes::Error { message } if message.contains("not linked")),
+            "unexpected error for a linked account: {res:?}"
+        );
+    }
+
+    handle.abort();
+    cleanup(&config);
+}

@@ -1313,7 +1313,10 @@ enum IpcResult {
     /// guard and arms the "synced once" latch on success.
     SpotifySyncFinished(bool),
     SpotifyTracks(Vec<SpotifyTrack>),
-    SpotifySearchWebResults(u64, Vec<SpotifyTrack>),
+    /// Terminal outcome of a web search, tagged with the query generation that
+    /// spawned it. Carries the failure so a failed search clears the spinner
+    /// instead of leaving it up over an already-populated result list.
+    SpotifySearchWebDone(u64, std::result::Result<Vec<SpotifyTrack>, String>),
     ReactivePalette(Option<ReactivePalette>),
     PodcastStatus(Option<PodcastStatus>),
     PodcastFeeds(Vec<PodcastFeed>),
@@ -3350,19 +3353,31 @@ impl App {
                         self.spotify.sync_pending = false;
                     }
                     IpcResult::SpotifyTracks(t) => self.spotify.playlist_tracks_cache = t,
-                    IpcResult::SpotifySearchWebResults(seq, tracks) => {
+                    IpcResult::SpotifySearchWebDone(seq, res) => {
                         if seq != self.spotify.web_seq {
                             // Stale: a newer query superseded this in-flight
                             // response, so its rows would be for the wrong
-                            // search. Drop rather than flash wrong results.
+                            // search. Drop rather than flash wrong results —
+                            // the newer search owns the spinner.
                             continue;
                         }
-                        for track in tracks {
-                            self.spotify.search_results.push((
-                                "web".into(),
-                                "Spotify".into(),
-                                track,
-                            ));
+                        match res {
+                            Ok(tracks) => {
+                                self.spotify.search_results.extend(
+                                    tracks
+                                        .into_iter()
+                                        .map(|track| ("web".into(), "Spotify".into(), track)),
+                                );
+                            }
+                            Err(e) => {
+                                self.notify_titled(
+                                    "Spotify",
+                                    format!("Spotify Web search failed: {e}"),
+                                    NotificationKind::Error,
+                                    true,
+                                    NotifType::Spotify,
+                                );
+                            }
                         }
                         self.spotify.search_loading = false;
                     }
@@ -4339,15 +4354,12 @@ impl App {
         let seq = self.spotify.web_seq;
         self.spotify.search_loading = true;
         tokio::spawn(async move {
-            match c.spotify().search_web(&query).await {
-                Ok(tracks) => {
-                    let _ = ipc_tx.send(IpcResult::SpotifySearchWebResults(seq, tracks));
-                }
-                Err(e) => {
-                    let _ =
-                        ipc_tx.send(IpcResult::Error(format!("Spotify Web search failed: {e}")));
-                }
-            }
+            let res = c
+                .spotify()
+                .search_web(&query)
+                .await
+                .map_err(|e| e.to_string());
+            let _ = ipc_tx.send(IpcResult::SpotifySearchWebDone(seq, res));
         });
     }
 
@@ -4355,6 +4367,9 @@ impl App {
     pub fn on_picker_opened(&mut self, id: PickerId) {
         match id {
             PickerId::SpotifySearch => {
+                // Reopening must not inherit a spinner from a search that was
+                // abandoned when the picker closed.
+                self.spotify.search_loading = false;
                 // Alt+s on an unlinked account hands off to the client-id
                 // form instead of auto-starting the OAuth flow: the picker
                 // must show the client-ID input first (Enter starts the flow).
@@ -6486,7 +6501,7 @@ impl App {
             PickerId::Queue => self.queue.cache.len().saturating_sub(1),
             PickerId::YTSearch => self.yt_results_cache.len().saturating_sub(1),
             PickerId::SearchLibrary => self.search_library_picks().len().saturating_sub(1),
-            PickerId::SpotifySearch => self.spotify.search_results.len().saturating_sub(1),
+            PickerId::SpotifySearch => self.spot_picks().len().saturating_sub(1),
             PickerId::Equalizer => EQ_PRESETS.len().saturating_sub(1),
             PickerId::SleepTimer => 8,
             PickerId::Crossfade => 13,
@@ -8388,7 +8403,10 @@ impl App {
                     self.spotify.oauth_url = None;
                     self.spotify.oauth_error = None;
                 }
-                PickerId::SpotifySearch => self.spotify.search_results.clear(),
+                PickerId::SpotifySearch => {
+                    self.spotify.search_results.clear();
+                    self.spotify.search_loading = false;
+                }
                 PickerId::EditMetadata => {
                     self.metadata.cover = None;
                     self.metadata.cover_stateful = None;
@@ -8515,12 +8533,10 @@ impl App {
                 .top()
                 .is_some_and(|o| o.id == PickerId::SpotifySearch)
         {
-            if !self.spotify.search_results.is_empty() {
-                let idx = self
-                    .pickers
-                    .top()
-                    .map_or(0, |o| o.selected)
-                    .min(self.spotify.search_results.len() - 1);
+            // `selected` indexes the filtered rows, so it must be mapped back
+            // through the pick filter before touching the result list.
+            let sel = self.pickers.top().map_or(0, |o| o.selected);
+            if let Some(&idx) = self.spot_picks().get(sel) {
                 let (playlist_id, _, track) = self.spotify.search_results[idx].clone();
                 if track.kind.is_some() {
                     self.notify_typed(

@@ -1,7 +1,7 @@
 // Spotify Charts provider using rspotify. Fetches editorial "Top 50" / "Viral 50"
 // category playlists as the chart list, then playlist tracks for playback.
 
-use super::super::spotify::{SpotifyManager, track_from_playable};
+use super::super::spotify::{SpotifyManager, pick_largest_image, track_from_playable};
 use async_trait::async_trait;
 use gtm::shared::chart::{ChartError, ChartPlaylist, ChartProvider, ChartTrack};
 use rspotify::clients::BaseClient;
@@ -34,7 +34,7 @@ impl ChartProvider for SpotifyCharts {
     async fn list_charts(&self) -> Result<Vec<ChartPlaylist>, ChartError> {
         let client = {
             let s = self.spotify.lock().await;
-            s.sync_client()
+            s.client()
         };
         let Some(client) = client else {
             return Err(ChartError::Unconfigured("spotify not linked".into()));
@@ -65,7 +65,7 @@ impl ChartProvider for SpotifyCharts {
                         id: pid,
                         title: pl.name,
                         description: pl.description,
-                        cover_url: crate::spotify::pick_largest_image(&pl.images),
+                        cover_url: pick_largest_image(&pl.images),
                         owner: pl.owner.display_name,
                         track_count: Some(track_count),
                     });
@@ -87,7 +87,7 @@ impl ChartProvider for SpotifyCharts {
     async fn chart_tracks(&self, chart_id: &str) -> Result<Vec<ChartTrack>, ChartError> {
         let client = {
             let s = self.spotify.lock().await;
-            s.sync_client()
+            s.client()
         };
         let Some(client) = client else {
             return Err(ChartError::Unconfigured("spotify not linked".into()));
