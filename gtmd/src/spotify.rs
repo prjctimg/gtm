@@ -674,17 +674,15 @@ pub async fn search(
         .await
     {
         Ok(rspotify::model::SearchResult::Tracks(page)) => {
-            tracks.extend(page.items.iter().enumerate().map(|(i, t)| {
-                SpotifyTrack {
-                    index: i,
-                    name: t.name.clone(),
-                    artists: artists_of(&t.artists),
-                    album: Some(t.album.name.clone()),
-                    duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
-                    uri: t.id.as_ref().map(|id| format!("spotify:track:{id}")),
-                    image_url: pick_largest_image(&t.album.images),
-                    kind: None,
-                }
+            tracks.extend(page.items.iter().enumerate().map(|(i, t)| SpotifyTrack {
+                index: i,
+                name: t.name.clone(),
+                artists: artists_of(&t.artists),
+                album: Some(t.album.name.clone()),
+                duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
+                uri: t.id.as_ref().map(|id| format!("spotify:track:{id}")),
+                image_url: pick_largest_image(&t.album.images),
+                kind: None,
             }));
         }
         Ok(_) => {}

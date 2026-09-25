@@ -41,9 +41,9 @@ use gtm::shared::track::{StreamInfo, TrackInfo};
 use gtm::shared::url::{is_youtube, ytdlp_label};
 use gtm::shared::wire;
 use gtm::shared::{CoreError, MetadataPatch};
-use rspotify::AuthCodePkceSpotify;
 #[cfg(feature = "pulseaudio")]
 use gtm::shared::{ensure_termux_pulse, is_termux};
+use rspotify::AuthCodePkceSpotify;
 
 use crate::charts::ChartsRegistry;
 use crate::cleaner::{
@@ -2270,7 +2270,9 @@ impl Spotify {
         // Premium accounts stream natively via librespot; the queue entry
         // carries the `spotify:track:` URI and Cmd::play routes it to the
         // streaming bridge. Everyone else falls back to the YT match.
-        if can_stream(inner).await && let Some(uri) = track.uri.clone() {
+        if can_stream(inner).await
+            && let Some(uri) = track.uri.clone()
+        {
             let duration = track.duration_ms.map(|ms| ms as f64 / 1000.0);
             return Spotify::queue_stream(
                 inner,
@@ -2411,7 +2413,10 @@ impl Spotify {
         uri: &Option<String>,
         play: bool,
     ) -> Result<DaemonRes, CoreError> {
-        if uri.is_some() && can_stream(inner).await && let Some(uri) = uri.clone() {
+        if uri.is_some()
+            && can_stream(inner).await
+            && let Some(uri) = uri.clone()
+        {
             let duration = {
                 let spotify = inner.spotify.lock().await;
                 spotify.find_track_duration(&uri)
@@ -2675,11 +2680,10 @@ impl Spotify {
         };
         let cache = inner.cover_cache().await;
         let data = match cache.as_ref() {
-            Some(cc) => {
-                cc.get_url(image_url, || image_at(&client, image_url))
-                    .await
-                    .map(|cd| cd.data)
-            }
+            Some(cc) => cc
+                .get_url(image_url, || image_at(&client, image_url))
+                .await
+                .map(|cd| cd.data),
             None => image_at(&client, image_url).await,
         };
         let data = data.map(|bytes| base64::engine::general_purpose::STANDARD.encode(&bytes));
