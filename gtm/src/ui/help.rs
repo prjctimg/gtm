@@ -1,0 +1,70 @@
+// Copyright (c) 2026
+// Author: prjctimg <prjctimg@outlook.com>
+// Help screen contents
+//
+//
+// This is free software released under the GPL-3.0 license.
+
+use crate::ui::*;
+
+pub const HELP_LINES: &[(&str, &str)] = &[
+    ("topic", "── Playback ──"),
+    ("", "   Space       Play / Pause"),
+    ("", "   n           Next Track"),
+    ("", "   p           Previous Track"),
+    ("", "   s           Stop"),
+    ("", "   .           Seek Forward"),
+    ("", "   ,           Seek Backward"),
+    ("", "   + / -       Volume Up / Down"),
+    ("", "   > / <       Speed Up / Down (pitch-preserving)"),
+    ("", "   z           Zen Mode (cover / lyrics / visualizer)"),
+    ("", "   m           Mute Toggle"),
+    ("", "   Alt+1       Mono Toggle"),
+    ("", "   *           Love / Un-love on Last.fm"),
+    ("", "   &           Toggle Last.fm Scrobbling"),
+    ("", "   r           Repeat Mode"),
+    ("", "   S           Shuffle Library"),
+    ("", "   f           Toggle Favourite"),
+    ("topic", "── Navigation ──"),
+    ("", "   Tab         Switch Pane"),
+    ("", "   Shift+Tab   Switch Pane (back)"),
+    ("", "   /           Search (context-aware)"),
+    ("", "   Alt+Q       Queue"),
+    ("", "   Alt+/       Search Library"),
+    ("", "   Alt+Y       YouTube Search"),
+    ("", "   Alt+S       Spotify"),
+    ("", "   Alt+P       Podcasts"),
+    ("", "   Alt+R       Radio Browser"),
+    ("", "   Alt+O       Play Stream URL"),
+    ("topic", "── Playlists ──"),
+    ("", "   e           Rename Playlist (overview)"),
+    ("", "   d / Del     Delete Playlist (overview)"),
+    ("topic", "── View ──"),
+    ("", "   ?           Toggle Help"),
+    ("", "   Ctrl+H      Hide Help Bar"),
+    ("", "   Ctrl+V      Visualizer Toggle"),
+    ("", "   Alt+V       Visualizer Preset"),
+    ("", "   Alt+P       Progress Style"),
+    ("", "   Alt+C       Theme Picker"),
+    ("", "   Alt+A       About"),
+    ("", "   Alt+E       Equalizer"),
+    ("", "   Alt+Z       Sleep Timer"),
+    ("", "   l           Fetch Lyrics"),
+    ("topic", "── Queue ──"),
+    ("", "   a           Add to Queue"),
+    ("", "   A           Add to Playlist"),
+    ("", "   x           Delete from List"),
+    ("", "   D           Clear Queue"),
+    ("", "   v           Multiselect"),
+    ("", "   Shift+Up    Multiselect Up"),
+    ("", "   Shift+Down  Multiselect Down"),
+    ("", "   e           Edit Metadata"),
+    ("topic", "── System ──"),
+    ("", "   q           Quit"),
+    ("", "   Q / Ctrl+Q  Quit Daemon"),
+    ("", "   Alt+H       Health Check"),
+    ("", "   Alt+X       Setup Services"),
+    ("", "   Alt+,       Settings"),
+];
+
+pub const CROSSFADE_DURATIONS: [u8; 5] = [3, 5, 10, 15, 30];
