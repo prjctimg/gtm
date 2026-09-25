@@ -1,18 +1,4 @@
 #!/usr/bin/env bash
-# Generate a Markdown release-notes draft between two refs.
-#
-#   release-notes.sh <from-ref> <to-ref> <version> [<out-file>]
-#
-# Produces a draft with:
-#   * every commit listed as a GitHub link in its own <LI>,
-#   * a "New Contributors" section listing each author only if the author had
-#     NO prior commit before `<from-ref>` (i.e. contributed before only if the
-#     contribution is genuinely the author's first ever).
-#   * a short HOW-RELEASE header note.
-#
-# The draft is written to <out-file> (default ./artifacts/release-notes.md).
-# It is intended to feed the release workflow, where the maintainer reviews it
-# in a PR / draft before the GitHub Release is created.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -27,16 +13,12 @@ repo_url="$(git config --get remote.origin.url | sed -E 's#(\.git)?$##; s#^git@g
 
 commits="$(git log --format='%H|%aN|%aE|%s' "${from}..${to}" 2>/dev/null || true)"
 if [[ -z "$commits" && "$from" == "$to" ]]; then
-  # The two refs resolve to the same commit (e.g. first-ever build where there
-  # is no prior release): treat that commit itself as the change set so the
-  # draft is never empty.
   commits="$(git log -1 --format='%H|%aN|%aE|%s' "${to}" 2>/dev/null || true)"
 fi
 if [[ -z "$commits" ]]; then
   echo "warning: no commits between ${from}..${to}, writing an empty changelog" >&2
 fi
 
-# Authors who have ever committed before <from> -> NOT "new".
 prior_authors="$(git log --format='%aE' "${from}" 2>/dev/null | sort -u || true)"
 
 mkdir -p "$(dirname "$out")"
@@ -54,12 +36,10 @@ mkdir -p "$(dirname "$out")"
   done <<<"$commits"
   echo
 
-  # New contributors: author emails in this range that never appeared before.
   this_emails="$(printf '%s\n' "$commits" | cut -d'|' -f3 | sort -u || true)"
   new_names=()
   while IFS='|' read -r sha name email subject; do
     if ! grep -qF -- "$email" <<<"$prior_authors"; then
-      # Dedup by email, keep first name encountered.
       if ! printf '%s\n' "${new_names[@]:-}" | grep -qF -- "$name" 2>/dev/null; then
         new_names+=("$name")
       fi

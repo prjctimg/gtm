@@ -23,13 +23,10 @@ jobs:
             git config user.name "prjctimg"
             git config user.email "prjctimg@outlook.com"
             git add README.md
-            # Remove deprecated file if it was auto-generated before
             if [ -f CONTRIBUTORS.md ]; then
               git rm -f CONTRIBUTORS.md || rm -f CONTRIBUTORS.md
               git add -A || true
             fi
             git commit -m "docs: update contributors"
-            # Push with a human PAT so the commit does not trigger
-            # approval-gated workflow runs.
             git push "https://x-access-token:${GH_BOT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD
           fi

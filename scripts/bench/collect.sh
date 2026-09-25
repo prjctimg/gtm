@@ -1,20 +1,4 @@
 #!/usr/bin/env bash
-# Collect benchmark results for one release tag into .bench/<tag>.json
-# (a gitignored, ephemeral store) and then render them into BENCHMARK.md.
-# Previous releases are reconstructed from machine-readable comments embedded
-# in BENCHMARK.md by render.sh, so the committed doc plus stats.json are the
-# permanent store — stats.json is the only tracked JSON (the .bench/ directory
-# stays ephemeral).
-#
-#   scripts/bench/collect.sh <tag> [seconds]
-#
-# Runs the harness for every player x fixture combination, aggregates the
-# per-run JSON lines into the release file, and validates the fixture hashes
-# against the pinned commits in gen-fixtures.sh.
-#
-# Requires: jq, and release gtm/gtmd binaries (gtm, gtmd on PATH or the
-# workspace target/release), plus cliamp for the reference player (optional;
-# its runs are skipped if cliamp is not installed, with a warning).
 
 set -euo pipefail
 
@@ -48,10 +32,6 @@ for player in "${PLAYERS[@]}"; do
     name="$(basename "${file}")"
     key="${player}/${name}"
     line="$("${RUN_BENCH}" "${player}" "${file}" "${SECONDS}" || true)"
-    # Validate once: anything that is not a JSON object (empty output from a
-    # crashed harness, shell errors on stderr aside) is unparseable. Reusing
-    # the validated value below keeps `--argjson` from ever seeing garbage,
-    # which under `set -e` would otherwise abort the whole collection.
     if ! parsed="$(printf '%s' "${line}" | jq -c 'select(type == "object")' 2>/dev/null)" \
       || [ -z "${parsed}" ]; then
       echo "  ${key}: SKIPPED (no parseable result)" >&2

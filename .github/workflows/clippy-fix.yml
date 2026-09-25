@@ -1,10 +1,5 @@
 name: Clippy Auto-Fix
 
-# Keep the tree clippy-clean without failing CI. Applies `cargo clippy --fix`,
-# then verifies with `cargo check`. If verification passes the fixes are
-# committed straight to the pushed branch (auto-merged). If verification fails
-# a PR is opened for review (Code Rabbit reviews it automatically when the app
-# is installed).
 
 on:
   push:
@@ -34,9 +29,6 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
       - name: Apply clippy auto-fixes
         run: cargo clippy --fix --workspace --allow-dirty --all-targets
-      # clippy --fix writes its rewrites without rustfmt layout (e.g. match
-      # guards on their own line, leftover blank lines), so normalize before
-      # the fmt gate or `cargo fmt --check` fails on every auto-fix run.
       - name: Normalize formatting of auto-fixes
         run: cargo fmt
       - name: Format
@@ -58,8 +50,6 @@ jobs:
             exit 0
           fi
           git commit -m "style: auto-fix clippy lints"
-          # Push with a human PAT so the commit does not trigger approval-gated
-          # pull_request workflow runs while this branch is a PR head.
           git push "https://x-access-token:${GH_BOT_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD
       - name: Open PR if verification failed
         if: failure()

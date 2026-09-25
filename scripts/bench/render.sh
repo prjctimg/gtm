@@ -1,30 +1,7 @@
 #!/usr/bin/env bash
-# Render BENCHMARK.md from benchmark results.
-#
-#   scripts/bench/render.sh [--tag <tag>] [-o BENCHMARK.md]
-#
-# Data flows:
-#   - `scripts/bench/collect.sh` writes one ephemeral JSON per release under
-#     the gitignored `.bench/` directory.
-#   - render.sh merges those with history reconstructed from the
-#     machine-readable `<!--bench:{json}-->` markers embedded at the bottom of
-#     the committed BENCHMARK.md, producing:
-#       - a per-metric delta table (vs the previous release)
-#       - mermaid xychart: peak-RSS bars per release
-#       - mermaid xychart: mean-RSS trend per release
-#       - mermaid xychart: t_ready (ms) start-latency trend per release
-#       - a results index table
-#       - `stats.json`: machine-readable series/deltas (differences vs the
-#         previous release) mappable to a visualization
-#     and then writes the equivalent markers back into the doc, so the
-#     committed BENCHMARK.md plus stats.json are the permanent store (the only
-#     JSON tracked in git is `stats.json`; the `.bench/` files stay ephemeral).
-#
-# Requires: jq
 
 set -euo pipefail
 
-# Temp files from the doc render below are always removed, even on failure.
 trap 'rm -f "${PYF:-}" "${DOC_TMP:-}"' EXIT
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -45,9 +22,6 @@ HIST_DIR="${BENCH_DIR}/history"
 rm -rf "${HIST_DIR}"
 mkdir -p "${HIST_DIR}"
 
-# ── 1. Reconstruct history ────────────────────────────────────────────────────
-# Markers in the committed BENCHMARK.md are the persistent store; any fresh
-# `.bench/*.json` written by collect.sh overrides its own tag.
 if [ -f "${OUT}" ]; then
   while IFS= read -r m; do
     [ -n "${m}" ] || continue
@@ -59,7 +33,6 @@ if [ -f "${OUT}" ]; then
   done < <(grep -ho '<!--bench:{.*}-->' "${OUT}" 2>/dev/null || true)
 fi
 
-# Fresh .bench/*.json results override marker copies of the same tag.
 for f in "${BENCH_DIR}"/*.json; do
   [ -f "${f}" ] || continue
   tag="$(jq -r '.tag // empty' "${f}" 2>/dev/null || true)"
@@ -75,12 +48,10 @@ shopt -u nullglob
   exit 1
 }
 
-# Sort history by date (ISO 8601 strings compare lexically).
 TAG_ORDER="$(jq -sr 'sort_by(.date) | .[].tag' "${HIST_FILES[@]}")"
 
 file_for() { printf '%s/%s.json' "${HIST_DIR}" "$1"; }
 
-# "this" = --tag if given, else the newest dated release.
 THIS=""
 if [ -n "${THIS_TAG}" ]; then
   for t in ${TAG_ORDER}; do
@@ -96,7 +67,6 @@ if [ -z "${THIS}" ]; then
 fi
 [ -f "${THIS}" ] || THIS="$(file_for "$(printf '%s' "${TAG_ORDER}" | tail -n1)")"
 
-# "prev" = the release immediately before "this" in date order.
 PREV=""
 for t in ${TAG_ORDER}; do
   [ "${t}" = "$(basename "${THIS%%.json}")" ] && break
@@ -131,7 +101,6 @@ nice_max() { # <values...> -> round y-axis ceiling
   echo $(( (m + mag - 1) / mag * mag ))
 }
 
-# ── 2. delta table ────────────────────────────────────────────────────────────
 TABLE=""
 for m in peak_rss_kb mean_rss_kb cpu_ms rss_5s_kb; do
   this_v="$(metric "${THIS}" "${FLAC}" "${m}")"
@@ -152,7 +121,6 @@ for m in peak_rss_kb mean_rss_kb cpu_ms rss_5s_kb; do
   TABLE+=$'\n'"| bench.flac (gtm) | ${label} | $(num "${prev_v}") | $(num "${this_v}") | ${delta} |"
 done
 
-# ── 3. mermaid chart series (all releases, gtm/bench.flac) ────────────────────
 PEAK_LABELS=""; PEAK_PTS=""
 MEAN_LABELS=""; MEAN_PTS=""
 LAT_LABELS="";  LAT_PTS=""
@@ -180,7 +148,6 @@ PEAK_Y="$(nice_max "${PEAK_VALUES[@]}")"
 MEAN_Y="$(nice_max "${MEAN_VALUES[@]}")"
 LAT_Y="$(nice_max "${LAT_VALUES[@]}")"
 
-# ── 4. history index table ────────────────────────────────────────────────────
 IDX=""
 for t in ${TAG_ORDER}; do
   f="$(file_for "${t}")"
@@ -192,7 +159,6 @@ for t in ${TAG_ORDER}; do
   IDX+=$'\n'"| ${t} | ${d} | $(num "${gpeak}") | $(num "${gmean}") | $(num "${glat}") |"
 done
 
-# ── 5. machine-readable markers (regenerated store) ───────────────────────────
 MARKERS=""
 for t in ${TAG_ORDER}; do
   f="$(file_for "${t}")"
@@ -201,12 +167,6 @@ for t in ${TAG_ORDER}; do
 done
 MARKERS="${MARKERS:1}"
 
-# ── 6. machine-readable stats.json (series + deltas, viz-ready) ───────────────
-# `series` mirrors the mermaid inputs above (one entry per release, keyed by
-# tag/date) plus t_ready; `deltas` are the headline this-vs-previous diff rows
-# with percentages and a regression flag; `runs` carries every metric of the
-# current release. Together they let any charting tool redraw the tables and
-# charts above without parsing Markdown.
 STATS_FILE="${REPO_DIR}/stats.json"
 
 SERIES_JSON="$(

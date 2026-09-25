@@ -14,7 +14,6 @@ declare -A user_map
 
 usernames=()
 while IFS='|' read -r name email; do
-  # skip bots
   if [[ "$name" == "github-actions[bot]" ]] || [[ "$email" == *"github-actions"* ]] || [[ "$email" == *"noreply.github.com"* ]]; then
     continue
   fi
@@ -44,10 +43,8 @@ fi
 
 avatars=""
 for user in "${usernames[@]}"; do
-  # Use GitHub avatar URL with size param, circle via border-radius
   avatars+="<a href=\"https://github.com/${user}\"><img src=\"https://github.com/${user}.png?size=80\" width=\"50\" height=\"50\" style=\"border-radius:50%;margin:4px;\" alt=\"${user}\"/></a> "
 done
-# Trim trailing space
 avatars=$(echo "$avatars" | sed 's/ $//')
 
 python3 - "$readme" "$avatars" <<'PY'

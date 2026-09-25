@@ -1,22 +1,4 @@
 #!/usr/bin/env bash
-# gtm benchmark harness — measures gtm/gtmd and cliamp resource usage during
-# playback and emits a JSON result line. See BENCHMARK.md for methodology.
-#
-#   scripts/bench/run.sh <player> <file> <seconds>
-#
-#   player   gtm | cliamp
-#   file     path to an audio file (fixture under assets/fixtures)
-#   seconds  sampling window length
-#
-# Emits to stdout:
-#   {"player":..,"file":..,"file_sha256":..,"peak_rss_kb":..,"mean_rss_kb":..,
-#    "rss_5s_kb":..,"rss_p50_kb":..,"rss_p95_kb":..,"cpu_ms":..,"t_ready_ms":..,
-#    "error":..}
-#
-# gtm is measured through its headless daemon (gtmd --test-mode => NullMixer,
-# no real audio device, so the harness records CPU/RSS without an audio sink
-# under CI). cliamp runs its own --daemon mode. Both are serialized because
-# cliamp allows only a single instance per user.
 
 set -euo pipefail
 
@@ -42,7 +24,6 @@ SOCK="${SOCK_DIR}/gtmd.sock"
 PID=""
 t_ready_ms=0
 RESULT_JSON=""
-# Linux clock ticks per second: /proc/<pid>/stat utime/stime are in these units.
 CLK_TCK="$(getconf CLK_TCK 2>/dev/null || echo 100)"
 
 cleanup() {
@@ -53,8 +34,6 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# Sample RSS (kB) and CPU (ms) for a process every ~100ms for `ms` ms,
-# printing one "ms rss cpu" line per tick to the given file.
 sample_proc() {
   local pid="$1" ms="$2" out="$3"
   local end=$(($(date +%s%N) + ms * 1000000))
@@ -68,8 +47,6 @@ sample_proc() {
     if [ -r "/proc/${pid}/stat" ]; then
       read -r utime stime < <(awk '
         { s=index($0, ") ")+2; rest=substr($0, s); n=split(rest, a, " ");
-          # after comm field: state, ppid, pgrp, session, tty_nr, tpgid, flags,
-          # minflt, cminflt, majflt, cmajflt, utime, stime  => a[12], a[13]
           print a[12], a[13] }' "/proc/${pid}/stat")
     else
       utime=0; stime=0
@@ -77,7 +54,6 @@ sample_proc() {
     local cpu_ms=$(( (${utime:-0} + ${stime:-0}) * (1000 / CLK_TCK) ))
     printf '%s %s %s\n' "${t}" "${rss:-0}" "${cpu_ms}" >> "${out}"
     t=$((t + 100))
-    # slice the sleep so a short window still gets ~10 ticks/sec
     local left=100
     while [ "${left}" -gt 0 ]; do
       /bin/sleep 0.02
@@ -86,8 +62,6 @@ sample_proc() {
   done
 }
 
-# Aggregate the sampled lines into computed fields, writing the four vars
-# (peak_rss, mean_rss, rss_5s, peak_cpu) back into the caller's scope via eval.
 aggregate() {
   local file="$1"
   local peak=0 mean=0 rss5=0 cpu=0 n=0 sum=0 best_rss=0 best_dist=999999
@@ -98,7 +72,6 @@ aggregate() {
     [ "${rss}" -gt "${peak}" ] && peak="${rss}"
     [ "${c}" -gt "${cpu}" ] && cpu="${c}"
     sorted_values+=("${rss}")
-    # rss at ~5s: track the sample closest to t=5000ms
     local d=$(( (t>5000?t-5000:5000-t) ))
     if [ "${d}" -lt "${best_dist}" ]; then best_dist="${d}"; best_rss="${rss}"; fi
   done < "${file}"
@@ -151,13 +124,8 @@ run_gtm() {
 run_cliamp() {
   [ -n "${CLIAMP}" ] || {
     RESULT_JSON="$(emit_error "cliamp not found; install it or set CLIAMP_BIN")"; return 1; }
-  # cliamp's socket is '$HOME/.config/cliamp/cliamp.sock'; isolate HOME so a
-  # user's running instance (and its config) is never touched.
   export HOME="${SOCK_DIR}/home"
   mkdir -p "${HOME}"
-  # --low-power reduces CPU (lower UI cadence / no visualizer) in the daemon;
-  # the explicit sample-rate/buffer keep PCM as close to the gtm measurement
-  # as possible.
   "${CLIAMP}" --daemon --low-power --sample-rate 44100 --buffer-ms 500 \
     >"${SOCK_DIR}/cliamp.log" 2>&1 &
   PID=$!

@@ -1,15 +1,4 @@
 #!/usr/bin/env bash
-# Publish the gtm crate to crates.io.
-#
-# gtm is the only crate (and only workspace member); core, audio, MPRIS, and
-# daemon subsystems ship as modules inside it, so nothing else is published.
-# Already-published versions are skipped so a partial publish can be resumed.
-#
-# Usage:
-#   scripts/build/publish.sh            # publish gtm
-#   scripts/build/publish.sh --dry-run  # package + verify without uploading
-#
-# Requires CARGO_REGISTRY_TOKEN (or a logged-in ~/.cargo/credentials).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
