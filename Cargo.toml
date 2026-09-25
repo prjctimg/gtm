@@ -20,3 +20,15 @@ lto = "fat"
 strip = "symbols"
 codegen-units = 1
 panic = "abort"
+
+# Test binaries link the full dependency graph, and full debuginfo for
+# ~950 crates makes GNU ld peak past 6 GiB and get OOM-killed. Debug info is
+# worthless in a test anyway (panics carry the message, not a backtrace), so
+# drop it and keep the link inside a normal memory budget.
+[profile.test]
+debug = 0
+strip = "debuginfo"
+
+[profile.dev]
+debug = 1
+split-debuginfo = "unpacked"
