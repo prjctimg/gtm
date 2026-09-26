@@ -11,8 +11,10 @@
 # When run from inside a gtm release archive (bin/gtm + bin/gtmd sit next to
 # this script) the same file installs the bundled assets directly. The
 # standalone form is a thin bootstrap: it downloads the per-platform archive,
-# extracts it, and runs ./install.sh from inside the archive — so the installer
-# logic lives in a single file that is shipped in every archive.
+# extracts it, and installs from it — using itself, not the copy inside the
+# archive, so that installer changes do not wait for a release. The installer
+# logic still lives in a single file that is shipped in every archive, for the
+# case where someone downloads an archive and runs ./install.sh directly.
 #
 # Recognised standard environment variables (all overridable):
 #   PREFIX DATAROOTDIR DATADIR BINDIR MANDIR SYSTEMD_DIR APPLICATIONS_DIR
@@ -261,9 +263,17 @@ bootstrap_install() {
   local extracted_dir="${BOOTSTRAP_TMPDIR}/${archive_name%.tar.gz}"
   [ -d "${extracted_dir}" ] || die "archive did not extract correctly"
 
+  # Install from the extracted archive using *this* script rather than the
+  # copy bundled in the archive. The two diverge: each release freezes
+  # install.sh at its own commit, so re-exec'ing the archived copy pins a
+  # stable install to the output format and behaviour of whatever release it
+  # came from, and no installer change reaches stable users until the next
+  # release. The archive is only a source of assets here (`install_from_archive`
+  # reads bin/, man/ and the rest relative to the current directory), and the
+  # options were already parsed above, so nothing is lost by not re-exec'ing.
   (
     cd "${extracted_dir}"
-    ./install.sh "$@"
+    install_from_archive
   )
 }
 
