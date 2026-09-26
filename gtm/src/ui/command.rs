@@ -15,7 +15,6 @@ pub struct Command {
 
 pub struct CommandPalette;
 
-
 impl CommandPalette {
     pub fn commands(icon_style: &str) -> &'static [Command] {
         if icon_style == "mdi" {

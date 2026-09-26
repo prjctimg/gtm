@@ -41,9 +41,11 @@ pub(crate) fn dim_background(f: &mut ratatui::Frame, area: Rect) {
     }
 }
 
-pub(crate) const NOTIFICATION_LIFETIME: std::time::Duration = std::time::Duration::from_millis(1500);
+pub(crate) const NOTIFICATION_LIFETIME: std::time::Duration =
+    std::time::Duration::from_millis(1500);
 
-pub(crate) const NOTIFICATION_EXIT_DURATION: std::time::Duration = std::time::Duration::from_millis(300);
+pub(crate) const NOTIFICATION_EXIT_DURATION: std::time::Duration =
+    std::time::Duration::from_millis(300);
 
 pub(crate) fn wrap_text(text: &str, max_chars: usize) -> Vec<String> {
     if max_chars == 0 {
@@ -96,7 +98,12 @@ pub(crate) fn cursor_span_style(app: &App) -> Option<Style> {
     )
 }
 
-pub(crate) fn step_viewport(offset: usize, sel: usize, visible: usize, total: usize) -> (usize, usize) {
+pub(crate) fn step_viewport(
+    offset: usize,
+    sel: usize,
+    visible: usize,
+    total: usize,
+) -> (usize, usize) {
     if total <= visible || visible == 0 {
         return (0, total);
     }
@@ -130,7 +137,6 @@ pub(crate) fn opencode_spinner(frame: usize) -> &'static str {
 pub(crate) const SCROLL_HOLD_FRAMES: usize = 300;
 /// Frames per scroll step; larger = slower animation.
 pub(crate) const SCROLL_SPEED: usize = 6;
-
 
 pub(crate) fn scroll_text(text: &str, max_width: usize, frame: usize, is_selected: bool) -> String {
     if text.chars().count() <= max_width {

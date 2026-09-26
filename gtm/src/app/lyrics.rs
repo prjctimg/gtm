@@ -31,7 +31,11 @@ pub fn lyrics_are_synced(lines: &[LrcLine]) -> bool {
 /// left `(true, false)`, right `(false, false)`, lyrics `(false, true)`.
 /// Returns the next `(library_focus, lyrics_focus)` moving forward (Tab) or
 /// backward (Shift-Tab) around the three-pane cycle.
-pub(crate) fn cycle_library_focus(library_focus: bool, lyrics_focus: bool, forward: bool) -> (bool, bool) {
+pub(crate) fn cycle_library_focus(
+    library_focus: bool,
+    lyrics_focus: bool,
+    forward: bool,
+) -> (bool, bool) {
     if lyrics_focus {
         // lyrics → left (Tab) or right (Shift-Tab)
         (forward, false)

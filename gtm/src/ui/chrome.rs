@@ -366,7 +366,12 @@ impl Render {
 
     /// Centered "title — artist" header used by the Zen cover and lyrics
     /// surfaces.
-    pub(crate) fn zen_track_header(f: &mut ratatui::Frame, app: &App, track: &TrackInfo, area: Rect) {
+    pub(crate) fn zen_track_header(
+        f: &mut ratatui::Frame,
+        app: &App,
+        track: &TrackInfo,
+        area: Rect,
+    ) {
         let title = if track.title.is_empty() {
             std::path::Path::new(&track.path)
                 .file_stem()
@@ -2222,7 +2227,12 @@ impl Render {
     /// line (with karaoke word timing when available) and scroll to the
     /// anchor. Shared by the normal lyrics pane and the Zen-mode fullscreen
     /// lyrics surface so both render identically.
-    pub(crate) fn lyrics_body(f: &mut ratatui::Frame, lyrics_inner: Rect, app: &App, lyrics: &LrcData) {
+    pub(crate) fn lyrics_body(
+        f: &mut ratatui::Frame,
+        lyrics_inner: Rect,
+        app: &App,
+        lyrics: &LrcData,
+    ) {
         let total = lyrics.lines.len();
         let width = lyrics_inner.width.max(1) as usize;
         let synced = lyrics_are_synced(&lyrics.lines);

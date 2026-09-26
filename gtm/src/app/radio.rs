@@ -22,7 +22,11 @@ impl App {
     /// Match a directory station against the picker query on the active
     /// filter field. Rating is a numeric votes threshold; the other fields are
     /// case-insensitive substring matches.
-    pub(crate) fn station_matches_filter(station: &RadioStation, q: &str, filter: RadioFilter) -> bool {
+    pub(crate) fn station_matches_filter(
+        station: &RadioStation,
+        q: &str,
+        filter: RadioFilter,
+    ) -> bool {
         match filter {
             RadioFilter::Name => station.name.to_lowercase().contains(q),
             RadioFilter::Tags => station.tags.to_lowercase().contains(q),

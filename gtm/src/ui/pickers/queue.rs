@@ -118,7 +118,12 @@ impl Pickers {
         }
     }
 
-    pub(crate) fn render_upnext_preview(f: &mut ratatui::Frame, area: Rect, app: &mut App, next_idx: usize) {
+    pub(crate) fn render_upnext_preview(
+        f: &mut ratatui::Frame,
+        area: Rect,
+        app: &mut App,
+        next_idx: usize,
+    ) {
         app.update_upnext_cover();
         // Use the same transparent/filled background as the picker panel so the
         // "Up Next" strip never shows a mismatched solid background over the

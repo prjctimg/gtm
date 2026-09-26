@@ -13,7 +13,6 @@ impl App {
         "Remove from list only available in playlist view";
 }
 
-
 impl App {
     /// Fuzzy-finder rows for the SearchLibrary picker, filtered by the
     /// picker's active `PickerSource` and query.

@@ -20,7 +20,6 @@ pub enum InputMode {
     Searching,
 }
 
-
 /// Live state of one daemon-side yt-dlp download, for the footer Download
 /// module. Percent is an EMA of the yt-dlp values so the bar glides instead of
 /// jittering between updates.

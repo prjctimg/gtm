@@ -11,7 +11,9 @@ pub(crate) fn overlay_extension(id: PickerId) -> Option<ExtensionId> {
     })
 }
 
-pub(crate) fn build_keybindings(overrides: &std::collections::HashMap<String, String>) -> Keybindings {
+pub(crate) fn build_keybindings(
+    overrides: &std::collections::HashMap<String, String>,
+) -> Keybindings {
     let mut defaults = default_keybindings();
 
     if overrides.is_empty() {
