@@ -87,7 +87,7 @@ impl App {
                         self.spotify.oauth_url = None;
                         self.spotify.oauth_error = None;
                         let c = self.client.clone();
-                        let _ = tx.send(TuiCommand::fire(move || async move {
+                        let _ = tx.try_send(TuiCommand::fire(move || async move {
                             let _ = c.spotify().oauth_cancel().await;
                         }));
                         self.close_picker();
@@ -104,7 +104,7 @@ impl App {
                         self.spotify.oauth_url = None;
                         self.spotify.oauth_error = None;
                         let c = self.client.clone();
-                        let _ = tx.send(TuiCommand::fire(move || async move {
+                        let _ = tx.try_send(TuiCommand::fire(move || async move {
                             let _ = c.spotify().oauth_cancel().await;
                         }));
                         self.close_picker();
@@ -177,7 +177,7 @@ impl App {
                             PromptType::DeletePlaylist(playlist_id) => {
                                 let client = self.client.clone();
                                 let ipc_tx = self.ipc_tx.clone();
-                                let _ = tx.send(TuiCommand::fire(move || async move {
+                                let _ = tx.try_send(TuiCommand::fire(move || async move {
                                     match client.library().delete_playlist(playlist_id).await {
                                         Ok(()) => {
                                             if let Ok(DaemonRes::Playlists { playlists, .. }) =
@@ -209,7 +209,7 @@ impl App {
                                 let mut added = 0;
                                 for target in targets {
                                     let c = self.client.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         let _ = c.queue().add(&target, None).await;
                                     }));
                                     added += 1;
@@ -588,7 +588,7 @@ impl App {
                                 "Shuffling playlist…".to_string(),
                                 std::time::Instant::now() + std::time::Duration::from_secs(2),
                             ));
-                            let _ = tx.send(TuiCommand::fire(move || async move {
+                            let _ = tx.try_send(TuiCommand::fire(move || async move {
                                 match c.spotify().play_all(&playlist_id, true).await {
                                     Ok(()) => {}
                                     Err(e) => {
@@ -988,7 +988,7 @@ impl App {
                                             self.browse_detail.clone().unwrap_or_default();
                                         let c = self.client.clone();
                                         let ipc_tx2 = self.ipc_tx.clone();
-                                        let _ = tx.send(TuiCommand::fire(move || async move {
+                                        let _ = tx.try_send(TuiCommand::fire(move || async move {
                                             match c.spotify().play_all(&playlist_id, shuffle).await
                                             {
                                                 Ok(()) => {}
@@ -1011,7 +1011,7 @@ impl App {
                                         let track_index = track.index;
                                         let c = self.client.clone();
                                         let ipc_tx2 = self.ipc_tx.clone();
-                                        let _ = tx.send(TuiCommand::fire(move || async move {
+                                        let _ = tx.try_send(TuiCommand::fire(move || async move {
                                             match c
                                                 .spotify()
                                                 .resolve(&playlist_id, track_index, true)
@@ -1058,7 +1058,7 @@ impl App {
                                     let c = self.client.clone();
                                     let ipc_tx2 = self.ipc_tx.clone();
                                     let pid = playlist.id;
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         if let Ok(DaemonRes::Tracks { tracks }) =
                                             c.library().get_playlist_tracks(pid).await
                                         {
@@ -1077,7 +1077,7 @@ impl App {
                                     let c = self.client.clone();
                                     let ipc_tx2 = self.ipc_tx.clone();
                                     let pid = playlist.id;
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         match c.spotify().playlist_tracks(&pid).await {
                                             Ok(tracks) => {
                                                 let _ =
@@ -1100,7 +1100,7 @@ impl App {
                                         None => format!("custom:{}", pos + 1),
                                     };
                                     let c = self.client.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         let _ = c.radio().play(&id, &station.name).await;
                                     }));
                                 }
@@ -1134,7 +1134,7 @@ impl App {
                                         let source_id = self.charts.sources[pos].id.clone();
                                         let c = self.client.clone();
                                         let ipc_tx2 = self.ipc_tx.clone();
-                                        let _ = tx.send(TuiCommand::fire(move || async move {
+                                        let _ = tx.try_send(TuiCommand::fire(move || async move {
                                             if let Ok(charts) =
                                                 c.charts().list(Some(source_id)).await
                                             {
@@ -1159,7 +1159,7 @@ impl App {
                                         let chart_id = self.charts.charts[pos].id.clone();
                                         let c = self.client.clone();
                                         let ipc_tx2 = self.ipc_tx.clone();
-                                        let _ = tx.send(TuiCommand::fire(move || async move {
+                                        let _ = tx.try_send(TuiCommand::fire(move || async move {
                                             if let Ok(tracks) =
                                                 c.charts().tracks(source_id, chart_id).await
                                             {
@@ -1175,7 +1175,7 @@ impl App {
                                     {
                                         let c = self.client.clone();
                                         let uri = track.uri.clone();
-                                        let _ = tx.send(TuiCommand::fire(move || async move {
+                                        let _ = tx.try_send(TuiCommand::fire(move || async move {
                                             let _ = c.queue().add(&uri, None).await;
                                         }));
                                     }
@@ -1368,7 +1368,7 @@ impl App {
                                     if ids.contains(&t.id) {
                                         let c = self.client.clone();
                                         let path = t.path.clone();
-                                        let _ = tx.send(TuiCommand::fire(move || async move {
+                                        let _ = tx.try_send(TuiCommand::fire(move || async move {
                                             let _ = c.queue().add(&path, None).await;
                                         }));
                                         added += 1;
@@ -1403,7 +1403,7 @@ impl App {
                                     let mut added = 0;
                                     if let Some(target) = self.play_target_at(self.list_pos()) {
                                         let c = self.client.clone();
-                                        let _ = tx.send(TuiCommand::fire(move || async move {
+                                        let _ = tx.try_send(TuiCommand::fire(move || async move {
                                             let _ = c.queue().add(&target, None).await;
                                         }));
                                         added += 1;
@@ -1861,7 +1861,7 @@ impl App {
                 let c = self.client.clone();
                 let ipc_tx = self.ipc_tx.clone();
                 self.pickers.close_top();
-                let _ = tx.send(TuiCommand::fire(move || async move {
+                let _ = tx.try_send(TuiCommand::fire(move || async move {
                     // Web hits are not in any synced playlist: resolve by
                     // metadata + known URI (streams natively on Premium), not
                     // by playlist index.
@@ -2174,14 +2174,14 @@ impl App {
                                         RepeatMode::All => RepeatMode::Off,
                                     };
                                     let c = self.client.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         let _ = c.cycle_repeat(next).await;
                                     }));
                                     self.state.repeat = next;
                                 }
                                 1 => {
                                     let c = self.client.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         let _ = c.toggle_shuffle().await;
                                     }));
                                     self.state.shuffle = !self.state.shuffle;
@@ -2190,7 +2190,7 @@ impl App {
                                     let new_enabled = !self.state.audio.eq_enabled;
                                     self.state.audio.eq_enabled = new_enabled;
                                     let c = self.client.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         let _ = c.set_eq_enabled(new_enabled).await;
                                     }));
                                 }
@@ -2199,7 +2199,7 @@ impl App {
                                     let room_size = self.state.audio.reverb.room_size;
                                     self.state.audio.reverb.enabled = new_enabled;
                                     let c = self.client.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         let _ = c.set_reverb(new_enabled, room_size).await;
                                     }));
                                 }
@@ -2230,7 +2230,7 @@ impl App {
                                             self.np_cover.pending_gen = Some(fetch_gen);
                                             let client = self.client.clone();
                                             let ipc_tx = self.ipc_tx.clone();
-                                            let _ = tx.send(TuiCommand::fire(move || async move {
+                                            let _ = tx.try_send(TuiCommand::fire(move || async move {
                                                 if let Ok(Some(b64)) = client.art().cover(tid).await
                                                     && let Ok(bytes) =
                                                         base64::engine::general_purpose::STANDARD
@@ -2270,14 +2270,14 @@ impl App {
                                         RepeatMode::All => RepeatMode::Off,
                                     };
                                     let c = self.client.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         let _ = c.cycle_repeat(next).await;
                                     }));
                                     self.state.repeat = next;
                                 }
                                 1 => {
                                     let c = self.client.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         let _ = c.toggle_shuffle().await;
                                     }));
                                     self.state.shuffle = !self.state.shuffle;
@@ -2286,7 +2286,7 @@ impl App {
                                     let new_enabled = !self.state.audio.eq_enabled;
                                     self.state.audio.eq_enabled = new_enabled;
                                     let c = self.client.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         let _ = c.set_eq_enabled(new_enabled).await;
                                     }));
                                 }
@@ -2295,7 +2295,7 @@ impl App {
                                     let room_size = self.state.audio.reverb.room_size;
                                     self.state.audio.reverb.enabled = new_enabled;
                                     let c = self.client.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         let _ = c.set_reverb(new_enabled, room_size).await;
                                     }));
                                 }
@@ -2326,7 +2326,7 @@ impl App {
                                             self.np_cover.pending_gen = Some(fetch_gen);
                                             let client = self.client.clone();
                                             let ipc_tx = self.ipc_tx.clone();
-                                            let _ = tx.send(TuiCommand::fire(move || async move {
+                                            let _ = tx.try_send(TuiCommand::fire(move || async move {
                                                 if let Ok(Some(b64)) = client.art().cover(tid).await
                                                     && let Ok(bytes) =
                                                         base64::engine::general_purpose::STANDARD
@@ -2393,7 +2393,7 @@ impl App {
                                     self.cookie_file = new_path.clone();
                                     let c = self.client.clone();
                                     let cf = new_path;
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         let _ = c.yt().set_config(None, cf, None, None, None).await;
                                     }));
                                     self.notify_typed(
@@ -2413,14 +2413,14 @@ impl App {
                                         RepeatMode::All => RepeatMode::Off,
                                     };
                                     let c = self.client.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         let _ = c.cycle_repeat(next).await;
                                     }));
                                     self.state.repeat = next;
                                 }
                                 1 => {
                                     let c = self.client.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         let _ = c.toggle_shuffle().await;
                                     }));
                                     self.state.shuffle = !self.state.shuffle;
@@ -2432,7 +2432,7 @@ impl App {
                                     let new_enabled = !self.state.audio.eq_enabled;
                                     self.state.audio.eq_enabled = new_enabled;
                                     let c = self.client.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         let _ = c.set_eq_enabled(new_enabled).await;
                                     }));
                                 }
@@ -2441,7 +2441,7 @@ impl App {
                                     let room_size = self.state.audio.reverb.room_size;
                                     self.state.audio.reverb.enabled = new_enabled;
                                     let c = self.client.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         let _ = c.set_reverb(new_enabled, room_size).await;
                                     }));
                                 }
@@ -2505,7 +2505,7 @@ impl App {
                                             self.np_cover.pending_gen = Some(fetch_gen);
                                             let client = self.client.clone();
                                             let ipc_tx = self.ipc_tx.clone();
-                                            let _ = tx.send(TuiCommand::fire(move || async move {
+                                            let _ = tx.try_send(TuiCommand::fire(move || async move {
                                                 if let Ok(Some(b64)) = client.art().cover(tid).await
                                                     && let Ok(bytes) =
                                                         base64::engine::general_purpose::STANDARD
@@ -2535,7 +2535,7 @@ impl App {
                                     let label = if opt == 10 { "lyrics" } else { "cover art" };
                                     let c = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         match c.clear_cache(what).await {
                                             Ok(()) => {
                                                 let _ = ipc_tx.send(IpcResult::Notification(
@@ -2568,7 +2568,7 @@ impl App {
                                 0 => {
                                     let c = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         match c.spotify().play_pause().await {
                                             Ok(status) => {
                                                 let _ =
@@ -2597,7 +2597,7 @@ impl App {
                                 5 => {
                                     let c = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         match c.spotify().clear().await {
                                             Ok(status) => {
                                                 let _ =
@@ -2697,7 +2697,7 @@ impl App {
                     let ipc_tx = self.ipc_tx.clone();
                     self.setup.lastfm_pending = true;
                     self.setup.lastfm_error = None;
-                    let _ = tx.send(TuiCommand::fire(move || async move {
+                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                         match c
                             .lastfm()
                             .set_config(true, Some(api_key), Some(api_secret), None, None, None)
@@ -2775,7 +2775,7 @@ impl App {
                     let cf = new_path.clone();
                     let display = new_path.clone().unwrap_or_else(|| "(none)".to_string());
                     self.pickers.close_top();
-                    let _ = tx.send(TuiCommand::fire(move || async move {
+                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                         let _ = c.yt().set_config(None, cf, None, None, None).await;
                     }));
                     let (msg, kind) = if trimmed.is_empty() {
@@ -2811,14 +2811,14 @@ impl App {
                 }
                 KeyCode::Char('r') => {
                     let c = self.client.clone();
-                    let _ = tx.send(TuiCommand::fire(move || async move {
+                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                         let _ = c.podcast().refresh(None).await;
                     }));
                     self.podcast.feeds.clear();
                     self.podcast.feeds_pending = true;
                     let c = self.client.clone();
                     let ipc_tx = self.ipc_tx.clone();
-                    let _ = tx.send(TuiCommand::fire(move || async move {
+                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                         match c.podcast().feeds().await {
                             Ok(f) => {
                                 let _ = ipc_tx.send(IpcResult::PodcastFeeds(f));
@@ -2849,7 +2849,7 @@ impl App {
                     if let (Some(feed_id), Some(_ep)) = (feed_id, self.podcast.episodes.get(idx)) {
                         let c = self.client.clone();
                         self.pickers.close_top();
-                        let _ = tx.send(TuiCommand::fire(move || async move {
+                        let _ = tx.try_send(TuiCommand::fire(move || async move {
                             let _ = c.podcast().play(&feed_id, idx).await;
                         }));
                     }
@@ -2889,7 +2889,7 @@ impl App {
                     let c = self.client.clone();
                     let ipc_tx = self.ipc_tx.clone();
                     self.pickers.close_top();
-                    let _ = tx.send(TuiCommand::fire(move || async move {
+                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                         match c.podcast().add_feed(&url).await {
                             Ok(_) => {
                                 let _ = ipc_tx.send(IpcResult::Notification(
@@ -2937,7 +2937,7 @@ impl App {
                     let c = self.client.clone();
                     let ipc_tx = self.ipc_tx.clone();
                     self.pickers.close_top();
-                    let _ = tx.send(TuiCommand::fire(move || async move {
+                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                         if let Err(e) = c.play_stream(url.trim()).await {
                             self_err(&ipc_tx, format!("stream failed: {e}"));
                         }
@@ -3258,7 +3258,7 @@ impl App {
                         let ids = self.metadata.edit_track_ids.clone();
                         let client = self.client.clone();
                         let ipc_tx = self.ipc_tx.clone();
-                        let _ = tx.send(TuiCommand::fire(move || async move {
+                        let _ = tx.try_send(TuiCommand::fire(move || async move {
                             let patch = MetadataPatch {
                                 title: Some(title),
                                 artist: Some(artist),
@@ -3332,7 +3332,7 @@ impl App {
                                             let uri = track.uri.clone().unwrap_or_default();
                                             let label = track.name.clone();
                                             let kind = track.kind;
-                                            let _ = tx.send(TuiCommand::fire(move || async move {
+                                            let _ = tx.try_send(TuiCommand::fire(move || async move {
                                                 let result = match kind {
                                                     Some(SpotifySearchKind::Album) => {
                                                         c2.spotify().album_tracks(&uri).await
@@ -3389,7 +3389,7 @@ impl App {
                                             let c2 = c.clone();
                                             let ipc_tx2 = ipc_tx.clone();
                                             let track_clone = track.clone();
-                                            let _ = tx.send(TuiCommand::fire(move || async move {
+                                            let _ = tx.try_send(TuiCommand::fire(move || async move {
                                                 match c2
                                                     .spotify()
                                                     .resolve_track(
@@ -3412,7 +3412,7 @@ impl App {
                                         }
                                     }
                                 } else {
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         match c
                                             .spotify()
                                             .resolve(&playlist_id, track_index, true)
@@ -3770,7 +3770,7 @@ impl App {
                                         let mut added = 0;
                                         for target in targets {
                                             let c = self.client.clone();
-                                            let _ = tx.send(TuiCommand::fire(move || async move {
+                                            let _ = tx.try_send(TuiCommand::fire(move || async move {
                                                 let _ = c.queue().add(&target, None).await;
                                             }));
                                             added += 1;
@@ -3963,7 +3963,7 @@ impl App {
                                 } else if let Some(rename_id) = self.renaming_playlist.take() {
                                     let client = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         match client
                                             .library()
                                             .rename_playlist(rename_id, &name)
@@ -3996,7 +3996,7 @@ impl App {
                                 } else {
                                     let client = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         match client.library().create_playlist(&name).await {
                                             Ok(playlists) => {
                                                 if let Some(new_p) = playlists.first().cloned() {
@@ -4042,7 +4042,7 @@ impl App {
                                     let playlist_id = pl.id;
                                     if !track_ids.is_empty() {
                                         let client = self.client.clone();
-                                        let _ = tx.send(TuiCommand::fire(move || async move {
+                                        let _ = tx.try_send(TuiCommand::fire(move || async move {
                                             let _ = client
                                                 .library()
                                                 .add_to_playlist(playlist_id, track_ids)
@@ -4065,7 +4065,7 @@ impl App {
                             let idx = top.selected.min(EQ_PRESETS.len() - 1);
                             let c = self.client.clone();
                             let preset = EQ_PRESETS[idx];
-                            let _ = tx.send(TuiCommand::fire(move || async move {
+                            let _ = tx.try_send(TuiCommand::fire(move || async move {
                                 let _ = c.set_eq_preset(preset).await;
                             }));
                             self.footer_notification = Some((
@@ -4116,7 +4116,7 @@ impl App {
                                         let c = self.client.clone();
                                         let ipc_tx2 = self.ipc_tx.clone();
                                         let pid = playlist.id;
-                                        let _ = tx.send(TuiCommand::fire(move || async move {
+                                        let _ = tx.try_send(TuiCommand::fire(move || async move {
                                             if let Ok(DaemonRes::Tracks { tracks }) =
                                                 c.library().get_playlist_tracks(pid).await
                                             {
@@ -4133,7 +4133,7 @@ impl App {
                                             };
                                             let c = self.client.clone();
                                             self.pickers.close_top();
-                                            let _ = tx.send(TuiCommand::fire(move || async move {
+                                            let _ = tx.try_send(TuiCommand::fire(move || async move {
                                                 let _ = c.radio().play(&id, &station.name).await;
                                             }));
                                         }
@@ -4156,7 +4156,7 @@ impl App {
                                     let ids = self.metadata.edit_track_ids.clone();
                                     let client = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
-                                    let _ = tx.send(TuiCommand::fire(move || async move {
+                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                                         let patch = MetadataPatch {
                                             title: Some(title),
                                             artist: Some(artist),
@@ -4239,7 +4239,7 @@ impl App {
                     self.metadata.cover_fetch.claim(track_id, fetch_gen);
                     let client = self.client.clone();
                     let ipc_tx = self.ipc_tx.clone();
-                    let _ = tx.send(TuiCommand::fire(move || async move {
+                    let _ = tx.try_send(TuiCommand::fire(move || async move {
                         let patch = MetadataPatch {
                             title: Some(title),
                             artist: Some(artist),
