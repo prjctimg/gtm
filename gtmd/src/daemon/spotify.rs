@@ -616,7 +616,7 @@ impl Spotify {
             if let Some(ref mut cc) = *guard {
                 match (image_url, client.as_ref()) {
                     (Some(url), Some(cl)) => {
-                        let _ = cc.get_url(url, || image_at(&cl, url)).await;
+                        let _ = cc.get_url(url, || image_at(cl, url)).await;
                     }
                     _ => {
                         let _ = cc
