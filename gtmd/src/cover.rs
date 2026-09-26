@@ -324,6 +324,16 @@ impl CoverCache {
         format!("u{}", hex::encode(&h.finalize()[..8]))
     }
 
+    /// Where [`Self::get_url`] will keep `url` on disk. Lets a caller that has
+    /// already warmed the cache point a queue entry's `cover_path` straight at
+    /// the file instead of leaving it empty and re-searching by artist/album.
+    pub fn url_disk_path(&self, url: &str) -> Option<PathBuf> {
+        if url.trim().is_empty() {
+            return None;
+        }
+        Some(self.disk_path(&Self::url_key(url)))
+    }
+
     /// Return cached bytes for `url`, fetching and persisting them on a miss.
     /// `fetch` is only called when neither memory nor disk has the image.
     pub async fn get_url<F, Fut>(&self, url: &str, fetch: F) -> Option<CoverData>

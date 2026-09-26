@@ -157,6 +157,14 @@ impl Cmd {
         // Bump first so any in-flight auto-advance/crossfade task sees a
         // session change and backs out before it touches state.
         inner.play_session.fetch_add(1, Ordering::Release);
+        // An explicit request for any source takes the output away from radio
+        // for good, not just until the next auto-advance. `step_next` cycles
+        // `radio_history` when the current entry is a station, so without this
+        // a spotify track that failed or ended would silently hand the output
+        // back to a station the user had already left.
+        if !auto_advanced {
+            inner.state.write().await.radio_history.clear();
+        }
         if path.starts_with("spotify:") {
             return Cmd::play_stream(inner, path, start_pos, auto_advanced).await;
         }

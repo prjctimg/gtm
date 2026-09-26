@@ -357,6 +357,7 @@ impl Spotify {
                 &spotify_title,
                 &spotify_artist,
                 &spotify_album,
+                track.image_url.as_deref(),
                 duration,
                 play,
             )
@@ -498,7 +499,7 @@ impl Spotify {
                 let spotify = inner.spotify.lock().await;
                 spotify.find_track_duration(&uri)
             };
-            Spotify::queue_stream(inner, &uri, name, artists, album, duration, play).await?;
+            Spotify::queue_stream(inner, &uri, name, artists, album, None, duration, play).await?;
             return Ok(DaemonRes::Ok);
         }
 
@@ -565,6 +566,7 @@ impl Spotify {
         title: &str,
         artist: &str,
         album: &str,
+        image_url: Option<&str>,
         duration: Option<f64>,
         play: bool,
     ) -> Result<DaemonRes, CoreError> {
@@ -599,12 +601,47 @@ impl Spotify {
             return Ok(DaemonRes::Error { message });
         }
 
+        // The web API hands us the album art directly, so use it instead of
+        // searching Deezer/MusicBrainz for `artist - album`: that misses often
+        // enough that spotify rows rendered with no cover at all. Clone the
+        // client before taking the cache — holding the cache guard while the
+        // spotify manager is locked is the inversion that wedged playback and
+        // cover art together.
+        let client = match image_url {
+            Some(_) => linked(inner).await.ok(),
+            None => None,
+        };
         {
             let mut guard = inner.cover_cache().await;
             if let Some(ref mut cc) = *guard {
-                let _ = cc
-                    .get(artist, album, inner.effective_cover_provider().await)
-                    .await;
+                match (image_url, client.as_ref()) {
+                    (Some(url), Some(cl)) => {
+                        let _ = cc.get_url(url, || image_at(&cl, url)).await;
+                    }
+                    _ => {
+                        let _ = cc
+                            .get(artist, album, inner.effective_cover_provider().await)
+                            .await;
+                    }
+                }
+            }
+        }
+
+        // Point the queued entry at the file just warmed so the TUI renders the
+        // row without looking the artwork up a second time.
+        if let Some(url) = image_url {
+            let path = inner
+                .cover_cache()
+                .await
+                .as_ref()
+                .and_then(|cc| cc.url_disk_path(url));
+            if let Some(path) = path
+                && path.exists()
+            {
+                let mut state = inner.state.write().await;
+                if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == uri) {
+                    entry.cover_path = Some(path.to_string_lossy().into_owned());
+                }
             }
         }
 
