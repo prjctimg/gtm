@@ -296,6 +296,10 @@ impl DaemonState {
             DaemonEvent::RadioTitleChanged { title } => {
                 self.radio_title = title.clone();
             }
+            DaemonEvent::RadioTracksChanged { list, artist } => {
+                self.radio_tracks = (**list).clone();
+                self.radio_artist = artist.clone();
+            }
             DaemonEvent::NetworkStatusChanged { online } => {
                 self.network_online = Some(*online);
             }

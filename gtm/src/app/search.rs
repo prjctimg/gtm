@@ -11,6 +11,12 @@ impl App {
     /// Shared guard text for "remove" actions that only work in a playlist view.
     pub const PLAYLIST_VIEW_ONLY_REMOVE: &'static str =
         "Remove from list only available in playlist view";
+
+    /// Shown when a queue-mutating key is pressed while a live stream plays. A
+    /// station's tracklist is a view of what is on air, not a queue, so it
+    /// cannot be reordered, cleared or added to.
+    pub const RADIO_QUEUE_LOCKED: &'static str =
+        "Queue is read-only while a station is playing";
 }
 
 impl App {

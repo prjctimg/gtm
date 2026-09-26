@@ -748,13 +748,25 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::ClearQueue) => {
-                        self.set_last_action("Clear Queue", &key);
-                        let tx = self.cmd_tx();
-                        let _ = tx.send(TuiCommand::QueueClear).await;
-                        self.footer_notification = Some((
-                            "Queue cleared".to_string(),
-                            std::time::Instant::now() + std::time::Duration::from_secs(2),
-                        ));
+                        // While a station is on air the queue is read-only, so
+                        // clearing it is refused rather than silently ignored.
+                        if self.live_queue().is_empty() {
+                            self.set_last_action("Clear Queue", &key);
+                            let tx = self.cmd_tx();
+                            let _ = tx.send(TuiCommand::QueueClear).await;
+                            self.footer_notification = Some((
+                                "Queue cleared".to_string(),
+                                std::time::Instant::now() + std::time::Duration::from_secs(2),
+                            ));
+                        } else {
+                            self.notify_typed(
+                                "Queue",
+                                Self::RADIO_QUEUE_LOCKED,
+                                NotificationKind::Info,
+                                false,
+                                NotifType::NowPlaying,
+                            );
+                        }
                     }
                     Some(KeyboardAction::ToggleVisualizer) => {
                         if self.extensions.is_disabled(ExtensionId::Visualizer) {
@@ -1378,6 +1390,17 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::AddToQueue) => {
+                        // Read-only for the whole time a station is on air.
+                        if !self.live_queue().is_empty() {
+                            self.notify_typed(
+                                "System",
+                                Self::RADIO_QUEUE_LOCKED,
+                                NotificationKind::Info,
+                                false,
+                                NotifType::NowPlaying,
+                            );
+                            return true;
+                        }
                         if !self.library_pane_focus {
                             // Playlist overview rows have no tracks of their
                             // own: open the playlist first.
@@ -1972,6 +1995,11 @@ impl App {
         }
 
         if matches!(self.pickers.top().map(|o| o.id), Some(PickerId::Queue)) {
+            // A live stream shows a read-only tracklist: there is no queue to
+            // reorder, so every mutating key is inert for as long as one plays.
+            if !self.live_queue().is_empty() {
+                return;
+            }
             // Queue move mode: Ctrl+j/k to move, Enter to confirm, Esc to cancel
             if self.queue.move_index.is_some() {
                 match key.code {
@@ -3086,6 +3114,7 @@ impl App {
                 if let Some(top) = self.pickers.top()
                     && top.id == PickerId::Queue
                     && !self.queue.cache.is_empty()
+                    && self.live_queue().is_empty()
                 {
                     let idx = top.selected.min(self.queue.cache.len() - 1);
                     if idx > 0 {
@@ -3103,6 +3132,7 @@ impl App {
                 if let Some(top) = self.pickers.top()
                     && top.id == PickerId::Queue
                     && !self.queue.cache.is_empty()
+                    && self.live_queue().is_empty()
                 {
                     let idx = top.selected.min(self.queue.cache.len() - 1);
                     if idx < self.queue.cache.len() - 1 {
@@ -3457,6 +3487,11 @@ impl App {
                             self.start_spotify_oauth(client_id, port);
                         }
                         PickerId::Queue => {
+                            // The read-only tracklist has nothing to play: a
+                            // live stream is always on the air at row 0.
+                            if !self.live_queue().is_empty() {
+                                return;
+                            }
                             if !self.queue.cache.is_empty() {
                                 let idx = top.selected.min(self.queue.cache.len() - 1);
                                 let path = self.queue.cache[idx].path.clone();

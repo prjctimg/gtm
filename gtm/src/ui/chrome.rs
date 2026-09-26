@@ -884,26 +884,39 @@ impl Render {
                 };
                 let cover_w = cover_h * 2;
 
-                let display_title = if track.title.is_empty() {
-                    // Never surface a raw provider URI (e.g. a queued
-                    // `spotify:track:` entry) as the title.
-                    if track.path.starts_with("spotify:") {
-                        "Spotify Track".to_string()
-                    } else {
-                        std::path::Path::new(&track.path)
-                            .file_stem()
-                            .map(|s| s.to_string_lossy().to_string())
-                            .unwrap_or_default()
+                // A live stream reports the track on air over ICY (or through
+                // the station's tracklist), and the daemon's synthesised track
+                // carries only the station name. Prefer the live title and the
+                // artist half the tracklist supplies, falling back to the
+                // station's own naming.
+                let (display_title, display_artist, is_live) = match app.live_track() {
+                    Some((title, artist)) => (title, artist, true),
+                    None => {
+                        let title = if track.title.is_empty() {
+                            // Never surface a raw provider URI (e.g. a queued
+                            // `spotify:track:` entry) as the title.
+                            if track.path.starts_with("spotify:") {
+                                "Spotify Track".to_string()
+                            } else {
+                                std::path::Path::new(&track.path)
+                                    .file_stem()
+                                    .map(|s| s.to_string_lossy().to_string())
+                                    .unwrap_or_default()
+                            }
+                        } else {
+                            track.title.clone()
+                        };
+                        let artist = if track.artist.is_empty() {
+                            " ".to_string()
+                        } else {
+                            track.artist.clone()
+                        };
+                        (title, artist, false)
                     }
-                } else {
-                    track.title.clone()
                 };
-                let display_artist = if track.artist.is_empty() {
-                    " "
-                } else {
-                    &track.artist
-                };
-                let has_album = !track.album.is_empty();
+                // A live track has no album: the daemon stamps the literal
+                // "Radio" there, which is noise next to the artist.
+                let has_album = !track.album.is_empty() && !is_live;
 
                 // Progress: 1 row (available when dur > 0 AND not a live stream)
                 let dur = if app.state.duration > 0.0 {

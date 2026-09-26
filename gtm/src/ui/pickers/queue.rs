@@ -18,6 +18,9 @@ pub struct ScrollList<'a> {
 
 impl Pickers {
     pub(crate) fn render_queue(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        if !app.live_queue().is_empty() {
+            return Self::render_live(f, area, app);
+        }
         let sel = app.pickers.top().map_or(0, |o| o.selected);
 
         let (title, hint) = if app.queue.move_index.is_some() {
@@ -125,6 +128,94 @@ impl Pickers {
             };
             Self::render_upnext_preview(f, preview_area, app, app.queue.cursor + 1);
         }
+    }
+
+    /// The playing station's published tracklist, newest first. A live stream
+    /// has no queue to reorder, so this is strictly a view: no move, no
+    /// remove, no play. Timestamps come from the source and order the list
+    /// chronologically, so the entry on air is the newest.
+    fn render_live(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let sel = app.pickers.top().map_or(0, |o| o.selected);
+        let block = Self::picker_panel(
+            app,
+            " Tracklist ",
+            Some(" read-only: a live stream has no queue to change   Esc: close"),
+        );
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let total = app.live_queue().len();
+        if total == 0 {
+            let p = Paragraph::new("No tracklist published")
+                .style(Style::default().fg(app.theme.fg_dim));
+            f.render_widget(p, inner);
+            return;
+        }
+        let on_air = app.state.radio_tracks.at;
+        let now = app.state.radio_tracks.at_time;
+        let visible = inner.height as usize;
+        let (scroll_start, scroll_end) = if let Some(top) = app.pickers.top_mut() {
+            let (s, e) = step_viewport(top.viewport_offset, sel, visible, total);
+            top.viewport_offset = s;
+            (s, e)
+        } else {
+            (0, total)
+        };
+        // Built before any mutable borrow: the rows read the state mirror,
+        // which the registration below writes through.
+        let rows: Vec<(String, bool, bool)> = (scroll_start..scroll_end)
+            .map(|i| {
+                let track = &app.state.radio_tracks.tracks[i];
+                let age = match track.start {
+                    Some(start) if now > 0 && start <= now => match (now - start) / 60 {
+                        0 => "now".to_string(),
+                        m => format!("-{m}m"),
+                    },
+                    _ => String::new(),
+                };
+                let age = if age.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{age}]")
+                };
+                let prefix = if i == sel { " > " } else { "   " };
+                let icon = if i == on_air { "\u{25b6} " } else { "   " };
+                (
+                    format!("{prefix}{icon}{}{age}", track.query()),
+                    i == sel,
+                    i == on_air,
+                )
+            })
+            .collect();
+        let mut lines = Vec::new();
+        for (n, (row, is_sel, is_on_air)) in rows.into_iter().enumerate() {
+            let i = scroll_start + n;
+            let row = if is_sel {
+                format!("{row}{}", " ".repeat(row_pad(&row, inner.width)))
+            } else {
+                row
+            };
+            let style = if is_sel {
+                Style::default()
+                    .fg(app.theme.selection_fg_readable())
+                    .bg(app.theme.selection_bg)
+            } else if is_on_air {
+                Style::default()
+                    .fg(app.theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(app.theme.fg_dim)
+            };
+            lines.push(Line::from(Span::styled(row, style)));
+            let row_rect = Rect {
+                x: inner.x,
+                y: inner.y + n as u16,
+                width: inner.width,
+                height: 1,
+            };
+            app.mouse_map.register(row_rect, MouseZone::PickerItem(i));
+        }
+        f.render_widget(Paragraph::new(lines), inner);
     }
 
     pub(crate) fn render_upnext_preview(

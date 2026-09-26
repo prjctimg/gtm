@@ -33,6 +33,7 @@ use gtm::shared::ipc::{
     LibraryAction, QueueAction, SyncKind, WireReq,
 };
 use gtm::shared::playlist::{M3u8Format, PlaylistFormat, PlsFormat};
+use gtm::shared::radio::RadioTracklist;
 use gtm::shared::secret::{
     LASTFM_API_KEY, LASTFM_API_SECRET, delete_secret, get_secret, set_secret,
 };
@@ -89,6 +90,7 @@ pub mod scrobble;
 pub mod search;
 pub mod spotify;
 pub mod stream;
+pub mod tracklist;
 pub mod yt;
 pub mod ytfb;
 
@@ -1563,6 +1565,10 @@ pub(crate) struct DaemonInner {
     spotify: Arc<tokio::sync::Mutex<SpotifyManager>>,
     podcast: tokio::sync::Mutex<PodcastManager>,
     radio: tokio::sync::Mutex<RadioBrowserManager>,
+    /// The playing station's tracklist binding: which station is current and
+    /// when its next refresh is due. Holds no list, so a refresh never runs
+    /// under this lock.
+    radio_list: tokio::sync::Mutex<Option<tracklist::Bound>>,
     /// Chart providers registry (Spotify first; more sources plug in via the
     /// same `ChartProvider` trait).
     charts: tokio::sync::Mutex<ChartsRegistry>,
@@ -1735,6 +1741,7 @@ fn is_read_only(req: &DaemonReq) -> bool {
             | DaemonReq::RadioByTag { .. }
             | DaemonReq::RadioCountries { .. }
             | DaemonReq::RadioByCountry { .. }
+            | DaemonReq::RadioTracklist { .. }
             | DaemonReq::Search { .. }
             | DaemonReq::Queue {
                 action: QueueAction::List,
@@ -1948,6 +1955,7 @@ impl Daemon {
             ))),
             podcast: tokio::sync::Mutex::new(PodcastManager::new(config_dir)),
             radio: tokio::sync::Mutex::new(RadioBrowserManager::new()),
+            radio_list: tokio::sync::Mutex::new(None),
             charts: tokio::sync::Mutex::new(ChartsRegistry::empty()),
             stream: tokio::sync::Mutex::new(StreamManager::new()),
             oauth_task: tokio::sync::Mutex::new(None),
@@ -3035,6 +3043,9 @@ impl Daemon {
             DaemonReq::RadioByCountry { country, limit } => {
                 Radio::by_country(inner, country, *limit).await
             }
+            DaemonReq::RadioTracklist { station_id } => {
+                tracklist::fetch(inner, station_id).await
+            }
             DaemonReq::SetSleepTimer {
                 minutes,
                 stop_immediately,
@@ -3712,6 +3723,89 @@ impl Daemon {
         Self::push_event(inner, DaemonEvent::RadioTitleChanged { title });
     }
 
+    /// Refetch the playing station's tracklist on its interval and mirror it
+    /// into `state`. Runs off the position tick, but the refresh happens
+    /// without a lock held and the deadline is checked without network I/O, so
+    /// a slow source cannot stall the tick. A station publishing no tracklist
+    /// leaves the list empty and the queue falls back to the station name,
+    /// exactly as before.
+    async fn sync_radio_list(inner: &Arc<DaemonInner>) {
+        let station = {
+            let state = inner.state.read().await;
+            state
+                .current_track
+                .as_ref()
+                .and_then(|t| t.path.strip_prefix("radio://"))
+                .map(|rest| rest.split('/').next().unwrap_or(rest).to_string())
+        };
+        // Decide whether to fetch, rebinding on a station change and dropping
+        // the binding outright when playback left radio.
+        let (due, left_radio) = {
+            let mut guard = inner.radio_list.lock().await;
+            match station {
+                None => {
+                    *guard = None;
+                    (false, true)
+                }
+                Some(ref id) => {
+                    if guard.as_ref().is_none_or(|b| b.switched(id)) {
+                        *guard = Some(tracklist::Bound::new(id));
+                        (true, false)
+                    } else {
+                        (guard.as_mut().is_some_and(|b| b.due()), false)
+                    }
+                }
+            }
+        };
+        if left_radio {
+            let mut state = inner.state.write().await;
+            if state.radio_tracks.tracks.is_empty() {
+                return;
+            }
+            state.radio_tracks = RadioTracklist::default();
+            state.radio_artist = None;
+            drop(state);
+            Self::push_event(
+                inner,
+                DaemonEvent::RadioTracksChanged {
+                    list: Box::new(RadioTracklist::default()),
+                    artist: None,
+                },
+            );
+            return;
+        }
+        if !due {
+            return;
+        }
+        let Some(station) = station else { return };
+        let list = tracklist::load(inner, &station).await;
+        if list.tracks.is_empty() {
+            return;
+        }
+        // A station switch mid-fetch makes this reply stale.
+        if !inner
+            .radio_list
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|b| b.station() == station)
+        {
+            return;
+        }
+        let mut state = inner.state.write().await;
+        state.radio_tracks = list.clone();
+        let (_, artist) = tracklist::now_split(&list, state.radio_title.as_deref());
+        state.radio_artist = artist.clone();
+        drop(state);
+        Self::push_event(
+            inner,
+            DaemonEvent::RadioTracksChanged {
+                list: Box::new(list),
+                artist,
+            },
+        );
+    }
+
     async fn handle_audio_event(inner: &Arc<DaemonInner>, result: AudioResult<Option<AudioEvent>>) {
         let ev = match result {
             Ok(Some(e)) => e,
@@ -3793,6 +3887,7 @@ impl Daemon {
                         *last = Some(std::time::Instant::now());
                         Self::push_event(inner, DaemonEvent::PositionChanged { time_pos: pos });
                         Self::sync_radio_title(inner).await;
+                        Self::sync_radio_list(inner).await;
                     }
                 }
 

@@ -8,6 +8,7 @@ use crate::shared::global::{
     AudioSettings, CrossfadeConfig, DaemonState, DynamicModeConfig, PlaybackStatus, RepeatMode,
     ScrobbleConfig,
 };
+use crate::shared::radio::RadioTracklist;
 use crate::shared::track::TrackInfo;
 
 impl CrossfadeConfig {
@@ -44,6 +45,8 @@ impl DaemonState {
             time_pos: 0.0,
             duration: 0.0,
             radio_title: None,
+            radio_tracks: RadioTracklist::default(),
+            radio_artist: None,
             sleep_timer: None,
             low_power: false,
             audio: AudioSettings::default(),

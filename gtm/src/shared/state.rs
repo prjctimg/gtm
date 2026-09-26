@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::shared::radio::RadioTracklist;
 use crate::shared::track::TrackInfo;
 
 #[derive(Debug, thiserror::Error)]
@@ -197,6 +198,16 @@ pub struct DaemonState {
     /// file, podcast, or non-metadata stream is active.
     #[serde(default)]
     pub radio_title: Option<String>,
+    /// The playing station's published tracklist, led by the entry on air.
+    /// Empty when the station publishes none, which leaves the queue showing
+    /// the station name as it always did.
+    #[serde(default)]
+    pub radio_tracks: RadioTracklist,
+    /// Artist half of the current live track. ICY publishes a single combined
+    /// string, so this comes from the tracklist row matching it, and stays
+    /// empty when no tracklist confirms the split.
+    #[serde(default)]
+    pub radio_artist: Option<String>,
     /// Radio stations that have been played, in order, for Next/Prev cycling.
     /// Each entry corresponds to a radio station that was removed from the queue.
     #[serde(default)]

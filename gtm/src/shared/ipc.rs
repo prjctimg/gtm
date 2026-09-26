@@ -7,7 +7,7 @@
 use crate::shared::global::{DaemonState, EqPreset, LoudnessMode, RepeatMode, YTFilter};
 use crate::shared::playlist::PlaylistFormatKind;
 use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
-use crate::shared::radio::{RadioCountry, RadioStation, RadioTag};
+use crate::shared::radio::{RadioCountry, RadioStation, RadioTag, RadioTracklist};
 use crate::shared::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::shared::track::{LrcData, Playlist, StreamInfo, TrackInfo, YTSearchResult};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -522,6 +522,12 @@ pub enum DaemonReq {
         country: String,
         limit: u16,
     },
+    /// The playing station's published tracklist, for the read-only queue
+    /// view. Refetches rather than reading the daemon's cache so opening the
+    /// queue mid-track shows the current entry.
+    RadioTracklist {
+        station_id: String,
+    },
     /// List available chart sources (Spotify, Apple Music; new providers plug
     /// in via the `ChartProvider` trait and appear here automatically).
     ChartsSources,
@@ -650,6 +656,7 @@ impl DaemonReq {
             DaemonReq::RadioByTag { .. } => "radio_bytag",
             DaemonReq::RadioCountries { .. } => "radio_countries",
             DaemonReq::RadioByCountry { .. } => "radio_bycountry",
+            DaemonReq::RadioTracklist { .. } => "radio_tracklist",
             DaemonReq::ChartsSources => "charts_sources",
             DaemonReq::ChartsList { .. } => "charts_list",
             DaemonReq::ChartsTracks { .. } => "charts_tracks",
@@ -1393,6 +1400,16 @@ impl DaemonReq {
                     limit: x.limit,
                 }
             }
+            "radio_tracklist" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    station_id: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::RadioTracklist {
+                    station_id: x.station_id,
+                }
+            }
             "radio_countries" => {
                 #[derive(Deserialize)]
                 struct Params {
@@ -1602,6 +1619,14 @@ pub enum DaemonEvent {
     /// it, `None`).
     #[serde(rename = "radio_title_changed")]
     RadioTitleChanged { title: Option<String> },
+    /// The playing station's published tracklist changed: first fetch, a
+    /// refresh, or the entry on air advancing. Carries the whole list so the
+    /// read-only queue and the now-playing artist split stay in step.
+    #[serde(rename = "radio_tracks_changed")]
+    RadioTracksChanged {
+        list: Box<RadioTracklist>,
+        artist: Option<String>,
+    },
     /// Generic internet connectivity changed, as measured by the daemon's
     /// bounded TCP probes (1.1.1.1:443, then gstatic.com:443). Independent of
     /// any provider link state; drives the footer `Network` module.
@@ -1676,6 +1701,9 @@ pub enum DaemonRes {
     },
     RadioCountriesRes {
         countries: Vec<RadioCountry>,
+    },
+    RadioTracklistRes {
+        list: Box<RadioTracklist>,
     },
     ChartsSourcesRes {
         sources: Vec<crate::shared::chart::ChartSource>,
@@ -1793,6 +1821,9 @@ impl DaemonRes {
                 Some(serde_json::json!({ "stations": stations }))
             }
             DaemonRes::RadioTagsRes { tags } => Some(serde_json::json!({ "tags": tags })),
+            DaemonRes::RadioTracklistRes { list } => {
+                Some(serde_json::json!({ "list": list }))
+            }
             DaemonRes::RadioCountriesRes { countries } => {
                 Some(serde_json::json!({ "countries": countries }))
             }
@@ -1959,6 +1990,7 @@ impl DaemonRes {
             DaemonRes::RadioStationsRes { stations } => field!("stations", &stations),
             DaemonRes::RadioTagsRes { tags } => field!("tags", &tags),
             DaemonRes::RadioCountriesRes { countries } => field!("countries", &countries),
+            DaemonRes::RadioTracklistRes { list } => field!("list", &list),
             DaemonRes::ChartsSourcesRes { sources } => field!("sources", &sources),
             DaemonRes::ChartsListRes { charts } => field!("charts", &charts),
             DaemonRes::ChartsTracksRes { tracks } => field!("tracks", &tracks),
@@ -2251,6 +2283,12 @@ impl DaemonRes {
             "radio_countries" => {
                 match serde_json::from_value::<Vec<RadioCountry>>(field(&data, "countries")) {
                     Ok(countries) => DaemonRes::RadioCountriesRes { countries },
+                    Err(_) => DaemonRes::Value { value: data },
+                }
+            }
+            "radio_tracklist" => {
+                match serde_json::from_value::<Box<RadioTracklist>>(field(&data, "list")) {
+                    Ok(list) => DaemonRes::RadioTracklistRes { list },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }

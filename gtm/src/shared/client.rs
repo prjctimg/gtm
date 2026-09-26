@@ -26,7 +26,7 @@ use crate::shared::ipc::{
 use crate::shared::log::log;
 use crate::shared::playlist::PlaylistFormatKind;
 use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
-use crate::shared::radio::{RadioCountry, RadioStation, RadioTag};
+use crate::shared::radio::{RadioCountry, RadioStation, RadioTag, RadioTracklist};
 use crate::shared::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use crate::shared::track;
 use crate::shared::wire;
@@ -1527,6 +1527,23 @@ impl<'a> Radio<'a> {
             .await?;
         match res {
             DaemonRes::RadioStationsRes { stations, .. } => Ok(stations),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
+    /// The station's published tracklist for the read-only queue view. An
+    /// empty list means the station publishes none, which the TUI renders as
+    /// the station name rather than as an error.
+    pub async fn tracklist(&self, station_id: &str) -> Result<RadioTracklist> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::RadioTracklist {
+                station_id: station_id.into(),
+            })
+            .await?;
+        match res {
+            DaemonRes::RadioTracklistRes { list, .. } => Ok(*list),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
             _ => Err(unexpected(&res)),
         }

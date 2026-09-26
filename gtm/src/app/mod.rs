@@ -18,7 +18,7 @@ use crate::shared::global::{DaemonState, EqPreset, PlaybackStatus, RepeatMode};
 use crate::shared::ipc::{CacheKind, DaemonEvent, DaemonRes, HealthReport, SyncKind};
 use crate::shared::log::log;
 use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
-use crate::shared::radio::{RadioCountry, RadioStation, RadioTag};
+use crate::shared::radio::{RadioCountry, RadioStation, RadioTag, RadioTrack};
 use crate::shared::secret::{SPOTIFY_CLIENT_ID, get_secret, set_secret};
 use crate::shared::spotify::{
     LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifySearchKind, SpotifyStatus, SpotifyTrack,
@@ -40,7 +40,7 @@ use tokio::sync::mpsc;
 use base64::Engine;
 
 use crate::extensions::{ExtensionId, ExtensionsConfig};
-use crate::footer::{FooterCache, FooterKeyAction, FooterPreset, merged_presets};
+use crate::footer::{FooterCache, FooterKeyAction, FooterPreset, is_live_stream, merged_presets};
 use crate::keymap::{
     BoundCommand, KeyContext, Keybindings, KeyboardAction, default_keybindings, detect_clashes,
     format_key_event, parse_key_event,
@@ -639,6 +639,56 @@ impl App {
         g
     }
 
+    /// The track on air for a live stream, as `(title, artist)`, or `None` for
+    /// anything else so callers fall back to the ordinary track metadata.
+    ///
+    /// The daemon synthesises only the station name for a `radio://` track, so
+    /// the real title comes from the stream's ICY `StreamTitle` and the artist
+    /// from the station's tracklist — the only place the two are published
+    /// separately.
+    pub fn live_track(&self) -> Option<(String, String)> {
+        let track = self.state.current_track.as_ref()?;
+        if !is_live_stream(&track.path) {
+            return None;
+        }
+        let title = self
+            .state
+            .radio_title
+            .as_deref()
+            .filter(|t| !t.is_empty())
+            .unwrap_or(track.title.as_str());
+        if title.is_empty() {
+            return None;
+        }
+        let artist = self
+            .state
+            .radio_artist
+            .as_deref()
+            .unwrap_or(track.artist.as_str());
+        let artist = if artist.is_empty() || artist == "Radio" {
+            " ".to_string()
+        } else {
+            artist.to_string()
+        };
+        Some((title.to_string(), artist))
+    }
+
+    /// The read-only station tracklist the daemon last published for the
+    /// playing `radio://` station, newest first. Empty for any other source,
+    /// and for a station that publishes no tracklist — the queue then shows the
+    /// station name as it always did.
+    pub fn live_queue(&self) -> &[RadioTrack] {
+        let live = self
+            .state
+            .current_track
+            .as_ref()
+            .is_some_and(|t| t.path.starts_with("radio://"));
+        if !live {
+            return &[];
+        }
+        &self.state.radio_tracks.tracks
+    }
+
     fn next_lyrics_gen(&mut self) -> u64 {
         let g = self.lyrics.next_gen;
         self.lyrics.next_gen = self.lyrics.next_gen.wrapping_add(1).max(1);
@@ -1025,7 +1075,14 @@ impl App {
             None => return,
         };
         let max = match id {
-            PickerId::Queue => self.queue.cache.len().saturating_sub(1),
+            PickerId::Queue => {
+                let live = self.live_queue().len();
+                if live > 0 {
+                    live.saturating_sub(1)
+                } else {
+                    self.queue.cache.len().saturating_sub(1)
+                }
+            }
             PickerId::YTSearch => self.yt_results_cache.len().saturating_sub(1),
             PickerId::SearchLibrary => self.search_library_picks().len().saturating_sub(1),
             PickerId::SpotifySearch => self.spot_picks().len().saturating_sub(1),
@@ -1064,7 +1121,10 @@ impl App {
             None => return 0,
         };
         match id {
-            PickerId::Queue => self.queue.cache.len(),
+            PickerId::Queue => {
+                let live = self.live_queue().len();
+                if live > 0 { live } else { self.queue.cache.len() }
+            }
             PickerId::YTSearch => self.yt_results_cache.len(),
             PickerId::SearchLibrary => self.search_library_picks().len(),
             PickerId::SpotifySearch => self.spot_picks().len(),

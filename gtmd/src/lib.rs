@@ -27,6 +27,7 @@ pub mod remote;
 pub mod spotify;
 pub mod stream;
 pub mod tags;
+pub mod tracklist;
 #[cfg(feature = "youtube")]
 pub mod youtube;
 
