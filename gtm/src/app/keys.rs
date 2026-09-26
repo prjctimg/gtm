@@ -3332,83 +3332,98 @@ impl App {
                                             let uri = track.uri.clone().unwrap_or_default();
                                             let label = track.name.clone();
                                             let kind = track.kind;
-                                            let _ = tx.try_send(TuiCommand::fire(move || async move {
-                                                let result = match kind {
-                                                    Some(SpotifySearchKind::Album) => {
-                                                        c2.spotify().album_tracks(&uri).await
-                                                    }
-                                                    Some(SpotifySearchKind::Artist) => {
-                                                        c2.spotify().artist_top_tracks(&uri).await
-                                                    }
-                                                    Some(SpotifySearchKind::Playlist) => {
-                                                        c2.spotify().web_playlist_tracks(&uri).await
-                                                    }
-                                                    _ => Err(CoreError::Daemon(
-                                                        "unsupported spotify result kind".into(),
-                                                    )),
-                                                };
-                                                match result {
-                                                    Ok(tracks) if tracks.is_empty() => {
-                                                        let _ = ipc_tx2.send(IpcResult::Error(
-                                                            format!(
-                                                                "Spotify: no tracks for \
+                                            let _ =
+                                                tx.try_send(TuiCommand::fire(move || async move {
+                                                    let result = match kind {
+                                                        Some(SpotifySearchKind::Album) => {
+                                                            c2.spotify().album_tracks(&uri).await
+                                                        }
+                                                        Some(SpotifySearchKind::Artist) => {
+                                                            c2.spotify()
+                                                                .artist_top_tracks(&uri)
+                                                                .await
+                                                        }
+                                                        Some(SpotifySearchKind::Playlist) => {
+                                                            c2.spotify()
+                                                                .web_playlist_tracks(&uri)
+                                                                .await
+                                                        }
+                                                        _ => Err(CoreError::Daemon(
+                                                            "unsupported spotify result kind"
+                                                                .into(),
+                                                        )),
+                                                    };
+                                                    match result {
+                                                        Ok(tracks) if tracks.is_empty() => {
+                                                            let _ = ipc_tx2.send(IpcResult::Error(
+                                                                format!(
+                                                                    "Spotify: no tracks for \
                                                                  '{label}'"
-                                                            ),
-                                                        ));
-                                                    }
-                                                    Ok(tracks) => {
-                                                        for (n, t) in tracks.iter().enumerate() {
-                                                            // Enter = play: the
-                                                            // first track starts
-                                                            // playback immediately
-                                                            // (switching source);
-                                                            // the rest queue behind.
-                                                            let _ = c2
-                                                                .spotify()
-                                                                .resolve_track(
-                                                                    &t.name,
-                                                                    &t.artists,
-                                                                    t.album
-                                                                        .as_deref()
-                                                                        .unwrap_or(""),
-                                                                    t.uri.clone(),
-                                                                    n == 0,
-                                                                )
-                                                                .await;
+                                                                ),
+                                                            ));
+                                                        }
+                                                        Ok(tracks) => {
+                                                            for (n, t) in tracks.iter().enumerate()
+                                                            {
+                                                                // Enter = play: the
+                                                                // first track starts
+                                                                // playback immediately
+                                                                // (switching source);
+                                                                // the rest queue behind.
+                                                                let _ = c2
+                                                                    .spotify()
+                                                                    .resolve_track(
+                                                                        &t.name,
+                                                                        &t.artists,
+                                                                        t.album
+                                                                            .as_deref()
+                                                                            .unwrap_or(""),
+                                                                        t.uri.clone(),
+                                                                        n == 0,
+                                                                    )
+                                                                    .await;
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            let _ = ipc_tx2.send(IpcResult::Error(
+                                                                format!(
+                                                                    "Spotify resolve failed: {e}"
+                                                                ),
+                                                            ));
                                                         }
                                                     }
-                                                    Err(e) => {
-                                                        let _ = ipc_tx2.send(IpcResult::Error(
-                                                            format!("Spotify resolve failed: {e}"),
-                                                        ));
-                                                    }
-                                                }
-                                            }));
+                                                }));
                                         }
                                         _ => {
                                             let c2 = c.clone();
                                             let ipc_tx2 = ipc_tx.clone();
                                             let track_clone = track.clone();
-                                            let _ = tx.try_send(TuiCommand::fire(move || async move {
-                                                match c2
-                                                    .spotify()
-                                                    .resolve_track(
-                                                        &track_clone.name,
-                                                        &track_clone.artists,
-                                                        track_clone.album.as_deref().unwrap_or(""),
-                                                        track_clone.uri.clone(),
-                                                        true,
-                                                    )
-                                                    .await
-                                                {
-                                                    Ok(()) => {}
-                                                    Err(e) => {
-                                                        let _ = ipc_tx2.send(IpcResult::Error(
-                                                            format!("Spotify resolve failed: {e}"),
-                                                        ));
+                                            let _ =
+                                                tx.try_send(TuiCommand::fire(move || async move {
+                                                    match c2
+                                                        .spotify()
+                                                        .resolve_track(
+                                                            &track_clone.name,
+                                                            &track_clone.artists,
+                                                            track_clone
+                                                                .album
+                                                                .as_deref()
+                                                                .unwrap_or(""),
+                                                            track_clone.uri.clone(),
+                                                            true,
+                                                        )
+                                                        .await
+                                                    {
+                                                        Ok(()) => {}
+                                                        Err(e) => {
+                                                            let _ = ipc_tx2.send(IpcResult::Error(
+                                                                format!(
+                                                                    "Spotify resolve failed: {e}"
+                                                                ),
+                                                            ));
+                                                        }
                                                     }
-                                                }
-                                            }));
+                                                }));
                                         }
                                     }
                                 } else {
@@ -3770,9 +3785,10 @@ impl App {
                                         let mut added = 0;
                                         for target in targets {
                                             let c = self.client.clone();
-                                            let _ = tx.try_send(TuiCommand::fire(move || async move {
-                                                let _ = c.queue().add(&target, None).await;
-                                            }));
+                                            let _ =
+                                                tx.try_send(TuiCommand::fire(move || async move {
+                                                    let _ = c.queue().add(&target, None).await;
+                                                }));
                                             added += 1;
                                         }
                                         self.fetch_queue().await;
@@ -4133,9 +4149,11 @@ impl App {
                                             };
                                             let c = self.client.clone();
                                             self.pickers.close_top();
-                                            let _ = tx.try_send(TuiCommand::fire(move || async move {
-                                                let _ = c.radio().play(&id, &station.name).await;
-                                            }));
+                                            let _ =
+                                                tx.try_send(TuiCommand::fire(move || async move {
+                                                    let _ =
+                                                        c.radio().play(&id, &station.name).await;
+                                                }));
                                         }
                                     }
                                 }
