@@ -1169,6 +1169,200 @@ fn state_defaults_eq() {
 // Request round-trip
 // ---------------------------------------------------------------------------
 
+/// Every source the request shapes are declared in, so the helpers below can
+/// read type definitions instead of hand-maintaining a fixture per command.
+const REQUEST_SOURCES: &str = concat!(
+    include_str!("../src/shared/ipc.rs"),
+    "\n",
+    include_str!("../src/shared/state.rs"),
+);
+
+/// Bodies of every `struct <name> { ... }` in [`REQUEST_SOURCES`], brace
+/// matched so nested braces inside a field type do not end the search early.
+fn struct_bodies<'a>(src: &'a str, name: &str) -> Vec<&'a str> {
+    let mut out = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(rel) = src[cursor..].find(name) {
+        let at = cursor + rel;
+        cursor = at + name.len();
+        // The name must be a declaration, not a use of the type.
+        if !src[..at].ends_with("struct ") {
+            continue;
+        }
+        let Some(rel) = src[cursor..].find('{') else {
+            break;
+        };
+        let open = cursor + rel;
+        let mut depth = 0usize;
+        for (i, c) in src[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        out.push(&src[open + 1..open + i]);
+                        cursor = open + i + 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if depth != 0 {
+            break;
+        }
+    }
+    out
+}
+
+/// `name -> type` for every field of every `struct Params` in the decoder.
+/// Later declarations win, which keeps the map consistent without caring which
+/// arm a field came from.
+fn param_fields() -> Vec<(String, String)> {
+    let mut seen: Vec<(String, String)> = Vec::new();
+    for body in struct_bodies(REQUEST_SOURCES, "Params") {
+        for line in body.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            let Some((name, ty)) = line.split_once(':') else {
+                continue;
+            };
+            let (name, ty) = (name.trim(), ty.trim().trim_end_matches(','));
+            // `#[serde(default)] fn ...` lines and stray attributes slip
+            // through the naive split; a field name is always lowercase.
+            let valid = !name.is_empty()
+                && name
+                    .chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+                && !ty.is_empty();
+            if !valid {
+                continue;
+            }
+            match seen.iter_mut().find(|(n, _)| n == name) {
+                Some(slot) => slot.1 = ty.to_string(),
+                None => seen.push((name.to_string(), ty.to_string())),
+            }
+        }
+    }
+    seen
+}
+
+/// A JSON value that deserializes into `ty`. Scalars come straight from the
+/// spelling of the type; an enum is resolved to its first variant so the
+/// request decodes instead of failing on an unknown tag.
+fn sample_for(ty: &str, depth: usize) -> serde_json::Value {
+    use serde_json::Value;
+    let ty = ty.trim();
+    // Peel `Option` and `Vec` wrappers down to what they contain.
+    if let Some(inner) = ty.strip_prefix("Option<").and_then(|r| r.strip_suffix('>')) {
+        return if depth == 0 {
+            Value::Null
+        } else {
+            sample_for(inner, depth - 1)
+        };
+    }
+    if let Some(inner) = ty.strip_prefix("Vec<").and_then(|r| r.strip_suffix('>')) {
+        return Value::Array(if depth == 0 {
+            vec![]
+        } else {
+            vec![sample_for(inner, depth - 1)]
+        });
+    }
+    match ty {
+        "String" | "&str" | "PathBuf" => return Value::String(String::new()),
+        "bool" => return Value::Bool(false),
+        "f32" | "f64" => return Value::from(0.0),
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128"
+        | "isize" => return Value::from(0),
+        _ => {}
+    }
+    if depth == 0 {
+        return Value::Null;
+    }
+    // An enum: take its first variant. A unit variant decodes from a string; a
+    // struct variant from an externally tagged object.
+    let Some(body) = enum_variants(REQUEST_SOURCES, ty) else {
+        return Value::Null;
+    };
+    let first = body
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("//"));
+    let Some(first) = first else {
+        return Value::Null;
+    };
+    if !first.contains('{') {
+        let variant = first.trim_end_matches(',');
+        return Value::String(variant.to_string());
+    }
+    // The variant's fields continue on the lines below, so brace match from
+    // the opening brace instead of reading the declaration line alone.
+    let start = body.find(first).unwrap_or_default();
+    let Some(open) = body[start..].find('{').map(|rel| start + rel) else {
+        return Value::Null;
+    };
+    let mut depth = 0usize;
+    let mut inner = "";
+    for (i, c) in body[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    inner = &body[open + 1..open + i];
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut fields = serde_json::Map::new();
+    for line in inner.lines() {
+        let line = line.trim();
+        let Some((n, t)) = line.split_once(':') else {
+            continue;
+        };
+        let n = n.trim();
+        if n.is_empty()
+            || !n
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        {
+            continue;
+        }
+        fields.insert(
+            n.to_string(),
+            sample_for(t.trim().trim_end_matches(','), depth - 1),
+        );
+    }
+    let variant = first.split('{').next().unwrap_or_default().trim();
+    let mut tagged = serde_json::Map::new();
+    tagged.insert(variant.to_string(), Value::Object(fields));
+    Value::Object(tagged)
+}
+
+/// Body of `enum <name> { ... }` in [`REQUEST_SOURCES`], brace matched.
+fn enum_variants<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+    let at = src.find(&format!("enum {name}"))?;
+    let open = src[at..].find('{')? + at;
+    let mut depth = 0usize;
+    for (i, c) in src[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&src[open + 1..open + i]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 /// Every wire name `parse_cmd` accepts, read straight out of the source so a
 /// newly added variant is covered without touching this test.
 fn wire_names() -> Vec<&'static str> {
@@ -1196,17 +1390,40 @@ fn req_every_wire_name_is_reachable() {
 
 #[test]
 fn req_round_trip() {
-    // `{}` decodes into every field type the request set uses, so each name
-    // must produce *a* request rather than an error. A name that falls
-    // through to the catch-all, or whose field list drifted, fails here.
+    // Every declared field is supplied with a value of its own type, read out
+    // of the `Params` structs, so each name must produce *a* request rather
+    // than an error. A name that falls through to the catch-all, or whose
+    // field list drifted, fails here. Surplus keys are harmless: serde ignores
+    // fields a struct does not declare.
+    let params: serde_json::Value = param_fields()
+        .into_iter()
+        .map(|(name, ty)| (name, sample_for(&ty, 4)))
+        .collect::<serde_json::Map<_, _>>()
+        .into();
     for name in wire_names() {
-        let req = DaemonReq::parse_cmd(name, serde_json::json!({}))
+        let req = DaemonReq::parse_cmd(name, params.clone())
             .unwrap_or_else(|e| panic!("{name} failed to decode: {e}"));
         assert_eq!(
             req.cmd_name(),
             name,
             "{name} decoded to a different command"
         );
+    }
+}
+
+#[test]
+fn req_param_fields_were_read() {
+    // Guards the source-scraping above: if the `Params` shape ever moves, the
+    // round-trip would silently weaken to decoding nothing.
+    let fields = param_fields();
+    assert!(
+        fields.len() >= 40,
+        "only found {} param fields",
+        fields.len()
+    );
+    let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
+    for expected in ["path", "start_pos", "url", "track_id"] {
+        assert!(names.contains(&expected), "missing field {expected}");
     }
 }
 
