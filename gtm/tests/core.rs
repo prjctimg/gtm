@@ -1348,38 +1348,44 @@ fn sample_for(ty: &str, depth: usize) -> serde_json::Value {
     if depth == 0 {
         return Value::Null;
     }
-    // An enum: take its first variant. A unit variant decodes from a string; a
-    // struct variant from an externally tagged object.
-    let Some(body) = enum_variants(REQUEST_SOURCES, ty) else {
+    // An enum: take its first variant, spelled the way serde spells it. A unit
+    // variant decodes from a bare string; a struct variant from an object that
+    // is either externally tagged (`{"scan": {...}}`) or internally tagged
+    // (`{"action": "scan", ...}`) depending on the enum's attributes.
+    let Some(meta) = enum_meta(REQUEST_SOURCES, ty) else {
         return Value::Null;
     };
-    let first = body
+    let first = meta
+        .body
         .lines()
         .map(str::trim)
         .find(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("//"));
     let Some(first) = first else {
         return Value::Null;
     };
+    let variant = rename_variant(
+        first.split('{').next().unwrap_or_default().trim(),
+        meta.rename_all,
+    );
     if !first.contains('{') {
-        let variant = first.trim_end_matches(',');
-        return Value::String(variant.to_string());
+        return Value::String(variant);
     }
     // The variant's fields continue on the lines below, so brace match from
     // the opening brace instead of reading the declaration line alone. The
     // counter is `nesting`, not `depth`: `depth` is the recursion budget.
-    let start = body.find(first).unwrap_or_default();
-    let Some(open) = body[start..].find('{').map(|rel| start + rel) else {
+    let start = meta.body.find(first).unwrap_or_default();
+    let Some(open) = meta.body[start..].find('{').map(|rel| start + rel) else {
         return Value::Null;
     };
     let mut nesting = 0usize;
     let mut inner = "";
-    for (i, c) in body[open..].char_indices() {
+    for (i, c) in meta.body[open..].char_indices() {
         match c {
             '{' => nesting += 1,
             '}' => {
                 nesting -= 1;
                 if nesting == 0 {
-                    inner = &body[open + 1..open + i];
+                    inner = &meta.body[open + 1..open + i];
                     break;
                 }
             }
@@ -1387,28 +1393,93 @@ fn sample_for(ty: &str, depth: usize) -> serde_json::Value {
         }
     }
     let mut fields = serde_json::Map::new();
-    for line in inner.lines() {
-        let line = line.trim();
-        let Some((n, t)) = line.split_once(':') else {
-            continue;
-        };
-        let n = n.trim();
-        if n.is_empty()
-            || !n
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-        {
-            continue;
-        }
-        fields.insert(
-            n.to_string(),
-            sample_for(t.trim().trim_end_matches(','), depth - 1),
-        );
+    for (n, t) in fields_of(inner) {
+        fields.insert(n, sample_for(&t, depth - 1));
     }
-    let variant = first.split('{').next().unwrap_or_default().trim();
-    let mut tagged = serde_json::Map::new();
-    tagged.insert(variant.to_string(), Value::Object(fields));
-    Value::Object(tagged)
+    let mut out = serde_json::Map::new();
+    match meta.tag {
+        // Internally tagged: the variant's fields sit beside the tag.
+        Some(tag) => {
+            out.insert(tag.to_string(), Value::String(variant));
+            out.extend(fields);
+        }
+        None => {
+            out.insert(variant, Value::Object(fields));
+        }
+    }
+    Value::Object(out)
+}
+
+/// How an enum is spelled on the wire, read from the attributes above it.
+struct EnumMeta<'a> {
+    body: &'a str,
+    /// `rename_all` casing, if the enum sets one.
+    rename_all: Option<&'a str>,
+    /// `tag` key, if the enum is internally tagged.
+    tag: Option<&'a str>,
+}
+
+/// Locate `enum <name>` in `src` and read the body plus the serde attributes
+/// declared immediately above it.
+fn enum_meta<'a>(src: &'a str, name: &str) -> Option<EnumMeta<'a>> {
+    let decl = src.find(&format!("enum {name}"))?;
+    // Start at the beginning of the declaration line: `pub enum Foo` puts a
+    // `pub ` between the newline and `enum`, so walking back from `decl` would
+    // stop on that instead of on the attributes.
+    let decl_line = src[..decl].rfind('\n').map_or(0, |i| i + 1);
+    // Walk back over the contiguous attribute block. A `#[serde(...)]` may be
+    // one line or several, so accept a line that opens or continues one.
+    let mut block_start = decl_line;
+    while block_start > 0 {
+        let head_end = block_start - 1;
+        let Some(nl) = src[..head_end].rfind('\n') else {
+            break;
+        };
+        let line = src[nl + 1..head_end].trim();
+        let continues = line.starts_with("#[")
+            || line.starts_with("rename_all")
+            || line.starts_with("tag")
+            || line.starts_with("untagged");
+        if !continues {
+            break;
+        }
+        block_start = nl + 1;
+    }
+    let attrs = &src[block_start..decl_line];
+    Some(EnumMeta {
+        body: enum_variants(src, name)?,
+        rename_all: attr_value(attrs, "rename_all"),
+        tag: attr_value(attrs, "tag"),
+    })
+}
+
+/// Read `key = "value"` out of an attribute block.
+fn attr_value<'a>(attrs: &'a str, key: &str) -> Option<&'a str> {
+    let pat = format!("{key} = \"");
+    let at = attrs.find(&pat)?;
+    let rest = &attrs[at + pat.len()..];
+    let end = rest.find('"')?;
+    Some(&rest[..end])
+}
+
+/// Apply a `rename_all` casing to a Rust variant name, matching what serde
+/// puts on the wire.
+fn rename_variant(variant: &str, rename_all: Option<&str>) -> String {
+    match rename_all {
+        Some("snake_case") => {
+            let mut out = String::with_capacity(variant.len() + 4);
+            for (i, c) in variant.chars().enumerate() {
+                if c.is_ascii_uppercase() && i > 0 {
+                    out.push('_');
+                }
+                out.push(c.to_ascii_lowercase());
+            }
+            out
+        }
+        Some("lowercase") => variant.to_ascii_lowercase(),
+        Some("kebab-case") => variant.replace('_', "-").to_ascii_lowercase(),
+        _ => variant.to_string(),
+    }
 }
 
 /// Body of `enum <name> { ... }` in [`REQUEST_SOURCES`], brace matched.
@@ -1477,6 +1548,27 @@ fn req_round_trip() {
             arm.name
         );
     }
+}
+
+#[test]
+fn req_enum_samples_match_their_serde_spelling() {
+    // The whole point of `sample_for` is to produce a value the decoder
+    // accepts, so the three ways an enum spells itself on the wire each need a
+    // case: plain, `rename_all`, and internally tagged.
+    assert_eq!(sample_for("RepeatMode", 4), serde_json::json!("Off"));
+    assert_eq!(sample_for("EqPreset", 4), serde_json::json!("flat"));
+    assert_eq!(sample_for("CacheKind", 4), serde_json::json!("lyrics"));
+    // `#[serde(tag = "action", rename_all = "snake_case")]`: the variant's
+    // fields sit beside the tag, not nested under it.
+    assert_eq!(
+        sample_for("LibraryAction", 4),
+        serde_json::json!({"action": "scan", "path": ""})
+    );
+    assert_eq!(sample_for("QueueAction", 4), serde_json::json!("list"));
+    // Wrappers peel before the enum is resolved.
+    assert_eq!(sample_for("Option<EqPreset>", 4), serde_json::json!("flat"));
+    assert_eq!(sample_for("Option<EqPreset>", 0), serde_json::Value::Null);
+    assert_eq!(sample_for("Vec<EqPreset>", 4), serde_json::json!(["flat"]));
 }
 
 #[test]
