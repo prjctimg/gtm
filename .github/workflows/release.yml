@@ -51,17 +51,29 @@ jobs:
 
       - name: Derive tag
         id: set-tag
+        # These arrive as environment variables rather than `${{ }}`
+        # interpolation. Interpolating them into the script text puts a commit
+        # message into shell source, where a backtick or `$(` in it is command
+        # substitution: any message containing a backtick turns this step into
+        # a syntax error, and one arriving from a pull request is arbitrary
+        # input executed in a job that holds release credentials.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_RELEASE_TYPE: ${{ github.event.inputs.release_type }}
+          INPUT_VERSION: ${{ github.event.inputs.version }}
+          REF: ${{ github.ref }}
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           short_sha="${GITHUB_SHA::7}"
           manifest_version="$(grep -m1 '^version = ' Cargo.toml | sed 's/^version = "\(.*\)"/\1/')"
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
             echo "skip=false" >> "$GITHUB_OUTPUT"
-            if [[ "${{ github.event.inputs.release_type }}" == "nightly" ]]; then
+            if [[ "$INPUT_RELEASE_TYPE" == "nightly" ]]; then
               tag="nightly"
               version="${manifest_version}+${short_sha}+nightly"
               nightly="true"
             else
-              version="${{ github.event.inputs.version }}"
+              version="$INPUT_VERSION"
               if [[ -z "$version" ]]; then
                 echo "::error::version input is required for stable releases" >&2
                 exit 1
@@ -69,8 +81,8 @@ jobs:
               tag="v${version}"
               nightly="false"
             fi
-          elif [[ "${{ github.ref }}" == "refs/heads/dev" ]]; then
-            if echo "${{ github.event.head_commit.message }}" | grep -q "\[skip nightly\]"; then
+          elif [[ "$REF" == "refs/heads/dev" ]]; then
+            if grep -q "\[skip nightly\]" <<<"$COMMIT_MESSAGE"; then
               echo "::notice::Skipping nightly — [skip nightly] in commit message"
               echo "skip=true" >> "$GITHUB_OUTPUT"
               echo "tag=nightly" >> "$GITHUB_OUTPUT"
