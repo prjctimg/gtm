@@ -276,26 +276,21 @@ impl App {
         ));
     }
 
+    /// Volume feedback. Deliberately never writes to the footer: the footer
+    /// already echoes the pressed key (`[Volume Down]`) and carries a
+    /// permanent Volume segment, so a second "🔊 45%" line just competed with
+    /// both. A floating toast is still raised when Playback notifications are
+    /// configured as Floating.
     pub fn notify_volume(&mut self, volume: u8) {
-        // Volume is a Playback-class notification: honor its configured mode.
         let mode = self
             .notification_modes
             .get(&NotifType::Playback)
             .copied()
             .unwrap_or(NotifMode::Floating);
-        if mode == NotifMode::Off {
+        if mode != NotifMode::Floating {
             return;
         }
         let now = std::time::Instant::now();
-        if mode == NotifMode::Footer {
-            let icon = if use_nerd_fonts() {
-                "\u{f057e} " // nf-md-volume-high
-            } else {
-                "\u{1f50a} " // 🔊
-            };
-            self.notify_footer(format!("{icon}{volume}%"));
-            return;
-        }
         if let Some(existing) = self
             .notifications
             .iter_mut()
