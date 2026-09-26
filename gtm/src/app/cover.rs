@@ -494,9 +494,10 @@ impl App {
             return;
         }
         let fetch_gen = self.next_cover_gen();
-        self.metadata
-            .cover_fetch
-            .claim(self.metadata.edit_track_ids.first().copied().unwrap_or(0), fetch_gen);
+        self.metadata.cover_fetch.claim(
+            self.metadata.edit_track_ids.first().copied().unwrap_or(0),
+            fetch_gen,
+        );
         // Clear stale cover while new fetch is in flight; handler will repopulate.
         self.metadata.cover = None;
         self.metadata.cover_stateful = None;
