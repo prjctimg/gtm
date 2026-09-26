@@ -74,44 +74,43 @@ use crate::youtube::{YoutubeManager, download_into};
 type ClientId = u64;
 type ReplyTx = mpsc::UnboundedSender<(u64, DaemonRes)>;
 
-pub mod stream;
-pub mod scrobble;
+pub mod charts;
+pub mod cover;
+pub mod favourites;
 pub mod health;
 pub mod history;
+pub mod lastfm;
+pub mod library;
+pub mod lyrics;
+pub mod podcast;
+pub mod queue_cmd;
+pub mod radio;
+pub mod scrobble;
+pub mod search;
+pub mod spotify;
+pub mod stream;
 pub mod yt;
 pub mod ytfb;
-pub mod spotify;
-pub mod charts;
-pub mod podcast;
-pub mod radio;
-pub mod lastfm;
-pub mod queue_cmd;
-pub mod library;
-pub mod search;
-pub mod favourites;
-pub mod cover;
-pub mod lyrics;
 
 #[cfg(test)]
 mod tests;
-pub(crate) use stream::*;
-pub(crate) use scrobble::*;
+pub(crate) use charts::*;
+pub(crate) use cover::*;
+pub(crate) use favourites::*;
 pub(crate) use health::*;
 pub(crate) use history::*;
+pub(crate) use lastfm::*;
+pub(crate) use library::*;
+pub(crate) use lyrics::*;
+pub(crate) use podcast::*;
+pub(crate) use queue_cmd::*;
+pub(crate) use radio::*;
+pub(crate) use scrobble::*;
+pub(crate) use search::*;
+pub(crate) use spotify::*;
+pub(crate) use stream::*;
 pub(crate) use yt::*;
 pub(crate) use ytfb::*;
-pub(crate) use spotify::*;
-pub(crate) use charts::*;
-pub(crate) use podcast::*;
-pub(crate) use radio::*;
-pub(crate) use lastfm::*;
-pub(crate) use queue_cmd::*;
-pub(crate) use library::*;
-pub(crate) use search::*;
-pub(crate) use favourites::*;
-pub(crate) use cover::*;
-pub(crate) use lyrics::*;
-
 
 struct Cmd;
 
@@ -569,8 +568,6 @@ impl Cmd {
         Ok(DaemonRes::Ok)
     }
 }
-
-
 
 impl Cmd {
     /// Play a raw HTTP(S) stream URL, transparently resolving M3U/PLS

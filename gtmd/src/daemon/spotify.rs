@@ -224,7 +224,10 @@ impl Spotify {
     /// Run one Spotify Connect control and answer with the refreshed status.
     /// Every control shares the same locking, error mapping and response shape;
     /// only the Web API call differs.
-    pub(crate) async fn connect_ctrl(inner: &DaemonInner, cmd: ConnectCmd) -> Result<DaemonRes, CoreError> {
+    pub(crate) async fn connect_ctrl(
+        inner: &DaemonInner,
+        cmd: ConnectCmd,
+    ) -> Result<DaemonRes, CoreError> {
         let mut spotify = inner.spotify.lock().await;
         let res = match cmd {
             ConnectCmd::PlayPause => spotify.play_pause().await,

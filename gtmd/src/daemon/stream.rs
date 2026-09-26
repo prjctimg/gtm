@@ -63,7 +63,10 @@ pub(crate) struct RemoteResolved {
 /// Resolve a synthetic remote path into its playable HTTP stream URL, plus
 /// whether it is a live (non-seekable) transport. Backed by the owning
 /// provider manager so the TUI never needs a fetch library of its own.
-pub(crate) async fn resolve_remote(inner: &DaemonInner, path: &str) -> Result<RemoteResolved, CoreError> {
+pub(crate) async fn resolve_remote(
+    inner: &DaemonInner,
+    path: &str,
+) -> Result<RemoteResolved, CoreError> {
     let kind = parse_remote_path(path)
         .ok_or_else(|| CoreError::Daemon(format!("{path} is not a remote provider path")))?;
     let url = match &kind {
