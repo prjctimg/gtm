@@ -1562,6 +1562,63 @@ fn req_round_trip() {
 }
 
 #[test]
+fn req_tagged_actions_survive_the_real_serializer() {
+    // `req_round_trip` builds params by hand from the `Params` struct, so it
+    // agrees with the decoder by construction and cannot catch the two
+    // disagreeing. This goes through the actual serializer: `DaemonReq` is
+    // `#[serde(untagged)]` and flattens its action, so the wire form has the
+    // tag and the variant's fields at the top level — and `parse_cmd` has to
+    // read them from there.
+    let queue = serde_json::to_value(DaemonReq::Queue {
+        action: QueueAction::Add {
+            paths: vec!["/tmp/a.opus".into()],
+            position: None,
+        },
+    })
+    .expect("queue serialises");
+    assert_eq!(
+        queue,
+        serde_json::json!({"action": "add", "paths": ["/tmp/a.opus"]})
+    );
+    assert!(matches!(
+        DaemonReq::parse_cmd("queue", queue).expect("queue decodes"),
+        DaemonReq::Queue {
+            action: QueueAction::Add { .. }
+        }
+    ));
+
+    // A unit variant flattens to just the tag.
+    let list = serde_json::to_value(DaemonReq::Queue {
+        action: QueueAction::List,
+    })
+    .expect("queue serialises");
+    assert_eq!(list, serde_json::json!({"action": "list"}));
+    assert!(matches!(
+        DaemonReq::parse_cmd("queue", list).expect("queue decodes"),
+        DaemonReq::Queue {
+            action: QueueAction::List
+        }
+    ));
+
+    let library = serde_json::to_value(DaemonReq::Library {
+        action: LibraryAction::Scan {
+            path: "/music".into(),
+        },
+    })
+    .expect("library serialises");
+    assert_eq!(
+        library,
+        serde_json::json!({"action": "scan", "path": "/music"})
+    );
+    assert!(matches!(
+        DaemonReq::parse_cmd("library", library).expect("library decodes"),
+        DaemonReq::Library {
+            action: LibraryAction::Scan { .. }
+        }
+    ));
+}
+
+#[test]
 fn req_enum_samples_match_their_serde_spelling() {
     // The whole point of `sample_for` is to produce a value the decoder
     // accepts, so the three ways an enum spells itself on the wire each need a

@@ -885,6 +885,11 @@ impl DaemonReq {
             "queue" => {
                 #[derive(Deserialize)]
                 struct Params {
+                    // `DaemonReq` is `#[serde(untagged)]` and flattens the
+                    // action, so the wire form is `{"action": "add", ...}` at
+                    // the top level. Without `flatten` here the decoder would
+                    // look for that object nested under `action`.
+                    #[serde(flatten)]
                     action: QueueAction,
                 }
                 let x: Params = p(params)?;
@@ -893,6 +898,7 @@ impl DaemonReq {
             "library" => {
                 #[derive(Deserialize)]
                 struct Params {
+                    #[serde(flatten)]
                     action: LibraryAction,
                 }
                 let x: Params = p(params)?;
