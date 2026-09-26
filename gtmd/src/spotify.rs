@@ -983,6 +983,32 @@ pub async fn album_cover(
     fetch_image(client, &url).await
 }
 
+/// Fetch the largest album-cover image bytes for a free-text `"{artist} -
+/// {title}"` query via the Web API. This is the shape a radio station
+/// publishes, and free text matches where the `album:` / `artist:` field
+/// syntax misses a track released outside Spotify's album index. `None` when
+/// no hit.
+pub async fn track_art(client: &AuthCodePkceSpotify, query: &str) -> Option<Vec<u8>> {
+    let q = query.trim();
+    if q.is_empty() {
+        return None;
+    }
+    let page = client
+        .search(q, SearchType::Track, None, None, Some(3), None)
+        .await
+        .ok()?;
+    let rspotify::model::SearchResult::Tracks(page) = page else {
+        return None;
+    };
+    let images = page
+        .items
+        .into_iter()
+        .flat_map(|t| t.album.images)
+        .collect::<Vec<_>>();
+    let url = pick_largest_image(&images)?;
+    fetch_image(client, &url).await
+}
+
 /// Fetch the largest artist portrait image bytes via the Web API. `None` when
 /// no hit.
 pub async fn artist_image(client: &AuthCodePkceSpotify, artist: &str) -> Option<Vec<u8>> {

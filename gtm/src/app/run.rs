@@ -427,17 +427,13 @@ impl App {
             }
             // After track change, check if new track has cover art.
             // If not, clear reactive palette so theme reverts to base.
-            if had_track_change && self.reactive_theme {
-                let has_cover = self
-                    .state
-                    .current_track
-                    .as_ref()
-                    .map(|t| t.cover_path.is_some())
-                    .unwrap_or(false);
-                if !has_cover {
-                    self.reactive_palette = None;
-                    self.apply_reactive();
-                }
+            // Judged on the cover actually held rather than on `cover_path`:
+            // a live radio track never has a library row to hang a path on, so
+            // the path test would wipe the palette on every track change even
+            // though the daemon had just delivered artwork.
+            if had_track_change && self.reactive_theme && self.np_cover.image.is_none() {
+                self.reactive_palette = None;
+                self.apply_reactive();
             }
             // If the countdown elapsed without a PlaybackStarted (e.g. the
             // track ended before the crossfade could fire), drop the card.
@@ -624,9 +620,16 @@ impl App {
                 self.lyrics.manual_scroll = false;
             }
 
+            // A live stream is a second case: its path never changes, so
+            // `track_changed` alone would fetch artwork once for the whole
+            // session. An advance of the track on air counts as a track change
+            // so the cover and reactive palette follow the rotation. Evaluated
+            // unconditionally, since it also refreshes the remembered title.
+            let live_advanced = self.live_advanced();
+
             // Clear stale cover immediately so we don't show old art on the
             // new track, then trigger a cover fetch + lyrics auto-fetch.
-            if track_changed {
+            if track_changed || (had_track_change && live_advanced) {
                 self.np_cover.image = None;
                 self.np_cover.stateful = None;
                 // Invalidate pending fetch so stale responses cannot overwrite

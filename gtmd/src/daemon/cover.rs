@@ -1,5 +1,11 @@
 use super::*;
 
+use crate::spotify::track_art;
+
+/// Cap on a fetched image. Station pages and tracklists are untrusted input and
+/// nothing in the app needs more than a few hundred kilobytes of cover.
+const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+
 pub(crate) struct Cover;
 
 impl Cover {
@@ -111,20 +117,22 @@ impl Cover {
             }
         }
 
-        // Radio stations have no album art; serve the station's own favicon
-        // (fetched once, cached under `radio:<uuid>`) so the now-playing pane
-        // shows the station logo instead of a blank tile.
+        // A live stream has no album art of its own. The track on air does
+        // have a title, so resolve art from it, and fall back to the station's
+        // own branding so the tile is never blank. Ordered cheapest-first:
+        // art the tracklist already published, the track's own cover from the
+        // metadata providers, then the station image.
         let radio_uuid = track_path
             .and_then(|p| p.strip_prefix("radio://"))
             .and_then(|rest| {
                 let uuid = rest.split('/').next().unwrap_or(rest);
                 (!uuid.is_empty()).then_some(uuid)
             });
-        if let Some(uuid) = radio_uuid
-            && let Some(bytes) = Self::radio_favicon_cover(inner, uuid).await
-        {
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-            return Ok(DaemonRes::CoverArt { data: Some(b64) });
+        if let Some(uuid) = radio_uuid {
+            if let Some(bytes) = Self::radio_cover(inner, uuid).await {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+                return Ok(DaemonRes::CoverArt { data: Some(b64) });
+            }
         }
 
         if !discovered_artist.is_empty() && !discovered_album.is_empty() {
@@ -175,51 +183,169 @@ impl Cover {
         Ok(DaemonRes::CoverArt { data: None })
     }
 
-    /// Resolve a radio station's favicon to cover-sized bytes, using the
-    /// directory's `byuuid` lookup to find the station (and thus its favicon
-    /// URL), then fetching the PNG once and caching it under `radio:<uuid>`.
-    pub(crate) async fn radio_favicon_cover(inner: &DaemonInner, uuid: &str) -> Option<Vec<u8>> {
+    /// Cover art for a live stream, in order of preference:
+    ///
+    /// 1. an image URL the station's tracklist published for the track;
+    /// 2. the track's own cover, from Spotify when linked and otherwise from
+    ///    the free-text Deezer search;
+    /// 3. the station's Open Graph image from its homepage;
+    /// 4. the station's directory favicon.
+    ///
+    /// Every step caches, so only the first call for a given track or station
+    /// touches the network. All of them resolve to `None` rather than
+    /// erroring, leaving the caller to render the placeholder glyph.
+    pub(crate) async fn radio_cover(inner: &DaemonInner, uuid: &str) -> Option<Vec<u8>> {
+        if let Some(bytes) = Self::track_cover(inner).await {
+            return Some(bytes);
+        }
+        Self::station_cover(inner, uuid).await
+    }
+
+    /// The current live track's own cover, from the tracklist and the metadata
+    /// providers. Reads the mirrored tracklist out of `state` rather than
+    /// refetching, so a cached track costs no network at all.
+    async fn track_cover(inner: &DaemonInner) -> Option<Vec<u8>> {
+        let track = {
+            let state = inner.state.read().await;
+            let list = &state.radio_tracks;
+            let at = match state.radio_title.as_deref() {
+                Some(t) if !t.is_empty() => list.match_title(t),
+                _ => list.at,
+            };
+            list.tracks.get(at)?.clone()
+        };
+        if let Some(url) = track.art.as_deref().filter(|u| !u.is_empty())
+            && let Some(cover) = Self::url_cover(inner, url).await
+        {
+            return Some(cover);
+        }
+        let query = track.query();
+        let provider = inner.effective_cover_provider().await;
+        // Spotify first when linked: original artwork, and no rate limit.
+        if matches!(provider, CoverProvider::Auto | CoverProvider::Spotify)
+            && let Ok(client) = linked(inner).await
+            && let Some(bytes) =
+                tokio::time::timeout(Duration::from_secs(8), track_art(&client, &query))
+                    .await
+                    .ok()
+                    .flatten()
         {
             let mut guard = inner.cover_cache().await;
-            let hit = match guard.as_mut() {
-                Some(c) => c.get("radio", uuid, CoverProvider::Auto).await,
-                None => None,
-            };
-            if let Some(cover) = hit {
-                return Some(cover.data);
+            if let Some(cache) = guard.as_mut() {
+                cache.put("track", &query, bytes.clone()).await;
             }
-        }
-        let favicon = {
-            let radio = inner.radio.lock().await;
-            radio.by_uuid(uuid).await.map(|s| s.favicon).ok()
-        }
-        .into_iter()
-        .find(|f| !f.is_empty())?;
-        let bytes = tokio::time::timeout(Duration::from_secs(8), async {
-            let req = reqwest::Client::builder()
-                .user_agent(format!("gtm/{}", env!("CARGO_PKG_VERSION")))
-                .timeout(Duration::from_secs(8))
-                .build()
-                .ok()?;
-            req.get(&favicon)
-                .send()
-                .await
-                .ok()?
-                .bytes()
-                .await
-                .ok()
-                .map(|b| b.to_vec())
-        })
-        .await
-        .ok()??;
-        if CoverCache::too_small(&bytes) {
-            return None;
+            return Some(bytes);
         }
         let mut guard = inner.cover_cache().await;
+        let hit = match guard.as_mut() {
+            Some(cache) => tokio::time::timeout(
+                Duration::from_secs(5),
+                cache.get_text(&query, provider),
+            )
+            .await
+            .ok()
+            .flatten(),
+            None => None,
+        };
+        hit.map(|c| c.data)
+    }
+
+    /// The station's own image, from its Open Graph tag or its directory
+    /// favicon. Cached under the station uuid, and accepting images below the
+    /// album cover floor since a station logo is legitimately small.
+    async fn station_cover(inner: &DaemonInner, uuid: &str) -> Option<Vec<u8>> {
+        {
+            // Memory-then-disk only, so holding the cache lock across it is
+            // safe; this is the same shape `Cover::artist` uses.
+            let guard = inner.cover_cache().await;
+            if let Some(hit) = guard.as_ref()
+                && let Some(hit) = hit.get_station(uuid).await
+            {
+                return Some(hit.data);
+            }
+        }
+        let (homepage, favicon) = {
+            let radio = inner.radio.lock().await;
+            radio
+                .by_uuid(uuid)
+                .await
+                .map(|s| (s.homepage, s.favicon))
+                .ok()?
+        };
+        let client = Self::image_client();
+        if !homepage.is_empty()
+            && let Some(og) = Self::og_image(&client, &homepage).await
+        {
+            let mut guard = inner.cover_cache().await;
+            if let Some(cache) = guard.as_mut() {
+                cache.put_station(uuid, og.clone()).await;
+            }
+            return Some(og);
+        }
+        let bytes = Self::fetch_image(&client, &favicon).await?;
+        let mut guard = inner.cover_cache().await;
         if let Some(cache) = guard.as_mut() {
-            cache.put("radio", uuid, bytes.clone()).await;
+            cache.put_station(uuid, bytes.clone()).await;
         }
         Some(bytes)
+    }
+
+    /// Fetch an image URL through the cover cache, so a tracklist-advertised
+    /// image reuses the same disk store as every other cover.
+    async fn url_cover(inner: &DaemonInner, url: &str) -> Option<Vec<u8>> {
+        let mut guard = inner.cover_cache().await;
+        let cache = guard.as_mut()?;
+        let client = Self::image_client();
+        let hit = cache
+            .get_url(url, || {
+                let client = client.clone();
+                let url = url.to_string();
+                async move { Self::fetch_image(&client, &url).await }
+            })
+            .await?;
+        Some(hit.data)
+    }
+
+    /// The `og:image` a station's homepage advertises, which is the closest
+    /// thing it publishes to cover art. Tolerates either attribute order by
+    /// locating `og:image` first and reading the `content` that follows.
+    async fn og_image(client: &reqwest::Client, homepage: &str) -> Option<Vec<u8>> {
+        let html = client.get(homepage).send().await.ok()?.text().await.ok()?;
+        let at = html.find("og:image")?;
+        let rest = &html[at + "og:image".len()..];
+        let key = rest.find("content=")? + "content=".len();
+        let rest = &rest[key..].trim_start();
+        let quote = rest.chars().next()?;
+        if quote != '"' && quote != '\'' {
+            return None;
+        }
+        let url = rest[1..].split(quote).next()?;
+        Self::fetch_image(client, url).await
+    }
+
+    /// One bounded image GET. Station pages are untrusted input, so the body
+    /// is capped and normalised before it reaches the cache.
+    async fn fetch_image(client: &reqwest::Client, url: &str) -> Option<Vec<u8>> {
+        if url.trim().is_empty() {
+            return None;
+        }
+        let resp = client.get(url).send().await.ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let bytes = resp.bytes().await.ok()?;
+        if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
+            return None;
+        }
+        Some(bytes.to_vec())
+    }
+
+    fn image_client() -> reqwest::Client {
+        reqwest::Client::builder()
+            .user_agent(format!("gtm/{} ({})", env!("CARGO_PKG_VERSION"), "gtm"))
+            .timeout(Duration::from_secs(8))
+            .build()
+            .unwrap_or_default()
     }
 
     pub async fn artist(inner: &DaemonInner, artist: &str) -> Result<DaemonRes, CoreError> {

@@ -219,6 +219,9 @@ pub struct App {
     pub pickers: PickerManager,
     pub sleep_timer: SleepTimerState,
     pub np_cover: NowPlayingCoverState,
+    /// The live `StreamTitle` seen on the previous frame, used to spot the
+    /// track on air advancing without a path change.
+    pub live_title: Option<String>,
     pub terminal_cols: u16,
     pub terminal_rows: u16,
     pub cmd_rx: mpsc::Receiver<TuiCommand>,
@@ -689,6 +692,18 @@ impl App {
         &self.state.radio_tracks.tracks
     }
 
+    /// Whether the live track on air changed since the last frame. The queue
+    /// path is stable across a whole station session, so this is the only
+    /// signal that a new track — and therefore new artwork — has started.
+    fn live_advanced(&mut self) -> bool {
+        let now = self.state.radio_title.clone();
+        if now != self.live_title {
+            self.live_title = now;
+            return true;
+        }
+        false
+    }
+
     fn next_lyrics_gen(&mut self) -> u64 {
         let g = self.lyrics.next_gen;
         self.lyrics.next_gen = self.lyrics.next_gen.wrapping_add(1).max(1);
@@ -867,6 +882,7 @@ impl App {
                 stateful: None,
                 pending_gen: None,
             },
+            live_title: None,
             terminal_cols: 80,
             terminal_rows: 24,
             cmd_rx,

@@ -264,7 +264,6 @@ impl CoverCache {
         if bytes.is_empty() || Self::too_small(&bytes) {
             return;
         }
-        let bytes = Self::normalize(&bytes).unwrap_or(bytes);
         let artist = if artist.is_empty() {
             "Unknown Artist"
         } else {
@@ -275,15 +274,85 @@ impl CoverCache {
         } else {
             album
         };
-        let key = Self::cache_key(artist, album);
+        Self::store(self, Self::cache_key(artist, album), bytes).await;
+    }
+
+    /// Insert station artwork — a logo, favicon or Open Graph image — under the
+    /// station's own key. Unlike [`Self::put`] this accepts a small image: a
+    /// station favicon is 32-64px and the 300px album floor rejects every one of
+    /// them, which is why the radio favicon fallback has never populated
+    /// anything. Normalisation still upscales to the app-wide 500x500, so the
+    /// stored form passes the floor on its way back out.
+    pub async fn put_station(&self, station: &str, bytes: Vec<u8>) {
+        if bytes.is_empty() || station.trim().is_empty() {
+            return;
+        }
+        Self::store(self, Self::cache_key("station", station), bytes).await;
+    }
+
+    /// The shared tail of every insert: normalise, write disk, fill the LRU.
+    /// Callers gate on whatever size floor suits their source.
+    async fn store(&self, key: String, bytes: Vec<u8>) {
+        let bytes = Self::normalize(&bytes).unwrap_or(bytes);
         let cd = CoverData {
             mime: "image/jpeg".to_string(),
             data: bytes.clone(),
         };
-        let disk = self.disk_path(&key);
-        self.store_disk(&disk, &bytes).await;
+        self.store_disk(&self.disk_path(&key), &bytes).await;
         let mut mem = self.memory.lock().await;
         Self::insert_mem(&mut mem, &self.memory_bytes, MEMORY_BUDGET_BYTES, key, cd);
+    }
+
+    /// Read a station's cached image without consulting any provider. Used on
+    /// the radio path, where the alternative is a metadata search that would
+    /// never match a station logo.
+    pub async fn get_station(&self, station: &str) -> Option<CoverData> {
+        self.cached(&Self::cache_key("station", station)).await
+    }
+
+    /// Look up cover art for a free-text `"{artist} - {title}"` query, the
+    /// shape a radio station publishes. Cached in the album caches under the
+    /// query itself, so a track that comes round again is served from disk
+    /// without a second search.
+    pub async fn get_text(&mut self, query: &str, provider: CoverProvider) -> Option<CoverData> {
+        let q = query.trim();
+        if q.is_empty() {
+            return None;
+        }
+        if matches!(provider, CoverProvider::Musicbrainz) {
+            return None;
+        }
+        let key = Self::cache_key("track", q);
+        if let Some(hit) = self.cached(&key).await {
+            return Some(hit);
+        }
+        let cover = self.deezer_cover(q).await?;
+        let disk = self.disk_path(&key);
+        if let Some(parent) = disk.parent() {
+            tokio::fs::create_dir_all(parent).await.ok();
+        }
+        if let Err(e) = tokio::fs::write(&disk, &cover.data).await {
+            warn!("Failed to write cover to disk: {e}");
+        }
+        Some(cover)
+    }
+
+    /// Memory-then-disk read for `key`, skipping the provider search.
+    async fn cached(&self, key: &str) -> Option<CoverData> {
+        {
+            let mut mem = self.memory.lock().await;
+            if let Some(c) = mem.get(key) {
+                return Some(c.clone());
+            }
+        }
+        let data = tokio::fs::read(self.disk_path(key)).await.ok()?;
+        if Self::too_small(&data) {
+            return None;
+        }
+        Some(CoverData {
+            mime: "image/jpeg".to_string(),
+            data,
+        })
     }
 
     /// Insert externally-provided artist image bytes into both artist caches.
@@ -559,19 +628,37 @@ impl CoverCache {
             urlencoding(artist),
             urlencoding(album)
         );
+        let cover = self.deezer_cover(&query).await;
+        if let Some(cd) = &cover {
+            let disk = self.disk_path(key);
+            if let Some(parent) = disk.parent() {
+                tokio::fs::create_dir_all(parent).await.ok();
+            }
+            if let Err(e) = tokio::fs::write(disk, &cd.data).await {
+                warn!("Failed to write cover to disk: {e}");
+            }
+        }
+        cover
+    }
 
+    /// Search Deezer for `query` and download the best cover it offers. The
+    /// query is free text, which is what a radio track supplies: stations
+    /// publish an artist and a title but no album, and Deezer's
+    /// `artist:"…"` / `track:"…"` field syntax misses most such titles where a
+    /// plain string matches.
+    async fn deezer_cover(&self, query: &str) -> Option<CoverData> {
         tokio::time::sleep(std::time::Duration::from_millis(RATE_LIMIT_MS)).await;
 
         let resp = match self
             .client
             .get(DEEZER_API)
-            .query(&[("q", &query)])
+            .query(&[("q", query)])
             .send()
             .await
         {
             Ok(r) => r,
             Err(e) => {
-                warn!("Deezer API request failed for {artist}/{album}: {e}");
+                warn!("Deezer request failed for {query}: {e}");
                 return None;
             }
         };
@@ -579,62 +666,51 @@ impl CoverCache {
         let json: serde_json::Value = match resp.json().await {
             Ok(j) => j,
             Err(e) => {
-                warn!("Deezer JSON parse failed for {artist}/{album}: {e}");
+                warn!("Deezer JSON parse failed for {query}: {e}");
                 return None;
             }
         };
-        let data = match json.get("data").and_then(|d| d.as_array()) {
-            Some(d) => d,
-            None => {
-                warn!("Deezer returned no data for {artist}/{album}");
-                return None;
-            }
-        };
-        let first = match data.first() {
+        let first = match json
+            .get("data")
+            .and_then(|d| d.as_array())
+            .and_then(|d| d.first())
+        {
             Some(f) => f,
             None => {
-                warn!("Deezer empty results for {artist}/{album}");
+                warn!("Deezer returned no results for {query}");
                 return None;
             }
         };
-
-        let cover_url = first
+        let url = first
             .get("cover_big")
             .or_else(|| first.get("cover_medium"))
             .and_then(|c| c.as_str())
             .unwrap_or("");
-
-        if cover_url.is_empty() {
-            warn!("Deezer cover URL empty for {artist}/{album}");
+        if url.is_empty() {
+            warn!("Deezer cover URL empty for {query}");
             return None;
         }
+        self.download(url).await
+    }
 
-        let img_bytes = match self.client.get(cover_url).send().await {
-            Ok(r) => match r.bytes().await {
-                Ok(b) => b.to_vec(),
-                Err(e) => {
-                    warn!("Failed to read cover bytes from {cover_url}: {e}");
-                    return None;
-                }
-            },
+    /// Fetch image bytes and normalise them to the app-wide cover size.
+    async fn download(&self, url: &str) -> Option<CoverData> {
+        let resp = match self.client.get(url).send().await {
+            Ok(r) => r,
             Err(e) => {
-                warn!("Failed to download cover from {cover_url}: {e}");
+                warn!("Failed to download cover from {url}: {e}");
                 return None;
             }
         };
-
-        let img_bytes = Self::normalize(&img_bytes).unwrap_or(img_bytes);
-
-        let disk = self.disk_path(key);
-        if let Some(parent) = disk.parent() {
-            tokio::fs::create_dir_all(parent).await.ok();
-        }
-        if let Err(e) = tokio::fs::write(&disk, &img_bytes).await {
-            warn!("Failed to write cover to disk {disk:?}: {e}");
-        }
-
+        let bytes = match resp.bytes().await {
+            Ok(b) => b.to_vec(),
+            Err(e) => {
+                warn!("Failed to read cover bytes from {url}: {e}");
+                return None;
+            }
+        };
         Some(CoverData {
-            data: img_bytes,
+            data: Self::normalize(&bytes).unwrap_or(bytes),
             mime: "image/jpeg".to_string(),
         })
     }
