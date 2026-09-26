@@ -91,6 +91,10 @@ pub struct Prefs {
     pub(crate) keybindings: std::collections::HashMap<String, String>,
     #[serde(default = "default_notification_modes")]
     pub(crate) notification_modes: std::collections::HashMap<String, String>,
+    /// Whether the footer echoes a command's name or the key that triggered
+    /// it. Config-file only; see [`FooterKeyAction`].
+    #[serde(default)]
+    pub(crate) footer_key_action: FooterKeyAction,
     #[serde(default = "default_cover_provider")]
     pub(crate) cover_provider: String,
     #[serde(default = "default_cover_cache_mb")]
@@ -269,6 +273,7 @@ impl Default for Prefs {
             track_sort: default_track_sort(),
             keybindings: std::collections::HashMap::new(),
             notification_modes: default_notification_modes(),
+            footer_key_action: FooterKeyAction::default(),
             cover_provider: default_cover_provider(),
             cover_cache_mb: default_cover_cache_mb(),
             auto_fetch_lyrics: default_fetch_lyrics(),

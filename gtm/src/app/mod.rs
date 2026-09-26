@@ -26,7 +26,9 @@ use crate::shared::spotify::{
 use crate::shared::state::{ThemeMode, TrackSort};
 use crate::shared::track::{LrcData, LrcLine, Playlist, TrackInfo, YTSearchResult};
 use crate::shared::{CoreError, MAX_SPEED, MAX_VOLUME, MIN_SPEED, MetadataPatch};
-use crossterm::event::{self, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
+use crossterm::event::{
+    self, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
+};
 use ratatui::Terminal;
 use ratatui::layout::Alignment;
 use ratatui::widgets::Paragraph;
@@ -38,10 +40,10 @@ use tokio::sync::mpsc;
 use base64::Engine;
 
 use crate::extensions::{ExtensionId, ExtensionsConfig};
-use crate::footer::{FooterCache, FooterPreset, merged_presets};
+use crate::footer::{FooterCache, FooterKeyAction, FooterPreset, merged_presets};
 use crate::keymap::{
     BoundCommand, KeyContext, Keybindings, KeyboardAction, default_keybindings, detect_clashes,
-    parse_key_event,
+    format_key_event, parse_key_event,
 };
 use crate::mouse::{MouseMap, MouseZone};
 use crate::oauth::{lastfm_callback_port, open_browser};
@@ -181,6 +183,9 @@ pub struct App {
     /// Per-category notification visibility, hydrated from `Prefs` on config
     /// load and persisted via `current_prefs`.
     pub notification_modes: std::collections::HashMap<NotifType, NotifMode>,
+    /// Whether the footer's `KeyAction` segment shows the action name or the
+    /// pressed key. Read-only from the TUI: set in `config.toml`.
+    pub footer_key_action: FooterKeyAction,
     /// Cover provider preference (`auto`/`deezer`/`musicbrainz`/`spotify`),
     /// persisted in config.toml and consumed by the daemon for cover lookups.
     pub cover_provider: String,
@@ -775,6 +780,7 @@ impl App {
                 .into_iter()
                 .map(|(k, v)| (NotifType::from_str_lossy(&k), NotifMode::from_str_lossy(&v)))
                 .collect(),
+            footer_key_action: prefs.footer_key_action,
             cover_provider: prefs.cover_provider.clone(),
             cover_cache_mb: prefs.cover_cache_mb,
             cover_cache_bytes: 0,
@@ -942,15 +948,15 @@ impl App {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('z') => {
                 self.zen = false;
-                self.set_last_action("Leave Zen Mode");
+                self.set_last_action("Leave Zen Mode", &key);
             }
             KeyCode::Tab => {
                 self.zen_surface = self.zen_surface.next();
-                self.set_last_action("Zen: Next Surface");
+                self.set_last_action("Zen: Next Surface", &key);
             }
             KeyCode::BackTab => {
                 self.zen_surface = self.zen_surface.prev();
-                self.set_last_action("Zen: Prev Surface");
+                self.set_last_action("Zen: Prev Surface", &key);
             }
             KeyCode::Char('l') => {
                 if self.zen_surface == ZenSurface::Lyrics {
@@ -992,9 +998,16 @@ impl App {
         self.scroll_offset[i] = v;
     }
 
-    fn set_last_action(&mut self, name: &str) {
+    /// Record the footer's `KeyAction` echo for a command. `name` is the
+    /// action's human label; `key` is what the user actually pressed, used
+    /// instead when `footer_key_action` is `Keys`.
+    fn set_last_action(&mut self, name: &str, key: &KeyEvent) {
+        let label = match self.footer_key_action {
+            FooterKeyAction::Action => name.to_string(),
+            FooterKeyAction::Keys => format_key_event(key),
+        };
         self.last_action_name = Some((
-            name.to_string(),
+            label,
             std::time::Instant::now() + std::time::Duration::from_secs(3),
         ));
     }

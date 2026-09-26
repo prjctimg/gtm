@@ -477,6 +477,57 @@ pub fn parse_key_event(s: &str) -> Option<KeyEvent> {
     Some(KeyEvent::new(code?, modifiers))
 }
 
+/// Inverse of [`parse_key_event`]: the spelling of a key event as it appears in
+/// `config.toml` and the help screen. Lets the footer echo the key a command
+/// was triggered with instead of the command's name.
+///
+/// A shifted letter arrives as an already-uppercase `Char` with the `SHIFT`
+/// modifier set, so the modifier is folded into the character rather than
+/// spelled out; every other shifted key keeps an explicit `Shift+`.
+pub fn format_key_event(key: &KeyEvent) -> String {
+    let mut out = String::new();
+    if key.modifiers.contains(KeyModifiers::CONTROL) {
+        out.push_str("Ctrl+");
+    }
+    if key.modifiers.contains(KeyModifiers::ALT) {
+        out.push_str("Alt+");
+    }
+    if key.modifiers.contains(KeyModifiers::SUPER) {
+        out.push_str("Super+");
+    }
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    if shift && !matches!(key.code, KeyCode::Char(_)) {
+        out.push_str("Shift+");
+    }
+    match key.code {
+        KeyCode::Char(' ') => out.push_str("Space"),
+        KeyCode::Char(c) => out.push(if shift { c.to_ascii_uppercase() } else { c }),
+        KeyCode::Enter => out.push_str("Enter"),
+        KeyCode::Tab => out.push_str("Tab"),
+        KeyCode::BackTab => out.push_str("BackTab"),
+        KeyCode::Backspace => out.push_str("Backspace"),
+        KeyCode::Delete => out.push_str("Delete"),
+        KeyCode::Esc => out.push_str("Esc"),
+        KeyCode::Home => out.push_str("Home"),
+        KeyCode::End => out.push_str("End"),
+        KeyCode::PageUp => out.push_str("PageUp"),
+        KeyCode::PageDown => out.push_str("PageDown"),
+        KeyCode::Up => out.push_str("Up"),
+        KeyCode::Down => out.push_str("Down"),
+        KeyCode::Left => out.push_str("Left"),
+        KeyCode::Right => out.push_str("Right"),
+        KeyCode::Insert => out.push_str("Insert"),
+        KeyCode::F(n) => {
+            out.push('F');
+            out.push_str(&n.to_string());
+        }
+        // A key the user has not bound; showing nothing would be worse than
+        // an honest placeholder.
+        _ => out.push('?'),
+    }
+    out
+}
+
 impl KeyboardAction {
     /// Map an action name (from config) to a `KeyboardAction`.
     pub fn from_name(name: &str) -> Option<Self> {
@@ -657,5 +708,59 @@ mod tests {
             dispatch(KeyCode::Char(':').into(), KeyContext::Normal),
             Some(KeyboardAction::OpenOverlay(PickerId::CommandPalette))
         ));
+    }
+
+    #[test]
+    fn format_is_readable() {
+        let show = |k: KeyEvent| format_key_event(&k);
+        assert_eq!(show(KeyCode::Char('n').into()), "n");
+        assert_eq!(show(KeyCode::Char(' ').into()), "Space");
+        assert_eq!(show(KeyCode::Up.into()), "Up");
+        assert_eq!(show(KeyCode::F(5).into()), "F5");
+        assert_eq!(
+            show(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL)),
+            "Ctrl+d"
+        );
+        assert_eq!(
+            show(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT)),
+            "Alt+1"
+        );
+    }
+
+    #[test]
+    fn shifted_letter_has_no_shift_prefix() {
+        // A terminal sends `S` with SHIFT set for shift+s; the character
+        // already carries the shift, so `Shift+S` would be redundant.
+        assert_eq!(
+            format_key_event(&KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT)),
+            "S"
+        );
+        // A shifted non-letter still needs the modifier spelled out.
+        assert_eq!(
+            format_key_event(&KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT)),
+            "Shift+Up"
+        );
+    }
+
+    #[test]
+    fn format_round_trips_through_parse() {
+        // `config.toml` spells bindings with `parse_key_event`; the footer
+        // echo must be something a user could paste back into it.
+        for key in [
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char('S'), KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Char('1'), KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Char('S'), KeyModifiers::ALT),
+            KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE),
+        ] {
+            let text = format_key_event(&key);
+            let back =
+                parse_key_event(&text).unwrap_or_else(|| panic!("{text} did not parse back"));
+            assert_eq!(back.code, key.code, "{text} changed the key");
+            assert_eq!(back.modifiers, key.modifiers, "{text} changed modifiers");
+        }
     }
 }

@@ -45,6 +45,9 @@ impl App {
                 .iter()
                 .map(|(t, m)| (t.as_str().to_string(), m.as_str().to_string()))
                 .collect(),
+            // Config-file only, so it is carried through verbatim: rebuilding
+            // the prefs must not silently reset the user's choice.
+            footer_key_action: self.footer_key_action,
             cover_provider: self.cover_provider.clone(),
             cover_cache_mb: self.cover_cache_mb,
             auto_fetch_lyrics: self.auto_fetch_lyrics,

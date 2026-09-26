@@ -396,7 +396,7 @@ impl App {
                         self.hide_help_bar = !self.hide_help_bar;
                     }
                     Some(KeyboardAction::PlayPause) => {
-                        self.set_last_action("Play/Pause");
+                        self.set_last_action("Play/Pause", &key);
                         match self.state.status {
                             PlaybackStatus::Playing => {
                                 self.send_high(TuiCommand::Pause);
@@ -414,7 +414,7 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::Next) => {
-                        self.set_last_action("Next");
+                        self.set_last_action("Next", &key);
                         if self.multiselect_mode && self.selected_count() > 0 {
                             let count = self.selected_count();
                             self.pending_prompt = Some(PendingPrompt {
@@ -437,7 +437,7 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::Prev) => {
-                        self.set_last_action("Previous");
+                        self.set_last_action("Previous", &key);
                         if self.multiselect_mode && self.selected_count() > 0 {
                             let count = self.selected_count();
                             self.pending_prompt = Some(PendingPrompt {
@@ -460,7 +460,7 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::Stop) => {
-                        self.set_last_action("Stop");
+                        self.set_last_action("Stop", &key);
                         self.send_high(TuiCommand::Stop);
                     }
                     Some(KeyboardAction::VolumeUp) => {
@@ -469,7 +469,7 @@ impl App {
                         self.notify_volume(new_vol);
                     }
                     Some(KeyboardAction::VolumeDown) => {
-                        self.set_last_action("Volume Down");
+                        self.set_last_action("Volume Down", &key);
                         let new_vol = self.state.volume.saturating_sub(5);
                         self.send_high(TuiCommand::SetVolume(new_vol));
                         self.notify_volume(new_vol);
@@ -478,17 +478,17 @@ impl App {
                         // Round to nearest 0.25 so the step stays predictable.
                         let new_speed = ((self.state.audio.speed + 0.25) * 4.0).ceil() / 4.0;
                         let new_speed = new_speed.min(MAX_SPEED);
-                        self.set_last_action(&format!("Speed {:.2}x", new_speed));
+                        self.set_last_action(&format!("Speed {:.2}x", new_speed), &key);
                         self.send_high(TuiCommand::SetSpeed(new_speed));
                     }
                     Some(KeyboardAction::SpeedDown) => {
-                        self.set_last_action("Speed Down");
+                        self.set_last_action("Speed Down", &key);
                         let new_speed = ((self.state.audio.speed - 0.25) * 4.0).ceil() / 4.0;
                         let new_speed = new_speed.max(MIN_SPEED);
                         self.send_high(TuiCommand::SetSpeed(new_speed));
                     }
                     Some(KeyboardAction::ToggleLowPower) => {
-                        self.set_last_action("Toggle Low-Power");
+                        self.set_last_action("Toggle Low-Power", &key);
                         self.send_high(TuiCommand::SetLowPower(!self.state.low_power));
                         let msg = if self.state.low_power {
                             "Leaving low-power mode"
@@ -501,11 +501,14 @@ impl App {
                         ));
                     }
                     Some(KeyboardAction::ToggleZen) => {
-                        self.set_last_action(if self.zen {
-                            "Leave Zen Mode"
-                        } else {
-                            "Zen Mode"
-                        });
+                        self.set_last_action(
+                            if self.zen {
+                                "Leave Zen Mode"
+                            } else {
+                                "Zen Mode"
+                            },
+                            &key,
+                        );
                         self.zen = !self.zen;
                         if self.zen {
                             // One surface at a time: start on the lyrics
@@ -520,15 +523,15 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::SeekForward) => {
-                        self.set_last_action("Seek Forward");
+                        self.set_last_action("Seek Forward", &key);
                         self.accumulate_seek(5.0);
                     }
                     Some(KeyboardAction::SeekBackward) => {
-                        self.set_last_action("SeekBackward");
+                        self.set_last_action("SeekBackward", &key);
                         self.accumulate_seek(-5.0);
                     }
                     Some(KeyboardAction::ToggleMute) => {
-                        self.set_last_action("Toggle Mute");
+                        self.set_last_action("Toggle Mute", &key);
                         self.send_high(TuiCommand::ToggleMute);
                         let msg = if self.state.mute { "Unmuted" } else { "Muted" };
                         self.footer_notification = Some((
@@ -537,7 +540,7 @@ impl App {
                         ));
                     }
                     Some(KeyboardAction::ToggleMono) => {
-                        self.set_last_action("Toggle Mono");
+                        self.set_last_action("Toggle Mono", &key);
                         self.send_high(TuiCommand::ToggleMono);
                         let msg = if self.state.mono {
                             "Mono off"
@@ -556,15 +559,16 @@ impl App {
                             } else {
                                 "Love on Last.fm"
                             },
+                            &key,
                         );
                         return self.manage_lastfm_love();
                     }
                     Some(KeyboardAction::ToggleScrobble) => {
-                        self.set_last_action("Toggle Last.fm scrobbling");
+                        self.set_last_action("Toggle Last.fm scrobbling", &key);
                         self.toggle_scrobble_session();
                     }
                     Some(KeyboardAction::CycleRepeat) => {
-                        self.set_last_action("Cycle Repeat");
+                        self.set_last_action("Cycle Repeat", &key);
                         let new_mode = match self.state.repeat {
                             RepeatMode::Off => RepeatMode::One,
                             RepeatMode::One => RepeatMode::All,
@@ -600,7 +604,7 @@ impl App {
                             }));
                             return true;
                         }
-                        self.set_last_action("Toggle Shuffle");
+                        self.set_last_action("Toggle Shuffle", &key);
                         self.send_high(TuiCommand::ToggleShuffle);
                         let msg = if self.state.shuffle {
                             "Shuffle OFF"
@@ -613,7 +617,7 @@ impl App {
                         ));
                     }
                     Some(KeyboardAction::ToggleFavourite) => {
-                        self.set_last_action("Toggle Favourite");
+                        self.set_last_action("Toggle Favourite", &key);
                         if self.library_pane_focus {
                             return true;
                         }
@@ -744,7 +748,7 @@ impl App {
                         }
                     }
                     Some(KeyboardAction::ClearQueue) => {
-                        self.set_last_action("Clear Queue");
+                        self.set_last_action("Clear Queue", &key);
                         let tx = self.cmd_tx();
                         let _ = tx.send(TuiCommand::QueueClear).await;
                         self.footer_notification = Some((

@@ -22,6 +22,20 @@ use crate::ui::{Render, provider_icon, use_nerd_fonts};
 /// Namespace for per-module footer rendering.
 pub struct Footer;
 
+/// What the footer's `KeyAction` segment echoes after a command. Set in
+/// `config.toml` as `footer_key_action`; deliberately not exposed in the
+/// Settings pane, since the choice is about muscle memory rather than
+/// presentation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FooterKeyAction {
+    /// The action name, e.g. `[Volume Down]`.
+    #[default]
+    Action,
+    /// The key that triggered it, e.g. `[ctrl+d]`.
+    Keys,
+}
+
 /// Scrolling marquee for footer text: if it fits in `MAX` chars, return it
 /// verbatim; otherwise cycle one full loop then hold still before repeating.
 fn scroll_text(raw: String, scroll: usize) -> String {
