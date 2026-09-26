@@ -1601,3 +1601,95 @@ fn spot_album_kind_survives_wire() {
     let back: SpotifyTrack = serde_json::from_value(json).expect("track deserialises");
     assert_eq!(back.kind, Some(SpotifySearchKind::Album));
 }
+
+// ---------------------------------------------------------------------------
+// Settings rows
+// ---------------------------------------------------------------------------
+
+/// The number of rows the Settings picker renders for each category, counted
+/// from the `vec![...]` literal that builds them.
+fn settings_row_counts() -> Vec<(u8, usize)> {
+    let src = include_str!("../src/ui/pickers/settings.rs");
+    let start = src
+        .find("let items: Vec<String> = match app.settings_category")
+        .expect("settings items");
+    // Brace- and bracket-match each `N => ...` arm and split its `vec!` on
+    // top-level commas.
+    let mut marks: Vec<(u8, usize)> = Vec::new();
+    let mut off = 0usize;
+    for line in src[start..].lines() {
+        let trimmed = line.trim_start();
+        let indent = line.len() - trimmed.len();
+        if indent == 12
+            && let Some(num) = trimmed
+                .split_once(" =>")
+                .and_then(|(n, _)| n.parse::<u8>().ok())
+        {
+            marks.push((num, start + off));
+        }
+        off += line.len() + 1;
+    }
+    let mut out = Vec::new();
+    for (i, (cat, pos)) in marks.iter().enumerate() {
+        let end = marks.get(i + 1).map_or(src.len(), |(_, n)| *n);
+        let seg = &src[*pos..end];
+        let Some(open) = seg.find("vec![").map(|i| i + "vec![".len() - 1) else {
+            continue;
+        };
+        let mut nesting = 0usize;
+        let mut close = None;
+        for (i, c) in seg[open..].char_indices() {
+            match c {
+                '[' | '{' | '(' => nesting += 1,
+                ']' | '}' | ')' => {
+                    nesting -= 1;
+                    if nesting == 0 {
+                        close = Some(open + i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(close) = close else { continue };
+        let inner = &seg[open + 1..close];
+        let mut nesting = 0usize;
+        let mut rows = 0usize;
+        let mut saw_content = false;
+        for c in inner.chars() {
+            match c {
+                '[' | '{' | '(' => nesting += 1,
+                ']' | '}' | ')' => nesting -= 1,
+                ',' if nesting == 0 => {
+                    if saw_content {
+                        rows += 1;
+                    }
+                    saw_content = false;
+                }
+                c if !c.is_whitespace() => saw_content = true,
+                _ => {}
+            }
+        }
+        if saw_content {
+            rows += 1;
+        }
+        out.push((*cat, rows));
+    }
+    out
+}
+
+#[test]
+fn settings_row_counts_match_the_navigation_bound() {
+    // `category_options` is what clamps keyboard navigation in the Settings
+    // pane, so a count lower than the rendered rows makes the tail of a
+    // category unreachable, and a count higher lets the cursor land on nothing.
+    let declared = [4usize, 6, 16, 11];
+    let rendered = settings_row_counts();
+    assert_eq!(rendered.len(), declared.len(), "categories drifted");
+    for ((cat, rows), want) in rendered.iter().zip(declared) {
+        assert_eq!(
+            *rows, want,
+            "category {cat} renders {rows} rows but the navigation bound is {want}"
+        );
+    }
+}

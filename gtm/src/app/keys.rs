@@ -2530,13 +2530,16 @@ impl App {
                                 9 => {
                                     self.cycle_reactive_intensity();
                                 }
-                                10 | 11 => {
-                                    let what = if opt == 10 {
+                                10 => {
+                                    self.toggle_hide_footer();
+                                }
+                                11 | 12 => {
+                                    let what = if opt == 11 {
                                         CacheKind::Lyrics
                                     } else {
                                         CacheKind::Covers
                                     };
-                                    let label = if opt == 10 { "lyrics" } else { "cover art" };
+                                    let label = if opt == 11 { "lyrics" } else { "cover art" };
                                     let c = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
                                     let _ = tx.try_send(TuiCommand::fire(move || async move {
@@ -2557,13 +2560,13 @@ impl App {
                                         }
                                     }));
                                 }
-                                12 => {
+                                13 => {
                                     self.cycle_cover_cache();
                                 }
-                                13 => {
+                                14 => {
                                     self.open_settings_overlay();
                                 }
-                                14 => {
+                                15 => {
                                     self.cycle_theme_mode();
                                 }
                                 _ => {}
@@ -2634,8 +2637,7 @@ impl App {
                                 _ => {}
                             },
                             9 => {
-                                self.hide_footer = !self.hide_footer;
-                                save_prefs(&self.current_prefs());
+                                self.toggle_hide_footer();
                             }
                             _ => {}
                         }

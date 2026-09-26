@@ -44,6 +44,28 @@ hand-edited file that omits keys still loads.
 | `left_pane_lists` | list | **none** (file only) |
 | `show_preview` | bool | **none** (file only) |
 
+### Bug found while auditing: the System category is mis-wired
+
+`category_options()` (`gtm/src/app/theme.rs:226`) declares `2 => 15` rows, but
+`gtm/src/ui/pickers/settings.rs:123` renders **16**. The declared count is what
+clamps keyboard navigation, so the last row is unreachable. Worse, the Enter
+handler (`gtm/src/app/keys.rs`) is shifted by one from row 12 onwards:
+
+| Row | Label | Enter does |
+|---|---|---|
+| 10 | Hide Footer | nothing |
+| 11 | Clear Lyrics Cache | nothing |
+| 12 | Clear Cover Cache | cycles the cache **size** |
+| 13 | Cover Cache 512 MB ▶ | opens **notification settings** |
+| 14 | Notification Settings ▶ | cycles **theme mode** |
+| 15 | Theme Mode ▶ | unreachable (clamped) |
+
+`cycle_theme_mode` only exists at arm 14, so the handler reads as if it were
+written against a list without the "Clear Lyrics Cache" row. Fixing it needs
+`category_options` at 16 plus arms 10–15; rows 10 and 11 have no handler at all,
+so they need one written (`hide_footer` already has a toggle, and
+`DaemonReq::ClearCache` already exists for both caches).
+
 ### Gaps worth closing
 
 - **`extensions`, `auto_fetch_lyrics`, `hide_footer`, `left_pane_lists`,
@@ -105,14 +127,18 @@ The daemon reads only `cover_provider` and `cover_cache_mb` from `config.toml`
 
 ## Recommendation
 
-1. Add the five file-only toggles that users are most likely to look for
+1. Fix the System category wiring (above). This is a live bug: four of the
+   sixteen rows do the wrong thing or nothing, and the cheapest way to keep it
+   fixed is a test asserting `category_options()` matches the rendered row
+   count per category.
+2. Add the five file-only toggles that users are most likely to look for
    (`hide_footer`, `show_preview`, `auto_fetch_lyrics`, `extensions`,
    `left_pane_lists`) to the System category.
-2. Validate the two tables on load and warn on unknown keys, so a typo is
+3. Validate the two tables on load and warn on unknown keys, so a typo is
    visible instead of silent.
-3. Document the two-store split (`config.toml` = chosen defaults, `state.json`
+4. Document the two-store split (`config.toml` = chosen defaults, `state.json`
    = live session). Nothing currently tells a user which file a given setting
    lives in, and the playback preferences that feel most "settable" are in the
    one that is rewritten on every change.
-4. Have the TUI write audio preferences to `config.toml` as well, so a user who
+5. Have the TUI write audio preferences to `config.toml` as well, so a user who
    hand-edits EQ or crossfade sees the effect they expect.

@@ -74,6 +74,13 @@ impl App {
     /// immediately re-resolve the matching theme and apply it, then persist so
     /// the choice survives restarts. `manual` keeps the current pick; `auto`
     /// re-enables OS light/dark detection.
+    /// Toggle footer visibility. Shared by the System and Spotify rows, which
+    /// both expose a Hide Footer toggle.
+    pub(crate) fn toggle_hide_footer(&mut self) {
+        self.hide_footer = !self.hide_footer;
+        save_prefs(&self.current_prefs());
+    }
+
     pub(crate) fn cycle_theme_mode(&mut self) {
         let next_mode = match self.theme_mode.trim().to_ascii_lowercase().as_str() {
             "auto" => "dark",
@@ -223,7 +230,7 @@ impl App {
         match self.settings_category {
             0 => 4,  // YouTube: Cookie Source, Cookie File, JS Runtime, Auto Download
             1 => 6,  // Playback: Repeat, Shuffle, Crossfade, EQ Enabled, Reverb, Cover Source
-            2 => 15, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme, Reactive Intensity, Hide Footer, Clear Lyrics Cache, Clear Cover Cache, Cover Cache Size, Notification Settings, Theme Mode
+            2 => 16, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme, Reactive Intensity, Hide Footer, Clear Lyrics Cache, Clear Cover Cache, Cover Cache Size, Notification Settings, Theme Mode
             3 => 11, // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Device, Next, Previous, Shuffle, Repeat
             _ => 0,
         }
