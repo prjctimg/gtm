@@ -713,16 +713,19 @@ impl DaemonReq {
             "play" => {
                 #[derive(Deserialize)]
                 struct Params {
-                path: String,
-                start_pos: f64,
+                    path: String,
+                    start_pos: f64,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::Play { path: x.path, start_pos: x.start_pos }
+                DaemonReq::Play {
+                    path: x.path,
+                    start_pos: x.start_pos,
+                }
             }
             "play_stream" => {
                 #[derive(Deserialize)]
                 struct Params {
-                url: String,
+                    url: String,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::PlayStream { url: x.url }
@@ -730,15 +733,17 @@ impl DaemonReq {
             "seek" => {
                 #[derive(Deserialize)]
                 struct Params {
-                position_secs: f64,
+                    position_secs: f64,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::Seek { position_secs: x.position_secs }
+                DaemonReq::Seek {
+                    position_secs: x.position_secs,
+                }
             }
             "set_volume" => {
                 #[derive(Deserialize)]
                 struct Params {
-                volume: u8,
+                    volume: u8,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SetVolume { volume: x.volume }
@@ -746,7 +751,7 @@ impl DaemonReq {
             "cycle_repeat" => {
                 #[derive(Deserialize)]
                 struct Params {
-                mode: RepeatMode,
+                    mode: RepeatMode,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::CycleRepeat { mode: x.mode }
@@ -754,7 +759,7 @@ impl DaemonReq {
             "set_mono" => {
                 #[derive(Deserialize)]
                 struct Params {
-                enabled: bool,
+                    enabled: bool,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SetMono { enabled: x.enabled }
@@ -762,16 +767,19 @@ impl DaemonReq {
             "crossfade" => {
                 #[derive(Deserialize)]
                 struct Params {
-                enabled: bool,
-                duration_secs: u8,
+                    enabled: bool,
+                    duration_secs: u8,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::Crossfade { enabled: x.enabled, duration_secs: x.duration_secs }
+                DaemonReq::Crossfade {
+                    enabled: x.enabled,
+                    duration_secs: x.duration_secs,
+                }
             }
             "set_loudness_mode" => {
                 #[derive(Deserialize)]
                 struct Params {
-                mode: LoudnessMode,
+                    mode: LoudnessMode,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SetLoudnessMode { mode: x.mode }
@@ -779,24 +787,29 @@ impl DaemonReq {
             "scan_loudness" => {
                 #[derive(Deserialize)]
                 struct Params {
-                track_ids: Option<Vec<i64>>,
-                force: Option<bool>,
+                    track_ids: Option<Vec<i64>>,
+                    force: Option<bool>,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::ScanLoudness { track_ids: x.track_ids, force: x.force }
+                DaemonReq::ScanLoudness {
+                    track_ids: x.track_ids,
+                    force: x.force,
+                }
             }
             "set_pre_gain" => {
                 #[derive(Deserialize)]
                 struct Params {
-                pre_gain_db: f32,
+                    pre_gain_db: f32,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SetPreGain { pre_gain_db: x.pre_gain_db }
+                DaemonReq::SetPreGain {
+                    pre_gain_db: x.pre_gain_db,
+                }
             }
             "set_gapless" => {
                 #[derive(Deserialize)]
                 struct Params {
-                enabled: bool,
+                    enabled: bool,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SetGapless { enabled: x.enabled }
@@ -804,29 +817,39 @@ impl DaemonReq {
             "set_dynamic_mode" => {
                 #[derive(Deserialize)]
                 struct Params {
-                enabled: bool,
-                min_queue_remaining: Option<u32>,
-                max_history: Option<u32>,
+                    enabled: bool,
+                    min_queue_remaining: Option<u32>,
+                    max_history: Option<u32>,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SetDynamicMode { enabled: x.enabled, min_queue_remaining: x.min_queue_remaining, max_history: x.max_history }
+                DaemonReq::SetDynamicMode {
+                    enabled: x.enabled,
+                    min_queue_remaining: x.min_queue_remaining,
+                    max_history: x.max_history,
+                }
             }
             "set_scrobble" => {
                 #[derive(Deserialize)]
                 struct Params {
-                enabled: bool,
-                api_key: Option<String>,
-                session_token: Option<String>,
-                min_play_secs: Option<u32>,
-                min_play_pct: Option<f32>,
+                    enabled: bool,
+                    api_key: Option<String>,
+                    session_token: Option<String>,
+                    min_play_secs: Option<u32>,
+                    min_play_pct: Option<f32>,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SetScrobble { enabled: x.enabled, api_key: x.api_key, session_token: x.session_token, min_play_secs: x.min_play_secs, min_play_pct: x.min_play_pct }
+                DaemonReq::SetScrobble {
+                    enabled: x.enabled,
+                    api_key: x.api_key,
+                    session_token: x.session_token,
+                    min_play_secs: x.min_play_secs,
+                    min_play_pct: x.min_play_pct,
+                }
             }
             "set_eq_preset" => {
                 #[derive(Deserialize)]
                 struct Params {
-                preset: EqPreset,
+                    preset: EqPreset,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SetEqPreset { preset: x.preset }
@@ -834,7 +857,7 @@ impl DaemonReq {
             "set_eq_enabled" => {
                 #[derive(Deserialize)]
                 struct Params {
-                enabled: bool,
+                    enabled: bool,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SetEqEnabled { enabled: x.enabled }
@@ -842,16 +865,19 @@ impl DaemonReq {
             "set_reverb" => {
                 #[derive(Deserialize)]
                 struct Params {
-                enabled: bool,
-                room_size: f32,
+                    enabled: bool,
+                    room_size: f32,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SetReverb { enabled: x.enabled, room_size: x.room_size }
+                DaemonReq::SetReverb {
+                    enabled: x.enabled,
+                    room_size: x.room_size,
+                }
             }
             "set_speed" => {
                 #[derive(Deserialize)]
                 struct Params {
-                rate: f32,
+                    rate: f32,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SetSpeed { rate: x.rate }
@@ -859,7 +885,7 @@ impl DaemonReq {
             "queue" => {
                 #[derive(Deserialize)]
                 struct Params {
-                action: QueueAction,
+                    action: QueueAction,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::Queue { action: x.action }
@@ -867,7 +893,7 @@ impl DaemonReq {
             "library" => {
                 #[derive(Deserialize)]
                 struct Params {
-                action: LibraryAction,
+                    action: LibraryAction,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::Library { action: x.action }
@@ -875,7 +901,7 @@ impl DaemonReq {
             "search" => {
                 #[derive(Deserialize)]
                 struct Params {
-                query: String,
+                    query: String,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::Search { query: x.query }
@@ -883,32 +909,39 @@ impl DaemonReq {
             "add_favourite" => {
                 #[derive(Deserialize)]
                 struct Params {
-                track_id: i64,
+                    track_id: i64,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::AddFavourite { track_id: x.track_id }
+                DaemonReq::AddFavourite {
+                    track_id: x.track_id,
+                }
             }
             "remove_favourite" => {
                 #[derive(Deserialize)]
                 struct Params {
-                track_id: i64,
+                    track_id: i64,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::RemoveFavourite { track_id: x.track_id }
+                DaemonReq::RemoveFavourite {
+                    track_id: x.track_id,
+                }
             }
             "yt_search" => {
                 #[derive(Deserialize)]
                 struct Params {
-                query: String,
-                filter: Option<YTFilter>,
+                    query: String,
+                    filter: Option<YTFilter>,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::YtSearch { query: x.query, filter: x.filter }
+                DaemonReq::YtSearch {
+                    query: x.query,
+                    filter: x.filter,
+                }
             }
             "yt_resolve_stream" => {
                 #[derive(Deserialize)]
                 struct Params {
-                url: String,
+                    url: String,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::YtResolveStream { url: x.url }
@@ -916,17 +949,21 @@ impl DaemonReq {
             "yt_download" => {
                 #[derive(Deserialize)]
                 struct Params {
-                url: String,
-                title: Option<String>,
-                channel: Option<String>,
+                    url: String,
+                    title: Option<String>,
+                    channel: Option<String>,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::YtDownload { url: x.url, title: x.title, channel: x.channel }
+                DaemonReq::YtDownload {
+                    url: x.url,
+                    title: x.title,
+                    channel: x.channel,
+                }
             }
             "yt_cancel_download" => {
                 #[derive(Deserialize)]
                 struct Params {
-                url: String,
+                    url: String,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::YtCancelDownload { url: x.url }
@@ -934,7 +971,7 @@ impl DaemonReq {
             "yt_fetch_playlist" => {
                 #[derive(Deserialize)]
                 struct Params {
-                url: String,
+                    url: String,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::YtFetchPlaylist { url: x.url }
@@ -942,29 +979,38 @@ impl DaemonReq {
             "yt_set_config" => {
                 #[derive(Deserialize)]
                 struct Params {
-                cookie_source: Option<String>,
-                cookie_file: Option<String>,
-                js_runtime: Option<String>,
-                download_dir: Option<String>,
-                max_concurrent: Option<u32>,
+                    cookie_source: Option<String>,
+                    cookie_file: Option<String>,
+                    js_runtime: Option<String>,
+                    download_dir: Option<String>,
+                    max_concurrent: Option<u32>,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::YtSetConfig { cookie_source: x.cookie_source, cookie_file: x.cookie_file, js_runtime: x.js_runtime, download_dir: x.download_dir, max_concurrent: x.max_concurrent }
+                DaemonReq::YtSetConfig {
+                    cookie_source: x.cookie_source,
+                    cookie_file: x.cookie_file,
+                    js_runtime: x.js_runtime,
+                    download_dir: x.download_dir,
+                    max_concurrent: x.max_concurrent,
+                }
             }
             "get_cover_art" => {
                 #[derive(Deserialize)]
                 struct Params {
-                track_id: i64,
-                #[serde(default)]
-                path: Option<String>,
+                    track_id: i64,
+                    #[serde(default)]
+                    path: Option<String>,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::GetCoverArt { track_id: x.track_id, path: x.path }
+                DaemonReq::GetCoverArt {
+                    track_id: x.track_id,
+                    path: x.path,
+                }
             }
             "artist_cover_art" => {
                 #[derive(Deserialize)]
                 struct Params {
-                artist: String,
+                    artist: String,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::GetArtistCoverArt { artist: x.artist }
@@ -972,15 +1018,17 @@ impl DaemonReq {
             "set_cover_provider" => {
                 #[derive(Deserialize)]
                 struct Params {
-                provider: String,
+                    provider: String,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SetCoverProvider { provider: x.provider }
+                DaemonReq::SetCoverProvider {
+                    provider: x.provider,
+                }
             }
             "set_cover_cache" => {
                 #[derive(Deserialize)]
                 struct Params {
-                bytes: u64,
+                    bytes: u64,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SetCoverCache { bytes: x.bytes }
@@ -988,25 +1036,31 @@ impl DaemonReq {
             "get_lyrics" => {
                 #[derive(Deserialize)]
                 struct Params {
-                track_id: i64,
-                path: Option<String>,
+                    track_id: i64,
+                    path: Option<String>,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::GetLyrics { track_id: x.track_id, path: x.path }
+                DaemonReq::GetLyrics {
+                    track_id: x.track_id,
+                    path: x.path,
+                }
             }
             "lyrics_search" => {
                 #[derive(Deserialize)]
                 struct Params {
-                artist: String,
-                title: String,
+                    artist: String,
+                    title: String,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::LyricsSearch { artist: x.artist, title: x.title }
+                DaemonReq::LyricsSearch {
+                    artist: x.artist,
+                    title: x.title,
+                }
             }
             "spotify_set_token" => {
                 #[derive(Deserialize)]
                 struct Params {
-                token: String,
+                    token: String,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SpotifySetToken { token: x.token }
@@ -1014,25 +1068,30 @@ impl DaemonReq {
             "spotify_oauth_start" => {
                 #[derive(Deserialize)]
                 struct Params {
-                client_id: String,
-                #[serde(default = "default_oauth_port")]
-                port: u16,
+                    client_id: String,
+                    #[serde(default = "default_oauth_port")]
+                    port: u16,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SpotifyOauthStart { client_id: x.client_id, port: x.port }
+                DaemonReq::SpotifyOauthStart {
+                    client_id: x.client_id,
+                    port: x.port,
+                }
             }
             "spotify_seek" => {
                 #[derive(Deserialize)]
                 struct Params {
-                pos_secs: u32,
+                    pos_secs: u32,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SpotifySeek { pos_secs: x.pos_secs }
+                DaemonReq::SpotifySeek {
+                    pos_secs: x.pos_secs,
+                }
             }
             "spotify_shuffle" => {
                 #[derive(Deserialize)]
                 struct Params {
-                on: bool,
+                    on: bool,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SpotifyShuffle { on: x.on }
@@ -1040,7 +1099,7 @@ impl DaemonReq {
             "spotify_repeat" => {
                 #[derive(Deserialize)]
                 struct Params {
-                mode: String,
+                    mode: String,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SpotifyRepeat { mode: x.mode }
@@ -1048,7 +1107,7 @@ impl DaemonReq {
             "spotify_volume" => {
                 #[derive(Deserialize)]
                 struct Params {
-                percent: u8,
+                    percent: u8,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SpotifyVolume { percent: x.percent }
@@ -1056,7 +1115,7 @@ impl DaemonReq {
             "spotify_playlist_tracks" => {
                 #[derive(Deserialize)]
                 struct Params {
-                id: String,
+                    id: String,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SpotifyPlaylistTracks { id: x.id }
@@ -1064,18 +1123,22 @@ impl DaemonReq {
             "spotify_resolve" => {
                 #[derive(Deserialize)]
                 struct Params {
-                playlist_id: String,
-                track_index: usize,
-                #[serde(default)]
-                play: bool,
+                    playlist_id: String,
+                    track_index: usize,
+                    #[serde(default)]
+                    play: bool,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SpotifyResolve { playlist_id: x.playlist_id, track_index: x.track_index, play: x.play }
+                DaemonReq::SpotifyResolve {
+                    playlist_id: x.playlist_id,
+                    track_index: x.track_index,
+                    play: x.play,
+                }
             }
             "spotify_search_web" => {
                 #[derive(Deserialize)]
                 struct Params {
-                query: String,
+                    query: String,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SpotifySearchWeb { query: x.query }
@@ -1083,7 +1146,7 @@ impl DaemonReq {
             "spotify_album_tracks" => {
                 #[derive(Deserialize)]
                 struct Params {
-                uri: String,
+                    uri: String,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SpotifyAlbumTracks { uri: x.uri }
@@ -1091,7 +1154,7 @@ impl DaemonReq {
             "spotify_web_playlist_tracks" => {
                 #[derive(Deserialize)]
                 struct Params {
-                uri: String,
+                    uri: String,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SpotifyWebPlaylistTracks { uri: x.uri }
@@ -1099,7 +1162,7 @@ impl DaemonReq {
             "spotify_artist_top_tracks" => {
                 #[derive(Deserialize)]
                 struct Params {
-                uri: String,
+                    uri: String,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SpotifyArtistTopTracks { uri: x.uri }
@@ -1107,53 +1170,71 @@ impl DaemonReq {
             "spotify_resolve_track" => {
                 #[derive(Deserialize)]
                 struct Params {
-                name: String,
-                artists: String,
-                album: String,
-                #[serde(default)]
-                uri: Option<String>,
-                #[serde(default)]
-                play: bool,
+                    name: String,
+                    artists: String,
+                    album: String,
+                    #[serde(default)]
+                    uri: Option<String>,
+                    #[serde(default)]
+                    play: bool,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SpotifyResolveTrack { name: x.name, artists: x.artists, album: x.album, uri: x.uri, play: x.play }
+                DaemonReq::SpotifyResolveTrack {
+                    name: x.name,
+                    artists: x.artists,
+                    album: x.album,
+                    uri: x.uri,
+                    play: x.play,
+                }
             }
             "spotify_play_all" => {
                 #[derive(Deserialize)]
                 struct Params {
-                playlist_id: String,
-                #[serde(default)]
-                shuffle: bool,
+                    playlist_id: String,
+                    #[serde(default)]
+                    shuffle: bool,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SpotifyPlayAll { playlist_id: x.playlist_id, shuffle: x.shuffle }
+                DaemonReq::SpotifyPlayAll {
+                    playlist_id: x.playlist_id,
+                    shuffle: x.shuffle,
+                }
             }
             "spotify_track_image" => {
                 #[derive(Deserialize)]
                 struct Params {
-                image_url: String,
+                    image_url: String,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SpotifyTrackImage { image_url: x.image_url }
+                DaemonReq::SpotifyTrackImage {
+                    image_url: x.image_url,
+                }
             }
             "lastfm_set_config" => {
                 #[derive(Deserialize)]
                 struct Params {
-                enabled: bool,
-                api_key: Option<String>,
-                api_secret: Option<String>,
-                session_key: Option<String>,
-                min_play_secs: Option<u32>,
-                min_play_pct: Option<f32>,
+                    enabled: bool,
+                    api_key: Option<String>,
+                    api_secret: Option<String>,
+                    session_key: Option<String>,
+                    min_play_secs: Option<u32>,
+                    min_play_pct: Option<f32>,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::LastfmSetConfig { enabled: x.enabled, api_key: x.api_key, api_secret: x.api_secret, session_key: x.session_key, min_play_secs: x.min_play_secs, min_play_pct: x.min_play_pct }
+                DaemonReq::LastfmSetConfig {
+                    enabled: x.enabled,
+                    api_key: x.api_key,
+                    api_secret: x.api_secret,
+                    session_key: x.session_key,
+                    min_play_secs: x.min_play_secs,
+                    min_play_pct: x.min_play_pct,
+                }
             }
             "lastfm_oauth_start" => {
                 #[derive(Deserialize)]
                 struct Params {
-                #[serde(default = "default_lastfm_port")]
-                port: u16,
+                    #[serde(default = "default_lastfm_port")]
+                    port: u16,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::LastfmOauthStart { port: x.port }
@@ -1161,7 +1242,7 @@ impl DaemonReq {
             "lastfm_authenticate" => {
                 #[derive(Deserialize)]
                 struct Params {
-                token: String,
+                    token: String,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::LastfmAuthenticate { token: x.token }
@@ -1169,17 +1250,20 @@ impl DaemonReq {
             "set_sleep_timer" => {
                 #[derive(Deserialize)]
                 struct Params {
-                minutes: u32,
-                #[serde(default = "default_true")]
-                stop_immediately: bool,
+                    minutes: u32,
+                    #[serde(default = "default_true")]
+                    stop_immediately: bool,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SetSleepTimer { minutes: x.minutes, stop_immediately: x.stop_immediately }
+                DaemonReq::SetSleepTimer {
+                    minutes: x.minutes,
+                    stop_immediately: x.stop_immediately,
+                }
             }
             "set_low_power" => {
                 #[derive(Deserialize)]
                 struct Params {
-                enabled: bool,
+                    enabled: bool,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SetLowPower { enabled: x.enabled }
@@ -1187,7 +1271,7 @@ impl DaemonReq {
             "set_audio_device" => {
                 #[derive(Deserialize)]
                 struct Params {
-                name: Option<String>,
+                    name: Option<String>,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::SetAudioDevice { name: x.name }
@@ -1195,7 +1279,7 @@ impl DaemonReq {
             "clear_cache" => {
                 #[derive(Deserialize)]
                 struct Params {
-                what: CacheKind,
+                    what: CacheKind,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::ClearCache { what: x.what }
@@ -1203,7 +1287,7 @@ impl DaemonReq {
             "podcast_add_feed" => {
                 #[derive(Deserialize)]
                 struct Params {
-                url: String,
+                    url: String,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::PodcastAddFeed { url: x.url }
@@ -1211,7 +1295,7 @@ impl DaemonReq {
             "podcast_remove_feed" => {
                 #[derive(Deserialize)]
                 struct Params {
-                feed_id: String,
+                    feed_id: String,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::PodcastRemoveFeed { feed_id: x.feed_id }
@@ -1219,7 +1303,7 @@ impl DaemonReq {
             "podcast_episodes" => {
                 #[derive(Deserialize)]
                 struct Params {
-                feed_id: String,
+                    feed_id: String,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::PodcastEpisodes { feed_id: x.feed_id }
@@ -1227,7 +1311,7 @@ impl DaemonReq {
             "podcast_refresh" => {
                 #[derive(Deserialize)]
                 struct Params {
-                feed_id: Option<String>,
+                    feed_id: Option<String>,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::PodcastRefresh { feed_id: x.feed_id }
@@ -1235,25 +1319,31 @@ impl DaemonReq {
             "podcast_play" => {
                 #[derive(Deserialize)]
                 struct Params {
-                feed_id: String,
-                episode_index: usize,
+                    feed_id: String,
+                    episode_index: usize,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::PodcastPlay { feed_id: x.feed_id, episode_index: x.episode_index }
+                DaemonReq::PodcastPlay {
+                    feed_id: x.feed_id,
+                    episode_index: x.episode_index,
+                }
             }
             "radio_search" => {
                 #[derive(Deserialize)]
                 struct Params {
-                query: String,
-                limit: u16,
+                    query: String,
+                    limit: u16,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::RadioSearch { query: x.query, limit: x.limit }
+                DaemonReq::RadioSearch {
+                    query: x.query,
+                    limit: x.limit,
+                }
             }
             "radio_top" => {
                 #[derive(Deserialize)]
                 struct Params {
-                limit: u16,
+                    limit: u16,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::RadioTop { limit: x.limit }
@@ -1261,16 +1351,19 @@ impl DaemonReq {
             "radio_play" => {
                 #[derive(Deserialize)]
                 struct Params {
-                station_id: String,
-                station_name: String,
+                    station_id: String,
+                    station_name: String,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::RadioPlay { station_id: x.station_id, station_name: x.station_name }
+                DaemonReq::RadioPlay {
+                    station_id: x.station_id,
+                    station_name: x.station_name,
+                }
             }
             "radio_tags" => {
                 #[derive(Deserialize)]
                 struct Params {
-                limit: u16,
+                    limit: u16,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::RadioTags { limit: x.limit }
@@ -1278,16 +1371,19 @@ impl DaemonReq {
             "radio_bytag" => {
                 #[derive(Deserialize)]
                 struct Params {
-                tag: String,
-                limit: u16,
+                    tag: String,
+                    limit: u16,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::RadioByTag { tag: x.tag, limit: x.limit }
+                DaemonReq::RadioByTag {
+                    tag: x.tag,
+                    limit: x.limit,
+                }
             }
             "radio_countries" => {
                 #[derive(Deserialize)]
                 struct Params {
-                limit: u16,
+                    limit: u16,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::RadioCountries { limit: x.limit }
@@ -1295,28 +1391,36 @@ impl DaemonReq {
             "radio_bycountry" => {
                 #[derive(Deserialize)]
                 struct Params {
-                country: String,
-                limit: u16,
+                    country: String,
+                    limit: u16,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::RadioByCountry { country: x.country, limit: x.limit }
+                DaemonReq::RadioByCountry {
+                    country: x.country,
+                    limit: x.limit,
+                }
             }
             "charts_list" => {
                 #[derive(Deserialize)]
                 struct Params {
-                source_id: Option<String>,
+                    source_id: Option<String>,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::ChartsList { source_id: x.source_id }
+                DaemonReq::ChartsList {
+                    source_id: x.source_id,
+                }
             }
             "charts_tracks" => {
                 #[derive(Deserialize)]
                 struct Params {
-                source_id: String,
-                chart_id: String,
+                    source_id: String,
+                    chart_id: String,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::ChartsTracks { source_id: x.source_id, chart_id: x.chart_id }
+                DaemonReq::ChartsTracks {
+                    source_id: x.source_id,
+                    chart_id: x.chart_id,
+                }
             }
             other => return Err(format!("unknown command: {other}")),
         })

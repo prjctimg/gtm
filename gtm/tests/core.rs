@@ -1164,3 +1164,123 @@ fn state_defaults_eq() {
     assert_eq!(a.status, b.status);
     assert_eq!(a.volume, b.volume);
 }
+
+// ---------------------------------------------------------------------------
+// Request round-trip
+// ---------------------------------------------------------------------------
+
+/// Every wire name `parse_cmd` accepts, read straight out of the source so a
+/// newly added variant is covered without touching this test.
+fn wire_names() -> Vec<&'static str> {
+    include_str!("../src/shared/ipc.rs")
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            l.starts_with("DaemonReq::")
+                .then(|| l.split('"').nth(1))
+                .flatten()
+        })
+        .collect()
+}
+
+#[test]
+fn req_every_wire_name_is_reachable() {
+    let names = wire_names();
+    assert!(names.len() >= 100, "only found {} wire names", names.len());
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    let total = sorted.len();
+    sorted.dedup();
+    assert_eq!(sorted.len(), total, "duplicate wire name in cmd_name");
+}
+
+#[test]
+fn req_round_trip() {
+    // `{}` decodes into every field type the request set uses, so each name
+    // must produce *a* request rather than an error. A name that falls
+    // through to the catch-all, or whose field list drifted, fails here.
+    for name in wire_names() {
+        let req = DaemonReq::parse_cmd(name, serde_json::json!({}))
+            .unwrap_or_else(|e| panic!("{name} failed to decode: {e}"));
+        assert_eq!(
+            req.cmd_name(),
+            name,
+            "{name} decoded to a different command"
+        );
+    }
+}
+
+#[test]
+fn req_unit_variant_ignores_params() {
+    for name in wire_names() {
+        if let Ok(req) = DaemonReq::parse_cmd(name, serde_json::json!({"bogus": 1})) {
+            assert_eq!(req.cmd_name(), name);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spotify picker
+// ---------------------------------------------------------------------------
+
+/// `PickerSource` cycles over six values, but the Spotify search picker only
+/// has rows for four of them. `spot_picks` maps `Radio` to "no rows", so a
+/// filter of `Radio` must yield an empty list rather than every result.
+#[test]
+fn spot_source_cycles_are_all_reachable() {
+    use gtm::picker::PickerSource;
+    let mut s = PickerSource::default();
+    let mut seen = vec![s];
+    for _ in 0..8 {
+        s = s.next();
+        if seen.contains(&s) {
+            break;
+        }
+        seen.push(s);
+    }
+    assert_eq!(seen.len(), 6, "source cycle has {} stops", seen.len());
+    assert!(seen.contains(&PickerSource::Radio));
+}
+
+/// Cover URLs ride on the search row, so every web result must carry one that
+/// the daemon can fetch; a row without a URL renders an empty preview.
+#[test]
+fn spot_track_carries_cover_url() {
+    let t = SpotifyTrack {
+        index: 0,
+        name: "Song".into(),
+        artists: "Artist".into(),
+        album: Some("Album".into()),
+        duration_ms: Some(210_000),
+        uri: Some("spotify:track:abc".into()),
+        image_url: Some("https://i.scdn.co/image/x".into()),
+        kind: None,
+    };
+    // Round-trips over the wire, which is how the TUI receives it.
+    let json = serde_json::to_value(&t).expect("track serialises");
+    let back: SpotifyTrack = serde_json::from_value(json).expect("track deserialises");
+    assert_eq!(back.image_url, t.image_url);
+    assert_eq!(back.uri, t.uri);
+    assert!(back.has_uri());
+    // A track kind is omitted on the wire (it is the default), so a track
+    // result must decode back to `None` and stay in the Tracks filter.
+    assert_eq!(back.kind, None);
+}
+
+#[test]
+fn spot_album_kind_survives_wire() {
+    use gtm::shared::spotify::SpotifySearchKind;
+    let t = SpotifyTrack {
+        index: 0,
+        name: "Album".into(),
+        artists: String::new(),
+        album: Some("Album".into()),
+        duration_ms: None,
+        uri: Some("spotify:album:abc".into()),
+        image_url: None,
+        kind: Some(SpotifySearchKind::Album),
+    };
+    let json = serde_json::to_value(&t).expect("track serialises");
+    let back: SpotifyTrack = serde_json::from_value(json).expect("track deserialises");
+    assert_eq!(back.kind, Some(SpotifySearchKind::Album));
+}
