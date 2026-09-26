@@ -1375,38 +1375,41 @@ fn sample_for(ty: &str, depth: usize) -> serde_json::Value {
             .trim(),
         meta.rename_all,
     );
-    if !first.contains('{') {
+    if !first.contains('{') && meta.tag.is_none() {
         return Value::String(variant);
     }
     // The variant's fields continue on the lines below, so brace match from
     // the opening brace instead of reading the declaration line alone. The
     // counter is `nesting`, not `depth`: `depth` is the recursion budget.
-    let start = meta.body.find(first).unwrap_or_default();
-    let Some(open) = meta.body[start..].find('{').map(|rel| start + rel) else {
-        return Value::Null;
-    };
-    let mut nesting = 0usize;
-    let mut inner = "";
-    for (i, c) in meta.body[open..].char_indices() {
-        match c {
-            '{' => nesting += 1,
-            '}' => {
-                nesting -= 1;
-                if nesting == 0 {
-                    inner = &meta.body[open + 1..open + i];
-                    break;
-                }
-            }
-            _ => {}
-        }
-    }
     let mut fields = serde_json::Map::new();
-    for (n, t) in fields_of(inner) {
-        fields.insert(n, sample_for(&t, depth - 1));
+    if first.contains('{') {
+        let start = meta.body.find(first).unwrap_or_default();
+        let Some(open) = meta.body[start..].find('{').map(|rel| start + rel) else {
+            return Value::Null;
+        };
+        let mut nesting = 0usize;
+        let mut inner = "";
+        for (i, c) in meta.body[open..].char_indices() {
+            match c {
+                '{' => nesting += 1,
+                '}' => {
+                    nesting -= 1;
+                    if nesting == 0 {
+                        inner = &meta.body[open + 1..open + i];
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        for (n, t) in fields_of(inner) {
+            fields.insert(n, sample_for(&t, depth - 1));
+        }
     }
     let mut out = serde_json::Map::new();
     match meta.tag {
-        // Internally tagged: the variant's fields sit beside the tag.
+        // Internally tagged: the tag wraps unit variants too, so `List` is
+        // `{"action": "list"}` and not the bare string `"list"`.
         Some(tag) => {
             out.insert(tag.to_string(), Value::String(variant));
             out.extend(fields);
@@ -1567,12 +1570,16 @@ fn req_enum_samples_match_their_serde_spelling() {
     assert_eq!(sample_for("EqPreset", 4), serde_json::json!("flat"));
     assert_eq!(sample_for("CacheKind", 4), serde_json::json!("lyrics"));
     // `#[serde(tag = "action", rename_all = "snake_case")]`: the variant's
-    // fields sit beside the tag, not nested under it.
+    // fields sit beside the tag, not nested under it — and the tag wraps unit
+    // variants too, so `List` is `{"action": "list"}` and not `"list"`.
     assert_eq!(
         sample_for("LibraryAction", 4),
         serde_json::json!({"action": "scan", "path": ""})
     );
-    assert_eq!(sample_for("QueueAction", 4), serde_json::json!("list"));
+    assert_eq!(
+        sample_for("QueueAction", 4),
+        serde_json::json!({"action": "list"})
+    );
     // Wrappers peel before the enum is resolved.
     assert_eq!(sample_for("Option<EqPreset>", 4), serde_json::json!("flat"));
     assert_eq!(sample_for("Option<EqPreset>", 0), serde_json::Value::Null);
