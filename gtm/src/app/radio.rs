@@ -286,8 +286,43 @@ impl App {
         }
     }
 
-    /// Enter on the unified Radio picker: activate the highlighted row —
-    /// play a station, drill into a tag/country, or run a directory search
+    /// The `radio://` station id the current track is playing, if it is one.
+    fn live_station(&self) -> Option<&str> {
+        self.state
+            .current_track
+            .as_ref()?
+            .path
+            .strip_prefix("radio://")
+            .map(|rest| rest.split('/').next().unwrap_or(rest))
+    }
+
+    /// Pull the playing station's tracklist on demand. The daemon also mirrors
+    /// it into `state` on a refresh tick, so this only has an effect when the
+    /// mirror has not landed yet — it fills that gap rather than replacing it,
+    /// and the daemon's next refresh overwrites the result either way.
+    pub(crate) fn fetch_live_list(&mut self) {
+        if !self.state.radio_tracks.tracks.is_empty() {
+            return;
+        }
+        let Some(station) = self.live_station().map(str::to_string) else {
+            return;
+        };
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            match client.radio().tracklist(&station).await {
+                Ok(list) if !list.tracks.is_empty() => {
+                    let _ = ipc_tx.send(IpcResult::RadioTracklist(list));
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    self_err(&ipc_tx, format!("radio tracklist: {e}"));
+                }
+            }
+        });
+    }
+
+    /// Enter on the unified Radio picker: activate the highlighted row —    /// play a station, drill into a tag/country, or run a directory search
     /// when the current filter matches nothing.
     pub(crate) fn radio_enter(&mut self) {
         let picks = self.radio_picks();

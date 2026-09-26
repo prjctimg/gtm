@@ -418,6 +418,9 @@ pub(crate) enum IpcResult {
     RadioTags(Vec<RadioTag>),
     RadioCountries(Vec<RadioCountry>),
     RadioBrowseStations(Vec<RadioStation>),
+    /// A station tracklist pulled on demand when the queue view opens before
+    /// the daemon's refresh tick has landed.
+    RadioTracklist(crate::shared::radio::RadioTracklist),
     ChartsLoaded(Vec<crate::shared::chart::ChartPlaylist>),
     ChartTracksLoaded(Vec<crate::shared::chart::ChartTrack>),
     ChartsSources(Vec<crate::shared::chart::ChartSource>),

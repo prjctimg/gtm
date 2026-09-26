@@ -83,6 +83,14 @@ impl App {
     /// Kick off data fetches right after a remote-service picker opens.
     pub fn on_picker_opened(&mut self, id: PickerId) {
         match id {
+            PickerId::Queue => {
+                // A station's tracklist is mirrored in `state` off the daemon's
+                // refresh tick, which may not have landed yet on the first open
+                // after pressing play. Pull it directly in that case so the
+                // queue never shows the user queue for a live stream that does
+                // publish one.
+                self.fetch_live_list();
+            }
             PickerId::SpotifyDest => {
                 // The destination filter is scoped to this picker, so a query
                 // left over from a previous open must not hide every row.

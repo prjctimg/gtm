@@ -846,6 +846,13 @@ impl App {
                     IpcResult::SpotifyMatch(uri) => {
                         self.live_uri = Some(uri);
                     }
+                    IpcResult::RadioTracklist(list) => {
+                        // The daemon's refresh tick owns this field once it
+                        // lands, so only fill it while still empty.
+                        if self.state.radio_tracks.tracks.is_empty() {
+                            self.state.radio_tracks = list;
+                        }
+                    }
                     IpcResult::ChartsLoaded(charts) => {
                         // A stale selected source index (e.g. Spotify got
                         // unlinked between fetches) must never crash the
