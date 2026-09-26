@@ -692,7 +692,16 @@ jobs:
               echo "no benchmark changes to commit"
               exit 0
             fi
-            git commit -m "bench: results for ${{ needs.tag.outputs.version }} [skip nightly]" >/dev/null
+            # `[skip ci]` matters as much as the artifact: this commit is pushed
+            # with GITHUB_TOKEN, so GitHub's recursion guard refuses to start
+            # the CI workflow for it. The `pull_request` event for the moved PR
+            # head is still recorded, and lands as `action_required` with zero
+            # jobs — a red X in the UI for a commit that only rewrites
+            # BENCHMARK.md and stats.json. Skipping the run outright keeps the
+            # history clean and costs nothing, since there is no Rust here to
+            # verify. `[skip nightly]` is still needed: the release workflow
+            # reads it to avoid a nightly loop.
+            git commit -m "bench: results for ${{ needs.tag.outputs.version }} [skip nightly] [skip ci]" >/dev/null
             if git push "${push_url}" dev 2>/dev/null; then
               break
             fi
