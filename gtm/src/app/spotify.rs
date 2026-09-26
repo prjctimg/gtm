@@ -366,3 +366,61 @@ impl App {
         });
     }
 }
+
+impl App {
+    /// Open the Spotify OAuth link form. Guarded so the row reports why it did
+    /// nothing instead of silently re-opening the flow on an already-linked
+    /// account.
+    pub(crate) fn open_spotify_link(&mut self) {
+        if self.spotify.status.as_ref().is_some_and(|s| s.linked) {
+            self.notify_typed(
+                "Spotify",
+                "Already linked — use Unlink to switch accounts",
+                NotificationKind::Info,
+                true,
+                NotifType::Spotify,
+            );
+            return;
+        }
+        self.spotify.link_input.clear();
+        self.spotify.oauth_port = "8990".to_string();
+        self.spotify.link_field = 0;
+        if let Some(cid) = get_secret(SPOTIFY_CLIENT_ID) {
+            self.spotify.link_input = cid;
+        }
+        self.pickers.open(PickerId::SpotifyLink);
+    }
+
+    /// Drop the stored Spotify credentials. Guarded for the same reason as
+    /// [`App::open_spotify_link`].
+    pub(crate) fn unlink_spotify(&mut self, tx: tokio::sync::mpsc::Sender<TuiCommand>) {
+        if !self.spotify.status.as_ref().is_some_and(|s| s.linked) {
+            self.notify_typed(
+                "Spotify",
+                "Not linked — nothing to unlink",
+                NotificationKind::Info,
+                true,
+                NotifType::Spotify,
+            );
+            return;
+        }
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        let _ = tx.try_send(TuiCommand::fire(move || async move {
+            match c.spotify().clear().await {
+                Ok(status) => {
+                    let _ = ipc_tx.send(IpcResult::SpotifyStatus(status));
+                    let _ = ipc_tx.send(IpcResult::Notification(
+                        "Spotify".to_string(),
+                        "Account unlinked".to_string(),
+                        NotificationKind::Info,
+                        NotifType::Spotify,
+                    ));
+                }
+                Err(e) => {
+                    let _ = ipc_tx.send(IpcResult::Error(format!("Spotify unlink: {e}")));
+                }
+            }
+        }));
+    }
+}

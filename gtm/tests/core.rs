@@ -1881,7 +1881,7 @@ fn settings_row_counts_match_the_navigation_bound() {
     // `category_options` is what clamps keyboard navigation in the Settings
     // pane, so a count lower than the rendered rows makes the tail of a
     // category unreachable, and a count higher lets the cursor land on nothing.
-    let declared = [4usize, 6, 16, 11];
+    let declared = [4usize, 6, 17, 8];
     let rendered = settings_row_counts();
     assert_eq!(rendered.len(), declared.len(), "categories drifted");
     for ((cat, rows), want) in rendered.iter().zip(declared) {
@@ -1889,5 +1889,104 @@ fn settings_row_counts_match_the_navigation_bound() {
             *rows, want,
             "category {cat} renders {rows} rows but the navigation bound is {want}"
         );
+    }
+}
+
+/// Match arms inside a Settings handler sit this far in; anything deeper is a
+/// nested match, not a row.
+const INDENT_32: &str = "                                ";
+
+/// The row indices each Settings category's Enter handler covers, scraped from
+/// the `N => match opt` blocks in `keys.rs`.
+fn settings_arm_coverage() -> Vec<(u8, Vec<usize>)> {
+    let src = include_str!("../src/app/keys.rs");
+    let mut out = Vec::new();
+    for cat in 0u8..4 {
+        let needle = format!("\n                            {cat} => match opt {{");
+        let Some(start) = src.find(&needle) else {
+            continue;
+        };
+        // Brace-match the block, then take the top-level match arms.
+        let body = &src[start + 1..];
+        let Some(open) = body.find('{') else { continue };
+        let mut nesting = 0usize;
+        let mut close = None;
+        for (i, c) in body[open..].char_indices() {
+            match c {
+                '{' => nesting += 1,
+                '}' => {
+                    nesting -= 1;
+                    if nesting == 0 {
+                        close = Some(open + i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(close) = close else { continue };
+        let block = &body[open..close];
+        let mut covered: Vec<usize> = Vec::new();
+        for line in block.lines() {
+            // Arms sit 32 spaces in; anything deeper is a nested match.
+            let Some(rest) = line.strip_prefix(INDENT_32) else {
+                continue;
+            };
+            let Some((pat, tail)) = rest.split_once(" =>") else {
+                continue;
+            };
+            if !tail.starts_with(' ') && !tail.starts_with('{') {
+                continue;
+            }
+            if let Some((a, b)) = pat.split_once("..=") {
+                if let (Ok(a), Ok(b)) = (a.trim().parse::<usize>(), b.trim().parse::<usize>()) {
+                    covered.extend(a..=b);
+                }
+            } else {
+                // Combined arms (`4 | 5 =>`) list each index separately.
+                for part in pat.split('|') {
+                    if let Ok(n) = part.trim().parse::<usize>() {
+                        covered.push(n);
+                    }
+                }
+            }
+        }
+        covered.sort_unstable();
+        covered.dedup();
+        out.push((cat, covered));
+    }
+    out
+}
+
+#[test]
+fn settings_rows_and_enter_arms_line_up() {
+    // A Settings row whose Enter arm belongs to a different row is worse than a
+    // dead row: it silently runs the wrong action. Both the System and Spotify
+    // categories drifted this way — Spotify's handler was written against a
+    // shorter row list, so "Next" opened the OAuth form and Repeat toggled
+    // shuffle. Assert the two lists are the same shape.
+    let rendered = settings_row_counts();
+    for (cat, arms) in settings_arm_coverage() {
+        let rows = rendered
+            .iter()
+            .find(|(c, _)| *c == cat)
+            .map(|(_, n)| *n)
+            .unwrap_or_else(|| panic!("category {cat} has no rendered rows"));
+        let beyond: Vec<usize> = arms.iter().copied().filter(|a| *a >= rows).collect();
+        assert!(
+            beyond.is_empty(),
+            "category {cat} renders {rows} rows but has arms {beyond:?} past the end"
+        );
+        // Display-only rows are legitimate (a status line does nothing on
+        // Enter), so only assert the reverse: no arm may be missing for a row
+        // that is not display-only. The Spotify and System categories arm every
+        // row, so track those explicitly.
+        if cat == 2 || cat == 3 {
+            let missing: Vec<usize> = (0..rows).filter(|r| !arms.contains(r)).collect();
+            assert!(
+                missing.is_empty(),
+                "category {cat} rows {missing:?} have no Enter arm"
+            );
+        }
     }
 }

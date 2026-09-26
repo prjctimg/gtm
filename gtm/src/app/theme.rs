@@ -231,7 +231,7 @@ impl App {
             0 => 4,  // YouTube: Cookie Source, Cookie File, JS Runtime, Auto Download
             1 => 6,  // Playback: Repeat, Shuffle, Crossfade, EQ Enabled, Reverb, Cover Source
             2 => 17, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme, Reactive Intensity, Hide Footer, Clear Lyrics Cache, Clear Cover Cache, Cover Cache Size, Notification Settings, Theme Mode, Audio Output
-            3 => 11, // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Device, Next, Previous, Shuffle, Repeat
+            3 => 8, // Spotify: Status (merged), Link Account, Unlink, Sync Now, Next, Previous, Shuffle, Repeat
             _ => 0,
         }
     }

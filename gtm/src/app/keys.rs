@@ -2601,67 +2601,21 @@ impl App {
                             },
                             3 => match opt {
                                 0 => {
-                                    let c = self.client.clone();
-                                    let ipc_tx = self.ipc_tx.clone();
-                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
-                                        match c.spotify().play_pause().await {
-                                            Ok(status) => {
-                                                let _ =
-                                                    ipc_tx.send(IpcResult::SpotifyStatus(status));
-                                            }
-                                            Err(e) => {
-                                                let _ = ipc_tx.send(IpcResult::Error(format!(
-                                                    "Spotify play/pause: {e}"
-                                                )));
-                                            }
-                                        }
-                                    }));
+                                    // Status is display-only.
+                                }
+                                1 => {
+                                    self.open_spotify_link();
+                                }
+                                2 => {
+                                    self.unlink_spotify(tx.clone());
                                 }
                                 3 => {
-                                    self.spotify.link_input.clear();
-                                    self.spotify.oauth_port = "8990".to_string();
-                                    self.spotify.link_field = 0;
-                                    if let Some(cid) = get_secret(SPOTIFY_CLIENT_ID) {
-                                        self.spotify.link_input = cid;
-                                    }
-                                    self.pickers.open(PickerId::SpotifyLink);
-                                }
-                                4 => {
                                     self.trigger_spotify_sync(true);
                                 }
-                                5 => {
-                                    let c = self.client.clone();
-                                    let ipc_tx = self.ipc_tx.clone();
-                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
-                                        match c.spotify().clear().await {
-                                            Ok(status) => {
-                                                let _ =
-                                                    ipc_tx.send(IpcResult::SpotifyStatus(status));
-                                                let _ = ipc_tx.send(IpcResult::Notification(
-                                                    "Spotify".to_string(),
-                                                    "Account unlinked".to_string(),
-                                                    NotificationKind::Info,
-                                                    NotifType::Spotify,
-                                                ));
-                                            }
-                                            Err(e) => {
-                                                let _ = ipc_tx.send(IpcResult::Error(format!(
-                                                    "Spotify unlink: {e}"
-                                                )));
-                                            }
-                                        }
-                                    }));
-                                }
-                                7 => {
-                                    self.spotify.link_input.clear();
-                                    self.spotify.oauth_port = "8990".to_string();
-                                    self.spotify.link_field = 0;
-                                    if let Some(cid) = get_secret(SPOTIFY_CLIENT_ID) {
-                                        self.spotify.link_input = cid;
-                                    }
-                                    self.pickers.open(PickerId::SpotifyLink);
-                                }
-                                8..=11 => self.spot_ctrl(opt),
+                                // Transport. `spot_ctrl` takes a semantic
+                                // index, not the row number, so reordering the
+                                // rows above cannot silently remap an action.
+                                4..=7 => self.spot_ctrl(opt - 4),
                                 _ => {}
                             },
                             9 => {

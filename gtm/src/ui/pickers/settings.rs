@@ -195,21 +195,33 @@ impl Pickers {
                 } else {
                     "Unavailable (Premium)".to_string()
                 };
-                let device_label = st
-                    .device
-                    .clone()
-                    .filter(|d| !d.is_empty())
-                    .unwrap_or_else(|| "(none)".to_string());
+                // One merged status row: connection, account, playlist count
+                // and the Spotify Connect device, so the rows below can all be
+                // actions. The handler mirrors this list exactly.
+                let mut status = status_label;
+                if st.linked {
+                    if !user.is_empty() {
+                        status.push_str(&format!(" · {user}"));
+                    }
+                    status.push_str(&format!(" · {} playlists", st.playlists));
+                    if let Some(device) = st.device.clone().filter(|d| !d.is_empty()) {
+                        status.push_str(&format!(" · {device}"));
+                    }
+                }
+                let status = {
+                    let mut c = status.chars().take(46).collect::<String>();
+                    if status.chars().count() > 46 {
+                        c.push('…');
+                    }
+                    c
+                };
                 vec![
-                    format!("Status         {status_label}"),
-                    format!("Account        {user:<10}"),
-                    format!("Playlists      {:>3}", st.playlists),
+                    format!("Status         {status}"),
                     "Link Account   Enter".to_string(),
-                    "Sync Now       Enter".to_string(),
                     "Unlink         Enter".to_string(),
-                    format!("Device         {device_label}"),
-                    "Next            Enter".to_string(),
-                    "Previous        Enter".to_string(),
+                    "Sync Now       Enter".to_string(),
+                    "Next           Enter".to_string(),
+                    "Previous       Enter".to_string(),
                     format!("Shuffle     {}  ▶", if st.shuffle { "On" } else { "Off" }),
                     format!("Repeat     {}  ▶", st.repeat),
                 ]
@@ -340,20 +352,16 @@ impl Pickers {
                 " Press Enter to cycle theme mode (auto/dark/light).",
                 Style::default().fg(app.theme.fg_dim),
             ))),
-            (3, 0) => lines.push(Line::from(Span::styled(
-                " Spotify integration status.",
+            (3, 1) => lines.push(Line::from(Span::styled(
+                " Authorize gtm with your Spotify account.",
+                Style::default().fg(app.theme.fg_dim),
+            ))),
+            (3, 2) => lines.push(Line::from(Span::styled(
+                " Remove the token and disconnect.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
             (3, 3) => lines.push(Line::from(Span::styled(
-                " Press Enter to paste a Spotify access token.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (3, 4) => lines.push(Line::from(Span::styled(
                 " Re-fetch playlists from Spotify.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (3, 5) => lines.push(Line::from(Span::styled(
-                " Remove token and disconnect.",
                 Style::default().fg(app.theme.fg_dim),
             ))),
             _ => {}
