@@ -19,12 +19,12 @@ pub(crate) fn is_playable(uri: &str) -> bool {
 /// drop this before any `.await` that reaches Spotify: the manager mutex is
 /// also taken by the cover paths, and holding it across a network call is
 /// what wedged playback, cover art and search.
-pub(crate) async fn linked(inner: &DaemonInner) -> Result<AuthCodePkceSpotify, DaemonRes> {
+pub(crate) async fn linked(inner: &DaemonInner) -> Result<AuthCodePkceSpotify, Box<DaemonRes>> {
     match inner.spotify.lock().await.client() {
         Some(client) => Ok(client),
-        None => Err(DaemonRes::Error {
+        None => Err(Box::new(DaemonRes::Error {
             message: "spotify not linked".into(),
-        }),
+        })),
     }
 }
 
@@ -268,7 +268,7 @@ impl Spotify {
         // `SpotifyPlaylists` keeps working against the previous snapshot.
         let client = match linked(inner).await {
             Ok(client) => client,
-            Err(res) => return Ok(res),
+            Err(res) => return Ok(*res),
         };
         let res =
             tokio::time::timeout(Duration::from_secs(60), SpotifyManager::run_sync(client)).await;
@@ -419,7 +419,7 @@ impl Spotify {
     pub async fn search_web(inner: &DaemonInner, query: &str) -> Result<DaemonRes, CoreError> {
         let client = match linked(inner).await {
             Ok(client) => client,
-            Err(res) => return Ok(res),
+            Err(res) => return Ok(*res),
         };
         let tracks = search(&client, query, 20)
             .await
@@ -432,7 +432,7 @@ impl Spotify {
     pub async fn album_tracks(inner: &DaemonInner, uri: &str) -> Result<DaemonRes, CoreError> {
         let client = match linked(inner).await {
             Ok(client) => client,
-            Err(res) => return Ok(res),
+            Err(res) => return Ok(*res),
         };
         match album_tracks(&client, uri).await {
             Ok(tracks) => Ok(DaemonRes::SpotifyTracksRes { tracks }),
@@ -445,7 +445,7 @@ impl Spotify {
     pub async fn artist_top_tracks(inner: &DaemonInner, uri: &str) -> Result<DaemonRes, CoreError> {
         let client = match linked(inner).await {
             Ok(client) => client,
-            Err(res) => return Ok(res),
+            Err(res) => return Ok(*res),
         };
         match artist_top(&client, uri).await {
             Ok(tracks) => Ok(DaemonRes::SpotifyTracksRes { tracks }),
@@ -461,7 +461,7 @@ impl Spotify {
     ) -> Result<DaemonRes, CoreError> {
         let client = match linked(inner).await {
             Ok(client) => client,
-            Err(res) => return Ok(res),
+            Err(res) => return Ok(*res),
         };
         match web_playlist(&client, uri).await {
             Ok(tracks) => Ok(DaemonRes::SpotifyTracksRes { tracks }),
@@ -754,7 +754,7 @@ impl Spotify {
         // `Cover::artist` acquire the two in opposite orders and deadlock.
         let client = match linked(inner).await {
             Ok(client) => client,
-            Err(res) => return Ok(res),
+            Err(res) => return Ok(*res),
         };
         let cache = inner.cover_cache().await;
         let data = match cache.as_ref() {

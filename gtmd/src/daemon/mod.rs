@@ -910,7 +910,7 @@ impl Cmd {
 
         let client = match linked(inner).await {
             Ok(client) => client,
-            Err(res) => return Ok(res),
+            Err(res) => return Ok(*res),
         };
         let token = match access_token(&client).await {
             Ok(t) => t,
