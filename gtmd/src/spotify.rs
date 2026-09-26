@@ -941,8 +941,7 @@ pub async fn web_playlist(
     client: &AuthCodePkceSpotify,
     uri: &str,
 ) -> Result<Vec<SpotifyTrack>, String> {
-    let playlist_id =
-        PlaylistId::from_uri(uri).map_err(|e| format!("bad playlist uri: {e}"))?;
+    let playlist_id = PlaylistId::from_uri(uri).map_err(|e| format!("bad playlist uri: {e}"))?;
     let page = client
         .playlist_items_manual(playlist_id, None, None, Some(50), Some(0))
         .await

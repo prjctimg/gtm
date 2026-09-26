@@ -216,7 +216,7 @@ impl DaemonClient {
             | DaemonReq::SpotifySync
             | DaemonReq::SpotifyResolve { .. }
             | DaemonReq::SpotifyResolveTrack { .. } => 200,
-            | DaemonReq::SpotifyMatch { .. }
+            DaemonReq::SpotifyMatch { .. }
             | DaemonReq::SpotifyLike { .. }
             | DaemonReq::SpotifyPlaylistAdd { .. } => 30,
             _ => IPC_TIMEOUT_SECS,

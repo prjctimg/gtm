@@ -94,7 +94,10 @@ impl LibrespotSink for ChannelSink {
             // librespot keeps writing until the track ends, and treats an
             // `Ok` write as healthy, so dropping here is how a target race
             // turns into silence that reports itself as playing. Say so.
-            warn!("spotify sink has no target — dropping {} samples", buf.len());
+            warn!(
+                "spotify sink has no target — dropping {} samples",
+                buf.len()
+            );
             return Ok(());
         };
         // `write` runs on librespot's player thread, which every official
@@ -546,7 +549,8 @@ mod tests {
     #[test]
     fn format_matches_librespot() {
         let (_tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHANNEL_CAPACITY);
-        let source = PcmStreamSource::new(rx, 180.0);        use rodio::Source;
+        let source = PcmStreamSource::new(rx, 180.0);
+        use rodio::Source;
         assert_eq!(source.sample_rate().get(), SAMPLE_RATE);
         assert_eq!(source.channels().get(), NUM_CHANNELS as u16);
         assert_eq!(source.total_duration(), Some(Duration::from_secs(180)));

@@ -2016,10 +2016,8 @@ impl App {
                             .map(|(id, _)| id.clone())
                             .unwrap_or_default()
                     };
-                    if !key.is_empty() || top.selected == 0 {
-                        if !self.live_dests.remove(&key) {
-                            self.live_dests.insert(key);
-                        }
+                    if (!key.is_empty() || top.selected == 0) && !self.live_dests.remove(&key) {
+                        self.live_dests.insert(key);
                     }
                 }
                 return;
