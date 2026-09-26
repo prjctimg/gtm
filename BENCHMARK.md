@@ -4,16 +4,16 @@ Automated measurements of gtm's resource usage during playback, compared
 release-over-release and against the reference CLI player **cliamp**
 ([bjarneo/cliamp](https://github.com/bjarneo/cliamp)).
 
-> **This run**: release `0.2.83+6faaf7e+nightly` (commit `6faaf7e643709557ae7370e05f40cbe0a12afb42`, 2026-09-26T19:58:25Z).
+> **This run**: release `0.2.83+aa7ffe4+nightly` (commit `aa7ffe457e41dca312f4277035526702513c7e09`, 2026-09-26T20:46:20Z).
 
-## Headline — diff vs the last published release (`0.2.83+c8ce0ac+nightly`)
+## Headline — diff vs the last published release (`0.2.83+6faaf7e+nightly`)
 
-| Fixture (player) | Metric | Prev (`0.2.83+c8ce0ac+nightly`) | This | Δ |
+| Fixture (player) | Metric | Prev (`0.2.83+6faaf7e+nightly`) | This | Δ |
 |------------------|--------|------:|-----:|---:|
-| bench.flac (gtm) | peak RSS (kB) | 16348 | 16272 | **−76** |
-| bench.flac (gtm) | mean RSS (kB) | 16305 | 16230 | **−75** |
-| bench.flac (gtm) | CPU (ms) | 100 | 90 | **−10** |
-| bench.flac (gtm) | RSS @5s (kB) | 16224 | 16148 | **−76** |
+| bench.flac (gtm) | peak RSS (kB) | 16272 | 16268 | **−4** |
+| bench.flac (gtm) | mean RSS (kB) | 16230 | 16196 | **−34** |
+| bench.flac (gtm) | CPU (ms) | 90 | 100 | **+10** |
+| bench.flac (gtm) | RSS @5s (kB) | 16148 | 16084 | **−64** |
 
 
 
@@ -22,9 +22,9 @@ release-over-release and against the reference CLI player **cliamp**
 ```mermaid
 xychart-beta
   title "Peak RSS by release (gtm, FLAC; kB)"
-  x-axis [0.2.83+cfe43fb+nightly, 0.2.83+3364103+nightly, 0.2.83+0ba44c5+nightly, 0.2.83+581b9eb+nightly, 0.2.83+7b6746d+nightly, 0.2.83+cf44858+nightly, 0.2.83+ab3350d+nightly, 0.2.83+0305f9a+nightly, 0.2.83+3a0a726+nightly, 0.2.83+487b302+nightly, 0.2.83+3e10016+nightly, 0.2.83+1d3fd86+nightly, 0.2.83+ff13d58+nightly, 0.2.83+dca7ff3+nightly, 0.2.83+d84752d+nightly, 0.2.83+03962c3+nightly, 0.2.83+72c64db+nightly, 0.2.83+9dbcbd3+nightly, 0.2.83+2e8f8c0+nightly, 0.2.83+6d5ffbc+nightly, 0.2.83+72e7f35+nightly, 0.2.83+354d495+nightly, 0.2.83+d780bd2+nightly, 0.2.83+29ca322+nightly, 0.2.83+0db6b8f+nightly, 0.2.83+e5d8a6f+nightly, 0.2.83+8d4ac02+nightly, 0.2.83+832e3c7+nightly, 0.2.83+b3cb5eb+nightly, 0.2.83+6b97229+nightly, 0.2.83+4b2e7a0+nightly, 0.2.83+4cf395b+nightly, 0.2.83+11bd4d4+nightly, 0.2.83+bb23574+nightly, 0.2.83+7aedba7+nightly, 0.2.83+ff19ecf+nightly, 0.2.83+f3a58ad+nightly, 0.2.83+07516cb+nightly, 0.2.83+442c67a+nightly, 0.2.83+0ee1d29+nightly, 0.2.83+028bbc2+nightly, 0.2.83+9181758+nightly, 0.2.83+64b3fbf+nightly, 0.2.83+a295708+nightly, 0.2.83+c8ce0ac+nightly, 0.2.83+6faaf7e+nightly]
+  x-axis [0.2.83+cfe43fb+nightly, 0.2.83+3364103+nightly, 0.2.83+0ba44c5+nightly, 0.2.83+581b9eb+nightly, 0.2.83+7b6746d+nightly, 0.2.83+cf44858+nightly, 0.2.83+ab3350d+nightly, 0.2.83+0305f9a+nightly, 0.2.83+3a0a726+nightly, 0.2.83+487b302+nightly, 0.2.83+3e10016+nightly, 0.2.83+1d3fd86+nightly, 0.2.83+ff13d58+nightly, 0.2.83+dca7ff3+nightly, 0.2.83+d84752d+nightly, 0.2.83+03962c3+nightly, 0.2.83+72c64db+nightly, 0.2.83+9dbcbd3+nightly, 0.2.83+2e8f8c0+nightly, 0.2.83+6d5ffbc+nightly, 0.2.83+72e7f35+nightly, 0.2.83+354d495+nightly, 0.2.83+d780bd2+nightly, 0.2.83+29ca322+nightly, 0.2.83+0db6b8f+nightly, 0.2.83+e5d8a6f+nightly, 0.2.83+8d4ac02+nightly, 0.2.83+832e3c7+nightly, 0.2.83+b3cb5eb+nightly, 0.2.83+6b97229+nightly, 0.2.83+4b2e7a0+nightly, 0.2.83+4cf395b+nightly, 0.2.83+11bd4d4+nightly, 0.2.83+bb23574+nightly, 0.2.83+7aedba7+nightly, 0.2.83+ff19ecf+nightly, 0.2.83+f3a58ad+nightly, 0.2.83+07516cb+nightly, 0.2.83+442c67a+nightly, 0.2.83+0ee1d29+nightly, 0.2.83+028bbc2+nightly, 0.2.83+9181758+nightly, 0.2.83+64b3fbf+nightly, 0.2.83+a295708+nightly, 0.2.83+c8ce0ac+nightly, 0.2.83+6faaf7e+nightly, 0.2.83+aa7ffe4+nightly]
   y-axis "peak RSS (kB)" 0 --> 30000
-  bar [19492,19860,19512,20140,20036,20640,20532,20376,20328,20268,20628,20840,20780,20548,17724,17720,17636,18152,17896,17840,18104,17792,17540,17424,17676,18272,18240,18396,18152,18068,18312,18272,18580,18404,18264,18256,17876,17904,17964,16556,16168,16144,16312,16176,16348,16272]
+  bar [19492,19860,19512,20140,20036,20640,20532,20376,20328,20268,20628,20840,20780,20548,17724,17720,17636,18152,17896,17840,18104,17792,17540,17424,17676,18272,18240,18396,18152,18068,18312,18272,18580,18404,18264,18256,17876,17904,17964,16556,16168,16144,16312,16176,16348,16272,16268]
 ```
 
 ## Mean RSS trend across releases (gtm, FLAC; kB)
@@ -32,9 +32,9 @@ xychart-beta
 ```mermaid
 xychart-beta
   title "Mean RSS trend across releases (gtm, FLAC; kB)"
-  x-axis [0.2.83+cfe43fb+nightly, 0.2.83+3364103+nightly, 0.2.83+0ba44c5+nightly, 0.2.83+581b9eb+nightly, 0.2.83+7b6746d+nightly, 0.2.83+cf44858+nightly, 0.2.83+ab3350d+nightly, 0.2.83+0305f9a+nightly, 0.2.83+3a0a726+nightly, 0.2.83+487b302+nightly, 0.2.83+3e10016+nightly, 0.2.83+1d3fd86+nightly, 0.2.83+ff13d58+nightly, 0.2.83+dca7ff3+nightly, 0.2.83+d84752d+nightly, 0.2.83+03962c3+nightly, 0.2.83+72c64db+nightly, 0.2.83+9dbcbd3+nightly, 0.2.83+2e8f8c0+nightly, 0.2.83+6d5ffbc+nightly, 0.2.83+72e7f35+nightly, 0.2.83+354d495+nightly, 0.2.83+d780bd2+nightly, 0.2.83+29ca322+nightly, 0.2.83+0db6b8f+nightly, 0.2.83+e5d8a6f+nightly, 0.2.83+8d4ac02+nightly, 0.2.83+832e3c7+nightly, 0.2.83+b3cb5eb+nightly, 0.2.83+6b97229+nightly, 0.2.83+4b2e7a0+nightly, 0.2.83+4cf395b+nightly, 0.2.83+11bd4d4+nightly, 0.2.83+bb23574+nightly, 0.2.83+7aedba7+nightly, 0.2.83+ff19ecf+nightly, 0.2.83+f3a58ad+nightly, 0.2.83+07516cb+nightly, 0.2.83+442c67a+nightly, 0.2.83+0ee1d29+nightly, 0.2.83+028bbc2+nightly, 0.2.83+9181758+nightly, 0.2.83+64b3fbf+nightly, 0.2.83+a295708+nightly, 0.2.83+c8ce0ac+nightly, 0.2.83+6faaf7e+nightly]
+  x-axis [0.2.83+cfe43fb+nightly, 0.2.83+3364103+nightly, 0.2.83+0ba44c5+nightly, 0.2.83+581b9eb+nightly, 0.2.83+7b6746d+nightly, 0.2.83+cf44858+nightly, 0.2.83+ab3350d+nightly, 0.2.83+0305f9a+nightly, 0.2.83+3a0a726+nightly, 0.2.83+487b302+nightly, 0.2.83+3e10016+nightly, 0.2.83+1d3fd86+nightly, 0.2.83+ff13d58+nightly, 0.2.83+dca7ff3+nightly, 0.2.83+d84752d+nightly, 0.2.83+03962c3+nightly, 0.2.83+72c64db+nightly, 0.2.83+9dbcbd3+nightly, 0.2.83+2e8f8c0+nightly, 0.2.83+6d5ffbc+nightly, 0.2.83+72e7f35+nightly, 0.2.83+354d495+nightly, 0.2.83+d780bd2+nightly, 0.2.83+29ca322+nightly, 0.2.83+0db6b8f+nightly, 0.2.83+e5d8a6f+nightly, 0.2.83+8d4ac02+nightly, 0.2.83+832e3c7+nightly, 0.2.83+b3cb5eb+nightly, 0.2.83+6b97229+nightly, 0.2.83+4b2e7a0+nightly, 0.2.83+4cf395b+nightly, 0.2.83+11bd4d4+nightly, 0.2.83+bb23574+nightly, 0.2.83+7aedba7+nightly, 0.2.83+ff19ecf+nightly, 0.2.83+f3a58ad+nightly, 0.2.83+07516cb+nightly, 0.2.83+442c67a+nightly, 0.2.83+0ee1d29+nightly, 0.2.83+028bbc2+nightly, 0.2.83+9181758+nightly, 0.2.83+64b3fbf+nightly, 0.2.83+a295708+nightly, 0.2.83+c8ce0ac+nightly, 0.2.83+6faaf7e+nightly, 0.2.83+aa7ffe4+nightly]
   y-axis "mean RSS (kB)" 0 --> 30000
-  line [19449,19817,19469,20097,19993,20597,20489,20333,20293,20233,20593,20805,20746,20514,17683,17679,17596,18113,17855,17800,18063,17751,17499,17384,17635,18232,18200,18356,18112,17996,18238,18231,18537,18364,18192,18216,17835,17832,17892,16516,16125,16101,16238,16102,16305,16230]
+  line [19449,19817,19469,20097,19993,20597,20489,20333,20293,20233,20593,20805,20746,20514,17683,17679,17596,18113,17855,17800,18063,17751,17499,17384,17635,18232,18200,18356,18112,17996,18238,18231,18537,18364,18192,18216,17835,17832,17892,16516,16125,16101,16238,16102,16305,16230,16196]
 ```
 
 ## Start latency (t_ready) by release (gtm, FLAC; ms)
@@ -42,9 +42,9 @@ xychart-beta
 ```mermaid
 xychart-beta
   title "Start latency (t_ready) by release (gtm, FLAC; ms)"
-  x-axis [0.2.83+cfe43fb+nightly, 0.2.83+3364103+nightly, 0.2.83+0ba44c5+nightly, 0.2.83+581b9eb+nightly, 0.2.83+7b6746d+nightly, 0.2.83+cf44858+nightly, 0.2.83+ab3350d+nightly, 0.2.83+0305f9a+nightly, 0.2.83+3a0a726+nightly, 0.2.83+487b302+nightly, 0.2.83+3e10016+nightly, 0.2.83+1d3fd86+nightly, 0.2.83+ff13d58+nightly, 0.2.83+dca7ff3+nightly, 0.2.83+d84752d+nightly, 0.2.83+03962c3+nightly, 0.2.83+72c64db+nightly, 0.2.83+9dbcbd3+nightly, 0.2.83+2e8f8c0+nightly, 0.2.83+6d5ffbc+nightly, 0.2.83+72e7f35+nightly, 0.2.83+354d495+nightly, 0.2.83+d780bd2+nightly, 0.2.83+29ca322+nightly, 0.2.83+0db6b8f+nightly, 0.2.83+e5d8a6f+nightly, 0.2.83+8d4ac02+nightly, 0.2.83+832e3c7+nightly, 0.2.83+b3cb5eb+nightly, 0.2.83+6b97229+nightly, 0.2.83+4b2e7a0+nightly, 0.2.83+4cf395b+nightly, 0.2.83+11bd4d4+nightly, 0.2.83+bb23574+nightly, 0.2.83+7aedba7+nightly, 0.2.83+ff19ecf+nightly, 0.2.83+f3a58ad+nightly, 0.2.83+07516cb+nightly, 0.2.83+442c67a+nightly, 0.2.83+0ee1d29+nightly, 0.2.83+028bbc2+nightly, 0.2.83+9181758+nightly, 0.2.83+64b3fbf+nightly, 0.2.83+a295708+nightly, 0.2.83+c8ce0ac+nightly, 0.2.83+6faaf7e+nightly]
+  x-axis [0.2.83+cfe43fb+nightly, 0.2.83+3364103+nightly, 0.2.83+0ba44c5+nightly, 0.2.83+581b9eb+nightly, 0.2.83+7b6746d+nightly, 0.2.83+cf44858+nightly, 0.2.83+ab3350d+nightly, 0.2.83+0305f9a+nightly, 0.2.83+3a0a726+nightly, 0.2.83+487b302+nightly, 0.2.83+3e10016+nightly, 0.2.83+1d3fd86+nightly, 0.2.83+ff13d58+nightly, 0.2.83+dca7ff3+nightly, 0.2.83+d84752d+nightly, 0.2.83+03962c3+nightly, 0.2.83+72c64db+nightly, 0.2.83+9dbcbd3+nightly, 0.2.83+2e8f8c0+nightly, 0.2.83+6d5ffbc+nightly, 0.2.83+72e7f35+nightly, 0.2.83+354d495+nightly, 0.2.83+d780bd2+nightly, 0.2.83+29ca322+nightly, 0.2.83+0db6b8f+nightly, 0.2.83+e5d8a6f+nightly, 0.2.83+8d4ac02+nightly, 0.2.83+832e3c7+nightly, 0.2.83+b3cb5eb+nightly, 0.2.83+6b97229+nightly, 0.2.83+4b2e7a0+nightly, 0.2.83+4cf395b+nightly, 0.2.83+11bd4d4+nightly, 0.2.83+bb23574+nightly, 0.2.83+7aedba7+nightly, 0.2.83+ff19ecf+nightly, 0.2.83+f3a58ad+nightly, 0.2.83+07516cb+nightly, 0.2.83+442c67a+nightly, 0.2.83+0ee1d29+nightly, 0.2.83+028bbc2+nightly, 0.2.83+9181758+nightly, 0.2.83+64b3fbf+nightly, 0.2.83+a295708+nightly, 0.2.83+c8ce0ac+nightly, 0.2.83+6faaf7e+nightly, 0.2.83+aa7ffe4+nightly]
   y-axis "t_ready (ms)" 0 --> 80
-  line [71,70,71,69,71,66,67,70,66,70,67,67,71,71,65,70,69,64,70,68,65,14,18,17,16,17,12,18,17,10,18,14,17,18,18,17,18,18,18,6,6,6,6,6,6,6]
+  line [71,70,71,69,71,66,67,70,66,70,67,67,71,71,65,70,69,64,70,68,65,14,18,17,16,17,12,18,17,10,18,14,17,18,18,17,18,18,18,6,6,6,6,6,6,6,6]
 ```
 
 ## History
@@ -97,6 +97,7 @@ xychart-beta
 | 0.2.83+a295708+nightly | 2026-09-26 | 16176 | 16102 | 6 |
 | 0.2.83+c8ce0ac+nightly | 2026-09-26 | 16348 | 16305 | 6 |
 | 0.2.83+6faaf7e+nightly | 2026-09-26 | 16272 | 16230 | 6 |
+| 0.2.83+aa7ffe4+nightly | 2026-09-26 | 16268 | 16196 | 6 |
 
 ## Machine-readable history
 
@@ -149,6 +150,7 @@ reconstructs trend history from them. Do not edit by hand.
 <!--bench:{"tag":"0.2.83+a295708+nightly","date":"2026-09-26T13:29:56Z","commit":"a295708c852233d9756e123a20b1f246b1d6d28a","seconds":"152","runs":{"gtm/bench.flac":{"file_sha256":"c5e5c960cf59e5fdf3f3b68ea94a24d5f3d4b1122697e4e19d5ec5c1c3e175de","peak_rss_kb":16176,"mean_rss_kb":16102,"rss_5s_kb":15988,"cpu_ms":100,"t_ready_ms":6,"rss_p50_kb":16108,"rss_p95_kb":16176},"gtm/bench.mp3":{"file_sha256":"6bd083a60ca94245ffd8d1be73e4b83eaab0fb6eeb6648e214ca528563a0bbfd","peak_rss_kb":16396,"mean_rss_kb":16360,"rss_5s_kb":16220,"cpu_ms":190,"t_ready_ms":6,"rss_p50_kb":16396,"rss_p95_kb":16396}}}-->
 <!--bench:{"tag":"0.2.83+c8ce0ac+nightly","date":"2026-09-26T14:35:43Z","commit":"c8ce0ac190f7dc58a46c865d251fa1e7b08f4078","seconds":"152","runs":{"gtm/bench.flac":{"file_sha256":"c5e5c960cf59e5fdf3f3b68ea94a24d5f3d4b1122697e4e19d5ec5c1c3e175de","peak_rss_kb":16348,"mean_rss_kb":16305,"rss_5s_kb":16224,"cpu_ms":100,"t_ready_ms":6,"rss_p50_kb":16348,"rss_p95_kb":16348},"gtm/bench.mp3":{"file_sha256":"6bd083a60ca94245ffd8d1be73e4b83eaab0fb6eeb6648e214ca528563a0bbfd","peak_rss_kb":16228,"mean_rss_kb":16209,"rss_5s_kb":16120,"cpu_ms":180,"t_ready_ms":6,"rss_p50_kb":16228,"rss_p95_kb":16228}}}-->
 <!--bench:{"tag":"0.2.83+6faaf7e+nightly","date":"2026-09-26T19:58:25Z","commit":"6faaf7e643709557ae7370e05f40cbe0a12afb42","seconds":"154","runs":{"gtm/bench.flac":{"file_sha256":"c5e5c960cf59e5fdf3f3b68ea94a24d5f3d4b1122697e4e19d5ec5c1c3e175de","peak_rss_kb":16272,"mean_rss_kb":16230,"rss_5s_kb":16148,"cpu_ms":90,"t_ready_ms":6,"rss_p50_kb":16268,"rss_p95_kb":16272},"gtm/bench.mp3":{"file_sha256":"6bd083a60ca94245ffd8d1be73e4b83eaab0fb6eeb6648e214ca528563a0bbfd","peak_rss_kb":16076,"mean_rss_kb":16057,"rss_5s_kb":15964,"cpu_ms":180,"t_ready_ms":6,"rss_p50_kb":16076,"rss_p95_kb":16076}}}-->
+<!--bench:{"tag":"0.2.83+aa7ffe4+nightly","date":"2026-09-26T20:46:20Z","commit":"aa7ffe457e41dca312f4277035526702513c7e09","seconds":"152","runs":{"gtm/bench.flac":{"file_sha256":"c5e5c960cf59e5fdf3f3b68ea94a24d5f3d4b1122697e4e19d5ec5c1c3e175de","peak_rss_kb":16268,"mean_rss_kb":16196,"rss_5s_kb":16084,"cpu_ms":100,"t_ready_ms":6,"rss_p50_kb":16268,"rss_p95_kb":16268},"gtm/bench.mp3":{"file_sha256":"6bd083a60ca94245ffd8d1be73e4b83eaab0fb6eeb6648e214ca528563a0bbfd","peak_rss_kb":16508,"mean_rss_kb":16489,"rss_5s_kb":16396,"cpu_ms":180,"t_ready_ms":6,"rss_p50_kb":16508,"rss_p95_kb":16508}}}-->
 
 ## Methodology
 
