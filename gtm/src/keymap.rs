@@ -432,7 +432,11 @@ pub fn parse_key_event(s: &str) -> Option<KeyEvent> {
             "shift" => modifiers |= KeyModifiers::SHIFT,
             "super" | "meta" | "cmd" | "command" => modifiers |= KeyModifiers::SUPER,
             _ => {
-                let c = match p {
+                // Named keys match case-insensitively, like the modifier arms
+                // above, so `"Space"` and `"Ctrl+Space"` both work. The
+                // single-character fallback keeps the original casing: `S` and
+                // `s` are different bindings.
+                let c = match p.to_lowercase().as_str() {
                     "space" => KeyCode::Char(' '),
                     "enter" | "return" => KeyCode::Enter,
                     "tab" => {
@@ -467,7 +471,9 @@ pub fn parse_key_event(s: &str) -> Option<KeyEvent> {
                     "f10" => KeyCode::F(10),
                     "f11" => KeyCode::F(11),
                     "f12" => KeyCode::F(12),
-                    _ if p.len() == 1 => KeyCode::Char(p.chars().next()?),
+                    // `chars().count()`, not `len()`: a single non-ASCII
+                    // character is more than one byte.
+                    _ if p.chars().count() == 1 => KeyCode::Char(p.chars().next()?),
                     _ => return None,
                 };
                 code = Some(c);
@@ -708,6 +714,30 @@ mod tests {
             dispatch(KeyCode::Char(':').into(), KeyContext::Normal),
             Some(KeyboardAction::OpenOverlay(PickerId::CommandPalette))
         ));
+    }
+
+    #[test]
+    fn parse_named_keys_ignore_case_but_chars_do_not() {
+        // Modifier arms have always been case-insensitive, so `Ctrl+d` parsed
+        // while `Space` did not. Named keys must behave the same way, and the
+        // single-character fallback must keep its case or `S` and `s` would
+        // collide.
+        let space = KeyCode::Char(' ').into();
+        assert_eq!(parse_key_event("Space"), Some(space));
+        assert_eq!(parse_key_event("space"), Some(space));
+        assert_eq!(parse_key_event("SPACE"), Some(space));
+        assert_eq!(
+            parse_key_event("Shift+Space"),
+            Some(KeyEvent::new(KeyCode::Char(' '), KeyModifiers::SHIFT))
+        );
+        let upper = KeyCode::Char('S').into();
+        assert_eq!(parse_key_event("S"), Some(upper));
+        assert_ne!(parse_key_event("S"), parse_key_event("s"));
+        // A single non-ASCII character is one key, not two bytes.
+        assert_eq!(
+            parse_key_event("é"),
+            Some(KeyEvent::new(KeyCode::Char('é'), KeyModifiers::NONE))
+        );
     }
 
     #[test]
