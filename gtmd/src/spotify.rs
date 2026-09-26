@@ -12,6 +12,7 @@ use chrono::{Duration, Utc};
 use futures::StreamExt;
 use rspotify::AuthCodePkceSpotify;
 use rspotify::clients::{BaseClient, OAuthClient};
+use rspotify::model::idtypes::Id;
 use rspotify::model::{
     AdditionalType, AlbumId, AlbumType, ArtistId, PlayableItem, RepeatState, SearchType,
     SimplifiedArtist, Token,
@@ -730,7 +731,7 @@ pub async fn search(
                 artists: artists_of(&t.artists),
                 album: Some(t.album.name.clone()),
                 duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
-                uri: t.id.as_ref().map(|id| format!("spotify:track:{id}")),
+                uri: t.id.as_ref().map(|id| id.uri()),
                 image_url: pick_largest_image(&t.album.images),
                 kind: None,
             }));
@@ -754,7 +755,7 @@ pub async fn search(
                     artists: artists_of(&a.artists),
                     album: Some(a.name.clone()),
                     duration_ms: None,
-                    uri: a.id.as_ref().map(|id| format!("spotify:album:{id}")),
+                    uri: a.id.as_ref().map(|id| id.uri()),
                     image_url: pick_largest_image(&a.images),
                     kind: Some(SpotifySearchKind::Album),
                 });
@@ -778,7 +779,7 @@ pub async fn search(
                     artists: String::new(),
                     album: None,
                     duration_ms: None,
-                    uri: Some(format!("spotify:artist:{}", a.id)),
+                    uri: Some(a.id.uri()),
                     image_url: pick_largest_image(&a.images),
                     kind: Some(SpotifySearchKind::Artist),
                 });
@@ -804,7 +805,7 @@ pub async fn search(
                     artists: a.owner.display_name.clone().unwrap_or_default(),
                     album: Some(format!("{} tracks", a.items.total)),
                     duration_ms: None,
-                    uri: Some(format!("spotify:playlist:{}", a.id)),
+                    uri: Some(a.id.uri()),
                     image_url: pick_largest_image(&a.images),
                     kind: Some(SpotifySearchKind::Playlist),
                 });
@@ -842,7 +843,7 @@ pub async fn album_tracks(
             artists: artists_of(&t.artists),
             album: t.album.as_ref().map(|a| a.name.clone()),
             duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
-            uri: t.id.as_ref().map(|id| format!("spotify:track:{id}")),
+            uri: t.id.as_ref().map(|id| id.uri()),
             image_url: t.album.as_ref().and_then(|a| pick_largest_image(&a.images)),
             kind: Some(SpotifySearchKind::Track),
         });
@@ -893,7 +894,7 @@ pub async fn artist_top(
             let Some(track_id) = t.id.as_ref() else {
                 continue;
             };
-            let track_uri = format!("spotify:track:{track_id}");
+            let track_uri = track_id.uri();
             if !seen.insert(track_uri.clone()) {
                 continue;
             }
@@ -1043,7 +1044,7 @@ pub fn track_from_playable(item: &PlayableItem) -> Option<SpotifyTrack> {
             artists: artists_of(&t.artists),
             album: Some(t.album.name.clone()),
             duration_ms: Some(t.duration.num_milliseconds().max(0) as u64),
-            uri: t.id.as_ref().map(|id| format!("spotify:track:{id}")),
+            uri: t.id.as_ref().map(|id| id.uri()),
             image_url: pick_largest_image(&t.album.images),
             kind: None,
         }),
@@ -1084,6 +1085,29 @@ fn parse_token(raw: &str) -> Result<Token, String> {
 #[cfg(test)]
 mod tests {
     use super::{SCOPE_STREAMING, TOKEN_ACCESS_PERMS, parse_token};
+    use rspotify::model::idtypes::Id;
+    use rspotify::model::{AlbumId, ArtistId, TrackId};
+
+    /// `Display` on an rspotify 0.16 id renders its **full URI**, not the bare
+    /// id, so `format!("spotify:track:{id}")` produced
+    /// `spotify:track:spotify:track:<id>` and every resolved track was
+    /// rejected as unplayable. The `Id` accessors are the correct spelling and
+    /// are what the request builders use; these pin the difference so a future
+    /// rspotify bump cannot quietly reintroduce it.
+    #[test]
+    fn id_display_is_a_uri_not_a_bare_id() {
+        let id = TrackId::from_id("1K2saNWiQjrrgeIy8gAb73").expect("valid track id");
+        assert_eq!(id.id(), "1K2saNWiQjrrgeIy8gAb73");
+        assert_eq!(id.uri(), "spotify:track:1K2saNWiQjrrgeIy8gAb73");
+        // The regression: Display must not be used to build a URI.
+        assert_eq!(format!("{id}"), id.uri());
+        assert_ne!(format!("spotify:track:{id}"), id.uri());
+
+        let album = AlbumId::from_id("1K2saNWiQjrrgeIy8gAb73").expect("valid album id");
+        assert_eq!(album.uri(), format!("spotify:album:{}", album.id()));
+        let artist = ArtistId::from_id("1K2saNWiQjrrgeIy8gAb73").expect("valid artist id");
+        assert_eq!(artist.uri(), format!("spotify:artist:{}", artist.id()));
+    }
 
     #[test]
     fn token_plain() {
