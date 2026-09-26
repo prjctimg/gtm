@@ -782,20 +782,25 @@ impl Spotify {
 mod tests {
     use super::is_playable;
 
+    /// A track id is 22 base62 characters; `to_id` refuses anything else, so
+    /// the positive cases need a real one.
+    const ID: &str = "4cOdK2wGLETKBW3PvgPWqT";
+
     #[test]
     fn plain_track_uri_is_playable() {
-        assert!(is_playable("spotify:track:1K2saeIy8gAb73"));
-        assert!(is_playable("spotify:episode:1K2saeIy8gAb73"));
+        assert!(is_playable(&format!("spotify:track:{ID}")));
+        assert!(is_playable(&format!("spotify:episode:{ID}")));
     }
 
     #[test]
     fn doubled_prefix_is_rejected() {
         // `SpotifyUri::from_uri` accepts this and returns the inner
-        // `spotify:track:1K2saeIy8gAb73` as the id, so without the part-count
-        // guard the doubled form passed every check and only failed once
-        // librespot was already streaming.
-        assert!(!is_playable("spotify:track:spotify:track:1K2saeIy8gAb73"));
-        assert!(!is_playable("spotify:track:spotify:track:spotify:track:x"));
+        // `spotify:track:<id>` as the id, so without the part-count guard the
+        // doubled form passed every check and only failed once librespot was
+        // already streaming.
+        let doubled = format!("spotify:track:spotify:track:{ID}");
+        assert!(!is_playable(&doubled));
+        assert!(!is_playable(&format!("spotify:track:{doubled}")));
     }
 
     #[test]
@@ -803,9 +808,11 @@ mod tests {
         assert!(!is_playable(""));
         assert!(!is_playable("spotify:"));
         assert!(!is_playable("spotify:track:"));
-        assert!(!is_playable(
-            "https://open.spotify.com/track/1K2saeIy8gAb73"
-        ));
+        // Wrong id length: `to_id` refuses it.
+        assert!(!is_playable("spotify:track:1K2saeIy8gAb73"));
+        assert!(!is_playable(&format!(
+            "https://open.spotify.com/track/{ID}"
+        )));
         // `spotify:user:<id>:playlist:<id>` is four parts and is not playable.
         assert!(!is_playable("spotify:user:owner:playlist:playlist"));
     }
