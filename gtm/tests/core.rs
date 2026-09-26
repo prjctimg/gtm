@@ -1215,12 +1215,18 @@ fn struct_bodies<'a>(src: &'a str, name: &str) -> Vec<&'a str> {
     out
 }
 
-/// `name -> type` for the fields of one `struct` body.
-fn fields_of(body: &str) -> Vec<(String, String)> {
+/// The fields of one `struct` body, noting which carry `#[serde(flatten)]`.
+fn fields_of(body: &str) -> Vec<ParamField> {
     let mut out = Vec::new();
+    // An attribute on its own line applies to the field that follows it.
+    let mut flatten = false;
     for line in body.lines() {
         let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(attr) = line.strip_prefix("#[") {
+            flatten = attr.contains("flatten");
             continue;
         }
         let Some((name, ty)) = line.split_once(':') else {
@@ -1235,8 +1241,13 @@ fn fields_of(body: &str) -> Vec<(String, String)> {
                 .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
             && !ty.is_empty();
         if valid {
-            out.push((name.to_string(), ty.to_string()));
+            out.push(ParamField {
+                name: name.to_string(),
+                ty: ty.to_string(),
+                flatten,
+            });
         }
+        flatten = false;
     }
     out
 }
@@ -1246,7 +1257,16 @@ fn fields_of(body: &str) -> Vec<(String, String)> {
 /// parameters.
 struct Arm {
     name: String,
-    fields: Vec<(String, String)>,
+    fields: Vec<ParamField>,
+}
+
+/// One field of a `Params` struct. `flatten` matters: a flattened field's
+/// value is spread across the params object rather than nested under its own
+/// name, which is exactly how `queue` and `library` carry their action.
+struct ParamField {
+    name: String,
+    ty: String,
+    flatten: bool,
 }
 
 /// Every `"<wire name>" =>` arm in `parse_cmd`, in source order.
@@ -1402,8 +1422,8 @@ fn sample_for(ty: &str, depth: usize) -> serde_json::Value {
                 _ => {}
             }
         }
-        for (n, t) in fields_of(inner) {
-            fields.insert(n, sample_for(&t, depth - 1));
+        for f in fields_of(inner) {
+            fields.insert(f.name, sample_for(&f.ty, depth - 1));
         }
     }
     let mut out = serde_json::Map::new();
@@ -1544,12 +1564,7 @@ fn req_round_trip() {
     // name must produce *a* request rather than an error. A name that falls
     // through to the catch-all, or whose field list drifted, fails here.
     for arm in request_arms() {
-        let params: serde_json::Value = arm
-            .fields
-            .iter()
-            .map(|(n, ty)| (n.clone(), sample_for(ty, 4)))
-            .collect::<serde_json::Map<_, _>>()
-            .into();
+        let params = arm_params(&arm);
         let req = DaemonReq::parse_cmd(&arm.name, params)
             .unwrap_or_else(|e| panic!("{} failed to decode: {e}", arm.name));
         assert_eq!(
@@ -1559,6 +1574,23 @@ fn req_round_trip() {
             arm.name
         );
     }
+}
+
+/// Build the params object for one arm. A `#[serde(flatten)]` field is merged
+/// into the object rather than nested under its name, so `queue` gets
+/// `{"action":"add","paths":[]}` and not `{"action":{"action":"add",...}}`.
+fn arm_params(arm: &Arm) -> serde_json::Value {
+    let mut map = serde_json::Map::new();
+    for field in &arm.fields {
+        let value = sample_for(&field.ty, 4);
+        match (field.flatten, value) {
+            (true, serde_json::Value::Object(inner)) => map.extend(inner),
+            (_, value) => {
+                map.insert(field.name.clone(), value);
+            }
+        }
+    }
+    map.into()
 }
 
 #[test]
@@ -1576,9 +1608,11 @@ fn req_tagged_actions_survive_the_real_serializer() {
         },
     })
     .expect("queue serialises");
+    // `Option` fields have no `skip_serializing_if`, so the wire form spells
+    // an absent `position` out as null.
     assert_eq!(
         queue,
-        serde_json::json!({"action": "add", "paths": ["/tmp/a.opus"]})
+        serde_json::json!({"action": "add", "paths": ["/tmp/a.opus"], "position": null})
     );
     assert!(matches!(
         DaemonReq::parse_cmd("queue", queue).expect("queue decodes"),
@@ -1657,7 +1691,7 @@ fn req_arms_were_read() {
     );
     for arm in &arms {
         if arm.name == "play" {
-            let names: Vec<&str> = arm.fields.iter().map(|(n, _)| n.as_str()).collect();
+            let names: Vec<&str> = arm.fields.iter().map(|f| f.name.as_str()).collect();
             assert!(names.contains(&"path"), "play lost its path field");
             assert!(names.contains(&"start_pos"), "play lost start_pos");
         }
