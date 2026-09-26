@@ -1215,38 +1215,105 @@ fn struct_bodies<'a>(src: &'a str, name: &str) -> Vec<&'a str> {
     out
 }
 
-/// `name -> type` for every field of every `struct Params` in the decoder.
-/// Later declarations win, which keeps the map consistent without caring which
-/// arm a field came from.
-fn param_fields() -> Vec<(String, String)> {
-    let mut seen: Vec<(String, String)> = Vec::new();
-    for body in struct_bodies(REQUEST_SOURCES, "Params") {
-        for line in body.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with('#') {
-                continue;
-            }
-            let Some((name, ty)) = line.split_once(':') else {
-                continue;
-            };
-            let (name, ty) = (name.trim(), ty.trim().trim_end_matches(','));
-            // `#[serde(default)] fn ...` lines and stray attributes slip
-            // through the naive split; a field name is always lowercase.
-            let valid = !name.is_empty()
-                && name
-                    .chars()
-                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-                && !ty.is_empty();
-            if !valid {
-                continue;
-            }
-            match seen.iter_mut().find(|(n, _)| n == name) {
-                Some(slot) => slot.1 = ty.to_string(),
-                None => seen.push((name.to_string(), ty.to_string())),
-            }
+/// `name -> type` for the fields of one `struct` body.
+fn fields_of(body: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in body.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let Some((name, ty)) = line.split_once(':') else {
+            continue;
+        };
+        let (name, ty) = (name.trim(), ty.trim().trim_end_matches(','));
+        // `#[serde(default)] fn ...` lines and stray attributes slip
+        // through the naive split; a field name is always lowercase.
+        let valid = !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            && !ty.is_empty();
+        if valid {
+            out.push((name.to_string(), ty.to_string()));
         }
     }
-    seen
+    out
+}
+
+/// One `parse_cmd` arm: the wire name it answers to, and the fields its
+/// `struct Params` declares. Unit-variant arms declare no struct and take no
+/// parameters.
+struct Arm {
+    name: String,
+    fields: Vec<(String, String)>,
+}
+
+/// Every `"<wire name>" =>` arm in `parse_cmd`, in source order.
+///
+/// The arms are read individually rather than merged into one field map,
+/// because the same field name means different things in different arms
+/// (`action` is a `QueueAction` in one and a `LibraryAction` in another), so a
+/// shared map would hand an arm a value of the wrong type.
+fn request_arms() -> Vec<Arm> {
+    let src = include_str!("../src/shared/ipc.rs");
+    let start = src.find("pub fn parse_cmd").expect("parse_cmd in ipc.rs");
+    // Bound the body to the function itself. Running to end-of-file would also
+    // pick up the `yt_download_*` match further down, which is not a request
+    // arm at all.
+    let open = src[start..]
+        .find('{')
+        .map(|rel| start + rel)
+        .expect("parse_cmd body");
+    let mut nesting = 0usize;
+    let end = src[open..]
+        .char_indices()
+        .find_map(|(i, c)| match c {
+            '{' => {
+                nesting += 1;
+                None
+            }
+            '}' => {
+                nesting -= 1;
+                (nesting == 0).then_some(open + i)
+            }
+            _ => None,
+        })
+        .expect("parse_cmd is brace balanced");
+    let body = &src[start..end];
+
+    // A match arm starts on its own line, indented 12 spaces, with the wire
+    // name in double quotes followed by `=>`. Track byte offsets in one pass.
+    let mut arms: Vec<(usize, String)> = Vec::new();
+    let mut off = 0usize;
+    for line in body.lines() {
+        if let Some(rest) = line.strip_prefix("            \"")
+            && rest.contains("\" =>")
+            && let Some(name) = rest.split('"').next()
+            && !name.is_empty()
+            && name
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+        {
+            arms.push((off, name.to_string()));
+        }
+        off += line.len() + 1;
+    }
+
+    let mut out = Vec::new();
+    for (i, (off, name)) in arms.iter().enumerate() {
+        let end = arms.get(i + 1).map_or(body.len(), |(next, _)| *next);
+        let arm = &body[*off..end];
+        let fields = struct_bodies(arm, "Params")
+            .into_iter()
+            .flat_map(fields_of)
+            .collect();
+        out.push(Arm {
+            name: name.clone(),
+            fields,
+        });
+    }
+    out
 }
 
 /// A JSON value that deserializes into `ty`. Scalars come straight from the
@@ -1298,19 +1365,20 @@ fn sample_for(ty: &str, depth: usize) -> serde_json::Value {
         return Value::String(variant.to_string());
     }
     // The variant's fields continue on the lines below, so brace match from
-    // the opening brace instead of reading the declaration line alone.
+    // the opening brace instead of reading the declaration line alone. The
+    // counter is `nesting`, not `depth`: `depth` is the recursion budget.
     let start = body.find(first).unwrap_or_default();
     let Some(open) = body[start..].find('{').map(|rel| start + rel) else {
         return Value::Null;
     };
-    let mut depth = 0usize;
+    let mut nesting = 0usize;
     let mut inner = "";
     for (i, c) in body[open..].char_indices() {
         match c {
-            '{' => depth += 1,
+            '{' => nesting += 1,
             '}' => {
-                depth -= 1;
-                if depth == 0 {
+                nesting -= 1;
+                if nesting == 0 {
                     inner = &body[open + 1..open + i];
                     break;
                 }
@@ -1390,41 +1458,73 @@ fn req_every_wire_name_is_reachable() {
 
 #[test]
 fn req_round_trip() {
-    // Every declared field is supplied with a value of its own type, read out
-    // of the `Params` structs, so each name must produce *a* request rather
-    // than an error. A name that falls through to the catch-all, or whose
-    // field list drifted, fails here. Surplus keys are harmless: serde ignores
-    // fields a struct does not declare.
-    let params: serde_json::Value = param_fields()
-        .into_iter()
-        .map(|(name, ty)| (name, sample_for(&ty, 4)))
-        .collect::<serde_json::Map<_, _>>()
-        .into();
-    for name in wire_names() {
-        let req = DaemonReq::parse_cmd(name, params.clone())
-            .unwrap_or_else(|e| panic!("{name} failed to decode: {e}"));
+    // Each arm gets a value of its own declared type for every field, so the
+    // name must produce *a* request rather than an error. A name that falls
+    // through to the catch-all, or whose field list drifted, fails here.
+    for arm in request_arms() {
+        let params: serde_json::Value = arm
+            .fields
+            .iter()
+            .map(|(n, ty)| (n.clone(), sample_for(ty, 4)))
+            .collect::<serde_json::Map<_, _>>()
+            .into();
+        let req = DaemonReq::parse_cmd(&arm.name, params)
+            .unwrap_or_else(|e| panic!("{} failed to decode: {e}", arm.name));
         assert_eq!(
             req.cmd_name(),
-            name,
-            "{name} decoded to a different command"
+            arm.name,
+            "{} decoded to a different command",
+            arm.name
         );
     }
 }
 
 #[test]
-fn req_param_fields_were_read() {
-    // Guards the source-scraping above: if the `Params` shape ever moves, the
-    // round-trip would silently weaken to decoding nothing.
-    let fields = param_fields();
+fn req_arms_were_read() {
+    // Guards the source scraping. If the arm shape ever moves, the round-trip
+    // would silently weaken to decoding nothing.
+    let arms = request_arms();
+    assert!(arms.len() >= 100, "only found {} arms", arms.len());
+    assert_eq!(arms.len(), wire_names().len(), "arm count drifted");
+    let with_params = arms.iter().filter(|a| !a.fields.is_empty()).count();
     assert!(
-        fields.len() >= 40,
-        "only found {} param fields",
-        fields.len()
+        with_params >= 60,
+        "only {with_params} arms declare parameters"
     );
-    let names: Vec<&str> = fields.iter().map(|(n, _)| n.as_str()).collect();
-    for expected in ["path", "start_pos", "url", "track_id"] {
-        assert!(names.contains(&expected), "missing field {expected}");
+    for arm in &arms {
+        if arm.name == "play" {
+            let names: Vec<&str> = arm.fields.iter().map(|(n, _)| n.as_str()).collect();
+            assert!(names.contains(&"path"), "play lost its path field");
+            assert!(names.contains(&"start_pos"), "play lost start_pos");
+        }
     }
+}
+
+#[test]
+fn req_every_variant_has_an_arm() {
+    // `cmd_name` and `parse_cmd` are two independent listings of the wire
+    // protocol. A variant with no arm decodes to the catch-all; an arm with no
+    // variant is dead weight. Either means the two have drifted apart.
+    let arms: Vec<String> = request_arms().into_iter().map(|a| a.name).collect();
+    let names = wire_names();
+    let mut missing: Vec<&str> = names
+        .iter()
+        .filter(|n| !arms.iter().any(|a| a == *n))
+        .copied()
+        .collect();
+    missing.sort_unstable();
+    assert!(
+        missing.is_empty(),
+        "variants with no parse arm: {missing:?}"
+    );
+
+    let mut orphan: Vec<&str> = arms
+        .iter()
+        .map(String::as_str)
+        .filter(|n| !names.contains(n))
+        .collect();
+    orphan.sort_unstable();
+    assert!(orphan.is_empty(), "arms with no variant: {orphan:?}");
 }
 
 #[test]

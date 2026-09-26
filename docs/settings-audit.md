@@ -61,27 +61,47 @@ hand-edited file that omits keys still loads.
   validation.** An unknown notification category is silently ignored; an
   unknown keybinding is silently unused. A typo produces no diagnostic.
 
-## Settings that are NOT persisted
+## Settings that are NOT in config.toml
 
 The Settings pane exposes 36 rows across four categories
 (`gtm/src/app/theme.rs::category_options`). Most of them send an IPC command
-and change daemon runtime state that is not written back to `config.toml`:
+rather than editing `config.toml`:
 
 | Category | Rows | Persisted? |
 |---|---|---|
 | YouTube | 4 (cookie source/file, JS runtime, auto download) | no — cookie paths live in the daemon's own `yt-dlp` config |
-| Playback | 6 (repeat, shuffle, crossfade, EQ enabled, reverb, cover source) | only `cover_provider` |
-| System | 15 | 10 of 15 persist; 5 are commands ("Sync Covers", "Clear Lyrics Cache", …) |
+| Playback | 6 (repeat, shuffle, crossfade, EQ enabled, reverb, cover source) | `cover_provider` in config.toml; the rest in `state.json` |
+| System | 15 | 10 of 15 in config.toml; 5 are commands ("Sync Covers", "Clear Lyrics Cache", …) |
 | Spotify | 11 (status, account, playlists, link, sync, unlink, device, next, previous, shuffle, repeat) | no — all daemon/runtime state |
 
-**Consequence:** repeat mode, shuffle, crossfade, EQ, reverb, speed, mono and
-gapless all reset to their defaults on daemon restart, even though the TUI
-presents them as ordinary settings. That is defensible for transport state
-(repeat/shuffle are arguably per-session) but surprising for EQ and crossfade,
-which most players persist.
+### The second store: `state.json`
 
-The daemon reads only `cover_provider` and `cover_cache_mb` from this file
-(`gtmd/src/config.rs:168-184`). Everything else in the daemon is command-driven.
+Playback preferences are **not** lost on restart. The daemon writes
+`SavedState` to `$XDG_DATA_HOME/gtm/state.json` (`gtmd/src/config.rs:164`,
+saved on change in `gtmd/src/daemon/mod.rs`). It carries:
+
+- `queue`, `queue_cursor`, `volume`, `repeat`, `shuffle`, `mute`, `mono`
+- `crossfade`, `gapless`, `dynamic_mode`, `scrobble`
+- `audio`: `eq_preset`, `eq_enabled`, `reverb`, `loudness_mode`, `pre_gain_db`,
+  `speed`, `audio_device`
+- `current_track`, `time_pos` and whether playback was active, so a restart
+  resumes exactly where it left off
+
+So there are two stores with different rules, and neither is documented:
+
+- `config.toml` — the user's *chosen defaults*, hand-editable, safe to delete
+- `state.json` — the *live* session, rewritten by the daemon, includes
+  playback position
+
+Deleting `config.toml` resets presentation and keybindings but leaves audio
+settings and the queue intact. Editing a setting in the TUI writes
+`config.toml`; changing it from the daemon writes `state.json`. A user who
+edits `config.toml` expecting EQ to change it will be surprised, because the
+TUI's EQ row writes to `state.json` and the daemon's saved value wins on
+startup.
+
+The daemon reads only `cover_provider` and `cover_cache_mb` from `config.toml`
+(`gtmd/src/config.rs:168-184`).
 
 ## Recommendation
 
@@ -90,6 +110,9 @@ The daemon reads only `cover_provider` and `cover_cache_mb` from this file
    `left_pane_lists`) to the System category.
 2. Validate the two tables on load and warn on unknown keys, so a typo is
    visible instead of silent.
-3. Decide whether EQ / crossfade / gapless should persist. If yes, they belong
-   in `Prefs`; if no, the Settings pane should not present them as ordinary
-   preferences.
+3. Document the two-store split (`config.toml` = chosen defaults, `state.json`
+   = live session). Nothing currently tells a user which file a given setting
+   lives in, and the playback preferences that feel most "settable" are in the
+   one that is rewritten on every change.
+4. Have the TUI write audio preferences to `config.toml` as well, so a user who
+   hand-edits EQ or crossfade sees the effect they expect.
