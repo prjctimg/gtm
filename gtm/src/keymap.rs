@@ -745,7 +745,10 @@ mod tests {
     #[test]
     fn format_round_trips_through_parse() {
         // `config.toml` spells bindings with `parse_key_event`; the footer
-        // echo must be something a user could paste back into it.
+        // echo must be a string a user could paste back into `keybindings` and
+        // still get the same binding. The key must survive, and the modifiers
+        // must still *match* — not be spelled identically, since `key_matches`
+        // deliberately treats a lone Shift as fuzzy.
         for key in [
             KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
             KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
@@ -754,13 +757,17 @@ mod tests {
             KeyEvent::new(KeyCode::Char(' '), KeyModifiers::NONE),
             KeyEvent::new(KeyCode::Char('S'), KeyModifiers::ALT),
             KeyEvent::new(KeyCode::Up, KeyModifiers::SHIFT),
+            KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
             KeyEvent::new(KeyCode::F(5), KeyModifiers::NONE),
         ] {
             let text = format_key_event(&key);
             let back =
                 parse_key_event(&text).unwrap_or_else(|| panic!("{text} did not parse back"));
             assert_eq!(back.code, key.code, "{text} changed the key");
-            assert_eq!(back.modifiers, key.modifiers, "{text} changed modifiers");
+            assert!(
+                key_matches(&key, &back),
+                "{text} no longer matches the press it came from"
+            );
         }
     }
 }
