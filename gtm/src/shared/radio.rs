@@ -77,19 +77,38 @@ impl RadioTrack {
         }
     }
 
-    /// Whether this entry and `other` name the same track. Sources spell the
-    /// same track differently from the ICY `StreamTitle` (remix suffixes, feat
-    /// clauses, leading dashes), so comparison is on the longest shared
-    /// normalised token run rather than whole-string equality.
+    /// Whether this entry and `other` name the same track. A station and its
+    /// own stream spell the same track differently — a `feat.` clause appears
+    /// in one and not the other, remix suffixes get trimmed, a title arrives
+    /// truncated — so neither is a substring of the other. Compare the
+    /// alphanumeric words instead: the shorter side's words must all appear in
+    /// the longer side, which survives insertions and trims while still
+    /// rejecting a genuinely different track.
     pub fn same_as(&self, title: &str) -> bool {
-        let norm = |s: &str| {
-            s.chars()
-                .filter(|c| c.is_alphanumeric())
-                .flat_map(char::to_lowercase)
-                .collect::<String>()
+        let words = |s: &str| -> Vec<String> {
+            let mut out: Vec<String> = Vec::new();
+            let mut cur = String::new();
+            for c in s.chars() {
+                if c.is_alphanumeric() {
+                    cur.extend(c.to_lowercase());
+                } else if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            if !cur.is_empty() {
+                out.push(cur);
+            }
+            out
         };
-        let (a, b) = (norm(&self.query()), norm(title));
-        !a.is_empty() && !b.is_empty() && (a.contains(&b) || b.contains(&a))
+        let (a, b) = (words(&self.query()), words(title));
+        let (long, short) = if a.len() >= b.len() {
+            (&a, &b)
+        } else {
+            (&b, &a)
+        };
+        // A one-word title is too weak to match on; it would pair any track
+        // called "Fading" with any other.
+        short.len() >= 2 && short.iter().all(|w| long.contains(w))
     }
 }
 
@@ -140,4 +159,61 @@ pub struct RadioCountry {
     pub name: String,
     #[serde(default, rename = "stationcount")]
     pub station_count: u64,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn track(artist: &str, title: &str) -> RadioTrack {
+        RadioTrack {
+            title: title.into(),
+            artist: artist.into(),
+            ..Default::default()
+        }
+    }
+
+    /// A station's tracklist and its own ICY stream routinely spell the same
+    /// track differently, and the differences are insertions rather than
+    /// edits: a `feat.` clause in one and not the other, a trimmed remix
+    /// suffix, a truncated title. None of those is a substring of the other.
+    #[test]
+    fn matching_survives_feat_clauses_and_trimming() {
+        let t = track(
+            "Mark Sherry feat. Sharone",
+            "Silent Tears (Orjan Nilsen Remix)",
+        );
+        assert!(t.same_as("Mark Sherry feat. Sharone - Silent Tears (Orjan Nilsen Remix)"));
+        assert!(t.same_as("Mark Sherry - Silent Tears"));
+        assert!(t.same_as("Mark Sherry feat. Sharone - Silent Tears"));
+        assert!(t.same_as("Silent Tears (Orjan Nilsen Remix)"));
+    }
+
+    /// A different track must not match, or the now-playing title would pair
+    /// with the wrong tracklist row.
+    #[test]
+    fn a_different_track_does_not_match() {
+        let t = track(
+            "Mark Sherry feat. Sharone",
+            "Silent Tears (Orjan Nilsen Remix)",
+        );
+        assert!(!t.same_as("Completely Different Song"));
+        assert!(!t.same_as("Mark Sherry - Hello"));
+        assert!(!t.same_as(""));
+    }
+
+    /// A single shared word is not enough evidence. Every tracklist has a row
+    /// called something short, and pairing on one word would be arbitrary.
+    #[test]
+    fn a_single_shared_word_is_too_weak() {
+        let t = track("Some Artist", "Fading Lights");
+        assert!(!t.same_as("Lights"));
+        assert!(!t.same_as("Fading"));
+    }
+
+    #[test]
+    fn query_is_well_formed_without_an_artist() {
+        assert_eq!(track("", "Alone").query(), "Alone");
+        assert_eq!(track("X", "Alone").query(), "X - Alone");
+    }
 }

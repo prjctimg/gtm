@@ -38,6 +38,18 @@ struct Keys {
     stamp: Stamp,
 }
 
+/// Where a platform keeps the station's name in its stream URL. They differ:
+/// laut.fm names the station in the subdomain, SomaFM in the path
+/// (`/groovesalad-128-mp3`), and neither is derivable from the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Slug {
+    /// The leftmost hostname label: `dance-wave-radio.stream.laut.fm`.
+    Host,
+    /// The first path segment up to the bitrate suffix: `/groovesalad-128-mp3`
+    /// yields `groovesalad`.
+    Path,
+}
+
 /// One known tracklist endpoint. Adding a station family is an entry here, not
 /// a new fetch-and-parse path.
 #[derive(Debug, Clone, Copy)]
@@ -45,9 +57,14 @@ struct Source {
     /// Hostname suffix this source claims, matched against the resolved stream
     /// host so a station is recognised by where it streams from.
     host: &'static str,
+    /// Authority to actually request. Often not the match host: stations
+    /// stream from one domain and publish their tracklist on an API subdomain
+    /// (laut.fm streams on `laut.fm` but serves on `api.laut.fm`).
+    api: &'static str,
     /// Path template. `{id}` is the station slug, `{stream}` the station's
     /// stream mount.
     path: &'static str,
+    slug: Slug,
     keys: Keys,
 }
 
@@ -84,22 +101,30 @@ const STREAMSB_KEYS: Keys = Keys {
 const SOURCES: &[Source] = &[
     Source {
         host: "stream.laut.fm",
+        api: "api.laut.fm",
         path: "/station/{id}/last_songs",
+        slug: Slug::Host,
         keys: LAUT_KEYS,
     },
     Source {
         host: "laut.fm",
+        api: "api.laut.fm",
         path: "/station/{id}/last_songs",
+        slug: Slug::Host,
         keys: LAUT_KEYS,
     },
     Source {
         host: "somafm.com",
+        api: "somafm.com",
         path: "/songs/{id}.json",
+        slug: Slug::Path,
         keys: SOMAFM_KEYS,
     },
     Source {
         host: "dancewave.online",
+        api: "dancewave.online",
         path: "/api/playlist.cgi?user={id}&mount={stream}&num=40&out=json",
+        slug: Slug::Host,
         keys: STREAMSB_KEYS,
     },
 ];
@@ -122,12 +147,14 @@ pub async fn fetch(
         }
         return Ok(list);
     }
-    let host = reqwest::Url::parse(stream)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_owned))
-        .ok_or_else(|| format!("unparseable stream url: {stream}"))?;
+    let parsed =
+        reqwest::Url::parse(stream).map_err(|_| format!("unparseable stream url: {stream}"))?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| format!("stream url has no host: {stream}"))?
+        .to_string();
     for src in matching(&host) {
-        let url = expand(src, &host, id);
+        let url = expand(src, &host, parsed.path(), id);
         match get(client, &url).await {
             Ok(body) => {
                 let list = build(&body, &src.keys, now);
@@ -161,19 +188,27 @@ fn matching(host: &str) -> Vec<&'static Source> {
 /// Expand a source's path template against the station's host and id. The slug
 /// is the leftmost label of the stream host (`dance-wave-radio.stream.laut.fm`
 /// -> `dance-wave-radio`), which is how both platforms key their stations.
-fn expand(src: &Source, host: &str, id: &str) -> String {
-    let slug = host.split('.').next().unwrap_or(id);
-    let src_host = src.host.trim_start_matches("stream.");
-    let authority = if src_host.contains('.') {
-        src_host
-    } else {
-        host
-    };
+fn expand(src: &Source, host: &str, stream_path: &str, id: &str) -> String {
+    let slug = station_slug(src, host, stream_path).unwrap_or_else(|| id.to_string());
     let path = src
         .path
-        .replace("{id}", &urlencoding::encode(slug))
+        .replace("{id}", &urlencoding::encode(&slug))
         .replace("{stream}", &urlencoding::encode(&format!("/{}", id)));
-    format!("https://{authority}{path}")
+    format!("https://{}{path}", src.api)
+}
+
+/// The station's own name, taken from wherever the platform puts it. `None`
+/// when the URL carries no usable segment, so the caller can fall back rather
+/// than request a nonsense channel.
+fn station_slug(src: &Source, host: &str, path: &str) -> Option<String> {
+    let seg = path.split('/').find(|s| !s.is_empty())?;
+    let name = match src.slug {
+        Slug::Host => host.split('.').next().unwrap_or_default(),
+        // SomaFM names channels with underscores and appends `-<bitrate>-<codec>`
+        // to the path, so the name is whatever precedes the first dash.
+        Slug::Path => seg.split('-').next().unwrap_or_default(),
+    };
+    (!name.is_empty()).then(|| name.to_string())
 }
 
 /// One `GET` with a bounded body size. A tracklist endpoint is untrusted input,
@@ -275,12 +310,14 @@ fn build(body: &str, keys: &Keys, now: i64) -> RadioTracklist {
                 let Some(delta) = text(dig(it, keys.start)).and_then(|s| clock(&s)) else {
                     continue;
                 };
-                // Walk backwards: a timestamp later than the previous entry
-                // means the broadcast crossed midnight since.
-                prev -= if delta > prev % 86_400 {
-                    prev % 86_400 + 86_400 - delta
+                // Walk backwards through the day. A stamp later on the clock
+                // than the entry before it means the broadcast crossed
+                // midnight in between, so that gap spans a day boundary.
+                let at = prev % 86_400;
+                prev -= if delta > at {
+                    at + 86_400 - delta
                 } else {
-                    prev % 86_400 - delta
+                    at - delta
                 };
                 t.start = Some(prev);
             }
@@ -401,24 +438,37 @@ mod tests {
         let hits = matching("dance-wave-radio.stream.laut.fm");
         assert!(!hits.is_empty());
         assert_eq!(hits[0].path, "/station/{id}/last_songs");
-        let url = expand(hits[0], "dance-wave-radio.stream.laut.fm", "x");
+        let url = expand(
+            hits[0],
+            "dance-wave-radio.stream.laut.fm",
+            "/dance-wave-radio",
+            "x",
+        );
         assert!(!url.contains('{'), "{url}");
         assert!(url.contains("dance-wave-radio"), "{url}");
     }
 
     #[test]
-    fn somafm_slug_strips_the_ice_host() {
+    fn slug_comes_from_where_each_platform_puts_it() {
+        // SomaFM names the channel in the path, not the subdomain: the shared
+        // `iceN` host says nothing about which channel is playing.
         let hit = matching("ice2.somafm.com");
         assert!(!hit.is_empty());
         assert_eq!(
-            expand(hit[0], "ice2.somafm.com", "x"),
-            "https://somafm.com/songs/ice.json"
+            expand(hit[0], "ice2.somafm.com", "/groovesalad-128-mp3", "x"),
+            "https://somafm.com/songs/groovesalad.json"
         );
-    }
-
-    #[test]
-    fn unknown_host_has_no_source() {
-        assert!(matching("stream.example.org").is_empty());
+        // laut.fm names it in the subdomain.
+        let hit = matching("dance-wave-radio.stream.laut.fm");
+        assert_eq!(
+            expand(
+                hit[0],
+                "dance-wave-radio.stream.laut.fm",
+                "/dance-wave-radio",
+                "x"
+            ),
+            "https://api.laut.fm/station/dance-wave-radio/last_songs"
+        );
     }
 
     #[test]
@@ -439,14 +489,26 @@ mod tests {
 
     #[test]
     fn clock_stamps_anchor_on_now_and_wrap_midnight() {
-        // 23:58 then 00:04: the second entry is later on the clock, so it must
-        // land before the first rather than in the future.
-        let now = 86_400 * 2 + 23 * 3600 + 58 * 60;
+        // Now is 00:04 and the previous track was 23:58, so that gap crosses
+        // midnight. The list is newest first, so the earlier row must land on
+        // the previous day rather than 23h56m in the past.
+        let now = 86_400 * 2 + 4 * 60;
         let body =
-            r#"{"mscp":{"playlist":[{"time":"23:58","title":"A"},{"time":"00:04","title":"B"}]}}"#;
+            r#"{"mscp":{"playlist":[{"time":"00:04","title":"A"},{"time":"23:58","title":"B"}]}}"#;
         let list = build(body, &STREAMSB_KEYS, now);
         assert_eq!(list.tracks[0].start, Some(now));
-        assert_eq!(list.tracks[1].start, Some(now + 6 * 60));
+        assert_eq!(list.tracks[1].start, Some(now - 6 * 60));
+    }
+
+    #[test]
+    fn clock_stamps_do_not_wrap_without_crossing_midnight() {
+        // Both entries after midnight: 00:20 then 00:14, a six-minute gap with
+        // no day boundary to account for.
+        let now = 86_400 * 2 + 20 * 60;
+        let body =
+            r#"{"mscp":{"playlist":[{"time":"00:20","title":"A"},{"time":"00:14","title":"B"}]}}"#;
+        let list = build(body, &STREAMSB_KEYS, now);
+        assert_eq!(list.tracks[1].start, Some(now - 6 * 60));
     }
 
     #[test]
@@ -510,11 +572,14 @@ mod tests {
     #[test]
     fn list_match_title_falls_back_to_leading_entry() {
         let list = RadioTracklist {
-            tracks: vec![row("A", None), row("B", None)],
+            tracks: vec![row("Silent Tears", None), row("Virtual Self", None)],
             at: 0,
             at_time: 1,
         };
-        assert_eq!(list.match_title("B"), 1);
-        assert_eq!(list.match_title("nonsense"), 0);
+        assert_eq!(list.match_title("Virtual Self"), 1);
+        assert_eq!(list.match_title("Something Else Entirely"), 0);
+        // A single word carries too little signal to move off the leading
+        // entry, which is the on-air track anyway.
+        assert_eq!(list.match_title("Tears"), 0);
     }
 }
