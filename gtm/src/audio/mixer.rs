@@ -27,12 +27,29 @@ use crate::audio::wave::{WAVEFORM_FRESHNESS, WaveformShared};
 use crate::shared::global::{EqPreset, ReverbConfig};
 use crate::shared::{MAX_VOLUME, volume_ratio};
 
+/// How long a provider-decoded source is given to prime its ring before the
+/// play proceeds anyway. Generous, because the cost of waiting is a late start
+/// while the cost of failing is a track that will not play at all.
+const STREAM_PREBUFFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 pub trait Mixer: Send + Sync {
     fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()>;
     fn load_active_decoded(
         &mut self,
         source: Box<dyn Source<Item = f32> + Send>,
         start_pos: f64,
+    ) -> AudioResult<()>;
+    /// Load a provider-decoded sample source (Spotify via librespot) as the
+    /// active source. A decode thread owns draining it into the ring buffer,
+    /// so a source that blocks waiting on the network can never stall the
+    /// output callback. Unlike [`Self::load_active_decoded`] this waits for
+    /// the ring to prime before returning, and keeps the real track duration so
+    /// seeking and position reporting still work.
+    fn load_active_stream(
+        &mut self,
+        source: Box<dyn Source<Item = f32> + Send>,
+        start_pos: f64,
+        duration_secs: f64,
     ) -> AudioResult<()>;
     /// Load a live byte transport (radio/HTTP stream) as the active source.
     /// The decode thread owns reading, EQ, reverb and ring-buffer feeding, so
@@ -65,9 +82,6 @@ pub trait Mixer: Send + Sync {
     fn poll(&mut self) -> AudioResult<Option<AudioEvent>>;
     fn current_peak_level(&self) -> f32;
     fn current_spectrum(&self) -> Vec<f32>;
-    /// Publish externally produced spectrum levels (e.g. from streamed
-    /// sources that bypass the decode thread). No-op by default.
-    fn publish_spectrum(&self, _levels: Vec<f32>) {}
 
     /// Latest time-domain waveform ring plus whether the source is stereo.
     /// Returns `(samples, stereo)`; empty when nothing fresh has been
@@ -75,10 +89,6 @@ pub trait Mixer: Send + Sync {
     fn current_waveform(&self) -> (Vec<f32>, bool) {
         (Vec::new(), false)
     }
-
-    /// Publish externally produced waveform samples (streamed sources that
-    /// bypass the decode thread). No-op by default.
-    fn publish_waveform(&self, _samples: Vec<f32>, _stereo: bool) {}
 
     // ─── EQ / Reverb ───
     fn set_eq_preset(&self, preset: &EqPreset);
@@ -179,6 +189,14 @@ impl Mixer for AudioMixer {
         start_pos: f64,
     ) -> AudioResult<()> {
         self.load_active_reader(reader, start_pos)
+    }
+    fn load_active_stream(
+        &mut self,
+        source: Box<dyn Source<Item = f32> + Send>,
+        start_pos: f64,
+        duration_secs: f64,
+    ) -> AudioResult<()> {
+        self.load_active_stream(source, start_pos, duration_secs)
     }
     fn load_standby(&mut self, path: &str) -> AudioResult<()> {
         self.load_standby(path)
@@ -318,18 +336,9 @@ impl Mixer for AudioMixer {
     fn current_waveform(&self) -> (Vec<f32>, bool) {
         self.wave.snapshot(WAVEFORM_FRESHNESS)
     }
-    fn publish_waveform(&self, samples: Vec<f32>, stereo: bool) {
-        self.wave.publish(samples, stereo);
-    }
 }
 
 impl AudioMixer {
-    /// Publish externally produced spectrum levels (e.g. from streamed
-    /// sources that bypass the decode thread).
-    pub fn publish_spectrum(&self, levels: Vec<f32>) {
-        *self.spectrum.lock().unwrap() = levels;
-    }
-
     pub fn new() -> AudioResult<Self> {
         Self::open_for_device(None)
     }
@@ -738,6 +747,131 @@ impl AudioMixer {
         self.crossfade_start = None;
 
         Ok(())
+    }
+
+    /// Load a provider-decoded sample source (Spotify via librespot) as the
+    /// active source, and wait for it to prime before returning.
+    ///
+    /// The source is drained by a decode thread into the ring buffer, exactly
+    /// as a local file or a live transport is. That is the whole point: a
+    /// provider source blocks waiting for the network, and the output callback
+    /// must never be the thread that waits. Handing such a source straight to
+    /// rodio stalls the callback until the device underruns, and rodio evicts a
+    /// source the moment it yields `None`, so a slow start becomes permanent
+    /// silence rather than a delayed start.
+    pub fn load_active_stream(
+        &mut self,
+        source: Box<dyn Source<Item = f32> + Send>,
+        start_pos: f64,
+        duration_secs: f64,
+    ) -> AudioResult<()> {
+        Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
+
+        let vol = volume_ratio(self.volume.load(Ordering::SeqCst));
+        self.active().stop();
+        self.active().set_volume(vol);
+
+        let (control, ring, handle) = Self::start_decode_stream(
+            source,
+            &self.eq_gains,
+            &self.eq_enabled,
+            &self.reverb_enabled,
+            &self.reverb_room_size,
+            &self.speed,
+            &self.spectrum,
+            &self.wave,
+        )?;
+
+        if duration_secs > 0.0 {
+            *self.duration.lock().unwrap() = duration_secs;
+        } else {
+            *self.duration.lock().unwrap() = 0.0;
+        }
+
+        // No `wrap_source` here: EQ, reverb and time-stretch all run inside
+        // the decode thread now, so wrapping again would apply them twice.
+        self.active().append(self.apply_mono(Box::new(ring)));
+
+        self.active_control = Some(control);
+        self.active_decode_handle = Some(handle);
+
+        *self.position.lock().unwrap() = start_pos;
+        *self.start_time.lock().unwrap() = None;
+        *self.start_pos.lock().unwrap() = start_pos;
+        self.playing.store(false, Ordering::SeqCst);
+        self.crossfade_start = None;
+
+        Ok(())
+    }
+
+    /// Spawn the decode thread for a provider-decoded source and wait for it to
+    /// prime the ring. Mirrors [`Self::start_decode_reader`].
+    ///
+    /// The wait is bounded but not fatal: a provider track can take a while to
+    /// deliver its first audio, and failing the play outright would turn a slow
+    /// start into a dead button. On timeout the thread keeps running, the ring
+    /// primes whenever the samples land, and the source's own watchdog reports
+    /// the silence — which is the outcome the caller asked for: wait, and say
+    /// so, rather than cut the track.
+    #[allow(clippy::too_many_arguments)]
+    fn start_decode_stream(
+        source: Box<dyn Source<Item = f32> + Send>,
+        eq_gains: &EqGains,
+        eq_enabled: &Arc<AtomicBool>,
+        reverb_enabled: &Arc<AtomicBool>,
+        reverb_room_size: &Arc<Mutex<f32>>,
+        speed: &SpeedControl,
+        spectrum: &Arc<Mutex<Vec<f32>>>,
+        wave: &WaveformShared,
+    ) -> AudioResult<(
+        Arc<DecodeControl>,
+        RingBufferSource,
+        std::thread::JoinHandle<()>,
+    )> {
+        let control = Arc::new(DecodeControl::new());
+        let shared = Arc::new(RingBufferInner::new(BUFFER_CAPACITY_SAMPLES));
+
+        let thread = DecodeThread::new_stream(
+            source,
+            shared.clone(),
+            control.clone(),
+            eq_gains.clone(),
+            eq_enabled.clone(),
+            reverb_enabled.clone(),
+            reverb_room_size.clone(),
+            speed.clone(),
+            spectrum.clone(),
+            wave.clone(),
+            PREBUFFER_SAMPLES_REDUCED,
+        );
+        let handle = thread.spawn().map_err(AudioError::DecodeError)?;
+
+        // Only a source that has already failed is fatal here. Silence is not:
+        // the decode thread is still allowed to deliver.
+        let start = Instant::now();
+        let timeout = STREAM_PREBUFFER_TIMEOUT;
+        while !control.ready.load(Ordering::Acquire) && start.elapsed() < timeout {
+            if control.finished.load(Ordering::Acquire) {
+                return Err(AudioError::DecodeError(
+                    "stream ended before producing audio".into(),
+                ));
+            }
+            if !control.running.load(Ordering::Acquire) {
+                return Err(AudioError::DecodeError(
+                    "decode thread exited before prebuffer".into(),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if !control.ready.load(Ordering::Acquire) {
+            log::warn!(
+                "provider stream produced no audio within {}s; starting anyway",
+                timeout.as_secs()
+            );
+        }
+
+        let ring = RingBufferSource::new(shared, control.clone());
+        Ok((control, ring, handle))
     }
 
     pub fn load_standby(&mut self, path: &str) -> AudioResult<()> {

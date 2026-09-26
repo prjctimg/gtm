@@ -227,13 +227,19 @@ pub struct DecodeThread {
 
 /// What the decode thread reads its samples from. Local files reopen on seek;
 /// live transport byte streams are consumed once (seeks are reported as
-/// not-supported and the request is dropped).
+/// not-supported and the request is dropped); a provider that hands over
+/// already-decoded samples is likewise consumed once.
 enum DecodeSource {
     /// Local file opened with `SymphoniaSource::from_file` (seek = reopen).
     File { path: String },
     /// Live byte stream handed straight to `SymphoniaSource::from_reader`
     /// with no re-opener. Declared so one-shot readers never race a seek.
     Reader(Option<Box<dyn Read + Send>>),
+    /// An already-decoded sample source, used for remote providers that decode
+    /// outside the mixer (Spotify via librespot). It carries no seek support
+    /// of its own, so it is declared one-shot for the same reason as
+    /// [`Self::Reader`].
+    Stream(Option<Box<dyn Source<Item = f32> + Send>>),
 }
 
 impl DecodeThread {
@@ -299,6 +305,41 @@ impl DecodeThread {
         }
     }
 
+    /// Same as [`DecodeThread::new_reader`] but the samples are already
+    /// decoded by the provider rather than arriving as a byte transport. This
+    /// is the path a remote provider takes when it owns its own decoder (e.g.
+    /// librespot for Spotify): the source may block waiting on the network, so
+    /// it must be drained here, on a thread that is allowed to wait, and never
+    /// on the output callback.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_stream(
+        stream: Box<dyn Source<Item = f32> + Send>,
+        shared: SharedRingBuffer,
+        control: Arc<DecodeControl>,
+        eq_gains: EqGains,
+        eq_enabled: Arc<AtomicBool>,
+        reverb_enabled: Arc<AtomicBool>,
+        reverb_room_size: Arc<Mutex<f32>>,
+        speed: SpeedControl,
+        spectrum: Arc<Mutex<Vec<f32>>>,
+        wave: WaveformShared,
+        prebuffer_samples: usize,
+    ) -> Self {
+        Self {
+            source: DecodeSource::Stream(Some(stream)),
+            shared,
+            control,
+            eq_gains,
+            eq_enabled,
+            reverb_enabled,
+            reverb_room_size,
+            speed,
+            spectrum,
+            wave,
+            prebuffer_samples,
+        }
+    }
+
     pub fn spawn(self) -> Result<JoinHandle<()>, String> {
         std::thread::Builder::new()
             .name("gtm-decode".into())
@@ -351,6 +392,18 @@ impl DecodeThread {
                             return;
                         }
                     }
+                }
+                DecodeSource::Stream(stream) => {
+                    // Provider-decoded samples: take ownership and use as-is.
+                    // There is nothing to open, so a missing source is the only
+                    // failure, and it fails the same way a dead reader does.
+                    let Some(s) = stream.take() else {
+                        log::error!("decode thread: stream source already consumed");
+                        self.shared.set_finished(true);
+                        self.control.finished.store(true, Ordering::Release);
+                        return;
+                    };
+                    s
                 }
             };
 
@@ -419,6 +472,9 @@ impl DecodeThread {
                             // dropped so a stale seek can never mask EOF or
                             // strand the consumer on the seeking flag.
                             log::debug!("decode thread: seek ignored on live stream");
+                        }
+                        DecodeSource::Stream(_) => {
+                            log::debug!("decode thread: seek ignored on provider stream");
                         }
                         DecodeSource::File { .. } => {
                             log::info!("decode thread: seek to {target_secs:.2}s");

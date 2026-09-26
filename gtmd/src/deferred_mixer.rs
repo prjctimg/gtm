@@ -91,6 +91,16 @@ impl Mixer for DeferredMixer {
         self.ensure_mut()?.load_active_reader(reader, start_pos)
     }
 
+    fn load_active_stream(
+        &mut self,
+        source: Box<dyn Source<Item = f32> + Send>,
+        start_pos: f64,
+        duration_secs: f64,
+    ) -> AudioResult<()> {
+        self.ensure_mut()?
+            .load_active_stream(source, start_pos, duration_secs)
+    }
+
     fn load_standby(&mut self, path: &str) -> AudioResult<()> {
         self.ensure_mut()?.load_standby(path)
     }
@@ -192,22 +202,10 @@ impl Mixer for DeferredMixer {
             .unwrap_or_default()
     }
 
-    fn publish_spectrum(&self, levels: Vec<f32>) {
-        if let Ok(m) = self.ensure_ref() {
-            m.publish_spectrum(levels);
-        }
-    }
-
     fn current_waveform(&self) -> (Vec<f32>, bool) {
         self.ensure_ref()
             .map(|m| m.current_waveform())
             .unwrap_or_default()
-    }
-
-    fn publish_waveform(&self, samples: Vec<f32>, stereo: bool) {
-        if let Ok(m) = self.ensure_ref() {
-            m.publish_waveform(samples, stereo);
-        }
     }
 
     fn set_eq_preset(&self, preset: &EqPreset) {

@@ -7,9 +7,6 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use gtm::audio::{
-    SPECTRUM_BINS, SpectrumAnalyzer, WAVEFORM_DECIM, WAVEFORM_FRESHNESS, WaveformShared,
-};
 use librespot_core::SessionConfig;
 use librespot_core::authentication::Credentials;
 use librespot_core::cache::Cache;
@@ -21,26 +18,44 @@ use librespot_playback::convert::Converter;
 use librespot_playback::decoder::AudioPacket;
 use librespot_playback::mixer::VolumeGetter;
 use librespot_playback::player::{Player, PlayerEvent};
+use librespot_playback::{NUM_CHANNELS, SAMPLE_RATE};
 use tracing::{info, warn};
 
 // A single librespot [`Session`] + [`Player`] pair is created lazily on the
 // first streamed track and reused afterwards. Decoded audio is pushed by a
-// custom librespot `Sink` through a bounded std channel; on the rodio side a
-// [`PcmStreamSource`] pulls from that channel, feeds the spectrum analyzer
-// used for visualizer levels, and implements `rodio::Source` so it can be
-// handed to the existing audio mixer chain (`load_active_decoded`) —
-// EQ, reverb, volume, and output routing all behave exactly like local
-// files.
+// custom librespot `Sink` through a bounded std channel and drained by a
+// [`PcmStreamSource`].
+//
+// The blocking half of that pairing is deliberate and is librespot's own
+// contract: `Sink::write` runs on a player thread documented as blocking, and
+// every official backend blocks there, so the bounded send is what applies
+// backpressure to the decoder. The drain side must then be a thread that is
+// allowed to wait — the mixer does that via `load_active_stream`, which feeds
+// its decode thread and gives the output callback a ring-buffer view. Handing
+// this source to rodio directly would park the callback inside `recv_timeout`
+// for as long as the network takes, underrun the device, and then be evicted
+// from the mix for good the first time it yielded `None`.
 
 /// Bounded channel capacity: each packet is ~23 ms of stereo audio, so this
 /// buffers roughly 1.5 s — enough to ride out network jitter without
-/// unbounded memory use. When rodio's queue is full the sink blocks, which
+/// unbounded memory use. When the queue is full the sink blocks, which
 /// naturally pauses the librespot decoder (backpressure).
 const CHANNEL_CAPACITY: usize = 64;
 
-/// Spectrum levels older than this are treated as expired so the visualizer
-/// falls back to silence instead of freezing on the last frame.
-const SPECTRUM_FRESHNESS: Duration = Duration::from_millis(300);
+/// How long the drain thread waits for the next packet before re-checking the
+/// silence watchdog. Short enough that a stall is noticed promptly, long enough
+/// that an idle stream is not a busy loop.
+const POLL: Duration = Duration::from_millis(100);
+
+/// How long a freshly loaded stream may stay silent before it is reported.
+/// A cold librespot connect plus the first packets can take a while, so this is
+/// generous; exceeding it means the session registered but never delivers
+/// audio. Reported, not fatal — see [`PcmStreamSource::stalled_for`].
+const STARTUP_GRACE: Duration = Duration::from_secs(25);
+
+/// How long an already-playing stream may stay silent before it is reported.
+/// Long enough to ride out a network hiccup without cutting the track short.
+const STALL_TIMEOUT: Duration = Duration::from_secs(45);
 
 /// Hard ceiling for the librespot session handshake. Without it, a rejected
 /// access token or unreachable access points make librespot retry across up
@@ -48,26 +63,6 @@ const SPECTRUM_FRESHNESS: Duration = Duration::from_millis(300);
 /// stall the whole IPC reply past its budget and surface as a misleading
 /// "IPC response timeout". Failing fast returns a readable error instead.
 const STREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
-
-/// How long a freshly loaded stream may stay silent before the source gives
-/// up. A cold librespot connect plus the first packets can take a while, so
-/// this is generous; exceeding it means the session registered but never
-/// delivers audio.
-const STARTUP_GRACE: Duration = Duration::from_secs(25);
-
-/// How long an already-playing stream may stay silent before the source gives
-/// up. Long enough to ride out a network hiccup without cutting the track
-/// short, short enough that a dead stream does not look like normal playback.
-const STALL_TIMEOUT: Duration = Duration::from_secs(45);
-
-type SpectrumShared = Arc<Mutex<(std::time::Instant, Vec<f32>)>>;
-
-fn new_spectrum_shared() -> SpectrumShared {
-    Arc::new(Mutex::new((
-        std::time::Instant::now() - SPECTRUM_FRESHNESS - SPECTRUM_FRESHNESS,
-        Vec::new(),
-    )))
-}
 
 // ---------------------------------------------------------------------------
 // Sink side: librespot audio thread -> bounded channel
@@ -92,14 +87,27 @@ impl LibrespotSink for ChannelSink {
         for sample in samples {
             buf.push((*sample as f32).clamp(-1.0, 1.0));
         }
-        // Snapshot the target under a short lock, then block outside of it so
-        // a stalled consumer never wedges target swaps or event handling.
+        // Snapshot the target under a short lock, then wait outside of it so a
+        // full queue never blocks target swaps or event handling.
         let target = self.0.lock().unwrap().clone();
-        if let Some(target) = target
-            && target.tx.send(buf).is_err()
-        {
-            // Receiver gone (track switched/stop); not fatal for the
-            // decoder thread — the player is being replaced anyway.
+        let Some(target) = target else {
+            // librespot keeps writing until the track ends, and treats an
+            // `Ok` write as healthy, so dropping here is how a target race
+            // turns into silence that reports itself as playing. Say so.
+            warn!("spotify sink has no target — dropping {} samples", buf.len());
+            return Ok(());
+        };
+        // `write` runs on librespot's player thread, which every official
+        // backend blocks in, so the bounded send is the sanctioned shape — the
+        // same one librespot's jackaudio backend uses. Blocking here applies
+        // backpressure to the decoder, which is the point; it is only wrong on
+        // the consumer side, which is why the mixer drains this on a thread
+        // that is allowed to wait.
+        if target.tx.send(buf).is_err() {
+            // Receiver gone (track replaced or stopped). librespot reads this
+            // as a healthy write and keeps going, so log it rather than let
+            // it look like a normal end of stream.
+            warn!("spotify sink receiver gone — dropping packet");
         }
         Ok(())
     }
@@ -113,15 +121,14 @@ impl LibrespotSink for ChannelSink {
 /// track. Ends only after the sender disconnects *and* all buffered samples
 /// are consumed, which lets the mixer emit its normal end-of-track event and
 /// advance the queue.
+///
+/// Its `next()` blocks while waiting for the provider, so it is drained by the
+/// mixer's decode thread and never by the output callback. Spectral and
+/// waveform analysis therefore live in that thread too, alongside every other
+/// source, instead of here.
 pub struct PcmStreamSource {
     rx: std::sync::mpsc::Receiver<Vec<f32>>,
     pending: VecDeque<f32>,
-    analyzer: SpectrumAnalyzer,
-    levels: [f32; SPECTRUM_BINS],
-    spectrum_out: SpectrumShared,
-    wave_out: WaveformShared,
-    wave_left: Option<f32>,
-    wave_frame: usize,
     channels: u16,
     sample_rate: u32,
     total_duration: Option<Duration>,
@@ -129,59 +136,53 @@ pub struct PcmStreamSource {
     loaded_at: std::time::Instant,
     /// When a sample last arrived, once one has.
     last_sample_at: Option<std::time::Instant>,
+    /// When the silence watchdog last fired, so it logs the transition once
+    /// rather than on every poll.
+    stalled_at: Option<std::time::Instant>,
 }
 
 impl PcmStreamSource {
-    fn new(
-        rx: std::sync::mpsc::Receiver<Vec<f32>>,
-        spectrum_out: SpectrumShared,
-        wave_out: WaveformShared,
-        duration_secs: f64,
-    ) -> Self {
-        wave_out.set_stereo(true);
+    fn new(rx: std::sync::mpsc::Receiver<Vec<f32>>, duration_secs: f64) -> Self {
         Self {
             rx,
-            pending: VecDeque::with_capacity(4096),
-            analyzer: SpectrumAnalyzer::new(44_100.0),
-            levels: [0.0; SPECTRUM_BINS],
-            spectrum_out,
-            wave_out,
-            wave_left: None,
-            wave_frame: 0,
-            channels: 2,
-            sample_rate: 44_100,
+            pending: VecDeque::with_capacity(CHANNEL_CAPACITY * 64),
+            channels: NUM_CHANNELS as u16,
+            sample_rate: SAMPLE_RATE,
             total_duration: Some(Duration::from_secs_f64(duration_secs)),
             loaded_at: std::time::Instant::now(),
             last_sample_at: None,
+            stalled_at: None,
         }
     }
 
-    /// Feed refilled samples through the mono spectrum analyzer (left
-    /// channel) and publish fresh band levels when an FFT window completes.
-    /// Every `WAVEFORM_DECIM`th stereo frame is also tapped into the shared
-    /// waveform ring for the Wave/Stereo visualizer modes.
-    fn refill(&mut self, chunk: Vec<f32>) {
-        for (i, s) in chunk.into_iter().enumerate() {
-            let even = i % 2 == 0;
-            if even {
-                self.wave_left = Some(s);
-                if self.analyzer.push(s, &mut self.levels) {
-                    let mut out = self.spectrum_out.lock().unwrap();
-                    out.0 = std::time::Instant::now();
-                    out.1 = self.levels.to_vec();
-                }
-            } else if let Some(l) = self.wave_left.take() {
-                self.wave_frame += 1;
-                if self.wave_frame.is_multiple_of(WAVEFORM_DECIM) {
-                    self.wave_out.push_frame(l, s);
-                }
-            }
-            self.pending.push_back(s);
+    /// Record that the stream has been silent, and log the transition into it.
+    ///
+    /// A stall no longer ends the source. The previous behaviour returned
+    /// `None`, and rodio evicts a source from the mix the moment it yields
+    /// `None` — so one slow start became permanent silence, with the UI still
+    /// reporting a playing track. Waiting is correct: a transient network gap
+    /// resolves on its own, and the caller keeps the track. The watchdog only
+    /// makes the condition visible.
+    fn stalled_for(&mut self) {
+        if self.stalled_at.is_some() {
+            return;
         }
-    }
-
-    pub fn take_spectrum(&self) -> Vec<f32> {
-        self.spectrum_out.lock().unwrap().1.clone()
+        let idle = match self.last_sample_at {
+            Some(at) => at.elapsed(),
+            None => self.loaded_at.elapsed(),
+        };
+        let budget = if self.last_sample_at.is_some() {
+            STALL_TIMEOUT
+        } else {
+            STARTUP_GRACE
+        };
+        if idle >= budget {
+            self.stalled_at = Some(std::time::Instant::now());
+            warn!(
+                "spotify stream silent for {}s after starting; still waiting",
+                idle.as_secs()
+            );
+        }
     }
 }
 
@@ -194,35 +195,19 @@ impl Iterator for PcmStreamSource {
                 self.last_sample_at = Some(std::time::Instant::now());
                 return Some(s);
             }
-            match self.rx.recv_timeout(Duration::from_millis(100)) {
+            // `recv_timeout` blocks, so this must never run on the output
+            // callback: a network wait there underruns the device. The mixer
+            // drains this source on a decode thread and hands rodio a
+            // ring-buffer view instead.
+            match self.rx.recv_timeout(POLL) {
                 Ok(chunk) => {
                     self.last_sample_at = Some(std::time::Instant::now());
-                    self.refill(chunk);
+                    self.pending.extend(chunk);
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    // Give up on a stream that never delivers. Waiting forever
-                    // looks like success: the mixer's position keeps advancing
-                    // from the track duration while the decode thread is
-                    // parked here, so the UI reports a playing track that
-                    // makes no sound. End-of-track is not this path — the
-                    // event pump drops the sender, which disconnects.
-                    let idle = match self.last_sample_at {
-                        Some(at) => at.elapsed(),
-                        None => self.loaded_at.elapsed(),
-                    };
-                    let budget = if self.last_sample_at.is_some() {
-                        STALL_TIMEOUT
-                    } else {
-                        STARTUP_GRACE
-                    };
-                    if idle >= budget {
-                        warn!(
-                            "spotify stream idle for {}s with no audio — ending source",
-                            idle.as_secs()
-                        );
-                        return None;
-                    }
-                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => self.stalled_for(),
+                // Real end of stream: the event pump dropped the sender, or the
+                // track was replaced. Returning `None` here is what lets the
+                // ring drain and the queue advance.
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
             }
         }
@@ -261,8 +246,6 @@ pub struct StreamManager {
     session: Option<Session>,
     player: Option<Arc<Player>>,
     target: SharedTarget,
-    spectrum: SpectrumShared,
-    waveform: WaveformShared,
     current_uri: Option<String>,
     /// Access token the current session was created with. `load` reconnects
     /// the session whenever the daemon supplies a fresh token (rspotify
@@ -286,29 +269,9 @@ impl StreamManager {
             session: None,
             player: None,
             target: Arc::new(Mutex::new(None)),
-            spectrum: new_spectrum_shared(),
-            waveform: WaveformShared::default(),
             current_uri: None,
             session_token: None,
             session_client_id: None,
-        }
-    }
-
-    /// Latest waveform ring produced by the active stream, alongside its
-    /// stereo flag. Empty when nothing streamed recently so the UI decays to
-    /// rest.
-    pub fn waveform_snapshot(&self) -> (Vec<f32>, bool) {
-        self.waveform.snapshot(WAVEFORM_FRESHNESS)
-    }
-
-    /// Latest visualizer band levels produced by the active stream. Empty
-    /// when nothing streamed recently so the UI falls back to silence.
-    pub fn spectrum_snapshot(&self) -> Vec<f32> {
-        let guard = self.spectrum.lock().unwrap();
-        if guard.0.elapsed() <= SPECTRUM_FRESHNESS {
-            guard.1.clone()
-        } else {
-            Vec::new()
         }
     }
 
@@ -330,10 +293,6 @@ impl StreamManager {
             player.stop();
         }
         self.current_uri = None;
-        {
-            let mut s = self.spectrum.lock().unwrap();
-            s.1.clear();
-        }
     }
 
     /// Create the librespot session and player on first use, and reconnect
@@ -458,11 +417,6 @@ impl StreamManager {
         self.session_token = None;
         self.session_client_id = None;
         self.current_uri = None;
-        {
-            let mut s = self.spectrum.lock().unwrap();
-            s.1.clear();
-        }
-        self.waveform.clear();
     }
 
     /// Start streaming `uri` and return the rodio source to hand to the
@@ -491,22 +445,12 @@ impl StreamManager {
         });
 
         self.current_uri = Some(uri.to_string());
-        {
-            let mut s = self.spectrum.lock().unwrap();
-            s.1.clear();
-        }
-        self.waveform.clear();
         self.player
             .as_ref()
             .expect("session ensured")
             .load(parsed, true, start_ms);
 
-        Ok(PcmStreamSource::new(
-            rx,
-            self.spectrum.clone(),
-            self.waveform.clone(),
-            duration_secs,
-        ))
+        Ok(PcmStreamSource::new(rx, duration_secs))
     }
 
     /// Tear down the whole librespot stack (used at daemon shutdown).
@@ -556,5 +500,69 @@ impl StreamManager {
             None => true,
             Some(p) => p.is_invalid(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The source must not report end-of-stream while its sender is still
+    /// alive. rodio evicts a source from the mix the first time its iterator
+    /// yields `None`, so treating a momentary gap as the end would drop a
+    /// track that is merely between packets — and the previous code did exactly
+    /// that after a 25s silence budget.
+    #[test]
+    fn empty_channel_is_not_end_of_stream() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHANNEL_CAPACITY);
+        let mut source = PcmStreamSource::new(rx, 180.0);
+        // Keep the sender alive: the receiver must block, not end.
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(120));
+            tx.send(vec![0.5, -0.5]).unwrap();
+            // Hold the sender open past the first sample's delivery.
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        });
+        assert_eq!(source.next(), Some(0.5));
+        assert_eq!(source.next(), Some(-0.5));
+        handle.join().unwrap();
+    }
+
+    /// A real end of stream — sender dropped — must still end the source, or
+    /// the ring never drains and the queue stops advancing.
+    #[test]
+    fn dropped_sender_ends_the_source() {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHANNEL_CAPACITY);
+        tx.send(vec![0.25, 0.75]).unwrap();
+        drop(tx);
+        let mut source = PcmStreamSource::new(rx, 180.0);
+        assert_eq!(source.next(), Some(0.25));
+        assert_eq!(source.next(), Some(0.75));
+        assert_eq!(source.next(), None);
+    }
+
+    /// The format reported to rodio must be librespot's own, not a guess: the
+    /// decode thread builds its EQ and resampler from these values.
+    #[test]
+    fn format_matches_librespot() {
+        let (_tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHANNEL_CAPACITY);
+        let source = PcmStreamSource::new(rx, 180.0);        use rodio::Source;
+        assert_eq!(source.sample_rate().get(), SAMPLE_RATE);
+        assert_eq!(source.channels().get(), NUM_CHANNELS as u16);
+        assert_eq!(source.total_duration(), Some(Duration::from_secs(180)));
+    }
+
+    /// A stall is reported, never fatal.
+    #[test]
+    fn stall_is_reported_not_fatal() {
+        let (_tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHANNEL_CAPACITY);
+        let mut source = PcmStreamSource::new(rx, 180.0);
+        source.loaded_at = std::time::Instant::now() - STARTUP_GRACE - Duration::from_secs(1);
+        source.stalled_for();
+        assert!(source.stalled_at.is_some(), "stall should be recorded");
+        // Reported once, not re-logged on every poll.
+        let first = source.stalled_at;
+        source.stalled_for();
+        assert_eq!(source.stalled_at, first);
     }
 }

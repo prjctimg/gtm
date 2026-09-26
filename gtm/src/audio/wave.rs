@@ -53,7 +53,7 @@ impl WaveformShared {
     }
 
     /// Replace the ring wholesale with externally produced interleaved
-    /// samples (streamed sources), mirroring `publish_spectrum`.
+    /// samples (streamed sources).
     pub fn publish(&self, samples: Vec<f32>, stereo: bool) {
         let mut s = self.0.lock().unwrap();
         let mut samples = samples;

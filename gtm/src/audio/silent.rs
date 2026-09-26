@@ -70,6 +70,17 @@ impl Mixer for NullMixer {
         Ok(())
     }
 
+    fn load_active_stream(
+        &mut self,
+        _source: Box<dyn Source<Item = f32> + Send>,
+        start_pos: f64,
+        _duration_secs: f64,
+    ) -> AudioResult<()> {
+        *self.position.lock().unwrap() = start_pos;
+        self.playing.store(false, Ordering::SeqCst);
+        Ok(())
+    }
+
     fn load_standby(&mut self, _path: &str) -> AudioResult<()> {
         *self.standby_loaded.lock().unwrap() = true;
         Ok(())

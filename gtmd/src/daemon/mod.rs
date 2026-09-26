@@ -404,7 +404,10 @@ impl Cmd {
         };
         let dur = {
             let mut mixer = inner.mixer.lock().await;
-            mixer.load_active_decoded(Box::new(source), start_pos)?;
+            // A decode thread drains the provider source, so its network waits
+            // can never stall the output callback, and the ring primes before
+            // this returns so "playing" means audio exists.
+            mixer.load_active_stream(Box::new(source), start_pos, duration_hint.unwrap_or(0.0))?;
             mixer.play()?;
             mixer.duration()
         };
@@ -957,7 +960,7 @@ impl Cmd {
         };
         {
             let mut mixer = inner.mixer.lock().await;
-            mixer.load_active_decoded(Box::new(source), pos)?;
+            mixer.load_active_stream(Box::new(source), pos, total_duration)?;
             mixer.play()?;
             if was_paused {
                 mixer.pause()?;
@@ -2307,15 +2310,11 @@ impl Daemon {
                     // Disable the visualizer (spectrum analysis + broadcast)
                     // when no TUI client is connected to conserve CPU.
                     if self.inner.active_clients.load(Ordering::Relaxed) > 0 {
-                        // Publish streamed-source spectrum (local files feed the
-                        // analyzer from the decode thread; streams from the
-                        // rodio source itself).
-                        let levels = self.inner.stream.lock().await.spectrum_snapshot();
+                        // Every source type now feeds the analyzer from its
+                        // decode thread, including remote providers, so the
+                        // mixer's own analysis is the single source of truth.
                         let spectrum = {
                             let mixer = self.inner.mixer.lock().await;
-                            if !levels.is_empty() {
-                                mixer.publish_spectrum(levels);
-                            }
                             mixer.current_spectrum()
                         };
                         {
@@ -2335,17 +2334,6 @@ impl Daemon {
                                 &self.inner,
                                 DaemonEvent::SpectrumChanged { levels: spectrum },
                             );
-                        }
-                        // Publish streamed-source waveform (streams bypass the
-                        // decode thread; local files feed the ring from the
-                        // decode thread itself). Mirror of the spectrum flow.
-                        {
-                            let stream = self.inner.stream.lock().await;
-                            let (ws, st) = stream.waveform_snapshot();
-                            if !ws.is_empty() {
-                                let mixer = self.inner.mixer.lock().await;
-                                mixer.publish_waveform(ws, st);
-                            }
                         }
                         let (wave_samples, wave_stereo) = {
                             let mixer = self.inner.mixer.lock().await;
