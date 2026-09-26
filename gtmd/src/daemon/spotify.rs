@@ -9,6 +9,15 @@ pub(crate) struct Spotify;
 /// caller bug or a stale cache entry, and streaming it would fail deep inside
 /// the protocol layer with a message that names neither the URI nor the song.
 pub(crate) fn is_playable(uri: &str) -> bool {
+    // A playable URI is `spotify:<kind>:<id>` — exactly three colon-separated
+    // parts. A fourth means the prefix was applied twice, to something that
+    // was already a URI (`spotify:track:spotify:track:<id>`). `SpotifyUri`
+    // parses that happily and hands the inner `spotify:track:<id>` back as the
+    // id, so the doubled form would otherwise pass every check below and only
+    // fail once librespot is already streaming.
+    if uri.split(':').count() > 3 {
+        return false;
+    }
     match SpotifyUri::from_uri(uri) {
         Ok(parsed) => parsed.is_playable() && parsed.to_id().is_ok(),
         Err(_) => false,
@@ -766,5 +775,38 @@ impl Spotify {
         };
         let data = data.map(|bytes| base64::engine::general_purpose::STANDARD.encode(&bytes));
         Ok(DaemonRes::SpotifyImageRes { data })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_playable;
+
+    #[test]
+    fn plain_track_uri_is_playable() {
+        assert!(is_playable("spotify:track:1K2saeIy8gAb73"));
+        assert!(is_playable("spotify:episode:1K2saeIy8gAb73"));
+    }
+
+    #[test]
+    fn doubled_prefix_is_rejected() {
+        // `SpotifyUri::from_uri` accepts this and returns the inner
+        // `spotify:track:1K2saeIy8gAb73` as the id, so without the part-count
+        // guard the doubled form passed every check and only failed once
+        // librespot was already streaming.
+        assert!(!is_playable("spotify:track:spotify:track:1K2saeIy8gAb73"));
+        assert!(!is_playable("spotify:track:spotify:track:spotify:track:x"));
+    }
+
+    #[test]
+    fn non_playable_shapes_are_rejected() {
+        assert!(!is_playable(""));
+        assert!(!is_playable("spotify:"));
+        assert!(!is_playable("spotify:track:"));
+        assert!(!is_playable(
+            "https://open.spotify.com/track/1K2saeIy8gAb73"
+        ));
+        // `spotify:user:<id>:playlist:<id>` is four parts and is not playable.
+        assert!(!is_playable("spotify:user:owner:playlist:playlist"));
     }
 }

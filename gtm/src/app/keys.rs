@@ -1179,8 +1179,33 @@ impl App {
                                     {
                                         let c = self.client.clone();
                                         let uri = track.uri.clone();
+                                        // A `spotify:track:` URI is not a
+                                        // filesystem path: `queue().add()`
+                                        // would push it through the library
+                                        // route (a directory expansion, no
+                                        // Premium streaming, no cover
+                                        // pre-warm). Send it to the spotify
+                                        // resolver instead, which is the same
+                                        // path the search picker uses.
+                                        let is_spotify = uri.starts_with("spotify:");
+                                        let title = track.title.clone();
+                                        let artists = track.artists.clone();
+                                        let album = track.album.clone();
                                         let _ = tx.try_send(TuiCommand::fire(move || async move {
-                                            let _ = c.queue().add(&uri, None).await;
+                                            if is_spotify {
+                                                let _ = c
+                                                    .spotify()
+                                                    .resolve_track(
+                                                        &title,
+                                                        &artists,
+                                                        album.as_deref().unwrap_or(""),
+                                                        Some(uri),
+                                                        true,
+                                                    )
+                                                    .await;
+                                            } else {
+                                                let _ = c.queue().add(&uri, None).await;
+                                            }
                                         }));
                                     }
                                 }
