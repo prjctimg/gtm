@@ -114,8 +114,7 @@ impl App {
             return;
         }
         let fetch_gen = self.next_cover_gen();
-        self.spotify_popup_slot.id = Some(url.clone());
-        self.spotify_popup_slot.version = Some(fetch_gen);
+        self.spotify_popup_slot.claim(url.clone(), fetch_gen);
         self.track_popup_cover = None;
         self.popup_cover_stateful = None;
         let client = self.client.clone();
@@ -141,8 +140,7 @@ impl App {
             .top()
             .map_or(String::new(), |o| o.query.to_lowercase());
         self.spotify.search_results.clear();
-        self.spotify.preview_fetch.id = None;
-        self.spotify.preview_fetch.version = None;
+        self.spotify.preview_fetch.clear();
         self.spotify.preview_cover = None;
         self.spotify.preview_cover_stateful = None;
         if q.is_empty() {
@@ -313,41 +311,36 @@ impl App {
         let Some(top) = self.pickers.top() else {
             self.spotify.preview_cover = None;
             self.spotify.preview_cover_stateful = None;
-            self.spotify.preview_fetch.id = None;
-            self.spotify.preview_fetch.version = None;
+            self.spotify.preview_fetch.clear();
             return;
         };
         if top.id != PickerId::SpotifySearch {
             self.spotify.preview_cover = None;
             self.spotify.preview_cover_stateful = None;
-            self.spotify.preview_fetch.id = None;
-            self.spotify.preview_fetch.version = None;
+            self.spotify.preview_fetch.clear();
             return;
         }
         let picks = self.spot_picks();
         if picks.is_empty() {
             self.spotify.preview_cover = None;
             self.spotify.preview_cover_stateful = None;
-            self.spotify.preview_fetch.id = None;
-            self.spotify.preview_fetch.version = None;
+            self.spotify.preview_fetch.clear();
             return;
         }
         let sel = top.selected.min(picks.len() - 1);
         let Some(url) = self.spotify.search_results[picks[sel]].2.image_url.clone() else {
             self.spotify.preview_cover = None;
             self.spotify.preview_cover_stateful = None;
-            self.spotify.preview_fetch.id = None;
-            self.spotify.preview_fetch.version = None;
+            self.spotify.preview_fetch.clear();
             return;
         };
-        if self.spotify.preview_fetch.id.as_deref() == Some(&url)
-            && self.spotify.preview_fetch.version.is_some()
-        {
+        // One in-flight fetch per selection: scrolling back to a row whose
+        // cover is already loading reuses it instead of re-requesting.
+        if self.spotify.preview_fetch.pending(&url) {
             return;
         }
         let fetch_gen = self.next_cover_gen();
-        self.spotify.preview_fetch.id = Some(url.clone());
-        self.spotify.preview_fetch.version = Some(fetch_gen);
+        self.spotify.preview_fetch.claim(url.clone(), fetch_gen);
         self.spotify.preview_cover = None;
         self.spotify.preview_cover_stateful = None;
         if no_image_protocol() {

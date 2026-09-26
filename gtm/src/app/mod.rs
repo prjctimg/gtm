@@ -639,29 +639,24 @@ impl App {
     fn clear_search_previews(&mut self) {
         self.picker_preview_cover = None;
         self.picker_preview_stateful = None;
-        self.picker_slot.id = None;
-        self.picker_slot.version = None;
+        self.picker_slot.clear();
         self.artist_cover = None;
         self.artist_cover_stateful = None;
-        self.artist_slot.id = None;
-        self.artist_slot.version = None;
+        self.artist_slot.clear();
     }
 
     fn clear_preview(&mut self) {
         self.queue.preview_cover = None;
         self.queue.preview_cover_stateful = None;
-        self.queue.preview_slot.id = None;
-        self.queue.preview_slot.version = None;
+        self.queue.preview_slot.clear();
     }
 
     fn clear_popup_cover(&mut self) {
         self.popup_track_id = None;
         self.track_popup_cover = None;
         self.popup_cover_stateful = None;
-        self.popup_slot.id = None;
-        self.popup_slot.version = None;
-        self.spotify_popup_slot.id = None;
-        self.spotify_popup_slot.version = None;
+        self.popup_slot.clear();
+        self.spotify_popup_slot.clear();
     }
 
     pub async fn new(
@@ -876,7 +871,7 @@ impl App {
                 cover: None,
                 cover_stateful: None,
                 cover_dirty: false,
-                cover_fetch_gen: None,
+                cover_fetch: FetchSlot::default(),
             },
             pending_quit: false,
             mouse_map: MouseMap::default(),
@@ -1199,7 +1194,7 @@ impl App {
                     self.metadata.cover = None;
                     self.metadata.cover_stateful = None;
                     self.metadata.edit_track_ids.clear();
-                    self.metadata.cover_fetch_gen = None;
+                    self.metadata.cover_fetch.clear();
                 }
                 PickerId::SearchLibrary => {
                     // Robust: clear preview dedup state so reopen does not retain

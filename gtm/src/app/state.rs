@@ -43,8 +43,9 @@ pub struct UpNextNotif {
     pub cover_stateful: Option<StatefulProtocol>,
     pub started_at: std::time::Instant,
     pub total_secs: f64,
-    pub cover_fetch_id: Option<i64>,
-    pub cover_fetch_gen: Option<u64>,
+    /// In-flight cover request for `track`, so a stale reply is dropped and
+    /// a repeated request for the same track is not re-issued.
+    pub cover_fetch: FetchSlot<i64>,
 }
 
 /// Fuzzy subsequence match: every byte of `q` appears in order in `hay`.
@@ -119,7 +120,8 @@ pub struct MetadataEditState {
     pub cover: Option<Vec<u8>>,
     pub cover_stateful: Option<StatefulProtocol>,
     pub cover_dirty: bool,
-    pub cover_fetch_gen: Option<u64>,
+    /// In-flight cover request for the first edited track.
+    pub cover_fetch: FetchSlot<i64>,
 }
 
 pub struct NowPlayingCoverState {
@@ -158,6 +160,11 @@ pub enum PromptType {
 /// Guard for a cover/preview fetch slot: the target id (or URL) the
 /// in-flight response belongs to, plus a generation used to drop stale
 /// replies. Replaces duplicated `last_*_fetch_id`/`version` bookkeeping pairs.
+///
+/// One slot per resource, so at most one fetch per resource is ever in
+/// flight: a new target bumps the generation, which makes the previous
+/// response a no-op on arrival, and `matches` lets a repeated request for
+/// the same target be skipped entirely.
 pub struct FetchSlot<T> {
     pub id: Option<T>,
     pub version: Option<u64>,
@@ -169,6 +176,31 @@ impl<T> Default for FetchSlot<T> {
             id: None,
             version: None,
         }
+    }
+}
+
+impl<T: PartialEq> FetchSlot<T> {
+    /// True when a request for `id` is already in flight, so the caller can
+    /// skip issuing a duplicate fetch for the same target.
+    pub fn pending(&self, id: &T) -> bool {
+        self.version.is_some() && self.id.as_ref() == Some(id)
+    }
+
+    /// Claim the slot for `id` at generation `version`.
+    pub fn claim(&mut self, id: T, version: u64) {
+        self.id = Some(id);
+        self.version = Some(version);
+    }
+
+    /// True when a reply tagged `version` still belongs to this request.
+    pub fn matches(&self, version: u64) -> bool {
+        self.version == Some(version)
+    }
+
+    /// Release the slot so a later visit can retry.
+    pub fn clear(&mut self) {
+        self.id = None;
+        self.version = None;
     }
 }
 

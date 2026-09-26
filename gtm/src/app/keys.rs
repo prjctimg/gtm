@@ -4236,7 +4236,7 @@ impl App {
                     let year = self.metadata.fields[5].parse::<i32>().ok();
                     let track_number = self.metadata.fields[6].parse::<i32>().ok();
                     let fetch_gen = self.next_cover_gen();
-                    self.metadata.cover_fetch_gen = Some(fetch_gen);
+                    self.metadata.cover_fetch.claim(track_id, fetch_gen);
                     let client = self.client.clone();
                     let ipc_tx = self.ipc_tx.clone();
                     let _ = tx.send(TuiCommand::fire(move || async move {
@@ -4338,12 +4338,11 @@ impl App {
                         top.viewport_offset = 0;
                         self.picker_preview_cover = None;
                         self.picker_preview_stateful = None;
-                        self.picker_slot.id = None;
+                        self.picker_slot.clear();
                         self.artist_cover = None;
                         self.artist_cover_stateful = None;
-                        self.artist_slot.id = None;
-                        self.spotify.preview_fetch.id = None;
-                        self.spotify.preview_fetch.version = None;
+                        self.artist_slot.clear();
+                        self.spotify.preview_fetch.clear();
                     } else if top.id == PickerId::EditMetadata {
                         self.metadata.field_idx = (self.metadata.field_idx + 1) % 7;
                     } else if top.id == PickerId::SpotifyLink {

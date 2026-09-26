@@ -1015,7 +1015,7 @@ impl App {
                     IpcResult::PopupCoverArt(cover, track_id, fetch_gen) => {
                         if !no_image_protocol()
                             && self.popup_track_id == Some(track_id)
-                            && self.popup_slot.version == Some(fetch_gen)
+                            && self.popup_slot.matches(fetch_gen)
                         {
                             self.track_popup_cover = cover;
                             self.popup_cover_sync();
@@ -1024,7 +1024,7 @@ impl App {
                     IpcResult::SpotifyPopupCover(cover, url, fetch_gen) => {
                         if !no_image_protocol()
                             && self.spotify_popup_slot.id.as_deref() == Some(&url)
-                            && self.spotify_popup_slot.version == Some(fetch_gen)
+                            && self.spotify_popup_slot.matches(fetch_gen)
                         {
                             self.track_popup_cover = cover;
                             self.popup_cover_sync();
@@ -1033,9 +1033,9 @@ impl App {
                     IpcResult::UpNextCover(cover, track_id, fetch_gen) => {
                         if !no_image_protocol()
                             && self.upnext.as_ref().is_some_and(|u| {
-                                u.cover_fetch_id == Some(track_id)
+                                u.cover_fetch.id == Some(track_id)
                                     && u.track.id == track_id
-                                    && u.cover_fetch_gen == Some(fetch_gen)
+                                    && u.cover_fetch.matches(fetch_gen)
                             })
                             && let Some(u) = self.upnext.as_mut()
                         {
@@ -1046,7 +1046,7 @@ impl App {
                     IpcResult::QueuePreviewCover(cover, track_id, fetch_gen) => {
                         if !no_image_protocol()
                             && self.queue.preview_slot.id == Some(track_id)
-                            && self.queue.preview_slot.version == Some(fetch_gen)
+                            && self.queue.preview_slot.matches(fetch_gen)
                         {
                             self.queue.preview_cover = cover;
                             self.sync_preview_cover();
@@ -1070,7 +1070,7 @@ impl App {
                     IpcResult::PickerPreviewCover(cover, track_id, fetch_gen) => {
                         if !no_image_protocol()
                             && self.picker_slot.id == Some(track_id)
-                            && self.picker_slot.version == Some(fetch_gen)
+                            && self.picker_slot.matches(fetch_gen)
                         {
                             self.picker_preview_cover = cover;
                             self.picker_preview_sync();
@@ -1078,15 +1078,14 @@ impl App {
                             // Release the guard on a miss so the same row can be
                             // retried later instead of staying blank forever.
                             if self.picker_preview_cover.is_none() {
-                                self.picker_slot.id = None;
-                                self.picker_slot.version = None;
+                                self.picker_slot.clear();
                             }
                         }
                     }
                     IpcResult::MetadataCoverArt(cover, track_id, fetch_gen) => {
                         if !no_image_protocol()
                             && self.metadata.edit_track_ids.first() == Some(&track_id)
-                            && self.metadata.cover_fetch_gen == Some(fetch_gen)
+                            && self.metadata.cover_fetch.matches(fetch_gen)
                         {
                             self.metadata.cover = cover;
                             self.metadata_cover_sync();
@@ -1096,7 +1095,7 @@ impl App {
                     IpcResult::ArtistCoverArt(cover, artist, fetch_gen) => {
                         if !no_image_protocol()
                             && self.artist_slot.id.as_deref() == Some(&artist)
-                            && self.artist_slot.version == Some(fetch_gen)
+                            && self.artist_slot.matches(fetch_gen)
                         {
                             self.artist_cover = cover;
                             self.artist_cover_sync();
@@ -1105,7 +1104,7 @@ impl App {
                     IpcResult::SpotifyPreviewCover(cover, url, fetch_gen) => {
                         if !no_image_protocol()
                             && self.spotify.preview_fetch.id.as_deref() == Some(&url)
-                            && self.spotify.preview_fetch.version == Some(fetch_gen)
+                            && self.spotify.preview_fetch.matches(fetch_gen)
                         {
                             self.spotify.preview_cover = cover;
                             self.spotify_preview_sync();
@@ -1113,8 +1112,7 @@ impl App {
                             // guard so a later visit can retry instead of
                             // being blocked forever by this generation.
                             if self.spotify.preview_cover.is_none() {
-                                self.spotify.preview_fetch.id = None;
-                                self.spotify.preview_fetch.version = None;
+                                self.spotify.preview_fetch.clear();
                             }
                         }
                     }

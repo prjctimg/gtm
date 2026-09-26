@@ -19,8 +19,10 @@ impl App {
             cover_stateful: None,
             started_at: std::time::Instant::now(),
             total_secs,
-            cover_fetch_id: fetch_id,
-            cover_fetch_gen: fetch_gen,
+            cover_fetch: FetchSlot {
+                id: fetch_id,
+                version: fetch_gen,
+            },
         });
         let Some(fetch_gen) = fetch_gen else {
             return;
@@ -148,25 +150,18 @@ impl App {
             if let Some(cover) = self.np_cover.image.clone() {
                 self.track_popup_cover = Some(cover);
                 self.popup_cover_sync();
-                self.popup_slot.id = None;
-                self.popup_slot.version = None;
+                self.popup_slot.clear();
                 return;
             }
             // else fall through to fetch below
         }
-        // Generation-guarded fetch: `id == 0` reuse is safe via fetch_gen.
-        let already_pending = self.popup_slot.id == Some(tid)
-            && self.popup_slot.version.is_some()
-            && !no_image_protocol();
-        if already_pending {
-            return;
-        }
-        if no_image_protocol() {
+        // One in-flight fetch per track; `id == 0` reuse is safe because the
+        // generation is what decides whether a reply is current.
+        if no_image_protocol() || self.popup_slot.pending(&tid) {
             return;
         }
         let fetch_gen = self.next_cover_gen();
-        self.popup_slot.id = Some(tid);
-        self.popup_slot.version = Some(fetch_gen);
+        self.popup_slot.claim(tid, fetch_gen);
         self.track_popup_cover = None;
         self.popup_cover_stateful = None;
         let client = self.client.clone();
@@ -193,42 +188,37 @@ impl App {
             // Robust: invalidate pending fetch_gen so close/reopen does not retain stale key
             self.picker_preview_cover = None;
             self.picker_preview_stateful = None;
-            self.picker_slot.id = None;
-            self.picker_slot.version = None;
+            self.picker_slot.clear();
             return;
         };
         if top.id != PickerId::SearchLibrary {
             self.picker_preview_cover = None;
             self.picker_preview_stateful = None;
-            self.picker_slot.id = None;
-            self.picker_slot.version = None;
+            self.picker_slot.clear();
             return;
         }
         let picks = self.search_library_picks();
         if picks.is_empty() {
             self.picker_preview_cover = None;
             self.picker_preview_stateful = None;
-            self.picker_slot.id = None;
-            self.picker_slot.version = None;
+            self.picker_slot.clear();
             return;
         }
         let sel = top.selected.min(picks.len() - 1);
         let LibraryPick::Track(i) = &picks[sel] else {
             self.picker_preview_cover = None;
             self.picker_preview_stateful = None;
-            self.picker_slot.id = None;
-            self.picker_slot.version = None;
+            self.picker_slot.clear();
             return;
         };
         let tid = self.tracks_cache[*i].id;
         // Generation-guarded dedup: id reuse (id==0) cannot block new fetches.
         // Only skip when both id and generation match current pending.
-        if self.picker_slot.id == Some(tid) && self.picker_slot.version.is_some() {
+        if self.picker_slot.pending(&tid) {
             return;
         }
         let fetch_gen = self.next_cover_gen();
-        self.picker_slot.id = Some(tid);
-        self.picker_slot.version = Some(fetch_gen);
+        self.picker_slot.claim(tid, fetch_gen);
         self.picker_preview_cover = None;
         self.picker_preview_stateful = None;
         if no_image_protocol() {
@@ -249,41 +239,34 @@ impl App {
         let Some(top) = self.pickers.top() else {
             self.artist_cover = None;
             self.artist_cover_stateful = None;
-            self.artist_slot.id = None;
-            self.artist_slot.version = None;
+            self.artist_slot.clear();
             return;
         };
         if top.id != PickerId::SearchLibrary {
             self.artist_cover = None;
             self.artist_cover_stateful = None;
-            self.artist_slot.id = None;
-            self.artist_slot.version = None;
+            self.artist_slot.clear();
             return;
         }
         let picks = self.search_library_picks();
         if picks.is_empty() {
             self.artist_cover = None;
             self.artist_cover_stateful = None;
-            self.artist_slot.id = None;
-            self.artist_slot.version = None;
+            self.artist_slot.clear();
             return;
         }
         let sel = top.selected.min(picks.len() - 1);
         let LibraryPick::Artist(name) = &picks[sel] else {
             self.artist_cover = None;
             self.artist_cover_stateful = None;
-            self.artist_slot.id = None;
-            self.artist_slot.version = None;
+            self.artist_slot.clear();
             return;
         };
-        if self.artist_slot.id.as_deref() == Some(name.as_str())
-            && self.artist_slot.version.is_some()
-        {
+        if self.artist_slot.pending(name) {
             return;
         }
         let fetch_gen = self.next_cover_gen();
-        self.artist_slot.id = Some(name.clone());
-        self.artist_slot.version = Some(fetch_gen);
+        self.artist_slot.claim(name.clone(), fetch_gen);
         self.artist_cover = None;
         self.artist_cover_stateful = None;
         if no_image_protocol() {
@@ -377,8 +360,7 @@ impl App {
         }
         let next_idx = self.queue.cursor + 1;
         let Some(track) = self.queue.cache.get(next_idx) else {
-            self.queue.preview_slot.id = None;
-            self.queue.preview_slot.version = None;
+            self.queue.preview_slot.clear();
             self.queue.preview_cover = None;
             self.queue.preview_cover_stateful = None;
             return;
@@ -419,18 +401,18 @@ impl App {
         if let Some(cover) = reuse {
             self.queue.preview_cover = Some(cover);
             self.sync_preview_cover();
-            self.queue.preview_slot.id = Some(tid);
+            // Keep the id so a retry reuses the cached bytes, but drop the
+            // generation so the next request is allowed through.
             self.queue.preview_slot.version = None;
             return;
         }
         // Generation-guarded dedup: allows `id == 0` tracks to refetch
         // distinctly. Only skip when pending fetch_gen exists.
-        if self.queue.preview_slot.id == Some(tid) && self.queue.preview_slot.version.is_some() {
+        if self.queue.preview_slot.pending(&tid) {
             return;
         }
         let fetch_gen = self.next_cover_gen();
-        self.queue.preview_slot.id = Some(tid);
-        self.queue.preview_slot.version = Some(fetch_gen);
+        self.queue.preview_slot.claim(tid, fetch_gen);
         self.queue.preview_cover = None;
         self.queue.preview_cover_stateful = None;
         let client = self.client.clone();
@@ -512,7 +494,9 @@ impl App {
             return;
         }
         let fetch_gen = self.next_cover_gen();
-        self.metadata.cover_fetch_gen = Some(fetch_gen);
+        self.metadata
+            .cover_fetch
+            .claim(self.metadata.edit_track_ids.first().copied().unwrap_or(0), fetch_gen);
         // Clear stale cover while new fetch is in flight; handler will repopulate.
         self.metadata.cover = None;
         self.metadata.cover_stateful = None;
