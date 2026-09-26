@@ -2594,6 +2594,9 @@ impl App {
                                 15 => {
                                     self.cycle_theme_mode();
                                 }
+                                16 => {
+                                    self.open_audio_device_picker();
+                                }
                                 _ => {}
                             },
                             3 => match opt {
@@ -3562,6 +3565,10 @@ impl App {
                                 ));
                             }
                             self.pickers.close_top();
+                        }
+                        PickerId::AudioDevice => {
+                            let index = self.pickers.top().map_or(0, |t| t.selected);
+                            self.apply_audio_device(index);
                         }
                         PickerId::ProgressStyle => {
                             let styles = ProgressStyle::all();

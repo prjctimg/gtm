@@ -1033,3 +1033,79 @@ impl Pickers {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Audio output device
+// ---------------------------------------------------------------------------
+
+/// Label for the entry that hands routing back to the platform.
+pub(crate) const DEFAULT_DEVICE_LABEL: &str = "System default";
+
+impl Pickers {
+    /// Pick the OS audio output device. The first row is always "System
+    /// default", which clears the saved device so the mixer opens the platform
+    /// sink — the state a fresh install should be in, and the one that keeps
+    /// working when a saved device is unplugged.
+    pub(crate) fn render_audio_device(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let block = Self::picker_panel(app, " Audio Output ", None);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        // Row 0 is the default; the rest are the daemon's list, which is empty
+        // until the fetch lands.
+        let mut rows: Vec<String> = vec![DEFAULT_DEVICE_LABEL.to_string()];
+        rows.extend(app.audio_devices.iter().cloned());
+
+        let current = app.state.audio.audio_device.clone();
+        let sel = app
+            .pickers
+            .top()
+            .map_or(0, |o| o.selected.min(rows.len().saturating_sub(1)));
+
+        let visible = inner.height as usize;
+        let total = rows.len();
+        let (scroll_start, scroll_end) = if let Some(top) = app.pickers.top_mut() {
+            let (s, e) = step_viewport(top.viewport_offset, sel, visible, total);
+            top.viewport_offset = s;
+            (s, e)
+        } else {
+            (0, total)
+        };
+
+        let mut lines = Vec::new();
+        for (i, name) in rows
+            .iter()
+            .enumerate()
+            .skip(scroll_start)
+            .take(scroll_end.saturating_sub(scroll_start))
+        {
+            let is_sel = i == sel;
+            // The saved device is `None` for the default row, so compare the
+            // row's meaning rather than the raw strings.
+            let is_cur = match &current {
+                None => i == 0,
+                Some(cur) => rows.get(i) == Some(cur),
+            };
+            let prefix = if is_sel { " > " } else { "   " };
+            let marker = if is_cur { "  (current)" } else { "" };
+            let style = if is_sel {
+                Style::default()
+                    .fg(app.theme.selection_fg_readable())
+                    .bg(app.theme.selection_bg)
+            } else {
+                Style::default().fg(app.theme.fg)
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{prefix}{name}{marker}"),
+                style,
+            )));
+        }
+        if rows.len() == 1 {
+            lines.push(Line::from(Span::styled(
+                " no output devices reported by this backend",
+                Style::default().fg(app.theme.fg_dim),
+            )));
+        }
+        f.render_widget(Paragraph::new(lines), inner);
+    }
+}

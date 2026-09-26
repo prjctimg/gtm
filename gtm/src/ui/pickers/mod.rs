@@ -71,6 +71,7 @@ impl Pickers {
             PickerId::FooterPreset => (52, 16),
             PickerId::NotificationSettings => (60, 14),
             PickerId::ProgressStyle => (48, 18),
+            PickerId::AudioDevice => (60, 14),
             PickerId::Settings => (64, 28),
             PickerId::Setup => (58, 24),
             PickerId::LastfmAuth => (60, 16),
@@ -190,6 +191,7 @@ impl Pickers {
             PickerId::VisualizerPreset => Self::render_visualizer_preset(f, picker_area, app),
             PickerId::FooterPreset => Self::render_footer_preset(f, picker_area, app),
             PickerId::ProgressStyle => Self::render_progress_style(f, picker_area, app),
+            PickerId::AudioDevice => Self::render_audio_device(f, picker_area, app),
             PickerId::Settings => Self::render_settings(f, picker_area, app),
             PickerId::Notifications => Self::render_notifications(f, picker_area, app),
             PickerId::NotificationSettings => {

@@ -186,6 +186,8 @@ pub struct App {
     /// Whether the footer's `KeyAction` segment shows the action name or the
     /// pressed key. Read-only from the TUI: set in `config.toml`.
     pub footer_key_action: FooterKeyAction,
+    /// OS output devices offered by the audio device picker, filled on open.
+    pub audio_devices: Vec<String>,
     /// Cover provider preference (`auto`/`deezer`/`musicbrainz`/`spotify`),
     /// persisted in config.toml and consumed by the daemon for cover lookups.
     pub cover_provider: String,
@@ -416,6 +418,8 @@ pub(crate) enum IpcResult {
     AuthFallback(String),
     /// Live cover cache disk usage in bytes, for the Settings row.
     CoverCacheStat(u64),
+    /// OS audio output devices reported by the daemon, for the device picker.
+    AudioDevices(Vec<String>),
 }
 /// Send a background-task error into the TUI event stream as an Error
 /// (surfaced in the notification history).
@@ -781,6 +785,7 @@ impl App {
                 .map(|(k, v)| (NotifType::from_str_lossy(&k), NotifMode::from_str_lossy(&v)))
                 .collect(),
             footer_key_action: prefs.footer_key_action,
+            audio_devices: Vec::new(),
             cover_provider: prefs.cover_provider.clone(),
             cover_cache_mb: prefs.cover_cache_mb,
             cover_cache_bytes: 0,

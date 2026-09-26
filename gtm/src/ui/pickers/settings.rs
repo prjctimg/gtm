@@ -158,6 +158,14 @@ impl Pickers {
                     format!("Cover Cache     {} MB  ▶", app.cover_cache_mb),
                     "Notification Settings  Enter  ▶".to_string(),
                     format!("Theme Mode     {}  ▶", theme_mode_label(&app.theme_mode)),
+                    format!(
+                        "Audio Output   {}  ▶",
+                        app.state
+                            .audio
+                            .audio_device
+                            .clone()
+                            .unwrap_or_else(|| "System default".into())
+                    ),
                 ]
             }
             3 => {

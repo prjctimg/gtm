@@ -23,6 +23,9 @@ pub enum PickerId {
     /// can be picked (persistently highlighted) before Ctrl+Enter commits them.
     PlaylistTrackSelect,
     EditMetadata,
+    /// OS audio output device list. The first entry is always "System default",
+    /// which clears the saved device so the mixer uses the platform sink.
+    AudioDevice,
     Crossfade,
     VisualizerPreset,
     FooterPreset,

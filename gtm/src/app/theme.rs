@@ -230,7 +230,7 @@ impl App {
         match self.settings_category {
             0 => 4,  // YouTube: Cookie Source, Cookie File, JS Runtime, Auto Download
             1 => 6,  // Playback: Repeat, Shuffle, Crossfade, EQ Enabled, Reverb, Cover Source
-            2 => 16, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme, Reactive Intensity, Hide Footer, Clear Lyrics Cache, Clear Cover Cache, Cover Cache Size, Notification Settings, Theme Mode
+            2 => 17, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme, Reactive Intensity, Hide Footer, Clear Lyrics Cache, Clear Cover Cache, Cover Cache Size, Notification Settings, Theme Mode, Audio Output
             3 => 11, // Spotify: Status, Account, Playlists, Link, Sync, Unlink, Device, Next, Previous, Shuffle, Repeat
             _ => 0,
         }
@@ -268,5 +268,70 @@ impl App {
             true,
             NotifType::System,
         );
+    }
+
+    /// Open the OS output-device picker and fetch the device list. The list
+    /// arrives asynchronously, so the picker renders "System default" alone
+    /// until the daemon answers.
+    pub(crate) fn open_audio_device_picker(&mut self) {
+        self.audio_devices.clear();
+        // Preselect the row that matches the saved device so Enter is a no-op
+        // rather than an accidental switch to "System default".
+        let current = self.state.audio.audio_device.clone();
+        let selected = match &current {
+            None => 0,
+            Some(cur) => match self.audio_devices.iter().position(|d| d == cur) {
+                Some(i) => i + 1,
+                None => 0,
+            },
+        };
+        self.pickers.open(PickerId::AudioDevice);
+        if let Some(top) = self.pickers.top_mut() {
+            top.selected = selected;
+        }
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        let tx = self.cmd_tx();
+        let _ = tx.try_send(TuiCommand::fire(move || async move {
+            match c.list_audio_devices().await {
+                Ok(devices) => {
+                    let _ = ipc_tx.send(IpcResult::AudioDevices(devices));
+                }
+                Err(e) => self_err(&ipc_tx, format!("audio devices: {e}")),
+            }
+        }));
+    }
+
+    /// Apply a choice from the output-device picker. Row 0 is "System
+    /// default", which clears the saved device so the mixer opens the platform
+    /// sink.
+    pub(crate) fn apply_audio_device(&mut self, index: usize) {
+        let name = if index == 0 {
+            None
+        } else {
+            self.audio_devices.get(index - 1).cloned()
+        };
+        if name.is_none() && index > 0 {
+            // The list had not arrived yet, or the index is stale.
+            return;
+        }
+        let label = name.clone().unwrap_or_else(|| "system default".into());
+        self.pickers.close_top();
+        let c = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        let tx = self.cmd_tx();
+        let _ = tx.try_send(TuiCommand::fire(move || async move {
+            match c.set_audio_device(name).await {
+                Ok(()) => {
+                    let _ = ipc_tx.send(IpcResult::Notification(
+                        "Audio".to_string(),
+                        format!("Output: {label}"),
+                        NotificationKind::Success,
+                        NotifType::Prefs,
+                    ));
+                }
+                Err(e) => self_err(&ipc_tx, format!("audio output: {e}")),
+            }
+        }));
     }
 }

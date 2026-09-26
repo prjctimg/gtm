@@ -1204,6 +1204,7 @@ impl App {
                         );
                     }
                     IpcResult::CoverCacheStat(bytes) => self.cover_cache_bytes = bytes,
+                    IpcResult::AudioDevices(devices) => self.audio_devices = devices,
                     IpcResult::SpotifyPlaylists(p) => self.spotify.playlists = p,
                     IpcResult::SpotifySyncFinished(ok) => {
                         if ok {
