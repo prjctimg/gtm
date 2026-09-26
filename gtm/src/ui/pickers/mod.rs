@@ -372,8 +372,9 @@ impl Pickers {
                             Style::default().fg(app.theme.fg_dim),
                         )));
                     } else {
-                        for row in scroll_start..scroll_end {
-                            let i = picks[row];
+                        for (row, &i) in
+                            picks.iter().enumerate().take(scroll_end).skip(scroll_start)
+                        {
                             let (_, _pl_name, track) = &app.spotify.search_results[i];
                             let prefix = if row == sel { " > " } else { "   " };
                             let tag = match track.kind {

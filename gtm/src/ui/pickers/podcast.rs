@@ -5,6 +5,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use crate::ui::pickers::queue::ScrollList;
 use crate::ui::*;
 
 impl Pickers {
@@ -27,15 +28,17 @@ impl Pickers {
             f,
             area,
             app,
-            " Podcasts ",
-            "",
+            ScrollList {
+                title: " Podcasts ",
+                hint: "",
+                empty_msg: if app.podcast.feeds_pending {
+                    " loading feeds\u{2026}"
+                } else {
+                    "no subscriptions \u{2014} press a to add a feed URL"
+                },
+            },
             prepend,
             rows,
-            if app.podcast.feeds_pending {
-                " loading feeds\u{2026}"
-            } else {
-                "no subscriptions \u{2014} press a to add a feed URL"
-            },
         );
     }
 
@@ -58,11 +61,13 @@ impl Pickers {
             f,
             area,
             app,
-            &title,
-            "",
+            ScrollList {
+                title: &title,
+                hint: "",
+                empty_msg: "no episodes \u{2014} press r in the feed list to refresh",
+            },
             Vec::new(),
             rows,
-            "no episodes \u{2014} press r in the feed list to refresh",
         );
     }
 

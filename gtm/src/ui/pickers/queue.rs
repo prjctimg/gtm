@@ -7,6 +7,15 @@
 
 use crate::ui::*;
 
+/// Presentation-only labels for [`Pickers::render_scroll_rows`]. Grouping them
+/// keeps the shared renderer under clippy's argument ceiling and makes the
+/// call sites read as one block.
+pub struct ScrollList<'a> {
+    pub title: &'a str,
+    pub hint: &'a str,
+    pub empty_msg: &'a str,
+}
+
 impl Pickers {
     pub(crate) fn render_queue(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let sel = app.pickers.top().map_or(0, |o| o.selected);
@@ -229,16 +238,22 @@ impl Pickers {
         }
     }
 
+    /// Shared scrollable list for pickers that only render strings. The three
+    /// presentation-only labels are grouped in [`ScrollList`] so the call
+    /// sites stay readable and the renderer stays under the argument ceiling.
     pub(crate) fn render_scroll_rows(
         f: &mut ratatui::Frame,
         area: Rect,
         app: &mut App,
-        title: &str,
-        hint: &str,
+        labels: ScrollList,
         prepend: Vec<Line<'static>>,
         rows: Vec<String>,
-        empty_msg: &str,
     ) {
+        let ScrollList {
+            title,
+            hint,
+            empty_msg,
+        } = labels;
         let block = if hint.is_empty() {
             Self::picker_panel(app, title, None)
         } else {
