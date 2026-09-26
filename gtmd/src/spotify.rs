@@ -14,8 +14,8 @@ use rspotify::AuthCodePkceSpotify;
 use rspotify::clients::{BaseClient, OAuthClient};
 use rspotify::model::idtypes::Id;
 use rspotify::model::{
-    AdditionalType, AlbumId, AlbumType, ArtistId, PlayableItem, RepeatState, SearchType,
-    SimplifiedArtist, Token,
+    AdditionalType, AlbumId, AlbumType, ArtistId, LibraryId, PlayableId, PlayableItem, PlaylistId,
+    RepeatState, SearchType, SimplifiedArtist, Token, TrackId,
 };
 use rspotify::{CallbackError, Config, Credentials, OAuth, TokenCallback};
 use tracing::{debug, info, warn};
@@ -547,7 +547,7 @@ impl SpotifyManager {
 
     async fn fetch_playlist_tracks(
         client: &AuthCodePkceSpotify,
-        playlist_id: rspotify::model::PlaylistId<'static>,
+        playlist_id: PlaylistId<'static>,
     ) -> Vec<SpotifyTrack> {
         let mut tracks = Vec::new();
         let mut items = client.playlist_items(playlist_id, None, None);
@@ -942,7 +942,7 @@ pub async fn web_playlist(
     uri: &str,
 ) -> Result<Vec<SpotifyTrack>, String> {
     let playlist_id =
-        rspotify::model::PlaylistId::from_uri(uri).map_err(|e| format!("bad playlist uri: {e}"))?;
+        PlaylistId::from_uri(uri).map_err(|e| format!("bad playlist uri: {e}"))?;
     let page = client
         .playlist_items_manual(playlist_id, None, None, Some(50), Some(0))
         .await
@@ -957,6 +957,57 @@ pub async fn web_playlist(
         }
     }
     Ok(tracks)
+}
+
+/// Resolve a free-text `"{artist} - {title}"` query to a single Spotify track
+/// URI, taking the closest hit. This is the bridge from a radio station's
+/// published track name to a track Spotify can store, and it is also what the
+/// cover lookup searches with.
+pub async fn resolve_uri(client: &AuthCodePkceSpotify, query: &str) -> Result<String, String> {
+    let q = query.trim();
+    if q.is_empty() {
+        return Err("empty track query".to_string());
+    }
+    let page = client
+        .search(q, SearchType::Track, None, None, Some(5), None)
+        .await
+        .map_err(|e| format!("search: {e}"))?;
+    let rspotify::model::SearchResult::Tracks(page) = page else {
+        return Err("no track results".to_string());
+    };
+    page.items
+        .iter()
+        .find_map(|t| t.id.as_ref().map(|id| id.uri()))
+        .ok_or_else(|| format!("no Spotify match for {q:?}"))
+}
+
+/// Save a track to the user's Liked Songs. Needs the `user-library-modify`
+/// scope, which a token minted before that scope existed cannot gain by
+/// refreshing, so an older link must be re-authorized first.
+pub async fn like(client: &AuthCodePkceSpotify, uri: &str) -> Result<(), String> {
+    let id = TrackId::from_uri(uri).map_err(|e| format!("bad track uri: {e}"))?;
+    client
+        .library_add([LibraryId::Track(id)])
+        .await
+        .map_err(|e| format!("save to Liked Songs: {e}"))
+}
+
+/// Append a track to a playlist, the `POST /playlists/{id}/items` call. Needs
+/// one of the `playlist-modify-*` scopes.
+pub async fn playlist_add(
+    client: &AuthCodePkceSpotify,
+    playlist_id: &str,
+    uri: &str,
+) -> Result<(), String> {
+    let list = PlaylistId::from_id(playlist_id)
+        .or_else(|_| PlaylistId::from_uri(playlist_id))
+        .map_err(|e| format!("bad playlist id: {e}"))?;
+    let track = TrackId::from_uri(uri).map_err(|e| format!("bad track uri: {e}"))?;
+    client
+        .playlist_add_items(list, [PlayableId::Track(track)], None)
+        .await
+        .map(|_| ())
+        .map_err(|e| format!("add to playlist: {e}"))
 }
 
 /// Fetch the largest album-cover image bytes for an artist + album via the

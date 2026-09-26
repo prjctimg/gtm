@@ -477,6 +477,22 @@ Response: `{"id": 84, "ok": true, "countries": [{"code": "US", "name": "United S
 
 Response: `{"id": 85, "ok": true, "stations": [...]}`.
 
+## radio_tracklist
+
+The playing station's published tracklist, newest first, led by the entry on
+air. Sourced from the control panel the station streams from; an empty
+`tracks` array means the station publishes none.
+
+```json
+{"id": 86, "cmd": "radio_tracklist", "station_id": "abc123"}
+```
+
+Response: `{"id": 86, "ok": true, "list": {"tracks": [{"title": "Silent Tears (Orjan Nilsen Remix)", "artist": "Mark Sherry feat. Sharone", "start": 1790434231, "art": null}], "at": 0, "at_time": 1790434260}}`.
+
+`start` is unix seconds. Sources that publish only a station-local wall clock
+are normalised against `at_time`, so ordering and `at` are exact without the
+caller needing the station's timezone.
+
 ## radio_play
 
 ```json

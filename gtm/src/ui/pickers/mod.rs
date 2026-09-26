@@ -7,6 +7,7 @@
 
 use crate::ui::*;
 
+pub mod dest;
 pub mod forms;
 pub mod library;
 pub mod palette;
@@ -100,6 +101,10 @@ impl Pickers {
             }
             PickerId::PodcastSubscribe => (56, 8),
             PickerId::LoadStream => (56, 8),
+            PickerId::SpotifyDest => {
+                let n = app.live_dests_rows();
+                (64, (n as u16 + 8).clamp(14, 30))
+            }
             PickerId::Radio => {
                 // One merged panel: height follows the filtered row count;
                 // width fits the longest name across every sub-list (custom
@@ -153,6 +158,7 @@ impl Pickers {
                     | PickerId::PodcastFeeds
                     | PickerId::PodcastEpisodes
                     | PickerId::Radio
+                    | PickerId::SpotifyDest
             );
             let picker_height = if scrolling {
                 let height_cap = (area.height.saturating_sub(2) / 2).max(10);
@@ -176,6 +182,7 @@ impl Pickers {
 
         match top_id {
             PickerId::Queue => Self::render_queue(f, picker_area, app),
+            PickerId::SpotifyDest => Self::render_live_dest(f, picker_area, app),
             PickerId::YTSearch => Self::render_yt_search(f, picker_area, app),
             PickerId::SearchLibrary => Self::render_search_library(f, picker_area, app),
             PickerId::About => Self::render_about(f, picker_area, app),

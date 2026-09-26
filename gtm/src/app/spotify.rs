@@ -298,6 +298,195 @@ impl App {
         });
     }
 
+    /// The `"{artist} - {title}"` of the track currently on air, if it is a
+    /// live stream whose title the daemon has resolved into an artist and a
+    /// title separately. `None` otherwise, which is what makes the like and
+    /// add actions unavailable rather than acting on a guess.
+    pub fn live_query(&self) -> Option<String> {
+        if self.live_queue().is_empty() {
+            return None;
+        }
+        let list = &self.state.radio_tracks;
+        let at = match self.state.radio_title.as_deref() {
+            Some(t) if !t.is_empty() => list.match_title(t),
+            _ => list.at,
+        };
+        let track = list.tracks.get(at)?;
+        if track.title.is_empty() {
+            return None;
+        }
+        Some(track.query())
+    }
+
+    /// Spotify destinations for `query`: `(id, name)` per synced playlist,
+    /// filtered by the picker's query. Liked Songs is not a playlist and is
+    /// always offered as row 0, so it is not in this list.
+    pub fn live_dest_names(&self, query: &str) -> Vec<(String, String)> {
+        let q = self
+            .pickers
+            .top()
+            .map_or(String::new(), |o| o.query.to_lowercase());
+        let _ = query;
+        self.spotify
+            .playlists
+            .iter()
+            .filter(|p| q.is_empty() || p.name.to_lowercase().contains(&q))
+            .map(|p| (p.id.clone(), p.name.clone()))
+            .collect()
+    }
+
+    /// Row count of the destination picker: Liked Songs plus the filtered
+    /// playlists.
+    pub fn live_dests_rows(&self) -> usize {
+        let query = self.live_query().unwrap_or_default();
+        self.live_dest_names(&query).len() + 1
+    }
+
+    /// Open the destination picker for the track on air, resolving it to a
+    /// Spotify URI first so the search happens once and the user can confirm
+    /// which track was matched before anything is written.
+    pub(crate) fn open_live_dest(&mut self) {
+        if self.spotify.status.as_ref().is_none_or(|s| !s.linked) {
+            self.notify_typed(
+                "Spotify",
+                "Not linked — nothing to add the track to",
+                NotificationKind::Info,
+                true,
+                NotifType::Spotify,
+            );
+            return;
+        }
+        let Some(query) = self.live_query() else {
+            self.notify_typed(
+                "Spotify",
+                "No track on air to add",
+                NotificationKind::Info,
+                false,
+                NotifType::NowPlaying,
+            );
+            return;
+        };
+        self.live_dests.clear();
+        self.live_uri = None;
+        self.live_query = Some(query.clone());
+        self.pickers.open(PickerId::SpotifyDest);
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            match client.spotify().match_track(&query).await {
+                Ok(uri) => {
+                    let _ = ipc_tx.send(IpcResult::SpotifyMatch(uri));
+                }
+                Err(e) => {
+                    let _ = ipc_tx.send(IpcResult::Error(format!("Spotify match: {e}")));
+                }
+            }
+        });
+    }
+
+    /// Write the resolved track to every ticked destination. One failure does
+    /// not stop the rest, so a single unwritable playlist cannot lose the
+    /// others.
+    pub(crate) fn commit_live_dest(&mut self, dests: Vec<String>) {
+        let Some(uri) = self.live_uri.clone() else {
+            self.notify_typed(
+                "Spotify",
+                "Still matching the track — try again in a moment",
+                NotificationKind::Info,
+                false,
+                NotifType::Spotify,
+            );
+            return;
+        };
+        let names = self.live_dest_names(&self.live_query().unwrap_or_default());
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        let asked = dests.len();
+        tokio::spawn(async move {
+            let mut done = 0usize;
+            let mut failed: Vec<String> = Vec::new();
+            for dest in dests {
+                let res = if dest.is_empty() {
+                    client.spotify().like(&uri).await.map_err(|e| e.to_string())
+                } else {
+                    let label = names
+                        .iter()
+                        .find(|(id, _)| *id == dest)
+                        .map(|(_, n)| n.clone())
+                        .unwrap_or_else(|| dest.clone());
+                    client
+                        .spotify()
+                        .playlist_add(&uri, &dest)
+                        .await
+                        .map_err(|e| format!("{label}: {e}"))
+                };
+                match res {
+                    Ok(()) => done += 1,
+                    Err(e) => failed.push(e),
+                }
+            }
+            if !failed.is_empty() {
+                let _ = ipc_tx.send(IpcResult::Error(format!("Spotify: {}", failed.join("; "))));
+            }
+            if done > 0 {
+                let _ = ipc_tx.send(IpcResult::Notification(
+                    "Spotify".to_string(),
+                    format!("Added to {done} of {asked}"),
+                    NotificationKind::Success,
+                    NotifType::Spotify,
+                ));
+            }
+        });
+    }
+
+    /// Save the track on air to Liked Songs, resolving it first.
+    pub(crate) fn like_live(&mut self) {
+        if self.spotify.status.as_ref().is_none_or(|s| !s.linked) {
+            self.notify_typed(
+                "Spotify",
+                "Not linked — nothing to like the track on",
+                NotificationKind::Info,
+                true,
+                NotifType::Spotify,
+            );
+            return;
+        }
+        let Some(query) = self.live_query() else {
+            self.notify_typed(
+                "Spotify",
+                "No track on air to like",
+                NotificationKind::Info,
+                false,
+                NotifType::NowPlaying,
+            );
+            return;
+        };
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            let uri = match client.spotify().match_track(&query).await {
+                Ok(uri) => uri,
+                Err(e) => {
+                    let _ = ipc_tx.send(IpcResult::Error(format!("Spotify match: {e}")));
+                    return;
+                }
+            };
+            match client.spotify().like(&uri).await {
+                Ok(()) => {
+                    let _ = ipc_tx.send(IpcResult::Notification(
+                        "Spotify".to_string(),
+                        "Saved to Liked Songs".to_string(),
+                        NotificationKind::Success,
+                        NotifType::Spotify,
+                    ));
+                }
+                Err(e) => {
+                    let _ = ipc_tx.send(IpcResult::Error(format!("Spotify like: {e}")));
+                }
+            }
+        });
+    }
+
     pub(crate) fn spotify_preview_sync(&mut self) {
         match (&self.spotify.preview_cover, &self.np_cover.picker) {
             (Some(bytes), Some(picker)) => {

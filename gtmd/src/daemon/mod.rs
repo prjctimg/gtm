@@ -1731,6 +1731,7 @@ fn is_read_only(req: &DaemonReq) -> bool {
             | DaemonReq::SpotifyAlbumTracks { .. }
             | DaemonReq::SpotifyArtistTopTracks { .. }
             | DaemonReq::SpotifyTrackImage { .. }
+            | DaemonReq::SpotifyMatch { .. }
             | DaemonReq::LastfmStatus
             | DaemonReq::PodcastFeeds
             | DaemonReq::PodcastEpisodes { .. }
@@ -1811,6 +1812,9 @@ fn is_spotify_slow(req: &DaemonReq) -> bool {
             | DaemonReq::SpotifyAlbumTracks { .. }
             | DaemonReq::SpotifyArtistTopTracks { .. }
             | DaemonReq::SpotifyWebPlaylistTracks { .. }
+            | DaemonReq::SpotifyMatch { .. }
+            | DaemonReq::SpotifyLike { .. }
+            | DaemonReq::SpotifyPlaylistAdd { .. }
     )
 }
 
@@ -2986,6 +2990,11 @@ impl Daemon {
             } => Spotify::play_all(inner, playlist_id, *shuffle).await,
             DaemonReq::SpotifyTrackImage { image_url } => {
                 Spotify::track_image(inner, image_url).await
+            }
+            DaemonReq::SpotifyMatch { query } => Spotify::match_track(inner, query).await,
+            DaemonReq::SpotifyLike { uri } => Spotify::like(inner, uri).await,
+            DaemonReq::SpotifyPlaylistAdd { uri, playlist_id } => {
+                Spotify::playlist_add(inner, uri, playlist_id).await
             }
             DaemonReq::ChartsSources => Charts::sources(inner).await,
             DaemonReq::ChartsList { source_id } => Charts::list(inner, source_id.clone()).await,

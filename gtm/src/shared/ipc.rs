@@ -428,6 +428,22 @@ pub enum DaemonReq {
     SpotifyTrackImage {
         image_url: String,
     },
+    /// Resolve a free-text track query to a Spotify track URI. A radio station
+    /// publishes only a name, so liking or filing its track needs this search
+    /// first. Separate from the add calls so the TUI can show which track was
+    /// matched before anything is written.
+    SpotifyMatch {
+        query: String,
+    },
+    /// Save a Spotify track to the user's Liked Songs.
+    SpotifyLike {
+        uri: String,
+    },
+    /// Append a Spotify track to a playlist.
+    SpotifyPlaylistAdd {
+        uri: String,
+        playlist_id: String,
+    },
     LastfmSetConfig {
         enabled: bool,
         api_key: Option<String>,
@@ -627,6 +643,9 @@ impl DaemonReq {
             DaemonReq::SpotifyResolveTrack { .. } => "spotify_resolve_track",
             DaemonReq::SpotifyPlayAll { .. } => "spotify_play_all",
             DaemonReq::SpotifyTrackImage { .. } => "spotify_track_image",
+            DaemonReq::SpotifyMatch { .. } => "spotify_match",
+            DaemonReq::SpotifyLike { .. } => "spotify_like",
+            DaemonReq::SpotifyPlaylistAdd { .. } => "spotify_playlist_add",
             DaemonReq::LastfmSetConfig { .. } => "lastfm_set_config",
             DaemonReq::LastfmAuthUrl => "lastfm_auth_url",
             DaemonReq::LastfmOauthStart { .. } => "lastfm_oauth_start",
@@ -1230,6 +1249,34 @@ impl DaemonReq {
                     image_url: x.image_url,
                 }
             }
+            "spotify_match" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    query: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SpotifyMatch { query: x.query }
+            }
+            "spotify_like" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    uri: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SpotifyLike { uri: x.uri }
+            }
+            "spotify_playlist_add" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    uri: String,
+                    playlist_id: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::SpotifyPlaylistAdd {
+                    uri: x.uri,
+                    playlist_id: x.playlist_id,
+                }
+            }
             "lastfm_set_config" => {
                 #[derive(Deserialize)]
                 struct Params {
@@ -1682,6 +1729,10 @@ pub enum DaemonRes {
     SpotifyImageRes {
         data: Option<String>,
     },
+    /// The Spotify track URI a free-text query resolved to.
+    SpotifyMatchRes {
+        uri: String,
+    },
     PodcastFeedsRes {
         feeds: Vec<PodcastFeed>,
     },
@@ -1806,6 +1857,7 @@ impl DaemonRes {
             DaemonRes::SpotifyOauthStarted { url } => Some(serde_json::json!({ "url": url })),
             DaemonRes::SpotifyTracksRes { tracks } => Some(serde_json::json!({ "tracks": tracks })),
             DaemonRes::SpotifyImageRes { data } => Some(serde_json::json!({ "data": data })),
+            DaemonRes::SpotifyMatchRes { uri } => Some(serde_json::json!({ "uri": uri })),
             DaemonRes::PodcastFeedsRes { feeds } => Some(serde_json::json!({ "feeds": feeds })),
             DaemonRes::PodcastEpisodesRes {
                 feed_id,
@@ -1974,6 +2026,7 @@ impl DaemonRes {
             DaemonRes::SpotifyPlaylistsRes { playlists } => field!("playlists", &playlists),
             DaemonRes::SpotifyTracksRes { tracks } => field!("tracks", &tracks),
             DaemonRes::SpotifyImageRes { data } => field!("data", &data),
+            DaemonRes::SpotifyMatchRes { uri } => field!("uri", &uri),
             DaemonRes::PodcastFeedsRes { feeds } => field!("feeds", &feeds),
             DaemonRes::PodcastEpisodesRes {
                 feed_id,
@@ -2241,6 +2294,9 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
+            "spotify_match" => DaemonRes::SpotifyMatchRes {
+                uri: field_str(&data, "uri").to_string(),
+            },
             "spotify_oauth_start" => DaemonRes::SpotifyOauthStarted {
                 url: field_str(&data, "url").to_string(),
             },

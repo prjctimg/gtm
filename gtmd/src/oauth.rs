@@ -45,7 +45,13 @@ const OAUTH_SCOPES: &[&str] = &[
     "user-read-currently-playing",
     "playlist-read-private",
     "playlist-read-collaborative",
+    "playlist-modify-public",
+    "playlist-modify-private",
     "user-library-read",
+    // Saving a track to Liked Songs. Without it the like button cannot work,
+    // and a token minted before this scope was added cannot be widened by a
+    // refresh, so the account has to be re-linked once.
+    "user-library-modify",
     "user-read-private",
     "user-read-email",
 ];

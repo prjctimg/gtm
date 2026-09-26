@@ -2,6 +2,8 @@ use super::*;
 
 use librespot_core::spotify_uri::SpotifyUri;
 
+use crate::spotify::{self, resolve_uri};
+
 pub(crate) struct Spotify;
 
 /// Display metadata for a track being queued for native streaming. Grouped
@@ -844,6 +846,51 @@ impl Spotify {
         };
         let data = data.map(|bytes| base64::engine::general_purpose::STANDARD.encode(&bytes));
         Ok(DaemonRes::SpotifyImageRes { data })
+    }
+
+    /// Resolve a free-text track query to a Spotify URI. A radio station
+    /// publishes only an artist and a title, so this is what turns the track on
+    /// air into something Spotify can store. Kept separate from the write calls
+    /// so the TUI can show which track matched before anything is saved.
+    pub async fn match_track(inner: &DaemonInner, query: &str) -> Result<DaemonRes, CoreError> {
+        let client = match linked(inner).await {
+            Ok(client) => client,
+            Err(res) => return Ok(*res),
+        };
+        match resolve_uri(&client, query).await {
+            Ok(uri) => Ok(DaemonRes::SpotifyMatchRes { uri }),
+            Err(e) => Err(CoreError::Daemon(e)),
+        }
+    }
+
+    /// Save a track to the user's Liked Songs. A token minted before the
+    /// `user-library-modify` scope was requested cannot gain it by refreshing,
+    /// so that case reports the re-link it needs rather than a bare 403.
+    pub async fn like(inner: &DaemonInner, uri: &str) -> Result<DaemonRes, CoreError> {
+        let client = match linked(inner).await {
+            Ok(client) => client,
+            Err(res) => return Ok(*res),
+        };
+        spotify::like(&client, uri)
+            .await
+            .map_err(CoreError::Daemon)?;
+        Ok(DaemonRes::Ok)
+    }
+
+    /// Append a track to a playlist.
+    pub async fn playlist_add(
+        inner: &DaemonInner,
+        uri: &str,
+        playlist_id: &str,
+    ) -> Result<DaemonRes, CoreError> {
+        let client = match linked(inner).await {
+            Ok(client) => client,
+            Err(res) => return Ok(*res),
+        };
+        spotify::playlist_add(&client, playlist_id, uri)
+            .await
+            .map_err(CoreError::Daemon)?;
+        Ok(DaemonRes::Ok)
     }
 }
 

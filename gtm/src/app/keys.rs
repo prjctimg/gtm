@@ -563,6 +563,14 @@ impl App {
                         );
                         return self.manage_lastfm_love();
                     }
+                    Some(KeyboardAction::LikeSpotify) => {
+                        self.set_last_action("Like on Spotify", &key);
+                        self.like_live();
+                    }
+                    Some(KeyboardAction::AddToSpotify) => {
+                        self.set_last_action("Add to Spotify", &key);
+                        self.open_live_dest();
+                    }
                     Some(KeyboardAction::ToggleScrobble) => {
                         self.set_last_action("Toggle Last.fm scrobbling", &key);
                         self.toggle_scrobble_session();
@@ -1965,6 +1973,59 @@ impl App {
             return;
         }
 
+        // SpotifyDest picker (multi-select of destinations for the live track):
+        //   Space / Tab    toggle the highlighted destination
+        //   Ctrl+Enter     write the track to every ticked destination
+        //   Esc            cancel (handled by the common Esc path)
+        if self
+            .pickers
+            .top()
+            .is_some_and(|o| o.id == PickerId::SpotifyDest)
+        {
+            let is_ctrl_enter = key.modifiers.contains(KeyModifiers::CONTROL)
+                && (key.code == KeyCode::Enter || key.code == KeyCode::Char('m'));
+            let is_toggle = key.code == KeyCode::Char(' ') || key.code == KeyCode::Tab;
+            let names = self.live_dest_names(&self.live_query().unwrap_or_default());
+            if is_ctrl_enter {
+                let dests: Vec<String> = std::iter::once(String::new())
+                    .chain(names.into_iter().map(|(id, _)| id))
+                    .filter(|d| self.live_dests.contains(d))
+                    .collect();
+                self.close_picker();
+                if dests.is_empty() {
+                    self.notify_typed(
+                        "Spotify",
+                        "Pick at least one destination",
+                        NotificationKind::Info,
+                        false,
+                        NotifType::Spotify,
+                    );
+                } else {
+                    self.commit_live_dest(dests);
+                }
+                return;
+            }
+            if is_toggle {
+                if let Some(top) = self.pickers.top() {
+                    // Row 0 is Liked Songs, keyed by the empty string.
+                    let key = if top.selected == 0 {
+                        String::new()
+                    } else {
+                        names
+                            .get(top.selected - 1)
+                            .map(|(id, _)| id.clone())
+                            .unwrap_or_default()
+                    };
+                    if !key.is_empty() || top.selected == 0 {
+                        if !self.live_dests.remove(&key) {
+                            self.live_dests.insert(key);
+                        }
+                    }
+                }
+                return;
+            }
+        }
+
         // PlaylistTrackSelect picker (post-create multi-select):
         //   Space / Tab    toggle the highlighted track
         //   Ctrl+Enter     commit highlighted tracks to the playlist
@@ -3152,6 +3213,7 @@ impl App {
                         | Some(PickerId::ThemePicker)
                         | Some(PickerId::SpotifySearch)
                         | Some(PickerId::SpotifyLink)
+                        | Some(PickerId::SpotifyDest)
                 );
                 let is_metadata = matches!(
                     self.pickers.top().map(|o| o.id),
@@ -3213,6 +3275,7 @@ impl App {
                         | Some(PickerId::ThemePicker)
                         | Some(PickerId::SpotifySearch)
                         | Some(PickerId::SpotifyLink)
+                        | Some(PickerId::SpotifyDest)
                 );
                 let is_metadata = matches!(
                     self.pickers.top().map(|o| o.id),
@@ -3780,6 +3843,10 @@ impl App {
                                     ));
                                 } else if action == "love last.fm" {
                                     self.manage_lastfm_love();
+                                } else if action == "like spotify" {
+                                    self.like_live();
+                                } else if action == "add to spotify" {
+                                    self.open_live_dest();
                                 } else if action == "toggle scrobbling" {
                                     self.toggle_scrobble_session();
                                 } else if action == "prev tab" {

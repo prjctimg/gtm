@@ -843,6 +843,9 @@ impl App {
                         self.radio.browse_stations = stations;
                         self.radio.browse_stations_pending = false;
                     }
+                    IpcResult::SpotifyMatch(uri) => {
+                        self.live_uri = Some(uri);
+                    }
                     IpcResult::ChartsLoaded(charts) => {
                         // A stale selected source index (e.g. Spotify got
                         // unlinked between fetches) must never crash the

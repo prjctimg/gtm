@@ -97,6 +97,16 @@ impl CommandPalette {
                 hint: "love last.fm",
             },
             Command {
+                icon: "\u{f0493} Like on Spotify",
+                keys: "L",
+                hint: "like spotify",
+            },
+            Command {
+                icon: "\u{f0493} Add live track to Spotify",
+                keys: "Alt+L",
+                hint: "add to spotify",
+            },
+            Command {
                 icon: "\u{f04ec} Toggle Last.fm Scrobbling",
                 keys: "&",
                 hint: "toggle scrobbling",
@@ -342,6 +352,16 @@ impl CommandPalette {
                 hint: "love last.fm",
             },
             Command {
+                icon: "\u{1f5a4}\u{fe0f} Like on Spotify",
+                keys: "L",
+                hint: "like spotify",
+            },
+            Command {
+                icon: "\u{1f5a4}\u{fe0f} Add live track to Spotify",
+                keys: "Alt+L",
+                hint: "add to spotify",
+            },
+            Command {
                 icon: "\u{1f504} Toggle Last.fm Scrobbling",
                 keys: "&",
                 hint: "toggle scrobbling",
@@ -516,7 +536,7 @@ impl CommandPalette {
 }
 
 pub const COMMAND_GROUPS: &[(&str, usize)] = &[
-    ("Playback", 12),
+    ("Playback", 14),
     ("Library & Queue", 15),
     ("View & Overlays", 11),
     ("System", 7),

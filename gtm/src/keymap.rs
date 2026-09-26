@@ -61,6 +61,11 @@ pub enum KeyboardAction {
     ToggleFavourite,
     /// Love / un-love the current track on Last.fm (`*`).
     ToggleLove,
+    /// Save the track on air to Spotify Liked Songs (`L`).
+    LikeSpotify,
+    /// Pick Spotify destinations (Liked Songs and/or playlists) for the track
+    /// on air (`Alt+L`).
+    AddToSpotify,
     /// Toggle Last.fm scrobbling for this session (`&`).
     ToggleScrobble,
 
@@ -283,6 +288,12 @@ pub fn default_keybindings() -> Keybindings {
             ),
             b!(KeyCode::Char('f'), KeyboardAction::ToggleFavourite, NORMAL),
             b!(KeyCode::Char('*'), KeyboardAction::ToggleLove, NORMAL),
+            b!(KeyCode::Char('L'), KeyboardAction::LikeSpotify, NORMAL),
+            b!(
+                KeyEvent::new(KeyCode::Char('l'), KeyModifiers::ALT),
+                KeyboardAction::AddToSpotify,
+                NORMAL
+            ),
             b!(KeyCode::Char('&'), KeyboardAction::ToggleScrobble, NORMAL),
             b!(KeyCode::Char('D'), KeyboardAction::ClearQueue, NORMAL),
             b!(KeyCode::Char('['), KeyboardAction::FocusLeft, NORMAL),
@@ -568,6 +579,8 @@ impl KeyboardAction {
             "toggle_mono" | "mono" => KeyboardAction::ToggleMono,
             "toggle_favourite" | "favourite" | "fav" => KeyboardAction::ToggleFavourite,
             "toggle_love" | "love" => KeyboardAction::ToggleLove,
+        "like_spotify" | "spotify_like" => KeyboardAction::LikeSpotify,
+        "add_to_spotify" | "spotify_add" => KeyboardAction::AddToSpotify,
             "toggle_scrobble" | "scrobble" => KeyboardAction::ToggleScrobble,
             "clear_queue" => KeyboardAction::ClearQueue,
             "back" => KeyboardAction::Back,

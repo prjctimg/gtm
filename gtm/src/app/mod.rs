@@ -289,6 +289,15 @@ pub struct App {
     pub pending_playlist_id: Option<i64>,
     /// Tracks currently highlighted for the in-flight new-playlist flow.
     pub selected_track_ids: std::collections::HashSet<i64>,
+    /// The `"{artist} - {title}"` of the live track the Spotify destination
+    /// picker is filing, held between opening the picker and the write.
+    pub live_query: Option<String>,
+    /// Destinations ticked in that picker. The empty string is the Liked Songs
+    /// row, which has no playlist id.
+    pub live_dests: std::collections::HashSet<String>,
+    /// Resolved Spotify track URI for `live_query`, so repeated picks do not
+    /// re-search.
+    pub live_uri: Option<String>,
     pub playlist_creating: bool,
     /// Playlist being renamed via the PlaylistSelect name input, if any.
     pub renaming_playlist: Option<i64>,
@@ -397,6 +406,9 @@ pub(crate) enum IpcResult {
     /// spawned it. Carries the failure so a failed search clears the spinner
     /// instead of leaving it up over an already-populated result list.
     SpotifySearchWebDone(u64, std::result::Result<Vec<SpotifyTrack>, String>),
+    /// A free-text track query resolved to a Spotify URI, for the live
+    /// track's like and add-to-playlist actions.
+    SpotifyMatch(String),
     ReactivePalette(Option<ReactivePalette>),
     PodcastStatus(Option<PodcastStatus>),
     PodcastFeeds(Vec<PodcastFeed>),
@@ -942,6 +954,9 @@ impl App {
             pending_track_ids: Vec::new(),
             pending_playlist_id: None,
             selected_track_ids: std::collections::HashSet::new(),
+            live_query: None,
+            live_dests: std::collections::HashSet::new(),
+            live_uri: None,
             playlist_creating: false,
             renaming_playlist: None,
             metadata: MetadataEditState {
@@ -1099,6 +1114,7 @@ impl App {
                     self.queue.cache.len().saturating_sub(1)
                 }
             }
+            PickerId::SpotifyDest => self.live_dests_rows().saturating_sub(1),
             PickerId::YTSearch => self.yt_results_cache.len().saturating_sub(1),
             PickerId::SearchLibrary => self.search_library_picks().len().saturating_sub(1),
             PickerId::SpotifySearch => self.spot_picks().len().saturating_sub(1),
@@ -1145,6 +1161,7 @@ impl App {
                     self.queue.cache.len()
                 }
             }
+            PickerId::SpotifyDest => self.live_dests_rows().saturating_sub(1),
             PickerId::YTSearch => self.yt_results_cache.len(),
             PickerId::SearchLibrary => self.search_library_picks().len(),
             PickerId::SpotifySearch => self.spot_picks().len(),
@@ -1314,6 +1331,11 @@ impl App {
                 PickerId::PlaylistSelect => {
                     self.playlist_creating = false;
                     self.renaming_playlist = None;
+                }
+                PickerId::SpotifyDest => {
+                    self.live_dests.clear();
+                    self.live_query = None;
+                    self.live_uri = None;
                 }
                 _ => {}
             }

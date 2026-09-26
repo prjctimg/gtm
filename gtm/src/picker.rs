@@ -50,6 +50,10 @@ pub enum PickerId {
     /// YouTube cookie-file path form (`gtm setup` → YouTube). Single text
     /// input, Enter commits to the daemon's yt-dlp config (empty clears).
     YoutubeSetup,
+    /// Multi-select list of Spotify destinations for the track on air: Liked
+    /// Songs plus the user's playlists. Row 0 is Liked Songs; the rest are the
+    /// synced playlists, filterable by the picker's query.
+    SpotifyDest,
 }
 
 /// Which list a fuzzy-finder picker searches. `Tab` cycles through these.

@@ -216,6 +216,9 @@ impl DaemonClient {
             | DaemonReq::SpotifySync
             | DaemonReq::SpotifyResolve { .. }
             | DaemonReq::SpotifyResolveTrack { .. } => 200,
+            | DaemonReq::SpotifyMatch { .. }
+            | DaemonReq::SpotifyLike { .. }
+            | DaemonReq::SpotifyPlaylistAdd { .. } => 30,
             _ => IPC_TIMEOUT_SECS,
         };
         self.cmd_tx
@@ -1284,6 +1287,40 @@ impl<'a> Spotify<'a> {
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
             _ => Err(unexpected(&res)),
         }
+    }
+
+    /// Resolve a free-text `"{artist} - {title}"` query to a Spotify track URI.
+    /// A radio station publishes only a name, so liking its track goes through
+    /// this search first.
+    pub async fn match_track(&self, query: &str) -> Result<String> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::SpotifyMatch {
+                query: query.into(),
+            })
+            .await?;
+        match res {
+            DaemonRes::SpotifyMatchRes { uri, .. } => Ok(uri),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
+    /// Save a track to the user's Liked Songs.
+    pub async fn like(&self, uri: &str) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::SpotifyLike { uri: uri.into() })
+            .await
+    }
+
+    /// Append a track to a playlist.
+    pub async fn playlist_add(&self, uri: &str, playlist_id: &str) -> Result<()> {
+        self.client
+            .send_ok(DaemonReq::SpotifyPlaylistAdd {
+                uri: uri.into(),
+                playlist_id: playlist_id.into(),
+            })
+            .await
     }
 
     fn status_from(res: DaemonRes) -> Result<SpotifyStatus> {

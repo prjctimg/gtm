@@ -83,6 +83,15 @@ impl App {
     /// Kick off data fetches right after a remote-service picker opens.
     pub fn on_picker_opened(&mut self, id: PickerId) {
         match id {
+            PickerId::SpotifyDest => {
+                // The destination filter is scoped to this picker, so a query
+                // left over from a previous open must not hide every row.
+                if let Some(top) = self.pickers.top_mut() {
+                    top.query.clear();
+                    top.selected = 0;
+                    top.viewport_offset = 0;
+                }
+            }
             PickerId::SpotifySearch => {
                 // Reopening must not inherit a spinner from a search that was
                 // abandoned when the picker closed.
