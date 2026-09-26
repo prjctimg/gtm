@@ -4,12 +4,21 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-/// Host of a URL, lowercased, without a leading `www.`. Falls back to manual
-/// splitting for inputs `reqwest::Url` cannot parse (yt-dlp gets raw user
-/// input), so a malformed URL still classifies by its leading host token.
+/// Host of a URL, lowercased, without a leading `www.`. The port is kept, so
+/// a self-hosted stream on `:8000` still classifies the same as the bare
+/// host. Falls back to manual splitting for inputs `reqwest::Url` cannot
+/// parse (yt-dlp gets raw user input), so a malformed URL still classifies by
+/// its leading host token.
 pub fn host(url: &str) -> String {
     let raw = match reqwest::Url::parse(url) {
-        Ok(u) => u.host_str().unwrap_or_default().to_string(),
+        // `host_str` drops the port, so take the authority span instead.
+        Ok(u) => u
+            .host_str()
+            .map(|h| match u.port() {
+                Some(port) => format!("{h}:{port}"),
+                None => h.to_string(),
+            })
+            .unwrap_or_default(),
         Err(_) => url
             .split_once("://")
             .map_or(url, |(_, rest)| rest)
