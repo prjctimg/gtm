@@ -1363,8 +1363,16 @@ fn sample_for(ty: &str, depth: usize) -> serde_json::Value {
     let Some(first) = first else {
         return Value::Null;
     };
+    // `first` is a whole line of the enum body, so it still carries the comma
+    // that separates it from the next variant.
     let variant = rename_variant(
-        first.split('{').next().unwrap_or_default().trim(),
+        first
+            .split('{')
+            .next()
+            .unwrap_or_default()
+            .trim()
+            .trim_end_matches(',')
+            .trim(),
         meta.rename_all,
     );
     if !first.contains('{') {
