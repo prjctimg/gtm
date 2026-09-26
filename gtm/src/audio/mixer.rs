@@ -29,8 +29,9 @@ use crate::shared::{MAX_VOLUME, volume_ratio};
 
 /// How long a provider-decoded source is given to prime its ring before the
 /// play proceeds anyway. Generous, because the cost of waiting is a late start
-/// while the cost of failing is a track that will not play at all.
-const STREAM_PREBUFFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// while the cost of failing is a track that will not play at all. Shared with
+/// the PulseAudio backend so both drain paths behave identically.
+pub(crate) const STREAM_PREBUFFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 pub trait Mixer: Send + Sync {
     fn load_active(&mut self, path: &str, start_pos: f64) -> AudioResult<()>;

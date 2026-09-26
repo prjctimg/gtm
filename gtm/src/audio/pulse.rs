@@ -21,7 +21,7 @@ use crate::audio::buffer::{
 };
 use crate::audio::decoder::DecodeThread;
 use crate::audio::eq::{EqGains, EqSource, ReverbSource};
-use crate::audio::mixer::Mixer;
+use crate::audio::mixer::{Mixer, STREAM_PREBUFFER_TIMEOUT};
 use crate::audio::stretch::{SpeedControl, TimeStretchSource};
 use crate::audio::symphonia::SymphoniaSource;
 use crate::audio::wave::WaveformShared;
@@ -465,6 +465,61 @@ impl PulseAudioMixer {
         Ok((control, handle))
     }
 
+    /// Same as [`Self::start_decode_reader`] for a provider-decoded source
+    /// (Spotify). The wait is bounded but not fatal: a slow first packet is a
+    /// late start, and failing the play would make it a dead button.
+    #[allow(clippy::too_many_arguments)]
+    fn start_decode_stream(
+        source: Box<dyn Source<Item = f32> + Send>,
+        ring: &SharedRingBuffer,
+        eq_gains: &EqGains,
+        eq_enabled: &Arc<AtomicBool>,
+        reverb_enabled: &Arc<AtomicBool>,
+        reverb_room_size: &Arc<Mutex<f32>>,
+        speed: &SpeedControl,
+        spectrum: &Arc<Mutex<Vec<f32>>>,
+    ) -> AudioResult<(Arc<DecodeControl>, std::thread::JoinHandle<()>)> {
+        let control = Arc::new(DecodeControl::new());
+        let thread = DecodeThread::new_stream(
+            source,
+            ring.clone(),
+            control.clone(),
+            eq_gains.clone(),
+            eq_enabled.clone(),
+            reverb_enabled.clone(),
+            reverb_room_size.clone(),
+            speed.clone(),
+            spectrum.clone(),
+            WaveformShared::default(),
+            PREBUFFER_SAMPLES_REDUCED,
+        );
+        let handle = thread.spawn().map_err(AudioError::DecodeError)?;
+
+        let start = Instant::now();
+        let timeout = STREAM_PREBUFFER_TIMEOUT;
+        while !control.ready.load(Ordering::Acquire) && start.elapsed() < timeout {
+            if control.finished.load(Ordering::Acquire) {
+                return Err(AudioError::DecodeError(
+                    "stream ended before producing audio".into(),
+                ));
+            }
+            if !control.running.load(Ordering::Acquire) {
+                return Err(AudioError::DecodeError(
+                    "decode thread exited before prebuffer".into(),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        if !control.ready.load(Ordering::Acquire) {
+            log::warn!(
+                "provider stream produced no audio within {}s; starting anyway",
+                timeout.as_secs()
+            );
+        }
+
+        Ok((control, handle))
+    }
+
     fn set_stream_volume(stream: &PaStreamState, vol: u8) {
         stream.stream_volume.store(vol, Ordering::Relaxed);
     }
@@ -630,6 +685,56 @@ impl Mixer for PulseAudioMixer {
         *self.position.lock().unwrap() = 0.0;
         *self.start_time.lock().unwrap() = None;
         *self.start_pos.lock().unwrap() = 0.0;
+        self.playing.store(false, Ordering::SeqCst);
+        self.crossfade_start = None;
+
+        Ok(())
+    }
+
+    fn load_active_stream(
+        &mut self,
+        source: Box<dyn Source<Item = f32> + Send>,
+        start_pos: f64,
+        duration_secs: f64,
+    ) -> AudioResult<()> {
+        self.active_mut().stop_decode();
+
+        self.active().cork();
+        self.active().flush();
+        Self::set_stream_volume(&self.active(), 0);
+
+        let (control, handle) = Self::start_decode_stream(
+            source,
+            &self.active().ring,
+            &self.eq_gains,
+            &self.eq_enabled,
+            &self.reverb_enabled,
+            &self.reverb_room_size,
+            &self.speed,
+            &self.spectrum,
+        )?;
+
+        let client = self._client.clone();
+        self.active_mut().reconfigure(
+            &client,
+            control.sample_rate.load(Ordering::Relaxed),
+            control.channels.load(Ordering::Relaxed),
+        )?;
+        self.active_mut().control = Some(control);
+        self.active_mut().decode_handle = Some(handle);
+
+        self.active().uncork();
+
+        // A provider track has a real length, so keep it for the Finished
+        // stall-guard and position reporting; zero it only if unknown.
+        *self.duration.lock().unwrap() = if duration_secs > 0.0 {
+            duration_secs
+        } else {
+            0.0
+        };
+        *self.position.lock().unwrap() = start_pos;
+        *self.start_time.lock().unwrap() = None;
+        *self.start_pos.lock().unwrap() = start_pos;
         self.playing.store(false, Ordering::SeqCst);
         self.crossfade_start = None;
 

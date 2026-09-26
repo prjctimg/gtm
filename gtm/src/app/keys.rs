@@ -2007,16 +2007,17 @@ impl App {
             }
             if is_toggle {
                 if let Some(top) = self.pickers.top() {
-                    // Row 0 is Liked Songs, keyed by the empty string.
+                    // Row 0 is Liked Songs, keyed by the empty string since it
+                    // has no playlist id. A row past the last playlist has no
+                    // key and is not toggleable.
                     let key = if top.selected == 0 {
-                        String::new()
+                        Some(String::new())
                     } else {
-                        names
-                            .get(top.selected - 1)
-                            .map(|(id, _)| id.clone())
-                            .unwrap_or_default()
+                        names.get(top.selected - 1).map(|(id, _)| id.clone())
                     };
-                    if (!key.is_empty() || top.selected == 0) && !self.live_dests.remove(&key) {
+                    if let Some(key) = key
+                        && !self.live_dests.remove(&key)
+                    {
                         self.live_dests.insert(key);
                     }
                 }
