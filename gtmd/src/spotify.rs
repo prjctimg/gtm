@@ -110,6 +110,22 @@ impl SpotifyManager {
             .unwrap_or_default()
     }
 
+    /// The client id the current access token was minted with.
+    ///
+    /// Spotify binds an access token to the app that requested it, so the
+    /// librespot session has to present the *same* id. Presenting a token from
+    /// one app to a session registered as another still connects and then
+    /// delivers no audio at all, which is the quietest possible failure: the
+    /// track resolves, the clock advances, and the mixer never gets a sample.
+    pub fn streaming_client_id(&self) -> String {
+        let id = self.stored_client_id();
+        if id.is_empty() {
+            LIBRESPOT_CLIENT_ID.to_string()
+        } else {
+            id
+        }
+    }
+
     /// Record the authorised client id in both stores. Called when the OAuth
     /// flow starts, so a restart can still refresh with the same app.
     pub fn save_client_id(&self, id: &str) -> Result<(), String> {
@@ -592,17 +608,16 @@ impl SpotifyManager {
         // refresh, so snapshot them here: the token itself lives behind an
         // async mutex that cannot be inspected synchronously.
         self.scopes = token.scopes.clone();
-        let client_id = self.stored_client_id();
         // Fall back to librespot's public desktop client id when the user
         // linked with a plain pasted access token (which never stores a
         // client id). `Credentials::default()` is a dead end: rspotify's
         // bundled demo id cannot refresh, so such tokens silently expire and
         // every later Web API call fails with a 401.
-        let creds = if client_id.is_empty() {
-            Credentials::new_pkce(LIBRESPOT_CLIENT_ID)
-        } else {
-            Credentials::new_pkce(&client_id)
-        };
+        //
+        // The fallback is also what `streaming_client_id` hands the librespot
+        // session, so both sides always agree on which app the token belongs
+        // to.
+        let creds = Credentials::new_pkce(&self.streaming_client_id());
         // Persist a refreshed token back to disk with 0600 permissions so a
         // renewed access token survives a daemon restart instead of reverting
         // to the stale one. rspotify invokes this callback after every

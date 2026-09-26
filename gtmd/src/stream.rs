@@ -10,7 +10,6 @@ use std::time::Duration;
 use gtm::audio::{
     SPECTRUM_BINS, SpectrumAnalyzer, WAVEFORM_DECIM, WAVEFORM_FRESHNESS, WaveformShared,
 };
-use gtm::shared::spotify::LIBRESPOT_CLIENT_ID;
 use librespot_core::SessionConfig;
 use librespot_core::authentication::Credentials;
 use librespot_core::cache::Cache;
@@ -22,7 +21,7 @@ use librespot_playback::convert::Converter;
 use librespot_playback::decoder::AudioPacket;
 use librespot_playback::mixer::VolumeGetter;
 use librespot_playback::player::{Player, PlayerEvent};
-use tracing::info;
+use tracing::{info, warn};
 
 // A single librespot [`Session`] + [`Player`] pair is created lazily on the
 // first streamed track and reused afterwards. Decoded audio is pushed by a
@@ -49,6 +48,17 @@ const SPECTRUM_FRESHNESS: Duration = Duration::from_millis(300);
 /// stall the whole IPC reply past its budget and surface as a misleading
 /// "IPC response timeout". Failing fast returns a readable error instead.
 const STREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// How long a freshly loaded stream may stay silent before the source gives
+/// up. A cold librespot connect plus the first packets can take a while, so
+/// this is generous; exceeding it means the session registered but never
+/// delivers audio.
+const STARTUP_GRACE: Duration = Duration::from_secs(25);
+
+/// How long an already-playing stream may stay silent before the source gives
+/// up. Long enough to ride out a network hiccup without cutting the track
+/// short, short enough that a dead stream does not look like normal playback.
+const STALL_TIMEOUT: Duration = Duration::from_secs(45);
 
 type SpectrumShared = Arc<Mutex<(std::time::Instant, Vec<f32>)>>;
 
@@ -115,6 +125,10 @@ pub struct PcmStreamSource {
     channels: u16,
     sample_rate: u32,
     total_duration: Option<Duration>,
+    /// When `load` handed this source to the mixer.
+    loaded_at: std::time::Instant,
+    /// When a sample last arrived, once one has.
+    last_sample_at: Option<std::time::Instant>,
 }
 
 impl PcmStreamSource {
@@ -137,6 +151,8 @@ impl PcmStreamSource {
             channels: 2,
             sample_rate: 44_100,
             total_duration: Some(Duration::from_secs_f64(duration_secs)),
+            loaded_at: std::time::Instant::now(),
+            last_sample_at: None,
         }
     }
 
@@ -175,11 +191,38 @@ impl Iterator for PcmStreamSource {
     fn next(&mut self) -> Option<f32> {
         loop {
             if let Some(s) = self.pending.pop_front() {
+                self.last_sample_at = Some(std::time::Instant::now());
                 return Some(s);
             }
             match self.rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(chunk) => self.refill(chunk),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                Ok(chunk) => {
+                    self.last_sample_at = Some(std::time::Instant::now());
+                    self.refill(chunk);
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    // Give up on a stream that never delivers. Waiting forever
+                    // looks like success: the mixer's position keeps advancing
+                    // from the track duration while the decode thread is
+                    // parked here, so the UI reports a playing track that
+                    // makes no sound. End-of-track is not this path — the
+                    // event pump drops the sender, which disconnects.
+                    let idle = match self.last_sample_at {
+                        Some(at) => at.elapsed(),
+                        None => self.loaded_at.elapsed(),
+                    };
+                    let budget = if self.last_sample_at.is_some() {
+                        STALL_TIMEOUT
+                    } else {
+                        STARTUP_GRACE
+                    };
+                    if idle >= budget {
+                        warn!(
+                            "spotify stream idle for {}s with no audio — ending source",
+                            idle.as_secs()
+                        );
+                        return None;
+                    }
+                }
                 Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
             }
         }
@@ -226,6 +269,9 @@ pub struct StreamManager {
     /// transparently refreshes it), so an expired access token never leaves a
     /// stale librespot session silently producing no audio.
     session_token: Option<String>,
+    /// Client id the session registered with. A session is only reusable for
+    /// the app that minted its token, so this is part of the reuse check.
+    session_client_id: Option<String>,
 }
 
 impl Default for StreamManager {
@@ -244,6 +290,7 @@ impl StreamManager {
             waveform: WaveformShared::default(),
             current_uri: None,
             session_token: None,
+            session_client_id: None,
         }
     }
 
@@ -294,8 +341,16 @@ impl StreamManager {
     /// one the current session was established with. This keeps playback
     /// working past a token expiry instead of leaving a stale session that
     /// silently stops producing audio.
-    async fn ensure_session(&mut self, token: &str, config_dir: &Path) -> Result<(), String> {
-        if self.player.is_some() && self.session_token.as_deref() == Some(token) {
+    async fn ensure_session(
+        &mut self,
+        token: &str,
+        client_id: &str,
+        config_dir: &Path,
+    ) -> Result<(), String> {
+        if self.player.is_some()
+            && self.session_token.as_deref() == Some(token)
+            && self.session_client_id.as_deref() == Some(client_id)
+        {
             return Ok(());
         }
         self.teardown_session();
@@ -309,7 +364,7 @@ impl StreamManager {
         .map_err(|e| format!("spotify cache: {e}"))?;
 
         let session_config = SessionConfig {
-            client_id: LIBRESPOT_CLIENT_ID.to_string(),
+            client_id: client_id.to_string(),
             device_id: "gtm-rs-stream".to_string(),
             ..Default::default()
         };
@@ -385,6 +440,7 @@ impl StreamManager {
         self.session = Some(session);
         self.player = Some(player);
         self.session_token = Some(token.to_string());
+        self.session_client_id = Some(client_id.to_string());
         Ok(())
     }
 
@@ -400,6 +456,7 @@ impl StreamManager {
         }
         self.player = None;
         self.session_token = None;
+        self.session_client_id = None;
         self.current_uri = None;
         {
             let mut s = self.spectrum.lock().unwrap();
@@ -410,15 +467,20 @@ impl StreamManager {
 
     /// Start streaming `uri` and return the rodio source to hand to the
     /// mixer. Any previous stream is torn down first.
+    ///
+    /// `client_id` must be the app that minted `token` (see
+    /// [`SpotifyManager::streaming_client_id`]); librespot presents it when it
+    /// registers the session, and a mismatch connects without streaming.
     pub async fn load(
         &mut self,
         uri: &str,
         start_ms: u32,
         duration_secs: f64,
         token: &str,
+        client_id: &str,
         config_dir: &Path,
     ) -> Result<PcmStreamSource, String> {
-        self.ensure_session(token, config_dir).await?;
+        self.ensure_session(token, client_id, config_dir).await?;
         let parsed = SpotifyUri::from_uri(uri).map_err(|e| format!("bad spotify uri: {e}"))?;
 
         self.clear_target();
@@ -455,6 +517,7 @@ impl StreamManager {
         }
         self.player = None;
         self.session_token = None;
+        self.session_client_id = None;
     }
 
     /// Resume the librespot player after a pause. The mixer is the transport

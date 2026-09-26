@@ -344,6 +344,7 @@ impl Cmd {
                 .filter(|d| *d > 0.0)
         };
         let config_dir = inner.config.config_dir.clone();
+        let client_id = inner.spotify.lock().await.streaming_client_id();
 
         {
             let mut mixer = inner.mixer.lock().await;
@@ -378,6 +379,7 @@ impl Cmd {
                     (start_pos.max(0.0) * 1000.0) as u32,
                     duration_hint.unwrap_or(0.0),
                     &token,
+                    &client_id,
                     &config_dir,
                 )
                 .await
@@ -921,6 +923,7 @@ impl Cmd {
             }
         };
         let config_dir = inner.config.config_dir.clone();
+        let client_id = inner.spotify.lock().await.streaming_client_id();
         let source = {
             let mut stream = inner.stream.lock().await;
             match stream
@@ -929,6 +932,7 @@ impl Cmd {
                     (pos.max(0.0) * 1000.0) as u32,
                     total_duration.max(0.0),
                     &token,
+                    &client_id,
                     &config_dir,
                 )
                 .await
