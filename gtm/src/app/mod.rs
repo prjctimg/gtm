@@ -23,7 +23,7 @@ use crate::shared::secret::{SPOTIFY_CLIENT_ID, get_secret, set_secret};
 use crate::shared::spotify::{
     LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifySearchKind, SpotifyStatus, SpotifyTrack,
 };
-use crate::shared::state::{ThemeMode, TrackSort};
+use crate::shared::state::{ThemeMode, TrackSort, path_is_remote};
 use crate::shared::track::{LrcData, LrcLine, Playlist, TrackInfo, YTSearchResult};
 use crate::shared::{CoreError, MAX_SPEED, MAX_VOLUME, MIN_SPEED, MetadataPatch};
 use crossterm::event::{

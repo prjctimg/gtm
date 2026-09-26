@@ -636,3 +636,34 @@ impl SavedState {
         serde_json::from_str(&data).ok()
     }
 }
+
+/// True when a queue entry's `path` is a provider URI rather than a file on
+/// disk. Such entries have no library row and no tags to read, so anything
+/// keyed on `track_id`/`path` (lyrics, cover art) has to fall back to the
+/// entry's own metadata.
+pub fn path_is_remote(path: &str) -> bool {
+    path.starts_with("spotify:")
+        || path.starts_with("radio://")
+        || path.starts_with("podcast:")
+        || path.starts_with("http://")
+        || path.starts_with("https://")
+}
+
+#[cfg(test)]
+mod remote_path_tests {
+    use super::path_is_remote;
+
+    #[test]
+    fn provider_uris_are_remote() {
+        assert!(path_is_remote("spotify:track:4cOdK2wGLETKBW3PvgPWqT"));
+        assert!(path_is_remote("radio://stream.example/live"));
+        assert!(path_is_remote("https://cdn.example/stream.mp3"));
+    }
+
+    #[test]
+    fn local_files_are_not_remote() {
+        assert!(!path_is_remote("/music/song.flac"));
+        assert!(!path_is_remote("relative/song.mp3"));
+        assert!(!path_is_remote(""));
+    }
+}

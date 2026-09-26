@@ -667,11 +667,27 @@ impl App {
                     let ipc_tx = self.ipc_tx.clone();
                     let tpath = self.state.current_track.as_ref().map(|t| t.path.clone());
                     let cur_tid = self.state.current_track.as_ref().map(|t| t.id);
+                    // A provider URI has no library row and no file to read
+                    // tags from, so `get(track_id, path)` can only miss. Use the
+                    // entry's own artist/title instead.
+                    let fallback = self
+                        .state
+                        .current_track
+                        .as_ref()
+                        .filter(|t| path_is_remote(&t.path))
+                        .map(|t| (t.artist.clone(), t.title.clone()));
                     tokio::spawn(async move {
-                        let result = client
-                            .lyrics()
-                            .get(cur_tid.unwrap_or(0), tpath.as_deref())
-                            .await;
+                        let result = match &fallback {
+                            Some((artist, title)) if !artist.is_empty() && !title.is_empty() => {
+                                client.lyrics().search(artist, title).await
+                            }
+                            _ => {
+                                client
+                                    .lyrics()
+                                    .get(cur_tid.unwrap_or(0), tpath.as_deref())
+                                    .await
+                            }
+                        };
                         match result {
                             Ok(lyrics) => {
                                 let _ = ipc_tx.send(IpcResult::Lyrics(lyrics, fetch_gen));
