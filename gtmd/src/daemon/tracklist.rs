@@ -101,8 +101,7 @@ pub(crate) async fn fetch(inner: &DaemonInner, station_id: &str) -> Result<Daemo
 /// falls back to the leading entry, the same convention the station's own page
 /// uses.
 pub(crate) fn now_split(list: &RadioTracklist, icy: Option<&str>) -> (String, Option<String>) {
-    let artist =
-        |t: &RadioTrack| Some(t.artist.clone()).filter(|a| !a.is_empty());
+    let artist = |t: &RadioTrack| Some(t.artist.clone()).filter(|a| !a.is_empty());
     match icy {
         Some(title) if !title.is_empty() => {
             let at = list.match_title(title);

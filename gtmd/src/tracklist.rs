@@ -132,7 +132,11 @@ pub async fn fetch(
             Ok(body) => {
                 let list = build(&body, &src.keys, now);
                 if !list.tracks.is_empty() {
-                    debug!("tracklist source {} -> {} tracks", src.host, list.tracks.len());
+                    debug!(
+                        "tracklist source {} -> {} tracks",
+                        src.host,
+                        list.tracks.len()
+                    );
                     return Ok(list);
                 }
             }
@@ -160,7 +164,11 @@ fn matching(host: &str) -> Vec<&'static Source> {
 fn expand(src: &Source, host: &str, id: &str) -> String {
     let slug = host.split('.').next().unwrap_or(id);
     let src_host = src.host.trim_start_matches("stream.");
-    let authority = if src_host.contains('.') { src_host } else { host };
+    let authority = if src_host.contains('.') {
+        src_host
+    } else {
+        host
+    };
     let path = src
         .path
         .replace("{id}", &urlencoding::encode(slug))
@@ -179,10 +187,7 @@ async fn get(client: &reqwest::Client, url: &str) -> Result<String, String> {
     if !resp.status().is_success() {
         return Err(format!("HTTP {}", resp.status()));
     }
-    let body = resp
-        .bytes()
-        .await
-        .map_err(|e| format!("body: {e}"))?;
+    let body = resp.bytes().await.map_err(|e| format!("body: {e}"))?;
     if body.len() > MAX_BODY {
         return Err("tracklist body too large".to_string());
     }
@@ -260,8 +265,7 @@ fn build(body: &str, keys: &Keys, now: i64) -> RadioTracklist {
     match keys.stamp {
         Stamp::Epoch | Stamp::Offset => {
             for (t, it) in tracks.iter_mut().zip(items) {
-                t.start = text(dig(it, keys.start))
-                    .and_then(|s| stamp(&s, keys.stamp, now));
+                t.start = text(dig(it, keys.start)).and_then(|s| stamp(&s, keys.stamp, now));
             }
         }
         Stamp::Clock => {
@@ -273,7 +277,11 @@ fn build(body: &str, keys: &Keys, now: i64) -> RadioTracklist {
                 };
                 // Walk backwards: a timestamp later than the previous entry
                 // means the broadcast crossed midnight since.
-                prev -= if delta > prev % 86_400 { prev % 86_400 + 86_400 - delta } else { prev % 86_400 - delta };
+                prev -= if delta > prev % 86_400 {
+                    prev % 86_400 + 86_400 - delta
+                } else {
+                    prev % 86_400 - delta
+                };
                 t.start = Some(prev);
             }
         }
@@ -291,8 +299,7 @@ fn dig<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
     if path.is_empty() {
         return Some(value);
     }
-    path.split('.')
-        .try_fold(value, |acc, seg| acc.get(seg))
+    path.split('.').try_fold(value, |acc, seg| acc.get(seg))
 }
 
 /// A field as text, accepting the string, number or nested-object forms the
@@ -367,9 +374,16 @@ mod tests {
         let list = build(LAUT, &LAUT_KEYS, 1_790_440_000);
         assert_eq!(list.tracks.len(), 2);
         assert_eq!(list.tracks[0].artist, "Green Velvet");
-        assert_eq!(list.tracks[1].query(), "Josh Gabriel pres. Winter Kills - My Friend (Josh Gabriel Remix)");
+        assert_eq!(
+            list.tracks[1].query(),
+            "Josh Gabriel pres. Winter Kills - My Friend (Josh Gabriel Remix)"
+        );
         // The nested artist object must not leak in as a title.
-        assert!(list.tracks.iter().all(|t| t.title.contains(char::is_alphanumeric)));
+        assert!(
+            list.tracks
+                .iter()
+                .all(|t| t.title.contains(char::is_alphanumeric))
+        );
         let starts: Vec<_> = list.tracks.iter().filter_map(|t| t.start).collect();
         assert!(starts.windows(2).all(|w| w[0] > w[1]), "{starts:?}");
     }
@@ -396,7 +410,10 @@ mod tests {
     fn somafm_slug_strips_the_ice_host() {
         let hit = matching("ice2.somafm.com");
         assert!(!hit.is_empty());
-        assert_eq!(expand(hit[0], "ice2.somafm.com", "x"), "https://somafm.com/songs/ice.json");
+        assert_eq!(
+            expand(hit[0], "ice2.somafm.com", "x"),
+            "https://somafm.com/songs/ice.json"
+        );
     }
 
     #[test]
@@ -407,7 +424,8 @@ mod tests {
     #[test]
     fn offset_stamps_are_absolute() {
         // 2026-09-26 16:50:31 +0200 is 14:50:31 UTC on the 26th.
-        let body = r#"[{"title":"A","artist":{"name":"X"},"started_at":"2026-09-26 16:50:31 +0200"}]"#;
+        let body =
+            r#"[{"title":"A","artist":{"name":"X"},"started_at":"2026-09-26 16:50:31 +0200"}]"#;
         let list = build(body, &LAUT_KEYS, 1_790_440_000);
         assert_eq!(list.tracks[0].start, Some(1_790_434_231));
     }
@@ -424,7 +442,8 @@ mod tests {
         // 23:58 then 00:04: the second entry is later on the clock, so it must
         // land before the first rather than in the future.
         let now = 86_400 * 2 + 23 * 3600 + 58 * 60;
-        let body = r#"{"mscp":{"playlist":[{"time":"23:58","title":"A"},{"time":"00:04","title":"B"}]}}"#;
+        let body =
+            r#"{"mscp":{"playlist":[{"time":"23:58","title":"A"},{"time":"00:04","title":"B"}]}}"#;
         let list = build(body, &STREAMSB_KEYS, now);
         assert_eq!(list.tracks[0].start, Some(now));
         assert_eq!(list.tracks[1].start, Some(now + 6 * 60));

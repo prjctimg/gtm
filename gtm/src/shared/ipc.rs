@@ -1821,9 +1821,7 @@ impl DaemonRes {
                 Some(serde_json::json!({ "stations": stations }))
             }
             DaemonRes::RadioTagsRes { tags } => Some(serde_json::json!({ "tags": tags })),
-            DaemonRes::RadioTracklistRes { list } => {
-                Some(serde_json::json!({ "list": list }))
-            }
+            DaemonRes::RadioTracklistRes { list } => Some(serde_json::json!({ "list": list })),
             DaemonRes::RadioCountriesRes { countries } => {
                 Some(serde_json::json!({ "countries": countries }))
             }

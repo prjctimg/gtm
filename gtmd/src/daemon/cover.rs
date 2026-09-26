@@ -128,11 +128,11 @@ impl Cover {
                 let uuid = rest.split('/').next().unwrap_or(rest);
                 (!uuid.is_empty()).then_some(uuid)
             });
-        if let Some(uuid) = radio_uuid {
-            if let Some(bytes) = Self::radio_cover(inner, uuid).await {
-                let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
-                return Ok(DaemonRes::CoverArt { data: Some(b64) });
-            }
+        if let Some(uuid) = radio_uuid
+            && let Some(bytes) = Self::radio_cover(inner, uuid).await
+        {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+            return Ok(DaemonRes::CoverArt { data: Some(b64) });
         }
 
         if !discovered_artist.is_empty() && !discovered_album.is_empty() {
@@ -238,13 +238,12 @@ impl Cover {
         }
         let mut guard = inner.cover_cache().await;
         let hit = match guard.as_mut() {
-            Some(cache) => tokio::time::timeout(
-                Duration::from_secs(5),
-                cache.get_text(&query, provider),
-            )
-            .await
-            .ok()
-            .flatten(),
+            Some(cache) => {
+                tokio::time::timeout(Duration::from_secs(5), cache.get_text(&query, provider))
+                    .await
+                    .ok()
+                    .flatten()
+            }
             None => None,
         };
         hit.map(|c| c.data)

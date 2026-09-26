@@ -1139,7 +1139,11 @@ impl App {
         match id {
             PickerId::Queue => {
                 let live = self.live_queue().len();
-                if live > 0 { live } else { self.queue.cache.len() }
+                if live > 0 {
+                    live
+                } else {
+                    self.queue.cache.len()
+                }
             }
             PickerId::YTSearch => self.yt_results_cache.len(),
             PickerId::SearchLibrary => self.search_library_picks().len(),

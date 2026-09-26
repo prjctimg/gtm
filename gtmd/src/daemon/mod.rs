@@ -3043,9 +3043,7 @@ impl Daemon {
             DaemonReq::RadioByCountry { country, limit } => {
                 Radio::by_country(inner, country, *limit).await
             }
-            DaemonReq::RadioTracklist { station_id } => {
-                tracklist::fetch(inner, station_id).await
-            }
+            DaemonReq::RadioTracklist { station_id } => tracklist::fetch(inner, station_id).await,
             DaemonReq::SetSleepTimer {
                 minutes,
                 stop_immediately,
