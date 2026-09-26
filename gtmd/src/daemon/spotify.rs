@@ -4,6 +4,19 @@ use librespot_core::spotify_uri::SpotifyUri;
 
 pub(crate) struct Spotify;
 
+/// Display metadata for a track being queued for native streaming. Grouped
+/// into one argument so [`Spotify::queue_stream`] stays readable and under the
+/// argument ceiling as fields are added.
+pub(crate) struct StreamMeta<'a> {
+    pub title: &'a str,
+    pub artist: &'a str,
+    pub album: &'a str,
+    /// Album art from the web API. Preferred over a text cover search, which
+    /// misses often enough to leave spotify rows with no artwork.
+    pub image_url: Option<&'a str>,
+    pub duration: Option<f64>,
+}
+
 /// True when `uri` is a `spotify:track:` (or episode) URI librespot can
 /// actually stream. A track id is 22 base62 characters; anything else is a
 /// caller bug or a stale cache entry, and streaming it would fail deep inside
@@ -354,11 +367,13 @@ impl Spotify {
             return Spotify::queue_stream(
                 inner,
                 &uri,
-                &spotify_title,
-                &spotify_artist,
-                &spotify_album,
-                track.image_url.as_deref(),
-                duration,
+                StreamMeta {
+                    title: &spotify_title,
+                    artist: &spotify_artist,
+                    album: &spotify_album,
+                    image_url: track.image_url.as_deref(),
+                    duration,
+                },
                 play,
             )
             .await;
@@ -483,12 +498,14 @@ impl Spotify {
     /// user queue. On a Premium account an accompanying `spotify:track:` URI
     /// streams natively via librespot; everyone else falls back to the top
     /// YouTube match for the track metadata.
+    #[allow(clippy::too_many_arguments)]
     pub async fn resolve_track(
         inner: &DaemonInner,
         name: &str,
         artists: &str,
         album: &str,
         uri: &Option<String>,
+        image_url: Option<&str>,
         play: bool,
     ) -> Result<DaemonRes, CoreError> {
         if uri.is_some()
@@ -499,7 +516,19 @@ impl Spotify {
                 let spotify = inner.spotify.lock().await;
                 spotify.find_track_duration(&uri)
             };
-            Spotify::queue_stream(inner, &uri, name, artists, album, None, duration, play).await?;
+            Spotify::queue_stream(
+                inner,
+                &uri,
+                StreamMeta {
+                    title: name,
+                    artist: artists,
+                    album,
+                    image_url,
+                    duration,
+                },
+                play,
+            )
+            .await?;
             return Ok(DaemonRes::Ok);
         }
 
@@ -563,13 +592,16 @@ impl Spotify {
     pub(crate) async fn queue_stream(
         inner: &DaemonInner,
         uri: &str,
-        title: &str,
-        artist: &str,
-        album: &str,
-        image_url: Option<&str>,
-        duration: Option<f64>,
+        meta: StreamMeta<'_>,
         play: bool,
     ) -> Result<DaemonRes, CoreError> {
+        let StreamMeta {
+            title,
+            artist,
+            album,
+            image_url,
+            duration,
+        } = meta;
         if !is_playable(uri) {
             return Ok(DaemonRes::Error {
                 message: format!("not a playable spotify uri: {uri}"),

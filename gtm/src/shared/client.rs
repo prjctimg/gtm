@@ -1237,12 +1237,14 @@ impl<'a> Spotify<'a> {
     /// account the track streams natively via librespot instead of a YouTube
     /// match. With `play` it starts playing immediately (switching the active
     /// source) instead of only queueing.
+    #[allow(clippy::too_many_arguments)]
     pub async fn resolve_track(
         &self,
         name: &str,
         artists: &str,
         album: &str,
         uri: Option<String>,
+        image_url: Option<String>,
         play: bool,
     ) -> Result<()> {
         self.client
@@ -1251,6 +1253,7 @@ impl<'a> Spotify<'a> {
                 artists: artists.into(),
                 album: album.into(),
                 uri,
+                image_url,
                 play,
             })
             .await

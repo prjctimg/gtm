@@ -2958,8 +2958,20 @@ impl Daemon {
                 artists,
                 album,
                 uri,
+                image_url,
                 play,
-            } => Spotify::resolve_track(inner, name, artists, album, uri, *play).await,
+            } => {
+                Spotify::resolve_track(
+                    inner,
+                    name,
+                    artists,
+                    album,
+                    uri,
+                    image_url.as_deref(),
+                    *play,
+                )
+                .await
+            }
             DaemonReq::SpotifyPlayAll {
                 playlist_id,
                 shuffle,

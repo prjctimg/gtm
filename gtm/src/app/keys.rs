@@ -1191,6 +1191,7 @@ impl App {
                                         let title = track.title.clone();
                                         let artists = track.artists.clone();
                                         let album = track.album.clone();
+                                        let image_url = track.cover_url.clone();
                                         let _ = tx.try_send(TuiCommand::fire(move || async move {
                                             if is_spotify {
                                                 let _ = c
@@ -1200,6 +1201,7 @@ impl App {
                                                         &artists,
                                                         album.as_deref().unwrap_or(""),
                                                         Some(uri),
+                                                        image_url,
                                                         true,
                                                     )
                                                     .await;
@@ -1901,7 +1903,8 @@ impl App {
                                 &track.artists,
                                 track.album.as_deref().unwrap_or(""),
                                 track.uri.clone(),
-                                false,
+                                track.image_url.clone(),
+                                true,
                             )
                             .await
                     } else {
@@ -3367,6 +3370,7 @@ impl App {
                                                                             .as_deref()
                                                                             .unwrap_or(""),
                                                                         t.uri.clone(),
+                                                                        t.image_url.clone(),
                                                                         n == 0,
                                                                     )
                                                                     .await;
@@ -3398,6 +3402,7 @@ impl App {
                                                                 .as_deref()
                                                                 .unwrap_or(""),
                                                             track_clone.uri.clone(),
+                                                            track_clone.image_url.clone(),
                                                             true,
                                                         )
                                                         .await

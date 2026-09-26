@@ -408,6 +408,10 @@ pub enum DaemonReq {
         /// search hits), enabling native librespot streaming on Premium.
         #[serde(default)]
         uri: Option<String>,
+        /// Album art the picker already fetched, so the queued row gets a cover
+        /// without a fresh artist/album search.
+        #[serde(default)]
+        image_url: Option<String>,
         /// When true the resolved track starts playing immediately (switching
         /// the active source), instead of merely being appended to the queue.
         #[serde(default)]
@@ -1182,6 +1186,8 @@ impl DaemonReq {
                     #[serde(default)]
                     uri: Option<String>,
                     #[serde(default)]
+                    image_url: Option<String>,
+                    #[serde(default)]
                     play: bool,
                 }
                 let x: Params = p(params)?;
@@ -1190,6 +1196,7 @@ impl DaemonReq {
                     artists: x.artists,
                     album: x.album,
                     uri: x.uri,
+                    image_url: x.image_url,
                     play: x.play,
                 }
             }
