@@ -27,6 +27,11 @@ use gtm::shared::spotify::{
 };
 
 const TOKEN_FILE: &str = "spotify.json";
+/// Client id of the Spotify app the user authorised with, kept beside the
+/// token so a refresh keeps using the same app. Without it the daemon falls
+/// back to librespot's public client, whose refresh tokens do not match and
+/// therefore fail on the first renewal after a restart.
+const CLIENT_ID_FILE: &str = "spotify_client_id";
 const TOKEN_ACCESS_PERMS: u32 = 0o600;
 /// Per-request `limit` ceiling for `/v1/search` (10 since Spotify's February
 /// 2026 migration, previously 50).
@@ -87,6 +92,37 @@ impl SpotifyManager {
         self.config_dir.join(TOKEN_FILE)
     }
 
+    /// Path of the client-id file, which keeps the config directory a
+    /// self-sufficient record of the link.
+    fn client_path(&self) -> PathBuf {
+        self.config_dir.join(CLIENT_ID_FILE)
+    }
+
+    /// The client id to refresh with: the file written at link time, else the
+    /// keychain copy, else empty (caller falls back to librespot's app).
+    fn stored_client_id(&self) -> String {
+        std::fs::read_to_string(self.client_path())
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .or_else(|| get_secret(SPOTIFY_CLIENT_ID))
+            .unwrap_or_default()
+    }
+
+    /// Record the authorised client id in both stores. Called when the OAuth
+    /// flow starts, so a restart can still refresh with the same app.
+    pub fn save_client_id(&self, id: &str) -> Result<(), String> {
+        let id = id.trim();
+        if id.is_empty() {
+            return Ok(());
+        }
+        std::fs::create_dir_all(&self.config_dir).map_err(|e| format!("create config dir: {e}"))?;
+        let path = self.client_path();
+        std::fs::write(&path, id).map_err(|e| format!("write client id: {e}"))?;
+        set_secret(SPOTIFY_CLIENT_ID, id);
+        Ok(())
+    }
+
     /// True if a token file exists on disk (regardless of load status).
     pub fn has_token_file(&self) -> bool {
         self.token_path().exists()
@@ -101,10 +137,19 @@ impl SpotifyManager {
     /// Playlist sync and the playback probe run in the daemon's background
     /// tasks so startup (and the OAuth picker) never block on the network
     /// while holding the manager mutex. `linked()` becomes true on return.
+    ///
+    /// The keychain copy is used when the file is missing, so a link survives
+    /// the config directory being reset or the file being removed by a
+    /// partial write: the user is only asked to authorise again when both
+    /// copies are gone.
     pub async fn load(&mut self) -> Result<(), String> {
-        let raw = tokio::fs::read_to_string(self.token_path())
-            .await
-            .map_err(|e| format!("read token file: {e}"))?;
+        let raw = match tokio::fs::read_to_string(self.token_path()).await {
+            Ok(raw) => raw,
+            Err(e) => {
+                info!("spotify token file unreadable ({e}); trying the keychain");
+                get_secret(SPOTIFY_TOKEN_KEY).ok_or_else(|| format!("read token file: {e}"))?
+            }
+        };
         let token = parse_token(&raw)?;
         self.set_client(token).await
     }
@@ -129,10 +174,12 @@ impl SpotifyManager {
         self.device = None;
         self.playlists.clear();
         self.error = None;
-        match std::fs::remove_file(self.token_path()) {
-            Ok(()) => info!("removed spotify token file"),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => warn!("failed to remove spotify token file: {e}"),
+        for path in [self.token_path(), self.client_path()] {
+            match std::fs::remove_file(&path) {
+                Ok(()) => info!("removed spotify {}", path.display()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => warn!("failed to remove {}: {e}", path.display()),
+            }
         }
         // Drop any keychain-stored credentials too.
         delete_secret(SPOTIFY_TOKEN_KEY);
@@ -544,7 +591,7 @@ impl SpotifyManager {
         // refresh, so snapshot them here: the token itself lives behind an
         // async mutex that cannot be inspected synchronously.
         self.scopes = token.scopes.clone();
-        let client_id = get_secret(SPOTIFY_CLIENT_ID).unwrap_or_default();
+        let client_id = self.stored_client_id();
         // Fall back to librespot's public desktop client id when the user
         // linked with a plain pasted access token (which never stores a
         // client id). `Credentials::default()` is a dead end: rspotify's
@@ -558,7 +605,9 @@ impl SpotifyManager {
         // Persist a refreshed token back to disk with 0600 permissions so a
         // renewed access token survives a daemon restart instead of reverting
         // to the stale one. rspotify invokes this callback after every
-        // successful refresh.
+        // successful refresh. The keychain copy is refreshed too, otherwise it
+        // keeps holding the token from the original link and goes stale
+        // exactly when it is needed as the fallback.
         let token_path = self.token_path();
         let token_callback = TokenCallback(Box::new(move |refreshed: Token| {
             let dir = token_path.parent().ok_or_else(|| {
@@ -568,13 +617,14 @@ impl SpotifyManager {
                 .map_err(|e| CallbackError::CustomizedError(format!("create dir: {e}")))?;
             let json = serde_json::to_string(&refreshed)
                 .map_err(|e| CallbackError::CustomizedError(format!("serialize: {e}")))?;
-            std::fs::write(&token_path, json)
+            std::fs::write(&token_path, &json)
                 .map_err(|e| CallbackError::CustomizedError(format!("write: {e}")))?;
             std::fs::set_permissions(
                 &token_path,
                 std::fs::Permissions::from_mode(TOKEN_ACCESS_PERMS),
             )
             .map_err(|e| CallbackError::CustomizedError(format!("chmod: {e}")))?;
+            set_secret(SPOTIFY_TOKEN_KEY, &json);
             Ok::<(), CallbackError>(())
         }));
         let config = Config {

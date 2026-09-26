@@ -751,6 +751,7 @@ impl App {
                 link_input: String::new(),
                 sync_pending: false,
                 synced_once: false,
+                sync_announced: false,
                 oauth_pending: false,
                 oauth_url: None,
                 oauth_error: None,

@@ -221,6 +221,10 @@ pub struct SpotifyView {
     /// auto-syncs once per process (when the cache is empty on open); manual
     /// Settings -> Sync always works regardless.
     pub synced_once: bool,
+    /// True once the post-link playlist fetch has been announced, so the
+    /// "Synced N playlists" toast fires once rather than on every status
+    /// event the daemon emits.
+    pub sync_announced: bool,
     /// True while the OAuth browser flow is pending; the SpotifyLink picker
     /// shows a "waiting for you to finish login" state until linked.
     pub oauth_pending: bool,

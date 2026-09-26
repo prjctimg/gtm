@@ -493,18 +493,13 @@ impl App {
                     let was_linked = self.spotify.status.as_ref().is_some_and(|s| s.linked);
                     if status.linked && !was_linked {
                         let user = status.user.clone().unwrap_or_else(|| "account".into());
-                        self.notify_titled(
-                            "Spotify",
-                            format!("Linked as {user} — playlists synced"),
-                            NotificationKind::Success,
-                            false,
-                            NotifType::Spotify,
-                        );
                         // The OAuth browser flow finished: dismiss the waiting
-                        // state. If the flow started from the Setup walkthrough
-                        // close its picker and navigate to Spotify; if it
-                        // started from the Alt+s search picker, keep that
-                        // picker open so it now behaves as the search box.
+                        // state before announcing, so the auth-URL prompt is
+                        // gone by the time the user reads the toast. If the
+                        // flow started from the Setup walkthrough close its
+                        // picker and navigate to Spotify; if it started from
+                        // the Alt+s search picker, keep that picker open so it
+                        // now behaves as the search box.
                         self.spotify.oauth_pending = false;
                         self.spotify.oauth_url = None;
                         self.spotify.oauth_error = None;
@@ -520,6 +515,16 @@ impl App {
                                 self.library_pane_focus = true;
                             }
                         }
+                        // Playlists are still being paginated in the daemon
+                        // background, so say that rather than claiming the
+                        // sync already finished.
+                        self.notify_titled(
+                            "Spotify",
+                            format!("Linked as {user} — syncing playlists"),
+                            NotificationKind::Success,
+                            false,
+                            NotifType::Spotify,
+                        );
                     } else if self.spotify.oauth_pending && !status.linked {
                         // The OAuth browser flow failed (e.g. no network): stop
                         // waiting, dismiss the picker and report the failure.
@@ -546,6 +551,21 @@ impl App {
                     self.spotify.status = Some(status);
                 }
                 if let Ok(playlists) = self.client.spotify().playlists().await {
+                    // Only announce completion when the daemon actually
+                    // delivered playlists; the first status event fires as
+                    // soon as the client is ready, well before pagination
+                    // finishes.
+                    if !playlists.is_empty() && !self.spotify.sync_announced {
+                        self.spotify.sync_announced = true;
+                        let count = playlists.len();
+                        self.notify_titled(
+                            "Spotify",
+                            format!("Synced {count} playlists"),
+                            NotificationKind::Success,
+                            false,
+                            NotifType::Spotify,
+                        );
+                    }
                     self.spotify.playlists = playlists;
                 }
             }

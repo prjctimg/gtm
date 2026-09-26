@@ -1,6 +1,19 @@
 use super::*;
 
+use librespot_core::spotify_uri::SpotifyUri;
+
 pub(crate) struct Spotify;
+
+/// True when `uri` is a `spotify:track:` (or episode) URI librespot can
+/// actually stream. A track id is 22 base62 characters; anything else is a
+/// caller bug or a stale cache entry, and streaming it would fail deep inside
+/// the protocol layer with a message that names neither the URI nor the song.
+pub(crate) fn is_playable(uri: &str) -> bool {
+    match SpotifyUri::from_uri(uri) {
+        Ok(parsed) => parsed.is_playable() && parsed.to_id().is_ok(),
+        Err(_) => false,
+    }
+}
 
 /// Clone of the Web API client, or the "not linked" error reply. Callers must
 /// drop this before any `.await` that reaches Spotify: the manager mutex is
@@ -83,9 +96,12 @@ impl Spotify {
                  (127.0.0.1, not localhost) or the link fails silently in the browser"
             )));
         }
-        // Persist the client id in the OS keychain so future links can reuse it
-        // without the user pasting it again.
-        set_secret(SPOTIFY_CLIENT_ID, cid);
+        // Persist the client id in the config dir and the OS keychain so a
+        // restart can still refresh with the same app: the refresh token is
+        // only valid for the client id it was issued to.
+        if let Err(e) = inner.spotify.lock().await.save_client_id(cid) {
+            warn!("spotify: could not persist client id: {e}");
+        }
         let flow = OauthFlow::new(cid, port);
         // Bind the loopback callback server *before* returning the URL so the
         // browser always opens to a live listener (a previously spawned task
@@ -529,6 +545,11 @@ impl Spotify {
     /// given title/artist/album metadata, pre-warm the cover cache for the
     /// album, and start playback when the queue was empty or the caller asked
     /// to play. Mirrors the Premium branch of `resolve`.
+    ///
+    /// Every native-stream path funnels through here, so the URI is validated
+    /// once: librespot rejects a malformed id with an opaque
+    /// "ID cannot be parsed" from deep inside its protobuf layer, long after
+    /// the request has already been queued and reported as a success.
     pub(crate) async fn queue_stream(
         inner: &DaemonInner,
         uri: &str,
@@ -538,6 +559,11 @@ impl Spotify {
         duration: Option<f64>,
         play: bool,
     ) -> Result<DaemonRes, CoreError> {
+        if !is_playable(uri) {
+            return Ok(DaemonRes::Error {
+                message: format!("not a playable spotify uri: {uri}"),
+            });
+        }
         let was_empty = {
             let mut state = inner.state.write().await;
             let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;

@@ -34,7 +34,7 @@ use gtm::shared::ipc::{
 };
 use gtm::shared::playlist::{M3u8Format, PlaylistFormat, PlsFormat};
 use gtm::shared::secret::{
-    LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, delete_secret, get_secret, set_secret,
+    LASTFM_API_KEY, LASTFM_API_SECRET, delete_secret, get_secret, set_secret,
 };
 use gtm::shared::spotify::SpotifyTrack;
 use gtm::shared::track::{StreamInfo, TrackInfo};
