@@ -511,6 +511,9 @@ impl App {
                     }
                 });
             }
+            TuiCommand::Fire(f) => {
+                tokio::spawn(f());
+            }
         };
     }
 }

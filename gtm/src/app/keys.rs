@@ -62,6 +62,7 @@ pub(crate) fn build_keybindings(
 
 impl App {
     pub(crate) async fn handle_key(&mut self, key: event::KeyEvent) -> bool {
+        let tx = self.cmd_tx();
         // Ctrl+Z: suspend to background (pass-through SIGTSTP)
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('z') {
             self.pending_suspend = true;
@@ -86,9 +87,9 @@ impl App {
                         self.spotify.oauth_url = None;
                         self.spotify.oauth_error = None;
                         let c = self.client.clone();
-                        tokio::spawn(async move {
+                        let _ = tx.send(TuiCommand::fire(move || async move {
                             let _ = c.spotify().oauth_cancel().await;
-                        });
+                        }));
                         self.close_picker();
                     } else if self
                         .pickers
@@ -103,9 +104,9 @@ impl App {
                         self.spotify.oauth_url = None;
                         self.spotify.oauth_error = None;
                         let c = self.client.clone();
-                        tokio::spawn(async move {
+                        let _ = tx.send(TuiCommand::fire(move || async move {
                             let _ = c.spotify().oauth_cancel().await;
-                        });
+                        }));
                         self.close_picker();
                     } else if self
                         .pickers
@@ -176,7 +177,7 @@ impl App {
                             PromptType::DeletePlaylist(playlist_id) => {
                                 let client = self.client.clone();
                                 let ipc_tx = self.ipc_tx.clone();
-                                tokio::spawn(async move {
+                                let _ = tx.send(TuiCommand::fire(move || async move {
                                     match client.library().delete_playlist(playlist_id).await {
                                         Ok(()) => {
                                             if let Ok(DaemonRes::Playlists { playlists, .. }) =
@@ -198,7 +199,7 @@ impl App {
                                             )));
                                         }
                                     }
-                                });
+                                }));
                             }
                             PromptType::MultiselectAddToQueue => {
                                 // Resolve the selection against the current
@@ -208,9 +209,9 @@ impl App {
                                 let mut added = 0;
                                 for target in targets {
                                     let c = self.client.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         let _ = c.queue().add(&target, None).await;
-                                    });
+                                    }));
                                     added += 1;
                                 }
                                 self.clear_selection();
@@ -587,7 +588,7 @@ impl App {
                                 "Shuffling playlist…".to_string(),
                                 std::time::Instant::now() + std::time::Duration::from_secs(2),
                             ));
-                            tokio::spawn(async move {
+                            let _ = tx.send(TuiCommand::fire(move || async move {
                                 match c.spotify().play_all(&playlist_id, true).await {
                                     Ok(()) => {}
                                     Err(e) => {
@@ -596,7 +597,7 @@ impl App {
                                         )));
                                     }
                                 }
-                            });
+                            }));
                             return true;
                         }
                         self.set_last_action("Toggle Shuffle");
@@ -987,7 +988,7 @@ impl App {
                                             self.browse_detail.clone().unwrap_or_default();
                                         let c = self.client.clone();
                                         let ipc_tx2 = self.ipc_tx.clone();
-                                        tokio::spawn(async move {
+                                        let _ = tx.send(TuiCommand::fire(move || async move {
                                             match c.spotify().play_all(&playlist_id, shuffle).await
                                             {
                                                 Ok(()) => {}
@@ -997,7 +998,7 @@ impl App {
                                                     ));
                                                 }
                                             }
-                                        });
+                                        }));
                                         return true;
                                     }
                                     if let Some(track) = self.selected_spotify_track().cloned() {
@@ -1010,7 +1011,7 @@ impl App {
                                         let track_index = track.index;
                                         let c = self.client.clone();
                                         let ipc_tx2 = self.ipc_tx.clone();
-                                        tokio::spawn(async move {
+                                        let _ = tx.send(TuiCommand::fire(move || async move {
                                             match c
                                                 .spotify()
                                                 .resolve(&playlist_id, track_index, true)
@@ -1023,7 +1024,7 @@ impl App {
                                                     ));
                                                 }
                                             }
-                                        });
+                                        }));
                                     }
                                 } else {
                                     // Local categories (All/Liked/Album/Artist/
@@ -1057,14 +1058,14 @@ impl App {
                                     let c = self.client.clone();
                                     let ipc_tx2 = self.ipc_tx.clone();
                                     let pid = playlist.id;
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         if let Ok(DaemonRes::Tracks { tracks }) =
                                             c.library().get_playlist_tracks(pid).await
                                         {
                                             let _ =
                                                 ipc_tx2.send(IpcResult::PlaylistTracks(*tracks));
                                         }
-                                    });
+                                    }));
                                 }
                             } else if self.library_category == 5 {
                                 // Spotify: select playlist → show its cached tracks
@@ -1076,7 +1077,7 @@ impl App {
                                     let c = self.client.clone();
                                     let ipc_tx2 = self.ipc_tx.clone();
                                     let pid = playlist.id;
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         match c.spotify().playlist_tracks(&pid).await {
                                             Ok(tracks) => {
                                                 let _ =
@@ -1088,7 +1089,7 @@ impl App {
                                                 )));
                                             }
                                         }
-                                    });
+                                    }));
                                 }
                             } else if self.library_category == 6 {
                                 // Radio: select custom station → play it
@@ -1099,9 +1100,9 @@ impl App {
                                         None => format!("custom:{}", pos + 1),
                                     };
                                     let c = self.client.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         let _ = c.radio().play(&id, &station.name).await;
-                                    });
+                                    }));
                                 }
                             } else if self.library_category == 10 {
                                 // Genres: select genre → show its tracks
@@ -1133,14 +1134,14 @@ impl App {
                                         let source_id = self.charts.sources[pos].id.clone();
                                         let c = self.client.clone();
                                         let ipc_tx2 = self.ipc_tx.clone();
-                                        tokio::spawn(async move {
+                                        let _ = tx.send(TuiCommand::fire(move || async move {
                                             if let Ok(charts) =
                                                 c.charts().list(Some(source_id)).await
                                             {
                                                 let _ =
                                                     ipc_tx2.send(IpcResult::ChartsLoaded(charts));
                                             }
-                                        });
+                                        }));
                                     }
                                 } else if self.charts.selected_chart.is_none() {
                                     // Level 1: Select chart → fetch tracks
@@ -1158,14 +1159,14 @@ impl App {
                                         let chart_id = self.charts.charts[pos].id.clone();
                                         let c = self.client.clone();
                                         let ipc_tx2 = self.ipc_tx.clone();
-                                        tokio::spawn(async move {
+                                        let _ = tx.send(TuiCommand::fire(move || async move {
                                             if let Ok(tracks) =
                                                 c.charts().tracks(source_id, chart_id).await
                                             {
                                                 let _ = ipc_tx2
                                                     .send(IpcResult::ChartTracksLoaded(tracks));
                                             }
-                                        });
+                                        }));
                                     }
                                 } else {
                                     // Level 2: Play selected track
@@ -1174,9 +1175,9 @@ impl App {
                                     {
                                         let c = self.client.clone();
                                         let uri = track.uri.clone();
-                                        tokio::spawn(async move {
+                                        let _ = tx.send(TuiCommand::fire(move || async move {
                                             let _ = c.queue().add(&uri, None).await;
-                                        });
+                                        }));
                                     }
                                 }
                             } else if self.library_category <= 1 || self.library_category >= 7 {
@@ -1367,9 +1368,9 @@ impl App {
                                     if ids.contains(&t.id) {
                                         let c = self.client.clone();
                                         let path = t.path.clone();
-                                        tokio::spawn(async move {
+                                        let _ = tx.send(TuiCommand::fire(move || async move {
                                             let _ = c.queue().add(&path, None).await;
-                                        });
+                                        }));
                                         added += 1;
                                     }
                                 }
@@ -1402,9 +1403,9 @@ impl App {
                                     let mut added = 0;
                                     if let Some(target) = self.play_target_at(self.list_pos()) {
                                         let c = self.client.clone();
-                                        tokio::spawn(async move {
+                                        let _ = tx.send(TuiCommand::fire(move || async move {
                                             let _ = c.queue().add(&target, None).await;
-                                        });
+                                        }));
                                         added += 1;
                                     }
                                     self.fetch_queue().await;
@@ -1860,7 +1861,7 @@ impl App {
                 let c = self.client.clone();
                 let ipc_tx = self.ipc_tx.clone();
                 self.pickers.close_top();
-                tokio::spawn(async move {
+                let _ = tx.send(TuiCommand::fire(move || async move {
                     // Web hits are not in any synced playlist: resolve by
                     // metadata + known URI (streams natively on Premium), not
                     // by playlist index.
@@ -1896,7 +1897,7 @@ impl App {
                                 .send(IpcResult::Error(format!("Spotify resolve failed: {e}")));
                         }
                     }
-                });
+                }));
             } else {
                 self.notify_typed(
                     "System",
@@ -2173,34 +2174,34 @@ impl App {
                                         RepeatMode::All => RepeatMode::Off,
                                     };
                                     let c = self.client.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         let _ = c.cycle_repeat(next).await;
-                                    });
+                                    }));
                                     self.state.repeat = next;
                                 }
                                 1 => {
                                     let c = self.client.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         let _ = c.toggle_shuffle().await;
-                                    });
+                                    }));
                                     self.state.shuffle = !self.state.shuffle;
                                 }
                                 3 => {
                                     let new_enabled = !self.state.audio.eq_enabled;
                                     self.state.audio.eq_enabled = new_enabled;
                                     let c = self.client.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         let _ = c.set_eq_enabled(new_enabled).await;
-                                    });
+                                    }));
                                 }
                                 4 => {
                                     let new_enabled = !self.state.audio.reverb.enabled;
                                     let room_size = self.state.audio.reverb.room_size;
                                     self.state.audio.reverb.enabled = new_enabled;
                                     let c = self.client.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         let _ = c.set_reverb(new_enabled, room_size).await;
-                                    });
+                                    }));
                                 }
                                 5 => {
                                     self.cycle_cover_provider();
@@ -2229,7 +2230,7 @@ impl App {
                                             self.np_cover.pending_gen = Some(fetch_gen);
                                             let client = self.client.clone();
                                             let ipc_tx = self.ipc_tx.clone();
-                                            tokio::spawn(async move {
+                                            let _ = tx.send(TuiCommand::fire(move || async move {
                                                 if let Ok(Some(b64)) = client.art().cover(tid).await
                                                     && let Ok(bytes) =
                                                         base64::engine::general_purpose::STANDARD
@@ -2241,7 +2242,7 @@ impl App {
                                                         fetch_gen,
                                                     ));
                                                 }
-                                            });
+                                            }));
                                         }
                                     }
                                     self.apply_reactive();
@@ -2269,34 +2270,34 @@ impl App {
                                         RepeatMode::All => RepeatMode::Off,
                                     };
                                     let c = self.client.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         let _ = c.cycle_repeat(next).await;
-                                    });
+                                    }));
                                     self.state.repeat = next;
                                 }
                                 1 => {
                                     let c = self.client.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         let _ = c.toggle_shuffle().await;
-                                    });
+                                    }));
                                     self.state.shuffle = !self.state.shuffle;
                                 }
                                 3 => {
                                     let new_enabled = !self.state.audio.eq_enabled;
                                     self.state.audio.eq_enabled = new_enabled;
                                     let c = self.client.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         let _ = c.set_eq_enabled(new_enabled).await;
-                                    });
+                                    }));
                                 }
                                 4 => {
                                     let new_enabled = !self.state.audio.reverb.enabled;
                                     let room_size = self.state.audio.reverb.room_size;
                                     self.state.audio.reverb.enabled = new_enabled;
                                     let c = self.client.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         let _ = c.set_reverb(new_enabled, room_size).await;
-                                    });
+                                    }));
                                 }
                                 5 => {
                                     self.cycle_cover_provider();
@@ -2325,7 +2326,7 @@ impl App {
                                             self.np_cover.pending_gen = Some(fetch_gen);
                                             let client = self.client.clone();
                                             let ipc_tx = self.ipc_tx.clone();
-                                            tokio::spawn(async move {
+                                            let _ = tx.send(TuiCommand::fire(move || async move {
                                                 if let Ok(Some(b64)) = client.art().cover(tid).await
                                                     && let Ok(bytes) =
                                                         base64::engine::general_purpose::STANDARD
@@ -2337,7 +2338,7 @@ impl App {
                                                         fetch_gen,
                                                     ));
                                                 }
-                                            });
+                                            }));
                                         }
                                     }
                                     self.apply_reactive();
@@ -2392,9 +2393,9 @@ impl App {
                                     self.cookie_file = new_path.clone();
                                     let c = self.client.clone();
                                     let cf = new_path;
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         let _ = c.yt().set_config(None, cf, None, None, None).await;
-                                    });
+                                    }));
                                     self.notify_typed(
                                         "System",
                                         format!("Cookie file: {display}"),
@@ -2412,16 +2413,16 @@ impl App {
                                         RepeatMode::All => RepeatMode::Off,
                                     };
                                     let c = self.client.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         let _ = c.cycle_repeat(next).await;
-                                    });
+                                    }));
                                     self.state.repeat = next;
                                 }
                                 1 => {
                                     let c = self.client.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         let _ = c.toggle_shuffle().await;
-                                    });
+                                    }));
                                     self.state.shuffle = !self.state.shuffle;
                                 }
                                 2 => {
@@ -2431,18 +2432,18 @@ impl App {
                                     let new_enabled = !self.state.audio.eq_enabled;
                                     self.state.audio.eq_enabled = new_enabled;
                                     let c = self.client.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         let _ = c.set_eq_enabled(new_enabled).await;
-                                    });
+                                    }));
                                 }
                                 4 => {
                                     let new_enabled = !self.state.audio.reverb.enabled;
                                     let room_size = self.state.audio.reverb.room_size;
                                     self.state.audio.reverb.enabled = new_enabled;
                                     let c = self.client.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         let _ = c.set_reverb(new_enabled, room_size).await;
-                                    });
+                                    }));
                                 }
                                 5 => {
                                     self.cycle_cover_provider();
@@ -2504,7 +2505,7 @@ impl App {
                                             self.np_cover.pending_gen = Some(fetch_gen);
                                             let client = self.client.clone();
                                             let ipc_tx = self.ipc_tx.clone();
-                                            tokio::spawn(async move {
+                                            let _ = tx.send(TuiCommand::fire(move || async move {
                                                 if let Ok(Some(b64)) = client.art().cover(tid).await
                                                     && let Ok(bytes) =
                                                         base64::engine::general_purpose::STANDARD
@@ -2516,7 +2517,7 @@ impl App {
                                                         fetch_gen,
                                                     ));
                                                 }
-                                            });
+                                            }));
                                         }
                                     }
                                     self.apply_reactive();
@@ -2534,7 +2535,7 @@ impl App {
                                     let label = if opt == 10 { "lyrics" } else { "cover art" };
                                     let c = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         match c.clear_cache(what).await {
                                             Ok(()) => {
                                                 let _ = ipc_tx.send(IpcResult::Notification(
@@ -2550,7 +2551,7 @@ impl App {
                                                 )));
                                             }
                                         }
-                                    });
+                                    }));
                                 }
                                 12 => {
                                     self.cycle_cover_cache();
@@ -2567,7 +2568,7 @@ impl App {
                                 0 => {
                                     let c = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         match c.spotify().play_pause().await {
                                             Ok(status) => {
                                                 let _ =
@@ -2579,7 +2580,7 @@ impl App {
                                                 )));
                                             }
                                         }
-                                    });
+                                    }));
                                 }
                                 3 => {
                                     self.spotify.link_input.clear();
@@ -2596,7 +2597,7 @@ impl App {
                                 5 => {
                                     let c = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         match c.spotify().clear().await {
                                             Ok(status) => {
                                                 let _ =
@@ -2614,7 +2615,7 @@ impl App {
                                                 )));
                                             }
                                         }
-                                    });
+                                    }));
                                 }
                                 7 => {
                                     self.spotify.link_input.clear();
@@ -2696,7 +2697,7 @@ impl App {
                     let ipc_tx = self.ipc_tx.clone();
                     self.setup.lastfm_pending = true;
                     self.setup.lastfm_error = None;
-                    tokio::spawn(async move {
+                    let _ = tx.send(TuiCommand::fire(move || async move {
                         match c
                             .lastfm()
                             .set_config(true, Some(api_key), Some(api_secret), None, None, None)
@@ -2737,7 +2738,7 @@ impl App {
                                 ));
                             }
                         }
-                    });
+                    }));
                 }
                 _ => {}
             }
@@ -2774,9 +2775,9 @@ impl App {
                     let cf = new_path.clone();
                     let display = new_path.clone().unwrap_or_else(|| "(none)".to_string());
                     self.pickers.close_top();
-                    tokio::spawn(async move {
+                    let _ = tx.send(TuiCommand::fire(move || async move {
                         let _ = c.yt().set_config(None, cf, None, None, None).await;
-                    });
+                    }));
                     let (msg, kind) = if trimmed.is_empty() {
                         ("Cookie file cleared".to_string(), NotificationKind::Info)
                     } else {
@@ -2810,14 +2811,14 @@ impl App {
                 }
                 KeyCode::Char('r') => {
                     let c = self.client.clone();
-                    tokio::spawn(async move {
+                    let _ = tx.send(TuiCommand::fire(move || async move {
                         let _ = c.podcast().refresh(None).await;
-                    });
+                    }));
                     self.podcast.feeds.clear();
                     self.podcast.feeds_pending = true;
                     let c = self.client.clone();
                     let ipc_tx = self.ipc_tx.clone();
-                    tokio::spawn(async move {
+                    let _ = tx.send(TuiCommand::fire(move || async move {
                         match c.podcast().feeds().await {
                             Ok(f) => {
                                 let _ = ipc_tx.send(IpcResult::PodcastFeeds(f));
@@ -2826,7 +2827,7 @@ impl App {
                                 self_err(&ipc_tx, format!("podcast feeds failed: {e}"));
                             }
                         }
-                    });
+                    }));
                 }
                 KeyCode::Up | KeyCode::Down => {
                     self.move_picker_selection(key.code == KeyCode::Down);
@@ -2848,9 +2849,9 @@ impl App {
                     if let (Some(feed_id), Some(_ep)) = (feed_id, self.podcast.episodes.get(idx)) {
                         let c = self.client.clone();
                         self.pickers.close_top();
-                        tokio::spawn(async move {
+                        let _ = tx.send(TuiCommand::fire(move || async move {
                             let _ = c.podcast().play(&feed_id, idx).await;
-                        });
+                        }));
                     }
                 }
                 KeyCode::Backspace => {
@@ -2888,7 +2889,7 @@ impl App {
                     let c = self.client.clone();
                     let ipc_tx = self.ipc_tx.clone();
                     self.pickers.close_top();
-                    tokio::spawn(async move {
+                    let _ = tx.send(TuiCommand::fire(move || async move {
                         match c.podcast().add_feed(&url).await {
                             Ok(_) => {
                                 let _ = ipc_tx.send(IpcResult::Notification(
@@ -2902,7 +2903,7 @@ impl App {
                                 self_err(&ipc_tx, format!("subscribe failed: {e}"));
                             }
                         }
-                    });
+                    }));
                 }
                 _ => {}
             }
@@ -2936,11 +2937,11 @@ impl App {
                     let c = self.client.clone();
                     let ipc_tx = self.ipc_tx.clone();
                     self.pickers.close_top();
-                    tokio::spawn(async move {
+                    let _ = tx.send(TuiCommand::fire(move || async move {
                         if let Err(e) = c.play_stream(url.trim()).await {
                             self_err(&ipc_tx, format!("stream failed: {e}"));
                         }
-                    });
+                    }));
                 }
                 _ => {}
             }
@@ -3257,7 +3258,7 @@ impl App {
                         let ids = self.metadata.edit_track_ids.clone();
                         let client = self.client.clone();
                         let ipc_tx = self.ipc_tx.clone();
-                        tokio::spawn(async move {
+                        let _ = tx.send(TuiCommand::fire(move || async move {
                             let patch = MetadataPatch {
                                 title: Some(title),
                                 artist: Some(artist),
@@ -3279,7 +3280,7 @@ impl App {
                                 NotificationKind::Success,
                                 NotifType::Library,
                             ));
-                        });
+                        }));
                         self.metadata.cover = None;
                         self.metadata.cover_stateful = None;
                         self.metadata.edit_track_ids.clear();
@@ -3331,7 +3332,7 @@ impl App {
                                             let uri = track.uri.clone().unwrap_or_default();
                                             let label = track.name.clone();
                                             let kind = track.kind;
-                                            tokio::spawn(async move {
+                                            let _ = tx.send(TuiCommand::fire(move || async move {
                                                 let result = match kind {
                                                     Some(SpotifySearchKind::Album) => {
                                                         c2.spotify().album_tracks(&uri).await
@@ -3382,13 +3383,13 @@ impl App {
                                                         ));
                                                     }
                                                 }
-                                            });
+                                            }));
                                         }
                                         _ => {
                                             let c2 = c.clone();
                                             let ipc_tx2 = ipc_tx.clone();
                                             let track_clone = track.clone();
-                                            tokio::spawn(async move {
+                                            let _ = tx.send(TuiCommand::fire(move || async move {
                                                 match c2
                                                     .spotify()
                                                     .resolve_track(
@@ -3407,11 +3408,11 @@ impl App {
                                                         ));
                                                     }
                                                 }
-                                            });
+                                            }));
                                         }
                                     }
                                 } else {
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         match c
                                             .spotify()
                                             .resolve(&playlist_id, track_index, true)
@@ -3424,7 +3425,7 @@ impl App {
                                                 )));
                                             }
                                         }
-                                    });
+                                    }));
                                 }
                             }
                         }
@@ -3769,9 +3770,9 @@ impl App {
                                         let mut added = 0;
                                         for target in targets {
                                             let c = self.client.clone();
-                                            tokio::spawn(async move {
+                                            let _ = tx.send(TuiCommand::fire(move || async move {
                                                 let _ = c.queue().add(&target, None).await;
-                                            });
+                                            }));
                                             added += 1;
                                         }
                                         self.fetch_queue().await;
@@ -3962,7 +3963,7 @@ impl App {
                                 } else if let Some(rename_id) = self.renaming_playlist.take() {
                                     let client = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         match client
                                             .library()
                                             .rename_playlist(rename_id, &name)
@@ -3989,13 +3990,13 @@ impl App {
                                                 )));
                                             }
                                         }
-                                    });
+                                    }));
                                     self.playlist_creating = false;
                                     self.close_picker();
                                 } else {
                                     let client = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         match client.library().create_playlist(&name).await {
                                             Ok(playlists) => {
                                                 if let Some(new_p) = playlists.first().cloned() {
@@ -4028,7 +4029,7 @@ impl App {
                                                 )));
                                             }
                                         }
-                                    });
+                                    }));
                                     self.playlist_creating = false;
                                     self.close_picker();
                                 }
@@ -4041,12 +4042,12 @@ impl App {
                                     let playlist_id = pl.id;
                                     if !track_ids.is_empty() {
                                         let client = self.client.clone();
-                                        tokio::spawn(async move {
+                                        let _ = tx.send(TuiCommand::fire(move || async move {
                                             let _ = client
                                                 .library()
                                                 .add_to_playlist(playlist_id, track_ids)
                                                 .await;
-                                        });
+                                        }));
                                         self.notify_titled(
                                             "Playlist",
                                             "Added to playlist",
@@ -4064,9 +4065,9 @@ impl App {
                             let idx = top.selected.min(EQ_PRESETS.len() - 1);
                             let c = self.client.clone();
                             let preset = EQ_PRESETS[idx];
-                            tokio::spawn(async move {
+                            let _ = tx.send(TuiCommand::fire(move || async move {
                                 let _ = c.set_eq_preset(preset).await;
-                            });
+                            }));
                             self.footer_notification = Some((
                                 format!("Equalizer preset: {}", preset.label()),
                                 std::time::Instant::now() + std::time::Duration::from_secs(2),
@@ -4115,14 +4116,14 @@ impl App {
                                         let c = self.client.clone();
                                         let ipc_tx2 = self.ipc_tx.clone();
                                         let pid = playlist.id;
-                                        tokio::spawn(async move {
+                                        let _ = tx.send(TuiCommand::fire(move || async move {
                                             if let Ok(DaemonRes::Tracks { tracks }) =
                                                 c.library().get_playlist_tracks(pid).await
                                             {
                                                 let _ = ipc_tx2
                                                     .send(IpcResult::PlaylistTracks(*tracks));
                                             }
-                                        });
+                                        }));
                                     }
                                     LibraryPick::Radio(i) => {
                                         if let Some(station) = self.radio.custom.get(*i).cloned() {
@@ -4132,9 +4133,9 @@ impl App {
                                             };
                                             let c = self.client.clone();
                                             self.pickers.close_top();
-                                            tokio::spawn(async move {
+                                            let _ = tx.send(TuiCommand::fire(move || async move {
                                                 let _ = c.radio().play(&id, &station.name).await;
-                                            });
+                                            }));
                                         }
                                     }
                                 }
@@ -4155,7 +4156,7 @@ impl App {
                                     let ids = self.metadata.edit_track_ids.clone();
                                     let client = self.client.clone();
                                     let ipc_tx = self.ipc_tx.clone();
-                                    tokio::spawn(async move {
+                                    let _ = tx.send(TuiCommand::fire(move || async move {
                                         let patch = MetadataPatch {
                                             title: Some(title),
                                             artist: Some(artist),
@@ -4177,7 +4178,7 @@ impl App {
                                             NotificationKind::Success,
                                             NotifType::Library,
                                         ));
-                                    });
+                                    }));
                                     self.metadata.cover = None;
                                     self.metadata.cover_stateful = None;
                                     self.metadata.edit_track_ids.clear();
@@ -4238,7 +4239,7 @@ impl App {
                     self.metadata.cover_fetch_gen = Some(fetch_gen);
                     let client = self.client.clone();
                     let ipc_tx = self.ipc_tx.clone();
-                    tokio::spawn(async move {
+                    let _ = tx.send(TuiCommand::fire(move || async move {
                         let patch = MetadataPatch {
                             title: Some(title),
                             artist: Some(artist),
@@ -4261,7 +4262,7 @@ impl App {
                                 fetch_gen,
                             ));
                         }
-                    });
+                    }));
                     self.metadata.cover_dirty = true;
                     self.notify_titled(
                         "Library",

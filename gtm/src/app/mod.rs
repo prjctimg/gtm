@@ -7,7 +7,9 @@
 // submodule reaches them with one `use crate::app::*;`, so a few are
 // unused here by design.
 #![allow(unused_imports)]
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::time::Duration;
 
 use crate::shared::client::{DaemonClient, LastfmStatus};
@@ -573,6 +575,21 @@ pub enum TuiCommand {
     SetSleepTimer(u32, bool),
     CancelSleepTimer,
     CheckHealth,
+    /// One-shot async action, for the many picker keys whose only effect is a
+    /// single fire-and-forget IPC call. Dispatched by [`Self::handle_command`]
+    /// like any other command, so it is queued, ordered and drained off the
+    /// render loop instead of spawning a detached task at every keypress.
+    Fire(Box<dyn FnOnce() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send>),
+}
+
+impl TuiCommand {
+    /// Queue a fire-and-forget async action without naming a variant for it.
+    pub fn fire<Fut>(f: impl FnOnce() -> Fut + Send + 'static) -> Self
+    where
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        Self::Fire(Box::new(move || Box::pin(f())))
+    }
 }
 impl App {
     pub fn surface_bg(&self) -> ratatui::style::Color {
