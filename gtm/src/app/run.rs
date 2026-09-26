@@ -642,10 +642,18 @@ impl App {
                 if needs_cover && let Some(tid) = current_tid {
                     let fetch_gen = self.next_cover_gen();
                     self.np_cover.pending_gen = Some(fetch_gen);
+                    // Pass the track path as well as the id. A provider track
+                    // has no library row, so `id == 0` is ambiguous on its own
+                    // and the daemon resolves it by exact path instead.
+                    let art_path = cur_path.clone();
                     let client = self.client.clone();
                     let ipc_tx = self.ipc_tx.clone();
                     tokio::spawn(async move {
-                        if let Ok(Some(b64)) = client.art().cover(tid).await
+                        let art = match client.art().cover_for(tid, art_path).await {
+                            Ok(b64) => b64,
+                            Err(_) => client.art().cover(tid).await.ok().flatten(),
+                        };
+                        if let Some(b64) = art
                             && let Ok(bytes) =
                                 base64::engine::general_purpose::STANDARD.decode(&b64)
                         {
@@ -1142,14 +1150,28 @@ impl App {
                             && self.spotify.preview_fetch.id.as_deref() == Some(&url)
                             && self.spotify.preview_fetch.matches(fetch_gen)
                         {
-                            self.spotify.preview_cover = cover;
-                            self.spotify_preview_sync();
-                            // A miss still counts as "answered": release the
-                            // guard so a later visit can retry instead of
-                            // being blocked forever by this generation.
-                            if self.spotify.preview_cover.is_none() {
-                                self.spotify.preview_fetch.clear();
+                            let prev_shown = self.spotify.preview_shown.clone();
+                            self.spotify.preview_cover = cover.clone();
+                            self.spotify.preview_shown = Some(url.clone());
+                            if let Some(bytes) = cover {
+                                // Bounded: each album is ~150 KB of decoded
+                                // JPEG, so an unbounded map would grow for the
+                                // whole session. Drop the entry we just left
+                                // once full, which keeps the recent page of
+                                // results warm.
+                                if self.spotify.preview_cache.len() >= PREVIEW_CACHE_MAX
+                                    && let Some(prev) = prev_shown
+                                {
+                                    self.spotify.preview_cache.remove(&prev);
+                                }
+                                self.spotify.preview_cache.insert(url, bytes);
                             }
+                            self.spotify_preview_sync();
+                            // Release the guard either way. A hit left it
+                            // claimed, so returning to the same row looked
+                            // "still in flight" forever and the slot could
+                            // never be reused for a different album.
+                            self.spotify.preview_fetch.clear();
                         }
                     }
                     IpcResult::CoverPicker(picker) => {

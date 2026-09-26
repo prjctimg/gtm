@@ -1,5 +1,11 @@
 use crate::app::*;
 
+/// Album-art previews kept in memory for the Spotify search picker. Each entry
+/// is a decoded album JPEG of roughly 100-200 KB, so this is deliberately
+/// small: enough to cover a page of results plus a little scrolling back, not
+/// enough to grow for the whole session.
+pub(crate) const PREVIEW_CACHE_MAX: usize = 24;
+
 impl App {
     /// Run one Spotify Connect control from the Settings panel and feed the
     /// refreshed status back into the view, so the row text updates in place.
@@ -142,6 +148,7 @@ impl App {
         self.spotify.search_results.clear();
         self.spotify.preview_fetch.clear();
         self.spotify.preview_cover = None;
+        self.spotify.preview_shown = None;
         self.spotify.preview_cover_stateful = None;
         if q.is_empty() {
             self.spotify.search_loading = false;
@@ -310,12 +317,14 @@ impl App {
     pub fn update_spot_preview(&mut self) {
         let Some(top) = self.pickers.top() else {
             self.spotify.preview_cover = None;
+            self.spotify.preview_shown = None;
             self.spotify.preview_cover_stateful = None;
             self.spotify.preview_fetch.clear();
             return;
         };
         if top.id != PickerId::SpotifySearch {
             self.spotify.preview_cover = None;
+            self.spotify.preview_shown = None;
             self.spotify.preview_cover_stateful = None;
             self.spotify.preview_fetch.clear();
             return;
@@ -323,6 +332,7 @@ impl App {
         let picks = self.spot_picks();
         if picks.is_empty() {
             self.spotify.preview_cover = None;
+            self.spotify.preview_shown = None;
             self.spotify.preview_cover_stateful = None;
             self.spotify.preview_fetch.clear();
             return;
@@ -330,19 +340,32 @@ impl App {
         let sel = top.selected.min(picks.len() - 1);
         let Some(url) = self.spotify.search_results[picks[sel]].2.image_url.clone() else {
             self.spotify.preview_cover = None;
+            self.spotify.preview_shown = None;
             self.spotify.preview_cover_stateful = None;
             self.spotify.preview_fetch.clear();
             return;
         };
+        // Already fetched this session: publish straight away. Adjacent search
+        // hits very often share an album, and returning to a row after a query
+        // change should not blank the preview while bytes we already hold are
+        // re-requested.
+        if let Some(bytes) = self.spotify.preview_cache.get(&url).cloned() {
+            if self.spotify.preview_shown.as_deref() != Some(url.as_str()) {
+                self.spotify.preview_cover = Some(bytes);
+                self.spotify.preview_shown = Some(url);
+                self.spotify_preview_sync();
+            }
+            self.spotify.preview_fetch.clear();
+            return;
+        }
         // One in-flight fetch per selection: scrolling back to a row whose
-        // cover is already loading reuses it instead of re-requesting.
+        // cover is already loading reuses it instead of re-requesting. The
+        // current image stays up rather than flashing blank until it lands.
         if self.spotify.preview_fetch.pending(&url) {
             return;
         }
         let fetch_gen = self.next_cover_gen();
         self.spotify.preview_fetch.claim(url.clone(), fetch_gen);
-        self.spotify.preview_cover = None;
-        self.spotify.preview_cover_stateful = None;
         if no_image_protocol() {
             return;
         }

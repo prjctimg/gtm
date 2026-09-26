@@ -772,6 +772,8 @@ impl App {
                 preview_cover: None,
                 preview_cover_stateful: None,
                 preview_fetch: FetchSlot::default(),
+                preview_cache: std::collections::HashMap::new(),
+                preview_shown: None,
             },
             charts: ChartsView::default(),
             podcast: PodcastView::default(),

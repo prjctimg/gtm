@@ -244,6 +244,16 @@ pub struct SpotifyView {
     pub preview_cover: Option<Vec<u8>>,
     pub preview_cover_stateful: Option<StatefulProtocol>,
     pub preview_fetch: FetchSlot<String>,
+    /// Album art already fetched this session, keyed by image URL. Several
+    /// search hits share an album, and moving between them (or back after a
+    /// query change) would otherwise blank the preview and refetch bytes we
+    /// already hold.
+    pub preview_cache: std::collections::HashMap<String, Vec<u8>>,
+    /// URL whose bytes are currently published in `preview_cover`.
+    /// `update_spot_preview` runs once per rendered frame, so without this the
+    /// cache path would re-decode the same image every frame and make the
+    /// preview flicker instead of holding still.
+    pub preview_shown: Option<String>,
 }
 
 /// Top Charts picker state, grouped under `App::charts`.

@@ -53,6 +53,43 @@ impl Cover {
             discovered_album = track.album.clone();
         }
 
+        // A queued entry can already know its artwork: the spotify resolver
+        // points `cover_path` at the album art the web API handed us. Serve
+        // that file before the artist/album search below, which misses often
+        // enough to leave a playing track with no cover at all.
+        let known_cover = {
+            let state = inner.state.read().await;
+            let by_key = if track_id == 0 {
+                track_path.and_then(|p| {
+                    state
+                        .queue
+                        .iter()
+                        .chain(state.default_list.iter())
+                        .find(|t| t.path == p)
+                })
+            } else {
+                state
+                    .queue
+                    .iter()
+                    .chain(state.default_list.iter())
+                    .find(|t| t.id == track_id)
+            };
+            by_key.and_then(|t| t.cover_path.clone()).or_else(|| {
+                state.current_track.as_ref().and_then(|t| {
+                    let matches = t.id == track_id
+                        || (track_id == 0 && track_path.is_some_and(|p| t.path == p));
+                    matches.then(|| t.cover_path.clone()).flatten()
+                })
+            })
+        };
+        if let Some(path) = known_cover
+            && let Ok(data) = tokio::fs::read(&path).await
+            && !CoverCache::too_small(&data)
+        {
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+            return Ok(DaemonRes::CoverArt { data: Some(b64) });
+        }
+
         if discovered_artist.is_empty() {
             let state = inner.state.read().await;
             let mut in_merged = state.queue.iter().chain(state.default_list.iter());
