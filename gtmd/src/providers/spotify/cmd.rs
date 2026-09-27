@@ -16,6 +16,7 @@ use gtm::shared::CoreError;
 use gtm::shared::global::PlaybackStatus;
 use gtm::shared::ipc::{DaemonEvent, DaemonRes};
 use gtm::shared::spotify::SpotifyTrack;
+use gtm::shared::track::TrackInfo;
 
 use crate::daemon::{Cmd, Daemon, DaemonInner};
 use crate::queue;
@@ -626,8 +627,8 @@ impl Spotify {
             title,
             artist,
             album,
-            image_url,
             duration,
+            ..
         } = meta;
         if !is_playable(uri) {
             return Ok(DaemonRes::Error {
@@ -649,6 +650,8 @@ impl Spotify {
             drop(state);
             w
         };
+        Self::warm_cover(inner, uri, &meta).await;
+
         // Start playback reliably: on an empty queue, and always when the
         // caller asked to play (Enter) — `Cmd::play` stops the current source
         // first, so switching from another source is smooth. A rejected
@@ -660,12 +663,32 @@ impl Spotify {
             return Ok(DaemonRes::Error { message });
         }
 
+        Daemon::push_queue_state(inner).await;
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    /// Warm the cover cache for a queued entry and point its `cover_path` at the
+    /// file on disk.
+    ///
+    /// Called *before* playback starts. `Cover::get` serves a queued entry's
+    /// `cover_path` directly and only then falls back to an artist/album
+    /// search, so a path written after `PlaybackStarted` is a race: a fast
+    /// skip, or a track-change cover request that lands first, finds nothing
+    /// and renders blank until the next refresh.
+    async fn warm_cover(inner: &DaemonInner, uri: &str, meta: &StreamMeta<'_>) {
+        let StreamMeta {
+            artist,
+            album,
+            image_url,
+            ..
+        } = *meta;
         // The web API hands us the album art directly, so use it instead of
         // searching Deezer/MusicBrainz for `artist - album`: that misses often
-        // enough that spotify rows rendered with no cover at all. Clone the
-        // client before taking the cache — holding the cache guard while the
-        // spotify manager is locked is the inversion that wedged playback and
-        // cover art together.
+        // enough to leave spotify rows with no cover at all. Clone the client
+        // before taking the cache — holding the cache guard while the spotify
+        // manager is locked is the inversion that wedged playback and cover art
+        // together.
         let client = match image_url {
             Some(_) => linked(inner).await.ok(),
             None => None,
@@ -685,28 +708,21 @@ impl Spotify {
                 }
             }
         }
-
-        // Point the queued entry at the file just warmed so the TUI renders the
-        // row without looking the artwork up a second time.
-        if let Some(url) = image_url {
-            let path = inner
-                .cover_cache()
-                .await
-                .as_ref()
-                .and_then(|cc| cc.url_disk_path(url));
-            if let Some(path) = path
-                && path.exists()
-            {
-                let mut state = inner.state.write().await;
-                if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == uri) {
-                    entry.cover_path = Some(path.to_string_lossy().into_owned());
-                }
-            }
+        let Some(url) = image_url else {
+            return;
+        };
+        let path = inner
+            .cover_cache()
+            .await
+            .as_ref()
+            .and_then(|cc| cc.url_disk_path(url));
+        let Some(path) = path.filter(|p| p.exists()) else {
+            return;
+        };
+        let mut state = inner.state.write().await;
+        if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == uri) {
+            entry.cover_path = Some(path.to_string_lossy().into_owned());
         }
-
-        Daemon::push_queue_state(inner).await;
-        Daemon::save_state(inner);
-        Ok(DaemonRes::Ok)
     }
 
     /// Play every track of a synced Spotify playlist. With `shuffle` the order
@@ -745,19 +761,22 @@ impl Spotify {
                     message: "playlist tracks carry no streamable spotify URIs".into(),
                 });
             }
-            let uris: Vec<String> = pairs.iter().map(|(uri, _)| uri.clone()).collect();
+            let resolved: Vec<TrackInfo> = pairs
+                .iter()
+                .map(|(uri, st)| TrackInfo {
+                    id: 0,
+                    path: uri.clone(),
+                    title: st.name.clone(),
+                    artist: st.artists.clone(),
+                    album: st.album.clone().unwrap_or_default(),
+                    duration: st.duration_ms.map(|ms| ms as f64 / 1000.0).unwrap_or(0.0),
+                    ..Default::default()
+                })
+                .collect();
             let was_empty = {
                 let mut state = inner.state.write().await;
                 let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
-                let added = queue::add_many(&mut state, &uris, None);
-                for (entry, (_, st)) in added.iter().zip(pairs.iter()) {
-                    if let Some(e) = state.queue.iter_mut().find(|t| t.path == entry.path) {
-                        e.title = st.name.clone();
-                        e.artist = st.artists.clone();
-                        e.album = st.album.clone().unwrap_or_default();
-                        e.duration = st.duration_ms.map(|ms| ms as f64 / 1000.0).unwrap_or(0.0);
-                    }
-                }
+                queue::add_resolved_many(&mut state, resolved, None);
                 drop(state);
                 w
             };
