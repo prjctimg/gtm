@@ -259,10 +259,19 @@ jobs:
             -e VERGEN_GIT_SHA="$VERGEN_GIT_SHA" \
             lfdevs/archlinuxarm:base-devel \
             /bin/bash -c "
+              set -euo pipefail
               echo 'DisableSandboxFilesystem' >> /etc/pacman.conf &&
               pacman-key --init &&
               pacman-key --populate archlinuxarm &&
-              pacman -Syu --noconfirm &&
+              # The mirrors are reached by name, so a transient DNS failure reds
+              # this target for no reason. Retried for the same reason as the
+              # script below, which repeats these two calls.
+              for attempt in 1 2 3 4 5; do
+                pacman -Syu --noconfirm && break
+                [ \"\$attempt\" -lt 5 ] || { echo '::error::pacman -Syu failed after 5 attempts' >&2; exit 1; }
+                echo \"::warning::pacman -Syu failed (attempt \${attempt}/5); retrying in 10s\" >&2
+                sleep 10
+              done &&
               curl -L -o /tmp/pandoc.tar.gz https://github.com/jgm/pandoc/releases/download/3.1.11.1/pandoc-3.1.11.1-linux-arm64.tar.gz &&
               tar -xzf /tmp/pandoc.tar.gz -C /usr/bin --strip-components=2 &&
               chmod +x /usr/bin/pandoc &&

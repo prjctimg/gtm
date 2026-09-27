@@ -15,8 +15,29 @@ else
     PACMAN_PACKAGES="base-devel rust pandoc alsa-lib cmake clang lld mold git libarchive zstd"
 fi
 
-pacman -Syu --noconfirm
-pacman -S --noconfirm --needed $PACMAN_PACKAGES
+# The Arch mirrors are reached by name, so a transient DNS failure — a resolver
+# blip, a mirror rotating its records — reds the whole target even though
+# nothing is wrong with the code. This step is the only network-bound part of the
+# release with no retry, so it gets one, matching the crates.io publish step.
+retry() {
+    local what="$1"; shift
+    local attempt
+    for attempt in 1 2 3 4 5; do
+        if "$@"; then
+            return 0
+        fi
+        if [ "$attempt" -lt 5 ]; then
+            echo "::warning::$what failed (attempt ${attempt}/5); retrying in 10s" >&2
+            sleep 10
+        fi
+    done
+    echo "::error::$what failed after 5 attempts" >&2
+    return 1
+}
+
+retry "pacman database sync" pacman -Syu --noconfirm
+# shellcheck disable=SC2086
+retry "pacman install" pacman -S --noconfirm --needed $PACMAN_PACKAGES
 
 cargo build --release
 
