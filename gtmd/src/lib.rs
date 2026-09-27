@@ -53,6 +53,9 @@ pub async fn run() {
             .with_env_filter(
                 EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level)),
             )
+            // A file is never a terminal: without this the subscriber's own
+            // detection enables colour and every line lands wrapped in escapes.
+            .with_ansi(false)
             .with_writer(std::sync::Mutex::new(file))
             .init();
     } else {

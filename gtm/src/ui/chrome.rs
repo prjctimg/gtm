@@ -1269,6 +1269,17 @@ impl Render {
         // Total rows in the active right-pane list, threaded out of the category
         // branches so mouse hit zones only cover real rows.
         let mut lib_total_rows: usize = 0;
+        // Rows reserved at the top of the track pane for the highlighted row's
+        // artwork. Zero unless there is art to draw, so the track list keeps its
+        // whole budget — and its viewport arithmetic — whenever there is not.
+        let spot_cover_h: u16 = if app.browse_detail.is_some()
+            && app.library_category == 5
+            && app.spotify.row_cover.is_some()
+        {
+            6
+        } else {
+            0
+        };
         let (right_lines, _stats_line) = if app.browse_detail.is_some() && app.library_category == 5
         {
             let tracks = &app.spotify.playlist_tracks_cache;
@@ -1279,7 +1290,10 @@ impl Render {
                 plural(tracks.len(), "track", "tracks")
             );
             let reserve = 3usize;
-            let available = panes[1].height.saturating_sub(reserve as u16) as usize;
+            let available = panes[1]
+                .height
+                .saturating_sub(reserve as u16)
+                .saturating_sub(spot_cover_h) as usize;
             app.viewport_items = available;
             let sel = app.list_pos().min(total_len.saturating_sub(1));
 
@@ -2020,6 +2034,24 @@ impl Render {
                 Render::pane_header(f, panes[1], app, &header_label, !left_focus, false, true);
             fill_pane(f, right_inner, app);
             Render::evolving(f, right_inner, right_para, "lib", app, false);
+            if spot_cover_h > 0 {
+                // Below the pane header, which is the one line the list also
+                // starts under, so the two never overlap.
+                let spot_area = Rect {
+                    x: right_inner.x + 1,
+                    y: right_inner.y + 1,
+                    width: right_inner.width.saturating_sub(2).min(24),
+                    height: spot_cover_h.min(right_inner.height.saturating_sub(2)),
+                };
+                Render::cover(
+                    f,
+                    spot_area,
+                    app.spotify.row_cover_stateful.as_mut(),
+                    app.spotify.row_cover.as_deref(),
+                    app.theme.fg_dim,
+                    Some(" \u{266b} "),
+                );
+            }
 
             // Mouse hit zones for the visible library rows: rows start
             // below one leading blank line.

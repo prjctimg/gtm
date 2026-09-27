@@ -341,26 +341,32 @@ impl App {
         if !self.in_spotify_playlist() {
             return;
         }
-        let pos = self.list_pos();
-        let tracks = &self.spotify.playlist_tracks_cache;
-        let mut urls = Vec::new();
-        for off in 1..=3 {
-            let idx = (pos + off).saturating_sub(Self::SPOTIFY_PLAYLIST_ROWS);
-            if let Some(t) = tracks.get(idx)
-                && let Some(url) = t.image_url.clone()
-                && !urls.contains(&url)
-            {
-                urls.push(url);
-            }
+        let open = self.browse_detail.clone().unwrap_or_default();
+        if self.spotify.prefetched_for.as_deref() == Some(open.as_str()) {
+            return;
         }
+        self.spotify.prefetched_for = Some(open);
+        // The whole playlist, not a few rows ahead: the daemon persists every
+        // one of these through its cover cache, so a later pass over the list —
+        // including scrolling back — is a local read rather than a fetch. The
+        // request is sequential and detached, so a thousand-track playlist
+        // never blocks the UI and never competes with the track that is
+        // playing.
+        let urls: Vec<String> = self
+            .spotify
+            .playlist_tracks_cache
+            .iter()
+            .filter_map(|t| t.image_url.clone())
+            .filter(|u| !u.trim().is_empty())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
         if urls.is_empty() {
             return;
         }
         let client = self.client.clone();
         tokio::spawn(async move {
             for url in urls {
-                // The daemon persists this through the cover cache, so the next
-                // visit is served from disk. A miss is simply retried later.
                 let _ = client.spotify().track_image(&url).await;
             }
         });
@@ -655,6 +661,63 @@ impl App {
                 }
             }
         });
+    }
+
+    /// Fetch cover art for the highlighted row of the playlist drill-down.
+    ///
+    /// Called on every cursor move, so it is latched twice: once on the row index
+    /// (moving between rows of the same album, or back to a row already shown, must
+    /// not refetch) and once on the URL through [`FetchSlot`], which drops a reply
+    /// that arrives after the cursor has moved on. The bytes come from the daemon's
+    /// on-disk cache — its background prefetch has already warmed the whole playlist
+    /// — so this is a local read rather than a fetch.
+    pub fn fetch_row_cover(&mut self) {
+        if !self.in_spotify_playlist() || no_image_protocol() {
+            return;
+        }
+        let Some(track) = self.selected_spotify_track().cloned() else {
+            self.clear_row_cover();
+            return;
+        };
+        if self.spotify.row_cover_index == Some(track.index)
+            && self.spotify.row_shown.as_deref() == track.image_url.as_deref()
+        {
+            return;
+        }
+        let Some(url) = track.image_url.clone().filter(|u| !u.trim().is_empty()) else {
+            self.clear_row_cover();
+            return;
+        };
+        if self.spotify.row_fetch.pending(&url) {
+            return;
+        }
+        self.spotify.row_cover_index = Some(track.index);
+        let fetch_gen = self.next_cover_gen();
+        self.spotify.row_fetch.claim(url.clone(), fetch_gen);
+        self.spotify.row_cover = None;
+        self.spotify.row_cover_stateful = None;
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            let msg = match client.spotify().track_image(&url).await {
+                Ok(Some(b64)) => base64::engine::general_purpose::STANDARD
+                    .decode(&b64)
+                    .map(Some)
+                    .unwrap_or(None),
+                _ => None,
+            };
+            let _ = ipc_tx.send(IpcResult::SpotifyRowCover(msg, url, fetch_gen));
+        });
+    }
+    /// Drop the drill-down cover, so leaving the view does not leave a stale image
+    /// bound to a row that is no longer selected.
+    pub fn clear_row_cover(&mut self) {
+        self.spotify.row_cover = None;
+        self.spotify.row_cover_stateful = None;
+        self.spotify.row_fetch.clear();
+        self.spotify.row_cover_index = None;
+        self.spotify.row_shown = None;
+        self.spotify.prefetched_for = None;
     }
 }
 

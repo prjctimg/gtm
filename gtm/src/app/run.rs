@@ -1134,6 +1134,18 @@ impl App {
                             self.artist_cover_sync();
                         }
                     }
+                    IpcResult::SpotifyRowCover(cover, url, fetch_gen) => {
+                        // Same guards as the search preview: the reply has to
+                        // match the URL still being awaited and the generation
+                        // the cursor is on, or a slow reply paints the wrong row.
+                        if !no_image_protocol()
+                            && self.spotify.row_fetch.id.as_deref() == Some(&url)
+                            && self.spotify.row_fetch.matches(fetch_gen)
+                        {
+                            self.spotify.row_cover = cover;
+                            self.spotify.row_shown = Some(url);
+                        }
+                    }
                     IpcResult::SpotifyPreviewCover(cover, url, fetch_gen) => {
                         if !no_image_protocol()
                             && self.spotify.preview_fetch.id.as_deref() == Some(&url)
@@ -1245,6 +1257,10 @@ impl App {
                         // track list attached to whatever opens next.
                         if self.in_spotify_playlist() {
                             self.spotify.playlist_tracks_cache = t;
+                            // Opening a playlist should land with artwork
+                            // already requested, not only after the first
+                            // cursor move.
+                            self.fetch_row_cover();
                         }
                     }
                     IpcResult::SpotifySearchWebDone(seq, res) => {

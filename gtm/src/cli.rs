@@ -18,7 +18,7 @@ use crate::shared::resolve_command_socket;
 use crate::shared::secret::{
     LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, get_secret, set_secret,
 };
-use crate::shared::spotify::SpotifyStatus;
+use crate::shared::spotify::{LIBRESPOT_CLIENT_ID, SpotifyStatus};
 use crate::shared::track::LrcData;
 use clap::{Parser, Subcommand};
 use tokio::io::AsyncBufReadExt;
@@ -1595,16 +1595,27 @@ async fn spotify_login(
         .unwrap_or(8990);
     // Resolve the client id: explicit arg > keychain > masked prompt (so a
     // locked keychain still lets the user log in).
+    //
+    // An empty id — from an explicit `--client-id ""`, a blank prompt, or no
+    // stored secret — means librespot's public desktop app, the one Spotify
+    // permits for streaming. That is also the only reliable way out of a token
+    // minted by a self-registered app: such an app works for the Web API
+    // (sync, search, artwork all fine) but the Connect endpoint librespot
+    // streams over rejects it, so playback is silent with nothing in the log
+    // but a refusal. A stored id is never re-applied blindly, because that
+    // silently resurrected exactly such an id and re-broke a working link.
     let client_id = match client_id {
         Some(c) => c,
         None => match get_secret(SPOTIFY_CLIENT_ID) {
             Some(c) => c,
-            None => masked_prompt("Spotify Client ID: ")?,
+            None => masked_prompt("Spotify Client ID (blank for the default app): ")?,
         },
     };
-    if client_id.trim().is_empty() {
-        return Err("no Spotify client id provided".into());
-    }
+    let client_id = if client_id.trim().is_empty() {
+        LIBRESPOT_CLIENT_ID.to_string()
+    } else {
+        client_id.trim().to_string()
+    };
     set_secret(SPOTIFY_CLIENT_ID, &client_id);
 
     let url = client

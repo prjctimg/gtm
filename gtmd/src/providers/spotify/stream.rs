@@ -467,6 +467,15 @@ impl StreamManager {
             ..Default::default()
         };
 
+        // Logged before connecting because the two failure modes are
+        // indistinguishable afterwards: a session that connects cleanly and
+        // then has every track load refused means the app this id names is not
+        // the one that minted the token, or is not permitted to stream at all.
+        info!(
+            "librespot session: client id {client_id}, device {}",
+            session_config.device_id
+        );
+
         let session = Session::new(session_config, Some(cache));
         // Bound the handshake hard — see STREAM_CONNECT_TIMEOUT.
         let connected = tokio::time::timeout(

@@ -254,6 +254,24 @@ pub struct SpotifyView {
     /// cache path would re-decode the same image every frame and make the
     /// preview flicker instead of holding still.
     pub preview_shown: Option<String>,
+    /// Cover art for the highlighted row of the playlist drill-down.
+    ///
+    /// Modelled on the search preview rather than sharing it: the two views are
+    /// never open at once, and a shared slot would make whichever rendered last
+    /// clear the other's image. The daemon's background prefetch has already put
+    /// the playlist's covers on disk by the time this is asked for, so the
+    /// fetch is a local read.
+    pub row_cover: Option<Vec<u8>>,
+    pub row_cover_stateful: Option<StatefulProtocol>,
+    pub row_fetch: FetchSlot<String>,
+    /// Playlist row whose cover is on screen, so moving the cursor only
+    /// re-decodes when it lands on a different track.
+    pub row_cover_index: Option<usize>,
+    pub row_shown: Option<String>,
+    /// Playlist whose covers have already been swept into the daemon's cache.
+    /// The sweep runs from the cursor-move path, so without this a thousand
+    /// track playlist would be re-requested on every keypress.
+    pub prefetched_for: Option<String>,
 }
 
 /// Top Charts picker state, grouped under `App::charts`.

@@ -207,6 +207,9 @@ impl App {
         self.library_category = category.min(LIBRARY_CATEGORIES.len() - 1);
         self.clear_selection();
         self.playlist_tracks_cache.clear();
+        // Leaving the drill-down must not leave its cover bound to a row that
+        // is no longer selected.
+        self.clear_row_cover();
         self.spotify.playlist_tracks_cache.clear();
         match self.library_category {
             6 => self.refresh_custom_stations(),

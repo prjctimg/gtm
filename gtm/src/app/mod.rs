@@ -366,6 +366,9 @@ pub(crate) enum IpcResult {
     MetadataCoverArt(Option<Vec<u8>>, i64, u64),
     ArtistCoverArt(Option<Vec<u8>>, String, u64),
     SpotifyPreviewCover(Option<Vec<u8>>, String, u64),
+    /// Cover art for the highlighted playlist drill-down row, as
+    /// (bytes, image url, fetch generation).
+    SpotifyRowCover(Option<Vec<u8>>, String, u64),
     /// Album cover bytes for the highlighted Spotify drill-down row, keyed by
     /// its image URL (guarded via `spotify_popup_slot`).
     SpotifyPopupCover(Option<Vec<u8>>, String, u64),
@@ -865,6 +868,12 @@ impl App {
                 preview_fetch: FetchSlot::default(),
                 preview_cache: std::collections::HashMap::new(),
                 preview_shown: None,
+                row_cover: None,
+                row_cover_stateful: None,
+                row_fetch: FetchSlot::default(),
+                row_cover_index: None,
+                row_shown: None,
+                prefetched_for: None,
             },
             charts: ChartsView::default(),
             podcast: PodcastView::default(),
