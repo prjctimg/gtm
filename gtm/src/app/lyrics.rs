@@ -151,3 +151,48 @@ impl App {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn track(path: &str, artist: &str, title: &str) -> TrackInfo {
+        TrackInfo {
+            path: path.to_string(),
+            artist: artist.to_string(),
+            title: title.to_string(),
+            ..Default::default()
+        }
+    }
+
+    /// A Spotify entry has no library row and no file to tag-read, so the
+    /// daemon can only answer by artist and title. This is the branch the
+    /// manual lyrics key was missing.
+    #[test]
+    fn a_spotify_track_searches_by_artist_and_title() {
+        let t = track(
+            "spotify:track:4cOdK2wGLETKBW3PvgPWqT",
+            "Daft Punk",
+            "Get Lucky",
+        );
+        assert_eq!(
+            lyrics_query(&t),
+            Some(("Daft Punk".to_string(), "Get Lucky".to_string()))
+        );
+    }
+
+    /// A local file must keep going through the daemon, which knows its library
+    /// row and the sidecar on disk.
+    #[test]
+    fn a_local_file_stays_on_the_library_route() {
+        assert_eq!(lyrics_query(&track("/music/song.mp3", "A", "B")), None);
+    }
+
+    /// Half-filled metadata cannot be searched on, so the daemon route is the
+    /// only one that can try.
+    #[test]
+    fn partial_metadata_falls_back_to_the_daemon() {
+        let t = track("spotify:track:4cOdK2wGLETKBW3PvgPWqT", "", "Get Lucky");
+        assert_eq!(lyrics_query(&t), None);
+    }
+}

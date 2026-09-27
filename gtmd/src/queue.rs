@@ -341,3 +341,67 @@ pub fn scan_audio_files(path: &str) -> Vec<String> {
     }
     paths
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn track(path: &str, title: &str) -> TrackInfo {
+        TrackInfo {
+            path: path.to_string(),
+            title: title.to_string(),
+            artist: String::new(),
+            album: String::new(),
+            duration: 0.0,
+            track_number: None,
+            genre: String::new(),
+            year: None,
+            bitrate: None,
+            samplerate: None,
+            hash: String::new(),
+            cover_path: None,
+            favourite: false,
+            ..Default::default()
+        }
+    }
+
+    /// A playlist that lists the same track twice must give each copy its own
+    /// metadata. The add-then-patch shape could not: it located the entry to
+    /// update by path, so the second copy was written onto the first and left
+    /// the real second copy as a bare placeholder.
+    #[test]
+    fn duplicate_uris_keep_their_own_metadata() {
+        let mut state = DaemonState::default();
+        let uri = "spotify:track:4cOdK2wGLETKBW3PvgPWqT";
+        add_resolved_many(
+            &mut state,
+            vec![track(uri, "Song"), track(uri, "Song (Remastered)")],
+            None,
+        );
+        let titles: Vec<&str> = state.queue.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(titles, ["Song", "Song (Remastered)"]);
+    }
+
+    /// Batch order survives the insert, which is what `shuffle` ordering depends
+    /// on.
+    #[test]
+    fn batch_keeps_order() {
+        let mut state = DaemonState::default();
+        add_resolved_many(
+            &mut state,
+            vec![track("spotify:track:a", "A"), track("spotify:track:b", "B")],
+            None,
+        );
+        let paths: Vec<&str> = state.queue.iter().map(|t| t.path.as_str()).collect();
+        assert_eq!(paths, ["spotify:track:a", "spotify:track:b"]);
+    }
+
+    /// A provider URI has no file to read a title from, so the queue must never
+    /// show the raw URI.
+    #[test]
+    fn provider_uri_is_labelled_not_printed() {
+        let t = resolve_track("spotify:track:4cOdK2wGLETKBW3PvgPWqT");
+        assert_eq!(t.title, "Spotify Track");
+        assert!(!t.title.contains("spotify:"));
+    }
+}

@@ -754,9 +754,60 @@ fn parse_token(raw: &str) -> Result<Token, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SCOPE_STREAMING, TOKEN_ACCESS_PERMS, parse_token};
+    use super::{SCOPE_STREAMING, TOKEN_ACCESS_PERMS, parse_token, pretty_id};
+    use gtm::shared::spotify::SpotifyPlaylist;
     use rspotify::model::idtypes::Id;
     use rspotify::model::{AlbumId, ArtistId, TrackId};
+
+    fn playlist(id: &str) -> SpotifyPlaylist {
+        SpotifyPlaylist {
+            id: id.to_string(),
+            name: id.to_string(),
+            owner: String::new(),
+            tracks: Vec::new(),
+        }
+    }
+
+    /// The synthetic Liked Songs entry and a bare track URI are the two ids that
+    /// reach a UI with no label of their own; both must render as words.
+    #[test]
+    fn raw_ids_are_labelled() {
+        assert_eq!(pretty_id("liked-songs"), "Liked Songs");
+        assert_eq!(
+            pretty_id("spotify:track:4cOdK2wGLETKBW3PvgPWqT"),
+            "Spotify Track"
+        );
+    }
+
+    /// A sync that came back empty is a failed pass, not an empty library.
+    /// Committing it blanked the TUI's playlist list until the next restart.
+    #[test]
+    fn an_empty_sync_keeps_the_cache() {
+        let mut mgr = super::SpotifyManager::new(std::path::PathBuf::from("/nonexistent"));
+        mgr.commit_sync(None, vec![playlist("a"), playlist("b")]);
+        mgr.commit_sync(None, Vec::new());
+        assert_eq!(mgr.playlists.len(), 2);
+        assert!(mgr.error.is_some(), "the failure must be reported");
+    }
+
+    /// `run_sync` stops paginating on a page error, so a truncated pass must not
+    /// replace a good library either.
+    #[test]
+    fn a_truncated_sync_keeps_the_cache() {
+        let mut mgr = super::SpotifyManager::new(std::path::PathBuf::from("/nonexistent"));
+        mgr.commit_sync(None, vec![playlist("a"), playlist("b"), playlist("c")]);
+        mgr.commit_sync(None, vec![playlist("a")]);
+        assert_eq!(mgr.playlists.len(), 3);
+    }
+
+    /// A real growth still commits.
+    #[test]
+    fn a_growing_sync_commits() {
+        let mut mgr = super::SpotifyManager::new(std::path::PathBuf::from("/nonexistent"));
+        mgr.commit_sync(None, vec![playlist("a")]);
+        mgr.commit_sync(None, vec![playlist("a"), playlist("b"), playlist("c")]);
+        assert_eq!(mgr.playlists.len(), 3);
+    }
 
     /// `Display` on an rspotify 0.16 id renders its **full URI**, not the bare
     /// id, so `format!("spotify:track:{id}")` produced
