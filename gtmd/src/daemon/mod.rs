@@ -59,7 +59,7 @@ use crate::network;
 use crate::podcast::PodcastManager;
 use crate::providers::spotify::cover::{PRELOAD_LEAD, preload};
 use crate::providers::spotify::oauth::{OAUTH_TIMEOUT, bind_callback};
-use crate::providers::spotify::stream::StreamManager;
+use crate::providers::spotify::stream::{SessionSpec, StreamManager};
 use crate::queue;
 use crate::radio::RadioBrowserManager;
 use crate::remote;
@@ -389,6 +389,11 @@ impl Cmd {
             state.current_track = Some(prev_track);
         }
 
+        // Read the mixer's level before taking the stream lock: Connect
+        // announces it as the device's initial volume, and locking the two in
+        // the other order is the inversion that wedged playback and cover art
+        // together once already.
+        let volume = inner.mixer.lock().await.volume();
         let source = {
             let mut stream = inner.stream.lock().await;
             match stream
@@ -396,9 +401,12 @@ impl Cmd {
                     uri_path,
                     (start_pos.max(0.0) * 1000.0) as u32,
                     duration_hint.unwrap_or(0.0),
-                    &token,
-                    &client_id,
-                    &config_dir,
+                    &SessionSpec {
+                        token: &token,
+                        client_id: &client_id,
+                        config_dir: &config_dir,
+                        volume,
+                    },
                 )
                 .await
             {
@@ -946,6 +954,7 @@ impl Cmd {
         };
         let config_dir = inner.config.config_dir.clone();
         let client_id = inner.spotify.lock().await.streaming_client_id();
+        let volume = inner.mixer.lock().await.volume();
         let source = {
             let mut stream = inner.stream.lock().await;
             match stream
@@ -953,9 +962,12 @@ impl Cmd {
                     uri_path,
                     (pos.max(0.0) * 1000.0) as u32,
                     total_duration.max(0.0),
-                    &token,
-                    &client_id,
-                    &config_dir,
+                    &SessionSpec {
+                        token: &token,
+                        client_id: &client_id,
+                        config_dir: &config_dir,
+                        volume,
+                    },
                 )
                 .await
             {

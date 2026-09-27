@@ -1220,7 +1220,12 @@ impl Render {
         // it at zero height for most of a browsing session.
         let want_track_card = app.show_preview && app.track_popup_visible && !is_small_height;
         let want_playlist_card = app.in_spotify_playlists() && app.spotify.list_cover.is_some();
-        let track_info_h: u16 = if (want_track_card || want_playlist_card) && !is_small_height {
+        // The Spotify drill-down shows its own highlighted track here rather
+        // than inline with the list rows, so the list panes stay pure text.
+        let want_spot_track_card = app.in_spotify_playlist() && app.spotify.row_cover.is_some();
+        let track_info_h: u16 = if (want_track_card || want_playlist_card || want_spot_track_card)
+            && !is_small_height
+        {
             let avail_h = left_inner.height.saturating_sub(1);
             let need = info_block_h();
             // Reserve at least 4 rows for the category list so "Spotify" never gets clipped.
@@ -1276,17 +1281,6 @@ impl Render {
         // Total rows in the active right-pane list, threaded out of the category
         // branches so mouse hit zones only cover real rows.
         let mut lib_total_rows: usize = 0;
-        // Rows reserved at the top of the track pane for the highlighted row's
-        // artwork. Zero unless there is art to draw, so the track list keeps its
-        // whole budget — and its viewport arithmetic — whenever there is not.
-        let spot_cover_h: u16 = if app.browse_detail.is_some()
-            && app.library_category == 5
-            && app.spotify.row_cover.is_some()
-        {
-            6
-        } else {
-            0
-        };
         let (right_lines, _stats_line) = if app.browse_detail.is_some() && app.library_category == 5
         {
             let tracks = &app.spotify.playlist_tracks_cache;
@@ -1297,10 +1291,7 @@ impl Render {
                 plural(tracks.len(), "track", "tracks")
             );
             let reserve = 3usize;
-            let available = panes[1]
-                .height
-                .saturating_sub(reserve as u16)
-                .saturating_sub(spot_cover_h) as usize;
+            let available = panes[1].height.saturating_sub(reserve as u16) as usize;
             app.viewport_items = available;
             let sel = app.list_pos().min(total_len.saturating_sub(1));
 
@@ -2010,11 +2001,11 @@ impl Render {
             }
         };
 
-        if want_playlist_card
+        if (want_playlist_card || want_spot_track_card)
             && left_info_area.height > 0
             && (info_sep_area.height > 0 || left_info_area.height > 0)
         {
-            Render::playlist_in_pane(f, left_info_area, app);
+            Render::spotify_card_in_pane(f, left_info_area, app);
         } else if app.show_preview
             && app.track_popup_visible
             && left_info_area.height >= info_block_h()
@@ -2046,24 +2037,6 @@ impl Render {
                 Render::pane_header(f, panes[1], app, &header_label, !left_focus, false, true);
             fill_pane(f, right_inner, app);
             Render::evolving(f, right_inner, right_para, "lib", app, false);
-            if spot_cover_h > 0 {
-                // Below the pane header, which is the one line the list also
-                // starts under, so the two never overlap.
-                let spot_area = Rect {
-                    x: right_inner.x + 1,
-                    y: right_inner.y + 1,
-                    width: right_inner.width.saturating_sub(2).min(24),
-                    height: spot_cover_h.min(right_inner.height.saturating_sub(2)),
-                };
-                Render::cover(
-                    f,
-                    spot_area,
-                    app.spotify.row_cover_stateful.as_mut(),
-                    app.spotify.row_cover.as_deref(),
-                    app.theme.fg_dim,
-                    Some(" \u{266b} "),
-                );
-            }
 
             // Mouse hit zones for the visible library rows: rows start
             // below one leading blank line.
@@ -2497,6 +2470,69 @@ impl Render {
         }
         let para = Paragraph::new(lines);
         f.render_widget(para, area);
+    }
+
+    /// The left pane's info slot while browsing Spotify: the highlighted
+    /// playlist's cover when the playlist list is open, or the highlighted
+    /// track's when the drill-down is. One renderer for both so the slot has a
+    /// single shape.
+    ///
+    /// The cover is never drawn inline with the list rows — the list panes stay
+    /// pure text, and the row budget keeps its whole height.
+    pub(crate) fn spotify_card_in_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        if app.in_spotify_playlist() {
+            return Self::spotify_track_in_pane(f, area, app);
+        }
+        Self::playlist_in_pane(f, area, app);
+    }
+
+    /// The highlighted playlist's name, owner and track count under its cover.
+    fn spotify_track_in_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        // Copied out before the mutable borrow of the decoder state below, so
+        // the text does not have to be read across it.
+        let Some(track) = app.selected_spotify_track().cloned() else {
+            return;
+        };
+        let text_need = 2u16;
+        let cover_h = COVER_H.min(area.height.saturating_sub(text_need).saturating_sub(1));
+        let cover_w = (cover_h * 2).min(area.width.saturating_sub(2));
+        let mut y = area.y;
+        if cover_h > 0 && cover_w > 0 {
+            let cover_area = Rect {
+                x: area.x + area.width.saturating_sub(cover_w) / 2,
+                y,
+                width: cover_w,
+                height: cover_h,
+            };
+            Render::cover(
+                f,
+                cover_area,
+                app.spotify.row_cover_stateful.as_mut(),
+                app.spotify.row_cover.as_deref(),
+                app.theme.fg_dim,
+                None,
+            );
+            y += cover_h;
+        }
+        let clip = |t: &str| t.chars().take(area.width as usize).collect::<String>();
+        for (text, style) in [
+            (clip(&track.name), Style::default().fg(app.theme.fg_bright)),
+            (clip(&track.artists), Style::default().fg(app.theme.fg_dim)),
+        ] {
+            if y >= area.y + area.height {
+                break;
+            }
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(text, style))).alignment(Alignment::Center),
+                Rect {
+                    x: area.x,
+                    y,
+                    width: area.width,
+                    height: 1,
+                },
+            );
+            y += 1;
+        }
     }
 
     /// The highlighted Spotify playlist, in the left pane's info slot: its cover

@@ -41,6 +41,11 @@ async-trait = "0.1"
 hex = "0.4"
 image = "0.25"
 innertube-rs = { version = "0.6", optional = true }
+# Provides `Spirc`, which registers the device with Spotify's Connect service.
+# Without it the session authenticates but the audio item is never loadable:
+# Connect is what serves it, and it refuses an unregistered device with
+# `FaultyRequest(BAD_REQUEST)`.
+librespot-connect = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
 librespot-core = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
 librespot-playback = { version = "0.8", default-features = false, features = ["rustls-tls-native-roots"] }
 lofty = "0.24"
