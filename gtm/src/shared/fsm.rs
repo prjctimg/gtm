@@ -382,6 +382,7 @@ impl DaemonState {
             | DaemonEvent::Custom { .. }
             | DaemonEvent::SpotifyStatusChanged
             | DaemonEvent::LastfmStatusChanged
+            | DaemonEvent::ProviderError { .. }
             | DaemonEvent::Heartbeat => {}
         }
         self.commit();

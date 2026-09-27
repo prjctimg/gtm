@@ -411,6 +411,19 @@ impl App {
                         std::time::Instant::now() + std::time::Duration::from_secs(3),
                     ));
                 }
+                if let DaemonEvent::ProviderError { provider, message } = &ev {
+                    // A provider that refuses every request used to be
+                    // indistinguishable from a muted player: librespot logged
+                    // the rejection to its own logger, the resulting
+                    // `Unavailable` ended the source, and the queue moved on.
+                    self.notify_typed(
+                        &format!("{provider} error"),
+                        message.clone(),
+                        NotificationKind::Error,
+                        false,
+                        NotifType::NowPlaying,
+                    );
+                }
                 if let DaemonEvent::Custom { name, data } = &ev
                     && name == "sync_done"
                     && data.get("kind").is_some_and(|k| k == "metadata")

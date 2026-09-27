@@ -507,6 +507,14 @@ pub(crate) fn try_open_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResu
 /// from the app dashboard the flow fails silently inside the browser. The
 /// empty-input fallback (librespot's public desktop id) always passes.
 pub(crate) fn client_id_error(client_id: &str, port: u16) -> Option<String> {
+    // Empty selects librespot's public desktop app, the one Spotify permits for
+    // streaming. Rejecting it here would leave a self-registered id as the only
+    // option, and that mints a token the Web API accepts and the audio endpoint
+    // refuses — silent playback with everything else working.
+    let client_id = client_id.trim();
+    if client_id.is_empty() {
+        return None;
+    }
     if client_id.len() != 32 || !client_id.chars().all(|c| c.is_ascii_hexdigit()) {
         return Some(format!(
             "This doesn't look like a valid Spotify Client ID (32 hex chars).\n\

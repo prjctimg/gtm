@@ -1679,6 +1679,16 @@ pub enum DaemonEvent {
     /// any provider link state; drives the footer `Network` module.
     #[serde(rename = "network_status_changed")]
     NetworkStatusChanged { online: bool },
+    /// A provider failed in a way the user has to act on, as opposed to a track
+    /// that merely is not playable.
+    ///
+    /// Provider-side rejections used to reach the user as silence: librespot
+    /// logs a rejected audio-item request to its own logger, the resulting
+    /// `Unavailable` event was consumed to end the source, and the queue moved
+    /// on — so a token that Spotify refuses produced no sound and no message.
+    /// This carries the diagnosis instead.
+    #[serde(rename = "provider_error")]
+    ProviderError { provider: String, message: String },
     #[serde(rename = "heartbeat")]
     Heartbeat,
 }

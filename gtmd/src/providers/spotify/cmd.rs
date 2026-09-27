@@ -27,6 +27,7 @@ use super::api::{
 use super::cover::{image_at, prefetch};
 use super::oauth::OauthFlow;
 
+use super::LIBRESPOT_CLIENT_ID;
 use super::SpotifyManager;
 use super::ytfb::spotify_yt_fallback;
 
@@ -135,10 +136,17 @@ impl Spotify {
             handle.abort();
         }
 
-        let cid = client_id.trim();
-        if cid.is_empty() {
-            return Err(CoreError::Daemon("empty spotify client id".into()));
-        }
+        // An empty client id selects librespot's public desktop app, which
+        // Spotify permits for the streaming protocol. A self-registered app is
+        // not: the Web API accepts its tokens — so sync, search, lyrics and
+        // artwork all work — but every audio load comes back `BAD_REQUEST` and
+        // playback is silent. The fallback therefore has to be reachable, or
+        // there is no way back from that state, and the only way to link at all
+        // is to paste a client id that cannot stream.
+        let cid = match client_id.trim() {
+            "" => LIBRESPOT_CLIENT_ID,
+            id => id,
+        };
         if cid.len() != 32 || !cid.chars().all(|c| c.is_ascii_hexdigit()) {
             return Err(CoreError::Daemon(format!(
                 "invalid spotify client id (expected 32 hex chars) — your app must also \

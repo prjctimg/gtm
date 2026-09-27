@@ -22,6 +22,8 @@ use librespot_playback::player::{Player, PlayerEvent};
 use librespot_playback::{NUM_CHANNELS, SAMPLE_RATE};
 use tracing::{info, warn};
 
+use gtm::shared::ipc::DaemonEvent;
+
 // A single librespot [`Session`] + [`Player`] pair is created lazily on the
 // first streamed track and reused afterwards. Decoded audio is pushed by a
 // custom librespot `Sink` through a bounded std channel and drained by a
@@ -321,6 +323,60 @@ impl VolumeGetter for VolumeOne {
     }
 }
 
+/// How many consecutive refused track loads count as a provider problem rather
+/// than a run of unavailable tracks. Three is past the point where a bad
+/// playlist explains it, and low enough that the user is told within a track or
+/// two of pressing play.
+const LOAD_REFUSALS_REPORTED: u32 = 3;
+
+/// Consecutive refused track loads, so a provider refusing *every* request is
+/// distinguishable from a playlist of individually unavailable tracks.
+///
+/// Reports once per streak: a session that keeps getting refused should not
+/// re-notify on every track, and a track that plays clears the streak so a
+/// later failure is reported again.
+struct RefusalStreak {
+    count: u32,
+    reported: bool,
+}
+
+impl RefusalStreak {
+    fn new() -> Self {
+        Self {
+            count: 0,
+            reported: false,
+        }
+    }
+
+    /// Record one refusal; `true` when this is the one to report.
+    fn refused(&mut self) -> bool {
+        self.count += 1;
+        if self.reported || self.count < LOAD_REFUSALS_REPORTED {
+            return false;
+        }
+        self.reported = true;
+        true
+    }
+
+    fn played(&mut self) {
+        self.count = 0;
+        self.reported = false;
+    }
+}
+
+/// Release the channel for `track_id`, but only when it is still the loaded
+/// target. A late event for a track already replaced must not strand the
+/// replacement by ending its channel.
+fn drop_target(target: &SharedTarget, track_id: &SpotifyUri) {
+    let mut guard = target.lock().unwrap();
+    if let Ok(uri) = track_id.to_uri()
+        && let Some(t) = guard.as_ref()
+        && t.uri == uri
+    {
+        guard.take();
+    }
+}
+
 pub struct StreamManager {
     session: Option<Session>,
     player: Option<Arc<Player>>,
@@ -334,16 +390,19 @@ pub struct StreamManager {
     /// Client id the session registered with. A session is only reusable for
     /// the app that minted its token, so this is part of the reuse check.
     session_client_id: Option<String>,
+    /// Where provider-level failures are reported. Held as a sender rather than
+    /// the daemon itself so the event pump can never reach into daemon state.
+    notify: tokio::sync::broadcast::Sender<DaemonEvent>,
 }
 
 impl Default for StreamManager {
     fn default() -> Self {
-        Self::new()
+        Self::new(tokio::sync::broadcast::Sender::new(1))
     }
 }
 
 impl StreamManager {
-    pub fn new() -> Self {
+    pub fn new(notify: tokio::sync::broadcast::Sender<DaemonEvent>) -> Self {
         Self {
             session: None,
             player: None,
@@ -351,6 +410,7 @@ impl StreamManager {
             current_uri: None,
             session_token: None,
             session_client_id: None,
+            notify,
         }
     }
 
@@ -456,20 +516,37 @@ impl StreamManager {
         // so loading a new track does not clear the replacement target.
         let events = player.get_player_event_channel();
         let target = self.target.clone();
+        let notify = self.notify.clone();
         tokio::spawn(async move {
             let mut events = events;
+            let mut streak = RefusalStreak::new();
             while let Some(event) = events.recv().await {
                 match event {
-                    PlayerEvent::EndOfTrack { track_id, .. }
-                    | PlayerEvent::Unavailable { track_id, .. } => {
-                        let mut guard = target.lock().unwrap();
-                        if let Ok(uri) = track_id.to_uri()
-                            && let Some(t) = guard.as_ref()
-                            && t.uri == uri
-                        {
-                            guard.take();
+                    PlayerEvent::EndOfTrack { track_id, .. } => {
+                        streak.played();
+                        drop_target(&target, &track_id);
+                    }
+                    PlayerEvent::Unavailable { track_id, .. } => {
+                        drop_target(&target, &track_id);
+                        if streak.refused() {
+                            warn!(
+                                "spotify refused {} consecutive track loads — the access token \
+                                 is not accepted for the configured client id",
+                                LOAD_REFUSALS_REPORTED
+                            );
+                            let _ = notify.send(DaemonEvent::ProviderError {
+                                provider: "spotify".to_string(),
+                                message: format!(
+                                    "Spotify refused {LOAD_REFUSALS_REPORTED} track loads in a row. \
+                                     The access token is not accepted for the configured client \
+                                     id — re-link from Settings → Spotify → Link, leaving the \
+                                     client id empty to use the default app."
+                                ),
+                            });
                         }
                     }
+                    // Anything that actually starts playing clears the streak.
+                    PlayerEvent::Playing { .. } => streak.played(),
                     _ => {}
                 }
             }
@@ -685,5 +762,94 @@ mod tests {
         let first = source.stalled_at;
         source.stalled_for();
         assert_eq!(source.stalled_at, first);
+    }
+
+    fn target_for(uri: &str) -> SharedTarget {
+        let target = Arc::new(Mutex::new(None));
+        let (tx, _rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHANNEL_CAPACITY);
+        *target.lock().unwrap() = Some(StreamTarget {
+            uri: uri.to_string(),
+            tx,
+            stat: Arc::new(StreamStat::default()),
+        });
+        target
+    }
+
+    fn loaded() -> SpotifyUri {
+        SpotifyUri::from_uri(&test_uri()).expect("valid uri")
+    }
+
+    /// The normal path: a track that loads and plays ends by releasing the
+    /// channel, which is what lets the ring drain and the queue advance.
+    #[test]
+    fn end_of_track_releases_the_channel() {
+        let target = target_for(&test_uri());
+        drop_target(&target, &loaded());
+        assert!(target.lock().unwrap().is_none());
+    }
+
+    /// A refusal for the loaded track must also release it, or the source waits
+    /// out its stall budget on a channel nobody will ever feed.
+    #[test]
+    fn refusal_releases_the_channel() {
+        let target = target_for(&test_uri());
+        drop_target(&target, &loaded());
+        assert!(target.lock().unwrap().is_none());
+    }
+
+    /// A late event for a track that has already been replaced must not strand
+    /// the replacement by ending its channel.
+    #[test]
+    fn a_stale_event_leaves_the_replacement_alone() {
+        let target = target_for("spotify:track:55Lz7vmtisJ6BBvuIR8t7U");
+        drop_target(&target, &loaded());
+        let held = target.lock().unwrap();
+        assert_eq!(
+            held.as_ref().map(|t| t.uri.as_str()),
+            Some("spotify:track:55Lz7vmtisJ6BBvuIR8t7U"),
+            "the replacement target must survive an event for the old track"
+        );
+    }
+
+    /// The threshold that turns per-track refusals into a report about the
+    /// provider. Below it, an unavailable playlist must stay quiet.
+    #[test]
+    fn a_single_refusal_is_not_a_provider_failure() {
+        let mut streak = RefusalStreak::new();
+        for _ in 0..(LOAD_REFUSALS_REPORTED - 1) {
+            assert!(
+                !streak.refused(),
+                "an isolated unavailable track is not a failure"
+            );
+        }
+        assert!(
+            streak.refused(),
+            "the streak should report once it reaches the threshold"
+        );
+    }
+
+    /// One report per streak: a session that keeps being refused must not
+    /// re-notify on every track.
+    #[test]
+    fn a_streak_reports_only_once() {
+        let mut streak = RefusalStreak::new();
+        assert!(!streak.refused());
+        assert!(!streak.refused());
+        assert!(streak.refused());
+        for _ in 0..5 {
+            assert!(!streak.refused(), "already reported for this streak");
+        }
+    }
+
+    /// A track that plays clears the streak, so a later failure is diagnosed
+    /// again rather than staying latched off for the rest of the session.
+    #[test]
+    fn playing_clears_the_streak() {
+        let mut streak = RefusalStreak::new();
+        for _ in 0..LOAD_REFUSALS_REPORTED {
+            streak.refused();
+        }
+        streak.played();
+        assert!(!streak.refused(), "the streak restarts after a track plays");
     }
 }
