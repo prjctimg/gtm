@@ -4,7 +4,6 @@
 //
 // This is free software released under the GPL-3.0 license.
 
-pub mod chart;
 pub mod client;
 pub mod custom;
 pub mod daemon;
@@ -14,17 +13,21 @@ pub mod ipc;
 pub mod log;
 pub mod paths;
 pub mod playlist;
-pub mod podcast;
-pub mod radio;
 pub mod secret;
-pub mod spotify;
 pub mod state;
 pub mod track;
 pub mod tripwire;
 pub mod url;
 pub mod validate;
 pub mod wire;
-pub mod yt;
+
+// Each provider's wire types live under `providers`; re-exported here so the
+// shared vocabulary stays flat for the rest of the client.
+pub use crate::providers::charts as chart;
+pub use crate::providers::podcast;
+pub use crate::providers::radio;
+pub use crate::providers::spotify;
+pub use crate::providers::yt;
 
 pub use crate::shared::custom::CustomRadioStation;
 pub use chart::{ChartError, ChartPlaylist, ChartSource, ChartTrack};

@@ -825,8 +825,13 @@ impl Mixer for PulseAudioMixer {
             self.pending_pause = false;
             self.pause_fade_start = None;
             self.active().uncork();
-            Self::set_stream_volume(&self.active(), self.stored_volume);
         }
+        // Every `load_active_*` zeroes the active stream so a priming ring
+        // cannot leak audio, and `stop` zeroes both. Restoring the volume only
+        // on a resume-from-pause left a freshly loaded track scaled to silence
+        // for its whole length: the callback still produced samples, but every
+        // one of them was multiplied by zero.
+        Self::set_stream_volume(&self.active(), self.user_volume.load(Ordering::SeqCst));
 
         *self.start_time.lock().unwrap() = Some(Instant::now());
         self.playing.store(true, Ordering::SeqCst);

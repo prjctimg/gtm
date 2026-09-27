@@ -7,18 +7,20 @@
 
 use crate::ui::*;
 
-pub mod dest;
 pub mod forms;
 pub mod library;
 pub mod palette;
-pub mod podcast;
 pub mod presets;
 pub mod queue;
-pub mod radio;
 pub mod search;
 pub mod settings;
-pub mod spotify;
 pub mod system;
+
+// Per-provider picker rendering lives under `providers`; re-exported here so
+// the dispatch above keeps resolving them by their existing paths.
+pub use crate::providers::podcast::picker as podcast;
+pub use crate::providers::radio::picker as radio;
+pub use crate::providers::spotify::{dest, picker as spotify};
 
 impl Pickers {
     pub(crate) fn picker_content_hint(top: &Picker, app: &App) -> (u16, u16) {

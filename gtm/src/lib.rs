@@ -24,6 +24,7 @@ pub mod mouse;
 pub mod oauth;
 pub mod picker;
 pub mod progress;
+pub mod providers;
 pub mod reactive;
 pub mod theme;
 pub mod ui;

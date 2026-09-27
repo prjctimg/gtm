@@ -1,3 +1,4 @@
+use crate::app::self_err;
 use crate::app::*;
 
 impl App {

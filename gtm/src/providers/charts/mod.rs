@@ -1,6 +1,14 @@
-// Chart data model shared by daemon ↔ client. Provider-agnostic: new chart
-// sources implement the `ChartProvider` trait (gtmd/src/charts/) and appear in
-// the UI without any shared-crate changes.
+// Copyright (c) 2026
+// Author: prjctimg <prjctimg@outlook.com>
+// Top charts: provider-agnostic data model and the client's tree actions
+//
+// This is free software released under the GPL-3.0 license.
+
+//! A new chart source implements the `ChartProvider` trait on the daemon side
+//! (gtmd/src/providers/charts/) and appears in this UI without any
+//! shared-crate changes.
+
+pub mod app;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};

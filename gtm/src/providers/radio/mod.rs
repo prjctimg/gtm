@@ -4,6 +4,9 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+pub mod app;
+pub mod picker;
+
 use serde::{Deserialize, Serialize};
 
 /// A radio station from the Radio Browser directory.

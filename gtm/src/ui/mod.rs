@@ -7,49 +7,53 @@
 // submodule reaches them with one `use crate::ui::*;` instead of
 // repeating them, so a few are unused here by design.
 #![allow(unused_imports)]
-use std::borrow::Cow;
-use std::path::PathBuf;
+pub(crate) use std::borrow::Cow;
+pub(crate) use std::path::PathBuf;
 
-use crate::app::fuzzy_match;
-use crate::app::{
+pub(crate) use crate::app::fuzzy_match;
+pub(crate) use crate::app::{
     App, InputMode, LIBRARY_CATEGORIES, LibraryPick, NotifMode, NotifType, NotificationKind,
     RadioPick, RadioSection, TrackInfoKind, ZenSurface, folder_name, lyrics_are_synced,
     no_image_protocol, setup_selection,
 };
-use crate::extensions::ExtensionId;
-use crate::footer::{
+pub(crate) use crate::extensions::ExtensionId;
+pub(crate) use crate::footer::{
     classify_remote_source, draw as footer_draw, format_duration, format_uptime, is_live_stream,
     render as footer_render,
 };
-use crate::mouse::MouseZone;
-use crate::picker::{Picker, PickerId, PickerSource};
-use crate::progress::{ProgressStyle, render_progress, render_progress_styled, render_ratio};
-use crate::shared::daemon::ensure_daemon_running;
-use crate::shared::global::{EqPreset, PlaybackStatus};
-use crate::shared::ipc::HealthStatus;
-use crate::shared::log::redirect_stderr;
-use crate::shared::radio::RadioStation;
-use crate::shared::resolve_command_socket;
-use crate::shared::spotify::SpotifySearchKind;
-use crate::shared::track::{LrcData, TrackInfo};
-use crate::theme::blend_colors;
+pub(crate) use crate::mouse::MouseZone;
+pub(crate) use crate::picker::{Picker, PickerId, PickerSource};
+pub(crate) use crate::progress::{
+    ProgressStyle, render_progress, render_progress_styled, render_ratio,
+};
+pub(crate) use crate::shared::daemon::ensure_daemon_running;
+pub(crate) use crate::shared::global::{EqPreset, PlaybackStatus};
+pub(crate) use crate::shared::ipc::HealthStatus;
+pub(crate) use crate::shared::log::redirect_stderr;
+pub(crate) use crate::shared::radio::RadioStation;
+pub(crate) use crate::shared::resolve_command_socket;
+pub(crate) use crate::shared::spotify::SpotifySearchKind;
+pub(crate) use crate::shared::track::{LrcData, TrackInfo};
+pub(crate) use crate::theme::blend_colors;
 pub use crate::theme::readable_fg;
-use crate::visualizer::VisualizerPreset;
-use crossterm::event::{
+pub(crate) use crate::visualizer::VisualizerPreset;
+pub(crate) use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
 };
-use crossterm::terminal::{
+pub(crate) use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
-use ratatui::Terminal;
-use ratatui::backend::CrosstermBackend;
-use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
-use ratatui::style::Color;
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap};
-use ratatui_image::StatefulImage;
-use ratatui_image::protocol::StatefulProtocol;
+pub(crate) use ratatui::Terminal;
+pub(crate) use ratatui::backend::CrosstermBackend;
+pub(crate) use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
+pub(crate) use ratatui::style::Color;
+pub(crate) use ratatui::style::{Modifier, Style};
+pub(crate) use ratatui::text::{Line, Span};
+pub(crate) use ratatui::widgets::{
+    Block, Borders, Clear, List, ListItem, Padding, Paragraph, Wrap,
+};
+pub(crate) use ratatui_image::StatefulImage;
+pub(crate) use ratatui_image::protocol::StatefulProtocol;
 
 /// Grouped render helpers: previously free `render_*` functions.
 pub struct Render;

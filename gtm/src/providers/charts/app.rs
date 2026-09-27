@@ -1,4 +1,6 @@
+use crate::app::self_err;
 use crate::app::*;
+use crate::shared::ipc::DaemonRes;
 
 impl App {
     /// Re-pull the Top Charts source list (free providers always answer; the

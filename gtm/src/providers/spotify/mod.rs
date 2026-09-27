@@ -4,6 +4,10 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+pub mod app;
+pub mod dest;
+pub mod picker;
+
 use serde::{Deserialize, Serialize};
 
 /// librespot's public desktop client id. Works for the OAuth PKCE flow

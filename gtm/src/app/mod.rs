@@ -7,56 +7,60 @@
 // submodule reaches them with one `use crate::app::*;`, so a few are
 // unused here by design.
 #![allow(unused_imports)]
-use std::future::Future;
-use std::path::Path;
-use std::pin::Pin;
-use std::time::Duration;
+pub(crate) use std::future::Future;
+pub(crate) use std::path::Path;
+pub(crate) use std::pin::Pin;
+pub(crate) use std::time::Duration;
 
-use crate::shared::client::{DaemonClient, LastfmStatus};
-use crate::shared::custom::CustomRadioStation;
-use crate::shared::global::{DaemonState, EqPreset, PlaybackStatus, RepeatMode};
-use crate::shared::ipc::{CacheKind, DaemonEvent, DaemonRes, HealthReport, SyncKind};
-use crate::shared::log::log;
-use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
-use crate::shared::radio::{RadioCountry, RadioStation, RadioTag, RadioTrack};
-use crate::shared::secret::{SPOTIFY_CLIENT_ID, get_secret, set_secret};
-use crate::shared::spotify::{
+pub(crate) use crate::shared::client::{DaemonClient, LastfmStatus};
+pub(crate) use crate::shared::custom::CustomRadioStation;
+pub(crate) use crate::shared::global::{DaemonState, EqPreset, PlaybackStatus, RepeatMode};
+pub(crate) use crate::shared::ipc::{CacheKind, DaemonEvent, DaemonRes, HealthReport, SyncKind};
+pub(crate) use crate::shared::log::log;
+pub(crate) use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
+pub(crate) use crate::shared::radio::{RadioCountry, RadioStation, RadioTag, RadioTrack};
+pub(crate) use crate::shared::secret::{SPOTIFY_CLIENT_ID, get_secret, set_secret};
+pub(crate) use crate::shared::spotify::{
     LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifySearchKind, SpotifyStatus, SpotifyTrack,
 };
-use crate::shared::state::{ThemeMode, TrackSort, path_is_remote};
-use crate::shared::track::{LrcData, LrcLine, Playlist, TrackInfo, YTSearchResult};
-use crate::shared::{CoreError, MAX_SPEED, MAX_VOLUME, MIN_SPEED, MetadataPatch};
-use crossterm::event::{
+pub(crate) use crate::shared::state::{ThemeMode, TrackSort, path_is_remote};
+pub(crate) use crate::shared::track::{LrcData, LrcLine, Playlist, TrackInfo, YTSearchResult};
+pub(crate) use crate::shared::{CoreError, MAX_SPEED, MAX_VOLUME, MIN_SPEED, MetadataPatch};
+pub(crate) use crossterm::event::{
     self, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
-use ratatui::Terminal;
-use ratatui::layout::Alignment;
-use ratatui::widgets::Paragraph;
-use ratatui_image::picker::Picker;
-use ratatui_image::protocol::StatefulProtocol;
-use tachyonfx::EffectManager;
-use tokio::sync::mpsc;
+pub(crate) use ratatui::Terminal;
+pub(crate) use ratatui::layout::Alignment;
+pub(crate) use ratatui::widgets::Paragraph;
+pub(crate) use ratatui_image::picker::Picker;
+pub(crate) use ratatui_image::protocol::StatefulProtocol;
+pub(crate) use tachyonfx::EffectManager;
+pub(crate) use tokio::sync::mpsc;
 
-use base64::Engine;
+pub(crate) use base64::Engine;
 
-use crate::extensions::{ExtensionId, ExtensionsConfig};
-use crate::footer::{FooterCache, FooterKeyAction, FooterPreset, is_live_stream, merged_presets};
-use crate::keymap::{
+pub(crate) use crate::extensions::{ExtensionId, ExtensionsConfig};
+pub(crate) use crate::footer::{
+    FooterCache, FooterKeyAction, FooterPreset, is_live_stream, merged_presets,
+};
+pub(crate) use crate::keymap::{
     BoundCommand, KeyContext, Keybindings, KeyboardAction, default_keybindings, detect_clashes,
     format_key_event, parse_key_event,
 };
-use crate::mouse::{MouseMap, MouseZone};
-use crate::oauth::{lastfm_callback_port, open_browser};
-use crate::picker::{PickerId, PickerManager, PickerSource};
-use crate::progress::{ProgressSmoother, ProgressStyle};
-use crate::reactive::{ReactivePalette, derive_theme, extract_palette};
-use crate::theme::{AppTheme, ThemeEntry, blend_colors, chadrula, detect_os_theme, merged_themes};
-use crate::ui;
-use crate::ui::{
+pub(crate) use crate::mouse::{MouseMap, MouseZone};
+pub(crate) use crate::oauth::{lastfm_callback_port, open_browser};
+pub(crate) use crate::picker::{PickerId, PickerManager, PickerSource};
+pub(crate) use crate::progress::{ProgressSmoother, ProgressStyle};
+pub(crate) use crate::reactive::{ReactivePalette, derive_theme, extract_palette};
+pub(crate) use crate::theme::{
+    AppTheme, ThemeEntry, blend_colors, chadrula, detect_os_theme, merged_themes,
+};
+pub(crate) use crate::ui;
+pub(crate) use crate::ui::{
     CROSSFADE_DURATIONS, Command, CommandPalette, HELP_LINES, cover_provider_label,
     theme_mode_label, use_nerd_fonts,
 };
-use crate::visualizer::{AudioVisualizer, VisualizerPreset};
+pub(crate) use crate::visualizer::{AudioVisualizer, VisualizerPreset};
 pub const NUM_SETTINGS_CATEGORIES: usize = 4;
 pub const LIBRARY_CATEGORIES: &[&str] = &[
     "All Tracks",
@@ -117,7 +121,7 @@ pub struct App {
     pub client: DaemonClient,
     pub state: DaemonState,
     pub display_position: f64,
-    last_display_position: f64,
+    pub(crate) last_display_position: f64,
     /// Raw (guarded, un-smoothed) daemon playback position used for
     /// time-synced lyric matching so the active verse updates without the
     /// EMA lag that smooths the progress bar.
@@ -125,16 +129,16 @@ pub struct App {
     /// Set when a seek is issued so the monotonic position guard is skipped
     /// (a backward seek would otherwise be clamped and never re-sync the lyric
     /// highlight). Cleared shortly after the seek lands.
-    seek_pending: Option<std::time::Instant>,
+    pub(crate) seek_pending: Option<std::time::Instant>,
     /// Coalesced seek commands: while the user holds a seek key (long-press),
     /// each repeat press adjusts `seek_cmd_accum` and the local position only.
     /// The daemon receives a single, debounced seek (via `ensure_seek_flush`)
     /// once the repeats settle — so it never does a full re-decode per keypress,
     /// which is what surfaced errors on long-press seeking.
-    seek_cmd_accum: Option<f64>,
-    last_seek_press: Option<std::time::Instant>,
+    pub(crate) seek_cmd_accum: Option<f64>,
+    pub(crate) last_seek_press: Option<std::time::Instant>,
     pub progress_smoother: ProgressSmoother,
-    last_frame: std::time::Instant,
+    pub(crate) last_frame: std::time::Instant,
     pub frame_count: u64,
     /// Progress whip scanner position (Knight Rider style).
     pub scanner_pos: i32,
@@ -149,7 +153,7 @@ pub struct App {
     /// Per-category selection index, keyed by `library_category`, so every
     /// list (All Tracks / Liked / Albums / Artists / Playlists / Spotify)
     /// keeps its own highlighted row.
-    scroll_offset: [usize; LIBRARY_CATEGORIES.len()],
+    pub(crate) scroll_offset: [usize; LIBRARY_CATEGORIES.len()],
     pub library_category: usize,
     pub library_pane_focus: bool,
     pub settings_category: usize,
@@ -158,11 +162,11 @@ pub struct App {
     pub tracks_cache: Vec<TrackInfo>,
     /// Generation bumped on every wholesale `tracks_cache` replacement; keys
     /// the `unique_*` caches below so per-frame renders don't rebuild maps.
-    tracks_cache_gen: u64,
-    cached_albums: CachedCategories,
-    cached_artists: CachedCategories,
-    cached_genres: CachedCategories,
-    cached_folders: CachedCategories,
+    pub(crate) tracks_cache_gen: u64,
+    pub(crate) cached_albums: CachedCategories,
+    pub(crate) cached_artists: CachedCategories,
+    pub(crate) cached_genres: CachedCategories,
+    pub(crate) cached_folders: CachedCategories,
     pub queue: QueueView,
     pub browse_detail: Option<String>,
     pub yt_results_cache: Vec<YTSearchResult>,
@@ -225,13 +229,13 @@ pub struct App {
     pub terminal_cols: u16,
     pub terminal_rows: u16,
     pub cmd_rx: mpsc::Receiver<TuiCommand>,
-    cmd_tx: mpsc::Sender<TuiCommand>,
-    pri_cmd_rx: mpsc::UnboundedReceiver<TuiCommand>,
-    pri_cmd_tx: mpsc::UnboundedSender<TuiCommand>,
-    ipc_rx: mpsc::UnboundedReceiver<IpcResult>,
-    ipc_tx: mpsc::UnboundedSender<IpcResult>,
-    keybindings: Keybindings,
-    prefs_keybindings: std::collections::HashMap<String, String>,
+    pub(crate) cmd_tx: mpsc::Sender<TuiCommand>,
+    pub(crate) pri_cmd_rx: mpsc::UnboundedReceiver<TuiCommand>,
+    pub(crate) pri_cmd_tx: mpsc::UnboundedSender<TuiCommand>,
+    pub(crate) ipc_rx: mpsc::UnboundedReceiver<IpcResult>,
+    pub(crate) ipc_tx: mpsc::UnboundedSender<IpcResult>,
+    pub(crate) keybindings: Keybindings,
+    pub(crate) prefs_keybindings: std::collections::HashMap<String, String>,
     pub theme_index: usize,
     pub list_scroll: usize,
     pub viewport_items: usize,
@@ -239,7 +243,7 @@ pub struct App {
     pub transparent_pickers: bool,
     pub reactive_theme: bool,
     pub reactive_theme_intensity: f32,
-    reactive_palette: Option<ReactivePalette>,
+    pub(crate) reactive_palette: Option<ReactivePalette>,
     pub last_action_name: Option<(String, std::time::Instant)>,
     pub footer_title_scroll: usize,
     /// strftime-style format string for the footer `Time` module.
@@ -249,7 +253,7 @@ pub struct App {
     /// How the library track list is sorted.
     pub track_sort: TrackSort,
     pub is_ready: bool,
-    last_queue_cursor: u64,
+    pub(crate) last_queue_cursor: u64,
     /// Set when the user manually triggers Next/Prev so the "Up next"
     /// notification only appears on genuine auto-advance.
     pub manual_track_advance: bool,
@@ -258,20 +262,20 @@ pub struct App {
     /// manual-advance flag is reset, so the dust animation can be gated to
     /// genuine auto-advances only.
     pub auto_track_advance: bool,
-    path_display: Option<String>,
-    prev_track_id: Option<i64>,
-    prev_status: PlaybackStatus,
-    prev_volume: u8,
-    prev_cover_id: Option<i64>,
-    cover_art_dirty: bool,
+    pub(crate) path_display: Option<String>,
+    pub(crate) prev_track_id: Option<i64>,
+    pub(crate) prev_status: PlaybackStatus,
+    pub(crate) prev_volume: u8,
+    pub(crate) prev_cover_id: Option<i64>,
+    pub(crate) cover_art_dirty: bool,
     /// Set whenever the daemon pushes events or refreshes state so the next
     /// frame re-renders even if no visual trigger (position/animation) is
     /// active yet. Cleared after each forced render.
-    data_dirty: bool,
+    pub(crate) data_dirty: bool,
     pub footer_cache: FooterCache,
     pub footer_presets: Vec<FooterPreset>,
     pub footer_preset: usize,
-    last_event_time: std::time::Instant,
+    pub(crate) last_event_time: std::time::Instant,
     pub multiselect_mode: bool,
     pub progress_style: ProgressStyle,
     pub visualizer: AudioVisualizer,
@@ -283,7 +287,7 @@ pub struct App {
     /// current visible list at call time, so stale or shifted indices can
     /// never make a batch op act on the wrong track or silently fail.
     pub selected_keys: std::collections::HashSet<String>,
-    pending_motion: Option<char>,
+    pub(crate) pending_motion: Option<char>,
     pub pending_track_ids: Vec<i64>,
     /// Id of a freshly-created playlist awaiting track selection.
     pub pending_playlist_id: Option<i64>,
@@ -317,23 +321,23 @@ pub struct App {
     pub popup_track_id: Option<i64>,
     pub track_popup_cover: Option<Vec<u8>>,
     pub popup_cover_stateful: Option<StatefulProtocol>,
-    popup_slot: FetchSlot<i64>,
+    pub(crate) popup_slot: FetchSlot<i64>,
     /// In-flight fetch slot for the Spotify drill-down popup cover, keyed by
     /// the track's album-image URL instead of a local library id.
-    spotify_popup_slot: FetchSlot<String>,
+    pub(crate) spotify_popup_slot: FetchSlot<String>,
     /// Cover art for the SearchLibrary picker preview window.
     pub picker_preview_cover: Option<Vec<u8>>,
     pub picker_preview_stateful: Option<StatefulProtocol>,
-    picker_slot: FetchSlot<i64>,
+    pub(crate) picker_slot: FetchSlot<i64>,
     /// Cover art for artist selections in the search picker preview.
     pub artist_cover: Option<Vec<u8>>,
     pub artist_cover_stateful: Option<StatefulProtocol>,
-    artist_slot: FetchSlot<String>,
+    pub(crate) artist_slot: FetchSlot<String>,
     /// Active "Up Next" crossfade-countdown notification.
     pub upnext: Option<UpNextNotif>,
     // Monotonic generation counter for all cover fetches — disambiguates
     // stale responses and `id == 0` reuse across different tracks.
-    next_cover_gen: u64,
+    pub(crate) next_cover_gen: u64,
     pub lyrics: LyricsView,
     /// Zen-mode flag: fullscreen cover/lyrics/visualizer surfaces.
     pub zen: bool,
@@ -349,7 +353,7 @@ pub struct App {
     /// Master switch for the left-pane track preview card.
     pub show_preview: bool,
     pub pending_suspend: bool,
-    last_config_mtime: Option<std::time::SystemTime>,
+    pub(crate) last_config_mtime: Option<std::time::SystemTime>,
 }
 
 pub(crate) enum IpcResult {
@@ -441,7 +445,7 @@ pub(crate) enum IpcResult {
 }
 /// Send a background-task error into the TUI event stream as an Error
 /// (surfaced in the notification history).
-fn self_err(ipc_tx: &mpsc::UnboundedSender<IpcResult>, msg: String) {
+pub(crate) fn self_err(ipc_tx: &mpsc::UnboundedSender<IpcResult>, msg: String) {
     let _ = ipc_tx.send(IpcResult::Error(msg));
 }
 
@@ -483,7 +487,7 @@ fn copy_to_clipboard(text: &str) -> Result<(), String> {
 /// Open the OAuth URL in a browser. When no opener works the authorize URL is
 /// already rendered inline in the link picker, so only a quiet fallback notice
 /// is recorded (no floating card). Non-blocking.
-fn try_open_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResult>) {
+pub(crate) fn try_open_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResult>) {
     let url = url.to_string();
     let ipc_tx = ipc_tx.clone();
     tokio::spawn(async move {
@@ -503,7 +507,7 @@ fn try_open_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResult>) {
 /// from the app dashboard the flow fails silently inside the browser (see
 /// `docs/spec/spotify-linking.md`). The empty-input fallback (librespot's
 /// public desktop id) always passes this check.
-fn client_id_error(client_id: &str, port: u16) -> Option<String> {
+pub(crate) fn client_id_error(client_id: &str, port: u16) -> Option<String> {
     if client_id.len() != 32 || !client_id.chars().all(|c| c.is_ascii_hexdigit()) {
         return Some(format!(
             "This doesn't look like a valid Spotify Client ID (32 hex chars).\n\
@@ -651,7 +655,7 @@ impl App {
         }
     }
 
-    fn next_cover_gen(&mut self) -> u64 {
+    pub(crate) fn next_cover_gen(&mut self) -> u64 {
         let g = self.next_cover_gen;
         self.next_cover_gen = self.next_cover_gen.wrapping_add(1).max(1);
         g
@@ -740,7 +744,7 @@ impl App {
         self.queue.preview_slot.clear();
     }
 
-    fn clear_popup_cover(&mut self) {
+    pub(crate) fn clear_popup_cover(&mut self) {
         self.popup_track_id = None;
         self.track_popup_cover = None;
         self.popup_cover_stateful = None;
@@ -1432,21 +1436,24 @@ impl App {
     }
 }
 
-pub mod charts;
 pub mod cmd;
 pub mod cover;
 pub mod keys;
-pub mod lastfm;
 pub mod lyrics;
 pub mod notify;
-pub mod podcast;
 pub mod prefs;
-pub mod radio;
 pub mod run;
 pub mod search;
-pub mod spotify;
 pub mod state;
 pub mod theme;
+
+// Per-provider actions live under `providers`; re-exported here so the glob
+// import every sibling module relies on keeps resolving them.
+pub use crate::providers::charts::app as charts;
+pub use crate::providers::lastfm::app as lastfm;
+pub use crate::providers::podcast::app as podcast;
+pub use crate::providers::radio::app as radio;
+pub use crate::providers::spotify::app as spotify;
 
 #[cfg(test)]
 mod tests;
