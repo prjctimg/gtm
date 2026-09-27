@@ -6,6 +6,53 @@ use crate::app::*;
 /// enough to grow for the whole session.
 pub(crate) const PREVIEW_CACHE_MAX: usize = 24;
 
+/// How closely a result answers `q`, lowest is best. A prefix beats an artist
+/// hit, which beats a hit anywhere in the title, which beats nothing.
+fn match_rank(q: &str, track: &SpotifyTrack) -> u8 {
+    let name = track.name.to_lowercase();
+    if name.starts_with(q) {
+        0
+    } else if track.artists.to_lowercase().contains(q) {
+        1
+    } else if name.contains(q) {
+        2
+    } else {
+        3
+    }
+}
+
+/// Row the search preview should show: the highlighted one, or — when it carries
+/// no artwork — the closest match for the query that does.
+///
+/// Results are appended local-cache-first and web-last, so the highlighted row is
+/// regularly a cache hit with no `image_url` while the web hit the user actually
+/// typed towards does have one. Falling back keeps the preview tied to what the
+/// query is asking for instead of to whichever row the cursor rests on.
+pub(crate) fn preview_pick(
+    picks: &[usize],
+    results: &[(String, String, SpotifyTrack)],
+    selected: usize,
+    query: &str,
+) -> Option<usize> {
+    let first = *picks.first()?;
+    let sel = picks[selected.min(picks.len() - 1)];
+    if results.get(sel)?.2.image_url.is_some() {
+        return Some(sel);
+    }
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return Some(first);
+    }
+    Some(
+        picks
+            .iter()
+            .copied()
+            .filter(|&i| results.get(i).is_some_and(|r| r.2.image_url.is_some()))
+            .min_by_key(|&i| match_rank(&q, &results[i].2))
+            .unwrap_or(first),
+    )
+}
+
 impl App {
     /// Run one Spotify Connect control from the Settings panel and feed the
     /// refreshed status back into the view, so the row text updates in place.
@@ -526,8 +573,19 @@ impl App {
             self.spotify.preview_fetch.clear();
             return;
         }
-        let sel = top.selected.min(picks.len() - 1);
-        let Some(url) = self.spotify.search_results[picks[sel]].2.image_url.clone() else {
+        let query = self
+            .pickers
+            .top()
+            .map_or(String::new(), |o| o.query.clone());
+        let Some(pick) = preview_pick(&picks, &self.spotify.search_results, top.selected, &query)
+        else {
+            self.spotify.preview_cover = None;
+            self.spotify.preview_shown = None;
+            self.spotify.preview_cover_stateful = None;
+            self.spotify.preview_fetch.clear();
+            return;
+        };
+        let Some(url) = self.spotify.search_results[pick].2.image_url.clone() else {
             self.spotify.preview_cover = None;
             self.spotify.preview_shown = None;
             self.spotify.preview_cover_stateful = None;
@@ -634,5 +692,78 @@ impl App {
                 }
             }
         }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hit(name: &str, artists: &str, image: bool) -> (String, String, SpotifyTrack) {
+        (
+            "web".to_string(),
+            "Spotify".to_string(),
+            SpotifyTrack {
+                name: name.to_string(),
+                artists: artists.to_string(),
+                image_url: image.then(|| "https://i.example/a.jpg".to_string()),
+                ..track()
+            },
+        )
+    }
+
+    fn track() -> SpotifyTrack {
+        SpotifyTrack {
+            index: 0,
+            name: String::new(),
+            artists: String::new(),
+            album: None,
+            duration_ms: None,
+            uri: None,
+            image_url: None,
+            kind: None,
+        }
+    }
+
+    /// The highlighted row wins whenever it has artwork, whatever else matches.
+    #[test]
+    fn selection_beats_a_better_match() {
+        let results = vec![
+            hit("Yesterday", "The Beatles", true),
+            hit("Yesterday", "Googoo Dolls", true),
+        ];
+        assert_eq!(preview_pick(&[0, 1], &results, 1, "yesterday"), Some(1));
+    }
+
+    /// A highlighted row with no artwork hands the preview to the closest match
+    /// that has some — the whole point, since the local cache hits first and
+    /// carry no `image_url`.
+    #[test]
+    fn falls_back_to_closest_match_with_art() {
+        let results = vec![
+            hit("Yesterday", "The Beatles", false),
+            hit("Yesterday", "Googoo Dolls", true),
+            hit("Yesterday", "Bing Crosby", true),
+        ];
+        // Both web hits tie on rank 0, so the first one in row order wins.
+        assert_eq!(preview_pick(&[0, 1, 2], &results, 0, "yesterday"), Some(1));
+    }
+
+    /// A prefix beats an artist match beats a mid-title match.
+    #[test]
+    fn rank_orders_prefix_then_artist_then_title() {
+        let q = "yes";
+        let prefix = hit("Yesterday", "Bing Crosby", true).2;
+        let artist = hit("Googoo Dolls", "Yes", true).2;
+        let title = hit("Hoy", "Nobody", true).2;
+        assert!(match_rank(q, &prefix) < match_rank(q, &artist));
+        assert!(match_rank(q, &artist) <= match_rank(q, &title));
+    }
+
+    /// Nothing to fall back to keeps the highlight rather than blanking.
+    #[test]
+    fn no_artwork_anywhere_keeps_the_row() {
+        let results = vec![hit("Yesterday", "The Beatles", false)];
+        assert_eq!(preview_pick(&[0], &results, 0, "yesterday"), Some(0));
     }
 }
