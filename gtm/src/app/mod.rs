@@ -504,9 +504,8 @@ pub(crate) fn try_open_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResu
 
 /// Validate a typed Spotify client id before starting the PKCE flow, and
 /// remind the user of the redirect-URI requirement: when the URI is missing
-/// from the app dashboard the flow fails silently inside the browser (see
-/// `docs/spec/spotify-linking.md`). The empty-input fallback (librespot's
-/// public desktop id) always passes this check.
+/// from the app dashboard the flow fails silently inside the browser. The
+/// empty-input fallback (librespot's public desktop id) always passes.
 pub(crate) fn client_id_error(client_id: &str, port: u16) -> Option<String> {
     if client_id.len() != 32 || !client_id.chars().all(|c| c.is_ascii_hexdigit()) {
         return Some(format!(

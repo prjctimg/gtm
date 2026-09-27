@@ -102,6 +102,13 @@ gtm.rs/
 │   │   ├── cli.rs          CLI command definitions (clap)
 │   │   ├── visualizer.rs   Audio visualizer (5 presets)
 │   │   ├── progress.rs     Progress bar (4 styles)
+│   │   ├── providers/      Per-integration client code (see below)
+│   │   │   ├── spotify/    Spotify: types, actions, pickers, cover, lyrics
+│   │   │   ├── radio/      Radio Browser: types, actions, picker
+│   │   │   ├── podcast/    Podcast feeds: types, actions, picker
+│   │   │   ├── charts/     Top charts: model, tree actions
+│   │   │   ├── lastfm/     Last.fm: status, love, scrobble toggle
+│   │   │   └── yt/         YouTube: host configuration
 │   │   ├── shared/         Core: IPC protocol, state machine, DaemonClient
 │   │   │   ├── mod.rs      Module declarations, re-exports
 │   │   │   ├── ipc.rs      68 typed commands, 30+ events, wire format
@@ -111,7 +118,6 @@ gtm.rs/
 │   │   │   ├── track.rs    TrackInfo, Playlist, LrcData, YTSearchResult
 │   │   │   ├── wire.rs     MessagePack encode/decode for pulse socket
 │   │   │   ├── paths.rs    Termux-aware path resolution
-│   │   │   ├── spotify.rs  Spotify types
 │   │   │   ├── log.rs      File logger
 │   │   │   ├── validate.rs Validated constructors
 │   │   │   └── tripwire.rs Fail-point injection (debug-fail feature)
@@ -127,21 +133,36 @@ gtm.rs/
 │   │   │   └── pulse.rs    PulseAudioMixer (pulseaudio feature)
 │   │   ├── mpris/          MPRIS D-Bus integration (mpris feature)
 │   │   │   └── mod.rs
-│   │   └── gtmd/           Background daemon
-│   │       ├── mod.rs      Module declarations, re-exports
-│   │       ├── daemon.rs   Main event loop, client handling, command dispatch
-│   │       ├── config.rs   DaemonConfig (paths, settings)
-│   │       ├── library.rs  SQLite library (tracks, playlists, metadata)
-│   │       ├── queue.rs    Queue helpers (dual-list, path expansion)
-│   │       ├── youtube.rs  YouTube search/streams via innertube-rs (youtube feature)
-│   │       ├── spotify.rs  Spotify Web API integration
-│   │       ├── cover.rs    Cover art (Deezer API + LRU cache)
-│   │       ├── lyrics.rs   Lyrics (lrclib.net + disk cache)
-│   │       ├── deezer.rs   Deezer metadata enrichment
-│   │       ├── tags.rs     Audio tag writing (lofty)
-│   │       └── cleaner.rs  YouTube title/filename cleaning
-│   └── tests/              Integration tests (core, audio, daemon)
+│   │   └── app/            Application state machine
+│   │       ├── mod.rs      App struct, IpcResult, shared import hub
+│   │       ├── keys.rs     Keybinding build and the full key handler
+│   │       ├── run.rs      Event loop, IPC drain, debounce
+│   │       ├── cover.rs    Cross-provider cover routing
+│   │       └── lyrics.rs   Cross-provider lyrics routing
+│   └── tests/              Integration tests (core, playback, opus)
 ├── gtmd/                   Daemon crate (gtmd binary, core playback engine)
+│   └── src/
+│       ├── lib.rs          Module declarations, re-exports
+│       ├── daemon/         Event loop, client handling, command dispatch
+│       │   ├── mod.rs      Daemon, DaemonInner, Cmd, command dispatch
+│       │   ├── cover.rs    Cover routing across providers
+│       │   └── lyrics.rs   Lyrics routing
+│       ├── providers/      Per-integration daemon code (mirrors gtm/src/providers)
+│       │   ├── spotify/    Web API, librespot bridge, artwork, lyrics, IPC
+│       │   ├── radio/      Radio Browser client, station tracklists
+│       │   ├── podcast/    Feed storage, RSS/Atom parsing
+│       │   ├── charts/     Chart registry and providers
+│       │   ├── lrclib/     Lyrics provider, cache, LRC/SRT parsers
+│       │   ├── deezer/     Deezer metadata and cover lookups
+│       │   ├── musicbrainz/ Catalogue and Cover Art Archive lookups
+│       │   ├── lastfm/     Scrobble, love, now-playing
+│       │   └── youtube/    Search and download via innertube-rs (youtube feature)
+│       ├── cover.rs        Shared cover cache (LRU + on-disk, keyed by URL)
+│       ├── library.rs      SQLite library (tracks, playlists, metadata)
+│       ├── queue.rs        Queue helpers (dual-list, path expansion)
+│       ├── config.rs       DaemonConfig (paths, settings)
+│       ├── tags.rs         Audio tag writing (lofty)
+│       └── cleaner.rs      YouTube title/filename cleaning
 ├── gtm/build/              Build-time helpers, incl. build/completions.rs
 ├── docs/                   Documentation (manpage sources)
 ├── scripts/build/          Build scripts (packaging, manpages, verification)
@@ -150,7 +171,7 @@ gtm.rs/
 ├── Formula/                Homebrew formula
 ├── artifacts/              Generated manpages and completions
 ├── Makefile                Build targets (release, test, man, completions, deb, rpm)
-├── Cargo.toml              Workspace root (single member: gtm)
+├── Cargo.toml              Workspace root (members: gtm, gtmd)
 └── flake.nix               Nix flake
 ```
 
@@ -158,20 +179,26 @@ gtm.rs/
 
 | File                       | Purpose                                                                       |
 | -------------------------- | ----------------------------------------------------------------------------- |
-| `gtm/src/app.rs`           | Application state machine: input handling, IPC dispatch, crossfade, preferences |
-| `gtm/src/ui.rs`            | TUI rendering: all widgets, layout, tab content, overlays, notifications      |
+| `gtm/src/app/mod.rs`       | Application state machine: input handling, IPC dispatch, crossfade, preferences |
+| `gtm/src/app/cover.rs`     | Cross-provider cover routing: which surface fetches what, stale-reply guards |
+| `gtm/src/app/lyrics.rs`    | Cross-provider lyrics routing and the time-sync highlight                    |
+| `gtm/src/providers/`       | One directory per integration: wire types, state, actions, pickers            |
+| `gtm/src/ui/chrome.rs`     | TUI rendering: layout, panes, list viewports, overlays                        |
+| `gtm/src/ui/pickers/`      | Picker overlay rendering, dispatched from `PickerId`                          |
 | `gtm/src/keymap.rs`        | Context-aware keybinding dispatch (Global, Normal, List)                      |
 | `gtm/src/theme.rs`         | 16 built-in themes + TOML user themes, contrast-safe rendering                |
 | `gtm/src/footer.rs`        | Modular footer: 14 module types, 3 built-in presets, TOML user presets        |
 | `gtm/src/picker.rs`        | Picker overlay manager: LIFO stack of 15 picker types                         |
 | `gtm/src/cli.rs`           | CLI command definitions (30+ subcommands via clap)                            |
-| `gtm/src/gtmd/daemon.rs`   | Main daemon logic: tokio event loop, client handling, command dispatch        |
-| `gtm/src/gtmd/library.rs`  | SQLite library: tracks, playlists, metadata extraction, M3U                   |
 | `gtm/src/shared/ipc.rs`    | IPC protocol: wire format, 68 typed commands, 30+ events                      |
 | `gtm/src/shared/state.rs`  | DaemonState, EQ presets (16), easing functions (7)                            |
 | `gtm/src/shared/client.rs` | Async IPC client: reconnection, clock estimation, typed API                   |
 | `gtm/src/audio/mixer.rs`   | Audio mixer: dual-player crossfade, decode threads, ring buffer               |
 | `gtm/src/audio/eq.rs`      | 15-band parametric EQ (fundsp) + stereo reverb                                |
+| `gtmd/src/daemon/mod.rs`   | Daemon, DaemonInner, Cmd: tokio event loop, client handling, command dispatch  |
+| `gtmd/src/providers/`      | One directory per integration: clients, artwork, lyrics, streaming            |
+| `gtmd/src/cover.rs`        | Shared cover cache (LRU + on-disk), keyed by artist/album or by URL           |
+| `gtmd/src/library.rs`      | SQLite library: tracks, playlists, metadata extraction, M3U                   |
 
 ## Manpage generation
 
