@@ -28,18 +28,32 @@ const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
 /// `None` when the track carries no artist or title to search on, or when the
 /// provider had nothing. Never errors: a playlist row without lyrics is a
 /// normal outcome, not a failure worth surfacing.
+/// Lyrics for one synced playlist track, resolved from the metadata the sync
+/// already cached rather than from a library row.
+///
+/// Goes through [`LyricsManager::get_lyrics`], the same path a local file takes:
+/// disk cache, then lrclib's exact `/api/get` keyed on artist, track, album *and*
+/// duration, then progressively looser fallbacks. The previous
+/// [`LyricsManager::search`] sent only `/api/search?q=<artist> <title>` — no
+/// album, no duration, no cache — so a synced playlist row was the one track kind
+/// that could not get a precise match even when the sync held every field needed
+/// to make one.
+///
+/// `None` when the track carries no artist or title to search on, or when the
+/// provider had nothing. Never errors: a playlist row without lyrics is a
+/// normal outcome, not a failure worth surfacing.
 pub(crate) async fn for_track(inner: &DaemonInner, track: &TrackInfo) -> DaemonRes {
-    let Some(query) = query_of(track) else {
+    if query_of(track).is_none() {
         return DaemonRes::Lyrics { lyrics: None };
-    };
+    }
     let Some(manager) = inner.lyrics_manager().await else {
         return DaemonRes::Lyrics { lyrics: None };
     };
-    let lyrics = tokio::time::timeout(LOOKUP_TIMEOUT, manager.search(&query.0, &query.1))
+    let lyrics = tokio::time::timeout(LOOKUP_TIMEOUT, manager.get_lyrics(track))
         .await
         .ok()
         .flatten();
-    debug!("spotify lyrics for `{}`: {}", query.1, lyrics.is_some());
+    debug!("spotify lyrics for `{}`: {}", track.title, lyrics.is_some());
     DaemonRes::Lyrics { lyrics }
 }
 

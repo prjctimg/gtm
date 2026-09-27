@@ -427,6 +427,7 @@ fn res_spotify_wire() {
         error: None,
     };
     let playlist = SpotifyPlaylist {
+        image_url: None,
         id: "37i9dQZEVX".into(),
         name: "Test Mix".into(),
         owner: "spotify".into(),

@@ -34,7 +34,7 @@ use gtm::shared::secret::{
 };
 use gtm::shared::spotify::{LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 
-use api::track_from_playable;
+use api::{pick_largest_image, track_from_playable};
 
 pub use gtm::shared::spotify::pretty_id;
 
@@ -506,6 +506,9 @@ impl SpotifyManager {
                 id: "liked-songs".to_string(),
                 name: pretty_id("liked-songs"),
                 owner: user.clone().unwrap_or_default(),
+                // The synthetic entry does have art on Spotify's side, but it
+                // is not in `metas` — the paginator only walks real playlists.
+                image_url: None,
                 tracks: saved,
             });
         }
@@ -518,6 +521,7 @@ impl SpotifyManager {
                 id: meta.id.as_ref().to_string(),
                 name: meta.name.clone(),
                 owner: meta.owner.display_name.clone().unwrap_or_default(),
+                image_url: pick_largest_image(&meta.images),
                 tracks,
             });
         }
@@ -761,6 +765,7 @@ mod tests {
 
     fn playlist(id: &str) -> SpotifyPlaylist {
         SpotifyPlaylist {
+            image_url: None,
             id: id.to_string(),
             name: id.to_string(),
             owner: String::new(),

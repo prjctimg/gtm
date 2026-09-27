@@ -55,6 +55,10 @@ pub struct SpotifyPlaylist {
     pub id: String,
     pub name: String,
     pub owner: String,
+    /// Cover-art URL captured during the sync, so the client can show a
+    /// playlist's own image rather than borrowing a track's.
+    #[serde(default)]
+    pub image_url: Option<String>,
     pub tracks: Vec<SpotifyTrack>,
 }
 

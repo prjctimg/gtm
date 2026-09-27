@@ -272,6 +272,14 @@ pub struct SpotifyView {
     /// The sweep runs from the cursor-move path, so without this a thousand
     /// track playlist would be re-requested on every keypress.
     pub prefetched_for: Option<String>,
+    /// Cover art of the highlighted *playlist*, shown in the left pane's info
+    /// slot. Separate from `row_cover` because the two views are never open at
+    /// once and sharing one slot would make whichever rendered last blank the
+    /// other.
+    pub list_cover: Option<Vec<u8>>,
+    pub list_cover_stateful: Option<StatefulProtocol>,
+    pub list_fetch: FetchSlot<String>,
+    pub list_shown: Option<String>,
 }
 
 /// Top Charts picker state, grouped under `App::charts`.

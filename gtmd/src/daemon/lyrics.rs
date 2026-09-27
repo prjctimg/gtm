@@ -77,13 +77,33 @@ impl Lyrics {
         inner: &DaemonInner,
         artist: &str,
         title: &str,
+        album: Option<&str>,
+        duration: Option<f64>,
     ) -> Result<DaemonRes, CoreError> {
         if let Some(manager) = inner.lyrics_manager().await {
-            let lyrics =
+            // With an album and duration the caller holds everything lrclib's
+            // exact `/api/get` needs, so build a track and take the same strong
+            // path a library file does — disk cache first, then exact, then the
+            // looser fallbacks. Without them, fall back to the loose search the
+            // two-field request has always used.
+            let lyrics = if album.is_some() || duration.is_some() {
+                let track = TrackInfo {
+                    title: title.to_string(),
+                    artist: artist.to_string(),
+                    album: album.unwrap_or_default().to_string(),
+                    duration: duration.unwrap_or_default(),
+                    ..Default::default()
+                };
+                tokio::time::timeout(Duration::from_secs(10), manager.get_lyrics(&track))
+                    .await
+                    .ok()
+                    .flatten()
+            } else {
                 tokio::time::timeout(Duration::from_secs(10), manager.search(artist, title))
                     .await
                     .ok()
-                    .flatten();
+                    .flatten()
+            };
             Ok(DaemonRes::Lyrics { lyrics })
         } else {
             Ok(DaemonRes::Lyrics { lyrics: None })

@@ -1213,7 +1213,14 @@ impl Render {
         let left_inner = Render::pane_header(f, panes[0], app, " ", left_focus, false, false);
         fill_pane(f, left_inner, app);
 
-        let track_info_h: u16 = if app.show_preview && app.track_popup_visible && !is_small_height {
+        // The left pane's info slot shows the track card, or the highlighted
+        // Spotify playlist's cover while that list is open. Either one is
+        // enough to reserve the slot, so the two conditions are OR'd rather
+        // than nested — gating the playlist case on the track popup would leave
+        // it at zero height for most of a browsing session.
+        let want_track_card = app.show_preview && app.track_popup_visible && !is_small_height;
+        let want_playlist_card = app.in_spotify_playlists() && app.spotify.list_cover.is_some();
+        let track_info_h: u16 = if (want_track_card || want_playlist_card) && !is_small_height {
             let avail_h = left_inner.height.saturating_sub(1);
             let need = info_block_h();
             // Reserve at least 4 rows for the category list so "Spotify" never gets clipped.
@@ -1227,7 +1234,7 @@ impl Render {
             .constraints([
                 Constraint::Min(4),
                 Constraint::Length(
-                    if app.show_preview && app.track_popup_visible && !is_small_height {
+                    if (want_track_card || want_playlist_card) && !is_small_height {
                         1
                     } else {
                         0
@@ -2003,7 +2010,12 @@ impl Render {
             }
         };
 
-        if app.show_preview
+        if want_playlist_card
+            && left_info_area.height > 0
+            && (info_sep_area.height > 0 || left_info_area.height > 0)
+        {
+            Render::playlist_in_pane(f, left_info_area, app);
+        } else if app.show_preview
             && app.track_popup_visible
             && left_info_area.height >= info_block_h()
             && (info_sep_area.height > 0 || left_info_area.height > 0)
@@ -2485,6 +2497,69 @@ impl Render {
         }
         let para = Paragraph::new(lines);
         f.render_widget(para, area);
+    }
+
+    /// The highlighted Spotify playlist, in the left pane's info slot: its cover
+    /// above its name, owner and track count.
+    ///
+    /// Shares the slot with the track card rather than taking a new one, so it
+    /// only renders when there is art to show — an empty slot would push the
+    /// category list up for nothing.
+    pub(crate) fn playlist_in_pane(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let Some(playlist) = app.highlighted_playlist() else {
+            return;
+        };
+        let text_need = 3u16;
+        let cover_h_avail = area.height.saturating_sub(text_need).saturating_sub(1);
+        let cover_h = COVER_H.min(cover_h_avail);
+        let cover_w = (cover_h * 2).min(area.width.saturating_sub(2));
+        let mut y = area.y;
+        if cover_h > 0 && cover_w > 0 {
+            let cover_area = Rect {
+                x: area.x + area.width.saturating_sub(cover_w) / 2,
+                y,
+                width: cover_w,
+                height: cover_h,
+            };
+            Render::cover(
+                f,
+                cover_area,
+                app.spotify.list_cover_stateful.as_mut(),
+                app.spotify.list_cover.as_deref(),
+                app.theme.fg_dim,
+                None,
+            );
+            y += cover_h;
+        }
+        // The pane is one line per field, so clip on width rather than let the
+        // paragraph wrap and push the owner line off the bottom.
+        let clip = |t: &str| t.chars().take(area.width as usize).collect::<String>();
+        let name = clip(&playlist.name);
+        let owner = clip(&playlist.owner);
+        let count = format!(
+            " {} {} ",
+            playlist.track_count(),
+            plural(playlist.track_count(), "track", "tracks")
+        );
+        for line in [
+            Line::from(Span::styled(name, Style::default().fg(app.theme.fg_bright))),
+            Line::from(Span::styled(count, Style::default().fg(app.theme.fg_dim))),
+            Line::from(Span::styled(owner, Style::default().fg(app.theme.fg_dim))),
+        ] {
+            if y >= area.y + area.height {
+                break;
+            }
+            f.render_widget(
+                Paragraph::new(line).alignment(Alignment::Center),
+                Rect {
+                    x: area.x,
+                    y,
+                    width: area.width,
+                    height: 1,
+                },
+            );
+            y += 1;
+        }
     }
 
     pub(crate) fn info_in_pane(f: &mut ratatui::Frame, sep_area: Rect, area: Rect, app: &mut App) {

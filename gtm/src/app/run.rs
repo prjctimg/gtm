@@ -1134,6 +1134,15 @@ impl App {
                             self.artist_cover_sync();
                         }
                     }
+                    IpcResult::SpotifyListCover(cover, url, fetch_gen) => {
+                        if !no_image_protocol()
+                            && self.spotify.list_fetch.id.as_deref() == Some(&url)
+                            && self.spotify.list_fetch.matches(fetch_gen)
+                        {
+                            self.spotify.list_cover = cover;
+                            self.spotify.list_shown = Some(url);
+                        }
+                    }
                     IpcResult::SpotifyRowCover(cover, url, fetch_gen) => {
                         // Same guards as the search preview: the reply has to
                         // match the URL still being awaited and the generation

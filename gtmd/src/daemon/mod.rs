@@ -2927,7 +2927,12 @@ impl Daemon {
             DaemonReq::GetLyrics { track_id, path } => {
                 Lyrics::get(inner, *track_id, path.clone()).await
             }
-            DaemonReq::LyricsSearch { artist, title } => Lyrics::search(inner, artist, title).await,
+            DaemonReq::LyricsSearch {
+                artist,
+                title,
+                album,
+                duration,
+            } => Lyrics::search(inner, artist, title, album.as_deref(), *duration).await,
             DaemonReq::SpotifySetToken { token } => Spotify::set_token(inner, token).await,
             DaemonReq::SpotifyOauthStart { client_id, port } => {
                 Spotify::oauth_start(inner, client_id, *port).await

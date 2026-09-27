@@ -208,8 +208,13 @@ impl App {
         self.clear_selection();
         self.playlist_tracks_cache.clear();
         // Leaving the drill-down must not leave its cover bound to a row that
-        // is no longer selected.
+        // is no longer selected, and arriving at a new category must not leave
+        // the previous one's playlist art behind.
         self.clear_row_cover();
+        self.clear_list_cover();
+        if self.in_spotify_playlists() {
+            self.fetch_list_cover();
+        }
         self.spotify.playlist_tracks_cache.clear();
         match self.library_category {
             6 => self.refresh_custom_stations(),

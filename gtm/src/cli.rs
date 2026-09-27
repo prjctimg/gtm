@@ -878,9 +878,11 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     Some((a, t)) => (a.trim().to_string(), t.trim().to_string()),
                     None => (String::new(), query.trim().to_string()),
                 };
+                // A free-form "artist - title" query carries no album or
+                // duration, so the daemon falls back to the loose search.
                 let lyrics = client
                     .lyrics()
-                    .search(&artist, &title)
+                    .search(&artist, &title, None, None)
                     .await
                     .map_err(|e| e.to_string())?;
                 if json {
@@ -950,7 +952,12 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                             lyrics = match &state.current_track {
                                 Some(t) => client
                                     .lyrics()
-                                    .search(&t.artist, &t.title)
+                                    .search(
+                                        &t.artist,
+                                        &t.title,
+                                        Some(t.album.as_str()).filter(|a| !a.trim().is_empty()),
+                                        (t.duration > 0.0).then_some(t.duration),
+                                    )
                                     .await
                                     .ok()
                                     .flatten(),
@@ -1593,29 +1600,38 @@ async fn spotify_login(
                 .and_then(|v| v.parse().ok())
         })
         .unwrap_or(8990);
-    // Resolve the client id: explicit arg > keychain > masked prompt (so a
-    // locked keychain still lets the user log in).
+    // Which Spotify app to authorize against: explicit arg > `GTM_SPOTIFY_CLIENT_ID`
+    // > librespot's public desktop app.
     //
-    // An empty id — from an explicit `--client-id ""`, a blank prompt, or no
-    // stored secret — means librespot's public desktop app, the one Spotify
-    // permits for streaming. That is also the only reliable way out of a token
-    // minted by a self-registered app: such an app works for the Web API
-    // (sync, search, artwork all fine) but the Connect endpoint librespot
-    // streams over rejects it, so playback is silent with nothing in the log
-    // but a refusal. A stored id is never re-applied blindly, because that
-    // silently resurrected exactly such an id and re-broke a working link.
-    let client_id = match client_id {
+    // A *stored* id is deliberately not consulted here. A self-registered app
+    // mints perfectly valid tokens — sync, search, artwork all work — but
+    // Spotify's Connect endpoint, which is what librespot streams over, is
+    // allowlisted by client id and refuses it. So re-applying the stored id
+    // silently produced a link that looked healthy and played nothing, and
+    // because the CLI never asked, the only way out was to pass an id the user
+    // had no reason to know they needed. Myx has no such fallback: it hardcodes
+    // the librespot id and only lets an override in explicitly.
+    let client_id = match client_id
+        .map(|c| c.trim().to_string())
+        .filter(|c| !c.is_empty())
+    {
         Some(c) => c,
-        None => match get_secret(SPOTIFY_CLIENT_ID) {
-            Some(c) => c,
-            None => masked_prompt("Spotify Client ID (blank for the default app): ")?,
-        },
+        None => std::env::var("GTM_SPOTIFY_CLIENT_ID")
+            .ok()
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty())
+            .unwrap_or_else(|| LIBRESPOT_CLIENT_ID.to_string()),
     };
-    let client_id = if client_id.trim().is_empty() {
-        LIBRESPOT_CLIENT_ID.to_string()
-    } else {
-        client_id.trim().to_string()
-    };
+    if client_id == LIBRESPOT_CLIENT_ID
+        && let Some(stored) = get_secret(SPOTIFY_CLIENT_ID)
+        && stored.trim() != LIBRESPOT_CLIENT_ID
+    {
+        eprintln!(
+            "note: ignoring your stored Spotify client id; using the default app. \
+             A self-registered app cannot stream — set GTM_SPOTIFY_CLIENT_ID to \
+             override deliberately."
+        );
+    }
     set_secret(SPOTIFY_CLIENT_ID, &client_id);
 
     let url = client

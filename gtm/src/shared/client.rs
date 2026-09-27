@@ -1791,12 +1791,24 @@ impl<'a> Lyrics<'a> {
     }
 
     /// Fetch lyrics for a free-form artist/title pair (no track id or path).
-    pub async fn search(&self, artist: &str, title: &str) -> Result<Option<track::LrcData>> {
+    ///
+    /// `album` and `duration` are what let the daemon use lrclib's exact
+    /// `/api/get` lookup instead of a loose search, so pass them whenever the
+    /// caller has them — a synced playlist track has all four fields.
+    pub async fn search(
+        &self,
+        artist: &str,
+        title: &str,
+        album: Option<&str>,
+        duration: Option<f64>,
+    ) -> Result<Option<track::LrcData>> {
         let res = self
             .client
             .send_raw(DaemonReq::LyricsSearch {
                 artist: artist.into(),
                 title: title.into(),
+                album: album.map(str::to_string),
+                duration,
             })
             .await?;
         match res {

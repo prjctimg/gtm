@@ -342,6 +342,14 @@ pub enum DaemonReq {
     LyricsSearch {
         artist: String,
         title: String,
+        /// Album and duration let the daemon use lrclib's exact `/api/get`
+        /// lookup, which needs all four fields to match precisely. Optional so a
+        /// client that only knows artist and title still works — the daemon
+        /// falls back to the looser search.
+        #[serde(default)]
+        album: Option<String>,
+        #[serde(default)]
+        duration: Option<f64>,
     },
     SpotifySetToken {
         token: String,
@@ -1086,11 +1094,17 @@ impl DaemonReq {
                 struct Params {
                     artist: String,
                     title: String,
+                    #[serde(default)]
+                    album: Option<String>,
+                    #[serde(default)]
+                    duration: Option<f64>,
                 }
                 let x: Params = p(params)?;
                 DaemonReq::LyricsSearch {
                     artist: x.artist,
                     title: x.title,
+                    album: x.album,
+                    duration: x.duration,
                 }
             }
             "spotify_set_token" => {

@@ -295,6 +295,13 @@ impl App {
         self.browse_detail.is_some() && self.library_category == 5
     }
 
+    /// The Spotify *playlist list* is showing: category 5 with no drill-down
+    /// open. Distinct from [`Self::in_spotify_playlist`], which is the
+    /// track list one level deeper.
+    pub fn in_spotify_playlists(&self) -> bool {
+        self.browse_detail.is_none() && self.library_category == 5
+    }
+
     /// Row count of the Spotify playlist drill-down list, including the two
     /// virtual action rows (`Play All`, `Shuffle`) at the top.
     pub fn spotify_playlist_rows(&self) -> usize {
@@ -718,6 +725,60 @@ impl App {
         self.spotify.row_cover_index = None;
         self.spotify.row_shown = None;
         self.spotify.prefetched_for = None;
+    }
+
+    /// The highlighted playlist in the Spotify playlist list, when that list is the
+    /// one being shown.
+    pub fn highlighted_playlist(&self) -> Option<SpotifyPlaylist> {
+        if !self.in_spotify_playlists() {
+            return None;
+        }
+        let i = self.list_pos();
+        self.spotify.playlists.get(i).cloned()
+    }
+    /// Fetch the highlighted playlist's cover art for the left pane's info slot.
+    ///
+    /// Latched on the playlist id so cursor movement does not refetch, and issued
+    /// only for a playlist that actually has art, so the pane does not open a slot
+    /// it will leave empty.
+    pub fn fetch_list_cover(&mut self) {
+        if no_image_protocol() {
+            return;
+        }
+        let Some(playlist) = self.highlighted_playlist() else {
+            self.clear_list_cover();
+            return;
+        };
+        let Some(url) = playlist.image_url.clone().filter(|u| !u.trim().is_empty()) else {
+            self.clear_list_cover();
+            return;
+        };
+        if self.spotify.list_shown.as_deref() == Some(url.as_str())
+            || self.spotify.list_fetch.pending(&url)
+        {
+            return;
+        }
+        let fetch_gen = self.next_cover_gen();
+        self.spotify.list_fetch.claim(url.clone(), fetch_gen);
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            let msg = match client.spotify().track_image(&url).await {
+                Ok(Some(b64)) => base64::engine::general_purpose::STANDARD
+                    .decode(&b64)
+                    .map(Some)
+                    .unwrap_or(None),
+                _ => None,
+            };
+            let _ = ipc_tx.send(IpcResult::SpotifyListCover(msg, url, fetch_gen));
+        });
+    }
+    /// Drop the playlist cover so a stale image cannot outlive its selection.
+    pub fn clear_list_cover(&mut self) {
+        self.spotify.list_cover = None;
+        self.spotify.list_cover_stateful = None;
+        self.spotify.list_fetch.clear();
+        self.spotify.list_shown = None;
     }
 }
 

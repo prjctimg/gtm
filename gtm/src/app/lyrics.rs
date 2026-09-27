@@ -111,7 +111,12 @@ impl App {
     pub(crate) fn fetch_lyrics(&mut self, track: &TrackInfo) {
         let (track_id, path) = (track.id, Some(track.path.clone()));
         match lyrics_query(track) {
-            Some((artist, title)) => self.search_lyrics(&artist, &title),
+            Some((artist, title)) => self.search_lyrics(
+                &artist,
+                &title,
+                Some(track.album.as_str()).filter(|a| !a.trim().is_empty()),
+                (track.duration > 0.0).then_some(track.duration),
+            ),
             None => self.library_lyrics(track_id, path),
         }
     }
@@ -125,17 +130,32 @@ impl App {
         if track.artists.trim().is_empty() || track.name.trim().is_empty() {
             return;
         }
-        self.search_lyrics(track.artists.trim(), track.name.trim());
+        self.search_lyrics(
+            track.artists.trim(),
+            track.name.trim(),
+            track.album.as_deref(),
+            track.duration_ms.map(|ms| ms as f64 / 1000.0),
+        );
     }
 
-    fn search_lyrics(&mut self, artist: &str, title: &str) {
+    fn search_lyrics(
+        &mut self,
+        artist: &str,
+        title: &str,
+        album: Option<&str>,
+        duration: Option<f64>,
+    ) {
         let (artist, title) = (artist.to_string(), title.to_string());
+        let album = album.map(str::to_string);
         let fetch_gen = self.begin_lyrics();
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
             report(
-                client.lyrics().search(&artist, &title).await,
+                client
+                    .lyrics()
+                    .search(&artist, &title, album.as_deref(), duration)
+                    .await,
                 &ipc_tx,
                 fetch_gen,
             );
