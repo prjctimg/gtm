@@ -726,7 +726,6 @@ impl SpotifyManager {
 /// Refresh failures are reported rather than swallowed: a token that could
 /// not be refreshed is not a usable credential, and returning it anyway turns
 /// every downstream call into a confusing network error.
-
 fn parse_token(raw: &str) -> Result<Token, String> {
     let raw = raw.trim();
     if raw.is_empty() {

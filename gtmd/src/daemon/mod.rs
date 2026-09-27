@@ -3916,7 +3916,7 @@ impl Daemon {
                         inner.cover_preloaded_for.lock().await.as_deref() != Some(&track.path);
                     if due {
                         *inner.cover_preloaded_for.lock().await = Some(track.path.clone());
-                        let warm = Arc::clone(&inner);
+                        let warm = inner.clone();
                         let ahead = track.clone();
                         tokio::spawn(async move {
                             if preload(&warm, &ahead).await {
