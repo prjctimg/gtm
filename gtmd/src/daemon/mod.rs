@@ -154,12 +154,13 @@ impl Cmd {
         // Bump first so any in-flight auto-advance/crossfade task sees a
         // session change and backs out before it touches state.
         inner.play_session.fetch_add(1, Ordering::Release);
-        // An explicit request for any source takes the output away from radio
-        // for good, not just until the next auto-advance. `step_next` cycles
-        // `radio_history` when the current entry is a station, so without this
-        // a spotify track that failed or ended would silently hand the output
-        // back to a station the user had already left.
-        if !auto_advanced {
+        // Playing anything that is not a station takes the output away from
+        // radio for good, including on an auto-advance: `step_next` cycles
+        // `radio_history` whenever it lands on a station, so leaving the ring
+        // populated is what made a track that failed to play hand the output
+        // to a station the user had already left. A station keeps the ring, so
+        // rotating through stations still works.
+        if !path.starts_with("radio://") {
             inner.state.write().await.radio_history.clear();
         }
         if path.starts_with("spotify:") {
@@ -295,6 +296,17 @@ impl Cmd {
         Ok(DaemonRes::Ok)
     }
 
+    /// A track the daemon could not start must not hand the output to whatever
+    /// happens to be queued next: the mixer has already stopped, and the empty
+    /// ring fires `Finished`, which walks `step_next` straight into an unrelated
+    /// source. The queue entry stays so the user can retry, but the
+    /// auto-advance fallback is switched off until they ask for something else.
+    async fn play_failed(inner: &DaemonInner, message: String) -> Result<DaemonRes, CoreError> {
+        warn!("playback failed: {message}");
+        inner.state.write().await.fallback_disabled = true;
+        Ok(DaemonRes::Error { message })
+    }
+
     /// Play a `spotify:track:<id>` URI through the librespot streaming
     /// bridge. Requires a linked Premium account; the queue entry (created
     /// at resolve time) already carries title/artist/album metadata.
@@ -390,11 +402,7 @@ impl Cmd {
                 .await
             {
                 Ok(s) => s,
-                Err(e) => {
-                    return Ok(DaemonRes::Error {
-                        message: format!("spotify stream: {e}"),
-                    });
-                }
+                Err(e) => return Self::play_failed(inner, format!("spotify stream: {e}")).await,
             }
         };
         let dur = {
@@ -402,7 +410,11 @@ impl Cmd {
             // A decode thread drains the provider source, so its network waits
             // can never stall the output callback, and the ring primes before
             // this returns so "playing" means audio exists.
-            mixer.load_active_stream(Box::new(source), start_pos, duration_hint.unwrap_or(0.0))?;
+            if let Err(e) =
+                mixer.load_active_stream(Box::new(source), start_pos, duration_hint.unwrap_or(0.0))
+            {
+                return Self::play_failed(inner, format!("spotify stream: {e}")).await;
+            }
             mixer.play()?;
             mixer.duration()
         };
@@ -416,7 +428,7 @@ impl Cmd {
             }
             None => TrackInfo {
                 path: uri_path.to_string(),
-                title: "Spotify Track".to_string(),
+                title: crate::spotify::pretty_id(uri_path),
                 duration: dur,
                 ..Default::default()
             },

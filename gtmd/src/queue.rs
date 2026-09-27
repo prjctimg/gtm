@@ -35,8 +35,8 @@ pub fn resolve_track(path: &str) -> TrackInfo {
     if path_str.starts_with("spotify:") {
         return TrackInfo {
             id: 0,
+            title: gtm::shared::spotify::pretty_id(&path_str),
             path: path_str,
-            title: "Spotify Track".into(),
             artist: String::new(),
             album: String::new(),
             duration: 0.0,
@@ -154,6 +154,24 @@ pub fn add(state: &mut DaemonState, path: &str, position: Option<u64>) -> TrackI
     added.pop().expect("add_many returns one entry per path")
 }
 
+/// Index the next inserted entry lands at, given an optional explicit
+/// merged-view position. Shared by every insert path so they cannot drift.
+fn insert_base(state: &DaemonState, position: Option<u64>) -> usize {
+    match position {
+        Some(p) => {
+            let len = state.queue.len() + state.default_list.len();
+            (p as usize).min(len)
+        }
+        None => {
+            if state.queue.is_empty() {
+                0
+            } else {
+                1
+            }
+        }
+    }
+}
+
 /// Add multiple tracks as a batch.  The whole batch is queued to play next
 /// (after the current entry) unless `position` is given, preserving order.
 pub fn add_many(
@@ -162,17 +180,7 @@ pub fn add_many(
     position: Option<u64>,
 ) -> Vec<TrackInfo> {
     let mut added = Vec::with_capacity(paths.len());
-    let len = state.queue.len() + state.default_list.len();
-    let insert_pos = match position {
-        Some(p) => (p as usize).min(len),
-        None => {
-            if state.queue.is_empty() {
-                0
-            } else {
-                1
-            }
-        }
-    };
+    let insert_pos = insert_base(state, position);
     for (i, path) in paths.iter().enumerate() {
         let track = resolve_track(path);
         let track_clone = track.clone();
@@ -186,18 +194,21 @@ pub fn add_many(
 /// [`add_many`]. Metadata gathering happens before the `DaemonState` write
 /// lock is taken, so the insert itself stays free of disk I/O and tag reads.
 pub fn add_resolved(state: &mut DaemonState, track: TrackInfo, position: Option<u64>) {
-    let len = state.queue.len() + state.default_list.len();
-    let insert_pos = match position {
-        Some(p) => (p as usize).min(len),
-        None => {
-            if state.queue.is_empty() {
-                0
-            } else {
-                1
-            }
-        }
-    };
+    let insert_pos = insert_base(state, position);
     insert_at(state, track, insert_pos);
+}
+
+/// Insert a batch of pre-resolved tracks, preserving order.
+///
+/// A provider that already holds every track's metadata inserts it here rather
+/// than adding by path and patching afterwards: the patch has to find the entry
+/// by path, so a playlist listing the same track twice writes both copies'
+/// metadata onto the first one and leaves the second as a bare placeholder.
+pub fn add_resolved_many(state: &mut DaemonState, tracks: Vec<TrackInfo>, position: Option<u64>) {
+    let insert_pos = insert_base(state, position);
+    for (i, track) in tracks.into_iter().enumerate() {
+        insert_at(state, track, insert_pos + i);
+    }
 }
 
 /// Replace the user queue with pre-resolved tracks and drop the default-list
