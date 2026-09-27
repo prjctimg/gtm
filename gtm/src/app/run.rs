@@ -1141,6 +1141,7 @@ impl App {
                         {
                             self.spotify.list_cover = cover;
                             self.spotify.list_shown = Some(url);
+                            self.list_cover_sync();
                         }
                     }
                     IpcResult::SpotifyRowCover(cover, url, fetch_gen) => {
@@ -1153,6 +1154,7 @@ impl App {
                         {
                             self.spotify.row_cover = cover;
                             self.spotify.row_shown = Some(url);
+                            self.row_cover_sync();
                         }
                     }
                     IpcResult::SpotifyPreviewCover(cover, url, fetch_gen) => {
@@ -1198,6 +1200,8 @@ impl App {
                         self.picker_preview_sync();
                         self.artist_cover_sync();
                         self.spotify_preview_sync();
+                        self.row_cover_sync();
+                        self.list_cover_sync();
                         self.metadata_cover_sync();
                     }
                     IpcResult::Lyrics(lyrics, lyrics_gen) => {

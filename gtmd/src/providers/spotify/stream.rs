@@ -524,37 +524,6 @@ impl StreamManager {
 
         let session = Session::new(session_config, Some(cache));
         // Bound the handshake hard — see STREAM_CONNECT_TIMEOUT.
-        let connected = tokio::time::timeout(
-            STREAM_CONNECT_TIMEOUT,
-            session.connect(Credentials::with_access_token(token), true),
-        )
-        .await
-        .map_err(|_| {
-            format!(
-                "spotify connect timed out after {}s — check network / access-point reachability",
-                STREAM_CONNECT_TIMEOUT.as_secs()
-            )
-        })?;
-        connected.map_err(|e| {
-            let msg = e.to_string();
-            let low = msg.to_ascii_lowercase();
-            if ["login", "token", "auth", "credential"]
-                .iter()
-                .any(|k| low.contains(k))
-            {
-                // A rejected access token (missing `streaming` scope, expired,
-                // or issued for a different client) is the common failure;
-                // point at the fix instead of the raw low-level error.
-                format!(
-                    "spotify connect rejected — re-link your Spotify account \
-                     (re-authorize, leaving the client id empty for the default app): {msg}"
-                )
-            } else {
-                format!("spotify connect: {msg}")
-            }
-        })?;
-        info!("librespot session connected");
-
         let player = Player::new(
             PlayerConfig::default(),
             session.clone(),
@@ -565,36 +534,46 @@ impl StreamManager {
             },
         );
 
-        // Register the device with Spotify Connect.
+        // Connect and register in one step, because `Spirc::new` connects the
+        // session itself. Connecting first and then registering connected
+        // twice, and the second attempt failed with "Session is not connected"
+        // because it did not own the connection it was handed.
         //
-        // This is the step that makes playback possible at all. Connect is the
-        // service that serves the audio item, and it refuses a request from a
-        // device it has never seen with `FaultyRequest(BAD_REQUEST)` — the
-        // session still authenticates, the player still loads the track, and
-        // every single load is refused. The symptom is silence: librespot emits
-        // `Unavailable`, the source is released, and the queue moves on. So the
-        // Spirc is spawned and its handle kept, or `teardown_session` would
-        // leave the device registered and the next session would collide with
-        // the ghost of this one.
+        // Registration is what makes playback possible at all: Connect serves
+        // the audio item and refuses a device it has never seen with
+        // `FaultyRequest(BAD_REQUEST)`. The session still authenticates and the
+        // player still loads the track, so the only symptom is silence —
+        // librespot emits `Unavailable`, the source is released, the queue moves
+        // on. The handle is kept so teardown can unregister rather than leave a
+        // ghost device behind for the next session to collide with.
         let mixer = Arc::new(ConnectVolume::new(volume));
-        let (spirc, spirc_task) = Spirc::new(
-            ConnectConfig {
-                name: "gtm".to_string(),
-                device_type: DeviceType::Computer,
-                initial_volume: mixer.volume(),
-                is_group: false,
-                disable_volume: false,
-                volume_steps: 64,
-            },
-            session.clone(),
-            Credentials::with_access_token(token),
-            player.clone(),
-            mixer,
+        let registered = tokio::time::timeout(
+            STREAM_CONNECT_TIMEOUT,
+            Spirc::new(
+                ConnectConfig {
+                    name: "gtm".to_string(),
+                    device_type: DeviceType::Computer,
+                    initial_volume: mixer.volume(),
+                    is_group: false,
+                    disable_volume: false,
+                    volume_steps: 64,
+                },
+                session.clone(),
+                Credentials::with_access_token(token),
+                player.clone(),
+                mixer,
+            ),
         )
         .await
-        .map_err(|e| format!("spotify connect registration: {e}"))?;
+        .map_err(|_| {
+            format!(
+                "spotify connect timed out after {}s — check network / access-point reachability",
+                STREAM_CONNECT_TIMEOUT.as_secs()
+            )
+        })?;
+        let (spirc, spirc_task) = registered.map_err(|e| Self::connect_error(&e.to_string()))?;
         tokio::spawn(spirc_task);
-        info!("spotify connect device registered");
+        info!("librespot session connected and registered as a connect device");
 
         // Event pump: end-of-track / unavailable mark the channel as
         // finished so the rodio source drains out and the mixer advances the
@@ -649,6 +628,23 @@ impl StreamManager {
         self.session_token = Some(token.to_string());
         self.session_client_id = Some(client_id.to_string());
         Ok(())
+    }
+
+    /// Turn a librespot connect/registration failure into something actionable.
+    ///
+    /// A rejected access token is the common case and the raw error says only
+    /// "invalid request", so it is named explicitly rather than leaving the user
+    /// to guess which of the two things went wrong.
+    fn connect_error(msg: &str) -> String {
+        let low = msg.to_ascii_lowercase();
+        if ["login", "token", "auth", "credential", "unauthor"]
+            .iter()
+            .any(|k| low.contains(k))
+        {
+            format!("spotify connect rejected — re-link your Spotify account: {msg}")
+        } else {
+            format!("spotify connect: {msg}")
+        }
     }
 
     /// Drop the current librespot session and player so a fresh one can be

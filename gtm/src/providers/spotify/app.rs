@@ -716,6 +716,35 @@ impl App {
             let _ = ipc_tx.send(IpcResult::SpotifyRowCover(msg, url, fetch_gen));
         });
     }
+    /// Build the image protocol for the drill-down cover.
+    ///
+    /// Every cover that renders sharply has one of these. Without it the bytes are
+    /// held but no `StatefulProtocol` exists, so `Render::cover` falls through to
+    /// the half-block character fallback — which is what made these two covers
+    /// look pixelated beside every other one.
+    pub(crate) fn row_cover_sync(&mut self) {
+        match (&self.spotify.row_cover, &self.np_cover.picker) {
+            (Some(bytes), Some(picker)) => {
+                self.spotify.row_cover_stateful = image::load_from_memory(bytes)
+                    .ok()
+                    .map(|img| picker.new_resize_protocol(img));
+            }
+            _ => self.spotify.row_cover_stateful = None,
+        }
+    }
+
+    /// Build the image protocol for the highlighted playlist's cover.
+    pub(crate) fn list_cover_sync(&mut self) {
+        match (&self.spotify.list_cover, &self.np_cover.picker) {
+            (Some(bytes), Some(picker)) => {
+                self.spotify.list_cover_stateful = image::load_from_memory(bytes)
+                    .ok()
+                    .map(|img| picker.new_resize_protocol(img));
+            }
+            _ => self.spotify.list_cover_stateful = None,
+        }
+    }
+
     /// Drop the drill-down cover, so leaving the view does not leave a stale image
     /// bound to a row that is no longer selected.
     pub fn clear_row_cover(&mut self) {
