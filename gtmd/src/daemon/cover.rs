@@ -1,6 +1,6 @@
 use super::*;
 
-use crate::spotify::track_art;
+use crate::spotify::cover::{album_cover, artist_image, track_art};
 
 /// Cap on a fetched image. Station pages and tracklists are untrusted input and
 /// nothing in the app needs more than a few hundred kilobytes of cover.

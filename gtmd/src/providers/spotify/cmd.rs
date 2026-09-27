@@ -1,8 +1,33 @@
-use super::*;
+// Copyright (c) 2026
+// Author: prjctimg <prjctimg@outlook.com>
+// Spotify IPC command handlers
+//
+// This is free software released under the GPL-3.0 license.
 
+use std::sync::Arc;
+use std::time::Duration;
+
+use base64::Engine;
 use librespot_core::spotify_uri::SpotifyUri;
+use rspotify::AuthCodePkceSpotify;
+use tracing::{info, warn};
 
-use crate::spotify::{self, resolve_uri};
+use gtm::shared::CoreError;
+use gtm::shared::global::PlaybackStatus;
+use gtm::shared::ipc::{DaemonEvent, DaemonRes};
+use gtm::shared::spotify::SpotifyTrack;
+
+use crate::daemon::{Cmd, Daemon, DaemonInner};
+use crate::queue;
+
+use super::api::{
+    access_token, album_tracks, artist_top, like, playlist_add, resolve_uri, search, web_playlist,
+};
+use super::cover::image_at;
+use super::oauth::OauthFlow;
+
+use super::SpotifyManager;
+use super::ytfb::spotify_yt_fallback;
 
 pub(crate) struct Spotify;
 
@@ -871,9 +896,7 @@ impl Spotify {
             Ok(client) => client,
             Err(res) => return Ok(*res),
         };
-        spotify::like(&client, uri)
-            .await
-            .map_err(CoreError::Daemon)?;
+        like(&client, uri).await.map_err(CoreError::Daemon)?;
         Ok(DaemonRes::Ok)
     }
 
@@ -887,7 +910,7 @@ impl Spotify {
             Ok(client) => client,
             Err(res) => return Ok(*res),
         };
-        spotify::playlist_add(&client, playlist_id, uri)
+        playlist_add(&client, playlist_id, uri)
             .await
             .map_err(CoreError::Daemon)?;
         Ok(DaemonRes::Ok)

@@ -1,4 +1,10 @@
-use super::*;
+// Copyright (c) 2026
+// Author: prjctimg <prjctimg@outlook.com>
+// Spotify to YouTube fallback: resolve a track the daemon cannot stream
+//
+// This is free software released under the GPL-3.0 license.
+
+use crate::daemon::{Daemon, DaemonInner};
 
 /// Shared YouTube-fallback path for Spotify tracks: search `query`, pick the
 /// top hit, and download its audio into the cache under `cache_key` via

@@ -37,14 +37,12 @@ use gtm::shared::radio::RadioTracklist;
 use gtm::shared::secret::{
     LASTFM_API_KEY, LASTFM_API_SECRET, delete_secret, get_secret, set_secret,
 };
-use gtm::shared::spotify::SpotifyTrack;
 use gtm::shared::track::{StreamInfo, TrackInfo};
 use gtm::shared::url::{is_youtube, ytdlp_label};
 use gtm::shared::wire;
 use gtm::shared::{CoreError, MetadataPatch};
 #[cfg(feature = "pulseaudio")]
 use gtm::shared::{ensure_termux_pulse, is_termux};
-use rspotify::AuthCodePkceSpotify;
 
 use crate::charts::ChartsRegistry;
 use crate::cleaner::{
@@ -58,16 +56,14 @@ use crate::lastfm::LastfmManager;
 use crate::library::{Library, extract_metadata};
 use crate::lyrics::{LyricsManager, lrc_to_text, meta_from_filename};
 use crate::network;
-use crate::oauth::{OAUTH_TIMEOUT, OauthFlow, bind_callback};
 use crate::podcast::PodcastManager;
+use crate::providers::spotify::oauth::{OAUTH_TIMEOUT, bind_callback};
+use crate::providers::spotify::stream::StreamManager;
 use crate::queue;
 use crate::radio::RadioBrowserManager;
 use crate::remote;
-use crate::spotify::{
-    SpotifyManager, access_token, album_cover, album_tracks, artist_image, artist_top, image_at,
-    search, web_playlist,
-};
-use crate::stream::StreamManager;
+use crate::spotify::SpotifyManager;
+use crate::spotify::api::access_token;
 use crate::tags::{MetadataToWrite, write_tags};
 #[cfg(feature = "youtube")]
 use crate::youtube::{YoutubeManager, download_into};
@@ -88,11 +84,9 @@ pub mod queue_cmd;
 pub mod radio;
 pub mod scrobble;
 pub mod search;
-pub mod spotify;
 pub mod stream;
 pub mod tracklist;
 pub mod yt;
-pub mod ytfb;
 
 #[cfg(test)]
 mod tests;
@@ -109,12 +103,13 @@ pub(crate) use queue_cmd::*;
 pub(crate) use radio::*;
 pub(crate) use scrobble::*;
 pub(crate) use search::*;
-pub(crate) use spotify::*;
 pub(crate) use stream::*;
 pub(crate) use yt::*;
-pub(crate) use ytfb::*;
 
-struct Cmd;
+// The Spotify command handlers live with the rest of the integration.
+pub(crate) use crate::providers::spotify::cmd::*;
+
+pub(crate) struct Cmd;
 
 impl Cmd {
     /// Scrobble the track that is about to be left. Uses the frame-derived
@@ -1549,104 +1544,104 @@ impl Cmd {
 }
 
 pub(crate) struct DaemonInner {
-    state: Arc<RwLock<DaemonState>>,
-    mixer: tokio::sync::Mutex<Box<dyn Mixer>>,
-    config: DaemonConfig,
+    pub(crate) state: Arc<RwLock<DaemonState>>,
+    pub(crate) mixer: tokio::sync::Mutex<Box<dyn Mixer>>,
+    pub(crate) config: DaemonConfig,
     /// Runtime cover-provider override. `None` means the value baked into
     /// `config` (from config.toml at startup) applies; the TUI switches it
     /// live via `DaemonReq::SetCoverProvider` without a restart.
-    cover_provider_override: tokio::sync::Mutex<Option<CoverProvider>>,
-    event_tx: broadcast::Sender<DaemonEvent>,
-    cover_cache: tokio::sync::Mutex<Option<CoverCache>>,
-    lyrics_manager: tokio::sync::Mutex<Option<LyricsManager>>,
-    lastfm: tokio::sync::Mutex<LastfmManager>,
+    pub(crate) cover_provider_override: tokio::sync::Mutex<Option<CoverProvider>>,
+    pub(crate) event_tx: broadcast::Sender<DaemonEvent>,
+    pub(crate) cover_cache: tokio::sync::Mutex<Option<CoverCache>>,
+    pub(crate) lyrics_manager: tokio::sync::Mutex<Option<LyricsManager>>,
+    pub(crate) lastfm: tokio::sync::Mutex<LastfmManager>,
     /// Last.fm loved-state for the current track: `Some((artist|title, loved))`
     /// once the user has loved/unloved anything this session.
-    lastfm_loved: std::sync::Mutex<Option<(String, bool)>>,
+    pub(crate) lastfm_loved: std::sync::Mutex<Option<(String, bool)>>,
     #[cfg(feature = "youtube")]
-    youtube: Arc<tokio::sync::Mutex<YoutubeManager>>,
-    spotify: Arc<tokio::sync::Mutex<SpotifyManager>>,
-    podcast: tokio::sync::Mutex<PodcastManager>,
-    radio: tokio::sync::Mutex<RadioBrowserManager>,
+    pub(crate) youtube: Arc<tokio::sync::Mutex<YoutubeManager>>,
+    pub(crate) spotify: Arc<tokio::sync::Mutex<SpotifyManager>>,
+    pub(crate) podcast: tokio::sync::Mutex<PodcastManager>,
+    pub(crate) radio: tokio::sync::Mutex<RadioBrowserManager>,
     /// The playing station's tracklist binding: which station is current and
     /// when its next refresh is due. Holds no list, so a refresh never runs
     /// under this lock.
-    radio_list: tokio::sync::Mutex<Option<tracklist::Bound>>,
+    pub(crate) radio_list: tokio::sync::Mutex<Option<tracklist::Bound>>,
     /// Chart providers registry (Spotify first; more sources plug in via the
     /// same `ChartProvider` trait).
-    charts: tokio::sync::Mutex<ChartsRegistry>,
+    pub(crate) charts: tokio::sync::Mutex<ChartsRegistry>,
     /// librespot streaming bridge for Premium Spotify playback.
-    stream: tokio::sync::Mutex<StreamManager>,
+    pub(crate) stream: tokio::sync::Mutex<StreamManager>,
     /// Pending OAuth link flow task; aborted when a new flow starts or the
     /// user cancels.
-    oauth_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pub(crate) oauth_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Pending Last.fm OAuth link flow task (daemon-hosted loopback). Kept
     /// separate from `oauth_task` so the Spotify and Last.fm flows never abort
     /// each other.
-    oauth_lastfm_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    pub(crate) oauth_lastfm_task: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// Last.fm link failure surfaced through the next status poll (callback
     /// timeout, token-exchange error, …). Cleared on a successful exchange so
     /// the Setup picker can show the reason inline instead of hanging.
-    lastfm_error: tokio::sync::Mutex<Option<String>>,
-    crossfade_loaded_for: tokio::sync::Mutex<Option<String>>,
-    countdown_notified_for: tokio::sync::Mutex<Option<String>>,
+    pub(crate) lastfm_error: tokio::sync::Mutex<Option<String>>,
+    pub(crate) crossfade_loaded_for: tokio::sync::Mutex<Option<String>>,
+    pub(crate) countdown_notified_for: tokio::sync::Mutex<Option<String>>,
     /// Wall-clock instant of the last `PositionChanged` broadcast. The 16ms
     /// poll loop emits `AudioEvent::Position` at ~20 Hz; re-anchoring the
     /// client clock on every one would flood the socket, so position gets
     /// broadcast at most this often. Clients extrapolate smoothly between
     /// broadcasts, keeping the lyric highlight and progress bar tight.
-    last_pos_broadcast: tokio::sync::Mutex<Option<std::time::Instant>>,
+    pub(crate) last_pos_broadcast: tokio::sync::Mutex<Option<std::time::Instant>>,
     /// Latest ICY `StreamTitle` seen on the active live stream. Written by
     /// the decode thread inside the ICY reader; the position tick mirrors it
     /// into `state.radio_title` and broadcasts on change.
-    icy_title: remote::IcySlot,
+    pub(crate) icy_title: remote::IcySlot,
     /// Monotonic generation counter for the sleep timer. `set_sleep_timer`
     /// bumps it so any previously scheduled timer observes the mismatch and
     /// backs out without racing the new one; `cancel_sleep_timer` also bumps.
-    sleep_gen: Arc<AtomicU64>,
+    pub(crate) sleep_gen: Arc<AtomicU64>,
     /// Set when the sleep timer expires with "stop immediately" disabled and a
     /// finite track is playing. Playback keeps running until that track ends
     /// naturally (`AudioEvent::Finished`), at which point the daemon stops and
     /// reports `SleepTimerExpired` instead of auto-advancing. Cleared whenever
     /// the user re-arms/cancels the timer or manually starts new playback.
-    sleep_stop_at_track_end: Arc<AtomicBool>,
+    pub(crate) sleep_stop_at_track_end: Arc<AtomicBool>,
     /// Monotonic counter bumped on every play/stop path. Crossfade tasks
     /// capture it at spawn time and abort if it has changed, preventing a
     /// stale auto-advance from overwriting a user-initiated playback switch.
-    play_session: Arc<AtomicU64>,
-    health: Arc<HealthTracker>,
-    active_clients: AtomicUsize,
-    internal_req_tx: mpsc::UnboundedSender<DaemonReq>,
+    pub(crate) play_session: Arc<AtomicU64>,
+    pub(crate) health: Arc<HealthTracker>,
+    pub(crate) active_clients: AtomicUsize,
+    pub(crate) internal_req_tx: mpsc::UnboundedSender<DaemonReq>,
     /// Serializes state-mutating commands. Read-only commands take a read
     /// lock so fast reads are not blocked behind slow mutating operations
     /// (Spotify sync, YouTube download, library scan, audio decode).
-    cmd_lock: tokio::sync::RwLock<()>,
+    pub(crate) cmd_lock: tokio::sync::RwLock<()>,
     /// Serializes fast user-initiated playback commands (play/pause/next/prev/
     /// seek/volume) against each other only. Playback runs on this lock rather
     /// than `cmd_lock` so a slow background job (Spotify sync, yt-dlp, loudness
     /// scan) holding the exclusive `cmd_lock` never delays the remote's next
     /// track. Long-running jobs and playback commands can then interleave: the
     /// underlying `DaemonState` keeps each individual mutation safe.
-    play_lock: tokio::sync::RwLock<()>,
+    pub(crate) play_lock: tokio::sync::RwLock<()>,
     /// Serializes slow Spotify network commands (sync, resolve, album/artist
     /// track fetches) without blocking fast reads: `GetStatus`/`Ping` never
     /// take this lock, so they stay responsive even when a multi-minute
     /// Spotify sync is in progress. A separate `yt_lock` keeps Spotify and
     /// YouTube jobs from serializing each other.
-    spotify_slow_lock: tokio::sync::Mutex<()>,
+    pub(crate) spotify_slow_lock: tokio::sync::Mutex<()>,
     /// Serializes slow YouTube network commands (search, resolve/download,
     /// playlist fetch) independently of Spotify's slow lock.
-    yt_slow_lock: tokio::sync::Mutex<()>,
-    play_history: tokio::sync::Mutex<Vec<HistoryEntry>>,
-    scrobble: tokio::sync::Mutex<ScrobbleTracker>,
-    sync_progress: Arc<SyncProgress>,
+    pub(crate) yt_slow_lock: tokio::sync::Mutex<()>,
+    pub(crate) play_history: tokio::sync::Mutex<Vec<HistoryEntry>>,
+    pub(crate) scrobble: tokio::sync::Mutex<ScrobbleTracker>,
+    pub(crate) sync_progress: Arc<SyncProgress>,
 }
 
 impl DaemonInner {
     /// Return the cover cache, creating it on first use so the costly
     /// `reqwest::Client` (TLS) init is deferred until a cover is actually
     /// requested instead of at daemon startup.
-    async fn cover_cache(&self) -> tokio::sync::MutexGuard<'_, Option<CoverCache>> {
+    pub(crate) async fn cover_cache(&self) -> tokio::sync::MutexGuard<'_, Option<CoverCache>> {
         let mut guard = self.cover_cache.lock().await;
         if guard.is_none() {
             let cache = CoverCache::new(self.config.cache_dir.clone());
@@ -1658,13 +1653,13 @@ impl DaemonInner {
 
     /// Cover provider in effect right now: the runtime override wins over the
     /// value parsed from config.toml at startup.
-    async fn effective_cover_provider(&self) -> CoverProvider {
+    pub(crate) async fn effective_cover_provider(&self) -> CoverProvider {
         (*self.cover_provider_override.lock().await).unwrap_or(self.config.cover_provider)
     }
 
     /// Return a clone of the lyrics manager, creating it on first use so the
     /// `reqwest::Client` (TLS) init is deferred until lyrics are needed.
-    async fn lyrics_manager(&self) -> Option<LyricsManager> {
+    pub(crate) async fn lyrics_manager(&self) -> Option<LyricsManager> {
         let mut guard = self.lyrics_manager.lock().await;
         if guard.is_none() {
             *guard = Some(LyricsManager::with_cache_dir(
@@ -3111,7 +3106,7 @@ impl Daemon {
         let _ = inner.event_tx.send(event);
     }
 
-    fn save_state(inner: &DaemonInner) {
+    pub(crate) fn save_state(inner: &DaemonInner) {
         if inner.config.test_mode {
             return;
         }
@@ -3197,7 +3192,7 @@ impl Daemon {
         inner.play_history.lock().await.clear();
     }
 
-    async fn push_queue_state(inner: &DaemonInner) {
+    pub(crate) async fn push_queue_state(inner: &DaemonInner) {
         let state = inner.state.read().await;
         let (queue, cursor) = queue::visible(&state);
         drop(state);
@@ -4042,7 +4037,7 @@ impl Daemon {
     // ─── Spotify ───
 
     #[cfg(feature = "youtube")]
-    async fn download_to_cache(
+    pub(crate) async fn download_to_cache(
         cache_dir: &Path,
         prefix: &str,
         url: &str,

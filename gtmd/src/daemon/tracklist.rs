@@ -6,7 +6,7 @@ use gtm::shared::radio::{RadioTrack, RadioTracklist};
 use tracing::warn;
 
 use super::{DaemonInner, resolve_remote};
-use crate::tracklist::{client as track_client, fetch as track_fetch};
+use crate::providers::radio::tracklist::{client as track_client, fetch as track_fetch};
 
 /// How often a playing station's tracklist is refetched. Station pages refresh
 /// on the order of tens of seconds, and a tracklist is only a display

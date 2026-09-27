@@ -7,29 +7,24 @@
 use clap::Parser;
 use tracing_subscriber::EnvFilter;
 
-pub mod charts;
 pub mod cleaner;
 pub mod config;
 pub mod cover;
 pub mod daemon;
-pub mod deezer;
 pub mod deferred_mixer;
-pub mod lastfm;
 pub mod library;
-pub mod lyrics;
-pub mod musicbrainz;
 pub mod network;
-pub mod oauth;
-pub mod podcast;
+pub mod providers;
 pub mod queue;
-pub mod radio;
 pub mod remote;
-pub mod spotify;
-pub mod stream;
 pub mod tags;
-pub mod tracklist;
+
+// Re-exported at the crate root so `crate::spotify::…` and friends keep
+// resolving; the implementation now lives under one directory per provider.
+pub use providers::lrclib as lyrics;
 #[cfg(feature = "youtube")]
-pub mod youtube;
+pub use providers::youtube;
+pub use providers::{charts, deezer, lastfm, musicbrainz, podcast, radio, spotify};
 
 pub use config::{DaemonArgs, DaemonConfig};
 pub use daemon::Daemon;

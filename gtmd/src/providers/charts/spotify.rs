@@ -1,7 +1,8 @@
 // Spotify Charts provider using rspotify. Fetches editorial "Top 50" / "Viral 50"
 // category playlists as the chart list, then playlist tracks for playback.
 
-use super::super::spotify::{SpotifyManager, pick_largest_image, track_from_playable};
+use crate::spotify::SpotifyManager;
+use crate::spotify::api::{pick_largest_image, track_from_playable};
 use async_trait::async_trait;
 use gtm::shared::chart::{ChartError, ChartPlaylist, ChartProvider, ChartTrack};
 use rspotify::clients::BaseClient;

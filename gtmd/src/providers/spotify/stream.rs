@@ -4,6 +4,7 @@
 
 use std::collections::VecDeque;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -72,9 +73,49 @@ const STREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 struct StreamTarget {
     uri: String,
     tx: std::sync::mpsc::SyncSender<Vec<f32>>,
+    stat: Arc<StreamStat>,
 }
 
 type SharedTarget = Arc<Mutex<Option<StreamTarget>>>;
+
+/// Counters shared between the librespot sink and the drain side.
+///
+/// A Spotify track can report itself as playing while the mixer never receives
+/// a sample, and the two possible causes — librespot never delivering, and the
+/// delivery being dropped between the sink and the ring — look identical from
+/// the UI. These make the difference visible in one log line.
+#[derive(Default)]
+struct StreamStat {
+    packets: AtomicU64,
+    samples: AtomicU64,
+    first_at: Mutex<Option<std::time::Instant>>,
+    loaded_at: Mutex<Option<std::time::Instant>>,
+}
+
+impl StreamStat {
+    fn note_packet(&self, samples: usize) {
+        self.packets.fetch_add(1, Ordering::Relaxed);
+        self.samples.fetch_add(samples as u64, Ordering::Relaxed);
+        let mut first = self.first_at.lock().unwrap();
+        if first.is_none() {
+            *first = Some(std::time::Instant::now());
+        }
+    }
+
+    /// One line summarising a load: how long the first packet took, and how much
+    /// audio actually reached the drain side. `None` means nothing ever did.
+    fn report(&self, uri: &str) {
+        let loaded = *self.loaded_at.lock().unwrap();
+        let first = *self.first_at.lock().unwrap();
+        let packets = self.packets.load(Ordering::Relaxed);
+        let samples = self.samples.load(Ordering::Relaxed);
+        let latency = match (loaded, first) {
+            (Some(l), Some(f)) => format!("{:?}", f.saturating_duration_since(l)),
+            _ => "never".to_string(),
+        };
+        info!("spotify stream {uri}: {packets} packets / {samples} samples, first after {latency}");
+    }
+}
 
 struct ChannelSink(SharedTarget);
 
@@ -100,6 +141,7 @@ impl LibrespotSink for ChannelSink {
             );
             return Ok(());
         };
+        target.stat.note_packet(buf.len());
         // `write` runs on librespot's player thread, which every official
         // backend blocks in, so the bounded send is the sanctioned shape — the
         // same one librespot's jackaudio backend uses. Blocking here applies
@@ -142,10 +184,22 @@ pub struct PcmStreamSource {
     /// When the silence watchdog last fired, so it logs the transition once
     /// rather than on every poll.
     stalled_at: Option<std::time::Instant>,
+    /// The URI this source was loaded for, and the shared target registry, so
+    /// the end-of-track summary can be attributed to the right track even after
+    /// the target has been replaced.
+    uri: String,
+    target: SharedTarget,
+    stat: Arc<StreamStat>,
 }
 
 impl PcmStreamSource {
-    fn new(rx: std::sync::mpsc::Receiver<Vec<f32>>, duration_secs: f64) -> Self {
+    fn new(
+        rx: std::sync::mpsc::Receiver<Vec<f32>>,
+        duration_secs: f64,
+        uri: String,
+        target: SharedTarget,
+        stat: Arc<StreamStat>,
+    ) -> Self {
         Self {
             rx,
             pending: VecDeque::with_capacity(CHANNEL_CAPACITY * 64),
@@ -155,6 +209,9 @@ impl PcmStreamSource {
             loaded_at: std::time::Instant::now(),
             last_sample_at: None,
             stalled_at: None,
+            uri,
+            target,
+            stat,
         }
     }
 
@@ -182,9 +239,28 @@ impl PcmStreamSource {
         if idle >= budget {
             self.stalled_at = Some(std::time::Instant::now());
             warn!(
-                "spotify stream silent for {}s after starting; still waiting",
-                idle.as_secs()
+                "spotify stream {} silent for {}s ({} packets from librespot); still waiting",
+                self.uri,
+                idle.as_secs(),
+                self.stat.packets.load(Ordering::Relaxed)
             );
+        }
+    }
+}
+
+impl Drop for PcmStreamSource {
+    fn drop(&mut self) {
+        // Reported when the track ends or is replaced, which is the only point
+        // where the totals are meaningful.
+        let uri = self
+            .target
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|t| t.uri == self.uri)
+            .map(|t| t.uri.clone());
+        if let Some(uri) = uri {
+            self.stat.report(&uri);
         }
     }
 }
@@ -442,9 +518,12 @@ impl StreamManager {
 
         self.clear_target();
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHANNEL_CAPACITY);
+        let stat = Arc::new(StreamStat::default());
+        *stat.loaded_at.lock().unwrap() = Some(std::time::Instant::now());
         *self.target.lock().unwrap() = Some(StreamTarget {
             uri: uri.to_string(),
             tx,
+            stat: stat.clone(),
         });
 
         self.current_uri = Some(uri.to_string());
@@ -453,7 +532,13 @@ impl StreamManager {
             .expect("session ensured")
             .load(parsed, true, start_ms);
 
-        Ok(PcmStreamSource::new(rx, duration_secs))
+        Ok(PcmStreamSource::new(
+            rx,
+            duration_secs,
+            uri.to_string(),
+            self.target.clone(),
+            stat,
+        ))
     }
 
     /// Tear down the whole librespot stack (used at daemon shutdown).
@@ -510,6 +595,14 @@ impl StreamManager {
 mod tests {
     use super::*;
 
+    fn test_target() -> SharedTarget {
+        Arc::new(Mutex::new(None))
+    }
+
+    fn test_uri() -> String {
+        "spotify:track:4cOdK2wGLETKBW3PvgPWqT".to_string()
+    }
+
     /// The source must not report end-of-stream while its sender is still
     /// alive. rodio evicts a source from the mix the first time its iterator
     /// yields `None`, so treating a momentary gap as the end would drop a
@@ -518,7 +611,13 @@ mod tests {
     #[test]
     fn empty_channel_is_not_end_of_stream() {
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHANNEL_CAPACITY);
-        let mut source = PcmStreamSource::new(rx, 180.0);
+        let mut source = PcmStreamSource::new(
+            rx,
+            180.0,
+            test_uri(),
+            test_target(),
+            Arc::new(StreamStat::default()),
+        );
         // Keep the sender alive: the receiver must block, not end.
         let handle = std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(120));
@@ -538,7 +637,13 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHANNEL_CAPACITY);
         tx.send(vec![0.25, 0.75]).unwrap();
         drop(tx);
-        let mut source = PcmStreamSource::new(rx, 180.0);
+        let mut source = PcmStreamSource::new(
+            rx,
+            180.0,
+            test_uri(),
+            test_target(),
+            Arc::new(StreamStat::default()),
+        );
         assert_eq!(source.next(), Some(0.25));
         assert_eq!(source.next(), Some(0.75));
         assert_eq!(source.next(), None);
@@ -549,7 +654,13 @@ mod tests {
     #[test]
     fn format_matches_librespot() {
         let (_tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHANNEL_CAPACITY);
-        let source = PcmStreamSource::new(rx, 180.0);
+        let source = PcmStreamSource::new(
+            rx,
+            180.0,
+            test_uri(),
+            test_target(),
+            Arc::new(StreamStat::default()),
+        );
         use rodio::Source;
         assert_eq!(source.sample_rate().get(), SAMPLE_RATE);
         assert_eq!(source.channels().get(), NUM_CHANNELS as u16);
@@ -560,7 +671,13 @@ mod tests {
     #[test]
     fn stall_is_reported_not_fatal() {
         let (_tx, rx) = std::sync::mpsc::sync_channel::<Vec<f32>>(CHANNEL_CAPACITY);
-        let mut source = PcmStreamSource::new(rx, 180.0);
+        let mut source = PcmStreamSource::new(
+            rx,
+            180.0,
+            test_uri(),
+            test_target(),
+            Arc::new(StreamStat::default()),
+        );
         source.loaded_at = std::time::Instant::now() - STARTUP_GRACE - Duration::from_secs(1);
         source.stalled_for();
         assert!(source.stalled_at.is_some(), "stall should be recorded");
