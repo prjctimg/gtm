@@ -19,7 +19,6 @@ YouTube/Spotify integration. It is a background daemon (`gtmd`) with a client
   - [Build from Source](#build-from-source)
   - [Termux](#termux-native-on-device)
 - [Spotify](#spotify)
-- [Screenshots](#screenshots)
 - [Documentation](#documentation)
 - [Contributing](#contributing)
 - [Acknowledgements](#acknowledgements)
@@ -33,18 +32,26 @@ You can read about it in [this post.](https://prjctimg.me/blg/feature-rich-termi
 
 - **Background playback**: reattach to the client from anywhere in the terminal
 - **YouTube & Spotify**: search & download from YouTube and sync Spotify
-  playlists; missing metadata/cover art is backfilled from Deezer's public API.
+  playlists; missing metadata/cover art is backfilled from Spotify, Deezer and
+  MusicBrainz.
+- **Internet radio**: browse the Radio Browser directory and stream any station
+- **Podcasts**: subscribe to RSS/Atom feeds and play episodes in order
+- **Top charts**: Spotify, Apple and community charts, browsable as a tree
 - **Crossfade**: gapless-ish transitions with a configurable duration.
 - **Lyrics**: automatic fetch from LRCLIB (default provider)
 - **Metadata sync**: backfill missing tags, cover art, and lyrics for local files
-- **Equalizer**: 16 presets plus a spectrum visualizer
+- **Last.fm**: scrobbling, love and now-playing
+- **Equalizer**: 16 presets
+- **Visualizer**: 12 spectrum presets
+- **Command palette**: fuzzy-finder over every TUI action
+- **Extensions**: toggle optional surfaces per session
 - **Playlist management**: Import/export `m3u8` playlists
 - **Sleep timer**
 - **Cover art support**: rendered inline via the kitty/terminal image protocol
-- **Zero configuration**: sane defaults, fully customizable via TOML,
-- **Widget styles** : for the visualizer and progress indicator
-- **Theming**: accent colors extracted from the current track cover (reactive theming), transparent mode and 12 built-in themes
-- **MPRIS**: media player controls via D-Bus (via the `mpris` feature)
+- **Zero configuration**: sane defaults, fully customizable via TOML
+- **Progress styles**: four indicators for the playback position
+- **Theming**: accent colors extracted from the current track cover (reactive theming), transparent mode and 16 built-in themes
+- **MPRIS**: media player controls via D-Bus
 
 ## Install
 
@@ -53,7 +60,7 @@ You can read about it in [this post.](https://prjctimg.me/blg/feature-rich-termi
 curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash
 ```
 
-For `nightly` builds (released on every push to `main`):
+For `nightly` builds (released on every push to `dev`):
 
 ```bash
 # nightly
@@ -64,7 +71,7 @@ Or grab an archive [releases page](https://github.com/prjctimg/gtm.rs/releases/l
 
 ### Build from Source
 
-Requires Rust 1.81+ and ALSA development headers (`libasound2-dev` on Debian/Ubuntu). `clang` is the default compiler (fallback to `gcc`) and uses `mold` when available instead of `ld`.
+Requires Rust 1.85+ (the workspace is edition 2024) and ALSA development headers (`libasound2-dev` on Debian/Ubuntu). `clang` is the default compiler (fallback to `gcc`) and uses `mold` when available instead of `ld`.
 
 This produces a `nightly` build, for tagged versions, checkout first.
 
@@ -109,17 +116,9 @@ backend, and starts the PulseAudio server automatically — no manual
 >
 > Also, first launch opens your browser for authorization (no client secret needed) and the daemon exchanges the code on port `8990` (5 min timeout).
 
-## Screenshots
-
-<!-- TODO: add screenshots -->
-
-| Now Playing | Library | Settings |
-|-------------|---------|----------|
-| ![](assets/screenshots/now-playing.png) | ![](assets/screenshots/library.png) | ![](assets/screenshots/settings.png) |
-
 ## Documentation
 
-- [Wiki](https://github.com/prjctimg/gtm.rs/wiki)
+- [gtmd.dev](https://gtmd.dev) — guides, configuration reference and troubleshooting
 - [gtm(1)](docs/man/gtm.1.md)
 - [gtmd(1)](docs/man/gtmd.1.md)
 - [gtmd-ipc(1)](docs/man/gtmd-ipc.1.md)
@@ -128,7 +127,7 @@ backend, and starts the PulseAudio server automatically — no manual
 
 This is a hobby project. It is feature complete and stable enough to use as a daily driver, though still largely a WIP.
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions & the crate layout.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build instructions & the crate layout, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for participation guidelines.
 
 ---
 
