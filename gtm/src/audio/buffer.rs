@@ -52,8 +52,25 @@ pub struct RingBufferInner {
 }
 
 impl RingBufferInner {
+    /// Smallest power of two at or above `n`.
+    ///
+    /// Indexing is `position & mask`, which addresses each slot exactly once
+    /// only when the capacity is a power of two. A capacity like 352800
+    /// (44100·2·4) is not, and its mask drops bit 5 — so write positions 100 and
+    /// 132 both resolve to slot 4. The ring then holds 32 usable samples while
+    /// `available()` reports the full logical count, and the consumer reads
+    /// samples the producer overwrote 32 steps ago. That is the sound of
+    /// interference, and it worsens with playback time, so a live stream shows
+    /// it within seconds.
+    fn pow2_ceil(n: usize) -> usize {
+        n.max(1).next_power_of_two()
+    }
+
     pub fn new(capacity: usize) -> Self {
-        let cap = capacity.max(1024);
+        // Rounded up here rather than trusting the caller: a non-power-of-two
+        // capacity silently corrupts every sample, and each caller would
+        // otherwise have to get the rounding right on its own.
+        let cap = Self::pow2_ceil(capacity.max(1024));
         let mut buf = vec![0.0f32; cap];
         let ptr = buf.as_mut_ptr();
         std::mem::forget(buf);
@@ -344,5 +361,51 @@ mod tests {
         assert_eq!(rb.available(), 0);
         assert!(rb.push(99.0));
         assert_eq!(rb.pop(), Some(99.0));
+    }
+
+    /// The capacity must address every slot it claims, whatever the caller asks
+    /// for. `position & mask` is only a bijection when the capacity is a power
+    /// of two, and every production constant (`44100 * 2 * 4`) is not — which
+    /// silently cut the usable ring to its lowest 32 samples.
+    #[test]
+    fn capacity_is_always_a_power_of_two() {
+        for n in [1024, 352_800, 529_200, 44_100, 3, 65_537] {
+            let rb = RingBufferInner::new(n);
+            assert_eq!(
+                rb.capacity & (rb.capacity - 1),
+                0,
+                "capacity {n} rounded to {} is not a power of two",
+                rb.capacity
+            );
+            assert!(
+                rb.capacity >= n.max(1024),
+                "rounding must not shrink the requested capacity"
+            );
+        }
+    }
+
+    /// The real regression: a producer running well ahead of the consumer must
+    /// be read back in order. With a non-power-of-two capacity the producer
+    /// overwrites samples the consumer has not reached yet, so the values come
+    /// back stale — an audible smear that reads as interference.
+    #[test]
+    fn a_lagging_consumer_reads_samples_in_order() {
+        // The production capacity, passed unrounded on purpose.
+        let rb = RingBufferInner::new(352_800);
+        // Well under the rounded capacity, so nothing is legitimately dropped:
+        // the producer runs 100k samples ahead of the consumer.
+        let lead = 100_000;
+        for i in 0..lead {
+            assert!(rb.push(i as f32), "must not report full this early");
+        }
+        assert_eq!(rb.available(), lead);
+        for i in 0..lead {
+            assert_eq!(
+                rb.pop(),
+                Some(i as f32),
+                "sample {i} was overwritten before it was read"
+            );
+        }
+        assert_eq!(rb.available(), 0);
     }
 }
