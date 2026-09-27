@@ -1,5 +1,23 @@
 use crate::app::*;
 
+/// The `(artist, title)` a lyrics lookup should search with, or `None` when the
+/// daemon can resolve the track from its own library row.
+///
+/// A provider track — a `spotify:` URI, a station, an episode — has no library
+/// row and no file to read tags from, so `lyrics().get(id, path)` can only miss
+/// for it. Asking by artist and title is the only route that works, and both
+/// the automatic and the manual fetch have to take it or one of them silently
+/// returns nothing.
+pub(crate) fn lyrics_query(track: &TrackInfo) -> Option<(String, String)> {
+    if !path_is_remote(&track.path) {
+        return None;
+    }
+    match (track.artist.trim(), track.title.trim()) {
+        ("", _) | (_, "") => None,
+        (artist, title) => Some((artist.to_string(), title.to_string())),
+    }
+}
+
 /// Index of the active time-synced lyric line for a playback position.
 /// Untimed lines (timestamp < 0) are skipped for matching but keep their
 /// index so the highlight tracks timed lines correctly. Uses
@@ -64,6 +82,49 @@ impl App {
             return 0;
         };
         lyric_index_at(&lyrics.lines, self.raw_position + self.lyrics.offset_secs)
+    }
+
+    /// Start a lyrics fetch for `track`, updating the view state in place.
+    ///
+    /// Both entry points go through here — the automatic fetch on a track change
+    /// and the manual one bound to the lyrics key. They used to disagree: only
+    /// the automatic one knew a provider track has to be searched by artist and
+    /// title, so asking manually for a Spotify track always came back empty.
+    pub(crate) fn fetch_lyrics(&mut self, track: &TrackInfo) {
+        let fetch_gen = self.next_lyrics_gen();
+        self.lyrics.current = None;
+        self.lyrics.pending_gen = Some(fetch_gen);
+        self.lyrics.fetching = true;
+        self.lyrics.scroll = 0;
+        self.lyrics.offset_secs = 0.0;
+        let track_id = track.id;
+        let path = Some(track.path.clone());
+        let query = lyrics_query(track);
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            let out = match query {
+                Some((artist, title)) => client.lyrics().search(&artist, &title).await,
+                None => match tokio::time::timeout(
+                    Duration::from_secs(12),
+                    client.lyrics().get(track_id, path.as_deref()),
+                )
+                .await
+                {
+                    Ok(res) => res,
+                    Err(_) => Err(CoreError::Daemon("lyrics fetch timed out".into())),
+                },
+            };
+            match out {
+                Ok(lyrics) => {
+                    let _ = ipc_tx.send(IpcResult::Lyrics(lyrics, fetch_gen));
+                }
+                Err(e) => {
+                    let _ = ipc_tx.send(IpcResult::Lyrics(None, fetch_gen));
+                    let _ = ipc_tx.send(IpcResult::Error(format!("Lyrics: {e}")));
+                }
+            }
+        });
     }
 
     /// Shift the lyric time baseline by `delta` seconds so lines whose timing

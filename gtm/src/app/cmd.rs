@@ -450,33 +450,9 @@ impl App {
                 });
             }
             TuiCommand::FetchLyrics => {
-                let track_path = self.state.current_track.as_ref().map(|t| t.path.clone());
-                let track_id = self.state.current_track.as_ref().map(|t| t.id).unwrap_or(0);
-                let fetch_gen = self.next_lyrics_gen();
-                self.lyrics.pending_gen = Some(fetch_gen);
-                let client2 = self.client.clone();
-                let ipc_tx2 = self.ipc_tx.clone();
-                tokio::spawn(async move {
-                    let result = tokio::time::timeout(
-                        Duration::from_secs(12),
-                        client2.lyrics().get(track_id, track_path.as_deref()),
-                    )
-                    .await;
-                    match result {
-                        Ok(Ok(lyrics)) => {
-                            let _ = ipc_tx2.send(IpcResult::Lyrics(lyrics, fetch_gen));
-                        }
-                        Ok(Err(e)) => {
-                            let _ = ipc_tx2.send(IpcResult::Lyrics(None, fetch_gen));
-                            let _ = ipc_tx2.send(IpcResult::Error(format!("Lyrics: {e}")));
-                        }
-                        Err(_) => {
-                            let _ = ipc_tx2.send(IpcResult::Lyrics(None, fetch_gen));
-                            let _ = ipc_tx2
-                                .send(IpcResult::Error("Lyrics fetch timed out".to_string()));
-                        }
-                    }
-                });
+                if let Some(track) = self.state.current_track.clone() {
+                    self.fetch_lyrics(&track);
+                }
             }
             TuiCommand::SetSleepTimer(minutes, stop_immediately) => {
                 let client = self.client.clone();
