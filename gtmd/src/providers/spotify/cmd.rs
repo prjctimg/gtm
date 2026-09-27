@@ -24,7 +24,7 @@ use crate::queue;
 use super::api::{
     access_token, album_tracks, artist_top, like, playlist_add, resolve_uri, search, web_playlist,
 };
-use super::cover::image_at;
+use super::cover::{image_at, prefetch};
 use super::oauth::OauthFlow;
 
 use super::SpotifyManager;
@@ -312,7 +312,7 @@ impl Spotify {
         }
     }
 
-    pub async fn sync(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
+    pub async fn sync(inner: &Arc<DaemonInner>) -> Result<DaemonRes, CoreError> {
         // Clone the Web API client out of the manager, then paginate without
         // holding `inner.spotify`: a concurrent `SpotifyStatus`/
         // `SpotifyPlaylists` keeps working against the previous snapshot.
@@ -327,6 +327,21 @@ impl Spotify {
                 let mut spotify = inner.spotify.lock().await;
                 spotify.commit_sync(user, playlists);
                 spotify.refresh_playback().await;
+                drop(spotify);
+                // Warm every cover the sync just brought in, so opening a
+                // playlist later is a disk read rather than a download.
+                let warm = inner.clone();
+                tokio::spawn(async move {
+                    let tracks: Vec<SpotifyTrack> = warm
+                        .spotify
+                        .lock()
+                        .await
+                        .playlists()
+                        .iter()
+                        .flat_map(|p| p.tracks.clone())
+                        .collect();
+                    prefetch(&warm, &tracks).await;
+                });
                 Ok(DaemonRes::Ok)
             }
             Ok(Err(e)) => Ok(DaemonRes::Error { message: e }),
@@ -348,19 +363,31 @@ impl Spotify {
         })
     }
 
-    pub async fn playlist_tracks(inner: &DaemonInner, id: &str) -> Result<DaemonRes, CoreError> {
+    pub async fn playlist_tracks(
+        inner: &Arc<DaemonInner>,
+        id: &str,
+    ) -> Result<DaemonRes, CoreError> {
         let spotify = inner.spotify.lock().await;
         if !spotify.linked() {
             return Ok(DaemonRes::Error {
                 message: "spotify not linked".into(),
             });
         }
-        match spotify.playlist_tracks(id) {
-            Some(tracks) => Ok(DaemonRes::SpotifyTracksRes { tracks }),
-            None => Ok(DaemonRes::Error {
-                message: "unknown spotify playlist".into(),
-            }),
-        }
+        let tracks = match spotify.playlist_tracks(id) {
+            Some(tracks) => tracks,
+            None => {
+                return Ok(DaemonRes::Error {
+                    message: "unknown spotify playlist".into(),
+                });
+            }
+        };
+        // First open of a playlist: warm the whole cover set up front so
+        // scrolling is a disk read. Already on disk after a sync, so
+        // `get_url` short-circuits and this costs nothing.
+        let warm = Arc::clone(inner);
+        let for_warm = tracks.clone();
+        tokio::spawn(async move { prefetch(&warm, &for_warm).await });
+        Ok(DaemonRes::SpotifyTracksRes { tracks })
     }
 
     #[cfg_attr(not(feature = "youtube"), allow(unused_variables))]
@@ -627,8 +654,8 @@ impl Spotify {
             title,
             artist,
             album,
+            image_url,
             duration,
-            ..
         } = meta;
         if !is_playable(uri) {
             return Ok(DaemonRes::Error {
@@ -643,6 +670,7 @@ impl Spotify {
                 entry.title = title.to_string();
                 entry.artist = artist.to_string();
                 entry.album = album.to_string();
+                entry.cover_url = image_url.map(str::to_string);
                 if let Some(duration) = duration {
                     entry.duration = duration;
                 }
@@ -770,6 +798,7 @@ impl Spotify {
                     artist: st.artists.clone(),
                     album: st.album.clone().unwrap_or_default(),
                     duration: st.duration_ms.map(|ms| ms as f64 / 1000.0).unwrap_or(0.0),
+                    cover_url: st.image_url.clone(),
                     ..Default::default()
                 })
                 .collect();
