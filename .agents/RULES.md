@@ -15,3 +15,9 @@
 - Do all work on the dev branch exclusively; only tagged commits are pushed to main.
 - Always `git pull --rebase` new changes from the remote before beginning any session and before committing.
 - Always use the question tool for user clarification instead of dumping all questions on the screen.
+
+# Debugging
+
+- Always read the log files before theorising about a bug, and before asking the user to describe a symptom. `$XDG_DATA_HOME/gtm/gtmd.log` (default `~/.local/share/gtm/gtmd.log`) for the daemon, `gtm.log` beside it for the client. Both are written at `info` by default; `-v` adds `debug`. Provider rejections, mixer events and IPC errors are recorded there and nowhere else.
+- A bug report of "it does not work" is not a diagnosis. Reproduce it, grep the log, and report the lines that localise the fault. Never propose a fix from static reading alone when a log line would settle it.
+- Confirm which binary the user is actually running before assuming a fix reached them: a released tag can be hundreds of commits behind `dev`, and a commit message containing `[skip ci]` suppresses every workflow for the whole push.
