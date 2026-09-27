@@ -1,16 +1,16 @@
 {
   "schema": 1,
-  "generated_at": "2026-09-27T18:43:11Z",
+  "generated_at": "2026-09-27T19:47:16Z",
   "run": {
-    "tag": "0.2.83+4c4254a+nightly",
-    "date": "2026-09-27T18:43:09Z",
-    "commit": "4c4254a9a6821ca50948caaf764b692ab3a84180",
+    "tag": "0.2.83+e0d3870+nightly",
+    "date": "2026-09-27T19:47:14Z",
+    "commit": "e0d3870877c0b9984923df54274abdef03f21890",
     "seconds": "152"
   },
   "previous": {
-    "tag": "0.2.83+594001d+nightly",
-    "date": "2026-09-27T17:16:17Z",
-    "commit": "594001df22f604ca8880c42ceef47e32c50a1582"
+    "tag": "0.2.83+4c4254a+nightly",
+    "date": "2026-09-27T18:43:09Z",
+    "commit": "4c4254a9a6821ca50948caaf764b692ab3a84180"
   },
   "series": {
     "peak_rss_kb": [
@@ -273,6 +273,11 @@
         "tag": "0.2.83+4c4254a+nightly",
         "date": "2026-09-27T18:43:09Z",
         "value": 16756
+      },
+      {
+        "tag": "0.2.83+e0d3870+nightly",
+        "date": "2026-09-27T19:47:14Z",
+        "value": 16708
       }
     ],
     "mean_rss_kb": [
@@ -535,6 +540,11 @@
         "tag": "0.2.83+4c4254a+nightly",
         "date": "2026-09-27T18:43:09Z",
         "value": 16684
+      },
+      {
+        "tag": "0.2.83+e0d3870+nightly",
+        "date": "2026-09-27T19:47:14Z",
+        "value": 16634
       }
     ],
     "rss_5s_kb": [
@@ -797,6 +807,11 @@
         "tag": "0.2.83+4c4254a+nightly",
         "date": "2026-09-27T18:43:09Z",
         "value": 16572
+      },
+      {
+        "tag": "0.2.83+e0d3870+nightly",
+        "date": "2026-09-27T19:47:14Z",
+        "value": 16520
       }
     ],
     "cpu_ms": [
@@ -1058,6 +1073,11 @@
       {
         "tag": "0.2.83+4c4254a+nightly",
         "date": "2026-09-27T18:43:09Z",
+        "value": 90
+      },
+      {
+        "tag": "0.2.83+e0d3870+nightly",
+        "date": "2026-09-27T19:47:14Z",
         "value": 90
       }
     ],
@@ -1321,6 +1341,11 @@
         "tag": "0.2.83+4c4254a+nightly",
         "date": "2026-09-27T18:43:09Z",
         "value": 5
+      },
+      {
+        "tag": "0.2.83+e0d3870+nightly",
+        "date": "2026-09-27T19:47:14Z",
+        "value": 6
       }
     ]
   },
@@ -1330,32 +1355,32 @@
       "player": "gtm",
       "metric": "peak_rss_kb",
       "label": "peak RSS (kB)",
-      "previous": 16308,
-      "current": 16756,
-      "delta": 448,
-      "delta_pct": 2.75,
-      "regression": true
+      "previous": 16756,
+      "current": 16708,
+      "delta": -48,
+      "delta_pct": -0.29,
+      "regression": false
     },
     {
       "fixture": "bench.flac",
       "player": "gtm",
       "metric": "mean_rss_kb",
       "label": "mean RSS (kB)",
-      "previous": 16268,
-      "current": 16684,
-      "delta": 416,
-      "delta_pct": 2.56,
-      "regression": true
+      "previous": 16684,
+      "current": 16634,
+      "delta": -50,
+      "delta_pct": -0.30,
+      "regression": false
     },
     {
       "fixture": "bench.flac",
       "player": "gtm",
       "metric": "cpu_ms",
       "label": "CPU (ms)",
-      "previous": 100,
+      "previous": 90,
       "current": 90,
-      "delta": -10,
-      "delta_pct": -10.00,
+      "delta": 0,
+      "delta_pct": 0.00,
       "regression": false
     },
     {
@@ -1363,33 +1388,33 @@
       "player": "gtm",
       "metric": "rss_5s_kb",
       "label": "RSS @5s (kB)",
-      "previous": 16188,
-      "current": 16572,
-      "delta": 384,
-      "delta_pct": 2.37,
-      "regression": true
+      "previous": 16572,
+      "current": 16520,
+      "delta": -52,
+      "delta_pct": -0.31,
+      "regression": false
     }
   ],
   "runs": {
     "gtm/bench.flac": {
       "file_sha256": "c5e5c960cf59e5fdf3f3b68ea94a24d5f3d4b1122697e4e19d5ec5c1c3e175de",
-      "peak_rss_kb": 16756,
-      "mean_rss_kb": 16684,
-      "rss_5s_kb": 16572,
+      "peak_rss_kb": 16708,
+      "mean_rss_kb": 16634,
+      "rss_5s_kb": 16520,
       "cpu_ms": 90,
-      "t_ready_ms": 5,
-      "rss_p50_kb": 16756,
-      "rss_p95_kb": 16756
+      "t_ready_ms": 6,
+      "rss_p50_kb": 16640,
+      "rss_p95_kb": 16708
     },
     "gtm/bench.mp3": {
       "file_sha256": "6bd083a60ca94245ffd8d1be73e4b83eaab0fb6eeb6648e214ca528563a0bbfd",
-      "peak_rss_kb": 16520,
-      "mean_rss_kb": 16500,
-      "rss_5s_kb": 16408,
-      "cpu_ms": 160,
-      "t_ready_ms": 5,
-      "rss_p50_kb": 16520,
-      "rss_p95_kb": 16520
+      "peak_rss_kb": 16540,
+      "mean_rss_kb": 16521,
+      "rss_5s_kb": 16432,
+      "cpu_ms": 190,
+      "t_ready_ms": 6,
+      "rss_p50_kb": 16540,
+      "rss_p95_kb": 16540
     }
   }
 }
