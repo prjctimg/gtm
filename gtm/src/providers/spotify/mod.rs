@@ -115,3 +115,17 @@ impl SpotifyTrack {
         self.uri.is_some()
     }
 }
+
+/// Display name for an identifier that carries no human label of its own.
+///
+/// The synthetic Liked Songs entry and bare `spotify:` URIs both reach the UI
+/// without a title, and the queue's file-stem fallback renders the URI
+/// verbatim. Formatting them in one place keeps a raw id out of every playlist
+/// header, queue row and now-playing widget.
+pub fn pretty_id(id: &str) -> String {
+    match id {
+        "liked-songs" => "Liked Songs".to_string(),
+        _ if id.starts_with("spotify:") => "Spotify Track".to_string(),
+        _ => id.replace(['-', '_'], " "),
+    }
+}

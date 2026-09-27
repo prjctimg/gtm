@@ -896,7 +896,7 @@ impl Render {
                             // Never surface a raw provider URI (e.g. a queued
                             // `spotify:track:` entry) as the title.
                             if track.path.starts_with("spotify:") {
-                                "Spotify Track".to_string()
+                                pretty_id(&track.path)
                             } else {
                                 std::path::Path::new(&track.path)
                                     .file_stem()
@@ -1282,12 +1282,29 @@ impl Render {
             let available = panes[1].height.saturating_sub(reserve as u16) as usize;
             app.viewport_items = available;
             let sel = app.list_pos().min(total_len.saturating_sub(1));
-            let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
-            app.list_scroll = list_scroll;
 
             let pane_w = panes[1].width as usize;
             let mut lines = vec![Line::from("")];
             const ACTION_ROWS: usize = App::SPOTIFY_PLAYLIST_ROWS;
+            // The spacer line and the two action rows are always emitted, so the
+            // track window gets whatever is left. Sizing it from `available`
+            // instead drew two rows more than the pane could hold, which pushed
+            // the bottom of the list off screen and — because the window then
+            // shrank as `end` clamped to the last row — made the final track
+            // impossible to scroll into view.
+            let budget = available.saturating_sub(1 + ACTION_ROWS).max(1);
+            // The scroll is kept in row space like the selection, but the
+            // viewport is stepped in track space, where the two action rows do
+            // not shift the arithmetic.
+            let sel_track = sel.saturating_sub(ACTION_ROWS);
+            let (start, stop) = step_viewport(
+                app.list_scroll.saturating_sub(ACTION_ROWS),
+                sel_track,
+                budget,
+                tracks.len(),
+            );
+            app.list_scroll = start + ACTION_ROWS;
+
             // Rows 0/1: virtual actions (Play All / Shuffle), then the tracks.
             let action_help = [("▶  Play All", "  Enter"), ("🔀  Shuffle", "  Enter / S")];
             for (ai, (action, key_hint)) in action_help.iter().enumerate() {
@@ -1323,11 +1340,6 @@ impl Render {
                 lib_total_rows = total_len;
                 (lines, st_line)
             } else {
-                let start = app
-                    .list_scroll
-                    .saturating_sub(ACTION_ROWS)
-                    .min(tracks.len());
-                let stop = end.saturating_sub(ACTION_ROWS).min(tracks.len());
                 for (i, tr) in tracks[start..stop].iter().enumerate() {
                     // True cursor row of this track: the two virtual action
                     // rows (Play All / Shuffle) sit above the track list, so

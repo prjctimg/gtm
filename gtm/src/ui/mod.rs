@@ -32,7 +32,7 @@ pub(crate) use crate::shared::ipc::HealthStatus;
 pub(crate) use crate::shared::log::redirect_stderr;
 pub(crate) use crate::shared::radio::RadioStation;
 pub(crate) use crate::shared::resolve_command_socket;
-pub(crate) use crate::shared::spotify::SpotifySearchKind;
+pub(crate) use crate::shared::spotify::{SpotifySearchKind, pretty_id};
 pub(crate) use crate::shared::track::{LrcData, TrackInfo};
 pub(crate) use crate::theme::blend_colors;
 pub use crate::theme::readable_fg;
