@@ -12,7 +12,7 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::sync::{RwLock, broadcast, mpsc};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use gtm::shared::paths::resolve_pid_file;
 
@@ -57,6 +57,7 @@ use crate::library::{Library, extract_metadata};
 use crate::lyrics::{LyricsManager, lrc_to_text, meta_from_filename};
 use crate::network;
 use crate::podcast::PodcastManager;
+use crate::providers::spotify::cover::{PRELOAD_LEAD, preload};
 use crate::providers::spotify::oauth::{OAUTH_TIMEOUT, bind_callback};
 use crate::providers::spotify::stream::StreamManager;
 use crate::queue;
@@ -795,6 +796,7 @@ impl Cmd {
         }
         *inner.crossfade_loaded_for.lock().await = None;
         *inner.countdown_notified_for.lock().await = None;
+        *inner.cover_preloaded_for.lock().await = None;
         let standby = {
             let state = inner.state.read().await;
             Daemon::next_track(&state)
@@ -1597,6 +1599,9 @@ pub(crate) struct DaemonInner {
     pub(crate) lastfm_error: tokio::sync::Mutex<Option<String>>,
     pub(crate) crossfade_loaded_for: tokio::sync::Mutex<Option<String>>,
     pub(crate) countdown_notified_for: tokio::sync::Mutex<Option<String>>,
+    /// Queue path whose artwork has already been warmed ahead of play, so
+    /// the position tick asks once per track rather than every frame.
+    pub(crate) cover_preloaded_for: tokio::sync::Mutex<Option<String>>,
     /// Wall-clock instant of the last `PositionChanged` broadcast. The 16ms
     /// poll loop emits `AudioEvent::Position` at ~20 Hz; re-anchoring the
     /// client clock on every one would flood the socket, so position gets
@@ -1977,6 +1982,7 @@ impl Daemon {
             lastfm_error: tokio::sync::Mutex::new(None),
             crossfade_loaded_for: tokio::sync::Mutex::new(None),
             countdown_notified_for: tokio::sync::Mutex::new(None),
+            cover_preloaded_for: tokio::sync::Mutex::new(None),
             last_pos_broadcast: tokio::sync::Mutex::new(None),
             icy_title: Arc::new(std::sync::Mutex::new(None)),
             sleep_gen: Arc::new(AtomicU64::new(0)),
@@ -2944,9 +2950,11 @@ impl Daemon {
             DaemonReq::SpotifyVolume { percent } => {
                 Spotify::connect_ctrl(inner, ConnectCmd::Volume(*percent)).await
             }
-            DaemonReq::SpotifySync => Spotify::sync(inner).await,
+            DaemonReq::SpotifySync => Spotify::sync(&Arc::clone(inner)).await,
             DaemonReq::SpotifyPlaylists => Spotify::playlists(inner).await,
-            DaemonReq::SpotifyPlaylistTracks { id } => Spotify::playlist_tracks(inner, id).await,
+            DaemonReq::SpotifyPlaylistTracks { id } => {
+                Spotify::playlist_tracks(&Arc::clone(inner), id).await
+            }
             DaemonReq::SpotifyResolve {
                 playlist_id,
                 track_index,
@@ -3463,6 +3471,7 @@ impl Daemon {
         }
         *inner.crossfade_loaded_for.lock().await = None;
         *inner.countdown_notified_for.lock().await = None;
+        *inner.cover_preloaded_for.lock().await = None;
 
         // Scrobble current track if it was played long enough
         let (track, played_secs) = {
@@ -3633,6 +3642,7 @@ impl Daemon {
         let actual = inner.mixer.lock().await.current_position();
         *inner.crossfade_loaded_for.lock().await = None;
         *inner.countdown_notified_for.lock().await = None;
+        *inner.cover_preloaded_for.lock().await = None;
 
         // Scrobble the track that just finished before advancing.
         let prev_track = {
@@ -3890,6 +3900,29 @@ impl Daemon {
                         Self::push_event(inner, DaemonEvent::PositionChanged { time_pos: pos });
                         Self::sync_radio_title(inner).await;
                         Self::sync_radio_list(inner).await;
+                    }
+                }
+
+                // Warm the successor's artwork while the current track is still
+                // playing, so the advance paints with a cover instead of a
+                // request the user waits through. Latched on the queue path so
+                // it costs one fetch per track, not one per tick.
+                if dur > 0.0
+                    && (dur - pos) <= PRELOAD_LEAD
+                    && let Some(track) = &next
+                    && track.path.starts_with("spotify:")
+                {
+                    let due =
+                        inner.cover_preloaded_for.lock().await.as_deref() != Some(&track.path);
+                    if due {
+                        *inner.cover_preloaded_for.lock().await = Some(track.path.clone());
+                        let warm = Arc::clone(&inner);
+                        let ahead = track.clone();
+                        tokio::spawn(async move {
+                            if preload(&warm, &ahead).await {
+                                debug!("preloaded the cover for {}", ahead.path);
+                            }
+                        });
                     }
                 }
 
