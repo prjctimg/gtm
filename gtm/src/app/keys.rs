@@ -894,6 +894,11 @@ impl App {
                         } else {
                             self.set_list_pos(self.list_pos().saturating_sub(1));
                             self.update_track_popup();
+                            // Matches MoveDown: moving up re-enters rows the
+                            // downward pass already warmed, so without this the
+                            // covers above the cursor are the only ones left
+                            // cold.
+                            self.preload_upcoming_covers();
                         }
                     }
                     Some(KeyboardAction::MoveDown) => {
