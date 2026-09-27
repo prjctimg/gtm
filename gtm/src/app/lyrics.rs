@@ -73,6 +73,24 @@ pub(crate) fn cycle_library_focus(
     }
 }
 
+/// Publish a lookup's outcome, reporting a miss as an error toast the way the
+/// manual key always has.
+fn report(
+    out: Result<Option<LrcData>, CoreError>,
+    ipc_tx: &mpsc::UnboundedSender<IpcResult>,
+    fetch_gen: u64,
+) {
+    match out {
+        Ok(lyrics) => {
+            let _ = ipc_tx.send(IpcResult::Lyrics(lyrics, fetch_gen));
+        }
+        Err(e) => {
+            let _ = ipc_tx.send(IpcResult::Lyrics(None, fetch_gen));
+            let _ = ipc_tx.send(IpcResult::Error(format!("Lyrics: {e}")));
+        }
+    }
+}
+
 impl App {
     /// Index of the time-synced lyric line for the current playback position.
     /// Untimed lines (timestamp < 0) are skipped for matching but keep their
@@ -91,40 +109,67 @@ impl App {
     /// the automatic one knew a provider track has to be searched by artist and
     /// title, so asking manually for a Spotify track always came back empty.
     pub(crate) fn fetch_lyrics(&mut self, track: &TrackInfo) {
+        let (track_id, path) = (track.id, Some(track.path.clone()));
+        match lyrics_query(track) {
+            Some((artist, title)) => self.search_lyrics(&artist, &title),
+            None => self.library_lyrics(track_id, path),
+        }
+    }
+
+    /// Fetch lyrics for a synced playlist row by its own `artist` and `name`.
+    ///
+    /// The lazy half of playlist lyrics: the track need not be playing or even
+    /// queued, so browsing a playlist warms the lyrics manager's on-disk cache
+    /// one row at a time instead of scanning the whole list.
+    pub(crate) fn row_lyrics(&mut self, track: &SpotifyTrack) {
+        if track.artists.trim().is_empty() || track.name.trim().is_empty() {
+            return;
+        }
+        self.search_lyrics(track.artists.trim(), track.name.trim());
+    }
+
+    fn search_lyrics(&mut self, artist: &str, title: &str) {
+        let (artist, title) = (artist.to_string(), title.to_string());
+        let fetch_gen = self.begin_lyrics();
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            report(
+                client.lyrics().search(&artist, &title).await,
+                &ipc_tx,
+                fetch_gen,
+            );
+        });
+    }
+
+    fn library_lyrics(&mut self, track_id: i64, path: Option<String>) {
+        let fetch_gen = self.begin_lyrics();
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            let out = match tokio::time::timeout(
+                Duration::from_secs(12),
+                client.lyrics().get(track_id, path.as_deref()),
+            )
+            .await
+            {
+                Ok(res) => res,
+                Err(_) => Err(CoreError::Daemon("lyrics fetch timed out".into())),
+            };
+            report(out, &ipc_tx, fetch_gen);
+        });
+    }
+
+    /// Clear the pane and arm the generation guard for one fetch.
+    fn begin_lyrics(&mut self) -> u64 {
         let fetch_gen = self.next_lyrics_gen();
         self.lyrics.current = None;
         self.lyrics.pending_gen = Some(fetch_gen);
         self.lyrics.fetching = true;
         self.lyrics.scroll = 0;
         self.lyrics.offset_secs = 0.0;
-        let track_id = track.id;
-        let path = Some(track.path.clone());
-        let query = lyrics_query(track);
-        let client = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        tokio::spawn(async move {
-            let out = match query {
-                Some((artist, title)) => client.lyrics().search(&artist, &title).await,
-                None => match tokio::time::timeout(
-                    Duration::from_secs(12),
-                    client.lyrics().get(track_id, path.as_deref()),
-                )
-                .await
-                {
-                    Ok(res) => res,
-                    Err(_) => Err(CoreError::Daemon("lyrics fetch timed out".into())),
-                },
-            };
-            match out {
-                Ok(lyrics) => {
-                    let _ = ipc_tx.send(IpcResult::Lyrics(lyrics, fetch_gen));
-                }
-                Err(e) => {
-                    let _ = ipc_tx.send(IpcResult::Lyrics(None, fetch_gen));
-                    let _ = ipc_tx.send(IpcResult::Error(format!("Lyrics: {e}")));
-                }
-            }
-        });
+        self.lyrics.row = None;
+        fetch_gen
     }
 
     /// Shift the lyric time baseline by `delta` seconds so lines whose timing

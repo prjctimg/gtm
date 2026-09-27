@@ -1004,6 +1004,7 @@ impl App {
                 pane_focus: false,
                 manual_scroll: false,
                 offset_secs: 0.0,
+                row: None,
             },
             zen: false,
             zen_surface: ZenSurface::Cover,

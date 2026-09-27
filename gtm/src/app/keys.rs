@@ -894,6 +894,7 @@ impl App {
                         } else {
                             self.set_list_pos(self.list_pos().saturating_sub(1));
                             self.update_track_popup();
+                            self.prefetch_playlist_lyrics();
                             // Matches MoveDown: moving up re-enters rows the
                             // downward pass already warmed, so without this the
                             // covers above the cursor are the only ones left
@@ -926,6 +927,7 @@ impl App {
                             self.set_list_pos((self.list_pos() + 1).min(max_list));
                             self.update_track_popup();
                             self.preload_upcoming_covers();
+                            self.prefetch_playlist_lyrics();
                         }
                     }
                     Some(KeyboardAction::PageUp) => {

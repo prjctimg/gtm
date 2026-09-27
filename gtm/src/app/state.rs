@@ -471,4 +471,8 @@ pub struct LyricsView {
     /// lyric matching and timestamp display). Adjusted with `[` / `]` while the
     /// lyrics pane holds focus and reset to zero on every track change.
     pub offset_secs: f64,
+    /// Playlist row whose lyrics are on screen. Moving the cursor re-fetches
+    /// only when it lands on a different track, so holding an arrow key does
+    /// not re-request the same row once per frame.
+    pub row: Option<usize>,
 }

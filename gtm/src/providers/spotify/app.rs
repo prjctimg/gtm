@@ -312,6 +312,27 @@ impl App {
             .get(self.list_pos().saturating_sub(Self::SPOTIFY_PLAYLIST_ROWS))
     }
 
+    /// Fetch the lyrics of the Spotify drill-down row under the cursor.
+    ///
+    /// Lazy by design: one row at a time, on the row the user is actually
+    /// looking at, so browsing a playlist warms the daemon's on-disk lyrics
+    /// cache a track at a time instead of scanning the whole list. Re-selecting
+    /// the same row is a no-op because the daemon's cache answers it without a
+    /// request.
+    pub fn prefetch_playlist_lyrics(&mut self) {
+        if !self.in_spotify_playlist() || !(self.auto_fetch_lyrics || self.lyrics.show) {
+            return;
+        }
+        let Some(track) = self.selected_spotify_track().cloned() else {
+            return;
+        };
+        if self.lyrics.row == Some(track.index) {
+            return;
+        }
+        self.lyrics.row = Some(track.index);
+        self.row_lyrics(&track);
+    }
+
     /// Preload the album-cover URLs of Spotify drill-down rows a short scroll
     /// ahead of the cursor so fast scrolling warms the daemon's image cache
     /// (covers are keyed by URL, not by a local library id). Fires in the

@@ -43,6 +43,14 @@ impl Lyrics {
             }
         };
 
+        // A provider entry already carries the artist and title the playlist
+        // sync cached, so it is worth searching directly. The library route
+        // below resolves a track by id, which a `spotify:` entry has none of,
+        // and that is why a Spotify track's lyrics came back empty.
+        if track.path.starts_with("spotify:") {
+            return Ok(crate::providers::spotify::lyrics::for_track(inner, &track).await);
+        }
+
         let mut track = track;
         if track.artist.is_empty() || track.title.is_empty() {
             let (artist, title) = meta_from_filename(&track.path);
