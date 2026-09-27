@@ -35,6 +35,8 @@ use gtm::shared::spotify::{LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifyStatus, 
 
 use api::track_from_playable;
 
+pub use gtm::shared::spotify::pretty_id;
+
 const TOKEN_FILE: &str = "spotify.json";
 /// Client id of the Spotify app the user authorised with, kept beside the
 /// token so a refresh keeps using the same app. Without it the daemon falls
@@ -45,20 +47,6 @@ const TOKEN_ACCESS_PERMS: u32 = 0o600;
 /// OAuth scope required for librespot native playback. Tokens issued before it
 /// was requested keep working for the Web API but cannot stream audio.
 const SCOPE_STREAMING: &str = "streaming";
-
-/// Display name for an identifier that has no human label of its own.
-///
-/// The synthetic Liked Songs entry and bare `spotify:` URIs both reach the UI
-/// without a title, and the queue's file-stem fallback renders the URI
-/// verbatim. Formatting them in one place keeps a raw id from ever reaching a
-/// playlist header or the now-playing widget.
-pub fn pretty_id(id: &str) -> String {
-    match id {
-        "liked-songs" => "Liked Songs".to_string(),
-        _ if id.starts_with("spotify:") => "Spotify Track".to_string(),
-        _ => id.replace(['-', '_'], " "),
-    }
-}
 
 /// Owns the Spotify Web API client, its token file, and the playlist cache.
 ///
@@ -515,7 +503,7 @@ impl SpotifyManager {
         if !saved.is_empty() {
             playlists.push(SpotifyPlaylist {
                 id: "liked-songs".to_string(),
-                name: "Liked Songs".to_string(),
+                name: pretty_id("liked-songs"),
                 owner: user.clone().unwrap_or_default(),
                 tracks: saved,
             });
@@ -538,7 +526,26 @@ impl SpotifyManager {
     /// Swap a completed sync snapshot into the manager. `status()` and
     /// `playlists()` only ever contend for this brief swap, never for the
     /// minutes of network pagination that preceded it.
+    ///
+    /// A snapshot that is empty, or a large regression against what is already
+    /// cached, is rejected: `run_sync` tolerates a page error by stopping the
+    /// walk, so a partial pass was committing a truncated — sometimes empty —
+    /// library over a good one and blanking the TUI's playlist list until the
+    /// next restart.
     pub fn commit_sync(&mut self, user: Option<String>, playlists: Vec<SpotifyPlaylist>) {
+        if playlists.is_empty() {
+            warn!("spotify sync returned no playlists — keeping the cached list");
+            self.error = Some("playlist sync returned nothing".into());
+            return;
+        }
+        if self.playlists.len() > playlists.len() / 2 {
+            warn!(
+                "spotify sync returned {} playlists against {} cached — keeping the cached list",
+                playlists.len(),
+                self.playlists.len()
+            );
+            return;
+        }
         self.error = None;
         self.user = user;
         self.playlists = playlists;

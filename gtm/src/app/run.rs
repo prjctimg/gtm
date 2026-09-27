@@ -665,49 +665,12 @@ impl App {
                         }
                     });
                 }
-                // Auto-fetch lyrics on track change if enabled and (pane visible or auto-fetch enabled)
-                let should_fetch_lyrics = self.auto_fetch_lyrics || self.lyrics.show;
-                if should_fetch_lyrics {
-                    let fetch_gen = self.next_lyrics_gen();
-                    self.lyrics.current = None;
-                    self.lyrics.pending_gen = Some(fetch_gen);
-                    self.lyrics.fetching = true;
-                    self.lyrics.scroll = 0;
-                    self.lyrics.offset_secs = 0.0;
-                    let client = self.client.clone();
-                    let ipc_tx = self.ipc_tx.clone();
-                    let tpath = self.state.current_track.as_ref().map(|t| t.path.clone());
-                    let cur_tid = self.state.current_track.as_ref().map(|t| t.id);
-                    // A provider URI has no library row and no file to read
-                    // tags from, so `get(track_id, path)` can only miss. Use the
-                    // entry's own artist/title instead.
-                    let fallback = self
-                        .state
-                        .current_track
-                        .as_ref()
-                        .filter(|t| path_is_remote(&t.path))
-                        .map(|t| (t.artist.clone(), t.title.clone()));
-                    tokio::spawn(async move {
-                        let result = match &fallback {
-                            Some((artist, title)) if !artist.is_empty() && !title.is_empty() => {
-                                client.lyrics().search(artist, title).await
-                            }
-                            _ => {
-                                client
-                                    .lyrics()
-                                    .get(cur_tid.unwrap_or(0), tpath.as_deref())
-                                    .await
-                            }
-                        };
-                        match result {
-                            Ok(lyrics) => {
-                                let _ = ipc_tx.send(IpcResult::Lyrics(lyrics, fetch_gen));
-                            }
-                            Err(_) => {
-                                let _ = ipc_tx.send(IpcResult::Lyrics(None, fetch_gen));
-                            }
-                        }
-                    });
+                // Auto-fetch lyrics on track change if enabled and (pane
+                // visible or auto-fetch enabled).
+                if (self.auto_fetch_lyrics || self.lyrics.show)
+                    && let Some(track) = self.state.current_track.clone()
+                {
+                    self.fetch_lyrics(&track);
                 }
             }
 
@@ -1263,7 +1226,14 @@ impl App {
                         }
                         self.spotify.sync_pending = false;
                     }
-                    IpcResult::SpotifyTracks(t) => self.spotify.playlist_tracks_cache = t,
+                    IpcResult::SpotifyTracks(t) => {
+                        // The drill-down may have been closed while this was in
+                        // flight; adopting the rows then would leave a stale
+                        // track list attached to whatever opens next.
+                        if self.in_spotify_playlist() {
+                            self.spotify.playlist_tracks_cache = t;
+                        }
+                    }
                     IpcResult::SpotifySearchWebDone(seq, res) => {
                         if seq != self.spotify.web_seq {
                             // Stale: a newer query superseded this in-flight
