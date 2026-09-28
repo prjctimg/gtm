@@ -5,9 +5,9 @@ class Gtm < Formula
   desc "Terminal-based music player daemon and client"
   homepage "https://github.com/prjctimg/gtm.rs"
   url "https://github.com/prjctimg/gtm.rs.git",
-      tag: "v0.2.73",
+      tag: "v0.2.83",
       using: :git
-  version "0.2.73"
+  version "0.2.83"
   license "GPL-3.0-only"
 
   depends_on "rust" => :build
@@ -25,13 +25,14 @@ class Gtm < Formula
 
   def caveats
     <<~EOS
-      Start the daemon:
-        gtmd &
+      gtm does not daemonize. Start the daemon in a terminal of its own:
+        gtmd
 
-      Then use gtm to control playback.
+      Then use gtm to control playback. Logs go to
+      $XDG_DATA_HOME/gtm/gtmd.log rather than the terminal.
 
       A systemd user service is also available:
-        systemctl --user start gtmd
+        systemctl --user enable --now gtmd
     EOS
   end
 
