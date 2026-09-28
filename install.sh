@@ -2,7 +2,7 @@
 # gtm installer — see https://github.com/prjctimg/gtm.rs
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash
+#   curl -fsSL https://gtmd.dev/install.sh | bash
 #   install.sh                        # download and install the release for this system
 #   install.sh --version 0.2.73       # pin a specific release
 #   install.sh --nightly              # install the latest nightly prerelease
@@ -49,7 +49,7 @@ When run from inside a release archive this file installs the bundled
 binaries, man pages, completions, systemd unit, desktop entry and icon.
 
 Examples:
-  curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | bash
+  curl -fsSL https://gtmd.dev/install.sh | bash
   install.sh --version 0.2.73
   install.sh --prefix /usr/local
 EOF

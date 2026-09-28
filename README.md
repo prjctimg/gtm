@@ -56,14 +56,14 @@ You can read about it in [this post.](https://prjctimg.me/blg/feature-rich-termi
 
 ```bash
 # stable (latest)
-curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash
+curl -fsSL https://gtmd.dev/install.sh | bash
 ```
 
 For `nightly` builds (released on every push to `dev`):
 
 ```bash
 # nightly
-curl -fsSL https://raw.githubusercontent.com/prjctimg/gtm.rs/main/install.sh | bash -s -- --nightly
+curl -fsSL https://gtmd.dev/install.sh | bash -s -- --nightly
 ```
 
 Or grab an archive [releases page](https://github.com/prjctimg/gtm.rs/releases/latest), extract it, and run the `./install.sh` in its directory
