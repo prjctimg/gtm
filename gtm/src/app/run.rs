@@ -1,3 +1,5 @@
+use crate::app::*;
+use crate::oauth::mask_credential;
 
 /// Validate the link form's redirect port.
 ///
@@ -52,8 +54,8 @@ impl App {
     /// the form is reopened in the same session.
     pub fn open_spotify_link_form(&mut self) {
         self.spotify.oauth_port = "8990".to_string();
-        self.spotify.oauth_form_error = None;
         self.spotify.oauth_field = 0;
+        self.spotify.oauth_form_error = None;
         // No pending flow: the picker shows the input form, not a waiting view.
         self.spotify.oauth_pending = false;
         self.spotify.oauth_url = None;
@@ -516,24 +518,31 @@ impl App {
             if had_spotify_change {
                 if let Ok(status) = self.client.spotify().status().await {
                     let was_linked = self.spotify.status.as_ref().is_some_and(|s| s.linked);
-                    if status.linked && !was_linked {
-                        let user = status.user.clone().unwrap_or_else(|| "account".into());
-                        // The OAuth browser flow finished: dismiss the waiting
-                        // state before announcing, so the auth-URL prompt is
-                        // gone by the time the user reads the toast. If the
-                        // flow started from the Setup walkthrough close its
-                        // picker and navigate to Spotify; if it started from
-                        // the Alt+s search picker, keep that picker open so it
-                        // now behaves as the search box.
+                    if status.linked {
+                        // Clearing the waiting state is idempotent on purpose.
+                        // It used to ride the `!was_linked` edge, which meant a
+                        // single failed status call left the picker up for good:
+                        // the daemon's post-sync event could no longer fire the
+                        // transition, because by then the account was already
+                        // linked. Every event gets a chance to dismiss instead,
+                        // so a missed one costs a moment, not a stuck screen.
                         self.spotify.oauth_pending = false;
                         self.spotify.oauth_url = None;
                         self.spotify.oauth_error = None;
+                        if self.pickers.top().map(|o| o.id) == Some(PickerId::SpotifyLink) {
+                            self.close_picker();
+                        }
+                    }
+                    if status.linked && !was_linked {
+                        let user = status.user.clone().unwrap_or_else(|| "account".into());
+                        // If the flow started from the Setup walkthrough
+                        // navigate to Spotify; if it started from the Alt+s
+                        // search picker, keep that picker open so it now
+                        // behaves as the search box. Deliberately *not*
+                        // idempotent: re-running this on the post-sync event
+                        // would reset the library pane the user has already
+                        // navigated.
                         match self.pickers.top().map(|o| o.id) {
-                            Some(PickerId::SpotifyLink) => {
-                                self.close_picker();
-                                self.reset_library_view(5, None);
-                                self.library_pane_focus = true;
-                            }
                             Some(PickerId::SpotifySearch) => {}
                             _ => {
                                 self.reset_library_view(5, None);
@@ -542,14 +551,27 @@ impl App {
                         }
                         // Playlists are still being paginated in the daemon
                         // background, so say that rather than claiming the
-                        // sync already finished.
+                        // sync already finished. The app is named because it
+                        // decides which rate limit the sync is spending, and
+                        // nothing on screen said so before.
+                        let app_desc = match self.spotify.oauth_sent_client_id.as_deref() {
+                            Some(id) if !id.trim().is_empty() => {
+                                format!("via your own app ({})", mask_credential(id.trim()))
+                            }
+                            _ => "via the shared app".to_string(),
+                        };
                         self.notify_titled(
                             "Spotify",
-                            format!("Linked as {user} — syncing playlists"),
+                            format!("Linked as {user} {app_desc} — syncing playlists"),
                             NotificationKind::Success,
                             false,
                             NotifType::Spotify,
                         );
+                        // The id is persisted daemon-side; the form's copy is a
+                        // credential that has no further use, so do not keep it
+                        // in pane state for the rest of the session.
+                        self.spotify.oauth_sent_client_id = None;
+                        self.spotify.oauth_client_id.clear();
                     } else if self.spotify.oauth_pending && !status.linked {
                         // The OAuth browser flow failed (e.g. no network): stop
                         // waiting, dismiss the picker and report the failure.

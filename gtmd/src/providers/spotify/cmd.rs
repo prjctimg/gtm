@@ -12,10 +12,11 @@ use librespot_core::spotify_uri::SpotifyUri;
 use rspotify::AuthCodePkceSpotify;
 use tracing::{info, warn};
 
+use gtm::oauth::mask_credential;
 use gtm::shared::CoreError;
 use gtm::shared::global::PlaybackStatus;
 use gtm::shared::ipc::{DaemonEvent, DaemonRes};
-use gtm::shared::spotify::SpotifyTrack;
+use gtm::shared::spotify::{LIBRESPOT_CLIENT_ID, SpotifyTrack};
 use gtm::shared::track::TrackInfo;
 
 use crate::daemon::{Cmd, Daemon, DaemonInner, is_rate_limit};
@@ -153,6 +154,19 @@ impl Spotify {
             mgr.web_client_id()
         };
         let cid = resolved.as_str();
+        // Log the app the flow is actually running under, at the point it
+        // starts. The link-time log only fires once the flow completes, so a
+        // flow that never got that far left nothing to explain why the account
+        // was about to be bound to a different app than the one requested.
+        info!(
+            "spotify oauth: client id {} ({}), redirect port {port}",
+            mask_credential(cid),
+            if cid == LIBRESPOT_CLIENT_ID {
+                "shared, every install contends for one rate limit"
+            } else {
+                "own"
+            },
+        );
         let flow = OauthFlow::new(cid, port);
         // Bind the loopback callback server *before* returning the URL so the
         // browser always opens to a live listener (a previously spawned task
