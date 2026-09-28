@@ -5,6 +5,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use crate::oauth::mask_credential;
 use crate::ui::*;
 
 pub mod forms;
@@ -72,7 +73,7 @@ impl Pickers {
             PickerId::PlaylistSelect => (48, 20),
             PickerId::PlaylistTrackSelect => (64, 26),
             PickerId::SpotifySearch => (60, 28),
-            PickerId::SpotifyLink => (60, 12),
+            PickerId::SpotifyLink => (60, 16),
             PickerId::Crossfade => (58, 20),
             PickerId::VisualizerPreset => (48, 14),
             PickerId::FooterPreset => (52, 16),
@@ -230,30 +231,65 @@ impl Pickers {
                     f.render_widget(p, inner);
                 } else {
                     let input_cursor = cursor_span_style(app);
+                    let field = app.spotify.oauth_field;
+                    // The client id is shown masked. It is a credential, not a
+                    // setting, and the picker is the one place a shoulder
+                    // reader could see it.
+                    let client_display = if app.spotify.oauth_client_id.is_empty() {
+                        "(optional)".to_string()
+                    } else {
+                        mask_credential(&app.spotify.oauth_client_id)
+                    };
                     let mut lines = vec![
                         Line::from(Span::styled(
                             "Press Enter to authorize gtm with Spotify.",
                             Style::default().fg(app.theme.fg),
                         )),
-                        Line::from(Span::styled(
-                            "A browser opens; the app id is fixed, so nothing to paste.",
-                            Style::default().fg(app.theme.fg_dim),
-                        )),
                         Line::from(""),
                     ];
 
-                    // The port is the only editable field left. The client id
-                    // input used to sit above it, and taking it out is not just
-                    // cosmetic: the id is ignored now, so a field that accepted
-                    // typing would swallow keystrokes and change nothing.
+                    let mut id_spans = vec![
+                        Span::styled(
+                            if field == 0 { "▸ " } else { "  " },
+                            Style::default().fg(app.theme.accent),
+                        ),
+                        Span::styled(" Client ID: ", Style::default().fg(app.theme.fg_bright)),
+                        Span::styled(client_display, Style::default().fg(app.theme.accent)),
+                    ];
+                    if field == 0
+                        && let Some(cur) = input_cursor
+                    {
+                        id_spans.push(Span::styled(" ", cur));
+                    }
+                    lines.push(Line::from(id_spans));
+                    lines.push(Line::from(Span::styled(
+                        "  Your own Spotify app, to give search, artwork and",
+                        Style::default().fg(app.theme.fg_dim),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "  playlist sync their own rate limit. Playback always",
+                        Style::default().fg(app.theme.fg_dim),
+                    )));
+                    lines.push(Line::from(Span::styled(
+                        "  uses gtm's app and is unaffected. Blank = shared.",
+                        Style::default().fg(app.theme.fg_dim),
+                    )));
+                    lines.push(Line::from(""));
+
                     let mut port_spans = vec![
+                        Span::styled(
+                            if field == 1 { "▸ " } else { "  " },
+                            Style::default().fg(app.theme.accent),
+                        ),
                         Span::styled(" Port: ", Style::default().fg(app.theme.fg_bright)),
                         Span::styled(
                             app.spotify.oauth_port.clone(),
                             Style::default().fg(app.theme.accent),
                         ),
                     ];
-                    if let Some(cur) = input_cursor {
+                    if field == 1
+                        && let Some(cur) = input_cursor
+                    {
                         port_spans.push(Span::styled(" ", cur));
                     }
                     lines.push(Line::from(port_spans));
@@ -266,7 +302,7 @@ impl Pickers {
                         Style::default().fg(app.theme.fg_bright),
                     )));
                     lines.push(Line::from(Span::styled(
-                        "Register it in your Spotify app dashboard.",
+                        "Tab: switch field",
                         Style::default().fg(app.theme.fg_dim),
                     )));
 

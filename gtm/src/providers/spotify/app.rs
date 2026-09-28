@@ -107,14 +107,14 @@ impl App {
     /// background. There is no client id to pass: the app is fixed, because
     /// Spotify Connect only accepts a token issued by the client id the session
     /// registers as, and a self-registered app is not one it recognises.
-    pub(crate) fn start_spotify_oauth(&mut self, port: u16) {
+    pub(crate) fn start_spotify_oauth(&mut self, port: u16, client_id: Option<String>) {
         let c = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         self.spotify.oauth_pending = true;
         self.spotify.oauth_url = None;
         self.spotify.oauth_error = None;
         tokio::spawn(async move {
-            match c.spotify().oauth_start(port).await {
+            match c.spotify().oauth_start_with(port, client_id).await {
                 Ok(url) => {
                     let _ = ipc_tx.send(IpcResult::AuthUrl("Spotify", url.clone()));
                     let _ = ipc_tx.send(IpcResult::Notification(
@@ -818,6 +818,7 @@ impl App {
             return;
         }
         self.spotify.oauth_port = "8990".to_string();
+        self.spotify.oauth_field = 0;
         self.pickers.open(PickerId::SpotifyLink);
     }
 

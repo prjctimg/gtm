@@ -1600,27 +1600,27 @@ async fn spotify_login(
                 .and_then(|v| v.parse().ok())
         })
         .unwrap_or(8990);
-    // No app to choose. The Spotify app is fixed: Connect only accepts a token
-    // issued by the same client id it is asked to register, and a
-    // self-registered app is not a recognised playback app, so a link made with
-    // one can browse the whole library and still play nothing. The old
-    // `--client-id` argument is accepted and ignored rather than rejected, so
-    // existing habits and scripts keep working.
-    if let Some(ignored) = &client_id
-        && !ignored.trim().is_empty()
-    {
-        println!(
-            "note: --client-id is ignored; Spotify playback requires gtm's own app, \
-             so audio works only with it"
-        );
-    }
+    // `--client-id` sets the *Web API* app: the one that mints the token used
+    // for search, artwork and playlist sync. Playback is unaffected and keeps
+    // using librespot's id, because Spotify Connect only accepts a token issued
+    // by the same client id it registers as, and a self-registered app is not a
+    // recognised playback app — a link made with one can browse the whole
+    // library and still play nothing.
+    //
+    // Supplying an id is what gets those calls out of librespot's shared quota,
+    // which every other librespot install competes for and which answers `429`
+    // under any real usage. Omitting it keeps the previous behaviour exactly.
+    let client_id = client_id
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+
     // An id from an older install is inert now, but drop it so the keychain
     // stops holding an app that can no longer be used for anything.
     delete_secret(SPOTIFY_CLIENT_ID);
 
     let url = client
         .spotify()
-        .oauth_start(port)
+        .oauth_start_with(port, client_id)
         .await
         .map_err(|e| e.to_string())?;
     println!("Open this URL in your browser to authorize gtm:\n{url}\n");
