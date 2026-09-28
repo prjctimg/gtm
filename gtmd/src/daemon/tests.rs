@@ -6,22 +6,26 @@ use super::*;
 /// again sooner.
 #[test]
 fn a_quota_refusal_is_recognised() {
-    // The exact wording rspotify renders for `ApiError::Regular { status: 429 }`,
-    // as it appears in the daemon log.
+    // reqwest's rendering, verbatim from the daemon log. This is the form a
+    // transport-level refusal takes and the one the log is full of.
     assert!(is_rate_limit(
         "me: http error: status code 429 Too Many Requests"
     ));
+    // `ApiError::Regular` displays as `{status}: {message}`, so a typed error
+    // arriving through rspotify renders without the "status code" prefix.
     assert!(is_rate_limit("429: rate limited"));
-    // A spent quota and nothing cached takes the same long wait, so the string
-    // alone decides, not whether a library happens to be on disk.
+    assert!(is_rate_limit("me: 429: Too Many Requests"));
+    // The wrapper `run_sync` adds around whatever rspotify produced.
     assert!(is_rate_limit(
         "spotify playlist sync failed: me: http error: status code 429 Too Many Requests"
     ));
 }
 
-/// Everything else keeps the fast ladder. Notably a `403` is not a quota
-/// problem — it is what a dev-mode app returns for playlist contents — and
-/// treating it as one would stall syncs for minutes over a permanent refusal.
+/// Everything else keeps the fast ladder.
+///
+/// A `403` is not a quota problem — it is what a dev-mode app returns for
+/// playlist contents — and treating it as one would stall syncs for minutes
+/// over a refusal that will never clear.
 #[test]
 fn other_failures_keep_the_fast_ladder() {
     assert!(!is_rate_limit("me: http error: status code 403 Forbidden"));
@@ -29,10 +33,19 @@ fn other_failures_keep_the_fast_ladder() {
         "me: http error: status code 500 Internal Server Error"
     ));
     assert!(!is_rate_limit("spotify not linked"));
-    // A `429` that appears only inside other text must not be mistaken for the
-    // status: a track or playlist name can carry any digits.
+    assert!(!is_rate_limit(
+        "me: http error: status code 401 Unauthorized"
+    ));
+    // A longer number must not match: "4291" contains "429" as a substring, and
+    // a bare `contains` would call it a quota refusal.
     assert!(
-        !is_rate_limit("playlist 429 Too Many Requests Later failed to parse"),
+        !is_rate_limit("me: http error: status code 4291 something"),
+        "4291 is not 429"
+    );
+    assert!(!is_rate_limit("me: 1429: rate limited"), "1429 is not 429");
+    // A title carrying digits is not a status either.
+    assert!(
+        !is_rate_limit("me: http error: status code 500 track 429 failed"),
         "429 in a name is not a quota refusal"
     );
 }

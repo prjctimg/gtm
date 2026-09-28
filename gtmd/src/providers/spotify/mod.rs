@@ -175,14 +175,25 @@ impl SpotifyManager {
 
     /// Write the snapshot, best-effort: a failure here only costs a slower
     /// next start, so it must never fail the sync that produced it.
+    ///
+    /// The config dir is created first because the snapshot is the whole reason
+    /// a quota-spent reconnect can serve anything — silently skipping the write
+    /// when the dir happens to be missing would leave the feature dead exactly
+    /// where it is needed, with nothing in the log but a swallowed error.
     fn save_snapshot(&self, user: Option<String>, playlists: &[SpotifyPlaylist]) {
         let snap = PlaylistSnapshot {
             user,
             playlists: playlists.to_vec(),
         };
-        if let Ok(json) = serde_json::to_string(&snap)
-            && let Err(e) = std::fs::write(self.playlists_path(), json)
-        {
+        let Ok(json) = serde_json::to_string(&snap) else {
+            warn!("spotify: could not serialise the playlist snapshot");
+            return;
+        };
+        if let Err(e) = std::fs::create_dir_all(&self.config_dir) {
+            warn!("spotify: could not create the config dir for the snapshot: {e}");
+            return;
+        }
+        if let Err(e) = std::fs::write(self.playlists_path(), json) {
             warn!("spotify: could not write playlist snapshot: {e}");
         }
     }
@@ -907,10 +918,14 @@ mod tests {
     /// reconnect that reads it back must not need to ask Spotify for anything.
     #[test]
     fn a_snapshot_survives_a_restart() {
+        // A fresh dir that does not exist yet, which is the first-link case and
+        // the one where a snapshot that silently failed to write would leave the
+        // feature dead exactly when it is needed.
         let dir = std::env::temp_dir().join(format!("gtm-snap-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let mut mgr = super::SpotifyManager::new(dir.clone());
         mgr.commit_sync(Some("Ada".into()), vec![playlist("a"), playlist("b")]);
+        assert_eq!(mgr.playlists.len(), 2, "the sync must have committed");
         // A brand-new manager, as after a daemon restart: the library and the
         // display name must come back off disk with no network involved.
         let fresh = super::SpotifyManager::new(dir.clone());

@@ -1717,12 +1717,43 @@ const RATE_LIMIT_RETRY: u64 = 300;
 /// Whether a sync failure is Spotify refusing for quota rather than a transient
 /// fault worth retrying quickly.
 ///
-/// rspotify surfaces the status only inside the message text
-/// (`ApiError::Regular`), so this matches on the rendered string. It is
-/// deliberately narrow: matching the word "429" alone would also catch an
-/// unrelated number in a track or playlist name carried by the same message.
+/// rspotify surfaces the status only inside the message text, never as a typed
+/// field, so this matches on the rendered string. Two forms occur:
+///
+/// * `me: http error: status code 429 Too Many Requests` — reqwest's own
+///   rendering, which is what the daemon log actually shows;
+/// * `429: rate limited` — [`ApiError::Regular`], which displays as
+///   `{status}: {message}` and is what a typed error renders to.
+///
+/// The digits are checked on both sides so a longer number cannot match:
+/// `status code 4291` is not a `429`, and a title that merely contains "429" is
+/// not a status. A `403` is excluded on purpose — it is a permanent refusal, not
+/// a quota, and waiting minutes on it would not help.
+///
+/// One case stays deliberately undecided: text shaped exactly like a real
+/// refusal but produced by something else is indistinguishable from one, and no
+/// amount of string matching fixes that. It would take the status as a typed
+/// field, which is an upstream change.
 pub(crate) fn is_rate_limit(err: &str) -> bool {
-    err.contains("429") && (err.contains("Too Many Requests") || err.contains("status code 429"))
+    const TRANSPORT: &str = "status code 429";
+    if let Some(i) = err.find(TRANSPORT) {
+        let after = &err[i + TRANSPORT.len()..];
+        if after
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphanumeric())
+        {
+            return true;
+        }
+    }
+    err.match_indices("429").any(|(i, _)| {
+        let at_boundary = err[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_ascii_alphanumeric());
+        at_boundary
+            && (err[i..].starts_with("429:") || err[i..].starts_with("429 Too Many Requests"))
+    })
 }
 
 /// sit in the OS keyring (or the config-dir file fallback) indefinitely. This
