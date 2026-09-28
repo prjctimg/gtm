@@ -15,6 +15,16 @@ use crate::cleaner::clean_filename_stem;
 
 const LRCLIB_API: &str = "https://lrclib.net/api";
 
+/// Prefix on every cached `.lrc` filename, so a change in what the cache
+/// *means* retires the old entries instead of quietly serving them.
+///
+/// Bumped to `v2` when the parser started reading lrclib's real `syncedLyrics`
+/// key. Every pre-existing entry had been written through the `plainLyrics`
+/// fallback and holds untimed text for a track that does have timed lyrics;
+/// since the cache is consulted before the network on both the library and the
+/// Spotify route, keeping those names would have made the fix invisible.
+const CACHE_VERSION: &str = "v2";
+
 /// Similarity threshold for fuzzy matching artist/title against search results.
 const FUZZY_THRESHOLD: f64 = 0.75;
 
@@ -406,6 +416,13 @@ impl LyricsManager {
     /// Resolve the cached `.lrc` file for a key. Cache entries are keyed by
     /// a sanitized "Artist - Title" (plus a short content hash) so the same
     /// song shares one entry regardless of where the file lives.
+    ///
+    /// The name is prefixed with [`CACHE_VERSION`]. Entries written before the
+    /// `syncedLyrics` fix hold untimed `plainLyrics` text under the key of a
+    /// track that does have synced lyrics, and both lookup paths read the cache
+    /// before reaching the network — so without the prefix every track would
+    /// keep serving its poisoned copy and the parser fix would look inert.
+    /// Versioning the name retires them with no migration step.
     fn cache_path(&self, key: &str) -> Option<PathBuf> {
         let dir = self.cache_dir.as_ref()?;
         let sanitized: String = key
@@ -419,9 +436,9 @@ impl LyricsManager {
             hash = hash.wrapping_mul(31).wrapping_add(u64::from(b));
         }
         let name = if sanitized.is_empty() {
-            format!("{:05x}.lrc", hash % 1_000_000)
+            format!("{CACHE_VERSION}-{:05x}.lrc", hash % 1_000_000)
         } else {
-            format!("{}-{:05x}.lrc", sanitized, hash % 1_000_000)
+            format!("{CACHE_VERSION}-{}-{:05x}.lrc", sanitized, hash % 1_000_000)
         };
         Some(dir.join(name))
     }
@@ -650,13 +667,22 @@ fn pick_best_result(
 }
 
 fn parse_lrclib_response(json: &serde_json::Value) -> Option<LrcData> {
-    let synced = json.get("syncLyrics").and_then(|v| v.as_str());
+    // The field is `syncedLyrics`, not `syncLyrics`. It was read under the
+    // wrong name for the whole life of this function, which made this branch
+    // unreachable: every lookup silently fell through to `plainLyrics`, every
+    // line came back with a negative timestamp, and `lyrics_are_synced()`
+    // reported false, so nothing was ever shown as timed. The unit tests were
+    // written with the same wrong name, so they passed on the bug — a
+    // misspelled JSON key is invisible to the compiler, and a test built from
+    // the same assumption cannot catch it. `lrclib_response_keys_match_the_api`
+    // now pins the real key set.
+    let synced = json.get("syncedLyrics").and_then(|v| v.as_str());
     let plain = json.get("plainLyrics").and_then(|v| v.as_str());
 
     // Prefer the timestamped (LRC) variant. Some submissions carry
-    // `syncLyrics` that is really plain text with no time tags; only accept
+    // `syncedLyrics` that is really plain text with no time tags; only accept
     // it as synced when timestamps are actually present, otherwise fall back
-    // to `plainLyrics`. Untimed `syncLyrics` is still served when that is all
+    // to `plainLyrics`. Untimed `syncedLyrics` is still served when that is all
     // a record has, so nothing that used to display is dropped.
     if let Some(s) = synced
         && !s.is_empty()
@@ -1047,7 +1073,7 @@ mod tests {
     #[test]
     fn lrclib_response_prefers_timed_sync() {
         let json = serde_json::json!({
-            "syncLyrics": "[00:12.00]Hello\n[00:20.00]World",
+            "syncedLyrics": "[00:12.00]Hello\n[00:20.00]World",
             "plainLyrics": "Hello\nWorld",
         });
         let lrc = parse_lrclib_response(&json).expect("response should parse");
@@ -1057,19 +1083,61 @@ mod tests {
     }
 
     #[test]
+    fn lrclib_response_keys_match_the_api() {
+        // A verbatim `GET /api/get` body, keys included, captured from lrclib.
+        //
+        // This exists because the parser read `syncLyrics` while the API sends
+        // `syncedLyrics`, and every test fixture had been written with the same
+        // wrong name — so the whole suite passed on a branch that could never
+        // execute and synced lyrics silently never worked. A misspelled JSON
+        // key fails silently in a way no type or borrow checker sees; the only
+        // defence is a fixture copied from a real response.
+        let json = serde_json::json!({
+            "id": 496,
+            "name": "Creep",
+            "trackName": "Creep",
+            "artistName": "Radiohead",
+            "albumName": "Pablo Honey",
+            "duration": 239.0,
+            "instrumental": false,
+            "hasWordSync": false,
+            "plainLyrics": "When you were here before\nCouldn't look you in the eye",
+            "syncedLyrics": "[00:19.16] When you were here before\n[00:24.09] Couldn't look you in the eye",
+            "lyricsfile": null,
+        });
+        let lrc = parse_lrclib_response(&json).expect("response should parse");
+        assert!(has_timed_lines(&lrc), "syncedLyrics must be preferred");
+        assert_eq!(lrc.lines.len(), 2);
+        assert_eq!(lrc.lines[0].text, "When you were here before");
+        assert!((lrc.lines[0].timestamp - 19.16).abs() < f64::EPSILON);
+        assert!((lrc.lines[1].timestamp - 24.09).abs() < f64::EPSILON);
+
+        // The negative direction, so a future rename cannot pass by accident:
+        // a body carrying only the old misspelling must fall back to the plain
+        // variant and never be mistaken for timed lyrics.
+        let misspelled = serde_json::json!({
+            "syncLyrics": "[00:19.16] When you were here before",
+            "plainLyrics": "When you were here before",
+        });
+        let lrc = parse_lrclib_response(&misspelled).expect("should still serve something");
+        assert!(!has_timed_lines(&lrc), "syncLyrics is not an lrclib field");
+        assert_eq!(lrc.lines[0].text, "When you were here before");
+    }
+
+    #[test]
     fn lrclib_response_rejects_pseudo_synced() {
-        // `syncLyrics` is actually plain text with no timestamps; when a real
+        // `syncedLyrics` is actually plain text with no timestamps; when a real
         // plain variant exists it must be served instead.
         let json = serde_json::json!({
-            "syncLyrics": "Hello\nWorld",
+            "syncedLyrics": "Hello\nWorld",
             "plainLyrics": "Hello\nWorld",
         });
         let lrc = parse_lrclib_response(&json).expect("response should parse");
         assert!(!has_timed_lines(&lrc));
         assert_eq!(lrc.lines.len(), 2);
 
-        // Untimed `syncLyrics` alone is still served as best effort.
-        let json = serde_json::json!({"syncLyrics": "Hello\nWorld"});
+        // Untimed `syncedLyrics` alone is still served as best effort.
+        let json = serde_json::json!({"syncedLyrics": "Hello\nWorld"});
         let lrc = parse_lrclib_response(&json).expect("response should parse");
         assert!(!has_timed_lines(&lrc));
         assert_eq!(lrc.lines.len(), 2);
@@ -1086,13 +1154,13 @@ mod tests {
             serde_json::json!({
                 "artistName": artist,
                 "trackName": title,
-                "syncLyrics": "",
+                "syncedLyrics": "",
                 "plainLyrics": "I'm blinded by the lights",
             }),
             serde_json::json!({
                 "artistName": artist,
                 "trackName": title,
-                "syncLyrics": "[00:05.00]I'm blinded by the lights",
+                "syncedLyrics": "[00:05.00]I'm blinded by the lights",
                 "plainLyrics": "I'm blinded by the lights",
             }),
         ];
