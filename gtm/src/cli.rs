@@ -16,9 +16,9 @@ use crate::shared::ipc::MetadataPatch;
 use crate::shared::playlist::PlaylistFormatKind;
 use crate::shared::resolve_command_socket;
 use crate::shared::secret::{
-    LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, delete_secret, get_secret, set_secret,
+    LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, delete_secret, get_secret,
 };
-use crate::shared::spotify::{LIBRESPOT_CLIENT_ID, SpotifyStatus};
+use crate::shared::spotify::SpotifyStatus;
 use crate::shared::track::LrcData;
 use clap::{Parser, Subcommand};
 use tokio::io::AsyncBufReadExt;
@@ -1600,48 +1600,27 @@ async fn spotify_login(
                 .and_then(|v| v.parse().ok())
         })
         .unwrap_or(8990);
-    // Which Spotify app to authorize against: explicit arg > keychain > default.
-    //
-    // A stored id is honoured, because it is a legitimate choice — your own app
-    // mints tokens the Web API accepts, so sync, search and artwork all work,
-    // and it is the reason you would have created one. An empty result, from a
-    // blank prompt or no stored secret, falls back to librespot's public desktop
-    // app so linking also works with no dashboard app at all.
-    //
-    // librespot's id is treated as nothing stored: an earlier build persisted it
-    // when the default was chosen, and honouring it here would keep the link
-    // pointing at the app id Spotify rate-limits. It cannot be cleared from the
-    // keychain reliably, so it is filtered rather than expected to be removed.
-    let is_usable = |s: &str| !s.trim().is_empty() && s.trim() != LIBRESPOT_CLIENT_ID;
-    let client_id = match client_id {
-        Some(c) if is_usable(&c) => c,
-        _ => match get_secret(SPOTIFY_CLIENT_ID).filter(|c| is_usable(c)) {
-            Some(c) => c,
-            None => masked_prompt("Spotify Client ID (blank for the default app): ")?,
-        },
-    };
-    let client_id = client_id.trim().to_string();
-    // Only a real app is worth remembering. Storing the fallback made the Web
-    // API adopt librespot's public id as this account's own, and that id is
-    // shared by every librespot install — Spotify rate-limits it into `429 Too
-    // Many Requests` on calls as ordinary as `/v1/me`, so the link appeared to
-    // work and then every later request failed. With nothing stored,
-    // `oauth_client_id` falls back to it only when there is no real app, which
-    // is exactly the intent of choosing the default here.
-    if client_id.is_empty() {
-        delete_secret(SPOTIFY_CLIENT_ID);
-    } else {
-        set_secret(SPOTIFY_CLIENT_ID, &client_id);
+    // No app to choose. The Spotify app is fixed: Connect only accepts a token
+    // issued by the same client id it is asked to register, and a
+    // self-registered app is not a recognised playback app, so a link made with
+    // one can browse the whole library and still play nothing. The old
+    // `--client-id` argument is accepted and ignored rather than rejected, so
+    // existing habits and scripts keep working.
+    if let Some(ignored) = &client_id
+        && !ignored.trim().is_empty()
+    {
+        println!(
+            "note: --client-id is ignored; Spotify playback requires gtm's own app, \
+             so audio works only with it"
+        );
     }
-    let client_id = if client_id.is_empty() {
-        LIBRESPOT_CLIENT_ID.to_string()
-    } else {
-        client_id
-    };
+    // An id from an older install is inert now, but drop it so the keychain
+    // stops holding an app that can no longer be used for anything.
+    delete_secret(SPOTIFY_CLIENT_ID);
 
     let url = client
         .spotify()
-        .oauth_start(&client_id, port)
+        .oauth_start(port)
         .await
         .map_err(|e| e.to_string())?;
     println!("Open this URL in your browser to authorize gtm:\n{url}\n");

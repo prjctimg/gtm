@@ -3541,14 +3541,9 @@ impl App {
                             }
                         }
                         PickerId::SpotifyLink => {
-                            // An empty entry falls back to librespot's public
-                            // desktop client id so no dashboard app is needed.
-                            let client_id = self.spotify.link_input.trim().to_string();
-                            let client_id = if client_id.is_empty() {
-                                LIBRESPOT_CLIENT_ID.to_string()
-                            } else {
-                                client_id
-                            };
+                            // No client id to supply: the app is fixed on the
+                            // daemon side, because Connect only accepts a token
+                            // issued by the client id it registers as.
                             let port = self
                                 .spotify
                                 .oauth_port
@@ -3557,7 +3552,7 @@ impl App {
                                 .unwrap_or(8990);
                             // Keep the picker open and show a waiting state until
                             // the daemon reports the link completed.
-                            self.start_spotify_oauth(client_id, port);
+                            self.start_spotify_oauth(port);
                         }
                         PickerId::Queue => {
                             // The read-only tracklist has nothing to play: a
@@ -4438,11 +4433,8 @@ impl App {
                             }
                         }
                         PickerId::SpotifyLink => {
-                            if self.spotify.link_field == 0 {
-                                self.spotify.link_input.push(c);
-                            } else {
-                                self.spotify.oauth_port.push(c);
-                            }
+                            // Only the port is editable; the app id is fixed.
+                            self.spotify.oauth_port.push(c);
                         }
                         PickerId::PlaylistSelect if self.playlist_creating => {
                             top.query.push(c);
@@ -4472,8 +4464,6 @@ impl App {
                         self.spotify.preview_fetch.clear();
                     } else if top.id == PickerId::EditMetadata {
                         self.metadata.field_idx = (self.metadata.field_idx + 1) % 7;
-                    } else if top.id == PickerId::SpotifyLink {
-                        self.spotify.link_field = (self.spotify.link_field + 1) % 2;
                     }
                 }
             }
@@ -4497,11 +4487,7 @@ impl App {
                             }
                         }
                         PickerId::SpotifyLink => {
-                            if self.spotify.link_field == 0 {
-                                self.spotify.link_input.pop();
-                            } else {
-                                self.spotify.oauth_port.pop();
-                            }
+                            self.spotify.oauth_port.pop();
                         }
                         PickerId::PlaylistSelect if self.playlist_creating => {
                             top.query.pop();

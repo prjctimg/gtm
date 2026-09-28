@@ -126,40 +126,20 @@ impl Spotify {
     /// redirect on the supplied local port in a background task, and exchange +
     /// persist the token when the browser round-trip completes. `port` lets the
     /// user reuse a redirect URI already registered in their Spotify dashboard.
-    pub async fn oauth_start(
-        inner: &Arc<DaemonInner>,
-        client_id: &str,
-        port: u16,
-    ) -> Result<DaemonRes, CoreError> {
+    pub async fn oauth_start(inner: &Arc<DaemonInner>, port: u16) -> Result<DaemonRes, CoreError> {
         // Abort any previous pending flow so its listener socket is freed.
         if let Some(handle) = inner.oauth_task.lock().await.take() {
             handle.abort();
         }
 
-        // An empty client id selects librespot's public desktop app, which
-        // Spotify permits for the streaming protocol. A self-registered app is
-        // not: the Web API accepts its tokens — so sync, search, lyrics and
-        // artwork all work — but every audio load comes back `BAD_REQUEST` and
-        // playback is silent. The fallback therefore has to be reachable, or
-        // there is no way back from that state, and the only way to link at all
-        // is to paste a client id that cannot stream.
-        let cid = match client_id.trim() {
-            "" => LIBRESPOT_CLIENT_ID,
-            id => id,
-        };
-        if cid.len() != 32 || !cid.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(CoreError::Daemon(format!(
-                "invalid spotify client id (expected 32 hex chars) — your app must also \
-                 list http://127.0.0.1:{port}/login as a Redirect URI \
-                 (127.0.0.1, not localhost) or the link fails silently in the browser"
-            )));
-        }
-        // Persist the client id in the config dir and the OS keychain so a
-        // restart can still refresh with the same app: the refresh token is
-        // only valid for the client id it was issued to.
-        if let Err(e) = inner.spotify.lock().await.save_client_id(cid) {
-            warn!("spotify: could not persist client id: {e}");
-        }
+        // The app is fixed, so any client id the caller supplied is ignored:
+        // authorizing against a self-registered app mints a token that Spotify
+        // Connect will not accept, because login5 requires the id to match the
+        // app that issued the credential. Such a link is worse than useless —
+        // the Web API works, so everything looks fine, and only audio fails,
+        // with `BAD_REQUEST` at connect time and `INVALID_CREDENTIALS` if the
+        // ids are then crossed. See [`super::SpotifyManager::client_id`].
+        let cid = LIBRESPOT_CLIENT_ID;
         let flow = OauthFlow::new(cid, port);
         // Bind the loopback callback server *before* returning the URL so the
         // browser always opens to a live listener (a previously spawned task

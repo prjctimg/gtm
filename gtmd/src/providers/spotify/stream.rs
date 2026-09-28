@@ -27,6 +27,8 @@ use tracing::{info, warn};
 use gtm::shared::global::MAX_VOLUME;
 use gtm::shared::ipc::DaemonEvent;
 
+use super::LIBRESPOT_CLIENT_ID;
+
 // A single librespot [`Session`] + [`Player`] pair is created lazily on the
 // first streamed track and reused afterwards. Decoded audio is pushed by a
 // custom librespot `Sink` through a bounded std channel and drained by a
@@ -319,10 +321,14 @@ impl rodio::Source for PcmStreamSource {
 
 /// Everything needed to establish a librespot session, grouped so the load path
 /// stays under the argument ceiling as fields are added.
+///
+/// No client id: the session registers as [`LIBRESPOT_CLIENT_ID`], which is
+/// also the app the OAuth flow authorizes against. It used to be a separate
+/// field whose documented purpose was to be *different* from the app that
+/// minted `token` — that is the conflation login5 refuses, and it only ever
+/// traded one failure for the other.
 pub struct SessionSpec<'a> {
     pub token: &'a str,
-    /// The app that minted `token`; librespot presents it when registering.
-    pub client_id: &'a str,
     pub config_dir: &'a Path,
     /// The mixer's current level, announced to Connect as the device's.
     pub volume: u8,
@@ -428,9 +434,6 @@ pub struct StreamManager {
     /// transparently refreshes it), so an expired access token never leaves a
     /// stale librespot session silently producing no audio.
     session_token: Option<String>,
-    /// Client id the session registered with. A session is only reusable for
-    /// the app that minted its token, so this is part of the reuse check.
-    session_client_id: Option<String>,
     /// Where provider-level failures are reported. Held as a sender rather than
     /// the daemon itself so the event pump can never reach into daemon state.
     notify: tokio::sync::broadcast::Sender<DaemonEvent>,
@@ -453,7 +456,6 @@ impl StreamManager {
             target: Arc::new(Mutex::new(None)),
             current_uri: None,
             session_token: None,
-            session_client_id: None,
             notify,
             spirc: None,
         }
@@ -500,14 +502,10 @@ impl StreamManager {
     async fn ensure_session(&mut self, spec: &SessionSpec<'_>) -> Result<(), String> {
         let SessionSpec {
             token,
-            client_id,
             config_dir,
             volume,
         } = *spec;
-        if self.player.is_some()
-            && self.session_token.as_deref() == Some(token)
-            && self.session_client_id.as_deref() == Some(client_id)
-        {
+        if self.player.is_some() && self.session_token.as_deref() == Some(token) {
             return Ok(());
         }
         self.teardown_session();
@@ -525,7 +523,7 @@ impl StreamManager {
         // has to disambiguate and which makes a reconnect look like a
         // re-registration.
         let session_config = SessionConfig {
-            client_id: client_id.to_string(),
+            client_id: LIBRESPOT_CLIENT_ID.to_string(),
             ..Default::default()
         };
 
@@ -533,7 +531,7 @@ impl StreamManager {
         // indistinguishable afterwards: a session that connects cleanly and then
         // has every track load refused is a device that never registered with
         // Spotify Connect, not a bad token.
-        info!("librespot session: client id {client_id}");
+        info!("librespot session: client id {LIBRESPOT_CLIENT_ID}");
 
         let session = Session::new(session_config, Some(cache));
         // Bound the handshake hard — see STREAM_CONNECT_TIMEOUT.
@@ -639,7 +637,6 @@ impl StreamManager {
         self.session = Some(session);
         self.player = Some(player);
         self.session_token = Some(token.to_string());
-        self.session_client_id = Some(client_id.to_string());
         Ok(())
     }
 
@@ -679,19 +676,18 @@ impl StreamManager {
         }
         self.player = None;
         self.session_token = None;
-        self.session_client_id = None;
         self.current_uri = None;
     }
 
     /// Start streaming `uri` and return the rodio source to hand to the
     /// mixer. Any previous stream is torn down first.
     ///
-    /// `client_id` is the app librespot registers the session as. It is
-    /// deliberately *not* the app that minted `token`: the OAuth app is for the
-    /// Web API, and Spotify Connect only accepts a recognised playback app, so
-    /// passing the OAuth one gets the login denied. See
-    /// [`SpotifyManager::oauth_client_id`] for the id that does belong to the
-    /// token.
+    /// `token` must have been minted by [`LIBRESPOT_CLIENT_ID`], the same app the
+    /// session registers as. Connect refuses any other pairing: a
+    /// self-registered app is answered `BAD_REQUEST` for not being a recognised
+    /// playback client, and someone else's id is answered
+    /// `INVALID_CREDENTIALS` because login5 requires the id to match the app
+    /// that issued the credential. See [`super::SpotifyManager::client_id`].
     pub async fn load(
         &mut self,
         uri: &str,
@@ -735,7 +731,6 @@ impl StreamManager {
         }
         self.player = None;
         self.session_token = None;
-        self.session_client_id = None;
     }
 
     /// Resume the librespot player after a pause. The mixer is the transport

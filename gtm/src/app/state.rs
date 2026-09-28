@@ -210,7 +210,6 @@ pub struct SpotifyView {
     pub playlists: Vec<SpotifyPlaylist>,
     pub playlist_tracks_cache: Vec<SpotifyTrack>,
     pub search_results: Vec<(String, String, SpotifyTrack)>,
-    pub link_input: String,
     /// True while a Spotify web search is in flight, so the picker can show a
     /// spinner instead of "No results found".
     pub search_loading: bool,
@@ -233,10 +232,9 @@ pub struct SpotifyView {
     pub oauth_url: Option<String>,
     /// Error from the most recent OAuth attempt, shown in the picker.
     pub oauth_error: Option<String>,
-    /// Local redirect port for the Spotify OAuth flow (editable in the picker).
+    /// Local redirect port for the Spotify OAuth flow (the only editable field
+    /// in the link picker; the app id is fixed).
     pub oauth_port: String,
-    /// Active field in the SpotifyLink picker (0 = client id, 1 = port).
-    pub link_field: usize,
     pub search_debounce: Option<std::time::Instant>,
     pub web_seq: u64,
     /// Cover art for the SpotifySearch picker preview window, fetched from the

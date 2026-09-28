@@ -103,27 +103,18 @@ impl App {
         }
     }
 
-    /// Start the Spotify OAuth PKCE flow for `client_id` on `port` and watch it
-    /// in the background. Validates the client id first (the empty-input
-    /// fallback id always passes); an invalid id or a missing redirect-URI
-    /// registration is reported inline instead of silently dying in the
-    /// browser.
-    pub(crate) fn start_spotify_oauth(&mut self, client_id: String, port: u16) {
-        if let Some(err) = client_id_error(&client_id, port) {
-            self.spotify.oauth_error = Some(err);
-            self.spotify.oauth_pending = false;
-            self.spotify.link_input.clear();
-            return;
-        }
-        set_secret(SPOTIFY_CLIENT_ID, &client_id);
+    /// Start the Spotify OAuth PKCE flow on `port` and watch it in the
+    /// background. There is no client id to pass: the app is fixed, because
+    /// Spotify Connect only accepts a token issued by the client id the session
+    /// registers as, and a self-registered app is not one it recognises.
+    pub(crate) fn start_spotify_oauth(&mut self, port: u16) {
         let c = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
-        self.spotify.link_input.clear();
         self.spotify.oauth_pending = true;
         self.spotify.oauth_url = None;
         self.spotify.oauth_error = None;
         tokio::spawn(async move {
-            match c.spotify().oauth_start(&client_id, port).await {
+            match c.spotify().oauth_start(port).await {
                 Ok(url) => {
                     let _ = ipc_tx.send(IpcResult::AuthUrl("Spotify", url.clone()));
                     let _ = ipc_tx.send(IpcResult::Notification(
@@ -826,12 +817,7 @@ impl App {
             );
             return;
         }
-        self.spotify.link_input.clear();
         self.spotify.oauth_port = "8990".to_string();
-        self.spotify.link_field = 0;
-        if let Some(cid) = get_secret(SPOTIFY_CLIENT_ID) {
-            self.spotify.link_input = cid;
-        }
         self.pickers.open(PickerId::SpotifyLink);
     }
 

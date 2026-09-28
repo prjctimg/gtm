@@ -507,29 +507,6 @@ pub(crate) fn try_open_browser(url: &str, ipc_tx: &mpsc::UnboundedSender<IpcResu
     });
 }
 
-/// Validate a typed Spotify client id before starting the PKCE flow, and
-/// remind the user of the redirect-URI requirement: when the URI is missing
-/// from the app dashboard the flow fails silently inside the browser. The
-/// empty-input fallback (librespot's public desktop id) always passes.
-pub(crate) fn client_id_error(client_id: &str, port: u16) -> Option<String> {
-    // Empty selects librespot's public desktop app, the one Spotify permits for
-    // streaming. Rejecting it here would leave a self-registered id as the only
-    // option, and that mints a token the Web API accepts and the audio endpoint
-    // refuses — silent playback with everything else working.
-    let client_id = client_id.trim();
-    if client_id.is_empty() {
-        return None;
-    }
-    if client_id.len() != 32 || !client_id.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Some(format!(
-            "This doesn't look like a valid Spotify Client ID (32 hex chars).\n\
-             Also make sure your app lists http://127.0.0.1:{port}/login as a\n\
-             Redirect URI (127.0.0.1, not localhost) or the link fails silently."
-        ));
-    }
-    None
-}
-
 fn sync_and_wait(
     c: DaemonClient,
     kind: SyncKind,
@@ -853,7 +830,6 @@ impl App {
                 playlists: Vec::new(),
                 playlist_tracks_cache: Vec::new(),
                 search_results: Vec::new(),
-                link_input: String::new(),
                 sync_pending: false,
                 synced_once: false,
                 sync_announced: false,
@@ -861,7 +837,6 @@ impl App {
                 oauth_url: None,
                 oauth_error: None,
                 oauth_port: "8990".to_string(),
-                link_field: 0,
                 search_debounce: None,
                 search_loading: false,
                 web_seq: 0,
@@ -1429,11 +1404,7 @@ impl App {
                     }
                 }
                 PickerId::SpotifyLink => {
-                    if self.spotify.link_field == 0 {
-                        self.spotify.link_input.push_str(text);
-                    } else {
-                        self.spotify.oauth_port.push_str(text);
-                    }
+                    self.spotify.oauth_port.push_str(text);
                 }
                 PickerId::EditMetadata => {
                     self.metadata.fields[self.metadata.field_idx].push_str(text);

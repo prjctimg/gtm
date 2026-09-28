@@ -37,7 +37,6 @@ use gtm::shared::radio::RadioTracklist;
 use gtm::shared::secret::{
     LASTFM_API_KEY, LASTFM_API_SECRET, delete_secret, get_secret, set_secret,
 };
-use gtm::shared::spotify::LIBRESPOT_CLIENT_ID;
 use gtm::shared::track::{StreamInfo, TrackInfo};
 use gtm::shared::url::{is_youtube, ytdlp_label};
 use gtm::shared::wire;
@@ -363,12 +362,6 @@ impl Cmd {
                 .filter(|d| *d > 0.0)
         };
         let config_dir = inner.config.config_dir.clone();
-        // The librespot session registers as librespot's own playback app, not
-        // as whatever app the user linked the Web API with. Connect refuses an
-        // app it does not recognise as a playback client with `Login request
-        // was denied: BAD_REQUEST` — the track resolves and the session
-        // authenticates, and only then does login5 deny the login.
-        let client_id = LIBRESPOT_CLIENT_ID;
 
         {
             let mut mixer = inner.mixer.lock().await;
@@ -409,7 +402,6 @@ impl Cmd {
                     duration_hint.unwrap_or(0.0),
                     &SessionSpec {
                         token: &token,
-                        client_id,
                         config_dir: &config_dir,
                         volume,
                     },
@@ -959,12 +951,6 @@ impl Cmd {
             }
         };
         let config_dir = inner.config.config_dir.clone();
-        // The librespot session registers as librespot's own playback app, not
-        // as whatever app the user linked the Web API with. Connect refuses an
-        // app it does not recognise as a playback client with `Login request
-        // was denied: BAD_REQUEST` — the track resolves and the session
-        // authenticates, and only then does login5 deny the login.
-        let client_id = LIBRESPOT_CLIENT_ID;
         let volume = inner.mixer.lock().await.volume();
         let source = {
             let mut stream = inner.stream.lock().await;
@@ -975,7 +961,6 @@ impl Cmd {
                     total_duration.max(0.0),
                     &SessionSpec {
                         token: &token,
-                        client_id,
                         config_dir: &config_dir,
                         volume,
                     },
@@ -2957,9 +2942,7 @@ impl Daemon {
                 duration,
             } => Lyrics::search(inner, artist, title, album.as_deref(), *duration).await,
             DaemonReq::SpotifySetToken { token } => Spotify::set_token(inner, token).await,
-            DaemonReq::SpotifyOauthStart { client_id, port } => {
-                Spotify::oauth_start(inner, client_id, *port).await
-            }
+            DaemonReq::SpotifyOauthStart { port } => Spotify::oauth_start(inner, *port).await,
             DaemonReq::SpotifyCancelOauth => Spotify::oauth_cancel(inner).await,
             DaemonReq::SpotifyClear => Spotify::clear(inner).await,
             DaemonReq::SpotifyStatus => Spotify::status(inner).await,

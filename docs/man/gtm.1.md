@@ -17,19 +17,30 @@ opens a full-screen Terminal User Interface (TUI) with keyboard-driven
 navigation. With **\--cli** (or **-c**), it acts as a command-line client for
 scripting and headless control.
 
-The TUI provides a built-in help buffer accessible with **?** that covers all
-keybindings, configuration options, and setup instructions.
+The TUI provides a built-in help buffer accessible with **?** listing every
+default keybinding, grouped by topic. For configuration options and setup, see
+**gtm config**(1) and the project documentation.
 
 # TUI MODE (default)
 
-The TUI provides two tabs navigated with **1** / **2** or **Tab** /
-**Shift+Tab**:
+The TUI opens on the **Library** view; there are no tabs. Three panes are
+available and **Tab** / **Shift+Tab** cycles between them, or focus them
+directly with **[** / **]**.
 
-## Library (1)
+## Library
 
-Browse tracks by category: All Tracks, Playlists, Favourites, Recent. Left
-pane selects category, right pane lists tracks. Keys: **Tab** (toggle pane),
-**j**/**k** or **Up**/**Down** (navigate), **Enter** (play), **/** (filter).
+Browse tracks by one of 13 sidebar categories: All Tracks, Liked, Albums,
+Artists, Playlists, Spotify, Radio, Most Played, Recently Played, Recently
+Added, Genres, Folders, Top Charts. The left pane selects the category, the
+centre pane lists its contents. Keys: **j**/**k** or **Up**/**Down**
+(navigate), **Enter** (drill down or play), **/** (contextual search),
+**Alt+S** (cycle sort in the List context).
+
+## Settings
+
+Settings is a floating picker opened with **Alt+,**, not a tab. The left pane
+selects a category, the right pane shows its options. Keys: **j**/**k**
+(navigate), **Enter** (toggle/select). The System category renders 17 rows.
 
 ### Lyrics view
 
@@ -38,37 +49,31 @@ timed `.json` sidecar next to the audio file, or the offline cache). When
 timestamps are available the active line is highlighted and auto-follows the
 playback position; enhanced-LRC sources light up per word. **Tab** moves focus
 into the lyrics pane, where **j**/**k**, **PageUp**/**PageDown**, **Home**/
-**End** scroll manually. While focused, **[** and **]** shift the lyric timing
-by ±0.1 s so early/late sync is corrected (reset on each track change);
-untimed lyrics show a "no timing available" hint instead of a highlight.
-
-## Settings (2)
-
-Adjust playback settings and open overlays. Left pane selects category
-(YouTube, Playback, System, Spotify), right pane shows options. Keys:
-**Tab** (toggle pane), **j**/**k** (navigate), **Enter** (toggle/select).
+**End** scroll manually. **[** and **]** shift the lyric timing by ±0.1 s per
+press, clamped to ±120 s, so early/late sync can be corrected. Untimed lyrics
+are shown as untimestamped lines and never get a highlight.
 
 ## Global Keys
 
 | Key | Action |
 |-----|--------|
-| `Tab` / `Shift+Tab` | Next / Previous tab |
-| `1` / `2` | Switch to Library / Settings tab |
 | `Space` | Play / Pause |
 | `n` / `p` | Next / Previous track |
-| `+` / `-` | Volume up / down |
+| `+` / `-` | Volume up / down (5 per press) |
 | `m` | Toggle mute |
 | `r` | Cycle repeat mode |
 | `S` | Toggle shuffle |
 | `s` | Stop |
-| `.` / `,` | Seek forward / backward |
-| `Alt+R` | Top radio stations |
-| `Alt+T` | Radio Browser (browse tags / countries) |
+| `.` / `,` | Seek forward / backward (±5 s per press) |
+| `Alt+R` | Radio Browser (custom + top stations, tags/countries, search) |
+| `Alt+T` | Cycle theme |
 | `Alt+O` | Play an HTTP(S) stream URL |
 | `l` | Fetch lyrics for current track |
 | `:` | Command mode |
 | `?` | Toggle help |
-| `q` / `Esc` | Quit |
+| `Q` / `Ctrl+Q` | Quit and stop the daemon |
+| `q` | Quit the client |
+| `Esc` | Close the top overlay, or pop a drill-down step |
 
 # CLI MODE
 
@@ -113,6 +118,19 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 **mute**
 :   Toggle mute.
 
+**mono**
+:   Toggle mono downmix.
+
+**love**
+:   Love the current track on Last.fm. Also immediate-scrobbles the play
+    session.
+
+**unlove**
+:   Remove the Last.fm love flag from the current track.
+
+**scrobble**
+:   Toggle Last.fm scrobbling for this session and report the new state.
+
 **speed** [*rate*]
 :   Set the playback speed (1.0 = normal). Without an argument, prints the
     current speed.
@@ -125,34 +143,40 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 
 **crossfade** *enabled* [*duration_secs*]
 :   Enable or disable crossfade between tracks. Optional duration in seconds
-    (default: 3).
+    (default: 7, clamped to 1–30). Crossfade is skipped for Spotify tracks
+    (`spotify:` URIs), which librespot cannot pre-decode.
 
 ## Queue
 
 **queue**
 :   Display the current playback queue.
 
-**queue-add** *path* [*position*]
-:   Add a track to the queue. Directories are scanned recursively for audio
-    files. Without a position the tracks are queued to play next.
+**queue-add** *path*... [`--position` *index*]
+:   Add tracks to the queue. Directories are scanned recursively for audio
+    files. Without `--position` the tracks are inserted play-next, right
+    after the current entry. Indices are positions in the merged view (the
+    user queue first, then the default library list).
 
 **queue-remove** *index*
-:   Remove a track by index.
+:   Remove a track by index. Out-of-range indices are silently ignored.
 
 **queue-move** *from* *to*
-:   Move a track between positions.
+:   Move a track between positions in the merged view.
 
 **queue-clear**
 :   Clear the entire queue.
 
-**queue-set** *paths*... *start_idx*
-:   Replace the entire queue with the given paths, starting playback at
-    *start_idx*.
+**queue-set** *paths*... `--start-idx` *index*
+:   Replace the entire queue with the given paths. `--start-idx` is required
+    but currently ignored — playback always starts at index 0.
 
 ## Library
 
 **scan** *path*
-:   Scan a directory for music files.
+:   Scan a directory for music files. There is no file watcher: the daemon
+    scans its library paths once at startup, and after that you must run
+    **scan** or restart the daemon. Startup also appends newly found tracks
+    to the playback queue.
 
 **tracks** [*filter*] [*sort*]
 :   List tracks in the library.
@@ -185,7 +209,13 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 :   Export a playlist to an M3U8 or PLS file. Defaults to M3U8.
 
 **recent** *count*
-:   Show recently added tracks.
+:   Show recently played tracks.
+
+**metadata-sync** [*path*]
+:   Probe tags for a single file, or for every library track. Scanning itself
+    never contacts a provider. The gate is per-track: once a track qualifies
+    and Deezer answers, title, artist, album, genre, year, track number and
+    `album_id` are written wholesale to both the file tags and the database.
 
 **search** *query*
 :   Search the library.
@@ -209,17 +239,13 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 
 ## YouTube
 
-**yt-search** *query* [*filter*]
-:   Search YouTube.
-
-**yt-poll**
-:   Poll for pending YouTube results.
-
-**yt-cancel**
-:   Cancel a YouTube search.
-
-**yt-resolve** *url*
-:   Resolve a YouTube URL to a playable stream.
+**yt-search** *query*
+:   Search YouTube. A query starting with `http://` / `https://` is resolved
+    as a direct URL instead. Provider prefixes select another source:
+    `scsearch:` (SoundCloud), `bilisearch:` (Bilibili), `mcsearch:` (Mixcloud).
+    Any other query is sent as `<query> official audio` so the top hits are
+    single tracks. Additional providers can be registered with
+    `GTM_YT_HOSTS`.
 
 ## Spotify
 
@@ -227,10 +253,13 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 :   Link the account with an access token (metadata/playlist APIs).
 
 **spotify** *login* [*client_id*] [*port*]
-:   Run the OAuth PKCE browser flow to link the account. The client id is
-    taken from the argument, the keychain, or an interactive prompt. The
-    callback is served on a loopback port (default 8990,
-    `$GTM_SPOTIFY_PORT`).
+:   Run the OAuth PKCE browser flow to link the account. The callback is served
+    on a loopback port (default 8990, `$GTM_SPOTIFY_PORT`).
+
+    *client_id* is accepted and ignored. The Spotify app is fixed, because
+    Connect only plays audio for a token issued by the client id the session
+    registers as, and a self-registered app is not one it recognises — a link
+    made with one browses the whole library and plays nothing.
 
 **spotify** *disconnect*
 :   Unlink the account and delete the stored token.
@@ -322,8 +351,16 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 
 ## Configuration
 
-**config**
-:   Open the config file in the default editor.
+**config** [`--reset`] [`--validate`]
+:   Open the config file in the default editor, creating it on first run.
+    `--reset` restores defaults, `--validate` reports parse errors.
+
+    Enum values are case-sensitive and several have no serde rename:
+    `progress_style` takes `SeekHead` / `Classic` / `Dots` / `TrueGradient`
+    and `track_sort` takes `Recents` / `RecentlyAdded` / `Alphabetical` /
+    `Artist` / `Album`. An invalid value does not fail just that key — the
+    entire file is discarded and defaults are used, silently. Validate before
+    relying on a hand-edited file.
 
 **sleep-timer** *minutes*
 :   Set the sleep timer (minutes until playback fades out and stops).
@@ -344,8 +381,12 @@ daemon and prints the result. Use **\--json** for machine-readable output.
     Switching restarts the output and stops playback.
 
 **update-metadata** *track_id* *field* *value*
-:   Edit metadata of a library track. Fields: title, artist, album, genre,
-    year, track-number. Empty value clears the field.
+:   Edit metadata in the **library database**; the audio file is not
+    rewritten. Fields: title, artist, album, genre, year, track-number. An
+    empty value clears the four text fields, but `year` and `track-number`
+    must parse as an integer and cannot be cleared. No range validation is
+    applied here; the 1000–9999 / >0 checks apply only during metadata-sync
+    write-back to file tags.
 
 # OPTIONS
 
@@ -372,6 +413,30 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 `XDG_RUNTIME_DIR`
 :   Used to derive the default socket path.
 
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`
+:   Config, data and cache roots (default `~/.config`, `~/.local/share`,
+    `~/.cache`).
+
+`GTM_THEME_MODE`
+:   Force OS-theme detection to `dark` / `light`. Honored only when
+    `theme_mode = "auto"`.
+
+`GTM_NERD_FONTS`
+:   Set to `0` / `false` / `no` to force plain-ASCII glyphs.
+
+`GTM_YT_HOSTS`
+:   Register extra YouTube-family search providers.
+
+`GTM_SPOTIFY_PORT`, `GTM_LASTFM_PORT`
+:   Override the OAuth callback ports (defaults 8990 and 8991).
+
+`GTK_THEME`, `XDG_STATE_HOME`
+:   Probed for the OS theme (a trailing `-dark` means dark) and the Omarchy
+    `colors.toml` respectively.
+
+`RUST_LOG`
+:   Daemon log verbosity, e.g. `RUST_LOG=gtm=debug`. Overrides `--verbose`.
+
 # FILES
 
 $XDG_RUNTIME_DIR/gtm/gtmd.sock
@@ -394,7 +459,19 @@ $XDG_CONFIG_HOME/gtm/footer.toml
 :   Optional user footer presets. Built-in presets are **Default**, **Minimal**
     and **Full**; the Default footer shows the platform icon (`System`) instead
     of the audio output device or backend — add the `Device` or `Backend`
-    module to a preset when that detail is needed.
+    module to a preset when that detail is needed. A legacy `middle` key still
+    parses so old files load, but its modules are discarded; use `left`/`right`.
+    Individual modules cannot be toggled from the TUI.
+
+$XDG_CONFIG_HOME/gtm/themes/*.toml
+:   User theme files. All 18 colour fields are required — a file missing any of
+    them is skipped silently, so the theme never appears in the picker. A user
+    theme whose `name` matches a built-in replaces it.
+
+$XDG_CONFIG_HOME/gtm/config.toml
+:   Client preferences, re-read every 120 frames when the file's mtime
+    changes. See **config**(1) above for the enum values that silently reset
+    the file when mistyped.
 
 # SEE ALSO
 

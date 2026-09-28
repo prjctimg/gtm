@@ -1052,13 +1052,14 @@ impl<'a> Spotify<'a> {
     /// must open in a browser; completion is signalled via the
     /// `spotify_status_changed` daemon event. `port` selects the local
     /// redirect port so a previously-registered Spotify dashboard URI works.
-    pub async fn oauth_start(&self, client_id: &str, port: u16) -> Result<String> {
+    ///
+    /// There is no client id to pass: the app is fixed on the daemon side,
+    /// because Spotify Connect only accepts a token issued by the same app it
+    /// is asked to register.
+    pub async fn oauth_start(&self, port: u16) -> Result<String> {
         let res = self
             .client
-            .send_raw(DaemonReq::SpotifyOauthStart {
-                client_id: client_id.into(),
-                port,
-            })
+            .send_raw(DaemonReq::SpotifyOauthStart { port })
             .await?;
         match res {
             DaemonRes::SpotifyOauthStarted { url } => Ok(url),

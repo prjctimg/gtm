@@ -56,28 +56,7 @@ fn lib_focus_backward() {
     assert_eq!((lib, lyr), (false, false));
 }
 
-/// An empty client id must be accepted here, because the daemon resolves it to
-/// librespot's public desktop app — the one Spotify permits for streaming. This
-/// check used to reject it while its own doc claimed the opposite, which left a
-/// self-registered app as the only linkable option.
-#[test]
-fn empty_client_id_is_accepted() {
-    assert_eq!(client_id_error("", 8990), None);
-    assert_eq!(client_id_error("   ", 8990), None);
-}
-
-/// A real id still has to look like one, and the error has to name the redirect
-/// URI, which is the part that fails silently in the browser.
-#[test]
-fn a_malformed_client_id_is_rejected() {
-    let err = client_id_error("not-a-client-id", 8990).expect("should reject");
-    assert!(
-        err.contains("127.0.0.1:8990/login"),
-        "names the redirect: {err}"
-    );
-    assert!(client_id_error("zzzz", 8990).is_some());
-    assert_eq!(
-        client_id_error("65b708073fc0480ea92a077233ca87bd", 8990),
-        None
-    );
-}
+// The client-id form and its validator are gone: the app is fixed, because
+// Spotify Connect only accepts a token issued by the client id the session
+// registers as, so there is no id left to validate or let the user choose.
+// See `SpotifyManager::client_id`.

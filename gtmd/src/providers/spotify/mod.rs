@@ -40,10 +40,10 @@ use api::{pick_largest_image, track_from_playable};
 pub use gtm::shared::spotify::pretty_id;
 
 const TOKEN_FILE: &str = "spotify.json";
-/// Client id of the Spotify app the user authorised with, kept beside the
-/// token so a refresh keeps using the same app. Without it the daemon falls
-/// back to librespot's public client, whose refresh tokens do not match and
-/// therefore fail on the first renewal after a restart.
+/// Name of the retired client-id file. Nothing writes it any more — the app id
+/// is fixed, see [`SpotifyManager::client_id`] — but [`SpotifyManager::clear`]
+/// still unlinks it so an install that linked under the old scheme stops
+/// carrying an id that no longer has any meaning.
 const CLIENT_ID_FILE: &str = "spotify_client_id";
 const TOKEN_ACCESS_PERMS: u32 = 0o600;
 /// OAuth scope required for librespot native playback. Tokens issued before it
@@ -102,76 +102,31 @@ impl SpotifyManager {
         self.config_dir.join(TOKEN_FILE)
     }
 
-    /// Path of the client-id file, which keeps the config directory a
-    /// self-sufficient record of the link.
-    fn client_path(&self) -> PathBuf {
-        self.config_dir.join(CLIENT_ID_FILE)
-    }
-
-    /// The client id to refresh with: the file written at link time, else the
-    /// keychain copy, else empty (caller falls back to librespot's app).
+    /// The single Spotify app this installation identifies as, for the OAuth /
+    /// Web API side *and* the Spotify Connect session.
     ///
-    /// librespot's own id is filtered out even if it was written by an earlier
-    /// build. Not only is it the wrong identity for the Web API — a link made
-    /// with the default app used to persist it, and there is no dependable way
-    /// to clear it again (the keychain may be locked, and `secret-tool` may not
-    /// be installed). Reading past it would keep serving `429` on `/v1/me`
-    /// indefinitely, so treating it as "nothing stored" is what actually
-    /// repairs those links. [`Self::save_client_id`] no longer writes it.
-    fn stored_client_id(&self) -> String {
-        let is_usable = |s: &str| !s.is_empty() && s != LIBRESPOT_CLIENT_ID;
-        std::fs::read_to_string(self.client_path())
-            .ok()
-            .map(|s| s.trim().to_string())
-            .filter(|s| is_usable(s))
-            .or_else(|| get_secret(SPOTIFY_CLIENT_ID).filter(|s| is_usable(s)))
-            .unwrap_or_default()
-    }
-
-    /// The client id for the **OAuth / Web API** side: the app that minted the
-    /// current access token, so refreshing it presents a matching id.
+    /// These are the same app, and that is not a simplification — it is
+    /// required. librespot logs in with `Login_method::StoredCredential`, which
+    /// sends the session's client id next to the credential, and login5 refuses
+    /// the pair unless the id is the app that issued it: *"this request will
+    /// only work when the store credentials match the client-id"*
+    /// (librespot-core `login5.rs`). Both halves of that rule were broken
+    /// separately, and each looked like an unrelated bug:
     ///
-    /// This is deliberately *not* what the librespot session registers with.
-    /// The two roles need different apps, and conflating them is what made
-    /// playback fail. Connect only accepts apps Spotify recognises as playback
-    /// clients, so a self-registered Web API app — fine for sync, search and
-    /// artwork — is refused there. librespot sends [`LIBRESPOT_CLIENT_ID`]
-    /// verbatim as the session client id, and Spotify answers
-    /// `Login request was denied: BAD_REQUEST` for anything else.
+    /// * a self-registered app is not a recognised playback app, so presenting
+    ///   it to Connect is answered `BAD_REQUEST` — even though the Web API
+    ///   accepts its tokens, so sync, search, artwork and lyrics all worked
+    ///   and only audio was missing;
+    /// * pairing librespot's id with a token minted by a self-registered app is
+    ///   answered `INVALID_CREDENTIALS`.
     ///
-    /// The refusal is loud and immediate, which is the good case: the log
-    /// shows `session.connect()` *succeeding* and login5 then denying the
-    /// login, rather than a session that streams silence.
-    pub fn oauth_client_id(&self) -> String {
-        let id = self.stored_client_id();
-        if id.is_empty() {
-            LIBRESPOT_CLIENT_ID.to_string()
-        } else {
-            id
-        }
-    }
-
-    /// Record the authorised client id in both stores. Called when the OAuth
-    /// flow starts, so a restart can still refresh with the same app.
-    ///
-    /// librespot's own client id is never stored. It is a public id shared by
-    /// every librespot install, so persisting it makes the Web API adopt it as
-    /// this account's app identity — and Spotify rate-limits it into `429 Too
-    /// Many Requests` on ordinary calls like `/v1/me`. The link flow
-    /// substitutes it as a fallback so linking works with no dashboard app at
-    /// all, but that substitution is a *use-time* decision: leaving it
-    /// unstored keeps [`Self::oauth_client_id`] free to return the real app
-    /// when one exists, and only fall back when none does.
-    pub fn save_client_id(&self, id: &str) -> Result<(), String> {
-        let id = id.trim();
-        if id.is_empty() || id == LIBRESPOT_CLIENT_ID {
-            return Ok(());
-        }
-        std::fs::create_dir_all(&self.config_dir).map_err(|e| format!("create config dir: {e}"))?;
-        let path = self.client_path();
-        std::fs::write(&path, id).map_err(|e| format!("write client id: {e}"))?;
-        set_secret(SPOTIFY_CLIENT_ID, id);
-        Ok(())
+    /// So the id is fixed rather than configured, and never persisted: with only
+    /// one identity there is nothing to keep in sync, which is precisely what
+    /// made the conflation possible. The cost is that the Web API now shares
+    /// an app id with every other librespot install and can be rate-limited
+    /// into `429`; that is absorbed by caching, not by changing identity.
+    pub fn client_id(&self) -> &'static str {
+        LIBRESPOT_CLIENT_ID
     }
 
     /// True if a token file exists on disk (regardless of load status).
@@ -225,7 +180,10 @@ impl SpotifyManager {
         self.device = None;
         self.playlists.clear();
         self.error = None;
-        for path in [self.token_path(), self.client_path()] {
+        // The client-id file is no longer written, but an install that linked
+        // before the id was retired still has one on disk. Clear it out so the
+        // config dir does not keep advertising an id that nothing reads.
+        for path in [self.token_path(), self.config_dir.join(CLIENT_ID_FILE)] {
             match std::fs::remove_file(&path) {
                 Ok(()) => info!("removed spotify {}", path.display()),
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -665,17 +623,12 @@ impl SpotifyManager {
         // refresh, so snapshot them here: the token itself lives behind an
         // async mutex that cannot be inspected synchronously.
         self.scopes = token.scopes.clone();
-        // Fall back to librespot's public desktop client id when the user
-        // linked with a plain pasted access token (which never stores a
-        // client id). `Credentials::default()` is a dead end: rspotify's
-        // bundled demo id cannot refresh, so such tokens silently expire and
-        // every later Web API call fails with a 401.
-        //
-        // This is the one place the stored id belongs: the refresh has to come
-        // from the same app that ran the authorization, or the renewed token is
-        // rejected and every later Web API call 401s. The librespot session
-        // must *not* reuse it — see [`Self::oauth_client_id`].
-        let creds = Credentials::new_pkce(&self.oauth_client_id());
+        // The refresh has to be presented as the app that ran the
+        // authorization, or the renewed token is rejected and every later Web
+        // API call 401s. That app is the same one the Connect session
+        // registers as — see [`Self::client_id`] — so a token pasted by hand
+        // refreshes correctly too, with no stored id to go missing.
+        let creds = Credentials::new_pkce(self.client_id());
         // Persist a refreshed token back to disk with 0600 permissions so a
         // renewed access token survives a daemon restart instead of reverting
         // to the stale one. rspotify invokes this callback after every

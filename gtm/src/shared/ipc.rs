@@ -355,7 +355,6 @@ pub enum DaemonReq {
         token: String,
     },
     SpotifyOauthStart {
-        client_id: String,
         port: u16,
     },
     SpotifyCancelOauth,
@@ -1116,17 +1115,16 @@ impl DaemonReq {
                 DaemonReq::SpotifySetToken { token: x.token }
             }
             "spotify_oauth_start" => {
+                // No `client_id`: it used to be required here and is now
+                // ignored, so an older client still sending one deserialises
+                // fine and gets the same fixed-app flow.
                 #[derive(Deserialize)]
                 struct Params {
-                    client_id: String,
                     #[serde(default = "default_oauth_port")]
                     port: u16,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SpotifyOauthStart {
-                    client_id: x.client_id,
-                    port: x.port,
-                }
+                DaemonReq::SpotifyOauthStart { port: x.port }
             }
             "spotify_seek" => {
                 #[derive(Deserialize)]

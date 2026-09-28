@@ -226,53 +226,28 @@ impl Pickers {
                     let input_cursor = cursor_span_style(app);
                     let mut lines = vec![
                         Line::from(Span::styled(
-                            "Enter your Spotify app Client ID, then press Enter.",
+                            "Press Enter to authorize gtm with Spotify.",
                             Style::default().fg(app.theme.fg),
                         )),
                         Line::from(Span::styled(
-                            "Tab switches field; a browser opens to authorize gtm.",
+                            "A browser opens; the app id is fixed, so nothing to paste.",
                             Style::default().fg(app.theme.fg_dim),
                         )),
                         Line::from(""),
                     ];
 
-                    // Client ID field (active = field 0). Masked so the secret
-                    // isn't echoed to the terminal while typing.
-                    let cid_active = app.spotify.link_field == 0;
-                    let cid_label = if cid_active {
-                        app.theme.fg_bright
-                    } else {
-                        app.theme.fg_dim
-                    };
-                    let cid_text = if app.spotify.link_input.is_empty() {
-                        "[ client id ]".to_string()
-                    } else {
-                        "•".repeat(app.spotify.link_input.chars().count())
-                    };
-                    let mut cid_spans = vec![
-                        Span::styled(" Client ID: ", Style::default().fg(cid_label)),
-                        Span::styled(cid_text, Style::default().fg(app.theme.accent)),
-                    ];
-                    if cid_active && let Some(cur) = input_cursor {
-                        cid_spans.push(Span::styled(" ", cur));
-                    }
-                    lines.push(Line::from(cid_spans));
-
-                    // Port field (active = field 1)
-                    let port_active = app.spotify.link_field == 1;
-                    let port_label = if port_active {
-                        app.theme.fg_bright
-                    } else {
-                        app.theme.fg_dim
-                    };
+                    // The port is the only editable field left. The client id
+                    // input used to sit above it, and taking it out is not just
+                    // cosmetic: the id is ignored now, so a field that accepted
+                    // typing would swallow keystrokes and change nothing.
                     let mut port_spans = vec![
-                        Span::styled(" Port:      ", Style::default().fg(port_label)),
+                        Span::styled(" Port: ", Style::default().fg(app.theme.fg_bright)),
                         Span::styled(
                             app.spotify.oauth_port.clone(),
                             Style::default().fg(app.theme.accent),
                         ),
                     ];
-                    if port_active && let Some(cur) = input_cursor {
+                    if let Some(cur) = input_cursor {
                         port_spans.push(Span::styled(" ", cur));
                     }
                     lines.push(Line::from(port_spans));
