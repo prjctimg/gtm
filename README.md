@@ -107,9 +107,15 @@ backend, and starts the PulseAudio server automatically — no manual
 > Requires **Spotify Premium** for playback control. `gtm` uses an OAuth PKCE flow that listens on `http://127.0.0.1:8990/login`.
 >
 
-1. Go to the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard) → **Create app** (if you don't have one already).
-2. Add **Redirect URI**: `http://127.0.0.1:8990/login`
-3. Copy the **Client ID** → in the TUI go to `Settings → Spotify → Link` and paste it, or run `gtm --cli spotify connect <token>`. Verify with `gtm --cli spotify status` and `gtm --cli spotify sync` to pull playlists.
+1. In the TUI go to `Settings → Spotify → Link` and press <kbd>Enter</kbd>, or run `gtm --cli spotify login`. A browser opens; authorize there and the daemon exchanges the code on port `8990`.
+2. Verify with `gtm --cli spotify status` and `gtm --cli spotify sync` to pull playlists.
+
+There is no client id to register or paste. `gtm` authorizes against its own
+built-in Spotify app, and it has to: Connect only plays audio for a token issued
+by the client id the streaming session registers as, and a self-registered app is
+not one Spotify recognises. A link made with your own app can browse your entire
+library and still play nothing, because the Web API accepts its tokens and the
+audio endpoint does not.
 
 > [!note]
 > Running Spotify search for the first time from the TUI also triggers an input field to paste the token.  

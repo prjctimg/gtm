@@ -13,7 +13,6 @@ pub mod api;
 pub mod cmd;
 pub mod cover;
 pub mod lyrics;
-pub mod lyrics_spotify;
 pub mod oauth;
 pub mod stream;
 pub mod ytfb;

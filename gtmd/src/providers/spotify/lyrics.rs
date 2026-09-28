@@ -10,6 +10,15 @@
 //! lyrics once means every later visit — and every later session — is a cache
 //! hit. This is the "fetch on demand" half: the playlist itself is never
 //! scanned, only whichever track the user is actually looking at.
+//!
+//! lrclib is the only source. Spotify's own colour-lyrics were tried first, via
+//! the undocumented `spclient.wg.spotify.com` partner endpoint, and removed: it
+//! needs a live streaming session for its token, so lyrics were unreachable
+//! until a track had played, it is gated per account with no way to tell "denied"
+//! from "no lyrics for this track", and its timings never agreed with the audio
+//! closely enough to be worth 350 lines and a session dependency. What was
+//! actually wrong with lyrics was in the lrclib parser the whole time — see
+//! `lrclib::parse_lrclib_response`.
 
 use std::time::Duration;
 
@@ -18,33 +27,24 @@ use gtm::shared::track::TrackInfo;
 use tracing::debug;
 
 use crate::daemon::DaemonInner;
-use crate::providers::spotify::lyrics_spotify as spotify_lyrics;
-
 /// How long one track's lookup may take before the UI gives up on it.
 const LOOKUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Lyrics for one synced playlist track, resolved from the metadata the sync
 /// already cached rather than from a library row.
 ///
-/// Two sources, in order: Spotify's own lyrics first, then lrclib. Spotify is
-/// preferred because it is authoritative for the catalogue being played, but
-/// its endpoint is undocumented and can be denied per account, so it is only
-/// ever a bonus — every failure falls through to lrclib, which is a complete
-/// answer on its own. See [`super::lyrics_spotify`] for why the Web API has no
-/// part in this.
+/// The disk cache is consulted first, so a track's lyrics are fetched once
+/// whatever the source. Then the lrclib route runs, and it is the same path a
+/// local file takes: cache, then lrclib's exact `/api/get` keyed on artist,
+/// track, album *and* duration, then progressively looser fallbacks. The
+/// previous [`LyricsManager::search`] sent only `/api/search?q=<artist>
+/// <title>` — no album, no duration, no cache — so a synced playlist row was
+/// the one track kind that could not get a precise match even when the sync
+/// held every field needed to make one.
 ///
-/// The disk cache is consulted before either source, so a track's lyrics are
-/// fetched once no matter which source answered. Only then does the lrclib
-/// route run, and it is the same path a local file takes: cache, then lrclib's
-/// exact `/api/get` keyed on artist, track, album *and* duration, then
-/// progressively looser fallbacks. The previous [`LyricsManager::search`] sent
-/// only `/api/search?q=<artist> <title>` — no album, no duration, no cache — so
-/// a synced playlist row was the one track kind that could not get a precise
-/// match even when the sync held every field needed to make one.
-///
-/// `None` when the track carries no artist or title to search on, or when
-/// neither source had anything. Never errors: a playlist row without lyrics is
-/// a normal outcome, not a failure worth surfacing.
+/// `None` when the track carries no artist or title to search on, or when lrclib
+/// had nothing. Never errors: a playlist row without lyrics is a normal
+/// outcome, not a failure worth surfacing.
 pub(crate) async fn for_track(inner: &DaemonInner, track: &TrackInfo) -> DaemonRes {
     if query_of(track).is_none() {
         return DaemonRes::Lyrics { lyrics: None };
@@ -53,20 +53,11 @@ pub(crate) async fn for_track(inner: &DaemonInner, track: &TrackInfo) -> DaemonR
         return DaemonRes::Lyrics { lyrics: None };
     };
 
-    // The cache is checked here rather than left to `get_lyrics`, because
-    // preferring Spotify below would otherwise re-fetch it on every visit: the
-    // only place the cache is consulted is inside the path being skipped.
+    // The cache is consulted here rather than only inside `get_lyrics`, so a
+    // track that already has synced lyrics on disk is answered without a
+    // network round trip on every visit.
     if let Some(lrc) = manager.cached_synced(track) {
         debug!("spotify lyrics for `{}`: cache hit", track.title);
-        return DaemonRes::Lyrics { lyrics: Some(lrc) };
-    }
-
-    // Spotify's own lyrics first, lrclib second. The token comes from the
-    // streaming session, so it is absent until a track has played and this
-    // step is simply skipped before then.
-    let token = inner.stream.lock().await.spclient_token().await;
-    if let Some(lrc) = spotify_lyrics::for_track(token, track).await {
-        manager.store(track, &lrc);
         return DaemonRes::Lyrics { lyrics: Some(lrc) };
     }
 
