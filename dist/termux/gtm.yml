@@ -5,7 +5,7 @@ control:
     Maintainer: prjctimg <prjctimg@outlook.com>
     Depends: libpulseaudio
     Recommends: pulseaudio
-    Homepage: https://github.com/prjctimg/gtm.rs
+    Homepage: https://github.com/prjctimg/gtm
     Description: |2-
         Terminal music player (TUI + CLI) and daemon with PulseAudio backend.
          .

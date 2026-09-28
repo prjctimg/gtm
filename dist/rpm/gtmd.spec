@@ -7,7 +7,7 @@ Version: 0.2.83
 Release: 1%{?dist}
 Summary: gtm background audio daemon
 License: GPL-3.0-only
-URL: https://github.com/prjctimg/gtm.rs
+URL: https://github.com/prjctimg/gtm
 Source0: %{name}-%{version}.tar.gz
 BuildRequires: cargo >= 1.81
 BuildRequires: pandoc

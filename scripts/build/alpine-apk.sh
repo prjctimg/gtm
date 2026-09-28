@@ -29,7 +29,7 @@ cat >"$root/.PKGINFO" <<EOF
 pkgname = $name
 pkgver = $pkgver
 pkgdesc = Terminal music player (TUI + CLI) and background daemon.
-url = https://github.com/prjctimg/gtm.rs
+url = https://github.com/prjctimg/gtm
 builddate = $(date +%s)
 packager = prjctimg <prjctimg@outlook.com>
 size = $size

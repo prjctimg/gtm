@@ -18,7 +18,7 @@ Version: %{gtm_version}
 Release: 1
 Summary: gtm - feature rich and cross platform terminal audio player
 License: GPL-3.0-only
-URL: https://github.com/prjctimg/gtm.rs
+URL: https://github.com/prjctimg/gtm
 Requires: alsa-lib
 
 %description

@@ -74,7 +74,7 @@
 
           meta = with pkgs.lib; {
             description = "Terminal-based music player daemon and client";
-            homepage = "https://github.com/prjctimg/gtm.rs";
+            homepage = "https://github.com/prjctimg/gtm";
             license = licenses.gpl3Only;
             maintainers = [ "prjctimg <prjctimg@outlook.com>" ];
             platforms = platforms.linux;

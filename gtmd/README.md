@@ -1,6 +1,6 @@
 # gtmd
 
-Background audio daemon for [gtm](https://github.com/prjctimg/gtm.rs) — the
+Background audio daemon for [gtm](https://github.com/prjctimg/gtm) — the
 feature-rich cross-platform terminal audio player.
 
 `gtmd` runs as a headless daemon: it owns the audio output (local files,

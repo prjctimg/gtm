@@ -5,8 +5,8 @@
 [![Crates.io](https://img.shields.io/crates/v/gtm)](https://crates.io/crates/gtm)
 [![Crates.io downloads](https://img.shields.io/crates/d/gtm)](https://crates.io/crates/gtm)
 [![Docs.rs](https://docs.rs/gtm/badge.svg)](https://docs.rs/gtm)
-[![CI](https://img.shields.io/github/actions/workflow/status/prjctimg/gtm.rs/ci.yml?label=CI)](https://github.com/prjctimg/gtm.rs/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/prjctimg/gtm.rs)](https://github.com/prjctimg/gtm.rs/blob/main/LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/prjctimg/gtm/ci.yml?label=CI)](https://github.com/prjctimg/gtm/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/prjctimg/gtm)](https://github.com/prjctimg/gtm/blob/main/LICENSE)
 
 A terminal music player (**gtm** — "goto music") with background playback and
 YouTube/Spotify integration. It is a background daemon (`gtmd`) with a client
@@ -66,7 +66,7 @@ For `nightly` builds (released on every push to `dev`):
 curl -fsSL https://gtmd.dev/install.sh | bash -s -- --nightly
 ```
 
-Or grab an archive [releases page](https://github.com/prjctimg/gtm.rs/releases/latest), extract it, and run the `./install.sh` in its directory
+Or grab an archive [releases page](https://github.com/prjctimg/gtm/releases/latest), extract it, and run the `./install.sh` in its directory
 
 ### Build from Source
 
@@ -76,8 +76,8 @@ This produces a `nightly` build, for tagged versions, checkout first.
 
 ```bash
 
-git clone https://github.com/prjctimg/gtm.rs
-cd gtm.rs
+git clone https://github.com/prjctimg/gtm
+cd gtm
 
 cargo build --release
 

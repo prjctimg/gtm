@@ -85,7 +85,7 @@ MPRIS integration, and daemon subsystems living as module trees under
 `gtmd` (daemon, always built).
 
 ```
-gtm.rs/
+gtm/
 ├── gtm/                    The single crate — client, daemon, core, audio, MPRIS
 │   ├── Cargo.toml          Merged dependencies, features, [[bin]] targets
 │   ├── build.rs            Build-time env (VERGEN, Termux warning, mold)

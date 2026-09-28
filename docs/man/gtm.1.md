@@ -483,7 +483,7 @@ prjctimg <prjctimg@outlook.com>
 
 # BUGS
 
-Report bugs to <https://github.com/prjctimg/gtm.rs/issues> or by email to
+Report bugs to <https://github.com/prjctimg/gtm/issues> or by email to
 <prjctimg@outlook.com>.
 
 # COPYRIGHT

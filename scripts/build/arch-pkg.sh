@@ -37,7 +37,7 @@ cat >"$root/.PKGINFO" <<EOF
 pkgname = $name
 pkgver = $pkgver
 pkgdesc = Feature rich and cross platform terminal audio player with background playback and YouTube/Spotify integration
-url = https://github.com/prjctimg/gtm.rs
+url = https://github.com/prjctimg/gtm
 builddate = $(date +%s)
 packager = prjctimg <prjctimg@outlook.com>
 size = $size

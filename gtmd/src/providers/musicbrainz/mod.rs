@@ -45,7 +45,7 @@ impl MusicBrainz {
                 .build()
                 .unwrap_or_else(|_| Client::new()),
             user_agent: format!(
-                "gtm.rs/{} (https://github.com/gtm.rs)",
+                "gtm/{} (https://github.com/prjctimg/gtm)",
                 env!("CARGO_PKG_VERSION")
             ),
         }

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# gtm installer — see https://github.com/prjctimg/gtm.rs
+# gtm installer — see https://github.com/prjctimg/gtm
 #
 # Usage:
 #   curl -fsSL https://gtmd.dev/install.sh | bash
@@ -24,7 +24,7 @@
 
 set -euo pipefail
 
-REPO="prjctimg/gtm.rs"
+REPO="prjctimg/gtm"
 
 NC='\033[0m'
 MUTED='\033[0;2m'

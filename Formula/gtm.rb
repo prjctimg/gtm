@@ -3,8 +3,8 @@
 # and `tag` together on each release.
 class Gtm < Formula
   desc "Terminal-based music player daemon and client"
-  homepage "https://github.com/prjctimg/gtm.rs"
-  url "https://github.com/prjctimg/gtm.rs.git",
+  homepage "https://github.com/prjctimg/gtm"
+  url "https://github.com/prjctimg/gtm.git",
       tag: "v0.2.83",
       using: :git
   version "0.2.83"
