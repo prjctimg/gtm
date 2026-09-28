@@ -65,9 +65,27 @@ are shown as untimestamped lines and never get a highlight.
 | `S` | Toggle shuffle |
 | `s` | Stop |
 | `.` / `,` | Seek forward / backward (±5 s per press) |
-| `Alt+R` | Radio Browser (custom + top stations, tags/countries, search) |
+| `Alt+r` | Radio Browser (custom + top stations, tags/countries, search) |
 | `Alt+T` | Cycle theme |
+| `Alt+S` | Cycle library sort order |
 | `Alt+O` | Play an HTTP(S) stream URL |
+| `Alt+p` | Podcast feeds |
+| `Alt+b` | Progress bar style |
+| `Alt+1` | Toggle mono |
+| `Alt+/` | Search the library |
+| `Alt+l` | Add the current track to a Spotify playlist |
+| `Alt+,` | Settings |
+| `Alt+.` | Pick a library to show |
+| `Alt+a` | About |
+| `Alt+c` | Theme picker |
+| `Alt+e` | Equalizer |
+| `Alt+n` | Notifications |
+| `Alt+q` | Queue |
+| `Alt+s` | Search Spotify (requires linking) |
+| `Alt+v` | Visualizer preset |
+| `Alt+x` | Setup walkthrough |
+| `Alt+y` | Search YouTube |
+| `Alt+z` | Sleep timer |
 | `l` | Fetch lyrics for current track |
 | `:` | Command mode |
 | `?` | Toggle help |

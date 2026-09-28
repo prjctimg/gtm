@@ -16,6 +16,13 @@ pub(crate) fn build_keybindings(
 ) -> Keybindings {
     let mut defaults = default_keybindings();
 
+    // Check the built-ins too, not just the user's. A duplicate in the default
+    // table is a silently dead binding, and reporting it here means the next one
+    // shows up on someone's terminal instead of in a bug report.
+    for w in default_clash_warnings() {
+        eprintln!("gtm: built-in keybinding clash: {}", w);
+    }
+
     if overrides.is_empty() {
         return defaults;
     }

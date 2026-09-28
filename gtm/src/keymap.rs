@@ -350,7 +350,7 @@ pub fn default_keybindings() -> Keybindings {
                 NORMAL
             ),
             b!(
-                KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT),
+                KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
                 KeyboardAction::OpenOverlay(PickerId::ProgressStyle),
                 NORMAL
             ),
@@ -370,6 +370,12 @@ pub fn default_keybindings() -> Keybindings {
                 NORMAL
             ),
             b!(
+                // `p` for podcast. This collided with the progress style
+                // picker, which sat earlier in this table and therefore won:
+                // `dispatch` returns the first match, so the Podcasts category
+                // was unreachable by key. It shipped because the clash detector
+                // only ever saw *user* bindings, never these.
+                // `defaults_have_no_clashing_keys` guards it now.
                 KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT),
                 KeyboardAction::OpenOverlay(PickerId::PodcastFeeds),
                 NORMAL
@@ -670,9 +676,119 @@ pub fn detect_clashes(bindings: &[(KeyEvent, String, Vec<KeyContext>)]) -> Vec<S
     warnings
 }
 
+/// Built-in binding pairs that share a key on purpose.
+///
+/// [`detect_clashes`] cannot see the difference between "two actions want this
+/// key" and "one action takes over from another in a narrower mode", because the
+/// context enum has no way to say "only while queue-move is open". These two are
+/// deliberate, and every one of them is a case where the *later* binding is the
+/// one that fires in a mode the earlier one is not in.
+const INTENTIONAL_DEFAULT_OVERLAPS: &[(&str, &str)] = &[
+    // Shift+Up/Down are indistinguishable from plain Up/Down: `key_matches`
+    // treats a bare SHIFT as fuzzy on purpose, because terminals report it
+    // inconsistently for letters.
+    ("MoveUp", "MultiselectUp"),
+    ("MoveDown", "MultiselectDown"),
+    // Enter in a list selects; Enter in queue-move mode confirms the move. The
+    // queue-move bindings are LIST_ONLY, but List is the mode's context too.
+    ("Select", "QueueMoveConfirm"),
+];
+
+/// Clashes among the built-in bindings, minus the deliberate overlaps above.
+///
+/// Run at startup and asserted in tests. A duplicate in the default table is a
+/// silently dead binding: `dispatch` returns the first match, so whichever entry
+/// happens to sit higher wins and the other is unreachable with nothing to say
+/// so. That is how `Alt+p` came to be bound to two pickers at once, leaving
+/// Podcasts with no working key.
+pub fn default_clash_warnings() -> Vec<String> {
+    let candidates = default_clash_candidates();
+    detect_clashes(&candidates)
+        .into_iter()
+        .filter(|w| {
+            !INTENTIONAL_DEFAULT_OVERLAPS.iter().any(|(a, b)| {
+                w.contains(&format!("\"{a}\" and \"{b}\""))
+                    || w.contains(&format!("\"{b}\" and \"{a}\""))
+            })
+        })
+        .collect()
+}
+
+/// The built-in bindings in the shape [`detect_clashes`] expects.
+///
+/// The detector was only ever fed *user* bindings, so a duplicate baked into
+/// these reported nothing at all — which is how `Alt+p` came to be bound to two
+/// different pickers with the first shadowing the second, and how the Podcasts
+/// category ended up unreachable by key. Nothing about that is visible unless
+/// the defaults are checked like the user's.
+pub fn default_clash_candidates() -> Vec<(KeyEvent, String, Vec<KeyContext>)> {
+    default_keybindings()
+        .bindings
+        .iter()
+        .map(|(key, cmd)| {
+            (
+                key.clone(),
+                format!("{:?}", cmd.action),
+                cmd.contexts.clone(),
+            )
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two built-in bindings on the same key in a shared context means one of
+    /// them is dead, and which one dies depends on table order rather than
+    /// intent. This is the check that was missing when `Alt+p` was bound twice.
+    ///
+    /// The deliberate overlaps are excluded by
+    /// [`INTENTIONAL_DEFAULT_OVERLAPS`], so a *third* accidental one still fails
+    /// here rather than blending into the noise.
+    #[test]
+    fn defaults_have_no_clashing_keys() {
+        let clashes = default_clash_warnings();
+        assert!(
+            clashes.is_empty(),
+            "built-in keybindings shadow each other: {clashes:#?}"
+        );
+    }
+
+    /// The allowlist must not rot into a blanket suppression. Each entry is
+    /// still a real overlap, so if one stops being true the entry should be
+    /// deleted rather than left justifying nothing.
+    #[test]
+    fn the_intentional_overlap_allowlist_still_describes_real_overlaps() {
+        let all = detect_clashes(&default_clash_candidates());
+        for (a, b) in INTENTIONAL_DEFAULT_OVERLAPS {
+            assert!(
+                all.iter()
+                    .any(|w| w.contains(&format!("\"{a}\" and \"{b}\""))),
+                "{a}/{b} is allowlisted but no longer overlaps — drop the entry"
+            );
+        }
+    }
+
+    /// `Alt+p` is podcasts; the progress bar style moved to `Alt+b` so the
+    /// Podcasts category is reachable at all.
+    #[test]
+    fn podcasts_and_progress_style_are_both_reachable() {
+        assert!(matches!(
+            dispatch(
+                KeyEvent::new(KeyCode::Char('p'), KeyModifiers::ALT),
+                KeyContext::Normal
+            ),
+            Some(KeyboardAction::OpenOverlay(PickerId::PodcastFeeds))
+        ));
+        assert!(matches!(
+            dispatch(
+                KeyEvent::new(KeyCode::Char('b'), KeyModifiers::ALT),
+                KeyContext::Normal
+            ),
+            Some(KeyboardAction::OpenOverlay(PickerId::ProgressStyle))
+        ));
+    }
 
     fn dispatch(key: KeyEvent, ctx: KeyContext) -> Option<KeyboardAction> {
         default_keybindings().dispatch(key, ctx)

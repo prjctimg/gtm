@@ -44,8 +44,8 @@ pub(crate) use crate::footer::{
     FooterCache, FooterKeyAction, FooterPreset, is_live_stream, merged_presets,
 };
 pub(crate) use crate::keymap::{
-    BoundCommand, KeyContext, Keybindings, KeyboardAction, default_keybindings, detect_clashes,
-    format_key_event, parse_key_event,
+    BoundCommand, KeyContext, Keybindings, KeyboardAction, default_clash_warnings,
+    default_keybindings, detect_clashes, format_key_event, parse_key_event,
 };
 pub(crate) use crate::mouse::{MouseMap, MouseZone};
 pub(crate) use crate::oauth::{lastfm_callback_port, open_browser};
