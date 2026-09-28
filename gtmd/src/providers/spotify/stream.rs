@@ -673,9 +673,12 @@ impl StreamManager {
     /// Start streaming `uri` and return the rodio source to hand to the
     /// mixer. Any previous stream is torn down first.
     ///
-    /// `client_id` must be the app that minted `token` (see
-    /// [`SpotifyManager::streaming_client_id`]); librespot presents it when it
-    /// registers the session, and a mismatch connects without streaming.
+    /// `client_id` is the app librespot registers the session as. It is
+    /// deliberately *not* the app that minted `token`: the OAuth app is for the
+    /// Web API, and Spotify Connect only accepts a recognised playback app, so
+    /// passing the OAuth one gets the login denied. See
+    /// [`SpotifyManager::oauth_client_id`] for the id that does belong to the
+    /// token.
     pub async fn load(
         &mut self,
         uri: &str,

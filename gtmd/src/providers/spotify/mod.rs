@@ -118,14 +118,21 @@ impl SpotifyManager {
             .unwrap_or_default()
     }
 
-    /// The client id the current access token was minted with.
+    /// The client id for the **OAuth / Web API** side: the app that minted the
+    /// current access token, so refreshing it presents a matching id.
     ///
-    /// Spotify binds an access token to the app that requested it, so the
-    /// librespot session has to present the *same* id. Presenting a token from
-    /// one app to a session registered as another still connects and then
-    /// delivers no audio at all, which is the quietest possible failure: the
-    /// track resolves, the clock advances, and the mixer never gets a sample.
-    pub fn streaming_client_id(&self) -> String {
+    /// This is deliberately *not* what the librespot session registers with.
+    /// The two roles need different apps, and conflating them is what made
+    /// playback fail. Connect only accepts apps Spotify recognises as playback
+    /// clients, so a self-registered Web API app — fine for sync, search and
+    /// artwork — is refused there. librespot sends [`LIBRESPOT_CLIENT_ID`]
+    /// verbatim as the session client id, and Spotify answers
+    /// `Login request was denied: BAD_REQUEST` for anything else.
+    ///
+    /// The refusal is loud and immediate, which is the good case: the log
+    /// shows `session.connect()` *succeeding* and login5 then denying the
+    /// login, rather than a session that streams silence.
+    pub fn oauth_client_id(&self) -> String {
         let id = self.stored_client_id();
         if id.is_empty() {
             LIBRESPOT_CLIENT_ID.to_string()
@@ -645,10 +652,11 @@ impl SpotifyManager {
         // bundled demo id cannot refresh, so such tokens silently expire and
         // every later Web API call fails with a 401.
         //
-        // The fallback is also what `streaming_client_id` hands the librespot
-        // session, so both sides always agree on which app the token belongs
-        // to.
-        let creds = Credentials::new_pkce(&self.streaming_client_id());
+        // This is the one place the stored id belongs: the refresh has to come
+        // from the same app that ran the authorization, or the renewed token is
+        // rejected and every later Web API call 401s. The librespot session
+        // must *not* reuse it — see [`Self::oauth_client_id`].
+        let creds = Credentials::new_pkce(&self.oauth_client_id());
         // Persist a refreshed token back to disk with 0600 permissions so a
         // renewed access token survives a daemon restart instead of reverting
         // to the stale one. rspotify invokes this callback after every
