@@ -76,6 +76,7 @@ pub const LIBRARY_CATEGORIES: &[&str] = &[
     "Genres",
     "Folders",
     "Top Charts",
+    "Podcasts",
 ];
 /// Sanitize a TOML `left_pane_lists` value: keep only canonical category
 /// names, drop duplicates, preserve user order. Empty (or fully unknown)
@@ -837,6 +838,8 @@ impl App {
                 oauth_url: None,
                 oauth_error: None,
                 oauth_port: "8990".to_string(),
+                oauth_client_id: String::new(),
+                oauth_field: 0,
                 search_debounce: None,
                 search_loading: false,
                 web_seq: 0,
@@ -1406,7 +1409,11 @@ impl App {
                     }
                 }
                 PickerId::SpotifyLink => {
-                    self.spotify.oauth_port.push_str(text);
+                    if self.spotify.oauth_field == 0 {
+                        self.spotify.oauth_client_id.push_str(text);
+                    } else {
+                        self.spotify.oauth_port.push_str(text);
+                    }
                 }
                 PickerId::EditMetadata => {
                     self.metadata.fields[self.metadata.field_idx].push_str(text);

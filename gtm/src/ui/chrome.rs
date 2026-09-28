@@ -1165,6 +1165,12 @@ impl Render {
             }
         }
 
+        // The left pane carries the category list again, alongside the Alt+.
+        // picker, so the highlight is visible without opening anything. The
+        // list is capped rather than grown: an uncapped one would take every
+        // row the pane has and squeeze the cover art to nothing, so the number
+        // of visible items is derived from what is left after reserving the
+        // card and one padding row above it.
         let left_inner = Render::pane_header(f, panes[0], app, " ", left_focus, false, false);
         fill_pane(f, left_inner, app);
 
@@ -1178,21 +1184,39 @@ impl Render {
         // The Spotify drill-down shows its own highlighted track here rather
         // than inline with the list rows, so the list panes stay pure text.
         let want_spot_track_card = app.in_spotify_playlist() && app.spotify.row_cover.is_some();
-        let track_info_h: u16 = if (want_track_card || want_playlist_card || want_spot_track_card)
-            && !is_small_height
-        {
-            let avail_h = left_inner.height.saturating_sub(1);
+        let has_card =
+            (want_track_card || want_playlist_card || want_spot_track_card) && !is_small_height;
+        // Rows the category list may use: everything, less the card and the
+        // single padding row that keeps the cover art off the list's baseline.
+        // A pane too short for both drops the list entirely rather than
+        // squeezing the card to a sliver.
+        let list_rows: u16 = if has_card {
+            let reserved = LEFT_LIST_PADDING + 1;
+            if left_inner.height <= reserved {
+                0
+            } else {
+                (left_inner.height - reserved).min(LEFT_LIST_MAX_ROWS)
+            }
+        } else {
+            left_inner.height
+        };
+        let track_info_h: u16 = if has_card {
+            let avail_h = left_inner
+                .height
+                .saturating_sub(list_rows)
+                .saturating_sub(LEFT_LIST_PADDING);
             let need = info_block_h();
-            let max_card = avail_h.max(6);
-            need.min(max_card)
+            need.min(avail_h.max(6))
         } else {
             0
         };
-        // The category list lives in the Alt+. picker, so the left pane is only
-        // the highlighted item's preview and can take every row it is given.
         let left_vchunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
+                Constraint::Length(list_rows),
+                // Padding row above the cover art, so the two blocks do not
+                // read as one clipped list.
+                Constraint::Length(if has_card { LEFT_LIST_PADDING } else { 0 }),
                 Constraint::Length(
                     if (want_track_card || want_playlist_card) && !is_small_height {
                         1
@@ -1200,11 +1224,72 @@ impl Render {
                         0
                     },
                 ),
-                Constraint::Min(track_info_h),
+                Constraint::Length(track_info_h),
             ])
             .split(left_inner);
-        let info_sep_area = left_vchunks[0];
-        let left_info_area = left_vchunks[1];
+        let left_list_area = left_vchunks[0];
+        let left_pad_area = left_vchunks[1];
+        let info_sep_area = left_vchunks[2];
+        let left_info_area = left_vchunks[3];
+
+        if list_rows > 0 {
+            let lib_icons = if use_nerd_fonts() {
+                LIBRARY_ICONS_NERD
+            } else {
+                LIBRARY_ICONS_ASCII
+            };
+            let visible_cats = app.visible_library_indices();
+            let total = visible_cats.len();
+            let sel = visible_cats
+                .iter()
+                .position(|&i| i == app.library_category)
+                .unwrap_or(0);
+            let (scroll_start, scroll_end) = step_viewport(0, sel, list_rows as usize, total);
+            let left_items: Vec<ListItem> = visible_cats[scroll_start..scroll_end]
+                .iter()
+                .map(|&i| {
+                    let cat = LIBRARY_CATEGORIES[i];
+                    let icon = lib_icons.get(i).copied().unwrap_or(" ");
+                    let count = app.library_count(cat);
+                    let label = if count > 0 {
+                        format!(" {icon}  {:<14} {:>4}", cat, count)
+                    } else {
+                        format!(" {icon}  {cat}")
+                    };
+                    let is_active = i == app.library_category;
+                    let style = if is_active && left_focus {
+                        Style::default()
+                            .fg(app.theme.selection_fg_readable())
+                            .bg(app.theme.selection_bg)
+                    } else if is_active {
+                        Style::default().fg(app.theme.accent)
+                    } else {
+                        Style::default().fg(app.theme.fg)
+                    };
+                    ListItem::new(label).style(style)
+                })
+                .collect();
+            f.render_widget(List::new(left_items), left_list_area);
+
+            // Indicator marks the active row within the scrolled window, not
+            // its absolute index, or it drifts off the pane once the list
+            // scrolls past the visible rows.
+            if sel >= scroll_start {
+                let indicator_y = left_list_area.y + (sel - scroll_start) as u16;
+                if indicator_y < left_list_area.y + left_list_area.height {
+                    let indicator_area = Rect {
+                        x: left_list_area.x + 1,
+                        y: indicator_y,
+                        width: 1,
+                        height: 1,
+                    };
+                    let indicator = Paragraph::new("\u{258e}")
+                        .style(Style::default().fg(app.theme.sidebar_active_border));
+                    f.render_widget(indicator, indicator_area);
+                }
+            }
+            let _ = left_pad_area;
+        }
 
         let category_label = LIBRARY_CATEGORIES
             .get(app.library_category)
@@ -1844,6 +1929,106 @@ impl Render {
                     lib_total_rows = total_len;
                     (lines, st_line)
                 }
+            }
+        } else if app.library_category == 13 {
+            // Podcasts: level 0 lists the subscribed feeds, level 1 the
+            // episodes of the feed drilled into. Mirrors the chart's two-level
+            // shape so Backspace/Enter behave the same in both.
+            if app.podcast.episodes_feed_id.is_some() {
+                let episodes = &app.podcast.episodes;
+                let total_len = episodes.len();
+                let sel = app.list_pos().min(total_len.saturating_sub(1));
+                let st_line = format!(
+                    " {} {} ",
+                    total_len,
+                    plural(total_len, "episode", "episodes")
+                );
+                let reserve = 3usize;
+                let available = panes[1].height.saturating_sub(reserve as u16) as usize;
+                app.viewport_items = available;
+                let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
+                app.list_scroll = list_scroll;
+                let mut lines = vec![Line::from("")];
+                if total_len == 0 {
+                    lines.extend(empty_hint_lines(
+                        app,
+                        "No episodes in this feed",
+                        "Hint: press Backspace to go back",
+                    ));
+                } else {
+                    for (i, ep) in episodes[list_scroll..end].iter().enumerate() {
+                        let real_i = list_scroll + i;
+                        let is_sel = real_i == sel && !left_focus;
+                        let style = if is_sel {
+                            Style::default()
+                                .fg(app.theme.selection_fg_readable())
+                                .bg(app.theme.selection_bg)
+                        } else {
+                            Style::default().fg(app.theme.fg)
+                        };
+                        let prefix = if is_sel { " > " } else { "   " };
+                        let dur = ep
+                            .duration_secs
+                            .map(|s| format!("  [{}:{:02}]", s / 60, s % 60))
+                            .unwrap_or_default();
+                        let row = format!("{}{}{}", prefix, ep.title, dur);
+                        let row = if is_sel {
+                            let pad = row_pad(&row, panes[1].width);
+                            format!("{row}{}", " ".repeat(pad))
+                        } else {
+                            row
+                        };
+                        lines.push(Line::from(Span::styled(row, style)));
+                    }
+                }
+                lib_total_rows = total_len;
+                (lines, st_line)
+            } else {
+                let feeds = &app.podcast.feeds;
+                let total_len = feeds.len();
+                let sel = app.list_pos().min(total_len.saturating_sub(1));
+                let st_line = format!(" {} {} ", total_len, plural(total_len, "feed", "feeds"));
+                let reserve = 3usize;
+                let available = panes[1].height.saturating_sub(reserve as u16) as usize;
+                app.viewport_items = available;
+                let (list_scroll, end) = step_viewport(app.list_scroll, sel, available, total_len);
+                app.list_scroll = list_scroll;
+                let mut lines = vec![Line::from("")];
+                if total_len == 0 {
+                    lines.extend(empty_hint_lines(
+                        app,
+                        "No podcast feeds",
+                        "Hint: press a to add a feed by URL",
+                    ));
+                } else {
+                    for (i, feed) in feeds[list_scroll..end].iter().enumerate() {
+                        let real_i = list_scroll + i;
+                        let is_sel = real_i == sel && !left_focus;
+                        let style = if is_sel {
+                            Style::default()
+                                .fg(app.theme.selection_fg_readable())
+                                .bg(app.theme.selection_bg)
+                        } else {
+                            Style::default().fg(app.theme.fg)
+                        };
+                        let prefix = if is_sel { " > " } else { "   " };
+                        let count = if feed.episodes > 0 {
+                            format!("  [{}]", feed.episodes)
+                        } else {
+                            String::new()
+                        };
+                        let row = format!("{}{}{}", prefix, feed.title, count);
+                        let row = if is_sel {
+                            let pad = row_pad(&row, panes[1].width);
+                            format!("{row}{}", " ".repeat(pad))
+                        } else {
+                            row
+                        };
+                        lines.push(Line::from(Span::styled(row, style)));
+                    }
+                }
+                lib_total_rows = total_len;
+                (lines, st_line)
             }
         } else {
             let (total_len, total_dur) = {

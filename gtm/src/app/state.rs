@@ -235,6 +235,17 @@ pub struct SpotifyView {
     /// Local redirect port for the Spotify OAuth flow (the only editable field
     /// in the link picker; the app id is fixed).
     pub oauth_port: String,
+    /// Optional Web API app id entered in the link picker.
+    ///
+    /// Blank means "use librespot's", which is the previous behaviour and
+    /// still works. A value here moves the Web API calls — search, artwork and
+    /// playlist sync — into a rate-limit bucket of the user's own instead of the
+    /// one every librespot install shares. It is deliberately *not* the id the
+    /// app streams with: playback always registers as librespot's, because
+    /// Spotify Connect rejects a self-registered app.
+    pub oauth_client_id: String,
+    /// Which field the link picker is editing: 0 = client id, 1 = port.
+    pub oauth_field: usize,
     pub search_debounce: Option<std::time::Instant>,
     pub web_seq: u64,
     /// Cover art for the SpotifySearch picker preview window, fetched from the

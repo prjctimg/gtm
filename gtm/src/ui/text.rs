@@ -7,6 +7,20 @@
 
 use crate::ui::*;
 
+/// Most category rows the left pane will show at once.
+///
+/// The list is capped rather than given whatever the pane has left, because an
+/// uncapped list takes every row and squeezes the cover art to nothing. Ten
+/// keeps the categories reachable on a short pane while leaving the card
+/// usable on a tall one.
+pub(crate) const LEFT_LIST_MAX_ROWS: u16 = 10;
+
+/// Blank rows between the category list and the cover art below it.
+///
+/// Without it the two blocks abut, and the card's top border reads as another
+/// row of the list rather than as a separate element.
+pub(crate) const LEFT_LIST_PADDING: u16 = 1;
+
 pub(crate) const INFO_CARD_H: u16 = 16;
 
 pub(crate) const INFO_TEXT_H: u16 = 6;
