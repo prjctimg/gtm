@@ -140,6 +140,26 @@ impl Cover {
             let album = discovered_album.clone();
             let provider = inner.effective_cover_provider().await;
 
+            // Cache first, and cache *only*. The Spotify step below stores under
+            // this same artist/album key, so reading it first is what makes a
+            // resolved cover cost nothing on the next request. Reading it
+            // afterwards — as this did — meant every request re-ran the API
+            // search, and when that search failed the 8s timeout was paid
+            // before the cached answer was even looked at.
+            //
+            // `get_cached` and not `get`: `get` searches MusicBrainz and Deezer
+            // on a miss, which would both cost a round trip and outrank the
+            // Spotify artwork this path deliberately prefers.
+            {
+                let guard = inner.cover_cache().await;
+                if let Some(cc) = &*guard
+                    && let Some(cover) = cc.get_cached(&artist, &album).await
+                {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&cover.data);
+                    return Ok(DaemonRes::CoverArt { data: Some(b64) });
+                }
+            }
+
             // With Auto (the default) or an explicit Spotify preference, a
             // linked account supplies original 640x640 artwork ahead of the
             // network fallbacks below. Resolved with no lock held: taking the
@@ -221,6 +241,20 @@ impl Cover {
         }
         let query = track.query();
         let provider = inner.effective_cover_provider().await;
+
+        // Cache first, and cache only, for the same reason as the album path
+        // above: `track_art` below stores under this exact key, so a track that
+        // has already been resolved is served without re-querying the API on
+        // every poll of the live tracklist.
+        {
+            let guard = inner.cover_cache().await;
+            if let Some(cache) = &*guard
+                && let Some(hit) = cache.get_text_cached(&query).await
+            {
+                return Some(hit.data);
+            }
+        }
+
         // Spotify first when linked: original artwork, and no rate limit.
         if matches!(provider, CoverProvider::Auto | CoverProvider::Spotify)
             && let Ok(client) = linked(inner).await

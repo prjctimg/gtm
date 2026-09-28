@@ -310,6 +310,38 @@ impl CoverCache {
         self.cached(&Self::cache_key("station", station)).await
     }
 
+    /// Memory-then-disk read for an artist/album pair, skipping the provider
+    /// search entirely.
+    ///
+    /// For a caller that has its own preferred source — the Spotify artwork
+    /// lookup. It needs to ask "is this already resolved?" *before* reaching for
+    /// that source, but [`Self::get`] cannot answer that question: on a miss it
+    /// goes on to search MusicBrainz and Deezer, which would both cost a network
+    /// round trip and take precedence over the caller's own source.
+    pub async fn get_cached(&self, artist: &str, album: &str) -> Option<CoverData> {
+        let artist = if artist.is_empty() {
+            "Unknown Artist"
+        } else {
+            artist
+        };
+        let album = if album.is_empty() {
+            "Unknown Album"
+        } else {
+            album
+        };
+        self.cached(&Self::cache_key(artist, album)).await
+    }
+
+    /// [`Self::get_cached`] for the free-text `"{artist} - {title}"` key that
+    /// [`Self::put_station`]/`put("track", …)` store under.
+    pub async fn get_text_cached(&self, query: &str) -> Option<CoverData> {
+        let q = query.trim();
+        if q.is_empty() {
+            return None;
+        }
+        self.cached(&Self::cache_key("track", q)).await
+    }
+
     /// Look up cover art for a free-text `"{artist} - {title}"` query, the
     /// shape a radio station publishes. Cached in the album caches under the
     /// query itself, so a track that comes round again is served from disk
