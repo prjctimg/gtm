@@ -146,6 +146,36 @@ impl Cmd {
         }
     }
 
+    /// Announce the track that is now playing to Last.fm.
+    ///
+    /// Every path that starts audio has to do this, and each one that grew its
+    /// own copy got the details subtly wrong: only some honoured
+    /// `scrobble.enabled`, and the bounds disagreed. Spotify streaming had no
+    /// copy at all, so a scrobble tracker was started for a track Last.fm had
+    /// never been told about.
+    ///
+    /// Scrobbling being off means now-playing is off too — that is the switch
+    /// the user actually turns. Best-effort and hard-bounded: Last.fm must
+    /// never delay a play-command reply.
+    async fn announce_now_playing(inner: &DaemonInner) {
+        let lastfm = inner.lastfm.lock().await;
+        if !lastfm.is_ready().await {
+            return;
+        }
+        let track = {
+            let state = inner.state.read().await;
+            if state.scrobble.enabled {
+                state.current_track.clone()
+            } else {
+                None
+            }
+        };
+        if let Some(ref track) = track {
+            let _ = tokio::time::timeout(Duration::from_secs(1), lastfm.update_now_playing(track))
+                .await;
+        }
+    }
+
     pub async fn play(
         inner: &DaemonInner,
         path: &str,
@@ -274,26 +304,7 @@ impl Cmd {
         );
 
         // Update Last.fm now playing
-        if inner.lastfm.lock().await.is_ready().await {
-            let track_for_np = {
-                let state = inner.state.read().await;
-                if state.scrobble.enabled {
-                    state.current_track.clone()
-                } else {
-                    None
-                }
-            };
-            if let Some(ref track) = track_for_np {
-                // Bound the now-playing handshake hard so a slow Last.fm
-                // response never delays the play-command reply; the real
-                // scrobble uses the background tracker.
-                let _ = tokio::time::timeout(
-                    Duration::from_secs(1),
-                    inner.lastfm.lock().await.update_now_playing(track),
-                )
-                .await;
-            }
-        }
+        Self::announce_now_playing(inner).await;
         Ok(DaemonRes::Ok)
     }
 
@@ -459,6 +470,7 @@ impl Cmd {
                 duration: dur,
             },
         );
+        Self::announce_now_playing(inner).await;
         Ok(DaemonRes::Ok)
     }
 
@@ -583,17 +595,7 @@ impl Cmd {
             },
         );
 
-        let lastfm = inner.lastfm.lock().await;
-        if lastfm.is_ready().await {
-            let track_for_np = inner.state.read().await.current_track.clone();
-            if let Some(ref track) = track_for_np {
-                // Bounded to keep the play-command reply fast; Last.fm is
-                // best-effort and must not stall playback control.
-                let _ =
-                    tokio::time::timeout(Duration::from_secs(1), lastfm.update_now_playing(track))
-                        .await;
-            }
-        }
+        Self::announce_now_playing(inner).await;
         Ok(DaemonRes::Ok)
     }
 }
@@ -3774,16 +3776,7 @@ impl Daemon {
                 }
                 inner.scrobble.lock().await.start(&next.path, actual);
                 // Update Last.fm now playing for the new track
-                if let Some(ref track) = inner.state.read().await.current_track {
-                    let lastfm = inner.lastfm.lock().await;
-                    if lastfm.is_ready().await {
-                        let _ = tokio::time::timeout(
-                            Duration::from_secs(10),
-                            lastfm.update_now_playing(track),
-                        )
-                        .await;
-                    }
-                }
+                Cmd::announce_now_playing(inner).await;
                 Self::push_event(
                     inner,
                     DaemonEvent::PlaybackStarted {
