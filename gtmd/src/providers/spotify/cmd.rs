@@ -808,10 +808,25 @@ impl Spotify {
             if was_empty {
                 let first = {
                     let read = inner.state.read().await;
-                    read.queue.first().map(|t| t.path.clone())
+                    read.queue.first().cloned()
                 };
-                if let Some(uri) = first {
-                    Cmd::play(inner, &uri, 0.0, false).await?;
+                if let Some(entry) = first {
+                    // The same race `queue_stream` warms for, and the queue
+                    // entry already holds the art URL: without it the first
+                    // track of a playlist has no `cover_path`, so the client's
+                    // cover request misses and pays a bounded 8s spotify
+                    // search for art the response told us about. The second and
+                    // later tracks were already better served than the first,
+                    // by the position-tick preload.
+                    let meta = StreamMeta {
+                        title: &entry.title,
+                        artist: &entry.artist,
+                        album: &entry.album,
+                        image_url: entry.cover_url.as_deref(),
+                        duration: Some(entry.duration),
+                    };
+                    Self::warm_cover(inner, &entry.path, &meta).await;
+                    Cmd::play(inner, &entry.path, 0.0, false).await?;
                 }
             }
             Daemon::push_queue_state(inner).await;
