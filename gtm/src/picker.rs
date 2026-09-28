@@ -10,6 +10,9 @@ pub enum PickerId {
     Queue,
     YTSearch,
     SearchLibrary,
+    /// The library categories (Alt+.). They used to be a permanent list in the
+    /// left pane, which is now only the highlighted item's preview.
+    Libraries,
     SpotifySearch,
     SpotifyLink,
     Equalizer,

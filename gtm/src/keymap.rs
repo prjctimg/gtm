@@ -390,6 +390,11 @@ pub fn default_keybindings() -> Keybindings {
                 NORMAL
             ),
             b!(
+                KeyEvent::new(KeyCode::Char('.'), KeyModifiers::ALT),
+                KeyboardAction::OpenOverlay(PickerId::Libraries),
+                NORMAL
+            ),
+            b!(
                 KeyCode::Char('v'),
                 KeyboardAction::ToggleMultiselect,
                 NORMAL
@@ -705,6 +710,42 @@ mod tests {
             dispatch(KeyCode::Char(',').into(), KeyContext::Normal),
             Some(KeyboardAction::SeekBackward)
         ));
+    }
+
+    #[test]
+    fn library_picker_shortcut_coexists_with_seek() {
+        // The library categories moved out of the left pane into a picker, and
+        // the key had to stay out of SeekForward's way — `.` still seeks.
+        assert!(matches!(
+            dispatch(
+                KeyEvent::new(KeyCode::Char('.'), KeyModifiers::ALT),
+                KeyContext::Normal
+            ),
+            Some(KeyboardAction::OpenOverlay(PickerId::Libraries))
+        ));
+        assert!(matches!(
+            dispatch(KeyCode::Char('.').into(), KeyContext::Normal),
+            Some(KeyboardAction::SeekForward)
+        ));
+    }
+
+    /// The palette stops rendering rows once the group counts run out, so any
+    /// command past their sum is silently unreachable — which is how Setup
+    /// Services and Radio Browser went missing.
+    #[test]
+    fn every_command_lands_in_a_group() {
+        let total: usize = crate::ui::COMMAND_GROUPS.iter().map(|(_, n)| *n).sum();
+        for commands in [
+            crate::ui::CommandPalette::commands("mdi"),
+            crate::ui::CommandPalette::commands("emoji"),
+        ] {
+            assert_eq!(
+                commands.len(),
+                total,
+                "group counts cover {total} but there are {} commands",
+                commands.len()
+            );
+        }
     }
 
     #[test]

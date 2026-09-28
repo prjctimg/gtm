@@ -3615,6 +3615,13 @@ impl App {
                                 self.pickers.close_top();
                             }
                         }
+                        PickerId::Libraries => {
+                            let sel = self.pickers.top().map_or(0, |t| t.selected);
+                            if let Some(cat) = self.visible_library_indices().get(sel).copied() {
+                                self.reset_library_view(cat, None);
+                            }
+                            self.pickers.close_top();
+                        }
                         PickerId::VisualizerPreset => {
                             let presets = VisualizerPreset::all();
                             if let Some(top) = self.pickers.top() {

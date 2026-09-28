@@ -8,6 +8,57 @@
 use crate::ui::*;
 
 impl Pickers {
+    /// The library categories, moved out of the left pane (Alt+.). Enter switches
+    /// to the highlighted category and closes.
+    pub(crate) fn render_libraries(f: &mut ratatui::Frame, area: Rect, app: &App) {
+        let block = Self::picker_panel(
+            app,
+            " Library ",
+            Some("\u{2191}/\u{2193}: choose   Enter: open   Esc: cancel"),
+        );
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let cats = app.visible_library_indices();
+        let total = cats.len();
+        let sel = app
+            .pickers
+            .top()
+            .map_or(0, |o| o.selected.min(total.saturating_sub(1)));
+        let offset = app.pickers.top().map_or(0, |o| o.viewport_offset);
+        let (scroll_start, scroll_end) = step_viewport(offset, sel, inner.height as usize, total);
+
+        let icons = if use_nerd_fonts() {
+            LIBRARY_ICONS_NERD
+        } else {
+            LIBRARY_ICONS_ASCII
+        };
+        let items: Vec<ListItem> = cats[scroll_start..scroll_end]
+            .iter()
+            .map(|&i| {
+                let cat = LIBRARY_CATEGORIES[i];
+                let count = app.library_count(cat);
+                let label = if count > 0 {
+                    format!(
+                        " {}  {:<14} {:>4}",
+                        icons.get(i).unwrap_or(&" "),
+                        cat,
+                        count
+                    )
+                } else {
+                    format!(" {}  {}", icons.get(i).unwrap_or(&" "), cat)
+                };
+                let style = if i == app.library_category {
+                    Style::default().fg(app.theme.accent)
+                } else {
+                    Style::default().fg(app.theme.fg)
+                };
+                ListItem::new(label).style(style)
+            })
+            .collect();
+        f.render_widget(List::new(items), inner);
+    }
+
     pub(crate) fn render_playlist_select(f: &mut ratatui::Frame, area: Rect, app: &App) {
         let help = if app.playlist_creating {
             None

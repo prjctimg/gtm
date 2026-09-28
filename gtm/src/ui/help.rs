@@ -30,6 +30,7 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("topic", "── Navigation ──"),
     ("", "   Tab         Switch Pane"),
     ("", "   Shift+Tab   Switch Pane (back)"),
+    ("", "   Alt+.       Library Categories"),
     ("", "   /           Search (context-aware)"),
     ("", "   Alt+Q       Queue"),
     ("", "   Alt+/       Search Library"),

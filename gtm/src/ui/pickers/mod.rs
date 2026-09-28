@@ -63,6 +63,10 @@ impl Pickers {
                 let h = (n as u16 + 12).clamp(24, 34);
                 (w, h)
             }
+            PickerId::Libraries => {
+                let n = app.visible_library_indices().len() as u16;
+                (44, (n + 6).clamp(14, 30))
+            }
             PickerId::ThemePicker => (58, 24),
             PickerId::CommandPalette => (46, 18),
             PickerId::PlaylistSelect => (48, 20),
@@ -152,6 +156,7 @@ impl Pickers {
                 PickerId::Queue
                     | PickerId::YTSearch
                     | PickerId::SearchLibrary
+                    | PickerId::Libraries
                     | PickerId::CommandPalette
                     | PickerId::ThemePicker
                     | PickerId::PlaylistSelect
@@ -187,6 +192,7 @@ impl Pickers {
             PickerId::SpotifyDest => Self::render_live_dest(f, picker_area, app),
             PickerId::YTSearch => Self::render_yt_search(f, picker_area, app),
             PickerId::SearchLibrary => Self::render_search_library(f, picker_area, app),
+            PickerId::Libraries => Self::render_libraries(f, picker_area, app),
             PickerId::About => Self::render_about(f, picker_area, app),
             PickerId::SleepTimer => Self::render_sleep_timer(f, picker_area, app),
             PickerId::CommandPalette => Self::command_palette(f, picker_area, app),

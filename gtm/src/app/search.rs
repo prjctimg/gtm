@@ -91,6 +91,19 @@ impl App {
                 // publish one.
                 self.fetch_live_list();
             }
+            PickerId::Libraries => {
+                // Open on the category already showing, so the picker is a
+                // view of the list rather than a jump back to the top.
+                if let Some(row) = self
+                    .visible_library_indices()
+                    .iter()
+                    .position(|&i| i == self.library_category)
+                    && let Some(top) = self.pickers.top_mut()
+                {
+                    top.selected = row;
+                    top.viewport_offset = 0;
+                }
+            }
             PickerId::SpotifyDest => {
                 // The destination filter is scoped to this picker, so a query
                 // left over from a previous open must not hide every row.
@@ -196,6 +209,26 @@ impl App {
             (0..LIBRARY_CATEGORIES.len()).collect()
         } else {
             out
+        }
+    }
+
+    /// Item count shown next to a library category. `Top Charts` and anything
+    /// unmapped counts as zero, which the picker renders as no count at all.
+    pub fn library_count(&self, cat: &str) -> usize {
+        match cat {
+            "All Tracks" => self.tracks_cache.len(),
+            "Liked" => self.tracks_cache.iter().filter(|t| t.favourite).count(),
+            "Albums" => self.unique_albums().len(),
+            "Artists" => self.unique_artists().len(),
+            "Playlists" => self.playlist_cache.len(),
+            "Spotify" => self.spotify.playlists.len(),
+            "Radio" => self.radio.custom.len(),
+            "Most Played" => self.most_played_cache.len(),
+            "Recently Played" => self.recently_played_cache.len(),
+            "Recently Added" => self.recently_added_cache.len(),
+            "Genres" => self.unique_genres().len(),
+            "Folders" => self.unique_folders().len(),
+            _ => 0,
         }
     }
 

@@ -105,13 +105,15 @@ pub struct Prefs {
     pub(crate) icon_style: String,
     #[serde(default)]
     pub(crate) hide_footer: bool,
-    /// Left-pane category names shown, in display order. Unknown names are
-    /// ignored; an empty list falls back to the full default set so the pane
-    /// can never be bricked from TOML. Indices into `LIBRARY_CATEGORIES`
-    /// stay stable — this only filters/orders the render + navigation.
+    /// Library category names offered, in display order. The list itself lives
+    /// in the Alt+. picker; the key keeps its original name so existing configs
+    /// keep working. Unknown names are ignored; an empty list falls back to the
+    /// full default set so the picker can never be bricked from TOML. Indices
+    /// into `LIBRARY_CATEGORIES` stay stable — this only filters/orders them.
     #[serde(default = "default_left_pane_lists")]
     pub(crate) left_pane_lists: Vec<String>,
-    /// Master switch for the left-pane track preview card.
+    /// Master switch for the left-pane track preview card, which is now all the
+    /// left pane holds.
     #[serde(default = "default_show_preview")]
     pub(crate) show_preview: bool,
 }

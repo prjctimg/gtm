@@ -1165,51 +1165,6 @@ impl Render {
             }
         }
 
-        let lib_icons = if use_nerd_fonts() {
-            LIBRARY_ICONS_NERD
-        } else {
-            LIBRARY_ICONS_ASCII
-        };
-        let visible_cats = app.visible_library_indices();
-        let left_items: Vec<ListItem> = visible_cats
-            .iter()
-            .map(|&i| {
-                let cat = LIBRARY_CATEGORIES[i];
-                let icon = lib_icons.get(i).unwrap_or(&" ");
-                let count = match cat {
-                    "All Tracks" => app.tracks_cache.len(),
-                    "Liked" => app.tracks_cache.iter().filter(|t| t.favourite).count(),
-                    "Albums" => app.unique_albums().len(),
-                    "Artists" => app.unique_artists().len(),
-                    "Playlists" => app.playlist_cache.len(),
-                    "Spotify" => app.spotify.playlists.len(),
-                    "Radio" => app.radio.custom.len(),
-                    "Most Played" => app.most_played_cache.len(),
-                    "Recently Played" => app.recently_played_cache.len(),
-                    "Recently Added" => app.recently_added_cache.len(),
-                    "Genres" => app.unique_genres().len(),
-                    "Folders" => app.unique_folders().len(),
-                    _ => 0,
-                };
-                let label = if count > 0 {
-                    format!(" {icon}  {:<14} {:>4}", cat, count)
-                } else {
-                    format!(" {icon}  {}", cat)
-                };
-                let is_active = i == app.library_category;
-                let style = if is_active && left_focus {
-                    Style::default()
-                        .fg(app.theme.selection_fg_readable())
-                        .bg(app.theme.selection_bg)
-                } else if is_active {
-                    Style::default().fg(app.theme.accent)
-                } else {
-                    Style::default().fg(app.theme.fg)
-                };
-                ListItem::new(label).style(style)
-            })
-            .collect();
-
         let left_inner = Render::pane_header(f, panes[0], app, " ", left_focus, false, false);
         fill_pane(f, left_inner, app);
 
@@ -1228,16 +1183,16 @@ impl Render {
         {
             let avail_h = left_inner.height.saturating_sub(1);
             let need = info_block_h();
-            // Reserve at least 4 rows for the category list so "Spotify" never gets clipped.
-            let max_card = avail_h.saturating_sub(4);
-            need.min(max_card.max(6))
+            let max_card = avail_h.max(6);
+            need.min(max_card)
         } else {
             0
         };
+        // The category list lives in the Alt+. picker, so the left pane is only
+        // the highlighted item's preview and can take every row it is given.
         let left_vchunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
-                Constraint::Min(4),
                 Constraint::Length(
                     if (want_track_card || want_playlist_card) && !is_small_height {
                         1
@@ -1245,34 +1200,11 @@ impl Render {
                         0
                     },
                 ),
-                Constraint::Length(track_info_h),
+                Constraint::Min(track_info_h),
             ])
             .split(left_inner);
-        let left_list_area = left_vchunks[0];
-        let info_sep_area = left_vchunks[1];
-        let left_info_area = left_vchunks[2];
-
-        f.render_widget(List::new(left_items), left_list_area);
-
-        if app.library_category < LIBRARY_CATEGORIES.len()
-            && let Some(row) = app
-                .visible_library_indices()
-                .iter()
-                .position(|&i| i == app.library_category)
-        {
-            let indicator_y = left_list_area.y + row as u16;
-            if indicator_y < left_list_area.y + left_list_area.height {
-                let indicator_area = Rect {
-                    x: left_list_area.x + 1,
-                    y: indicator_y,
-                    width: 1,
-                    height: 1,
-                };
-                let indicator =
-                    Paragraph::new("▎").style(Style::default().fg(app.theme.sidebar_active_border));
-                f.render_widget(indicator, indicator_area);
-            }
-        }
+        let info_sep_area = left_vchunks[0];
+        let left_info_area = left_vchunks[1];
 
         let category_label = LIBRARY_CATEGORIES
             .get(app.library_category)

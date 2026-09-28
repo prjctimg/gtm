@@ -122,6 +122,11 @@ impl CommandPalette {
                 hint: "search lib",
             },
             Command {
+                icon: "\u{f07b} Library Categories",
+                keys: "Alt+.",
+                hint: "library lists",
+            },
+            Command {
                 icon: "\u{f056e} Queue",
                 keys: "Alt+Q",
                 hint: "queue",
@@ -377,6 +382,11 @@ impl CommandPalette {
                 hint: "search lib",
             },
             Command {
+                icon: "\u{1f4d1} Library Categories",
+                keys: "Alt+.",
+                hint: "library lists",
+            },
+            Command {
                 icon: "\u{1f4cb} Queue",
                 keys: "Alt+Q",
                 hint: "queue",
@@ -537,7 +547,7 @@ impl CommandPalette {
 
 pub const COMMAND_GROUPS: &[(&str, usize)] = &[
     ("Playback", 14),
-    ("Library & Queue", 15),
+    ("Library & Queue", 16),
     ("View & Overlays", 11),
-    ("System", 7),
+    ("System", 10),
 ];
