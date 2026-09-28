@@ -40,6 +40,15 @@ pub async fn run() {
 
     let log_file = config.log_file.as_deref();
     let log_level = if args.verbose { "debug" } else { "info" };
+    // rspotify logs each outgoing request at `info`, Debug-printing the whole
+    // request builder — which carries `Authorization: Bearer <access token>`.
+    // The log file is not private, so that wrote a live credential other users
+    // on the machine could read, once per API call. Capping the target at
+    // `warn` costs the request trace, which said nothing we act on. `RUST_LOG`
+    // replaces the directive list wholesale, so an operator who asks for that
+    // target back still gets it.
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(format!("{log_level},rspotify_http=warn")));
 
     if let Some(path) = log_file {
         let file = match std::fs::File::create(path) {
@@ -50,20 +59,14 @@ pub async fn run() {
             }
         };
         tracing_subscriber::fmt()
-            .with_env_filter(
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level)),
-            )
+            .with_env_filter(filter)
             // A file is never a terminal: without this the subscriber's own
             // detection enables colour and every line lands wrapped in escapes.
             .with_ansi(false)
             .with_writer(std::sync::Mutex::new(file))
             .init();
     } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(
-                EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(log_level)),
-            )
-            .init();
+        tracing_subscriber::fmt().with_env_filter(filter).init();
     }
 
     tracing::info!("starting gtm daemon");
