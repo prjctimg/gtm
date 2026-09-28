@@ -464,6 +464,19 @@ impl StreamManager {
         self.current_uri.as_deref()
     }
 
+    /// A partner-API bearer token for the endpoints the official clients call,
+    /// which the Web API has no equivalent of — lyrics being the one that
+    /// matters here.
+    ///
+    /// Reuses the session the stream already established, so this costs
+    /// nothing while audio is playing. `None` when no session is up: a lyrics
+    /// lookup must not bring a Connect device into existence on its own, so
+    /// before the first track plays there is simply no token and the caller
+    /// falls back.
+    pub async fn spclient_token(&self) -> Option<String> {
+        self.session.as_ref()?.spclient().client_token().await.ok()
+    }
+
     fn clear_target(&self) {
         // Dropping the sender makes the rodio source drain its buffer and
         // then end, which triggers the mixer's normal end-of-track path.

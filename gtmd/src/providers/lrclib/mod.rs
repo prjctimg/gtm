@@ -439,6 +439,23 @@ impl LyricsManager {
         }
     }
 
+    /// The cached lyrics for `track`, but only when they are genuinely synced.
+    ///
+    /// Exposed so a caller with its own source can check the cache *before*
+    /// reaching for the network. Without this, preferring that source would
+    /// re-fetch it on every visit, since the cache is consulted inside
+    /// [`Self::get_lyrics`] — which is the path being short-circuited.
+    pub fn cached_synced(&self, track: &TrackInfo) -> Option<LrcData> {
+        let lrc = self.read_cache(track)?;
+        has_timed_lines(&lrc).then_some(lrc)
+    }
+
+    /// Store lyrics fetched elsewhere, so a later lookup is served from disk
+    /// by either source. Counterpart to [`Self::cached_synced`].
+    pub fn store(&self, track: &TrackInfo, lrc: &LrcData) {
+        self.write_cache(track, lrc);
+    }
+
     fn read_cache(&self, track: &TrackInfo) -> Option<LrcData> {
         let key = self.track_cache_key(track)?;
         self.read_cache_key(&key)
