@@ -119,3 +119,28 @@ fn stale_left_pane_lists_keep_known_categories() {
     );
     assert!(!out.iter().any(|c| c == "Podcasts"));
 }
+
+/// A client id pasted into the port box must be reported, not swallowed.
+///
+/// The two fields are one Tab apart, and a non-numeric port used to fall back
+/// to the default: the flow then linked the account against librespot's shared
+/// app while appearing to honour the id, with no message anywhere. The symptom
+/// — a token that never gets its own quota, and playlists that fail to sync —
+/// was indistinguishable from the id being rejected.
+#[test]
+fn a_non_numeric_port_is_an_error_not_a_default() {
+    // A real client id in the port field is the exact mistake that was silent.
+    assert!(super::run::parse_oauth_port("0123456789abcdef0123456789abcdef").is_err());
+    // And the error has to point at the cause, or the user fixes the wrong box.
+    let err = super::run::parse_oauth_port("8990a").unwrap_err();
+    assert!(err.contains("Tab"), "the error should name the fix: {err}");
+}
+
+/// Blank means "I did not change this", which is a legitimate answer and must
+/// not be treated as a mistake.
+#[test]
+fn a_blank_port_still_defaults() {
+    assert_eq!(super::run::parse_oauth_port("").unwrap(), 8990);
+    assert_eq!(super::run::parse_oauth_port("   ").unwrap(), 8990);
+    assert_eq!(super::run::parse_oauth_port("1234").unwrap(), 1234);
+}

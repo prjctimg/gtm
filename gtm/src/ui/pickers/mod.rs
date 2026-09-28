@@ -73,7 +73,7 @@ impl Pickers {
             PickerId::PlaylistSelect => (48, 20),
             PickerId::PlaylistTrackSelect => (64, 26),
             PickerId::SpotifySearch => (60, 28),
-            PickerId::SpotifyLink => (60, 16),
+            PickerId::SpotifyLink => (60, 18),
             PickerId::Crossfade => (58, 20),
             PickerId::VisualizerPreset => (48, 14),
             PickerId::FooterPreset => (52, 16),
@@ -294,13 +294,55 @@ impl Pickers {
                     }
                     lines.push(Line::from(port_spans));
                     lines.push(Line::from(""));
-                    lines.push(Line::from(Span::styled(
-                        format!(
-                            "Redirect: http://127.0.0.1:{}/login",
-                            app.spotify.oauth_port.parse::<u16>().unwrap_or(8990)
-                        ),
-                        Style::default().fg(app.theme.fg_bright),
-                    )));
+
+                    // What Enter will actually send, decided before the user
+                    // commits to it. A paste that missed its field used to be
+                    // indistinguishable from a rejected id, because nothing
+                    // between the form and the authorize URL reported which app
+                    // was in play.
+                    let client_id = app.spotify.oauth_client_id.trim();
+                    let (as_text, as_style) = if client_id.is_empty() {
+                        (
+                            "Authorizing as: the shared app (every install shares its rate limit)"
+                                .to_string(),
+                            Style::default().fg(app.theme.warning),
+                        )
+                    } else {
+                        // Masked: this is the one line that names the app, and it
+                        // must not be the line that prints it in full.
+                        (
+                            format!(
+                                "Authorizing as your own app ({})",
+                                mask_credential(client_id)
+                            ),
+                            Style::default().fg(app.theme.success),
+                        )
+                    };
+                    lines.push(Line::from(Span::styled(format!("  {as_text}"), as_style)));
+                    lines.push(Line::from(""));
+
+                    // A port that does not parse has nowhere to send the
+                    // browser, so say that instead of printing a redirect for
+                    // the fallback port as though it were the user's.
+                    match app.spotify.oauth_port.trim().parse::<u16>() {
+                        Ok(port) => lines.push(Line::from(Span::styled(
+                            format!("  Redirect: http://127.0.0.1:{port}/login"),
+                            Style::default().fg(app.theme.fg_bright),
+                        ))),
+                        Err(_) if app.spotify.oauth_port.trim().is_empty() => {
+                            lines.push(Line::from(Span::styled(
+                                "  Redirect: http://127.0.0.1:8990/login (default)",
+                                Style::default().fg(app.theme.fg_bright),
+                            )));
+                        }
+                        Err(_) => {}
+                    }
+                    if let Some(err) = app.spotify.oauth_form_error.as_deref() {
+                        lines.push(Line::from(Span::styled(
+                            format!("  {err}"),
+                            Style::default().fg(app.theme.error),
+                        )));
+                    }
                     lines.push(Line::from(Span::styled(
                         "Tab: switch field",
                         Style::default().fg(app.theme.fg_dim),

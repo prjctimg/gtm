@@ -246,6 +246,15 @@ pub struct SpotifyView {
     pub oauth_client_id: String,
     /// Which field the link picker is editing: 0 = client id, 1 = port.
     pub oauth_field: usize,
+    /// Local validation error on the link form, e.g. a client id pasted into
+    /// the port box. Kept apart from [`Self::oauth_error`] because that one
+    /// renders as a terminal flow-outcome view: overloading it would replace
+    /// the form with the failure, leaving nothing to correct.
+    pub oauth_form_error: Option<String>,
+    /// The Web API app id the last link flow was started with, so the
+    /// completion toast can name the app the account is now bound to. `None`
+    /// means the flow went out with librespot's id.
+    pub oauth_sent_client_id: Option<String>,
     pub search_debounce: Option<std::time::Instant>,
     pub web_seq: u64,
     /// Cover art for the SpotifySearch picker preview window, fetched from the

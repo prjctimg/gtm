@@ -840,6 +840,8 @@ impl App {
                 oauth_port: "8990".to_string(),
                 oauth_client_id: String::new(),
                 oauth_field: 0,
+                oauth_form_error: None,
+                oauth_sent_client_id: None,
                 search_debounce: None,
                 search_loading: false,
                 web_seq: 0,
@@ -1414,6 +1416,7 @@ impl App {
                     } else {
                         self.spotify.oauth_port.push_str(text);
                     }
+                    self.spotify.oauth_form_error = None;
                 }
                 PickerId::EditMetadata => {
                     self.metadata.fields[self.metadata.field_idx].push_str(text);

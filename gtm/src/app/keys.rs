@@ -3591,12 +3591,21 @@ impl App {
                                 let id = self.spotify.oauth_client_id.trim().to_string();
                                 (!id.is_empty()).then_some(id)
                             };
-                            let port = self
-                                .spotify
-                                .oauth_port
-                                .trim()
-                                .parse::<u16>()
-                                .unwrap_or(8990);
+                            // A port that does not parse is a mistake, not a
+                            // reason to silently pick a different one. This
+                            // field and the client id sit next to each other
+                            // with a Tab between them, so the realistic failure
+                            // is a client id pasted into the port box — which
+                            // used to vanish here, linking the account against
+                            // the shared app while looking like it worked.
+                            let port = match super::run::parse_oauth_port(&self.spotify.oauth_port)
+                            {
+                                Ok(p) => p,
+                                Err(msg) => {
+                                    self.spotify.oauth_form_error = Some(msg);
+                                    return;
+                                }
+                            };
                             // Keep the picker open and show a waiting state until
                             // the daemon reports the link completed.
                             self.start_spotify_oauth(port, client_id);
@@ -4492,6 +4501,9 @@ impl App {
                             } else {
                                 self.spotify.oauth_port.push(c);
                             }
+                            // Editing invalidates the complaint about the
+                            // previous state of the field.
+                            self.spotify.oauth_form_error = None;
                         }
                         PickerId::PlaylistSelect if self.playlist_creating => {
                             top.query.push(c);
@@ -4525,6 +4537,7 @@ impl App {
                         // Client id first (it is the optional one that decides
                         // the quota), then the port.
                         self.spotify.oauth_field = (self.spotify.oauth_field + 1) % 2;
+                        self.spotify.oauth_form_error = None;
                     }
                 }
             }
@@ -4553,6 +4566,7 @@ impl App {
                             } else {
                                 self.spotify.oauth_port.pop();
                             }
+                            self.spotify.oauth_form_error = None;
                         }
                         PickerId::PlaylistSelect if self.playlist_creating => {
                             top.query.pop();

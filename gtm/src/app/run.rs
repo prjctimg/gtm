@@ -1,4 +1,22 @@
-use crate::app::*;
+
+/// Validate the link form's redirect port.
+///
+/// A port that does not parse is a mistake, and it must be reported rather
+/// than discarded: the client id and the port sit one Tab apart, so a client id
+/// pasted into the port box used to fall back to the default and link the
+/// account against the shared app while looking like the id had been honoured.
+/// Returning the error keeps the form on screen to correct.
+///
+/// Blank is not a mistake — the default is a legitimate answer to "I did not
+/// change this".
+pub(crate) fn parse_oauth_port(raw: &str) -> Result<u16, String> {
+    match raw.trim() {
+        "" => Ok(8990),
+        text => text
+            .parse::<u16>()
+            .map_err(|_| "Port must be a number. Tab switches to the client id.".to_string()),
+    }
+}
 
 impl App {
     pub fn open_setup_picker(&mut self, service: Option<&str>) {
@@ -34,6 +52,7 @@ impl App {
     /// the form is reopened in the same session.
     pub fn open_spotify_link_form(&mut self) {
         self.spotify.oauth_port = "8990".to_string();
+        self.spotify.oauth_form_error = None;
         self.spotify.oauth_field = 0;
         // No pending flow: the picker shows the input form, not a waiting view.
         self.spotify.oauth_pending = false;

@@ -113,6 +113,11 @@ impl App {
         self.spotify.oauth_pending = true;
         self.spotify.oauth_url = None;
         self.spotify.oauth_error = None;
+        // Remember what was asked for, so the completion toast can say which
+        // app the account ended up bound to. Nothing downstream reported it
+        // before, so a link that silently fell back to the shared app was
+        // indistinguishable from a successful one.
+        self.spotify.oauth_sent_client_id = client_id.clone();
         tokio::spawn(async move {
             match c.spotify().oauth_start_with(port, client_id).await {
                 Ok(url) => {
@@ -819,6 +824,7 @@ impl App {
         }
         self.spotify.oauth_port = "8990".to_string();
         self.spotify.oauth_field = 0;
+        self.spotify.oauth_form_error = None;
         self.pickers.open(PickerId::SpotifyLink);
     }
 
