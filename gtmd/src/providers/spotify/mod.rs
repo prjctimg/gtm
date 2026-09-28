@@ -884,6 +884,7 @@ fn parse_token(raw: &str) -> Result<Token, String> {
 #[cfg(test)]
 mod tests {
     use super::{SCOPE_STREAMING, TOKEN_ACCESS_PERMS, parse_token, pretty_id};
+    use chrono::Utc;
     use gtm::shared::spotify::SpotifyPlaylist;
     use rspotify::model::idtypes::Id;
     use rspotify::model::{AlbumId, ArtistId, TrackId};
