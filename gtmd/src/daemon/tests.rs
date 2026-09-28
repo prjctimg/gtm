@@ -50,27 +50,21 @@ fn other_failures_keep_the_fast_ladder() {
     );
 }
 
-/// The quota wait has to be shorter than the window Spotify actually hands out.
+/// The quota wait has to fit the window Spotify actually hands out.
 ///
 /// A live refusal answered `Retry-After: 17`, so waiting minutes to retry a
 /// window measured in seconds means the latch stays set long after the quota is
-/// back and the library stays empty while the API is serving. The bound is what
-/// keeps that from regressing into the fixed 300s it replaced.
-#[test]
-fn the_quota_retry_fits_the_window() {
+/// back and the library stays empty while the API is serving. These bounds are
+/// what keep the wait from drifting back to the fixed 300s it replaced, and
+/// they are const so a violation fails the build rather than a run.
+const _: () = {
     assert!(
         RATE_LIMIT_RETRY <= 60,
-        "a {}s wait outlives the {}-second window spotify reports",
-        RATE_LIMIT_RETRY,
-        17
+        "the wait outlives the 17-second window spotify reports"
     );
-    // Still long enough not to spin: a retry costs a real request.
-    assert!(
-        RATE_LIMIT_RETRY >= 5,
-        "retrying in {}s is a spin",
-        RATE_LIMIT_RETRY
-    );
-}
+    // Long enough not to spin: every retry costs a real request.
+    assert!(RATE_LIMIT_RETRY >= 5, "retrying this fast is a spin");
+};
 
 #[test]
 fn parse_remote_streams() {
