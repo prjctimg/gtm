@@ -17,7 +17,7 @@ use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Widget;
 
-use crate::theme::AppTheme;
+use crate::theme::{AppTheme, blend_colors};
 
 // ─── Presets ────────────────────────────────────────────────────────────────
 
@@ -133,10 +133,41 @@ const BRAILLE_BIT: [[u32; 2]; 4] = [[0x01, 0x08], [0x02, 0x10], [0x04, 0x20], [0
 /// Fractional block glyphs (bottom half), for meter/preview fills.
 const BLOCKS: [&str; 8] = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 
+/// Share of the accent mixed into each neutral step of a meter ramp.
+///
+/// `derive_theme` re-tints the accents and leaves `fg`/`fg_bright`/`fg_dim`
+/// alone, which is right for text and wrong for a meter: the quiet end of every
+/// ramp stayed the same grey whatever was playing, so a reactive theme only
+/// reached the top of the bars. Low enough that the steps stay distinguishable
+/// from one another at one cell per bar.
+const STEP_TINT: f64 = 0.35;
+
+/// A neutral theme step pulled toward the current artwork, preserving its
+/// luminance so ramp ordering survives. Non-RGB themes have nothing to blend
+/// and `blend_colors` hands the step back untouched.
+fn tinted(theme: &AppTheme, step: Color) -> Color {
+    blend_colors(step, theme.accent, STEP_TINT)
+}
+
+/// Three-step ramp by amplitude. Free rather than a method so the visualizer
+/// preset picker can preview bars with the same colours the renderer uses.
+pub fn amplitude_color(val: f32, theme: &AppTheme) -> Color {
+    if val > 0.7 {
+        theme.accent
+    } else if val > 0.4 {
+        tinted(theme, theme.fg_bright)
+    } else {
+        tinted(theme, theme.fg_dim)
+    }
+}
+
 /// Fallback heat palette for Flame/Retro warm hues.
 fn heat_color(heat: f32, theme: &AppTheme) -> Color {
     if heat > 0.78 {
-        Color::Rgb(255, 250, 200)
+        // The peak was a fixed cream, so the hottest cells were the one place a
+        // reactive theme could never reach. Nudging the accent toward the same
+        // cream keeps the "hot" reading and gives it the artwork's hue.
+        blend_colors(theme.accent, Color::Rgb(255, 250, 200), 0.7)
     } else if heat > 0.58 {
         theme.tertiary_accent
     } else if heat > 0.38 {
@@ -144,7 +175,7 @@ fn heat_color(heat: f32, theme: &AppTheme) -> Color {
     } else if heat > 0.2 {
         theme.accent
     } else {
-        theme.fg_dim
+        tinted(theme, theme.fg_dim)
     }
 }
 
@@ -555,16 +586,6 @@ impl AudioVisualizer {
         self.rng >> 33
     }
 
-    fn amplitude_color(&self, val: f32, theme: &AppTheme) -> Color {
-        if val > 0.7 {
-            theme.accent
-        } else if val > 0.4 {
-            theme.fg_bright
-        } else {
-            theme.fg_dim
-        }
-    }
-
     pub fn render(&self, area: Rect, theme: &AppTheme) -> Option<Lines<'_>> {
         if !self.enabled || area.width < 4 || area.height < 3 {
             return None;
@@ -612,7 +633,7 @@ impl AudioVisualizer {
                 let ch = char::from_u32(braille).unwrap_or('⠀');
                 spans.push(Span::styled(
                     ch.to_string(),
-                    Style::default().fg(self.amplitude_color(val, theme)),
+                    Style::default().fg(amplitude_color(val, theme)),
                 ));
             }
             lines.push(Line::from(spans));
@@ -639,7 +660,7 @@ impl AudioVisualizer {
                 let filled = (val * height as f32).floor() as usize;
                 let cap_row = (cap * height as f32).floor() as usize;
                 let (glyph, color) = if row_from_top < filled {
-                    ("█", self.amplitude_color(val, theme))
+                    ("█", amplitude_color(val, theme))
                 } else if cap > val + 0.005 && cap_row == row_from_top && cap_row < height {
                     let idx = if self.peak_vel[i] > 0.2 {
                         0
@@ -670,7 +691,7 @@ impl AudioVisualizer {
                 let val = *self.bars.get(i).unwrap_or(&0.0);
                 let filled = (val * height as f32).floor() as usize;
                 let (glyph, color) = if row_from_top < filled {
-                    ("█", self.amplitude_color(val, theme))
+                    ("█", amplitude_color(val, theme))
                 } else {
                     (" ", theme.bg)
                 };
@@ -778,11 +799,11 @@ impl AudioVisualizer {
                     } else {
                         3
                     };
-                    (BLOCKS[idx], self.amplitude_color(level, theme))
+                    (BLOCKS[idx], amplitude_color(level, theme))
                 } else if x == full_rows && frac > 0.001 && full_rows < meter_w {
                     (
                         BLOCKS[((frac * 8.0) as usize).min(7)],
-                        self.amplitude_color(level, theme),
+                        amplitude_color(level, theme),
                     )
                 } else if peak > 0.0 && x == peak_col && peak_col >= full_rows {
                     ("·", theme.accent)
@@ -928,7 +949,7 @@ impl AudioVisualizer {
                 } else if has_sun {
                     theme.accent
                 } else {
-                    theme.fg_dim
+                    tinted(theme, theme.fg_dim)
                 };
                 let glyph = char::from_u32(braille).unwrap_or('⠀');
                 spans.push(Span::styled(glyph.to_string(), Style::default().fg(color)));
@@ -1011,7 +1032,7 @@ impl AudioVisualizer {
                 let filled_rows = (val * height as f32).floor() as usize;
                 let peak_row = ((peak * height as f32).floor() as usize).min(height);
                 let (glyph, color) = if row_from_top < filled_rows {
-                    ("█", self.amplitude_color(val, theme))
+                    ("█", amplitude_color(val, theme))
                 } else if peak > 0.0 && row_from_top == peak_row && peak_row < height {
                     ("▔", theme.accent)
                 } else {
@@ -1045,7 +1066,7 @@ impl AudioVisualizer {
                 let color = if glyph == " " {
                     theme.bg
                 } else {
-                    self.amplitude_color(val, theme)
+                    amplitude_color(val, theme)
                 };
                 spans.push(Span::styled(glyph, Style::default().fg(color)));
             }
@@ -1065,7 +1086,7 @@ impl AudioVisualizer {
                 let val = *self.bars.get(i).unwrap_or(&0.0);
                 let extent = val * half;
                 let (glyph, color) = if center_dist <= extent {
-                    ("█", self.amplitude_color(val, theme))
+                    ("█", amplitude_color(val, theme))
                 } else {
                     (" ", theme.bg)
                 };
@@ -1108,18 +1129,18 @@ impl AudioVisualizer {
             if val > 0.75 {
                 theme.accent
             } else if val > 0.5 {
-                theme.fg_bright
+                tinted(theme, theme.fg_bright)
             } else if val > 0.25 {
-                theme.fg
+                tinted(theme, theme.fg)
             } else {
-                theme.fg_dim
+                tinted(theme, theme.fg_dim)
             }
         })
     }
 
     fn render_braille(&self, num_bars: usize, height: usize, theme: &AppTheme) -> Lines<'_> {
         self.render_braille_grid(num_bars, height, theme, |val, theme| {
-            self.amplitude_color(val, theme)
+            amplitude_color(val, theme)
         })
     }
 }
@@ -1315,5 +1336,37 @@ mod tests {
             v.backdate_tick();
         }
         assert!(v.bars.iter().any(|&b| b > 0.5));
+    }
+
+    /// The whole point of the reactive theme here: changing only the artwork
+    /// colour must change what the bars are drawn in, at every step of the ramp
+    /// and not just the accent-coloured top.
+    #[test]
+    fn the_ramp_follows_the_artwork() {
+        let base = crate::theme::chadrula();
+        let other = AppTheme {
+            accent: Color::Rgb(10, 200, 90),
+            ..base
+        };
+        for val in [0.1, 0.5, 0.9] {
+            assert_ne!(
+                amplitude_color(val, &base),
+                amplitude_color(val, &other),
+                "amplitude {val} ignored the accent"
+            );
+        }
+    }
+
+    /// The peak used to be a fixed cream, which is the one colour a reactive
+    /// theme could never change.
+    #[test]
+    fn the_heat_peak_is_not_a_fixed_colour() {
+        let base = crate::theme::chadrula();
+        let other = AppTheme {
+            accent: Color::Rgb(10, 200, 90),
+            ..base
+        };
+        assert_ne!(heat_color(0.9, &base), heat_color(0.9, &other));
+        assert_ne!(heat_color(0.9, &base), Color::Rgb(255, 250, 200));
     }
 }

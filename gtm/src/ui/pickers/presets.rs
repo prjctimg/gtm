@@ -305,11 +305,10 @@ impl Pickers {
                         } else {
                             ['█', '▇', '▆', '▅', '▄', '▃', '▂', '▁'][level.min(7)]
                         };
-                        let color = ratatui::style::Color::Rgb(
-                            (b * 200.0) as u8,
-                            (b * 120.0 + 40.0) as u8,
-                            (120.0 - b * 80.0) as u8,
-                        );
+                        // The real renderer ramps through `amplitude_color`; a
+                        // hardcoded orange here both ignored the theme and
+                        // previewed a preset that does not look like itself.
+                        let color = crate::visualizer::amplitude_color(b, &app.theme);
                         spans.push(Span::styled(ch.to_string(), Style::default().fg(color)));
                     }
                     lines.push(Line::from(spans));
