@@ -284,7 +284,9 @@ bootstrap_install() {
   if ! download_simple "${url}" "${BOOTSTRAP_TMPDIR}/${archive_name}"; then
     die "download failed: ${url}"
   fi
-  ok "downloaded ${label}"
+  # No label here: the line above already named the build, and repeating the
+  # commit hash on success says nothing the reader does not have.
+  ok "downloaded gtm"
 
   tar -xzf "${BOOTSTRAP_TMPDIR}/${archive_name}" -C "${BOOTSTRAP_TMPDIR}"
 
