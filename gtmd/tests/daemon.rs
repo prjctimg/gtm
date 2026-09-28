@@ -591,8 +591,13 @@ async fn oauth_start_url() {
     .await;
     match res {
         DaemonRes::SpotifyOauthStarted { url } => {
+            // The app is fixed, so this asserts the one id that can both
+            // authorize and stream. It used to assert a caller-supplied id,
+            // which is precisely the pairing login5 refuses: a self-registered
+            // app authorizes fine and then plays nothing. See
+            // `SpotifyManager::client_id`.
             assert!(
-                url.contains("client_id=0123456789abcdef0123456789abcdef"),
+                url.contains("client_id=65b708073fc0480ea92a077233ca87bd"),
                 "unexpected authorize url {url}"
             );
             assert!(
