@@ -8,797 +8,463 @@ gtmd-ipc - IPC protocol for the gtm music daemon
 
 # DESCRIPTION
 
-The gtm daemon (**gtmd**(1)) communicates with clients over Unix domain sockets
-using a mixed JSON+binary protocol. Commands are sent as newline-delimited JSON
-objects with an explicit `cmd` field. The daemon responds synchronously with a
-JSON response per request, interleaved with asynchronous JSON and binary event
-notifications.
+**gtmd**(1) listens on two Unix domain sockets. A client sends newline-delimited
+JSON commands on the command socket and receives one JSON response per command,
+interleaved with unsolicited JSON event objects. A second, read-only socket
+carries the same events as length-prefixed MessagePack frames, for clients that
+want position updates without paying for JSON parsing.
 
-Commands are dispatched on the daemon via `cmd` string matching; params are
-deserialized from the envelope's `params` key. Each command variant carries
-its own params structure — the envelope `params` is a flat object with no
-wrapper key.
+Every command is synchronous: the daemon answers before doing the work, for
+anything that can be deferred. Where that is not true — a background library
+scan, a YouTube download — the command returns an acknowledgement immediately and
+the result arrives later as an event, and the command table below says which.
+This is the single most important thing to know about the protocol, and it is
+the reason a successful response is not the same as a finished one.
 
-The daemon's protocol version is `3` (`gtm/src/shared/ipc.rs:16`). Framing is
-newline-delimited JSON for commands/responses; binary MessagePack frames for
-the dedicated pulse socket event stream.
+Commands are dispatched by the `cmd` string. Parameters are the remaining keys of
+the same object: there is no `params` wrapper on the wire, even though the
+internal representation has one. Command and field names are `snake_case`.
 
-Two sockets are used:
+The wire version is **3** (`gtm/src/shared/ipc.rs`).
 
-| Socket | Path | Purpose |
+| Socket | Path | Carries |
 |--------|------|---------|
-| **Command** | `$XDG_RUNTIME_DIR/gtm/gtmd.sock` | JSON commands, responses, and JSON events |
-| **Pulse** | `$XDG_RUNTIME_DIR/gtm/gtmd.pulse` | Binary event stream (MessagePack, read-only) |
+| Command | `$XDG_RUNTIME_DIR/gtm/gtmd.sock` | Commands, responses, JSON events |
+| Pulse | `$XDG_RUNTIME_DIR/gtm/gtmd.pulse` | MessagePack event frames, read-only |
 
-If `$XDG_RUNTIME_DIR` is not set, the daemon falls back in order:
-/tmp/gtm-$USER/gtm/gtmd.sock, `$TMPDIR/gtm/gtmd.sock`, `$HOME/.gtm/gtm/gtmd.sock`.
+If `$XDG_RUNTIME_DIR` is unset the daemon falls back, in order, to
+`/tmp/gtm-$USER/gtm/gtmd.sock`, `$TMPDIR/gtm/gtmd.sock`, then
+`$HOME/.gtm/gtm/gtmd.sock`.
 
 # FRAMING
 
-## Commands (client → daemon)
+## Requests
 
-Each command is a single JSON line terminated with `\n`:
-
-```json
-{"id": 1, "cmd": "play", "path": "/music/song.mp3", "start_pos": 0.0}
-```
-
-Fields:
-
-- `id` (uint64, required): Monotonically increasing sequence number. Used to
-  correlate responses.
-- `cmd` (string, required): The command name. Dispatch is via
-  `DaemonReq::parse_cmd`.
-- Additional fields: command-specific parameters. The envelope's `params` key
-  holds a flat object — the nested `action` enum for `Queue`/`Library` carries
-  its fields at the top level per wire spec.
-
-## Responses (daemon → client)
-
-Each response is a single JSON line terminated with `\n`:
+One JSON object per line, newline-terminated:
 
 ```json
-{"id": 1, "ok": true, "state": {"volume": 80}}
+{"id": 1, "cmd": "play", "path": "/music/song.flac", "start_pos": 0.0}
 ```
 
-Fields:
+`id` is a client-chosen correlation token, echoed on the response. The daemon
+does not require it to be monotonic, but two in-flight requests sharing an `id`
+make the response ambiguous.
 
-- `id` (uint64, required): Echoes the `id` from the matching request.
-- `ok` (boolean, required): `true` on success, `false` on error.
-- `error` (string, optional): Human-readable error message when `ok` is `false`.
-- Additional fields: command-specific response data encoded via
-  `DaemonRes::to_wire(id)`.
+## Responses
 
-## Events (daemon → client, JSON)
+One JSON object per line, newline-terminated:
 
-Events are delivered as individual JSON objects on the command socket,
-interleaved with responses. Clients distinguish events from responses by
-checking for the `event` field (events) versus the `id` field (responses).
+```json
+{"id": 1, "ok": true, "volume": 80}
+```
+
+`ok` is always present. On failure, `error` carries a human-readable message and
+no other keys. On success, the remaining keys are the command's payload — see
+the tables. A command documented with no payload returns nothing beyond `ok`.
+
+## Events (JSON, command socket)
+
+Event objects have an `event` key where a response has `id`, which is how a
+client tells them apart on a multiplexed connection:
 
 ```json
 {"event": "playback_started", "track": {"title": "Song"}, "time_pos": 0.0, "duration": 240.0}
 ```
 
-The bundled `gtm` client does **not** read this JSON event stream — it consumes
-events exclusively over the pulse socket (below) so each event is delivered once.
-Third-party clients that want raw JSON events may track the JSON stream instead.
+The bundled **gtm**(1) client does not read this stream; it consumes events only
+from the pulse socket, so that each event is delivered exactly once. Third-party
+clients may read either.
 
-## Events (daemon → client, binary / MessagePack)
+## Events (binary, pulse socket)
 
-The pulse socket delivers the same events in a compact binary format for
-high-frequency position updates. Frame format:
-
-```
-[4 bytes: payload length, big-endian uint32][payload bytes]
-```
-
-The payload is a MessagePack-encoded array of event objects. Each event is a
-MessagePack map with at minimum an `event` string field, matching the full JSON
-event schema.
-
-The client distinguishes JSON responses from binary events by the first byte:
-
-- `0x7B` (`{`): JSON response (read until `\n`)
-- anything else: binary event frame (read 4-byte length, then payload)
-
-Maximum JSON line length: 1,048,576 bytes (1 MiB) (`gtm/src/gtmd/daemon.rs:618`).
-Maximum binary frame: 16,777,216 bytes (16 MiB) (`gtm/src/shared/client.rs:1122`).
-
-# COMMAND ENVELOPE
-
-Every command follows this envelope:
-
-```json
-{"id": <uint64>, "cmd": "<name>", ...params}
-```
-
-The daemon responds with:
-
-```json
-{"id": <uint64>, "ok": true, ...data}
-{"id": <uint64>, "ok": false, "error": "<message>"}
-```
-
-# PLAYBACK COMMANDS
-
-## play
-
-Load a track by path and begin playback. `path` may be a local file, a
-`radio://`/`podcast://` provider path, or an `http(s)://` stream
-URL (played as a live, non-seekable stream).
-
-```json
-{"id": 1, "cmd": "play", "path": "/path/to/file.opus", "start_pos": 0.0}
-```
-
-Response: `{"id": 1, "ok": true}`. Emits: `playback_started` event.
-
-## play_stream
-
-Play an HTTP(S) stream URL. If the fetched body is an M3U or PLS playlist it is
-parsed server-side; playlist entries are queued and the first is played.
-Relative entry paths are resolved against the playlist's base URL. Emits
-`playback_started`, and `radio_title_changed` when the stream advertises
-Shoutcast/Icecast `icy-metaint` metadata.
-
-```json
-{"id": 1, "cmd": "play_stream", "url": "https://icecast.example.com/radio.mp3"}
-```
-
-Response: `{"id": 1, "ok": true}`.
-
-## play_pause
-
-Smart toggle: stopped → play, playing → pause, paused → resume.
-
-```json
-{"id": 2, "cmd": "play_pause"}
-```
-
-Response: `{"id": 2, "ok": true}`.
-
-## pause
-
-```json
-{"id": 3, "cmd": "pause"}
-```
-
-Response: `{"id": 3, "ok": true}`.
-
-## stop
-
-```json
-{"id": 4, "cmd": "stop"}
-```
-
-Response: `{"id": 4, "ok": true}`.
-
-## next / prev
-
-```json
-{"id": 5, "cmd": "next"}
-{"id": 6, "cmd": "prev"}
-```
-
-Response: `{"id": 5, "ok": true}`.
-
-## seek
-
-```json
-{"id": 7, "cmd": "seek", "position_secs": 30.0}
-```
-
-Response: `{"id": 7, "ok": true}`.
-
-## set_volume
-
-Volume range: 0-100.
-
-```json
-{"id": 8, "cmd": "set_volume", "volume": 75}
-```
-
-Response: `{"id": 8, "ok": true}`.
-
-## get_volume
-
-```json
-{"id": 9, "cmd": "get_volume"}
-```
-
-Response: `{"id": 9, "ok": true, "volume": 75}`.
-
-## toggle_shuffle
-
-```json
-{"id": 10, "cmd": "toggle_shuffle"}
-```
-
-Response: `{"id": 10, "ok": true}`.
-
-## cycle_repeat
-
-Modes: `"off"`, `"one"`, `"all"`.
-
-```json
-{"id": 11, "cmd": "cycle_repeat", "mode": "all"}
-```
-
-Response: `{"id": 11, "ok": true}`.
-
-## toggle_mute
-
-```json
-{"id": 12, "cmd": "toggle_mute"}
-```
-
-Response: `{"id": 12, "ok": true}`.
-
-## crossfade
-
-```json
-{"id": 13, "cmd": "crossfade", "enabled": true, "duration_secs": 3}
-```
-
-Response: `{"id": 13, "ok": true}`.
-
-# AUDIO EFFECT COMMANDS
-
-## set_eq_preset
-
-```json
-{"id": 14, "cmd": "set_eq_preset", "preset": "rock"}
-```
-
-Response: `{"id": 14, "ok": true}`.
-
-## set_eq_enabled
-
-```json
-{"id": 15, "cmd": "set_eq_enabled", "enabled": true}
-```
-
-Response: `{"id": 15, "ok": true}`.
-
-## set_reverb
-
-```json
-{"id": 16, "cmd": "set_reverb", "enabled": true, "room_size": 0.7}
-```
-
-Response: `{"id": 16, "ok": true}`.
-
-## list_eq_presets
-
-```json
-{"id": 17, "cmd": "list_eq_presets"}
-```
-
-Response: `{"id": 17, "ok": true, "presets": ["flat", "rock", "pop", "jazz"]}`.
-
-# QUEUE COMMANDS
-
-All queue operations are sub-commands dispatched through the `queue` command
-with an `action` field.
-
-## queue list
-
-```json
-{"id": 20, "cmd": "queue", "action": "list"}
-```
-
-Response: `{"id": 20, "ok": true, "queue": [{"title": "...", "path": "..."}], "cursor": 0}`.
-
-## queue add
-
-```json
-{"id": 21, "cmd": "queue", "action": "add", "path": "/path/to/file.opus"}
-```
-
-## queue remove
-
-```json
-{"id": 24, "cmd": "queue", "action": "remove", "index": 2}
-```
-
-## queue move
-
-```json
-{"id": 25, "cmd": "queue", "action": "move", "from": 3, "to": 1}
-```
-
-## queue clear
-
-```json
-{"id": 26, "cmd": "queue", "action": "clear"}
-```
-
-## queue set
-
-```json
-{"id": 27, "cmd": "queue", "action": "set", "paths": ["/a.opus"], "start_idx": 0}
-```
-
-# LIBRARY COMMANDS
-
-All library operations are sub-commands dispatched through the `library`
-command with an `action` field.
-
-## library scan
-
-```json
-{"id": 30, "cmd": "library", "action": "scan", "path": "/path/to/music"}
-```
-
-Runs asynchronously. No `custom`/`scan_done` event emitted.
-
-## library get_tracks
-
-```json
-{"id": 31, "cmd": "library", "action": "get_tracks", "filter": null, "sort": null}
-```
-
-Response: `{"id": 31, "ok": true, "tracks": [{"id": "abc", "title": "...", "artist": "...", "path": "...", "duration": 240.0}]}`.
-
-## library get_playlists
-
-```json
-{"id": 32, "cmd": "library", "action": "get_playlists"}
-```
-
-Response: `{"id": 32, "ok": true, "playlists": [{"id": 1, "name": "My Playlist", "track_count": 15}]}`.
-
-## library create_playlist
-
-```json
-{"id": 33, "cmd": "library", "action": "create_playlist", "name": "My Mix"}
-```
-
-## library delete_playlist
-
-```json
-{"id": 34, "cmd": "library", "action": "delete_playlist", "id": 1}
-```
-
-## library add_to_playlist
-
-```json
-{"id": 35, "cmd": "library", "action": "add_to_playlist", "playlist_id": 1, "track_ids": [1, 2, 3]}
-```
-
-## library get_recent
-
-```json
-{"id": 36, "cmd": "library", "action": "get_recent", "count": 10}
-```
-
-Response: `{"id": 36, "ok": true, "tracks": [...]}`.
-
-## library remove_track
-
-```json
-{"id": 37, "cmd": "library", "action": "remove_track", "id": 42}
-```
-
-Response: `{"id": 37, "ok": true}`.
-
-## library update_metadata
-
-```json
-{"id": 38, "cmd": "library", "action": "update_metadata", "track_id": 42, "title": "New Title"}
-```
-
-Response: `{"id": 38, "ok": true}`.
-
-## library sync_covers
-
-```json
-{"id": 39, "cmd": "library", "action": "sync_covers"}
-```
-
-Runs asynchronously. Emits `metadata_changed` event on completion.
-
-## library sync_lyrics
-
-```json
-{"id": 40, "cmd": "library", "action": "sync_lyrics"}
-```
-
-Runs asynchronously. Emits `metadata_changed` event on completion.
-
-## library sync_metadata
-
-```json
-{"id": 41, "cmd": "library", "action": "sync_metadata", "path": "/path/to/file.mp3"}
-```
-
-Runs asynchronously. Emits `metadata_changed` event on completion.
-
-## library sync_status
-
-```json
-{"id": 42, "cmd": "library", "action": "sync_status"}
-```
-
-Response: `{"id": 42, "ok": true, "report": {"running": false, "kind": "covers", "synced": 15, "total": 15}}`.
-
-# RADIO COMMANDS
-
-Radio Browser (radio-browser.info) directory lookups. Stations are played by
-their directory id; locally stored custom stations are referenced as
-`custom:N` (1-based index into `$XDG_CONFIG_HOME/gtm/radios.toml`, maintained
-by the `gtm` client — not via IPC).
-
-## radio_search
-
-```json
-{"id": 80, "cmd": "radio_search", "query": "jazz", "limit": 25}
-```
-
-Response: `{"id": 80, "ok": true, "stations": [{"id": "abc", "name": "...", "url_resolved": "...", "votes": 12}]}`.
-
-## radio_top
-
-```json
-{"id": 81, "cmd": "radio_top", "limit": 50}
-```
-
-Response: `{"id": 81, "ok": true, "stations": [...]}`.
-
-## radio_tags
-
-```json
-{"id": 82, "cmd": "radio_tags", "limit": 50}
-```
-
-Response: `{"id": 82, "ok": true, "tags": [{"name": "...", "station_count": 120}]}`.
-
-## radio_bytag
-
-```json
-{"id": 83, "cmd": "radio_bytag", "tag": "jazz", "limit": 50}
-```
-
-Response: `{"id": 83, "ok": true, "stations": [...]}`.
-
-## radio_countries
-
-```json
-{"id": 84, "cmd": "radio_countries", "limit": 50}
-```
-
-Response: `{"id": 84, "ok": true, "countries": [{"code": "US", "name": "United States", "station_count": 2000}]}`.
-
-## radio_bycountry
-
-```json
-{"id": 85, "cmd": "radio_bycountry", "country": "US", "limit": 50}
-```
-
-Response: `{"id": 85, "ok": true, "stations": [...]}`.
-
-## radio_tracklist
-
-The playing station's published tracklist, newest first, led by the entry on
-air. Sourced from the control panel the station streams from; an empty
-`tracks` array means the station publishes none.
-
-```json
-{"id": 86, "cmd": "radio_tracklist", "station_id": "abc123"}
-```
-
-Response: `{"id": 86, "ok": true, "list": {"tracks": [{"title": "Silent Tears (Orjan Nilsen Remix)", "artist": "Mark Sherry feat. Sharone", "start": 1790434231, "art": null}], "at": 0, "at_time": 1790434260}}`.
-
-`start` is unix seconds. Sources that publish only a station-local wall clock
-are normalised against `at_time`, so ordering and `at` are exact without the
-caller needing the station's timezone.
-
-## radio_play
-
-```json
-{"id": 86, "cmd": "radio_play", "station_id": "abc123", "station_name": "Jazz FM"}
-```
-
-Plays the station as a live stream (non-seekable). `station_id` may be a
-radio-browser id or `custom:N` for a locally stored station. Emits
-`playback_started` and `radio_title_changed`.
-
-Response: `{"id": 86, "ok": true}`.
-
-# SEARCH AND FAVOURITES
-
-## search
-
-```json
-{"id": 41, "cmd": "search", "query": "jazz"}
-```
-
-Response: `{"id": 41, "ok": true, "tracks": [...]}`.
-
-Extended parameters: none (the wire accepts **only** `query`; `fuzzy`,
-`ignore_diacritics`, `fields` are not supported).
-
-## get_favourites
-
-```json
-{"id": 42, "cmd": "get_favourites"}
-```
-
-Response: `{"id": 42, "ok": true, "tracks": [...]}`.
-
-## add_favourite / remove_favourite
-
-```json
-{"id": 43, "cmd": "add_favourite", "track_id": 42}
-{"id": 44, "cmd": "remove_favourite", "track_id": 42}
-```
-
-# YOUTUBE COMMANDS
-
-## yt_search
-
-```json
-{"id": 45, "cmd": "yt_search", "query": "lofi jazz"}
-```
-
-Emits `custom` events with `name: "yt_search_partial"` or `"yt_search_done"`.
-
-## yt_search_poll
-
-```json
-{"id": 46, "cmd": "yt_search_poll"}
-```
-
-Response: `{"id": 46, "ok": true, "results": [{"title": "...", "url": "...", "duration": 240, "channel": "..."}]}`.
-
-## yt_search_cancel
-
-```json
-{"id": 47, "cmd": "yt_search_cancel"}
-```
-
-## yt_resolve_stream
-
-```json
-{"id": 48, "cmd": "yt_resolve_stream", "url": "https://youtube.com/watch?v=..."}
-```
-
-## yt_download
-
-```json
-{"id": 49, "cmd": "yt_download", "url": "https://youtube.com/watch?v=..."}
-```
-
-## yt_download_poll
-
-```json
-{"id": 50, "cmd": "yt_download_poll"}
-```
-
-Response: `{"id": 50, "ok": true, "progress": 0.75, "status": "downloading"}`.
-
-## yt_cancel_download
-
-```json
-{"id": 51, "cmd": "yt_cancel_download", "url": "https://youtube.com/watch?v=..."}
-```
-
-## yt_fetch_playlist
-
-```json
-{"id": 52, "cmd": "yt_fetch_playlist", "url": "https://youtube.com/playlist?list=..."}
-```
-
-## yt_fetch_playlist_poll
-
-```json
-{"id": 53, "cmd": "yt_fetch_playlist_poll"}
-```
-
-## yt_set_config
-
-```json
-{"id": 54, "cmd": "yt_set_config", "cookie_source": "/path/to/cookies.txt", "js_runtime": "deno", "download_dir": null, "max_concurrent": 4}
-```
-
-# COVER ART AND LYRICS
-
-## get_cover_art
-
-```json
-{"id": 55, "cmd": "get_cover_art", "track_id": 42}
-```
-
-Response: `{"id": 55, "ok": true, "data": "<base64-encoded PNG>"}`.
-
-## get_lyrics
-
-```json
-{"id": 56, "cmd": "get_lyrics", "track_id": 42}
-```
-
-Response: `{"id": 56, "ok": true, "lyrics": {"title": null, "artist": null, "album": null, "lines": [{"timestamp": 0.0, "text": "...", "words": []}]}}`. Each `timestamp` is in seconds; untimed (plain) lines use a sentinel `timestamp` of `-1.0`; `words` carries enhanced-LRC karaoke timings when available. `lyrics` is `null` when nothing was found.
-
-# AUDIO EFFECTS
-
-## set_sleep_timer / cancel_sleep_timer
-
-```json
-{"id": 57, "cmd": "set_sleep_timer", "minutes": 30}
-{"id": 58, "cmd": "cancel_sleep_timer"}
-```
-
-# LOUDNESS COMPENSATION
-
-## set_loudness_mode
-
-Modes: `"off"`, `"track"`, `"album"`, `"auto"`.
-
-```json
-{"id": 60, "cmd": "set_loudness_mode", "mode": "auto"}
-```
-
-Response: `{"id": 60, "ok": true}`.
-
-## scan_loudness
-
-```json
-{"id": 61, "cmd": "scan_loudness", "track_ids": null, "force": false}
-```
-
-Runs asynchronously. Emits `loudness_scan_progress` and `loudness_scan_done`.
-
-## set_pre_gain
-
-```json
-{"id": 62, "cmd": "set_pre_gain", "pre_gain_db": -14.0}
-```
-
-Response: `{"id": 62, "ok": true}`.
-
-# GAPLESS PLAYBACK
-
-## set_gapless
-
-```json
-{"id": 63, "cmd": "set_gapless", "enabled": true}
-```
-
-Response: `{"id": 63, "ok": true}`.
-
-# DYNAMIC MODE
-
-## set_dynamic_mode
-
-```json
-{"id": 64, "cmd": "set_dynamic_mode", "enabled": true, "min_queue_remaining": 3, "max_history": 50}
-```
-
-Response: `{"id": 64, "ok": true}`.
-
-# SCROBBLING
-
-## set_scrobble
-
-```json
-{"id": 65, "cmd": "set_scrobble", "enabled": true, "api_key": "...", "session_token": "..."}
-```
-
-Response: `{"id": 65, "ok": true}`.
-
-# SYSTEM COMMANDS
-
-## get_status
-
-```json
-{"id": 70, "cmd": "get_status"}
-```
-
-Response: `{"id": 70, "ok": true, "state": {"uptime_secs": 3600, "clients_connected": 2, "audio_backend": "rodio"}}`.
-
-## check_health
-
-```json
-{"id": 71, "cmd": "check_health"}
 ```
-
-Response: `{"id": 71, "ok": true, "report": {"uptime_secs": 3600, "clients_connected": 2, "audio_backend": "rodio"}}`.
-
-## ping
-
-```json
-{"id": 99, "cmd": "ping"}
+[4 bytes: payload length, big-endian uint32][MessagePack payload]
 ```
 
-Response: `{"id": 99, "ok": true}`.
+The payload is a MessagePack map carrying the same fields as the JSON form. The
+two framings are told apart by the first byte: `0x7B` (`{`) is a JSON line,
+anything else is a binary frame.
 
-## quit
+Limits: 1 MiB maximum JSON line, 16 MiB maximum binary frame.
 
-```json
-{"id": 100, "cmd": "quit"}
-```
+# RESPONSE DECODING
 
-Response: `{"id": 100, "ok": true}`.
+Responses are not decoded by command name. `ok_from_data` inspects the **shape**
+of the payload, which has consequences worth stating plainly:
 
-The daemon persists state and closes the connection.
+- An object with a `tracks` array decodes as a track list, whatever asked for it.
+- An object with a `queue` array decodes as queue state; `cursor` is read
+  separately and defaults to `0` when absent.
+- An object with `playlists` decodes as a playlist list.
+- An object with a `running` key decodes as sync status.
+- **Anything else passes through undecoded**, with the whole object handed to the
+  client as an opaque value.
+
+That last case is why several `library` actions answer with a bare count
+(`removed`, `refreshed`, `deduped`) rather than a recognised structure. It is
+also why a client must not assume an action it did not recognise failed: an
+unknown action is a request error, but an unrecognised *response shape* is a
+successful response with an unexamined payload.
+
+# COMMAND REFERENCE
+# COMMAND REFERENCE
+
+
+### Playback
+
+Every command is a control call on the current session and returns as soon as the daemon has accepted it; nothing waits for the audio device to catch up. State arrives as events (`position_changed`, `playback_started`), not as a return value, so a client that wants to confirm an outcome should watch for the event rather than re-read the response. `play` is the only one that takes a path, and it is the only one that can fail on the spot.
+
+| Command | Request | Response | Emits |
+|---------|---------|----------|-------|
+| `play` | `path` : string, `start_pos` : float | — | `playback_started` |
+| `play_stream` | `url` : string | — | `playback_started`, `radio_title_changed` |
+| `play_pause` | — | — | `playback_started` / `playback_paused` |
+| `pause` | — | — | `playback_paused` |
+| `stop` | — | — | `playback_stopped` |
+| `next` | — | — | `playback_started` |
+| `prev` | — | — | `playback_started` |
+| `seek` | `position_secs` : float | — | — |
+| `set_volume` | `volume` : u8 | — | `volume_changed` |
+| `get_volume` | — | `volume` | — |
+| `toggle_shuffle` | — | — | `shuffle_changed` |
+| `cycle_repeat` | `mode` : RepeatMode | — | `repeat_mode_changed` |
+| `toggle_mute` | — | — | `volume_changed` |
+| `set_speed` | `rate` : float | — | — |
+| `get_speed` | — | `speed` | — |
+| `set_mono` | `enabled` : bool | — | — |
+| `quit` | — | — | — |
+| `ping` | — | — | — |
+
+### Queue
+
+One `cmd` with an `action` discriminator, not one command per operation. `action` is a nested enum: sending an unknown action is a protocol error rather than a no-op, so a client should not synthesise one. `list` is the only read; every other action mutates and emits `queue_changed`.
+
+| Command | Request | Response | Emits |
+|---------|---------|----------|-------|
+| `queue` | `action` : QueueAction | `queue`, `cursor` | `queue_changed` (every action except `list`) |
+
+### Library
+
+One `cmd` with an `action` discriminator, and the one group where several actions are explicitly asynchronous: `scan`, `sync_covers`, `sync_lyrics` and `sync_metadata` return immediately with no payload and finish later as events. A client must not treat a successful response as "done" for those. `sync_status` is the only way to ask what state a background pass is in.
+
+| Command | Request | Response | Emits |
+|---------|---------|----------|-------|
+| `library` | `action` : LibraryAction | `removed` | `metadata_changed` (the three `sync_*` actions), `library_organized` (`organize`) |
+
+### Search and favourites
+
+Synchronous reads against the local index. `search` accepts `query` and nothing else — there is no fuzzy, field-selecting or diacritic-folding variant on the wire, and a client sending extra keys is relying on server-side defaults it cannot see. Favourites are a separate, explicitly id-addressed set.
+
+| Command | Request | Response | Emits |
+|---------|---------|----------|-------|
+| `search` | `query` : string | `tracks` | — |
+| `get_favourites` | — | `tracks` | — |
+| `add_favourite` | `track_id` : i64 | — | — |
+| `remove_favourite` | `track_id` : i64 | — | — |
+
+### Cover art and lyrics
+
+Both are cache-backed reads that may touch the network on a miss, and both can be slow enough that a client wants a timeout around them. `get_cover_art` returns base64 image bytes, not a URL — the daemon does not hand out paths. Lyrics are `null` rather than absent when nothing was found, so the field's presence is not proof of a hit.
+
+| Command | Request | Response | Emits |
+|---------|---------|----------|-------|
+| `get_cover_art` | `track_id` : i64, `path` : string | `data` | — |
+| `artist_cover_art` | `artist` : string | `data` | — |
+| `get_lyrics` | `track_id` : i64, `path` : string | `lyrics` | — |
+| `lyrics_search` | `artist` : string, `title` : string, `album` : string, `duration` : float | `stations` | — |
+| `get_cover_cache_stat` | — | `stat`, `disk_bytes`, `mem_bytes`, `cap_bytes` | — |
+| `set_cover_provider` | `provider` : string | — | — |
+| `set_cover_cache` | `bytes` : uint64 | — | — |
+| `clear_cache` | `what` : CacheKind | — | — |
+
+### Audio processing
+
+DSP configuration. Every setter is acknowledged with no payload and reports the applied value as its own event, so a client that needs confirmation subscribes rather than polls. Preset names come from `list_eq_presets`; an unknown preset is rejected at the daemon.
+
+| Command | Request | Response | Emits |
+|---------|---------|----------|-------|
+| `set_eq_preset` | `preset` : EqPreset | — | `eq_preset_changed` |
+| `set_eq_enabled` | `enabled` : bool | — | `eq_enabled_changed` |
+| `list_eq_presets` | — | `presets` | — |
+| `set_reverb` | `enabled` : bool, `room_size` : float | — | `reverb_changed` |
+| `crossfade` | `enabled` : bool, `duration_secs` : u8 | — | `crossfade_changed` |
+| `set_gapless` | `enabled` : bool | — | `gapless_changed` |
+| `set_dynamic_mode` | `enabled` : bool, `min_queue_remaining` : uint32, `max_history` : uint32 | — | `dynamic_mode_changed` |
+| `set_low_power` | `enabled` : bool | — | — |
+| `get_low_power` | — | `low_power` | — |
+| `set_pre_gain` | `pre_gain_db` : float | — | `pre_gain_changed` |
+| `set_loudness_mode` | `mode` : LoudnessMode | — | `loudness_mode_changed` |
+| `scan_loudness` | `track_ids` : Vec<i64>, `force` : bool | — | `loudness_scan_progress`, `loudness_scan_done` |
+| `set_audio_device` | `name` : string | — | — |
+| `list_audio_devices` | — | `devices` | — |
+
+### Radio
+
+Directory lookups against radio-browser.info, plus playback and tracklist reads. Directory calls are ordinary network reads and fail when the directory does. `radio_play` is the exception: it takes a station id and starts a non-seekable live stream. Locally stored stations are addressed as `custom:N`, 1-based into `radios.toml` — that file is owned by the `gtm` client and is not writable over IPC. `radio_tracklist` returns an empty `tracks` array when the station publishes none, which is not an error.
+
+| Command | Request | Response | Emits |
+|---------|---------|----------|-------|
+| `radio_search` | `query` : string, `limit` : uint16 | `stations` | — |
+| `radio_top` | `limit` : uint16 | `stations` | — |
+| `radio_tags` | `limit` : uint16 | `tags` | — |
+| `radio_bytag` | `tag` : string, `limit` : uint16 | `stations` | — |
+| `radio_countries` | `limit` : uint16 | `countries` | — |
+| `radio_bycountry` | `country` : string, `limit` : uint16 | `stations` | — |
+| `radio_tracklist` | `station_id` : string | `list` | — |
+| `radio_play` | `station_id` : string, `station_name` : string | — | `playback_started`, `radio_title_changed` |
+
+### Spotify
+
+Two independent legs share one stored token, and the distinction decides which client id a request is billed against. Playback and library calls run over the Web API; only playback additionally needs a Connect session. `spotify_status` is the only command whose `linked` field a client should branch on, and every other command here fails with an error rather than a null when the account is unlinked.
+
+The client id matters: rate limits are keyed per Spotify app, not per user, so a Web API token minted under a shared app id contends with every other install using it. `spotify_oauth_start` therefore takes an optional `client_id` naming the app to authorize against; omit it and the daemon falls back to its own built-in id. That id is recorded with the token, because a refresh must be presented to the app that ran the authorization. Playback is unaffected by it — the Connect session always registers as the daemon's own app, which is the only recognised playback app.
+
+| Command | Request | Response | Emits |
+|---------|---------|----------|-------|
+| `spotify_status` | — | `enabled`, `api_key`, `session_token`, `ready`, `loved`, `error` | — |
+| `spotify_oauth_start` | `port` : uint16, `client_id` : string | `url` | — |
+| `spotify_cancel_oauth` | — | — | — |
+| `spotify_set_token` | `token` : string | `status` | — |
+| `spotify_clear` | — | — | — |
+| `spotify_playlists` | — | `playlists` | — |
+| `spotify_playlist_tracks` | `id` : string | `tracks` | — |
+| `spotify_web_playlist_tracks` | `uri` : string | `tracks` | — |
+| `spotify_album_tracks` | `uri` : string | `tracks` | — |
+| `spotify_artist_top_tracks` | `uri` : string | `tracks` | — |
+| `spotify_track_image` | `image_url` : string | `data` | — |
+| `spotify_search_web` | `query` : string | `tracks` | — |
+| `spotify_resolve` | `playlist_id` : string, `track_index` : int, `play` : bool | — | — |
+| `spotify_resolve_track` | `name` : string, `artists` : string, `album` : string, `uri` : string, `image_url` : string, `play` : bool | — | — |
+| `spotify_match` | `query` : string | `uri` | — |
+| `spotify_sync` | — | — | — |
+| `spotify_play_pause` | — | — | `playback_started` / `playback_paused` |
+| `spotify_next` | — | `status` | `playback_started` |
+| `spotify_previous` | — | `status` | `playback_started` |
+| `spotify_seek` | `pos_secs` : uint32 | `status` | — |
+| `spotify_shuffle` | `on` : bool | `status` | — |
+| `spotify_repeat` | `mode` : string | `status` | — |
+| `spotify_volume` | `percent` : u8 | `status` | `volume_changed` |
+| `spotify_like` | `uri` : string | — | — |
+| `spotify_playlist_add` | `uri` : string, `playlist_id` : string | — | — |
+| `spotify_play_all` | `playlist_id` : string, `shuffle` : bool | — | — |
+
+### Last.fm
+
+Scrobbling only — there is no playback control in this group. The flow is the same two-step shape as Spotify's: start the flow to get a URL a browser can visit, then hand the resulting session key back with `lastfm_authenticate`. `lastfm_status` reports `ready` and the last `error`, and is the right thing to poll after starting a flow.
+
+| Command | Request | Response | Emits |
+|---------|---------|----------|-------|
+| `lastfm_status` | — | `enabled`, `api_key`, `session_token`, `ready`, `loved`, `error` | — |
+| `lastfm_oauth_start` | `port` : uint16 | `url` | — |
+| `lastfm_auth_url` | — | `url` | — |
+| `lastfm_authenticate` | `token` : string | — | — |
+| `lastfm_clear` | — | — | — |
+| `lastfm_set_config` | `enabled` : bool, `api_key` : string, `api_secret` : string, `session_key` : string, `min_play_secs` : uint32, `min_play_pct` : float | — | `scrobble_config_changed` |
+| `lastfm_love` | — | — | — |
+| `lastfm_unlove` | — | — | — |
+
+### Podcasts
+
+Subscriptions are per-daemon and held in the config directory; there is no account. Feeds are read one level down: list feeds, then list episodes for a `feed_id`. `podcast_play` takes an episode index rather than an id, so a client that reorders a feed between listing and playing will play the wrong episode — resolve the index from the same response it displayed.
+
+| Command | Request | Response | Emits |
+|---------|---------|----------|-------|
+| `podcast_status` | — | `status` | — |
+| `podcast_feeds` | — | `feeds` | — |
+| `podcast_episodes` | `feed_id` : string | `feed_id`, `feed_title`, `episodes` | — |
+| `podcast_add_feed` | `url` : string | `feeds` | — |
+| `podcast_remove_feed` | `feed_id` : string | — | — |
+| `podcast_refresh` | `feed_id` : string | `refreshed` | — |
+| `podcast_play` | `feed_id` : string, `episode_index` : int | — | `playback_started` |
+
+### Charts
+
+A cross-provider view. `charts_list` enumerates the registered providers, and the other two take a provider name from it. Tracks come back normalised to the same `TrackInfo` shape the rest of the protocol uses, so a client does not need a per-provider parser.
+
+| Command | Request | Response | Emits |
+|---------|---------|----------|-------|
+| `charts_list` | `source_id` : string | `charts` | — |
+| `charts_sources` | — | `sources` | — |
+| `charts_tracks` | `source_id` : string, `chart_id` : string | `tracks` | — |
+
+### YouTube
+
+Search and download are asynchronous and use the poll pattern throughout: start the work, then call the matching `_poll` command until it reports done. This is the only group where a `_poll` command can return either a payload or a bare ack, so a client must handle both. The `youtube` feature is compiled out of some builds, and every command in this group then fails with "youtube support is disabled in this build" rather than being absent from the enum.
+
+| Command | Request | Response | Emits |
+|---------|---------|----------|-------|
+| `yt_search` | `query` : string, `filter` : YTFilter | `stations` | `custom` with `name` `yt_search_partial` / `yt_search_done` |
+| `yt_search_poll` | — | `query`, `results` | — |
+| `yt_search_cancel` | — | — | — |
+| `yt_resolve_stream` | `url` : string | `info` | — |
+| `yt_fetch_playlist` | `url` : string | — | — |
+| `yt_playlist_poll` | — | `query`, `results` | — |
+| `yt_download` | `url` : string, `title` : string, `channel` : string | — | — |
+| `yt_download_poll` | — | `id`, `url`, `title`, `progress`, `status`, `error`, `file_path`, `downloaded_bytes`, `total_bytes`, `rate_bps`, `eta_secs` | — |
+| `yt_cancel_download` | `url` : string | — | — |
+| `yt_set_config` | `cookie_source` : string, `cookie_file` : string, `js_runtime` : string, `download_dir` : string, `max_concurrent` : uint32 | — | — |
+
+### Sleep timer and scrobbling
+
+The sleep timer counts down on the daemon and emits a tick every second, so a client rendering a countdown should follow `sleep_timer_tick` rather than decrementing locally — the two drift apart the moment a client is paused or reconnects. Scrobbling configuration is global to the daemon, not per-listener.
+
+| Command | Request | Response | Emits |
+|---------|---------|----------|-------|
+| `set_sleep_timer` | `minutes` : uint32, `stop_immediately` : bool | — | `sleep_timer_tick`, `sleep_timer_expired` |
+| `cancel_sleep_timer` | — | — | — |
+| `set_scrobble` | `enabled` : bool, `api_key` : string, `session_token` : string, `min_play_secs` : uint32, `min_play_pct` : float | — | `scrobble_config_changed` |
+
+### System
+
+Introspection and lifecycle. `get_status` and `get_status_lite` differ only in how much they carry: the lite form is for a status bar and will not drag the whole state object across the socket. `check_health` is a deeper probe and can be slow. `quit` persists state and closes the connection, so a client should treat a successful response as the last thing it will ever get.
+
+| Command | Request | Response | Emits |
+|---------|---------|----------|-------|
+| `get_status` | — | `state` | — |
+| `get_status_lite` | — | `state` | — |
+| `check_health` | — | `report` | — |
+| `quit` | — | — | — |
+| `ping` | — | — | — |
+
+
+
+# NESTED ACTION ENVELOPES
+
+`queue` and `library` are single `cmd` values whose `action` field selects a
+variant of a tagged enum. The variant's own fields sit alongside `action` in the
+same object — there is no extra nesting level:
+
+```json
+{"id": 5, "cmd": "library", "action": "add_to_playlist", "playlist_id": 1, "track_ids": [4, 5]}
+```
+
+An unrecognised `action` is rejected as a malformed request rather than ignored,
+so a client should treat it as a hard error and not retry it unchanged.
+
+## queue actions
+
+### queue
+
+| Action | Fields |
+|--------|--------|
+| `list` | — |
+| `clear` | — |
+| `remove` | `index` : uint64 |
+| `move` | `from` : uint64, `to` : uint64 |
+| `add` | `paths` : list, `position` : uint64 (optional) |
+| `set` | `paths` : list, `start_idx` : uint64 |
+
+`list` is the only read and the only one with a payload. `add` appends unless
+`position` is given, in which case it inserts at that index; `set` replaces the
+whole queue and takes the index to start playing from, which is the usual way to
+hand a finished playlist to the daemon in one call.
+
+## library actions
+
+### library
+
+| Action | Fields |
+|--------|--------|
+| `scan` | `path` : string |
+| `get_tracks` | `filter` : string (optional), `sort` : string (optional) |
+| `get_most_played` | `limit` : uint64 |
+| `get_recently_played` | `limit` : uint64 |
+| `get_recently_added` | `limit` : uint64 |
+| `get_playlists` | — |
+| `get_playlist_tracks` | `id` : int |
+| `create_playlist` | `name` : string |
+| `rename_playlist` | `id` : int, `name` : string |
+| `delete_playlist` | `id` : int |
+| `add_to_playlist` | `playlist_id` : int, `track_ids` : list |
+| `import_playlist` | `path` : string, `format` : PlaylistFormatKind |
+| `export_playlist` | `playlist_id` : int, `path` : string, `format` : PlaylistFormatKind |
+| `get_recent` | `count` : uint64 |
+| `sync_covers` | — |
+| `sync_lyrics` | — |
+| `sync_metadata` | `path` : string (optional) |
+| `sync_status` | — |
+| `remove_from_playlist` | `playlist_id` : int, `track_id` : int |
+| `playlist_dedup` | `playlist_id` : int |
+| `playlist_doctor` | `playlist_id` : int |
+| `playlist_sort` | `playlist_id` : int, `field` : string |
+| `remove_track` | `id` : int |
+| `update_metadata` | `track_id` : int, `patch` : MetadataPatch |
+
+Three of these are asynchronous and return before doing their work: `scan`,
+`sync_covers`, `sync_lyrics` and `sync_metadata` acknowledge immediately and
+report completion as an event. `sync_status` is the only way to ask about a pass
+already in flight.
+
+`sync_metadata` with no `path` processes every track whose metadata looks
+unreliable — the title equals the filename stem, or artist or album is missing.
+With a `path` it processes just that track.
+
+`update_metadata` takes a `patch` object whose fields are all optional; a field
+that is absent is left alone, so a client must not send the field it does not
+mean to change.
 
 # EVENTS
 
-Events are daemon-to-client notifications about state changes. They are
-delivered as JSON objects on the command socket and as MessagePack binary
-frames on the pulse socket.
+Events are unsolicited. A client is expected to read them continuously and
+tolerate any it does not recognise, because the set grows without a version
+bump. `position_changed` is the only one that arrives at a rate worth naming —
+the rest are state transitions.
 
-## Playback Lifecycle
+| Event | Payload |
+|-------|---------|
+| `playback_started` | `track`, `auto_advanced`, `time_pos`, `duration` |
+| `playback_paused` | `time_pos` |
+| `playback_stopped` | — |
+| `track_ended` | — |
+| `position_changed` | `time_pos` |
+| `duration_changed` | `duration` |
+| `volume_changed` | `volume` |
+| `mono_changed` | `enabled` |
+| `metadata_changed` | `detail` |
+| `queue_changed` | `queue`, `cursor` |
+| `queue_index_changed` | `index` |
+| `repeat_mode_changed` | `mode` |
+| `shuffle_changed` | `enabled` |
+| `crossfade_changed` | `enabled`, `duration_secs` |
+| `crossfade_countdown` | `track`<br>Emitted once when the next track is about to enter crossfade (5s before it begins). The client animates the countdown until the crossfade starts. |
+| `loudness_mode_changed` | `mode` |
+| `loudness_scan_progress` | `tracks_remaining`, `tracks_total` |
+| `loudness_scan_done` | `scanned`, `failed` |
+| `pre_gain_changed` | `pre_gain_db` |
+| `gapless_changed` | `enabled` |
+| `dynamic_mode_changed` | `enabled`, `min_queue_remaining`, `max_history` |
+| `scrobble_config_changed` | `enabled` |
+| `sleep_timer_tick` | `remaining_secs` |
+| `sleep_timer_expired` | — |
+| `low_power_changed` | `enabled` |
+| `audio_device_changed` | `name` |
+| `eq_preset_changed` | `preset` |
+| `eq_enabled_changed` | `enabled` |
+| `reverb_changed` | `enabled`, `room_size` |
+| `speed_changed` | `rate` |
+| `custom` | `name` : string, plus the sub-type's own fields |
+| `spotify_status_changed` | Spotify link state changed (e.g. an OAuth link flow completed). |
+| `lastfm_status_changed` | — |
+| `spectrum_changed` | `levels` |
+| `waveform_changed` | `samples`, `stereo`<br>Time-domain waveform ring (interleaved L/R) plus a stereo flag, for the Wave/Stereo visualizer modes. Decimated on the decode/stream threads so a ~5.5 kHz ring reaches the client at ~30 Hz. |
+| `radio_title_changed` | `title`<br>A live ICY/Shoutcast stream published a new `StreamTitle` (or cleared it, `None`). |
+| `radio_tracks_changed` | `list`, `artist`<br>The playing station's published tracklist changed: first fetch, a refresh, or the entry on air advancing. Carries the whole list so the read-only queue and the now-playing artist split stay in step. |
+| `network_status_changed` | `online`<br>Generic internet connectivity changed, as measured by the daemon's bounded TCP probes (1.1.1.1:443, then gstatic.com:443). Independent of any provider link state; drives the footer `Network` module. |
+| `provider_error` | `provider`, `message`<br>A provider failed in a way the user has to act on, as opposed to a track that merely is not playable.  Provider-side rejections used to reach the user as silence: librespot logs a rejected audio-item request to its own logger, the resulting `Unavailable` event was consumed to end the source, and the queue moved on — so a token that Spotify refuses produced no sound and no message. This carries the diagnosis instead. |
+| `heartbeat` | — |
 
-- `playback_started`: track begins playing. Fields: `track` (TrackInfo),
-  `auto_advanced` (bool), `time_pos` (float64), `duration` (float64).
-- `playback_paused`: playback paused. Fields: `time_pos`.
-- `playback_stopped`: playback explicitly stopped.
-- `track_ended`: track reached end of file naturally.
-- `radio_title_changed`: live stream/radio song title updated. Fields:
-  `title` (string or null, cleared when a track transition resets it).
 
-## Position and Duration
+Under `custom`, the `name` field selects a sub-type whose remaining fields
+vary. `custom` names observed in the daemon: `daemon_quitting`, `backend_error`,
+`audio_error`, `audio_backend`, `sync_done`, `library_scan`, `library_changed`,
+`cover_art`, `lyrics`, `sleep_timer_deferred`, `youtube_search`, `event_channel`,
+`gtm`. The set is open — a client must ignore names it does not know rather than
+treating one as an error, since new sub-types are added without a protocol bump.
+`gtm/src/shared/ipc.rs` is the only complete list.
 
-- `position_changed`: playback position updated. Fields: `time_pos` (float64).
-- `duration_changed`: track duration resolved. Fields: `duration` (float64).
-
-## Volume
-
-- `volume_changed`: volume level changed. Fields: `volume` (uint8, 0-100).
-
-## Playback Mode
-
-- `shuffle_changed`: shuffle toggled. Fields: `enabled` (bool).
-- `repeat_mode_changed`: repeat mode changed. Fields: `mode` (string).
-
-## Queue
-
-- `queue_changed`: queue modified. Fields: `queue` (array), `cursor`.
-- `queue_index_changed`: cursor moved. Fields: `index`.
-
-## Audio Effects
-
-- `crossfade_changed`: fields: `enabled`, `duration_secs`.
-- `eq_preset_changed`: fields: `preset`.
-- `eq_enabled_changed`: fields: `enabled`.
-- `reverb_changed`: fields: `enabled`, `room_size`.
-
-## Sleep Timer
-
-- `sleep_timer_tick`: emitted every second. Fields: `remaining_secs`.
-- `sleep_timer_expired`: timer reached zero.
-
-## Loudness Compensation
-
-- `loudness_mode_changed`: fields: `mode`.
-- `loudness_scan_progress`: fields: `tracks_remaining`, `tracks_total`, `current_track`.
-- `loudness_scan_done`: fields: `scanned`, `failed`.
-- `pre_gain_changed`: fields: `pre_gain_db`.
-
-## Gapless Playback
-
-- `gapless_changed`: fields: `enabled`.
-
-## Dynamic Mode
-
-- `dynamic_mode_changed`: fields: `enabled`, `min_queue_remaining`, `max_history`.
-
-## Scrobbling
-
-- `scrobble_config_changed`: fields: `enabled`.
-- `scrobble_sent`: fields: `track`, `timestamp`.
-- `scrobble_error`: fields: `track_id`, `error`.
-
-## Library Organization
-
-- `library_organized`: fields: `moves_succeeded`, `moves_failed`.
-
-## System
-
-- `heartbeat`: emitted at least every 15 seconds during active playback.
-- `custom`: extensible event type with `name` sub-type field. Known names:
-  `daemon_quitting`, `backend_error`, `audio_error`, `scan_done`.
+`heartbeat` is emitted at least every 15 seconds during active playback. It
+carries no payload and exists so a client can tell a silent daemon from an idle
+one.
 
 # SEE ALSO
 
