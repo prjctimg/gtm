@@ -27,7 +27,6 @@ use super::api::{
 use super::cover::{image_at, prefetch};
 use super::oauth::OauthFlow;
 
-use super::LIBRESPOT_CLIENT_ID;
 use super::SpotifyManager;
 use super::ytfb::spotify_yt_fallback;
 
@@ -126,20 +125,34 @@ impl Spotify {
     /// redirect on the supplied local port in a background task, and exchange +
     /// persist the token when the browser round-trip completes. `port` lets the
     /// user reuse a redirect URI already registered in their Spotify dashboard.
-    pub async fn oauth_start(inner: &Arc<DaemonInner>, port: u16) -> Result<DaemonRes, CoreError> {
+    ///
+    /// `client_id` overrides the resolved Web API app id for this flow. The
+    /// caller supplies it so a fresh id takes effect on the next link without
+    /// waiting for a daemon restart; it is persisted with the token so a later
+    /// refresh is presented to the app that issued it.
+    pub async fn oauth_start(
+        inner: &Arc<DaemonInner>,
+        port: u16,
+        client_id: Option<&str>,
+    ) -> Result<DaemonRes, CoreError> {
         // Abort any previous pending flow so its listener socket is freed.
         if let Some(handle) = inner.oauth_task.lock().await.take() {
             handle.abort();
         }
 
-        // The app is fixed, so any client id the caller supplied is ignored:
-        // authorizing against a self-registered app mints a token that Spotify
-        // Connect will not accept, because login5 requires the id to match the
-        // app that issued the credential. Such a link is worse than useless —
-        // the Web API works, so everything looks fine, and only audio fails,
-        // with `BAD_REQUEST` at connect time and `INVALID_CREDENTIALS` if the
-        // ids are then crossed. See [`super::SpotifyManager::client_id`].
-        let cid = LIBRESPOT_CLIENT_ID;
+        // Only the Web API leg takes an id. The Connect session keeps
+        // registering as librespot's, because a self-registered app is not a
+        // recognised playback app and would cost audio while leaving the Web API
+        // working — a link that looks fine and plays nothing. See
+        // [`super::SpotifyManager::client_id`] for why that half is fixed.
+        let resolved = {
+            let mgr = inner.spotify.lock().await;
+            if let Some(id) = client_id.map(str::trim).filter(|s| !s.is_empty()) {
+                mgr.set_web_client_id(id);
+            }
+            mgr.web_client_id()
+        };
+        let cid = resolved.as_str();
         let flow = OauthFlow::new(cid, port);
         // Bind the loopback callback server *before* returning the URL so the
         // browser always opens to a live listener (a previously spawned task

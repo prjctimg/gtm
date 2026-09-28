@@ -1057,9 +1057,18 @@ impl<'a> Spotify<'a> {
     /// because Spotify Connect only accepts a token issued by the same app it
     /// is asked to register.
     pub async fn oauth_start(&self, port: u16) -> Result<String> {
+        self.oauth_start_with(port, None).await
+    }
+
+    /// Start the link flow against a specific Web API app id.
+    ///
+    /// Only the Web API leg takes the id; the daemon's Connect session still
+    /// registers as librespot's app, which is what a recognised playback app
+    /// requires.
+    pub async fn oauth_start_with(&self, port: u16, client_id: Option<String>) -> Result<String> {
         let res = self
             .client
-            .send_raw(DaemonReq::SpotifyOauthStart { port })
+            .send_raw(DaemonReq::SpotifyOauthStart { port, client_id })
             .await?;
         match res {
             DaemonRes::SpotifyOauthStarted { url } => Ok(url),

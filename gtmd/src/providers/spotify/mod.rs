@@ -67,10 +67,15 @@ pub struct PlaylistSnapshot {
     #[serde(default)]
     synced_at: Option<i64>,
 }
-/// Name of the retired client-id file. Nothing writes it any more — the app id
-/// is fixed, see [`SpotifyManager::client_id`] — but [`SpotifyManager::clear`]
-/// still unlinks it so an install that linked under the old scheme stops
-/// carrying an id that no longer has any meaning.
+/// Name of the file holding the Web API app id, which is also the id that
+/// minted the stored token.
+///
+/// Written at link time alongside the token, because the id is not free to
+/// change afterwards: a refresh must be presented to the app that ran the
+/// authorization, so a token minted by one app cannot be renewed by another.
+/// The file is therefore read to learn the token's issuer, not merely to
+/// configure a preference — which is why an install that predates it defaults
+/// to librespot's id, the only id that ever issued these tokens.
 const CLIENT_ID_FILE: &str = "spotify_client_id";
 const TOKEN_ACCESS_PERMS: u32 = 0o600;
 /// OAuth scope required for librespot native playback. Tokens issued before it
@@ -228,16 +233,15 @@ impl SpotifyManager {
         }
     }
 
-    /// The single Spotify app this installation identifies as, for the OAuth /
-    /// Web API side *and* the Spotify Connect session.
+    /// The app id the Spotify Connect session registers as, which is fixed.
     ///
-    /// These are the same app, and that is not a simplification — it is
-    /// required. librespot logs in with `Login_method::StoredCredential`, which
-    /// sends the session's client id next to the credential, and login5 refuses
-    /// the pair unless the id is the app that issued it: *"this request will
-    /// only work when the store credentials match the client-id"*
-    /// (librespot-core `login5.rs`). Both halves of that rule were broken
-    /// separately, and each looked like an unrelated bug:
+    /// This one genuinely cannot be chosen. librespot logs in with
+    /// `Login_method::StoredCredential`, which sends the session's client id
+    /// next to the credential, and login5 refuses the pair unless the id is the
+    /// app that issued it: *"this request will only work when the store
+    /// credentials match the client-id"* (librespot-core `login5.rs`). Both
+    /// halves of that rule were broken separately, and each looked like an
+    /// unrelated bug:
     ///
     /// * a self-registered app is not a recognised playback app, so presenting
     ///   it to Connect is answered `BAD_REQUEST` — even though the Web API
@@ -246,13 +250,97 @@ impl SpotifyManager {
     /// * pairing librespot's id with a token minted by a self-registered app is
     ///   answered `INVALID_CREDENTIALS`.
     ///
-    /// So the id is fixed rather than configured, and never persisted: with only
-    /// one identity there is nothing to keep in sync, which is precisely what
-    /// made the conflation possible. The cost is that the Web API now shares
-    /// an app id with every other librespot install and can be rate-limited
-    /// into `429`; that is absorbed by caching, not by changing identity.
+    /// So this stays librespot's, whatever else is configured.
     pub fn client_id(&self) -> &'static str {
         LIBRESPOT_CLIENT_ID
+    }
+
+    /// The app id the Web API token is presented as, and the one that refreshes
+    /// it.
+    ///
+    /// Deliberately separate from [`Self::client_id`]. Rate limits are keyed per
+    /// app, not per user, so a Web API token minted by librespot's public id
+    /// shares one quota with every other librespot install on the internet —
+    /// which is why this installation's sync, search and artwork were being
+    /// answered `429` by a pool it does not use. Supplying the user's own app
+    /// id moves those calls into a bucket of their own.
+    ///
+    /// The split is safe because only the *Connect* half has to match the
+    /// session: `api.spotify.com` accepts any valid app's token, and the
+    /// refresh only has to be presented to the app that ran the authorization.
+    /// The audio path never sees this id.
+    ///
+    /// Resolution order is `GTM_SPOTIFY_CLIENT_ID`, then the id file, then
+    /// librespot's id — so an install that configures nothing behaves exactly as
+    /// before, and CI needs no Spotify app to exercise the code.
+    pub fn web_client_id(&self) -> String {
+        if let Ok(id) = std::env::var("GTM_SPOTIFY_CLIENT_ID") {
+            let id = id.trim().to_string();
+            if !id.is_empty() {
+                return id;
+            }
+        }
+        if let Ok(id) = std::fs::read_to_string(self.config_dir.join(CLIENT_ID_FILE)) {
+            let id = id.trim().to_string();
+            if !id.is_empty() {
+                return id;
+            }
+        }
+        LIBRESPOT_CLIENT_ID.to_string()
+    }
+
+    /// Whether the Web API has its own app id, i.e. its quota is its own.
+    pub fn has_own_web_quota(&self) -> bool {
+        self.web_client_id() != LIBRESPOT_CLIENT_ID
+    }
+
+    /// Persist `id` as the Web API app id, so a link started now mints its
+    /// token against it and a later refresh is presented to the same app.
+    ///
+    /// A link is required before the id takes effect: an existing token belongs
+    /// to the app that issued it, so swapping the id out from under one would
+    /// make its next refresh fail. The caller is expected to run the OAuth flow
+    /// immediately after this.
+    pub fn set_web_client_id(&self, id: &str) {
+        self.save_client_id(id);
+    }
+
+    /// The app id that issued the stored token, for refreshing it.
+    ///
+    /// Falls back to librespot's id when the file is missing, which is the
+    /// correct answer rather than a fallback: it is the only id that could
+    /// have minted a token from before the file existed, so those installs
+    /// keep refreshing. The distinction matters because a token cannot be
+    /// renewed by a different app than issued it.
+    fn token_client_id(&self) -> String {
+        if let Ok(id) = std::fs::read_to_string(self.config_dir.join(CLIENT_ID_FILE)) {
+            let id = id.trim().to_string();
+            if !id.is_empty() {
+                return id;
+            }
+        }
+        LIBRESPOT_CLIENT_ID.to_string()
+    }
+
+    /// Record the id that issued the stored token, so a later refresh is
+    /// presented to the right app. Best-effort: a failure here costs a
+    /// re-authorize on the next expiry, so it must not fail the link that
+    /// succeeded.
+    fn save_client_id(&self, id: &str) {
+        let path = self.config_dir.join(CLIENT_ID_FILE);
+        if let Err(e) = std::fs::create_dir_all(&self.config_dir) {
+            warn!("spotify: could not create the config dir for the client id: {e}");
+            return;
+        }
+        if let Err(e) = std::fs::write(&path, id) {
+            warn!("spotify: could not write the client id: {e}");
+            return;
+        }
+        if let Err(e) =
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(TOKEN_ACCESS_PERMS))
+        {
+            warn!("spotify: could not chmod the client id: {e}");
+        }
     }
 
     /// True if a token file exists on disk (regardless of load status).
@@ -294,6 +382,10 @@ impl SpotifyManager {
         // Mirror the token into the OS keychain so it survives the file-based
         // token being cleared and can be restored without a re-login.
         set_secret(SPOTIFY_TOKEN_KEY, raw);
+        // The token is being authorized against the configured Web API id, so
+        // that is the id a later refresh has to present.
+        let id = self.web_client_id();
+        self.save_client_id(&id);
         self.init_client(token).await
     }
 
@@ -306,17 +398,19 @@ impl SpotifyManager {
         self.device = None;
         self.playlists.clear();
         self.error = None;
-        // The client-id file is no longer written, but an install that linked
-        // before the id was retired still has one on disk. Clear it out so the
-        // config dir does not keep advertising an id that nothing reads.
-        for path in [self.token_path(), self.config_dir.join(CLIENT_ID_FILE)] {
-            match std::fs::remove_file(&path) {
-                Ok(()) => info!("removed spotify {}", path.display()),
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => warn!("failed to remove {}: {e}", path.display()),
-            }
+        // Only the token goes. The client-id file is kept: it is a preference,
+        // not a credential, and it outlives the token it issued. Deleting it
+        // would make every unlink/re-link cycle cost the user a retyped id for
+        // no benefit, and there is no mismatch to guard against — the token it
+        // named is gone, so the next link simply mints a new one against it.
+        let path = self.token_path();
+        match std::fs::remove_file(&path) {
+            Ok(()) => info!("removed spotify {}", path.display()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => warn!("failed to remove {}: {e}", path.display()),
         }
-        // Drop any keychain-stored credentials too.
+        // Drop any keychain-stored credentials too, including the client id an
+        // older build kept there.
         delete_secret(SPOTIFY_TOKEN_KEY);
         delete_secret(SPOTIFY_CLIENT_ID);
     }
@@ -723,6 +817,13 @@ impl SpotifyManager {
         // Mirror the token into the OS keychain so it survives the file-based
         // token being cleared and can be restored without a re-login.
         set_secret(SPOTIFY_TOKEN_KEY, raw);
+        // Record the app that just issued this token, so the refresh below and
+        // every later one is presented to it. Without this the id file is
+        // absent on the OAuth path and the refresh falls back to librespot's,
+        // which is right for a default link and wrong the moment a user
+        // supplied their own.
+        let id = self.web_client_id();
+        self.save_client_id(&id);
         self.set_client(token).await?;
         // Reconnecting previously cost `/v1/me` here, again inside `run_sync`,
         // and again on every rung of the retry ladder — 17 calls to one endpoint
@@ -770,10 +871,12 @@ impl SpotifyManager {
         self.scopes = token.scopes.clone();
         // The refresh has to be presented as the app that ran the
         // authorization, or the renewed token is rejected and every later Web
-        // API call 401s. That app is the same one the Connect session
-        // registers as — see [`Self::client_id`] — so a token pasted by hand
-        // refreshes correctly too, with no stored id to go missing.
-        let creds = Credentials::new_pkce(self.client_id());
+        // API call 401s. That is the Web API's id, which is *not* necessarily
+        // the Connect session's — so it is read back from the file written at
+        // link time rather than from the current preference. Reading the
+        // preference instead would 401 every existing install the moment
+        // someone set an id, since their token belongs to the old app.
+        let creds = Credentials::new_pkce(&self.token_client_id());
         // Persist a refreshed token back to disk with 0600 permissions so a
         // renewed access token survives a daemon restart instead of reverting
         // to the stale one. rspotify invokes this callback after every
@@ -819,9 +922,17 @@ impl SpotifyManager {
         match self.sync().await {
             Ok(()) => {
                 info!(
-                    "linked spotify as {:?} ({} playlists, auto-refresh: {refreshable})",
+                    "linked spotify as {:?} ({} playlists, auto-refresh: {refreshable}, web app: {})",
                     self.user,
-                    self.playlists.len()
+                    self.playlists.len(),
+                    // Which app the Web API calls bill against. A `429` here is
+                    // a shared-quota symptom, and the id is the only thing that
+                    // distinguishes "contended" from "your own app is spent".
+                    if self.has_own_web_quota() {
+                        "own"
+                    } else {
+                        "shared (librespot)"
+                    }
                 );
                 Ok(())
             }
@@ -888,6 +999,53 @@ mod tests {
     use gtm::shared::spotify::SpotifyPlaylist;
     use rspotify::model::idtypes::Id;
     use rspotify::model::{AlbumId, ArtistId, TrackId};
+
+    /// The two app ids are independent, and only the playback one is fixed.
+    ///
+    /// This is the whole point of the split, and it is easy to undo by
+    /// accident: pointing the Web API back at librespot's id puts every
+    /// install on one shared quota again, and the `429`s come back with
+    /// nothing in the code to explain them.
+    #[test]
+    fn the_web_id_is_separate_from_the_connect_id() {
+        let dir = std::env::temp_dir().join("gtm-spotify-id-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mgr = super::SpotifyManager::new(dir.clone());
+
+        // Unconfigured: both legs fall back to librespot's, so an install that
+        // sets nothing behaves exactly as it did before the split.
+        assert_eq!(mgr.web_client_id(), super::LIBRESPOT_CLIENT_ID);
+        assert_eq!(mgr.token_client_id(), super::LIBRESPOT_CLIENT_ID);
+        assert!(!mgr.has_own_web_quota());
+
+        // The Connect leg is fixed and ignores the file entirely.
+        mgr.set_web_client_id("0123456789abcdef0123456789abcdef");
+        assert_eq!(mgr.client_id(), super::LIBRESPOT_CLIENT_ID);
+        assert_eq!(mgr.web_client_id(), "0123456789abcdef0123456789abcdef");
+        assert!(mgr.has_own_web_quota());
+        // The issuer is remembered, so a later refresh is presented to the app
+        // that actually minted the token.
+        assert_eq!(mgr.token_client_id(), "0123456789abcdef0123456789abcdef");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A token cannot be renewed by a different app than the one that issued
+    /// it, so the persisted id — not the current preference — is what a
+    /// refresh presents. Reading the preference instead would 401 every
+    /// existing install the moment someone set an id.
+    #[test]
+    fn a_missing_id_file_means_the_token_came_from_librespot() {
+        let dir = std::env::temp_dir().join("gtm-spotify-issuer-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mgr = super::SpotifyManager::new(dir.clone());
+        // No file at all: the only id that could have issued this token is
+        // librespot's, so that is the correct answer rather than a guess.
+        assert_eq!(mgr.token_client_id(), super::LIBRESPOT_CLIENT_ID);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn playlist(id: &str) -> SpotifyPlaylist {
         SpotifyPlaylist {

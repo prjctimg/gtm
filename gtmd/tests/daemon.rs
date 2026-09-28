@@ -586,7 +586,10 @@ async fn oauth_start_url() {
     let res = send_req(
         &mut reader,
         &mut writer,
-        &DaemonReq::SpotifyOauthStart { port: 0 },
+        &DaemonReq::SpotifyOauthStart {
+            port: 0,
+            client_id: None,
+        },
     )
     .await;
     match res {

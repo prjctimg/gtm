@@ -356,6 +356,10 @@ pub enum DaemonReq {
     },
     SpotifyOauthStart {
         port: u16,
+        /// Web API app id to authorize against. `None` uses whatever the
+        /// daemon already resolved, so a client that does not care about the
+        /// quota does not have to carry the id over IPC.
+        client_id: Option<String>,
     },
     SpotifyCancelOauth,
     SpotifyClear,
@@ -1115,16 +1119,22 @@ impl DaemonReq {
                 DaemonReq::SpotifySetToken { token: x.token }
             }
             "spotify_oauth_start" => {
-                // No `client_id`: it used to be required here and is now
-                // ignored, so an older client still sending one deserialises
-                // fine and gets the same fixed-app flow.
+                // `client_id` is optional in both directions. An older client
+                // omits it and gets the daemon's resolved id, and an older
+                // client that still sends one is honoured rather than
+                // rejected — it is the Web API leg, which accepts any app.
                 #[derive(Deserialize)]
                 struct Params {
                     #[serde(default = "default_oauth_port")]
                     port: u16,
+                    #[serde(default)]
+                    client_id: Option<String>,
                 }
                 let x: Params = p(params)?;
-                DaemonReq::SpotifyOauthStart { port: x.port }
+                DaemonReq::SpotifyOauthStart {
+                    port: x.port,
+                    client_id: x.client_id,
+                }
             }
             "spotify_seek" => {
                 #[derive(Deserialize)]

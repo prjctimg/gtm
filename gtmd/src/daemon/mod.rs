@@ -3075,7 +3075,9 @@ impl Daemon {
                 duration,
             } => Lyrics::search(inner, artist, title, album.as_deref(), *duration).await,
             DaemonReq::SpotifySetToken { token } => Spotify::set_token(inner, token).await,
-            DaemonReq::SpotifyOauthStart { port } => Spotify::oauth_start(inner, *port).await,
+            DaemonReq::SpotifyOauthStart { port, client_id } => {
+                Spotify::oauth_start(inner, *port, client_id.as_deref()).await
+            }
             DaemonReq::SpotifyCancelOauth => Spotify::oauth_cancel(inner).await,
             DaemonReq::SpotifyClear => Spotify::clear(inner).await,
             DaemonReq::SpotifyStatus => Spotify::status(inner).await,
