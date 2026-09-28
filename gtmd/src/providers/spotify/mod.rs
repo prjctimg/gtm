@@ -38,6 +38,12 @@ use api::{pick_largest_image, track_from_playable};
 
 pub use gtm::shared::spotify::pretty_id;
 
+/// How long a playlist snapshot is served without re-fetching, in seconds.
+///
+/// Long enough that ordinary restarts and reconnects cost nothing, short enough
+/// that a stale library is not what a user sees after a day of listening.
+const SNAPSHOT_TTL: i64 = 6 * 3600;
+
 const TOKEN_FILE: &str = "spotify.json";
 /// Last good playlist snapshot, so a reconnect does not have to re-fetch the
 /// whole catalogue to show anything.
@@ -51,10 +57,15 @@ const TOKEN_FILE: &str = "spotify.json";
 const PLAYLISTS_FILE: &str = "spotify_playlists.json";
 
 /// The snapshot written by [`SpotifyManager::commit_sync`].
+///
+/// `synced_at` is unix seconds, absent in snapshots written before it existed so
+/// they read as stale rather than as fresh-and-zero.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct PlaylistSnapshot {
     user: Option<String>,
     playlists: Vec<SpotifyPlaylist>,
+    #[serde(default)]
+    synced_at: Option<i64>,
 }
 /// Name of the retired client-id file. Nothing writes it any more — the app id
 /// is fixed, see [`SpotifyManager::client_id`] — but [`SpotifyManager::clear`]
@@ -133,6 +144,24 @@ impl SpotifyManager {
         !self.playlists.is_empty()
     }
 
+    /// True when the snapshot is recent enough to skip a re-fetch.
+    ///
+    /// A full sync is the single most expensive thing gtm asks of the Web API —
+    /// `/v1/me` plus the whole paginator plus a track pass per playlist, which
+    /// is 17 calls for a modest library and scales with it. Paying that on every
+    /// reconnect is what spends a shared app id's quota, and a reconnect is not a
+    /// user action that implies fresh data. A snapshot younger than
+    /// [`SNAPSHOT_TTL`] is reused as-is; older, or one written before `synced_at`
+    /// existed, is re-fetched.
+    pub fn snapshot_fresh(&self) -> bool {
+        self.load_snapshot().is_some_and(|s| {
+            s.synced_at.is_some_and(|at| {
+                let age = Utc::now().timestamp().saturating_sub(at);
+                (0..=SNAPSHOT_TTL).contains(&age)
+            })
+        })
+    }
+
     /// Note a Web API outcome: `429` marks the quota spent, anything else clears
     /// the mark so a recovered quota is noticed on the next call.
     pub fn note_api_status(&mut self, status: u16) {
@@ -184,6 +213,7 @@ impl SpotifyManager {
         let snap = PlaylistSnapshot {
             user,
             playlists: playlists.to_vec(),
+            synced_at: Some(Utc::now().timestamp()),
         };
         let Ok(json) = serde_json::to_string(&snap) else {
             warn!("spotify: could not serialise the playlist snapshot");
@@ -934,6 +964,48 @@ mod tests {
             .expect("snapshot should round-trip through commit_sync");
         assert_eq!(snap.playlists.len(), 2);
         assert_eq!(snap.user.as_deref(), Some("Ada"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The TTL decides whether a boot pays for a full paginator, so both edges
+    /// have to hold: just-written is fresh, expired is not, and a snapshot with
+    /// no timestamp is not fresh — treating a missing field as "epoch" would
+    /// silently disable the skip for every install written before `synced_at`.
+    #[test]
+    fn snapshot_freshness_follows_the_ttl() {
+        let dir = std::env::temp_dir().join(format!("gtm-snap-ttl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut mgr = super::SpotifyManager::new(dir.clone());
+        assert!(!mgr.snapshot_fresh(), "nothing cached is not fresh");
+        mgr.commit_sync(Some("Ada".into()), vec![playlist("a")]);
+        assert!(
+            mgr.snapshot_fresh(),
+            "a snapshot written just now must skip the refetch"
+        );
+
+        let mut snap = mgr.load_snapshot().expect("just committed");
+        snap.synced_at = Some(Utc::now().timestamp() - super::SNAPSHOT_TTL - 1);
+        std::fs::write(
+            dir.join(super::PLAYLISTS_FILE),
+            serde_json::to_string(&snap).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !mgr.snapshot_fresh(),
+            "past the ttl the library must be refetched"
+        );
+
+        snap.synced_at = None;
+        std::fs::write(
+            dir.join(super::PLAYLISTS_FILE),
+            serde_json::to_string(&snap).unwrap(),
+        )
+        .unwrap();
+        assert!(
+            !mgr.snapshot_fresh(),
+            "a snapshot with no timestamp predates the field and is not fresh"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

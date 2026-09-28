@@ -190,6 +190,14 @@ impl Spotify {
                         let Some(client) = client else {
                             return;
                         };
+                        // A relink within the TTL already has the library on
+                        // screen, and the full pass is the most expensive thing
+                        // gtm asks of the Web API. Skip it; the next expiry, or an
+                        // explicit sync, refetches.
+                        if inner3.spotify.lock().await.snapshot_fresh() {
+                            let _ = inner3.event_tx.send(DaemonEvent::SpotifyStatusChanged);
+                            return;
+                        }
                         match SpotifyManager::run_sync(client).await {
                             Ok((user, playlists)) => {
                                 {

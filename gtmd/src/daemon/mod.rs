@@ -2240,6 +2240,28 @@ impl Daemon {
                             // Unlinked while backing off; do not resurrect.
                             return;
                         };
+                        // A boot inside the snapshot TTL has nothing to re-fetch:
+                        // the library it would page is the one already on disk,
+                        // and that pass is the most the Web API ever sees. The
+                        // cheap half still runs — `/me/player` is one call, and
+                        // it is what learns Premium and whether the quota has
+                        // reset. The explicit sync command forces a full pass.
+                        let fresh = sync_inner.spotify.lock().await.snapshot_fresh();
+                        if fresh {
+                            info!("spotify snapshot within ttl — skipping the full sync");
+                            {
+                                let mut spotify = sync_inner.spotify.lock().await;
+                                if spotify.linked() {
+                                    let _ = tokio::time::timeout(
+                                        Duration::from_secs(10),
+                                        spotify.refresh_playback(),
+                                    )
+                                    .await;
+                                }
+                            }
+                            let _ = sync_inner.event_tx.send(DaemonEvent::SpotifyStatusChanged);
+                            return;
+                        }
                         match SpotifyManager::run_sync(client).await {
                             Ok((user, playlists)) => {
                                 {
