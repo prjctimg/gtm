@@ -18,7 +18,6 @@ YouTube/Spotify integration. It is a background daemon (`gtmd`) with a client
 - [Install](#install)
   - [Build from Source](#build-from-source)
   - [Termux](#termux-native-on-device)
-- [Spotify](#spotify)
 - [Documentation](#documentation)
 - [Contributing](#contributing)
 - [Acknowledgements](#acknowledgements)
@@ -99,28 +98,6 @@ make termux
 `gtmd` auto-detects Termux at runtime, picks the PulseAudio
 backend, and starts the PulseAudio server automatically — no manual
 `pulseaudio --start` needed.
-
-## Spotify
-
-> [!note]
->
-> Requires **Spotify Premium** for playback control. `gtm` uses an OAuth PKCE flow that listens on `http://127.0.0.1:8990/login`.
->
-
-1. In the TUI go to `Settings → Spotify → Link` and press <kbd>Enter</kbd>, or run `gtm --cli spotify login`. A browser opens; authorize there and the daemon exchanges the code on port `8990`.
-2. Verify with `gtm --cli spotify status` and `gtm --cli spotify sync` to pull playlists.
-
-There is no client id to register or paste. `gtm` authorizes against its own
-built-in Spotify app, and it has to: Connect only plays audio for a token issued
-by the client id the streaming session registers as, and a self-registered app is
-not one Spotify recognises. A link made with your own app can browse your entire
-library and still play nothing, because the Web API accepts its tokens and the
-audio endpoint does not.
-
-> [!note]
-> Running Spotify search for the first time from the TUI also triggers an input field to paste the token.  
->
-> Also, first launch opens your browser for authorization (no client secret needed) and the daemon exchanges the code on port `8990` (5 min timeout).
 
 ## Documentation
 
