@@ -39,6 +39,23 @@ use api::{pick_largest_image, track_from_playable};
 pub use gtm::shared::spotify::pretty_id;
 
 const TOKEN_FILE: &str = "spotify.json";
+/// Last good playlist snapshot, so a reconnect does not have to re-fetch the
+/// whole catalogue to show anything.
+///
+/// The Web API answers `429` for a development-mode app once its quota is
+/// spent, and it answers it for *every* request until the window resets — not
+/// just the one that overspent. `/v1/me` alone was hit 17 times during a single
+/// reconnect, every attempt a rung on a backoff ladder that never gave up, so
+/// the quota never recovered. This file is what lets a reconnect still succeed
+/// while the quota is spent.
+const PLAYLISTS_FILE: &str = "spotify_playlists.json";
+
+/// The snapshot written by [`SpotifyManager::commit_sync`].
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct PlaylistSnapshot {
+    user: Option<String>,
+    playlists: Vec<SpotifyPlaylist>,
+}
 /// Name of the retired client-id file. Nothing writes it any more — the app id
 /// is fixed, see [`SpotifyManager::client_id`] — but [`SpotifyManager::clear`]
 /// still unlinks it so an install that linked under the old scheme stops
@@ -75,6 +92,14 @@ pub struct SpotifyManager {
     playlists: Vec<SpotifyPlaylist>,
     /// Scopes granted by the stored token, snapshotted when the client is built.
     scopes: std::collections::HashSet<String>,
+    /// Set when the Web API last answered `429`, cleared on the next success.
+    ///
+    /// Spotify's quota is per-window, not per-request: once a development-mode
+    /// app spends it, *every* call is refused until the window resets, and each
+    /// refusal is charged against the same budget. So a spent quota means stop
+    /// calling, not call again more slowly — the retry ladder in the daemon's
+    /// startup sync was what turned one 429 into seventeen.
+    rate_limited: bool,
     error: Option<String>,
 }
 
@@ -92,13 +117,74 @@ impl SpotifyManager {
             repeat: "off".to_string(),
             playlists: Vec::new(),
             scopes: std::collections::HashSet::new(),
+            rate_limited: false,
             error: None,
+        }
+    }
+
+    /// True while the Web API is refusing calls with `429`.
+    pub fn rate_limited(&self) -> bool {
+        self.rate_limited
+    }
+
+    /// True when a previous sync left a library on disk, i.e. there is something
+    /// to fall back on if the quota is spent.
+    pub fn has_cached_playlists(&self) -> bool {
+        !self.playlists.is_empty()
+    }
+
+    /// Note a Web API outcome: `429` marks the quota spent, anything else clears
+    /// the mark so a recovered quota is noticed on the next call.
+    pub fn note_api_status(&mut self, status: u16) {
+        if status == 429 {
+            if !self.rate_limited {
+                warn!("spotify web api rate limited (429) — serving cached data until it resets");
+            }
+            self.rate_limited = true;
+        } else {
+            self.rate_limited = false;
         }
     }
 
     /// Absolute path of the token cache file.
     pub fn token_path(&self) -> PathBuf {
         self.config_dir.join(TOKEN_FILE)
+    }
+
+    /// Absolute path of the playlist snapshot.
+    fn playlists_path(&self) -> PathBuf {
+        self.config_dir.join(PLAYLISTS_FILE)
+    }
+
+    /// The last playlist snapshot written by a successful sync, if any.
+    ///
+    /// Loaded at construction so the TUI has a library to show before any
+    /// request goes out, and so a quota-spent reconnect degrades to the
+    /// previous sync rather than to an empty pane.
+    pub fn load_snapshot(&self) -> Option<PlaylistSnapshot> {
+        let raw = std::fs::read_to_string(self.playlists_path()).ok()?;
+        match serde_json::from_str::<PlaylistSnapshot>(&raw) {
+            Ok(snap) if !snap.playlists.is_empty() => Some(snap),
+            Ok(_) => None,
+            Err(e) => {
+                warn!("spotify playlist snapshot unreadable ({e}) — ignoring it");
+                None
+            }
+        }
+    }
+
+    /// Write the snapshot, best-effort: a failure here only costs a slower
+    /// next start, so it must never fail the sync that produced it.
+    fn save_snapshot(&self, user: Option<String>, playlists: &[SpotifyPlaylist]) {
+        let snap = PlaylistSnapshot {
+            user,
+            playlists: playlists.to_vec(),
+        };
+        if let Ok(json) = serde_json::to_string(&snap)
+            && let Err(e) = std::fs::write(self.playlists_path(), json)
+        {
+            warn!("spotify: could not write playlist snapshot: {e}");
+        }
     }
 
     /// The single Spotify app this installation identifies as, for the OAuth /
@@ -535,6 +621,7 @@ impl SpotifyManager {
             return;
         }
         self.error = None;
+        self.save_snapshot(user.clone(), &playlists);
         self.user = user;
         self.playlists = playlists;
     }
@@ -596,10 +683,23 @@ impl SpotifyManager {
         // token being cleared and can be restored without a re-login.
         set_secret(SPOTIFY_TOKEN_KEY, raw);
         self.set_client(token).await?;
-        // Populate the display name eagerly so the TUI can greet the user as
-        // soon as the picker closes; the playlist sync continues in the
-        // background and refreshes the cache when it finishes.
-        if let Some(client) = self.client.clone()
+        // Reconnecting previously cost `/v1/me` here, again inside `run_sync`,
+        // and again on every rung of the retry ladder — 17 calls to one endpoint
+        // for a single reconnect, which is enough to spend a development-mode
+        // app's quota and earn a `429` for the rest of the window. The snapshot
+        // already holds the display name and the whole library, so a reconnect
+        // that has one goes to it and issues no request at all.
+        if let Some(snap) = self.load_snapshot() {
+            let count = snap.playlists.len();
+            self.user = snap.user;
+            self.playlists = snap.playlists;
+            self.error = None;
+            debug!("spotify reconnect: {count} playlists from the snapshot, no request sent");
+        }
+        // Only reach for `/v1/me` when the snapshot cannot name the user. A
+        // first link has nothing cached, so this still runs then.
+        if self.user.is_none()
+            && let Some(client) = self.client.clone()
             && let Ok(Ok(me)) =
                 tokio::time::timeout(std::time::Duration::from_secs(10), client.me()).await
         {
@@ -607,9 +707,14 @@ impl SpotifyManager {
         }
         // Probe `/me/player` right after linking so `premium` is set before any
         // play command arrives (playlists sync purely via the Web API and never
-        // implied Premium).
-        let _ =
-            tokio::time::timeout(std::time::Duration::from_secs(10), self.refresh_playback()).await;
+        // implied Premium). It is a second request against the same quota, and
+        // Premium is not needed to browse, so a quota-spent reconnect skips it
+        // and reports playback as unavailable instead of being throttled for it.
+        if !self.rate_limited {
+            let _ =
+                tokio::time::timeout(std::time::Duration::from_secs(10), self.refresh_playback())
+                    .await;
+        }
         Ok(())
     }
 
@@ -782,6 +887,65 @@ mod tests {
         mgr.commit_sync(None, vec![playlist("a"), playlist("b"), playlist("c")]);
         mgr.commit_sync(None, vec![playlist("a")]);
         assert_eq!(mgr.playlists.len(), 3);
+    }
+
+    /// The rate-limit mark is what stops the startup ladder from re-issuing a
+    /// refused request, so it has to latch on 429 and clear on any success.
+    #[test]
+    fn a_429_latches_until_a_call_succeeds() {
+        let mut mgr = super::SpotifyManager::new(std::path::PathBuf::from("/nonexistent"));
+        assert!(!mgr.rate_limited(), "a fresh manager is not limited");
+        mgr.note_api_status(429);
+        assert!(mgr.rate_limited());
+        mgr.note_api_status(429);
+        assert!(mgr.rate_limited(), "a second 429 keeps it latched");
+        mgr.note_api_status(200);
+        assert!(!mgr.rate_limited(), "a success means the window reset");
+    }
+
+    /// A snapshot round-trips through disk, which is the whole point: a
+    /// reconnect that reads it back must not need to ask Spotify for anything.
+    #[test]
+    fn a_snapshot_survives_a_restart() {
+        let dir = std::env::temp_dir().join(format!("gtm-snap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut mgr = super::SpotifyManager::new(dir.clone());
+        mgr.commit_sync(Some("Ada".into()), vec![playlist("a"), playlist("b")]);
+        // A brand-new manager, as after a daemon restart: the library and the
+        // display name must come back off disk with no network involved.
+        let fresh = super::SpotifyManager::new(dir.clone());
+        let snap = fresh
+            .load_snapshot()
+            .expect("snapshot should round-trip through commit_sync");
+        assert_eq!(snap.playlists.len(), 2);
+        assert_eq!(snap.user.as_deref(), Some("Ada"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An empty or corrupt snapshot must read as "nothing cached" rather than
+    /// panicking or handing back a blank library.
+    #[test]
+    fn an_unusable_snapshot_is_ignored() {
+        let dir = std::env::temp_dir().join(format!("gtm-snap-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mgr = super::SpotifyManager::new(dir.clone());
+
+        assert!(mgr.load_snapshot().is_none(), "no file at all");
+
+        std::fs::write(dir.join(super::PLAYLISTS_FILE), b"not json").unwrap();
+        assert!(mgr.load_snapshot().is_none(), "corrupt json must not panic");
+
+        std::fs::write(
+            dir.join(super::PLAYLISTS_FILE),
+            br#"{"user":null,"playlists":[]}"#,
+        )
+        .unwrap();
+        assert!(
+            mgr.load_snapshot().is_none(),
+            "an empty library is not a usable snapshot"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A real growth still commits.

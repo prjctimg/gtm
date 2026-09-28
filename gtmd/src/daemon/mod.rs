@@ -1706,6 +1706,25 @@ const RETIRED_PROVIDER_SECRET_KEYS: &[&str] = &[
 
 /// Drop keychain entries left behind by removed providers. Their commands and
 /// readers are gone, so the values can never be used again and would otherwise
+/// How long to wait before retrying a Spotify sync that hit `429`.
+///
+/// Deliberately long and fixed. Spotify's quota is per-window, so a retry at
+/// 5s or 30s is refused exactly like one at 300s while costing the same. Only
+/// the window boundary can clear it, and waiting several minutes is what makes
+/// the next attempt worth making.
+const RATE_LIMIT_RETRY: u64 = 300;
+
+/// Whether a sync failure is Spotify refusing for quota rather than a transient
+/// fault worth retrying quickly.
+///
+/// rspotify surfaces the status only inside the message text
+/// (`ApiError::Regular`), so this matches on the rendered string. It is
+/// deliberately narrow: matching the word "429" alone would also catch an
+/// unrelated number in a track or playlist name carried by the same message.
+pub(crate) fn is_rate_limit(err: &str) -> bool {
+    err.contains("429") && (err.contains("Too Many Requests") || err.contains("status code 429"))
+}
+
 /// sit in the OS keyring (or the config-dir file fallback) indefinitely. This
 /// also covers secrets written by older builds before the removal, which no
 /// config migration can reach.
@@ -2164,6 +2183,11 @@ impl Daemon {
                 // auto-heals via the success event below. The manager mutex
                 // is only ever held for the brief client clone / commit swap,
                 // never across the network pass.
+                //
+                // "Never give up" is right for a transient failure and wrong for
+                // a spent quota, which is why the ladder below steps aside for
+                // `429`. Retrying it on a backoff does not recover the budget,
+                // it spends more of it.
                 let sync_inner = Arc::clone(&spotify_inner);
                 tokio::spawn(async move {
                     let mut delay_secs: u64 = 5;
@@ -2180,6 +2204,10 @@ impl Daemon {
                                     if spotify.linked() {
                                         let count = playlists.len();
                                         spotify.commit_sync(user, playlists);
+                                        // Reaching here is itself proof the quota
+                                        // is available again, so clear the mark and
+                                        // let the cheap paths resume.
+                                        spotify.note_api_status(200);
                                         info!("spotify playlists synced ({count} playlists)");
                                     }
                                 }
@@ -2200,6 +2228,37 @@ impl Daemon {
                                 return;
                             }
                             Err(e) => {
+                                // A spent quota must not be retried into the
+                                // ground. The ladder below doubles to a 300s
+                                // ceiling and then repeats forever, and each rung
+                                // re-issues `/v1/me` plus the whole paginator —
+                                // 17 calls to one endpoint for a single
+                                // reconnect, every one of them refused by the
+                                // same exhausted budget. So on a 429: stop, and
+                                // retry on a long fixed interval instead, which
+                                // is slower than doubling but bounded and
+                                // self-healing when the window resets.
+                                if is_rate_limit(&e) {
+                                    let cached = {
+                                        let mut spotify = sync_inner.spotify.lock().await;
+                                        spotify.note_api_status(429);
+                                        spotify.has_cached_playlists()
+                                    };
+                                    if cached {
+                                        warn!(
+                                            "spotify quota spent (429) — keeping the cached \
+                                             playlists and retrying in {RATE_LIMIT_RETRY}s"
+                                        );
+                                    } else {
+                                        warn!(
+                                            "spotify quota spent (429) and nothing cached — \
+                                             retrying in {RATE_LIMIT_RETRY}s"
+                                        );
+                                    }
+                                    tokio::time::sleep(Duration::from_secs(RATE_LIMIT_RETRY)).await;
+                                    delay_secs = 5;
+                                    continue;
+                                }
                                 warn!(
                                     "spotify startup sync failed: {e} — retrying in {delay_secs}s"
                                 );

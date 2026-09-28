@@ -18,7 +18,7 @@ use gtm::shared::ipc::{DaemonEvent, DaemonRes};
 use gtm::shared::spotify::SpotifyTrack;
 use gtm::shared::track::TrackInfo;
 
-use crate::daemon::{Cmd, Daemon, DaemonInner};
+use crate::daemon::{Cmd, Daemon, DaemonInner, is_rate_limit};
 use crate::queue;
 
 use super::api::{
@@ -217,6 +217,14 @@ impl Spotify {
                             Err(e) => {
                                 warn!("spotify playlist sync failed: {e}");
                                 let mut spotify = inner3.spotify.lock().await;
+                                // Latch a spent quota here too, not just in the
+                                // startup ladder: this is the path a reconnect
+                                // takes, and without the mark every later cheap
+                                // call (`/me/player`, status) keeps spending a
+                                // budget that cannot grow.
+                                if is_rate_limit(&e) {
+                                    spotify.note_api_status(429);
+                                }
                                 if spotify.linked() {
                                     spotify.set_error(format!("playlist sync failed: {e}"));
                                 }
