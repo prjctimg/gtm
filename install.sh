@@ -178,7 +178,7 @@ detect_platform() {
 
 resolve_latest_stable_tag() {
   local tag
-  tag="$(curl -sf "https://api.github.com/repos/${REPO}/releases/latest" \
+  tag="$(curl -sfL "https://api.github.com/repos/${REPO}/releases/latest" \
     | sed -n 's/.*"tag_name": *"v\([^"]*\)".*/\1/p' || true)"
   [ -n "${tag}" ] || die "could not resolve the latest stable release from GitHub"
   echo "${tag}"
@@ -193,12 +193,17 @@ resolve_latest_stable_tag() {
 # never ask curl to fetch a URL that cannot exist; otherwise (stable) we fall
 # back to the conventional release URL so installs keep working even when the
 # API is unreachable or rate-limited.
+#
+# `-L` is load-bearing: the repository was renamed, and the API answers the
+# old name with a 301 to the new one. Without it every lookup reads as an empty
+# release, which the stable path absorbed via its URL fallback but the nightly
+# path reported as "not published yet" however many builds had succeeded.
 #   resolve_asset_url <tag> <archive> [strict]
 resolve_asset_url() {
   local tag="$1" archive="$2" strict="${3:-0}"
   local direct="https://github.com/${REPO}/releases/download/${tag}/${archive}"
   local names
-  names="$(curl -sf "https://api.github.com/repos/${REPO}/releases/tags/${tag}" 2>/dev/null \
+  names="$(curl -sfL "https://api.github.com/repos/${REPO}/releases/tags/${tag}" 2>/dev/null \
     | sed 's/}, *{/\n/g' \
     | grep -o '"name": *"[^"]*"' \
     | sed 's/^"name": *"//; s/"$//')" || true
