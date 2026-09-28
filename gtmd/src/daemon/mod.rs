@@ -1706,15 +1706,19 @@ const RETIRED_PROVIDER_SECRET_KEYS: &[&str] = &[
     "tidal_token",
 ];
 
-/// Drop keychain entries left behind by removed providers. Their commands and
-/// readers are gone, so the values can never be used again and would otherwise
 /// How long to wait before retrying a Spotify sync that hit `429`.
 ///
-/// Deliberately long and fixed. Spotify's quota is per-window, so a retry at
-/// 5s or 30s is refused exactly like one at 300s while costing the same. Only
-/// the window boundary can clear it, and waiting several minutes is what makes
-/// the next attempt worth making.
-const RATE_LIMIT_RETRY: u64 = 300;
+/// Short, and the latch is what keeps it from becoming a hammer. Spotify
+/// answers a spent quota with `Retry-After: 17` — a window measured in seconds,
+/// not minutes — and the header is not reachable through rspotify, so the wait
+/// is a guess either way. Guessing long is the worse error: the quota clears
+/// after seconds while the wait runs for minutes, so the rate-limited mark
+/// outlives the condition it describes and the library stays empty long after
+/// the API is serving again. The mark itself, not this interval, is what stops
+/// the spending — the paginator, the `/me/player` probe and the search paths
+/// all read it and issue nothing, so a retry costs the single `/v1/me` it takes
+/// to learn the window has reset.
+const RATE_LIMIT_RETRY: u64 = 25;
 
 /// Whether a sync failure is Spotify refusing for quota rather than a transient
 /// fault worth retrying quickly.
@@ -1758,6 +1762,8 @@ pub(crate) fn is_rate_limit(err: &str) -> bool {
     })
 }
 
+/// Drop keychain entries left behind by removed providers. Their commands and
+/// readers are gone, so the values can never be used again and would otherwise
 /// sit in the OS keyring (or the config-dir file fallback) indefinitely. This
 /// also covers secrets written by older builds before the removal, which no
 /// config migration can reach.
@@ -2224,6 +2230,10 @@ impl Daemon {
                 let sync_inner = Arc::clone(&spotify_inner);
                 tokio::spawn(async move {
                     let mut delay_secs: u64 = 5;
+                    // Whether this streak of 429s has already been reported. A
+                    // success returns below, so the flag never has to be
+                    // cleared — only a streak reaching the log twice matters.
+                    let mut rate_limit_logged = false;
                     loop {
                         let client = { sync_inner.spotify.lock().await.client() };
                         let Some(client) = client else {
@@ -2267,26 +2277,35 @@ impl Daemon {
                                 // re-issues `/v1/me` plus the whole paginator —
                                 // 17 calls to one endpoint for a single
                                 // reconnect, every one of them refused by the
-                                // same exhausted budget. So on a 429: stop, and
-                                // retry on a long fixed interval instead, which
-                                // is slower than doubling but bounded and
-                                // self-healing when the window resets.
+                                // same exhausted budget. So on a 429: step aside
+                                // and retry on `RATE_LIMIT_RETRY`, which is safe
+                                // to be short because the latch keeps every other
+                                // path quiet until a call comes back clean.
                                 if is_rate_limit(&e) {
                                     let cached = {
                                         let mut spotify = sync_inner.spotify.lock().await;
                                         spotify.note_api_status(429);
                                         spotify.has_cached_playlists()
                                     };
-                                    if cached {
-                                        warn!(
-                                            "spotify quota spent (429) — keeping the cached \
-                                             playlists and retrying in {RATE_LIMIT_RETRY}s"
-                                        );
-                                    } else {
-                                        warn!(
-                                            "spotify quota spent (429) and nothing cached — \
-                                             retrying in {RATE_LIMIT_RETRY}s"
-                                        );
+                                    // `note_api_status` only warns on the edge, so
+                                    // this repeats once per retry — a line every
+                                    // `RATE_LIMIT_RETRY` for as long as the quota
+                                    // is gone. Say it once per streak instead:
+                                    // the condition is the latch's, and the latch
+                                    // already says so when it closes.
+                                    if !rate_limit_logged {
+                                        rate_limit_logged = true;
+                                        if cached {
+                                            warn!(
+                                                "spotify quota spent (429) — keeping the cached \
+                                                 playlists and retrying every {RATE_LIMIT_RETRY}s"
+                                            );
+                                        } else {
+                                            warn!(
+                                                "spotify quota spent (429) and nothing cached — \
+                                                 retrying every {RATE_LIMIT_RETRY}s"
+                                            );
+                                        }
                                     }
                                     tokio::time::sleep(Duration::from_secs(RATE_LIMIT_RETRY)).await;
                                     delay_secs = 5;
