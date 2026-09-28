@@ -88,6 +88,10 @@ VERSION=""
 CHANNEL="stable"
 PREFIX="${PREFIX:-$HOME/.local}"
 ASSUME_YES=0
+# Set by `resolve_asset_url`. Script scope, like `BOOTSTRAP_TMPDIR`, so the
+# name survives the call and `set -u` still sees a value.
+ASSET_URL=""
+RELEASE_NAME=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -198,23 +202,29 @@ resolve_latest_stable_tag() {
 # old name with a 301 to the new one. Without it every lookup reads as an empty
 # release, which the stable path absorbed via its URL fallback but the nightly
 # path reported as "not published yet" however many builds had succeeded.
+#
+# Sets ASSET_URL and RELEASE_NAME instead of printing the URL: a `$(...)` capture
+# would run this in a subshell, where the release name — the only source of the
+# nightly's commit — is discarded.
 #   resolve_asset_url <tag> <archive> [strict]
 resolve_asset_url() {
   local tag="$1" archive="$2" strict="${3:-0}"
   local direct="https://github.com/${REPO}/releases/download/${tag}/${archive}"
-  local names
-  names="$(curl -sfL "https://api.github.com/repos/${REPO}/releases/tags/${tag}" 2>/dev/null \
-    | sed 's/}, *{/\n/g' \
-    | grep -o '"name": *"[^"]*"' \
-    | sed 's/^"name": *"//; s/"$//')" || true
-  if printf '%s\n' "${names}" | grep -qxF "${archive}"; then
-    printf '%s\n' "${direct}"
+  local body head
+  body="$(curl -sfL "https://api.github.com/repos/${REPO}/releases/tags/${tag}" 2>/dev/null)" || body=""
+  # A release shares its `"name"` key with every asset it carries, but the assets
+  # all sit inside the `assets` array, so cutting the body at that key leaves the
+  # release's own name as the only match.
+  head="${body%%\"assets\"*}"
+  RELEASE_NAME="$(printf '%s' "${head}" | sed -n 's/.*"name": *"\([^"]*\)".*/\1/p' | head -1)"
+  if printf '%s' "${body}" | grep -qF "\"name\": \"${archive}\""; then
+    ASSET_URL="${direct}"
     return 0
   fi
   if [ "${strict}" = 1 ]; then
     return 1
   fi
-  printf '%s\n' "${direct}"
+  ASSET_URL="${direct}"
   return 0
 }
 
@@ -238,15 +248,28 @@ bootstrap_install() {
   fi
 
   local archive_name="gtm-${PLATFORM}.tar.gz"
-  local url=""
   if [ "${CHANNEL}" = "nightly" ]; then
     # Resolve strictly against the published nightly so a draft (mid-build)
     # resolves to a clear "try again" instead of a dead 404 URL.
-    url="$(resolve_asset_url "${tag}" "${archive_name}" 1)" || {
+    resolve_asset_url "${tag}" "${archive_name}" 1 || {
       die "nightly archive '${archive_name}' is not published yet — the latest nightly build may still be running or failed. Retry in a few minutes, or install a stable release with: install.sh --version <ver>"
     }
   else
-    url="$(resolve_asset_url "${tag}" "${archive_name}")"
+    resolve_asset_url "${tag}" "${archive_name}"
+  fi
+  local url="${ASSET_URL}"
+
+  # Name the build rather than the file. The platform triple is already decided
+  # by the machine this runs on and says nothing to the person reading it, while
+  # the version is the one fact that tells two installs apart — and on a nightly,
+  # where the version barely moves, only the commit does.
+  local label sha=""
+  if [ "${CHANNEL}" = "nightly" ]; then
+    # Nightly releases are named `<version>+<short sha>+nightly`.
+    sha="$(printf '%s' "${RELEASE_NAME}" | sed -n 's/.*+\([0-9a-f]\{7,\}\)+.*/\1/p')"
+    label="gtm (nightly at ${sha:-unidentified build})"
+  else
+    label="gtm (${tag#v})"
   fi
 
   # Script-scope on purpose (no `local`): the EXIT trap must still read it
@@ -257,11 +280,11 @@ bootstrap_install() {
   BOOTSTRAP_TMPDIR="$(mktemp -d)" || die "mktemp failed"
   trap 'rm -rf "${BOOTSTRAP_TMPDIR:?}"' EXIT
 
-  log "📥 downloading ${archive_name}"
+  log "📥 downloading ${label}"
   if ! download_simple "${url}" "${BOOTSTRAP_TMPDIR}/${archive_name}"; then
     die "download failed: ${url}"
   fi
-  ok "downloaded ${archive_name}"
+  ok "downloaded ${label}"
 
   tar -xzf "${BOOTSTRAP_TMPDIR}/${archive_name}" -C "${BOOTSTRAP_TMPDIR}"
 
