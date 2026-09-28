@@ -9,4 +9,6 @@ DIRECTORY.md
 .entire/
 .opencode/
 .agents/opencode/
-.bench/
+.bench/*
+!.bench/BENCHMARK.md
+!.bench/stats.json

@@ -164,7 +164,7 @@ gtm/
 │       ├── tags.rs         Audio tag writing (lofty)
 │       └── cleaner.rs      YouTube title/filename cleaning
 ├── gtm/build/              Build-time helpers, incl. build/completions.rs
-├── docs/                   Documentation (manpage sources)
+├── docs/man/               Manpage sources
 ├── scripts/build/          Build scripts (packaging, manpages, verification)
 ├── dist/                   Packaging files (systemd service, desktop entry, termux/rpm/arch)
 ├── assets/                 Icons and artwork

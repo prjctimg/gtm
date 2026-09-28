@@ -6,7 +6,7 @@ trap 'rm -f "${PYF:-}" "${DOC_TMP:-}"' EXIT
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 BENCH_DIR="${REPO_DIR}/.bench"
-OUT="${REPO_DIR}/BENCHMARK.md"
+OUT="${BENCH_DIR}/BENCHMARK.md"
 THIS_TAG=""
 
 while [[ $# -gt 0 ]]; do
@@ -167,7 +167,7 @@ for t in ${TAG_ORDER}; do
 done
 MARKERS="${MARKERS:1}"
 
-STATS_FILE="${REPO_DIR}/stats.json"
+STATS_FILE="${BENCH_DIR}/stats.json"
 
 SERIES_JSON="$(
   jq -cs 'sort_by(.date) | {
@@ -321,8 +321,8 @@ __MARKERS__
 - Harness: `scripts/bench/run.sh <player> <file> <seconds>`; collection:
   `scripts/bench/collect.sh <tag>` writes ephemeral results to `.bench/`; this
   renderer: `scripts/bench/render.sh` publishes them into this file and emits
-  the machine-readable `stats.json` (series + this-vs-previous deltas) that is
-  committed alongside it for visualization tools.
+  `.bench/stats.json` (series + this-vs-previous deltas) alongside it, both
+  committed for visualization tools.
 EOF
 )"
 

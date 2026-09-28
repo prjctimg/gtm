@@ -707,7 +707,7 @@ jobs:
           attempt=0
           while true; do
             if git diff --cached --quiet; then
-              git add -f BENCHMARK.md stats.json assets/fixtures
+              git add -f .bench/BENCHMARK.md .bench/stats.json assets/fixtures
             fi
             if git diff --cached --quiet; then
               echo "no benchmark changes to commit"
@@ -739,8 +739,8 @@ jobs:
         with:
           name: bench-results
           path: |
-            BENCHMARK.md
-            stats.json
+            .bench/BENCHMARK.md
+            .bench/stats.json
           if-no-files-found: error
 
   crates-io:
