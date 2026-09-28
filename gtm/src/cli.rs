@@ -16,7 +16,7 @@ use crate::shared::ipc::MetadataPatch;
 use crate::shared::playlist::PlaylistFormatKind;
 use crate::shared::resolve_command_socket;
 use crate::shared::secret::{
-    LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, get_secret, set_secret,
+    LASTFM_API_KEY, LASTFM_API_SECRET, SPOTIFY_CLIENT_ID, delete_secret, get_secret, set_secret,
 };
 use crate::shared::spotify::{LIBRESPOT_CLIENT_ID, SpotifyStatus};
 use crate::shared::track::LrcData;
@@ -1607,19 +1607,37 @@ async fn spotify_login(
     // and it is the reason you would have created one. An empty result, from a
     // blank prompt or no stored secret, falls back to librespot's public desktop
     // app so linking also works with no dashboard app at all.
+    //
+    // librespot's id is treated as nothing stored: an earlier build persisted it
+    // when the default was chosen, and honouring it here would keep the link
+    // pointing at the app id Spotify rate-limits. It cannot be cleared from the
+    // keychain reliably, so it is filtered rather than expected to be removed.
+    let is_usable = |s: &str| !s.trim().is_empty() && s.trim() != LIBRESPOT_CLIENT_ID;
     let client_id = match client_id {
-        Some(c) => c,
-        None => match get_secret(SPOTIFY_CLIENT_ID) {
+        Some(c) if is_usable(&c) => c,
+        _ => match get_secret(SPOTIFY_CLIENT_ID).filter(|c| is_usable(c)) {
             Some(c) => c,
             None => masked_prompt("Spotify Client ID (blank for the default app): ")?,
         },
     };
-    let client_id = if client_id.trim().is_empty() {
+    let client_id = client_id.trim().to_string();
+    // Only a real app is worth remembering. Storing the fallback made the Web
+    // API adopt librespot's public id as this account's own, and that id is
+    // shared by every librespot install — Spotify rate-limits it into `429 Too
+    // Many Requests` on calls as ordinary as `/v1/me`, so the link appeared to
+    // work and then every later request failed. With nothing stored,
+    // `oauth_client_id` falls back to it only when there is no real app, which
+    // is exactly the intent of choosing the default here.
+    if client_id.is_empty() {
+        delete_secret(SPOTIFY_CLIENT_ID);
+    } else {
+        set_secret(SPOTIFY_CLIENT_ID, &client_id);
+    }
+    let client_id = if client_id.is_empty() {
         LIBRESPOT_CLIENT_ID.to_string()
     } else {
-        client_id.trim().to_string()
+        client_id
     };
-    set_secret(SPOTIFY_CLIENT_ID, &client_id);
 
     let url = client
         .spotify()

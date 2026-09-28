@@ -110,12 +110,21 @@ impl SpotifyManager {
 
     /// The client id to refresh with: the file written at link time, else the
     /// keychain copy, else empty (caller falls back to librespot's app).
+    ///
+    /// librespot's own id is filtered out even if it was written by an earlier
+    /// build. Not only is it the wrong identity for the Web API — a link made
+    /// with the default app used to persist it, and there is no dependable way
+    /// to clear it again (the keychain may be locked, and `secret-tool` may not
+    /// be installed). Reading past it would keep serving `429` on `/v1/me`
+    /// indefinitely, so treating it as "nothing stored" is what actually
+    /// repairs those links. [`Self::save_client_id`] no longer writes it.
     fn stored_client_id(&self) -> String {
+        let is_usable = |s: &str| !s.is_empty() && s != LIBRESPOT_CLIENT_ID;
         std::fs::read_to_string(self.client_path())
             .ok()
             .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .or_else(|| get_secret(SPOTIFY_CLIENT_ID))
+            .filter(|s| is_usable(s))
+            .or_else(|| get_secret(SPOTIFY_CLIENT_ID).filter(|s| is_usable(s)))
             .unwrap_or_default()
     }
 
@@ -144,9 +153,18 @@ impl SpotifyManager {
 
     /// Record the authorised client id in both stores. Called when the OAuth
     /// flow starts, so a restart can still refresh with the same app.
+    ///
+    /// librespot's own client id is never stored. It is a public id shared by
+    /// every librespot install, so persisting it makes the Web API adopt it as
+    /// this account's app identity — and Spotify rate-limits it into `429 Too
+    /// Many Requests` on ordinary calls like `/v1/me`. The link flow
+    /// substitutes it as a fallback so linking works with no dashboard app at
+    /// all, but that substitution is a *use-time* decision: leaving it
+    /// unstored keeps [`Self::oauth_client_id`] free to return the real app
+    /// when one exists, and only fall back when none does.
     pub fn save_client_id(&self, id: &str) -> Result<(), String> {
         let id = id.trim();
-        if id.is_empty() {
+        if id.is_empty() || id == LIBRESPOT_CLIENT_ID {
             return Ok(());
         }
         std::fs::create_dir_all(&self.config_dir).map_err(|e| format!("create config dir: {e}"))?;
