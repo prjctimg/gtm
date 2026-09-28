@@ -25,11 +25,16 @@ impl App {
     }
 
     /// Open the SpotifyLink picker. This does NOT start the OAuth flow: the
-    /// screen renders the redirect port and waits for Enter, which is what
-    /// starts it. There is no client id to seed or review any more — the app is
-    /// fixed, so a form field for it could only mislead.
+    /// screen renders the client id and redirect port and waits for Enter, which
+    /// is what starts it.
+    ///
+    /// The client id field is left as-is rather than reset, so a user who
+    /// already supplied one does not retype it on every re-link — the id
+    /// persists on disk anyway, and this only avoids a pointless retype when
+    /// the form is reopened in the same session.
     pub fn open_spotify_link_form(&mut self) {
         self.spotify.oauth_port = "8990".to_string();
+        self.spotify.oauth_field = 0;
         // No pending flow: the picker shows the input form, not a waiting view.
         self.spotify.oauth_pending = false;
         self.spotify.oauth_url = None;

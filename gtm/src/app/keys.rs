@@ -853,6 +853,14 @@ impl App {
                                 if self.library_category == 5 {
                                     self.spotify.playlist_tracks_cache.clear();
                                 }
+                            } else if self.library_category == 13
+                                && self.podcast.episodes_feed_id.is_some()
+                            {
+                                // Podcasts: leave the episode list for the feed
+                                // list. Same two-level shape as the charts.
+                                self.podcast.episodes.clear();
+                                self.podcast.episodes_feed_id = None;
+                                self.set_list_pos(0);
                             } else if !self.library_pane_focus {
                                 self.library_pane_focus = true;
                             }
@@ -1154,6 +1162,31 @@ impl App {
                                 if pos < folders.len() {
                                     self.browse_detail = Some(folders[pos].0.clone());
                                     self.set_list_pos(0);
+                                }
+                            } else if self.library_category == 13 {
+                                // Podcasts: feeds → episodes → play, mirroring
+                                // the chart levels. Reuses the same fetch and
+                                // play calls the picker drives, so both
+                                // surfaces stay in step.
+                                if self.podcast.episodes_feed_id.is_none() {
+                                    let pos = self.list_pos();
+                                    if let Some(feed) = self.podcast.feeds.get(pos).cloned() {
+                                        self.podcast.episodes.clear();
+                                        self.podcast.episodes_feed_id = Some(feed.id.clone());
+                                        self.set_list_pos(0);
+                                        self.fetch_podcast_episodes(feed.id);
+                                    }
+                                } else {
+                                    let pos = self.list_pos();
+                                    if let (Some(feed_id), Some(_ep)) = (
+                                        self.podcast.episodes_feed_id.clone(),
+                                        self.podcast.episodes.get(pos),
+                                    ) {
+                                        let c = self.client.clone();
+                                        let _ = tx.try_send(TuiCommand::fire(move || async move {
+                                            let _ = c.podcast().play(&feed_id, pos).await;
+                                        }));
+                                    }
                                 }
                             } else if self.library_category == 12 {
                                 // Top Charts: three-level navigation
@@ -1814,6 +1847,12 @@ impl App {
                             KeyCode::Esc => {
                                 if self.browse_detail.is_some() {
                                     self.browse_detail = None;
+                                    self.set_list_pos(0);
+                                } else if self.library_category == 13
+                                    && self.podcast.episodes_feed_id.is_some()
+                                {
+                                    self.podcast.episodes.clear();
+                                    self.podcast.episodes_feed_id = None;
                                     self.set_list_pos(0);
                                 } else if self.library_category == 12 {
                                     // Top Charts: three-level back navigation
@@ -3541,9 +3580,17 @@ impl App {
                             }
                         }
                         PickerId::SpotifyLink => {
-                            // No client id to supply: the app is fixed on the
-                            // daemon side, because Connect only accepts a token
-                            // issued by the client id it registers as.
+                            // The client id is the *Web API* app — the one that
+                            // mints the token used for search, artwork and
+                            // playlist sync. Playback is unaffected: the daemon
+                            // still registers the Connect session as librespot's
+                            // app, which is the only recognised one. Blank falls
+                            // back to librespot's id, so the form works for
+                            // anyone who does not want their own app.
+                            let client_id = {
+                                let id = self.spotify.oauth_client_id.trim().to_string();
+                                (!id.is_empty()).then_some(id)
+                            };
                             let port = self
                                 .spotify
                                 .oauth_port
@@ -3552,7 +3599,7 @@ impl App {
                                 .unwrap_or(8990);
                             // Keep the picker open and show a waiting state until
                             // the daemon reports the link completed.
-                            self.start_spotify_oauth(port);
+                            self.start_spotify_oauth(port, client_id);
                         }
                         PickerId::Queue => {
                             // The read-only tracklist has nothing to play: a
@@ -4440,8 +4487,11 @@ impl App {
                             }
                         }
                         PickerId::SpotifyLink => {
-                            // Only the port is editable; the app id is fixed.
-                            self.spotify.oauth_port.push(c);
+                            if self.spotify.oauth_field == 0 {
+                                self.spotify.oauth_client_id.push(c);
+                            } else {
+                                self.spotify.oauth_port.push(c);
+                            }
                         }
                         PickerId::PlaylistSelect if self.playlist_creating => {
                             top.query.push(c);
@@ -4471,6 +4521,10 @@ impl App {
                         self.spotify.preview_fetch.clear();
                     } else if top.id == PickerId::EditMetadata {
                         self.metadata.field_idx = (self.metadata.field_idx + 1) % 7;
+                    } else if top.id == PickerId::SpotifyLink {
+                        // Client id first (it is the optional one that decides
+                        // the quota), then the port.
+                        self.spotify.oauth_field = (self.spotify.oauth_field + 1) % 2;
                     }
                 }
             }
@@ -4494,7 +4548,11 @@ impl App {
                             }
                         }
                         PickerId::SpotifyLink => {
-                            self.spotify.oauth_port.pop();
+                            if self.spotify.oauth_field == 0 {
+                                self.spotify.oauth_client_id.pop();
+                            } else {
+                                self.spotify.oauth_port.pop();
+                            }
                         }
                         PickerId::PlaylistSelect if self.playlist_creating => {
                             top.query.pop();

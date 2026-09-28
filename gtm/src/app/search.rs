@@ -126,27 +126,7 @@ impl App {
                 }
             }
             PickerId::PodcastFeeds => {
-                self.podcast.feeds_pending = true;
-                let c = self.client.clone();
-                let ipc_tx = self.ipc_tx.clone();
-                tokio::spawn(async move {
-                    match c.podcast().feeds().await {
-                        Ok(f) => {
-                            let _ = ipc_tx.send(IpcResult::PodcastFeeds(f));
-                            match c.podcast().status().await {
-                                Ok(s) => {
-                                    let _ = ipc_tx.send(IpcResult::PodcastStatus(Some(s)));
-                                }
-                                Err(e) => {
-                                    self_err(&ipc_tx, format!("podcast status failed: {e}"));
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            self_err(&ipc_tx, format!("podcast feeds failed: {e}"));
-                        }
-                    }
-                });
+                self.fetch_podcast_feeds();
             }
             PickerId::PodcastEpisodes => {
                 if let Some(feed_id) = self.podcast.episodes_feed_id.clone() {
@@ -228,6 +208,7 @@ impl App {
             "Recently Added" => self.recently_added_cache.len(),
             "Genres" => self.unique_genres().len(),
             "Folders" => self.unique_folders().len(),
+            "Podcasts" => self.podcast.feeds.len(),
             _ => 0,
         }
     }
@@ -245,6 +226,14 @@ impl App {
         // the previous one's playlist art behind.
         self.clear_row_cover();
         self.clear_list_cover();
+        // Entering the Podcasts category must land on the feed list, not on
+        // whatever feed was drilled into last time — the episode list belongs
+        // to the feed it was opened from, and re-entering the category is a
+        // fresh start rather than a resume.
+        if self.library_category == 13 {
+            self.podcast.episodes.clear();
+            self.podcast.episodes_feed_id = None;
+        }
         if self.in_spotify_playlists() {
             self.fetch_list_cover();
         }
@@ -255,6 +244,7 @@ impl App {
             8 => self.fetch_list_tracks(8),
             9 => self.fetch_list_tracks(9),
             12 => self.fetch_chart_sources(),
+            13 => self.fetch_podcast_feeds(),
             _ => {}
         }
         // Spotify pane: self-heal an empty playlist cache with a single
