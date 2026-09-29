@@ -72,15 +72,35 @@ impl Pickers {
             let is_current = i == app.queue.cursor;
             let is_sel = i == sel;
             let prefix = if is_sel { " > " } else { "   " };
-            let icon = if is_current { "\u{25b6} " } else { "\u{266b} " };
+            // A live stream has no end and no length, so it must not wear the
+            // same music note and a `[00:00]` as a local file whose length is
+            // merely unknown — those are different things, and the queue is
+            // where the difference decides whether the next track arrives.
+            let live = is_live_stream(&track.path);
+            let remote = classify_remote_source(&track.path).is_some();
+            let icon = if is_current {
+                "\u{25b6} "
+            } else if live {
+                "\u{1f4fb} "
+            } else if remote {
+                "\u{1f517} "
+            } else {
+                "\u{266b} "
+            };
             let label = track.display_title();
             let artist = if track.artist.is_empty() {
                 String::new()
             } else {
                 format!(" - {}", track.artist)
             };
-            let dur = format_duration_short(track.duration as u64);
-            let row = format!("{prefix}{icon}{label}{artist} [{}]", dur);
+            let dur = if live {
+                "live".to_string()
+            } else if remote {
+                "stream".to_string()
+            } else {
+                format_duration_short(track.duration as u64)
+            };
+            let row = format!("{prefix}{icon}{label}{artist} [{dur}]");
 
             let row = if is_sel {
                 format!("{row}{}", " ".repeat(row_pad(&row, inner.width)))
@@ -95,6 +115,10 @@ impl Pickers {
                 Style::default()
                     .fg(app.theme.accent)
                     .add_modifier(Modifier::BOLD)
+            } else if live || remote {
+                // Distinct from a local file, and still readable against the
+                // selection colours it never shares.
+                Style::default().fg(app.theme.fg_dim)
             } else {
                 Style::default()
             };

@@ -556,6 +556,7 @@ impl Spotify {
                     duration,
                 },
                 play,
+                None,
             )
             .await;
         }
@@ -708,6 +709,7 @@ impl Spotify {
                     duration,
                 },
                 play,
+                None,
             )
             .await?;
             return Ok(DaemonRes::Ok);
@@ -775,6 +777,7 @@ impl Spotify {
         uri: &str,
         meta: StreamMeta<'_>,
         play: bool,
+        position: Option<u64>,
     ) -> Result<DaemonRes, CoreError> {
         let StreamMeta {
             title,
@@ -791,7 +794,7 @@ impl Spotify {
         let was_empty = {
             let mut state = inner.state.write().await;
             let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
-            let added = queue::add(&mut state, uri, None);
+            let added = queue::add(&mut state, uri, position);
             if let Some(entry) = state.queue.iter_mut().rev().find(|t| t.path == added.path) {
                 entry.title = title.to_string();
                 entry.artist = artist.to_string();

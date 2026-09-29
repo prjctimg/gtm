@@ -132,8 +132,34 @@ fn split_index(state: &DaemonState, idx: usize) -> Option<(bool, usize)> {
     }
 }
 
+/// Whether `path` is already in the queue, as `(is_user, local)`.
+///
+/// Path is the only identity available: every provider entry — Spotify,
+/// podcast, radio, a chart row — is queued with `id == 0`, so an id-based
+/// comparison would call every provider track the same track.
+fn find_path(state: &DaemonState, path: &str) -> Option<(bool, usize)> {
+    if let Some(i) = state.queue.iter().position(|t| t.path == path) {
+        return Some((true, i));
+    }
+    state
+        .default_list
+        .iter()
+        .position(|t| t.path == path)
+        .map(|i| (false, i))
+}
+
 /// Insert a track into the merged view at `pos`, maintaining the cursor.
-fn insert_at(state: &mut DaemonState, track: TrackInfo, pos: usize) {
+///
+/// Returns `false` when the path is already queued, in which case nothing is
+/// inserted. There was no duplicate check anywhere: adding a track that was
+/// already queued, adding a playlist that overlapped the queue, or pressing
+/// `a` twice on a row all produced a second copy — and because `Cmd::play`
+/// rotates by *path*, the two copies were indistinguishable afterwards, so
+/// playing one left the other as a phantom row.
+fn insert_at(state: &mut DaemonState, track: TrackInfo, pos: usize) -> bool {
+    if find_path(state, &track.path).is_some() {
+        return false;
+    }
     let ulen = state.queue.len();
     if pos <= ulen {
         state.queue.insert(pos, track);
@@ -144,11 +170,13 @@ fn insert_at(state: &mut DaemonState, track: TrackInfo, pos: usize) {
             state.default_cursor += 1;
         }
     }
+    true
 }
 
 /// Add a track.  `position == None` queues it to play next (right after the
 /// current entry); `Some(pos)` inserts at an explicit merged-view index.
-/// Returns the created TrackInfo.
+/// Returns the entry now in the queue, which for a path that was already
+/// queued is the pre-existing copy rather than a new one.
 pub fn add(state: &mut DaemonState, path: &str, position: Option<u64>) -> TrackInfo {
     let mut added = add_many(state, &[path.to_string()], position);
     added.pop().expect("add_many returns one entry per path")
@@ -180,22 +208,48 @@ pub fn add_many(
     position: Option<u64>,
 ) -> Vec<TrackInfo> {
     let mut added = Vec::with_capacity(paths.len());
-    let insert_pos = insert_base(state, position);
-    for (i, path) in paths.iter().enumerate() {
-        let track = resolve_track(path);
-        let track_clone = track.clone();
-        insert_at(state, track, insert_pos + i);
-        added.push(track_clone);
+    let mut at = insert_base(state, position);
+    for path in paths {
+        added.push(place(state, resolve_track(path), &mut at, position));
     }
     added
+}
+
+/// Insert `track` at `at`, advancing `at` only if it was actually inserted, and
+/// return the entry that is now in the queue — the new one, or the pre-existing
+/// copy when the path was already queued.
+///
+/// The insert position has to track *successful* inserts rather than the loop
+/// index: a skipped duplicate would otherwise leave every later track one slot
+/// too far along.
+fn place(
+    state: &mut DaemonState,
+    track: TrackInfo,
+    at: &mut usize,
+    position: Option<u64>,
+) -> TrackInfo {
+    if insert_at(state, track.clone(), *at) {
+        if position.is_none() {
+            *at += 1;
+        }
+        return track;
+    }
+    let path = track.path.clone();
+    match find_path(state, &path) {
+        Some((true, i)) => state.queue[i].clone(),
+        Some((false, i)) => state.default_list[i].clone(),
+        None => track,
+    }
 }
 
 /// Insert a pre-resolved track using the same merged-view placement as
 /// [`add_many`]. Metadata gathering happens before the `DaemonState` write
 /// lock is taken, so the insert itself stays free of disk I/O and tag reads.
-pub fn add_resolved(state: &mut DaemonState, track: TrackInfo, position: Option<u64>) {
-    let insert_pos = insert_base(state, position);
-    insert_at(state, track, insert_pos);
+/// Returns the entry now in the queue, which for an already-queued path is the
+/// pre-existing copy.
+pub fn add_resolved(state: &mut DaemonState, track: TrackInfo, position: Option<u64>) -> TrackInfo {
+    let mut at = insert_base(state, position);
+    place(state, track, &mut at, position)
 }
 
 /// Insert a batch of pre-resolved tracks, preserving order.
@@ -204,10 +258,11 @@ pub fn add_resolved(state: &mut DaemonState, track: TrackInfo, position: Option<
 /// than adding by path and patching afterwards: the patch has to find the entry
 /// by path, so a playlist listing the same track twice writes both copies'
 /// metadata onto the first one and leaves the second as a bare placeholder.
+/// Duplicates within the batch and against the existing queue are skipped.
 pub fn add_resolved_many(state: &mut DaemonState, tracks: Vec<TrackInfo>, position: Option<u64>) {
-    let insert_pos = insert_base(state, position);
-    for (i, track) in tracks.into_iter().enumerate() {
-        insert_at(state, track, insert_pos + i);
+    let mut at = insert_base(state, position);
+    for track in tracks {
+        place(state, track, &mut at, position);
     }
 }
 
@@ -256,9 +311,13 @@ pub fn move_track(state: &mut DaemonState, from: u64, to: u64) -> bool {
         }
         t
     };
-    let ulen = state.queue.len();
-    let tlocal = if to < ulen { to } else { to - ulen };
-    insert_at(state, track, tlocal);
+    // `to` is already a merged-view index and `insert_at` reads it as one.
+    // It used to be converted to a *local* index first, which then had the
+    // queue length subtracted from it a second time inside `insert_at` — so a
+    // move into the default-list region landed `ulen` slots too early. With a
+    // queue of 2 over a default list of 4, moving row 0 to row 5 produced
+    // `B C D A E F` instead of `B C D E F A`.
+    insert_at(state, track, to);
     true
 }
 
@@ -365,21 +424,54 @@ mod tests {
         }
     }
 
-    /// A playlist that lists the same track twice must give each copy its own
-    /// metadata. The add-then-patch shape could not: it located the entry to
-    /// update by path, so the second copy was written onto the first and left
-    /// the real second copy as a bare placeholder.
+    /// A track already queued is not queued twice.
+    ///
+    /// Nothing checked this: adding a queued track, adding a playlist that
+    /// overlapped the queue, or pressing `a` twice on a row all left a second
+    /// copy behind. Identity is the path, because every provider entry is
+    /// queued with `id == 0`.
     #[test]
-    fn duplicate_uris_keep_their_own_metadata() {
+    fn an_already_queued_path_is_not_duplicated() {
         let mut state = DaemonState::default();
         let uri = "spotify:track:4cOdK2wGLETKBW3PvgPWqT";
+        add_resolved(&mut state, track(uri, "Song"), None);
+        add_resolved(&mut state, track(uri, "Song"), None);
+        assert_eq!(state.queue.len(), 1, "the second add must be a no-op");
+        // The pre-existing copy is returned, so a caller that wants to play it
+        // still gets a usable entry.
+        assert_eq!(
+            add_resolved(&mut state, track(uri, "Song"), None).title,
+            "Song"
+        );
+    }
+
+    /// The same rule holds within a single batch, and the skip must not shift
+    /// the tracks that follow it.
+    #[test]
+    fn a_duplicate_inside_a_batch_does_not_shift_the_rest() {
+        let mut state = DaemonState::default();
         add_resolved_many(
             &mut state,
-            vec![track(uri, "Song"), track(uri, "Song (Remastered)")],
+            vec![
+                track("a", "A"),
+                track("b", "B"),
+                track("a", "A again"),
+                track("c", "C"),
+            ],
             None,
         );
-        let titles: Vec<&str> = state.queue.iter().map(|t| t.title.as_str()).collect();
-        assert_eq!(titles, ["Song", "Song (Remastered)"]);
+        let paths: Vec<&str> = state.queue.iter().map(|t| t.path.as_str()).collect();
+        assert_eq!(paths, ["a", "b", "c"], "C must land third, not fourth");
+    }
+
+    /// A path in the default list also counts as already queued — the merged
+    /// view is one list to the user.
+    #[test]
+    fn a_default_list_entry_is_not_duplicated_into_the_queue() {
+        let mut state = DaemonState::default();
+        state.default_list = vec![track("/music/song.mp3", "Song")];
+        add_resolved(&mut state, track("/music/song.mp3", "Song"), None);
+        assert!(state.queue.is_empty(), "must not shadow the library entry");
     }
 
     /// Batch order survives the insert, which is what `shuffle` ordering depends
@@ -396,6 +488,39 @@ mod tests {
         assert_eq!(paths, ["spotify:track:a", "spotify:track:b"]);
     }
 
+    /// A move across the user-queue/default-list boundary lands where it was
+    /// asked to.
+    ///
+    /// The target index used to be converted to a *local* index and then had the
+    /// queue length subtracted from it again inside `insert_at`, so moving row 0
+    /// to the end of a 2-track queue over a 4-track library produced
+    /// `B C D A E F` instead of `B C D E F A`.
+    #[test]
+    fn a_move_into_the_default_region_lands_where_asked() {
+        let mut state = DaemonState::default();
+        state.queue = vec![track("a", "A"), track("b", "B")];
+        state.default_list = vec![
+            track("c", "C"),
+            track("d", "D"),
+            track("e", "E"),
+            track("f", "F"),
+        ];
+        assert!(move_track(&mut state, 0, 5), "move should succeed");
+        let (merged, _) = visible(&state);
+        let paths: Vec<&str> = merged.iter().map(|t| t.path.as_str()).collect();
+        assert_eq!(paths, ["b", "c", "d", "e", "f", "a"]);
+    }
+
+    /// A move within the user queue is unaffected.
+    #[test]
+    fn a_move_inside_the_queue_lands_where_asked() {
+        let mut state = DaemonState::default();
+        state.queue = vec![track("a", "A"), track("b", "B"), track("c", "C")];
+        assert!(move_track(&mut state, 2, 0));
+        let paths: Vec<&str> = state.queue.iter().map(|t| t.path.as_str()).collect();
+        assert_eq!(paths, ["c", "a", "b"]);
+    }
+
     /// A provider URI has no file to read a title from, so the queue must never
     /// show the raw URI.
     #[test]
@@ -403,5 +528,22 @@ mod tests {
         let t = resolve_track("spotify:track:4cOdK2wGLETKBW3PvgPWqT");
         assert_eq!(t.title, "Spotify Track");
         assert!(!t.title.contains("spotify:"));
+    }
+
+    /// A provider URI is a resource, not a filesystem path, so the queue route
+    /// has to recognise it and hand it to a resolver instead of a tag read.
+    #[test]
+    fn provider_paths_are_recognised() {
+        for p in [
+            "spotify:track:4cOdK2wGLETKBW3PvgPWqT",
+            "podcast://feed/2",
+            "radio://abc",
+            "youtube:xyz",
+        ] {
+            assert!(crate::daemon::is_provider_path(p), "{p}");
+        }
+        for p in ["/music/song.mp3", "song.mp3", "/music", ""] {
+            assert!(!crate::daemon::is_provider_path(p), "{p}");
+        }
     }
 }

@@ -301,6 +301,18 @@ pub async fn resolve_uri(client: &AuthCodePkceSpotify, query: &str) -> Result<St
         .ok_or_else(|| format!("no Spotify match for {q:?}"))
 }
 
+/// Full metadata for one track by bare id.
+///
+/// The queue holds nothing but a `spotify:track:<id>` path, and every label the
+/// row needs — title, artists, album, duration, cover — lives here. Without
+/// this the only thing a queued uri can be titled is `pretty_id`, which is the
+/// literal "Spotify Track".
+pub async fn track(client: &AuthCodePkceSpotify, id: &str) -> Option<SpotifyTrack> {
+    let id = TrackId::from_id(id).ok()?;
+    let full = client.track(id, None).await.ok()?;
+    track_from_playable(&PlayableItem::Track(full))
+}
+
 /// Save a track to the user's Liked Songs. Needs the `user-library-modify`
 /// scope, which a token minted before that scope existed cannot gain by
 /// refreshing, so an older link must be re-authorized first.

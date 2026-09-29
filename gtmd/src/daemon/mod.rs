@@ -3346,7 +3346,14 @@ impl Daemon {
         Self::push_event(inner, DaemonEvent::QueueChanged { queue, cursor });
     }
 
+    /// What the countdown and the crossfade will play next.
+    ///
+    /// Skips entries that cannot be counted down to an end, and only falls
+    /// through to the default list once the queue holds nothing else. A live
+    /// entry has no duration, so previewing one as the next track pointed the
+    /// crossfade and the cover preload at a stream that never ends.
     fn next_track(state: &DaemonState) -> Option<TrackInfo> {
+        let finite = |t: &TrackInfo| t.duration > 0.0 && !Self::path_is_live_stream(&t.path);
         let cur_is_queued = state
             .current_track
             .as_ref()
@@ -3363,10 +3370,17 @@ impl Daemon {
                 state
                     .queue
                     .get(1)
+                    .filter(|t| finite(t))
                     .cloned()
-                    .or_else(|| state.default_list.get(state.default_cursor + 1).cloned())
+                    .or_else(|| {
+                        state
+                            .default_list
+                            .get(state.default_cursor + 1)
+                            .filter(|t| finite(t))
+                            .cloned()
+                    })
             } else {
-                state.queue.first().cloned()
+                state.queue.first().filter(|t| finite(t)).cloned()
             }
         } else if !state.default_list.is_empty() {
             let len = state.default_list.len();
@@ -3428,6 +3442,10 @@ impl Daemon {
 
     async fn step_next(inner: &DaemonInner) -> Result<Option<TrackInfo>, CoreError> {
         let mut resume_key: Option<String> = None;
+        // Set when this call itself parked the outgoing station in the ring, so
+        // the cycle below knows the entry it would pop is the one it just put
+        // there.
+        let mut parked_radio = false;
         {
             let mut history = inner.play_history.lock().await;
             let mut state = inner.state.write().await;
@@ -3442,6 +3460,7 @@ impl Daemon {
                     resume_key = Some(cur.title.clone());
                     if cur.path.starts_with("radio://") {
                         state.radio_history.push(cur.clone());
+                        parked_radio = true;
                         if state.radio_history.len() > MAX_RADIO_HISTORY {
                             state.radio_history.remove(0);
                         }
@@ -3463,11 +3482,16 @@ impl Daemon {
                     return Ok(Some(next));
                 }
             }
-            // If the current track was a radio station, cycle through radio history
-            if state
-                .current_track
-                .as_ref()
-                .is_some_and(|t| t.path.starts_with("radio://"))
+            // Cycle to the next station only when this call did not just park
+            // the current one. `Next` on a queued station used to pop that
+            // station into the ring and then immediately pop it straight back
+            // out, so the real queue, the default list and the fallback were
+            // never reached — the same station replayed until a second press.
+            if !parked_radio
+                && state
+                    .current_track
+                    .as_ref()
+                    .is_some_and(|t| t.path.starts_with("radio://"))
                 && !state.radio_history.is_empty()
             {
                 let next = state.radio_history.remove(0);

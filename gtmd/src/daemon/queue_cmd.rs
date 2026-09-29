@@ -1,5 +1,19 @@
 use super::*;
 
+/// A path that names a provider resource rather than a file on disk.
+///
+/// These arrive from the library and chart pickers, where a row's identity *is*
+/// its uri, and from `gtm queue add`. Treating one as a path is what produced
+/// an untitled "Spotify Track" row: `expand_paths` passes anything that is
+/// neither a directory nor an existing file straight through, and
+/// `resolve_track` then has a uri to work with and no way to label it.
+pub(crate) fn is_provider_path(path: &str) -> bool {
+    path.starts_with("spotify:")
+        || path.starts_with("podcast://")
+        || path.starts_with("radio://")
+        || path.starts_with("youtube:")
+}
+
 pub(crate) struct Queue;
 
 impl Queue {
@@ -43,6 +57,20 @@ impl Queue {
                 Ok(DaemonRes::Ok)
             }
             QueueAction::Add { paths, position } => {
+                // A provider uri is not a filesystem path. `resolve_track` has
+                // no way to turn `spotify:track:<id>` into a title, so the row
+                // landed as the literal "Spotify Track" placeholder and nothing
+                // ever repaired it — the repairing code only runs inside the
+                // provider's own resolver. Route those to the resolver, which
+                // is the same path Enter on the row already took.
+                let remote: Vec<String> = paths
+                    .iter()
+                    .filter(|p| is_provider_path(p))
+                    .cloned()
+                    .collect();
+                if !remote.is_empty() {
+                    return Self::add_remote(inner, &remote, *position).await;
+                }
                 // Directory walk + per-file tag reads all happen on a
                 // blocking thread so adding a huge folder never stalls the
                 // command loop; the state write below only inserts entries.
@@ -68,14 +96,22 @@ impl Queue {
                     let mut state = inner.state.write().await;
                     state.fallback_disabled = false;
                     let w = state.queue.is_empty() && state.status == PlaybackStatus::Stopped;
-                    for track in tracks {
-                        queue::add_resolved(&mut state, track, *position);
-                    }
+                    // One call, so the batch keeps its order. Adding one at a
+                    // time recomputed `insert_base` per track, and that returns
+                    // the "play next" slot every time — so `add a b c` produced
+                    // `head c b a`.
+                    queue::add_resolved_many(&mut state, tracks, *position);
                     drop(state);
                     w
                 };
-                if was_empty {
-                    let _ = Cmd::play(inner, &first_path, 0.0, false).await;
+                if was_empty
+                    && let DaemonRes::Error { message } =
+                        Cmd::play(inner, &first_path, 0.0, false).await?
+                {
+                    // The play result used to be discarded, so a first track
+                    // that could not play — Premium required, stream refused —
+                    // left a queued row, silence, and no error anywhere.
+                    return Ok(DaemonRes::Error { message });
                 }
                 Daemon::push_queue_state(inner).await;
                 Daemon::save_state(inner);
@@ -103,5 +139,65 @@ impl Queue {
                 Ok(DaemonRes::Ok)
             }
         }
+    }
+
+    /// Enqueue provider uris as real, titled, playable rows.
+    ///
+    /// A `spotify:` uri goes through the Spotify resolver, which either queues
+    /// it for native streaming or falls back to a YouTube download, and writes
+    /// the entry with its title, artist, album, duration and cover already
+    /// filled in. Anything the resolver cannot handle is queued unresolved:
+    /// a row the user can see, reorder and remove beats a row that silently
+    /// refuses to play.
+    async fn add_remote(
+        inner: &DaemonInner,
+        paths: &[String],
+        position: Option<u64>,
+    ) -> Result<DaemonRes, CoreError> {
+        let mut queued = 0usize;
+        for path in paths {
+            if path.starts_with("spotify:") && Self::add_spotify(inner, path, position).await {
+                queued += 1;
+                continue;
+            }
+            let mut state = inner.state.write().await;
+            state.fallback_disabled = false;
+            queue::add_resolved_many(&mut state, vec![queue::resolve_track(path)], position);
+            queued += 1;
+        }
+        if queued == 0 {
+            return Ok(DaemonRes::Error {
+                message: format!("nothing to queue from {}", paths.join(", ")),
+            });
+        }
+        Daemon::push_queue_state(inner).await;
+        Daemon::save_state(inner);
+        Ok(DaemonRes::Ok)
+    }
+
+    /// Resolve one `spotify:` uri and enqueue the resolved row.
+    ///
+    /// The uri is all the queue carries, so the metadata has to come from the
+    /// Web API here. Without it the row is the bare placeholder, because
+    /// `resolve_track` is given a uri and no way to label it.
+    async fn add_spotify(inner: &DaemonInner, uri: &str, position: Option<u64>) -> bool {
+        let Ok(client) = linked(inner).await else {
+            return false;
+        };
+        let id = uri.rsplit(':').next().unwrap_or_default();
+        let Some(track) = crate::spotify::api::track(&client, id).await else {
+            return false;
+        };
+        let meta = StreamMeta {
+            title: &track.name,
+            artist: &track.artists,
+            album: track.album.as_deref().unwrap_or(""),
+            image_url: track.image_url.as_deref(),
+            duration: track.duration_ms.map(|ms| ms as f64 / 1000.0),
+        };
+        matches!(
+            Spotify::queue_stream(inner, uri, meta, false, position).await,
+            Ok(DaemonRes::Ok)
+        )
     }
 }
