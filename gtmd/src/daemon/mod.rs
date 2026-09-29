@@ -58,7 +58,6 @@ use crate::lyrics::{LyricsManager, lrc_to_text, meta_from_filename};
 use crate::network;
 use crate::podcast::PodcastManager;
 use crate::providers::spotify::cover::{PRELOAD_LEAD, preload};
-use crate::providers::spotify::oauth::{OAUTH_TIMEOUT, bind_callback};
 use crate::providers::spotify::stream::{SessionSpec, StreamManager};
 use crate::queue;
 use crate::radio::RadioBrowserManager;
@@ -3111,8 +3110,7 @@ impl Daemon {
                 )
                 .await
             }
-            DaemonReq::LastfmAuthUrl => Lastfm::auth_url(inner).await,
-            DaemonReq::LastfmOauthStart { port } => Lastfm::oauth_start(inner, *port).await,
+            DaemonReq::LastfmOauthStart => Lastfm::oauth_start(inner).await,
             DaemonReq::LastfmAuthenticate { token } => Lastfm::authenticate(inner, token).await,
             DaemonReq::LastfmStatus => Lastfm::status(inner).await,
             DaemonReq::LastfmClear => Lastfm::clear(inner).await,

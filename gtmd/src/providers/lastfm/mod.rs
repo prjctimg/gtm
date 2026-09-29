@@ -113,10 +113,63 @@ impl LastfmManager {
             && self.session_key.lock().await.is_some()
     }
 
-    /// Get the authorization URL for the user to grant permission.
-    pub fn auth_url(&self) -> Option<String> {
+    /// Fetch the single-use token that the authorize page will authorize.
+    ///
+    /// Step 4.1 of Last.fm's desktop-application flow, and it was missing
+    /// entirely. The code went straight to `auth.getSession` with a token the
+    /// user had copied off a page that Last.fm only renders when the URL
+    /// carries a token to authorize.
+    ///
+    /// The token is valid for 60 minutes and may be used once (§6.1), so it
+    /// is deliberately not cached: a link that is abandoned simply lets it
+    /// expire.
+    pub async fn request_token(&self) -> Result<String, String> {
+        let api_key = self
+            .api_key
+            .as_ref()
+            .ok_or("Last.fm API key not configured")?;
+        let sig = self.try_sign_params(&[("api_key", api_key), ("method", "auth.getToken")])?;
+
+        let params = [
+            ("method", "auth.getToken"),
+            ("api_key", api_key),
+            ("api_sig", &sig),
+            ("format", "json"),
+        ];
+
+        let json: serde_json::Value = self
+            .client
+            .post(LASTFM_API_URL)
+            .form(&params)
+            .send()
+            .await
+            .map_err(|e| format!("Request failed: {e}"))?
+            .json()
+            .await
+            .map_err(|e| format!("Invalid JSON: {e}"))?;
+
+        if let Some(error) = json.get("error") {
+            return Err(format!("Last.fm error: {error}"));
+        }
+        json.get("token")
+            .and_then(|t| t.as_str())
+            .map(str::to_string)
+            .ok_or_else(|| "no token in auth.getToken response".to_string())
+    }
+
+    /// The page the user clicks *Allow* on, for a token from
+    /// [`Self::request_token`].
+    ///
+    /// §4.2 gives the request as `last.fm/api/auth/?api_key=xxx&token=yyy`,
+    /// and §4.2 also says the browser process is over once permission is
+    /// granted — nothing is sent back. So the token belongs in this URL, and
+    /// the only thing the app has to do afterwards is exchange the token it
+    /// already holds.
+    pub fn auth_url(&self, token: &str) -> Option<String> {
         let api_key = self.api_key.as_ref()?;
-        Some(format!("https://www.last.fm/api/auth/?api_key={api_key}"))
+        Some(format!(
+            "https://www.last.fm/api/auth/?api_key={api_key}&token={token}"
+        ))
     }
 
     /// Exchange a token for a session key after user authorization.
@@ -532,5 +585,33 @@ impl LastfmManager {
 
     pub async fn get_session_key(&self) -> Option<String> {
         self.session_key.lock().await.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The authorize page only renders something the user can *authorize* when
+    /// the request carries a token. Without it Last.fm shows a page with no
+    /// token on it, which is why the flow used to need a callback server and a
+    /// manual copy-paste: the URL it produced was never a URL that could
+    /// complete anything. §4.2 of the auth spec gives the shape exactly.
+    #[test]
+    fn the_authorize_url_carries_the_token() {
+        let mut mgr = LastfmManager::new();
+        mgr.api_key = Some("KEY".into());
+        let url = mgr.auth_url("TOK").expect("api key set");
+        assert!(url.contains("api_key=KEY"), "{url}");
+        assert!(url.contains("token=TOK"), "{url}");
+        // The token is the thing being authorized; it is not optional.
+        assert!(!mgr.auth_url("").unwrap().ends_with("token="), "{url}");
+    }
+
+    /// No api key means no URL, rather than one that would 404 at Last.fm.
+    #[test]
+    fn no_api_key_means_no_authorize_url() {
+        let mgr = LastfmManager::new();
+        assert!(mgr.auth_url("TOK").is_none());
     }
 }

@@ -22,11 +22,10 @@ use crate::shared::spotify::SpotifyStatus;
 use crate::shared::track::LrcData;
 use base64::Engine as _;
 use clap::{Parser, Subcommand};
-use tokio::io::AsyncBufReadExt;
 
 use crate::app::{Prefs, ensure_prefs_file};
 use crate::footer::format_uptime;
-use crate::oauth::{capture_lastfm_token, lastfm_callback_port, mask_credential};
+use crate::oauth::mask_credential;
 use crate::ui::run_tui;
 
 /// Parse a CLI `--format` value into a [`PlaylistFormatKind`].
@@ -1803,43 +1802,29 @@ async fn setup_lastfm(client: &DaemonClient) -> Result<String, String> {
 
     let url = client
         .lastfm()
-        .auth_url()
+        .oauth_start()
         .await
         .map_err(|e| e.to_string())?;
-    println!("Open this URL in your browser to authorize gtm:\n{url}\n");
+    println!("Open this URL in your browser and click Allow:\n{url}\n");
     let _ = webbrowser::open(&url);
 
-    let token = capture_callback_token().await?;
-    if token.trim().is_empty() {
-        return Err("no Last.fm token provided — authorization not completed".into());
-    }
-    client
-        .lastfm()
-        .authenticate(token.trim())
-        .await
-        .map_err(|e| e.to_string())?;
-
-    let st = client.lastfm().status().await.map_err(|e| e.to_string())?;
-    Ok(format_lastfm_status(&st))
-}
-
-/// Wait for an OAuth token on the loopback callback port or accept a manual
-/// paste on stdin (whichever finishes first). Times out after 5 minutes.
-async fn capture_callback_token() -> Result<String, String> {
-    let port = lastfm_callback_port();
-    let addr = format!("127.0.0.1:{port}");
-    println!(
-        "Waiting for the Last.fm authorization callback on http://{addr} (5-minute timeout).\n\
-         If your browser doesn't redirect there, paste the token from the address bar and press Enter."
-    );
-    let mut stdin_line = String::new();
-    let mut stdin_reader = tokio::io::BufReader::new(tokio::io::stdin());
-    tokio::select! {
-        token = capture_lastfm_token() => token,
-        pasted = stdin_reader.read_line(&mut stdin_line) => {
-            let _ = pasted;
-            Ok(stdin_line.trim().to_string())
+    // Last.fm's desktop flow ends when permission is granted — nothing is sent
+    // back — so there is nothing to wait for here. The daemon retries the
+    // exchange in the background and this polls its status until it resolves,
+    // which is what makes this command safe to script.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
+    loop {
+        let st = client.lastfm().status().await.map_err(|e| e.to_string())?;
+        if st.ready {
+            break Ok(format_lastfm_status(&st));
         }
+        if let Some(e) = st.error.as_deref().filter(|e| !e.is_empty()) {
+            break Err(e.to_string());
+        }
+        if std::time::Instant::now() >= deadline {
+            break Err("timed out waiting for the Last.fm authorization".into());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
     }
 }
 

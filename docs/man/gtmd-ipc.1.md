@@ -253,8 +253,7 @@ Scrobbling only — there is no playback control in this group. The flow is the 
 | Command | Request | Response | Emits |
 |---------|---------|----------|-------|
 | `lastfm_status` | — | `enabled`, `api_key`, `session_token`, `ready`, `loved`, `error` | — |
-| `lastfm_oauth_start` | `port` : uint16 | `url` | — |
-| `lastfm_auth_url` | — | `url` | — |
+| `lastfm_oauth_start` | — | `url` | — |
 | `lastfm_authenticate` | `token` : string | — | — |
 | `lastfm_clear` | — | — | — |
 | `lastfm_set_config` | `enabled` : bool, `api_key` : string, `api_secret` : string, `session_key` : string, `min_play_secs` : uint32, `min_play_pct` : float | — | `scrobble_config_changed` |

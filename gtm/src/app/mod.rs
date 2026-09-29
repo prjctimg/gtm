@@ -48,7 +48,7 @@ pub(crate) use crate::keymap::{
     default_keybindings, detect_clashes, format_key_event, parse_key_event,
 };
 pub(crate) use crate::mouse::{MouseMap, MouseZone};
-pub(crate) use crate::oauth::{lastfm_callback_port, open_browser};
+pub(crate) use crate::oauth::open_browser;
 pub(crate) use crate::picker::{PickerId, PickerManager, PickerSource};
 pub(crate) use crate::progress::{ProgressSmoother, ProgressStyle};
 pub(crate) use crate::reactive::{ReactivePalette, derive_theme, extract_palette};

@@ -34,12 +34,6 @@ fn default_oauth_port() -> u16 {
     8990
 }
 
-/// Default local callback port for the Last.fm OAuth redirect when the caller
-/// doesn't specify one (mirrors `gtm::oauth::lastfm_callback_port`).
-fn default_lastfm_port() -> u16 {
-    8991
-}
-
 /// Serde default: sleep timer hard-stops at zero unless the caller opts in to
 /// letting the current track finish.
 fn default_true() -> bool {
@@ -460,14 +454,17 @@ pub enum DaemonReq {
         min_play_secs: Option<u32>,
         min_play_pct: Option<f32>,
     },
-    LastfmAuthUrl,
     /// Start the daemon-hosted Last.fm OAuth loopback: the daemon binds the
-    /// callback port, returns the authorize URL, then captures the returning
-    /// `token`, exchanges it, and pushes a status event — the TUI never binds
-    /// or polls the callback itself.
-    LastfmOauthStart {
-        port: u16,
-    },
+    /// request. The daemon fetches a single-use token, returns the page the
+    /// user clicks *Allow* on, and exchanges that same token for a session key
+    /// once they do, pushing a status event — the TUI never binds a socket or
+    /// polls.
+    ///
+    /// This used to take a `callback port`. Last.fm's desktop flow has no
+    /// callback (§4.2: the browser process is over once permission is granted),
+    /// so the port was never reachable — the listener it opened could not
+    /// receive anything.
+    LastfmOauthStart,
     LastfmAuthenticate {
         token: String,
     },
@@ -658,8 +655,7 @@ impl DaemonReq {
             DaemonReq::SpotifyLike { .. } => "spotify_like",
             DaemonReq::SpotifyPlaylistAdd { .. } => "spotify_playlist_add",
             DaemonReq::LastfmSetConfig { .. } => "lastfm_set_config",
-            DaemonReq::LastfmAuthUrl => "lastfm_auth_url",
-            DaemonReq::LastfmOauthStart { .. } => "lastfm_oauth_start",
+            DaemonReq::LastfmOauthStart => "lastfm_oauth_start",
             DaemonReq::LastfmAuthenticate { .. } => "lastfm_authenticate",
             DaemonReq::LastfmStatus => "lastfm_status",
             DaemonReq::LastfmClear => "lastfm_clear",
@@ -735,7 +731,6 @@ impl DaemonReq {
             "spotify_previous" => DaemonReq::SpotifyPrevious,
             "spotify_sync" => DaemonReq::SpotifySync,
             "spotify_playlists" => DaemonReq::SpotifyPlaylists,
-            "lastfm_auth_url" => DaemonReq::LastfmAuthUrl,
             "lastfm_status" => DaemonReq::LastfmStatus,
             "lastfm_clear" => DaemonReq::LastfmClear,
             "lastfm_love" => DaemonReq::LastfmLove,
@@ -1312,13 +1307,16 @@ impl DaemonReq {
                 }
             }
             "lastfm_oauth_start" => {
+                // A `port` used to be required here and is still accepted, then
+                // discarded: an older client sending it is not a protocol
+                // error, and there is nothing left for a port to select.
                 #[derive(Deserialize)]
                 struct Params {
-                    #[serde(default = "default_lastfm_port")]
-                    port: u16,
+                    #[allow(dead_code)]
+                    port: Option<u16>,
                 }
-                let x: Params = p(params)?;
-                DaemonReq::LastfmOauthStart { port: x.port }
+                let _x: Params = p(params)?;
+                DaemonReq::LastfmOauthStart
             }
             "lastfm_authenticate" => {
                 #[derive(Deserialize)]
@@ -2437,7 +2435,7 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "lastfm_auth_url" | "lastfm_oauth_start" => DaemonRes::LastfmAuthUrlRes {
+            "lastfm_oauth_start" => DaemonRes::LastfmAuthUrlRes {
                 url: field_str(&data, "url").to_string(),
             },
             "lastfm_status" => DaemonRes::LastfmStatusRes {

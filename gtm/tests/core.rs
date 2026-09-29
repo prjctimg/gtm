@@ -273,7 +273,7 @@ fn req_parse_lastfm() {
         other => panic!("expected LastfmSetConfig, got {other:?}"),
     }
 
-    for cmd in ["lastfm_auth_url", "lastfm_status", "lastfm_clear"] {
+    for cmd in ["lastfm_status", "lastfm_clear"] {
         let req = DaemonReq::parse_cmd(cmd, serde_json::json!({})).unwrap();
         assert_eq!(req.cmd_name(), cmd);
     }
@@ -489,25 +489,17 @@ fn res_spotify_wire() {
 
 #[test]
 fn res_lastfm_wire() {
-    let cases: Vec<(&str, DaemonRes)> = vec![
-        (
-            "lastfm_auth_url",
-            DaemonRes::LastfmAuthUrlRes {
-                url: "https://www.last.fm/api/auth/?api_key=k1".into(),
-            },
-        ),
-        (
-            "lastfm_status",
-            DaemonRes::LastfmStatusRes {
-                enabled: true,
-                api_key: Some("k1".into()),
-                session_token: Some("sess".into()),
-                ready: true,
-                loved: false,
-                error: None,
-            },
-        ),
-    ];
+    let cases: Vec<(&str, DaemonRes)> = vec![(
+        "lastfm_status",
+        DaemonRes::LastfmStatusRes {
+            enabled: true,
+            api_key: Some("k1".into()),
+            session_token: Some("sess".into()),
+            ready: true,
+            loved: false,
+            error: None,
+        },
+    )];
     for (cmd, res) in cases {
         let expected = format!("{:?}", res);
         let wire = res.to_wire(1);
@@ -627,7 +619,7 @@ fn every_client_expectation_round_trips() {
         (
             "lastfm_oauth_start",
             DaemonRes::LastfmAuthUrlRes {
-                url: "https://www.last.fm/api/auth/?api_key=k1".into(),
+                url: "https://www.last.fm/api/auth/?api_key=k1&token=t1".into(),
             },
         ),
     ];

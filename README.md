@@ -23,9 +23,9 @@ YouTube/Spotify integration. It is a background daemon (`gtmd`) with a client
 - [Acknowledgements](#acknowledgements)
 - [Contributors](#contributors)
 
-## Why another (terminal) audio player ?
 
-You can read about it in [this post.](https://prjctimg.me/blg/feature-rich-terminal-audio-player)
+
+![](./gtm.png)
 
 ## Features
 
@@ -105,6 +105,13 @@ backend, and starts the PulseAudio server automatically — no manual
 - [gtm(1)](docs/man/gtm.1.md)
 - [gtmd(1)](docs/man/gtmd.1.md)
 - [gtmd-ipc(1)](docs/man/gtmd-ipc.1.md)
+
+
+## Why another (terminal) audio player ?
+
+You can read about it in [this post.](https://prjctimg.me/blg/feature-rich-terminal-audio-player)
+
+
 
 ## Contributing
 

@@ -82,17 +82,6 @@ impl Lastfm {
         lastfm.set_retry_path(path);
     }
 
-    pub async fn auth_url(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let lastfm = inner.lastfm.lock().await;
-        if let Some(url) = lastfm.auth_url() {
-            Ok(DaemonRes::LastfmAuthUrlRes { url })
-        } else {
-            Ok(DaemonRes::Error {
-                message: "Last.fm API key/secret not configured".into(),
-            })
-        }
-    }
-
     /// Exchange a web-auth token for a (persisted) session key, clearing any
     /// recorded link error. Shared by the IPC `authenticate` call and the
     /// daemon-hosted OAuth flow task so both paths run the same exchange.
@@ -103,55 +92,87 @@ impl Lastfm {
         }
     }
 
-    /// Start the Last.fm OAuth link flow entirely daemon-side: bind the
-    /// loopback callback *before* returning the authorize URL (so the redirect
-    /// never lands on a dead port), then capture the returning `token`,
-    /// exchange it for a session key, and push [`DaemonEvent::LastfmStatusChanged`]
-    /// so the TUI dismisses its prompt and proceeds to a playback-ready state
-    /// as soon as the exchange completes — no client-side polling, no
-    /// client-bound callback socket. Failures (timeout, exchange error) push
-    /// the same event with the reason carried by the next status poll. The
-    /// TUI's only hooks — start → url → status event — are identical to the
-    /// Spotify flow, so future providers plug into the same contract.
-    pub async fn oauth_start(inner: &Arc<DaemonInner>, port: u16) -> Result<DaemonRes, CoreError> {
-        let url = {
-            let lastfm = inner.lastfm.lock().await;
-            lastfm.auth_url().ok_or_else(|| {
-                CoreError::Daemon(
-                    "Last.fm API key/secret not configured; enter them in the setup form first"
-                        .into(),
-                )
-            })?
-        };
-        // Abort any previous pending flow so its listener socket is freed.
+    /// How long to keep retrying the exchange while the user decides whether to
+    /// click *Allow*. Last.fm tokens live 60 minutes (§6.1); this is the
+    /// time we are willing to hold a retry loop for someone who opened the
+    /// page and walked away.
+    const GRANT_WAIT: std::time::Duration = std::time::Duration::from_secs(180);
+    const GRANT_POLL: std::time::Duration = std::time::Duration::from_millis(1500);
+
+    /// Start the Last.fm link flow daemon-side: fetch a single-use token, hand
+    /// back the page the user clicks *Allow* on, and exchange that same token
+    /// for a session key as soon as they do.
+    ///
+    /// There is no callback and no socket. Last.fm's desktop flow (§4) has
+    /// none either — §4.2 says that once permission is granted “ the
+    /// browser-based process is over … the user is asked to close their
+    /// browser and return to your application”. The previous implementation
+    /// borrowed the *web* flow's callback (§3) for a *desktop* flow and
+    /// then never sent the `callback` parameter that §3 requires, so the
+    /// listener it waited on could never receive anything: the CLI worked
+    /// around it by asking the user to paste a token off the page by hand.
+    ///
+    /// Retrying rather than asking the user to press a key is what §6.1
+    /// allows: a token is “consumed when a session is created”, so an
+    /// `auth.getSession` attempt made before the user clicks Allow fails
+    /// without spending the token and the next attempt can still succeed. The
+    /// user can therefore click through at their own pace, or not at all, and
+    /// nothing is left waiting on a keypress.
+    ///
+    /// The TUI hooks are start → url → status event, identical to Spotify's.
+    pub async fn oauth_start(inner: &Arc<DaemonInner>) -> Result<DaemonRes, CoreError> {
+        // A fresh attempt supersedes any previous one, so a user who starts
+        // over is not left with two loops racing for the same account.
         if let Some(handle) = inner.oauth_lastfm_task.lock().await.take() {
             handle.abort();
         }
-        // A fresh attempt starts clean: any error from an earlier (failed) flow
-        // must not leak into the status the new flow's completion event polls.
+        // Clear any error from an earlier attempt: it must not leak into the
+        // status the new attempt's completion event reports.
         *inner.lastfm_error.lock().await = None;
-        let listener = bind_callback(port, OAUTH_TIMEOUT)
-            .await
-            .map_err(|e| CoreError::Daemon(format!("Last.fm callback server: {e}")))?;
+
+        let token = {
+            let lastfm = inner.lastfm.lock().await;
+            if lastfm.get_api_key().is_none() {
+                return Err(CoreError::Daemon(
+                    "Last.fm API key/secret not configured; enter them in the setup form first"
+                        .into(),
+                ));
+            }
+            lastfm.request_token().await.map_err(CoreError::Daemon)?
+        };
+        let url = {
+            let lastfm = inner.lastfm.lock().await;
+            lastfm
+                .auth_url(&token)
+                .ok_or_else(|| CoreError::Daemon("Last.fm API key not configured".into()))?
+        };
+
         let inner2 = Arc::clone(inner);
         let handle = tokio::spawn(async move {
-            match listener.accept_param("token", None).await {
-                Ok(token) => match Lastfm::exchange_session(&inner2, token.trim()).await {
+            let deadline = tokio::time::Instant::now() + Self::GRANT_WAIT;
+            // Only ever the most recent failure, and only read on timeout, so
+            // it is assigned once the exchange has actually been attempted.
+            let mut last_err;
+            loop {
+                match Lastfm::exchange_session(&inner2, &token).await {
                     Ok(()) => {
-                        info!("last.fm oauth link complete (session key stored)");
+                        info!("last.fm link complete (session key stored)");
+                        break;
                     }
-                    Err(e) => {
-                        warn!("last.fm oauth exchange failed: {e}");
-                        *inner2.lastfm_error.lock().await = Some(e);
-                    }
-                },
-                Err(e) => {
-                    warn!("last.fm oauth link failed: {e}");
-                    *inner2.lastfm_error.lock().await = Some(e);
+                    Err(e) => last_err = e,
                 }
+                if tokio::time::Instant::now() >= deadline {
+                    warn!("last.fm link timed out waiting for the browser grant: {last_err}");
+                    *inner2.lastfm_error.lock().await = Some(format!(
+                        "timed out after {}s waiting for you to click Allow on the Last.fm page",
+                        Self::GRANT_WAIT.as_secs()
+                    ));
+                    break;
+                }
+                tokio::time::sleep(Self::GRANT_POLL).await;
             }
-            // One status event covers both outcomes: `ready` dismisses the
-            // TUI prompt and proceeds; a `lastfm_error` reasons it inline.
+            // One status event covers both outcomes: `ready` dismisses the TUI
+            // prompt and proceeds; a `lastfm_error` reasons it inline.
             let _ = inner2.event_tx.send(DaemonEvent::LastfmStatusChanged);
         });
         *inner.oauth_lastfm_task.lock().await = Some(handle);

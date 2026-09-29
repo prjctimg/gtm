@@ -549,14 +549,6 @@ async fn lastfm_setup() {
     .await;
     assert!(matches!(res, DaemonRes::Ok), "got {res:?}");
 
-    let res = send_req(&mut reader, &mut writer, &DaemonReq::LastfmAuthUrl).await;
-    match res {
-        DaemonRes::LastfmAuthUrlRes { url } => {
-            assert!(url.contains("api_key=k1"), "unexpected url {url}");
-        }
-        other => panic!("expected LastfmAuthUrlRes, got {other:?}"),
-    }
-
     let res = send_req(&mut reader, &mut writer, &DaemonReq::LastfmStatus).await;
     match res {
         DaemonRes::LastfmStatusRes {

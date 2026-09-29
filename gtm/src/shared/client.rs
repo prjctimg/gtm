@@ -1632,26 +1632,16 @@ impl<'a> Lastfm<'a> {
             .await
     }
 
-    /// Authorization URL the user opens to grant gtm access to their account.
-    pub async fn auth_url(&self) -> Result<String> {
-        let res = self.client.send_raw(DaemonReq::LastfmAuthUrl).await?;
-        match res {
-            DaemonRes::LastfmAuthUrlRes { url } => Ok(url),
-            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
-            _ => Err(unexpected(&res)),
-        }
-    }
-
-    /// Start the Last.fm OAuth browser flow. The daemon binds the callback
-    /// port *before* returning the authorize URL (so the redirect never lands
-    /// on a dead port), captures the returning `token`, exchanges it, and
-    /// pushes a status event the TUI reacts to. Returns the authorize URL to
-    /// open. Identical hook shape to `Spotify::oauth_start`.
-    pub async fn oauth_start(&self, port: u16) -> Result<String> {
-        let res = self
-            .client
-            .send_raw(DaemonReq::LastfmOauthStart { port })
-            .await?;
+    /// Start the Last.fm link flow. The daemon fetches a single-use token,
+    /// returns the page the user clicks *Allow* on, and exchanges that token
+    /// for a session key once they do, pushing a status event the TUI reacts
+    /// to. Returns the authorize URL to open. Identical hook shape to
+    /// `Spotify::oauth_start`.
+    ///
+    /// There is no callback to hand over a port for: Last.fm's desktop flow
+    /// ends when permission is granted, with nothing sent back.
+    pub async fn oauth_start(&self) -> Result<String> {
+        let res = self.client.send_raw(DaemonReq::LastfmOauthStart).await?;
         match res {
             DaemonRes::LastfmAuthUrlRes { url } => Ok(url),
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),

@@ -2335,7 +2335,6 @@ impl App {
                         self.setup.lastfm_error = Some("API key and secret are required".into());
                         return;
                     }
-                    let port = lastfm_callback_port();
                     let c = self.client.clone();
                     let ipc_tx = self.ipc_tx.clone();
                     self.setup.lastfm_pending = true;
@@ -2346,7 +2345,7 @@ impl App {
                             .set_config(true, Some(api_key), Some(api_secret), None, None, None)
                             .await
                         {
-                            Ok(()) => match c.lastfm().oauth_start(port).await {
+                            Ok(()) => match c.lastfm().oauth_start().await {
                                 Ok(url) => {
                                     // The daemon bound the callback port before
                                     // returning this URL, so the browser's

@@ -346,9 +346,9 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 **setup** [*service*] [**\--cli**]
 :   Interactive source setup. Without a *service* argument (`spotify` or
     `lastfm`), a picker opens and every unconfigured source is
-    walked through in turn. OAuth steps (Spotify, Last.fm) open your browser
-    and capture the callback response automatically; Last.fm's loopback
-    capture falls back to pasting the token on stdin. With **\--cli**, run the
+    walked through in turn. OAuth steps open your browser: Spotify captures
+    the loopback callback automatically, and Last.fm just waits for you to
+    click *Allow* (its desktop flow sends nothing back). With **\--cli**, run the
     plain terminal wizard instead of the TUI. The daemon is started
     automatically if it is not already running.
 
@@ -445,8 +445,9 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 `GTM_YT_HOSTS`
 :   Register extra YouTube-family search providers.
 
-`GTM_SPOTIFY_PORT`, `GTM_LASTFM_PORT`
-:   Override the OAuth callback ports (defaults 8990 and 8991).
+`GTM_SPOTIFY_PORT`
+:   Override the Spotify OAuth callback port (default 8990). There is no
+    Last.fm equivalent: its desktop flow has no callback.
 
 `GTK_THEME`, `XDG_STATE_HOME`
 :   Probed for the OS theme (a trailing `-dark` means dark) and the Omarchy
