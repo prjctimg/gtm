@@ -1083,63 +1083,53 @@ impl App {
         let _ = self.pri_cmd_tx.send(cmd);
     }
 
-    /// Whether Zen should stand aside and let the normal dispatch handle `key`.
+    /// Whether Zen claims `key` for itself instead of letting the normal
+    /// dispatch have it.
     ///
-    /// Zen swallows every key it does not claim, which included the ones that
-    /// open a picker — so the command palette, search, the queue and help were
-    /// unreachable from Zen, and the only escape was z/Esc/q. Zen is a surface,
-    /// not a modal: whatever it hides should still be reachable.
-    pub(crate) fn zen_defers_to(&self, key: event::KeyEvent) -> bool {
+    /// Zen used to swallow everything it did not name, which left the queue,
+    /// search, the command palette and the transport unreachable from a
+    /// fullscreen view — the only way out was z/Esc/q. Now everything else
+    /// dispatches normally and these three are the exceptions:
+    ///
+    /// * `q` is `Quit` everywhere else. From a fullscreen view, with the
+    ///   library and the footer both off screen, that would kill playback from
+    ///   an overlay the user cannot see the rest of the app in.
+    /// * `Tab` / `BackTab` are `NextPane` / `PrevPane`. Zen is one surface, so
+    ///   there is no pane to focus, and cycling the surface is the only thing
+    ///   the key could usefully do.
+    /// * `Esc` closes a picker when one is open and is already handled above
+    ///   this point, so it is listed only for the case where none is.
+    ///
+    /// `z` and `Space` are deliberately absent: they are `ToggleZen` and
+    /// `PlayPause`, which already do what Zen wanted them to do.
+    pub(crate) fn zen_owns(&self, key: event::KeyEvent) -> bool {
         matches!(
-            self.keybindings
-                .dispatch(key, crate::keymap::KeyContext::Normal),
-            Some(
-                crate::keymap::KeyboardAction::OpenOverlay(_)
-                    | crate::keymap::KeyboardAction::Search
-                    | crate::keymap::KeyboardAction::ToggleHelp
-            )
+            key.code,
+            event::KeyCode::Esc
+                | event::KeyCode::Char('q')
+                | event::KeyCode::Tab
+                | event::KeyCode::BackTab
         )
     }
 
-    /// Keys handled while Zen mode is active. Tab / Shift-Tab cycle the
-    /// fullscreen surface (now playing → visualizer), `l` toggles the lyric
-    /// line under the art (fetching it first when needed), Space toggles
-    /// playback, and z/Esc/q leave Zen mode. Every other key is swallowed so
-    /// browsing/quit motions can't disturb the view.
+    /// The keys Zen handles: exit, cycle the surface, and play/pause.
+    ///
+    /// Nothing is swallowed here. Whatever Zen does not claim is dispatched as
+    /// normal, which is the point — see [`Self::zen_owns`].
     fn zen_key(&mut self, key: event::KeyEvent) {
         match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('z') => {
+            event::KeyCode::Esc | event::KeyCode::Char('q') => {
                 self.zen = false;
                 self.set_last_action("Leave Zen Mode", &key);
             }
-            KeyCode::Tab => {
+            event::KeyCode::Tab => {
                 self.zen_surface = self.zen_surface.next();
                 self.set_last_action("Zen: Next Surface", &key);
             }
-            KeyCode::BackTab => {
+            event::KeyCode::BackTab => {
                 self.zen_surface = self.zen_surface.prev();
                 self.set_last_action("Zen: Prev Surface", &key);
             }
-            KeyCode::Char('l') => {
-                // The lyric line under the art, not a surface of its own.
-                self.lyrics.show = !self.lyrics.show;
-                if self.lyrics.show && self.lyrics.current.is_none() && !self.lyrics.fetching {
-                    self.lyrics.fetching = true;
-                    self.send_high(TuiCommand::FetchLyrics);
-                }
-                self.set_last_action("Toggle Lyrics", &key);
-            }
-            KeyCode::Char(' ') => match self.state.status {
-                PlaybackStatus::Playing => self.send_high(TuiCommand::Pause),
-                PlaybackStatus::Paused => self.send_high(TuiCommand::PlayPause),
-                PlaybackStatus::Stopped => {
-                    if !self.queue.cache.is_empty() {
-                        let idx = self.queue.cursor.min(self.queue.cache.len() - 1);
-                        let path = self.queue.cache[idx].path.clone();
-                        self.send_high(TuiCommand::Play(path));
-                    }
-                }
-            },
             _ => {}
         }
     }

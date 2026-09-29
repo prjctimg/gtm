@@ -296,13 +296,11 @@ impl App {
                     self.show_health_panel = false;
                     return true;
                 }
-                // Zen mode: only a small set of keys acts — Tab/Shift-Tab
-                // cycle the surface, l toggles lyrics, Space toggles
-                // playback, and z/Esc/q leave. Everything else is swallowed
-                // so the fullscreen surfaces are never disturbed, except the
-                // keys that open a picker: Zen hid every way into the queue,
-                // the command palette, search and help.
-                if self.zen && !self.zen_defers_to(key) {
+                // Zen keeps only the three keys it has to: every other
+                // keybinding works as it does everywhere else, so the queue,
+                // search, the command palette and the transport are all
+                // reachable from a fullscreen view.
+                if self.zen && self.zen_owns(key) {
                     self.zen_key(key);
                     return true;
                 }

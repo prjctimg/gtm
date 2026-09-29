@@ -431,6 +431,7 @@ impl Render {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(2),
+                Constraint::Length(1),
                 Constraint::Min(0),
                 Constraint::Length(3),
             ])
@@ -440,19 +441,17 @@ impl Render {
             Render::zen_track_header(f, app, t, vchunks[0]);
         }
 
-        // Enlarged cover centered in the middle band. Half-block art keeps
-        // the image square at a 1:2 cell aspect, so width = height * 2.
-        let mid = vchunks[1];
-        let art_band = Rect {
-            height: mid.height.saturating_sub(1),
-            ..mid
-        };
-        let lyric_rect = Rect {
-            x: mid.x,
-            y: mid.y + art_band.height,
-            width: mid.width,
-            height: 1,
-        };
+        // The lyric line gets its own band directly under the title and
+        // artist, and the artwork centres in whatever is left. It used to be
+        // the last row of the middle band, pinned to the bottom of the art, so
+        // it read as a caption on the artwork rather than as the line being
+        // sung, and the art was then centred in a band one row shorter than
+        // the space it actually had — which put the whole composition about a
+        // row and a half above the middle of the screen.
+        let lyric_rect = vchunks[1];
+        // Enlarged cover centred in what is left. Half-block art keeps the
+        // image square at a 1:2 cell aspect, so width = height * 2.
+        let art_band = vchunks[2];
         let max_w = art_band.width.saturating_sub(4);
         let max_h = art_band.height.saturating_sub(2);
         let mut w = max_w.min(max_h.saturating_mul(2));
@@ -606,11 +605,22 @@ impl Render {
         placeholder: Option<&str>,
     ) {
         if std::env::var("NVIM").is_ok() || std::env::var("ZELLIJ").is_ok() {
-            let placeholder = Paragraph::new(Span::styled(
-                " \u{266b} Cover art unavailable in this terminal ",
-                Style::default().fg(placeholder_fg),
-            ));
-            f.render_widget(placeholder, area);
+            // Centred, and clipped to the area. It was neither: the message
+            // hugged the top-left of whatever box it was handed, which in Zen
+            // is the middle of the whole screen.
+            let msg = " \u{266b} Cover art unavailable in this terminal ";
+            let shown: String = msg.chars().take(area.width as usize).collect();
+            let line = format!("{:^width$}", shown, width = area.width as usize);
+            f.render_widget(
+                Paragraph::new(line)
+                    .alignment(Alignment::Center)
+                    .style(Style::default().fg(placeholder_fg)),
+                Rect {
+                    y: area.y + area.height.saturating_sub(1) / 2,
+                    height: 1,
+                    ..area
+                },
+            );
             return;
         }
         if area.width == 0 || area.height == 0 {
@@ -2973,6 +2983,19 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
         f.render_widget(msg, area);
         return;
     }
+    // The surface fill comes first and covers every mode. It used to sit below
+    // the Zen branch, which returned before reaching it — and ratatui does not
+    // clear between frames, it diffs. So Zen painted on top of whatever the
+    // last non-Zen frame left behind: the library text, the footer and the
+    // brand badge stayed on screen for as long as Zen was open, and because
+    // the background was never repainted, a reactive theme change could not
+    // reach the screen at all. The text and accents did update, so Zen was
+    // half-reactive — new colours on the previous track's background.
+    f.render_widget(
+        ratatui::widgets::Block::default()
+            .style(ratatui::style::Style::default().bg(app.surface_bg())),
+        area,
+    );
     // Zen mode: exactly one fullscreen surface at a time — no chrome, no
     // footer. A picker still draws over it: zen is a surface, not a modal, and
     // a picker opened by an event (a link flow finishing, a track landing) was
@@ -2982,11 +3005,6 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
         app.track_anim_trigger = false;
         return;
     }
-    f.render_widget(
-        ratatui::widgets::Block::default()
-            .style(ratatui::style::Style::default().bg(app.surface_bg())),
-        area,
-    );
     let footer_height = if app.hide_footer { 0 } else { 1 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
