@@ -2399,7 +2399,9 @@ impl App {
                                     if self.reactive_theme && self.reactive_palette.is_none() {
                                         if let Some(c) = self.np_cover.image.clone() {
                                             let tx = self.ipc_tx.clone();
-                                            self.request_reactive_palette(&c, tx);
+                                            self.reactive_gen = Some(self.next_cover_gen());
+                                            let pal_gen = self.reactive_gen.expect("just set");
+                                            self.request_reactive_palette(&c, pal_gen, tx);
                                         } else if let Some(tid) =
                                             self.state.current_track.as_ref().map(|t| t.id)
                                         {
@@ -2495,7 +2497,9 @@ impl App {
                                     if self.reactive_theme && self.reactive_palette.is_none() {
                                         if let Some(c) = self.np_cover.image.clone() {
                                             let tx = self.ipc_tx.clone();
-                                            self.request_reactive_palette(&c, tx);
+                                            self.reactive_gen = Some(self.next_cover_gen());
+                                            let pal_gen = self.reactive_gen.expect("just set");
+                                            self.request_reactive_palette(&c, pal_gen, tx);
                                         } else if let Some(tid) =
                                             self.state.current_track.as_ref().map(|t| t.id)
                                         {
@@ -2674,7 +2678,9 @@ impl App {
                                     if self.reactive_theme && self.reactive_palette.is_none() {
                                         if let Some(c) = self.np_cover.image.clone() {
                                             let tx = self.ipc_tx.clone();
-                                            self.request_reactive_palette(&c, tx);
+                                            self.reactive_gen = Some(self.next_cover_gen());
+                                            let pal_gen = self.reactive_gen.expect("just set");
+                                            self.request_reactive_palette(&c, pal_gen, tx);
                                         } else if let Some(tid) =
                                             self.state.current_track.as_ref().map(|t| t.id)
                                         {

@@ -6,6 +6,12 @@ use crate::app::*;
 /// enough to grow for the whole session.
 pub(crate) const PREVIEW_CACHE_MAX: usize = 24;
 
+/// How long the search picker waits before re-requesting an album the daemon
+/// had no art for. Long enough that a per-frame caller cannot turn one miss
+/// into a request storm, short enough that art landing later — a prefetch
+/// finishing, a token caught mid-refresh — is picked up in the same visit.
+pub(crate) const PREVIEW_RETRY: std::time::Duration = std::time::Duration::from_secs(30);
+
 /// How closely a result answers `q`, lowest is best. A prefix beats an artist
 /// hit, which beats a hit anywhere in the title, which beats nothing.
 fn match_rank(q: &str, track: &SpotifyTrack) -> u8 {
@@ -641,6 +647,16 @@ impl App {
         if self.spotify.preview_fetch.pending(&url) {
             return;
         }
+        // This runs once per rendered frame, and a miss caches nothing, so
+        // without a cooldown the same album is re-requested every frame —
+        // a Spotify CDN call carrying a bearer token at frame rate. The
+        // throttle is per-URL and expires, so art that appears later (a
+        // finished prefetch, a token that was mid-refresh) is picked up.
+        if let Some(until) = self.spotify.preview_fail_until.get(&url)
+            && *until > std::time::Instant::now()
+        {
+            return;
+        }
         let fetch_gen = self.next_cover_gen();
         self.spotify.preview_fetch.claim(url.clone(), fetch_gen);
         if no_image_protocol() {
@@ -649,20 +665,15 @@ impl App {
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            match client.spotify().track_image(&url).await {
-                Ok(Some(b64)) => {
-                    if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) {
-                        let _ = ipc_tx.send(IpcResult::SpotifyPreviewCover(
-                            Some(bytes),
-                            url,
-                            fetch_gen,
-                        ));
-                    }
-                }
-                Ok(None) | Err(_) => {
-                    let _ = ipc_tx.send(IpcResult::SpotifyPreviewCover(None, url, fetch_gen));
-                }
-            }
+            let bytes = match client.spotify().track_image(&url).await {
+                Ok(Some(b64)) => base64::engine::general_purpose::STANDARD.decode(&b64).ok(),
+                _ => None,
+            };
+            let msg = match bytes {
+                Some(bytes) => IpcResult::SpotifyPreviewCover(Some(bytes), url, fetch_gen),
+                None => IpcResult::SpotifyPreviewCover(None, url, fetch_gen),
+            };
+            let _ = ipc_tx.send(msg);
         });
     }
 

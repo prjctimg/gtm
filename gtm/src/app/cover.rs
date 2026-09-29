@@ -167,11 +167,18 @@ impl App {
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.art().cover(tid).await
-                && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64)
-            {
-                let _ = ipc_tx.send(IpcResult::PopupCoverArt(Some(bytes), tid, fetch_gen));
-            }
+            // Answer on a miss too: a silent failure leaves `popup_slot`
+            // claimed, and the handler treats a claimed slot as "in flight", so
+            // the row could never be re-fetched for the rest of the session.
+            let bytes = match client.art().cover(tid).await {
+                Ok(Some(b64)) => base64::engine::general_purpose::STANDARD.decode(&b64).ok(),
+                _ => None,
+            };
+            let msg = match bytes {
+                Some(bytes) => IpcResult::PopupCoverArt(Some(bytes), tid, fetch_gen),
+                None => IpcResult::PopupCoverArt(None, tid, fetch_gen),
+            };
+            let _ = ipc_tx.send(msg);
         });
     }
 
@@ -227,11 +234,17 @@ impl App {
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.art().cover(tid).await
-                && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64)
-            {
-                let _ = ipc_tx.send(IpcResult::PickerPreviewCover(Some(bytes), tid, fetch_gen));
-            }
+            // Answer on a miss so `picker_slot` is released; see the popup
+            // fetch above for why a silent failure is not self-clearing.
+            let bytes = match client.art().cover(tid).await {
+                Ok(Some(b64)) => base64::engine::general_purpose::STANDARD.decode(&b64).ok(),
+                _ => None,
+            };
+            let msg = match bytes {
+                Some(bytes) => IpcResult::PickerPreviewCover(Some(bytes), tid, fetch_gen),
+                None => IpcResult::PickerPreviewCover(None, tid, fetch_gen),
+            };
+            let _ = ipc_tx.send(msg);
         });
     }
 
@@ -276,11 +289,16 @@ impl App {
         let ipc_tx = self.ipc_tx.clone();
         let artist = name.clone();
         tokio::spawn(async move {
-            if let Ok(Some(b64)) = client.art().artist_cover(artist.clone()).await
-                && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64)
-            {
-                let _ = ipc_tx.send(IpcResult::ArtistCoverArt(Some(bytes), artist, fetch_gen));
-            }
+            // Answer on a miss so `artist_slot` is released.
+            let bytes = match client.art().artist_cover(artist.clone()).await {
+                Ok(Some(b64)) => base64::engine::general_purpose::STANDARD.decode(&b64).ok(),
+                _ => None,
+            };
+            let msg = match bytes {
+                Some(bytes) => IpcResult::ArtistCoverArt(Some(bytes), artist, fetch_gen),
+                None => IpcResult::ArtistCoverArt(None, artist, fetch_gen),
+            };
+            let _ = ipc_tx.send(msg);
         });
     }
 

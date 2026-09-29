@@ -183,15 +183,22 @@ impl App {
     /// Kick off palette extraction for freshly received cover art.  Runs on
     /// a blocking thread; the result comes back through
     /// [`IpcResult::ReactivePalette`].
+    ///
+    /// The cover generation travels with it. Extraction is a full decode plus a
+    /// median cut, so on a fast A→B→C skip the reply for A can land after C's
+    /// and tint the whole UI with the wrong album. Every other guarded reply in
+    /// this app carries its generation; this one did not, so nothing could
+    /// order it against a track change.
     pub(crate) fn request_reactive_palette(
         &self,
         cover_bytes: &[u8],
+        pal_gen: u64,
         ipc_tx: mpsc::UnboundedSender<IpcResult>,
     ) {
         let bytes = cover_bytes.to_vec();
         tokio::task::spawn_blocking(move || {
             let pal = extract_palette(&bytes);
-            let _ = ipc_tx.send(IpcResult::ReactivePalette(pal));
+            let _ = ipc_tx.send(IpcResult::ReactivePalette(pal, pal_gen));
         });
     }
 

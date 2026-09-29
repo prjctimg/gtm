@@ -707,13 +707,21 @@ impl App {
                             Ok(b64) => b64,
                             Err(_) => client.art().cover(tid).await.ok().flatten(),
                         };
-                        if let Some(b64) = art
-                            && let Ok(bytes) =
-                                base64::engine::general_purpose::STANDARD.decode(&b64)
-                        {
-                            let _ =
-                                ipc_tx.send(IpcResult::CoverArt(Some(bytes), Some(tid), fetch_gen));
-                        }
+                        // Always answer, including "no art". A miss used to
+                        // send nothing at all, which left `pending_gen` claimed
+                        // for the rest of the session: the reply handler
+                        // treats that as "still in flight", so the pane stayed
+                        // blank and no later attempt could ever claim the slot
+                        // again. That also starved reactive theming, which
+                        // fetches a cover solely to extract a palette from it.
+                        let msg = art
+                            .and_then(|b64| {
+                                base64::engine::general_purpose::STANDARD.decode(&b64).ok()
+                            })
+                            .map_or(IpcResult::CoverArt(None, Some(tid), fetch_gen), |bytes| {
+                                IpcResult::CoverArt(Some(bytes), Some(tid), fetch_gen)
+                            });
+                        let _ = ipc_tx.send(msg);
                     });
                 }
                 // Auto-fetch lyrics on track change if enabled and (pane
@@ -780,7 +788,12 @@ impl App {
                                 if tid_matches && path_matches {
                                     if self.reactive_theme {
                                         let tx = self.ipc_tx.clone();
-                                        self.request_reactive_palette(&c, tx);
+                                        self.reactive_gen = Some(self.next_cover_gen());
+                                        self.request_reactive_palette(
+                                            &c,
+                                            self.reactive_gen.expect("just set"),
+                                            tx,
+                                        );
                                     }
                                     self.np_cover.image = Some(c);
                                     self.np_cover.track_id = cover_tid;
@@ -823,7 +836,9 @@ impl App {
                             && self.reactive_theme
                         {
                             let tx = self.ipc_tx.clone();
-                            self.request_reactive_palette(c, tx);
+                            self.reactive_gen = Some(self.next_cover_gen());
+                            let pal_gen = self.reactive_gen.expect("just set");
+                            self.request_reactive_palette(c, pal_gen, tx);
                         }
                         self.np_cover.pending_gen = None;
                         self.np_cover.image = cover;
@@ -833,8 +848,13 @@ impl App {
                         }
                         self.cover_art_dirty = true;
                     }
-                    IpcResult::ReactivePalette(pal) => {
-                        if self.reactive_theme {
+                    IpcResult::ReactivePalette(pal, pal_gen) => {
+                        // Only the newest extraction may paint. A reply for a
+                        // cover the cursor has already left is a late arrival,
+                        // not a late update. Guarded on its own generation
+                        // rather than the cover's, which is released as soon as
+                        // the bytes land — the palette always arrives after.
+                        if self.reactive_theme && self.reactive_gen == Some(pal_gen) {
                             self.reactive_palette = pal;
                             self.apply_reactive();
                         }
@@ -1187,9 +1207,19 @@ impl App {
                             && self.spotify.list_fetch.id.as_deref() == Some(&url)
                             && self.spotify.list_fetch.matches(fetch_gen)
                         {
+                            // Only latch `list_shown` on a hit. Recording the
+                            // URL on a miss made one transient failure look
+                            // like "already displayed" for good, so the playlist
+                            // card never came back for that playlist — the
+                            // fetch was skipped forever after.
+                            let hit = cover.is_some();
                             self.spotify.list_cover = cover;
-                            self.spotify.list_shown = Some(url);
+                            if hit {
+                                self.spotify.list_shown = Some(url.clone());
+                            }
+                            self.spotify.list_fetch.clear();
                             self.list_cover_sync();
+                            self.cover_art_dirty = true;
                         }
                     }
                     IpcResult::SpotifyRowCover(cover, url, fetch_gen) => {
@@ -1200,9 +1230,17 @@ impl App {
                             && self.spotify.row_fetch.id.as_deref() == Some(&url)
                             && self.spotify.row_fetch.matches(fetch_gen)
                         {
+                            let hit = cover.is_some();
                             self.spotify.row_cover = cover;
-                            self.spotify.row_shown = Some(url);
+                            if hit {
+                                self.spotify.row_shown = Some(url.clone());
+                            }
+                            // Released unconditionally: the row latch above
+                            // is a hit-only claim, and a claimed slot reads as
+                            // "in flight" to the next fetch attempt.
+                            self.spotify.row_fetch.clear();
                             self.row_cover_sync();
+                            self.cover_art_dirty = true;
                         }
                     }
                     IpcResult::SpotifyPreviewCover(cover, url, fetch_gen) => {
@@ -1212,7 +1250,16 @@ impl App {
                         {
                             let prev_shown = self.spotify.preview_shown.clone();
                             self.spotify.preview_cover = cover.clone();
-                            self.spotify.preview_shown = Some(url.clone());
+                            if cover.is_some() {
+                                // Hit-only, like the row and list latches: on a
+                                // miss nothing is cached, so claiming the URL
+                                // as "shown" left the next frame free to
+                                // re-request it. `update_spot_preview` runs per
+                                // rendered frame, which turned one failed
+                                // lookup into a Spotify CDN request carrying a
+                                // bearer token, at frame rate.
+                                self.spotify.preview_shown = Some(url.clone());
+                            }
                             if let Some(bytes) = cover {
                                 // Bounded: each album is ~150 KB of decoded
                                 // JPEG, so an unbounded map would grow for the
@@ -1224,7 +1271,7 @@ impl App {
                                 {
                                     self.spotify.preview_cache.remove(&prev);
                                 }
-                                self.spotify.preview_cache.insert(url, bytes);
+                                self.spotify.preview_cache.insert(url.clone(), bytes);
                             }
                             self.spotify_preview_sync();
                             // Release the guard either way. A hit left it
@@ -1232,6 +1279,12 @@ impl App {
                             // "still in flight" forever and the slot could
                             // never be reused for a different album.
                             self.spotify.preview_fetch.clear();
+                            if self.spotify.preview_cover.is_none() {
+                                self.spotify
+                                    .preview_fail_until
+                                    .insert(url, std::time::Instant::now() + PREVIEW_RETRY);
+                            }
+                            self.cover_art_dirty = true;
                         }
                     }
                     IpcResult::CoverPicker(picker) => {

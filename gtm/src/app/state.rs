@@ -272,6 +272,14 @@ pub struct SpotifyView {
     /// cache path would re-decode the same image every frame and make the
     /// preview flicker instead of holding still.
     pub preview_shown: Option<String>,
+    /// URLs the search preview has already been refused, with the instant it
+    /// may be retried.
+    ///
+    /// A miss caches nothing, so without this the preview re-requested the same
+    /// album every rendered frame — `update_spot_preview` is called from the
+    /// render path — which is a Spotify CDN request carrying a bearer token at
+    /// up to frame rate. Mirrors the throttle the queue strip already uses.
+    pub preview_fail_until: std::collections::HashMap<String, std::time::Instant>,
     /// Cover art for the highlighted row of the playlist drill-down.
     ///
     /// Modelled on the search preview rather than sharing it: the two views are
