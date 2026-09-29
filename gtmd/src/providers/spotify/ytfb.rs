@@ -10,9 +10,14 @@ use crate::daemon::{Daemon, DaemonInner};
 /// top hit, and download its audio into the cache under `cache_key` via
 /// yt-dlp. Returns the local file path. The youtube lock is held only during
 /// the (fast) search, dropped before the (slow) download.
+///
+/// Also used for podcast episodes, which is why the cache subdirectory is a
+/// parameter: an episode resolved this way is not a Spotify track and does not
+/// belong in `cache/spotify/`.
 #[cfg(feature = "youtube")]
-pub(crate) async fn spotify_yt_fallback(
+pub(crate) async fn spotify_yt_fallback_in(
     inner: &DaemonInner,
+    subdir: &str,
     cache_key: &str,
     query: &str,
 ) -> Result<String, String> {
@@ -27,6 +32,7 @@ pub(crate) async fn spotify_yt_fallback(
         drop(yt);
         Daemon::download_to_cache(
             &inner.config.cache_dir,
+            subdir,
             cache_key,
             &top.url,
             auth,
@@ -35,6 +41,15 @@ pub(crate) async fn spotify_yt_fallback(
         )
         .await
     }
+}
+
+#[cfg(feature = "youtube")]
+pub(crate) async fn spotify_yt_fallback(
+    inner: &DaemonInner,
+    cache_key: &str,
+    query: &str,
+) -> Result<String, String> {
+    spotify_yt_fallback_in(inner, "spotify", cache_key, query).await
 }
 
 #[cfg(not(feature = "youtube"))]

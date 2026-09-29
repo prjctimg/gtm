@@ -43,13 +43,24 @@ impl Pickers {
     }
 
     pub(crate) fn render_podcast_episodes(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+        let selected = app.pickers.top().map_or(0, |o| o.selected);
         let mut rows = Vec::new();
         for ep in &app.podcast.episodes {
             let dur = ep
                 .duration_secs
                 .map(format_duration_short)
                 .unwrap_or_else(|| "--:--".to_string());
-            rows.push(format!("\u{266b} [{dur}] {}", ep.title));
+            // Two marks that used to be missing and that change what a row can
+            // do: an episode with no enclosure in the feed cannot be played at
+            // all, and only some feeds publish a transcript.
+            let mut marks = String::new();
+            if ep.url.trim().is_empty() {
+                marks.push_str("  [no audio]");
+            }
+            if !ep.transcripts.is_empty() {
+                marks.push_str("  [transcript]");
+            }
+            rows.push(format!("\u{266b} [{dur}] {}{marks}", ep.title));
         }
         let title = app
             .podcast
@@ -57,13 +68,23 @@ impl Pickers {
             .first()
             .map(|e| format!(" {} ", e.feed_title))
             .unwrap_or_else(|| " Episodes ".into());
+        let has_transcript = app
+            .podcast
+            .episodes
+            .get(selected)
+            .is_some_and(|e| !e.transcripts.is_empty());
+        let hint = if has_transcript {
+            "enter play \u{b7} t transcript"
+        } else {
+            "enter play"
+        };
         Self::render_scroll_rows(
             f,
             area,
             app,
             ScrollList {
                 title: &title,
-                hint: "",
+                hint,
                 empty_msg: "no episodes \u{2014} press r in the feed list to refresh",
             },
             Vec::new(),

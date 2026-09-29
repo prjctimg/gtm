@@ -387,6 +387,14 @@ pub(crate) enum IpcResult {
     SpotifyPopupCover(Option<Vec<u8>>, String, u64),
     CoverPicker(Option<Picker>),
     Lyrics(Option<LrcData>, u64),
+    /// A podcast episode's transcript, shown in the lyrics pane.
+    ///
+    /// Deliberately not `Lyrics`: that variant is gated on a per-track
+    /// generation so a response that arrives after the track changed is
+    /// dropped. A transcript is not for the track that happens to be playing —
+    /// it was asked for by name — so gating it would throw away exactly the
+    /// fetch the user waited for.
+    PodcastTranscript(Option<LrcData>, String),
     LibraryTracks(Vec<TrackInfo>),
     MostPlayed(Vec<TrackInfo>),
     RecentlyPlayed(Vec<TrackInfo>),

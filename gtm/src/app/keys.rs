@@ -2966,6 +2966,50 @@ impl App {
                     self.podcast.episodes_feed_id = None;
                     self.pickers.close_top();
                 }
+                KeyCode::Char('t') => {
+                    // Transcript: the episode's own text, in the lyrics pane.
+                    let idx = self.pickers.top().map_or(0, |o| o.selected);
+                    let feed_id = self.podcast.episodes_feed_id.clone();
+                    if let Some(feed_id) = feed_id {
+                        let ep = self.podcast.episodes.get(idx).cloned();
+                        // A feed entry with no transcript is worth saying out
+                        // loud, but not before the fetch: the list is usually
+                        // cached and the network may not be needed at all.
+                        if ep.as_ref().is_some_and(|e| !e.transcripts.is_empty()) {
+                            self.pickers.close_top();
+                            self.lyrics.show = true;
+                            self.lyrics.fetching = true;
+                            let label = ep
+                                .map(|e| e.title)
+                                .filter(|t| !t.trim().is_empty())
+                                .unwrap_or_else(|| "this episode".to_string());
+                            let c = self.client.clone();
+                            let ipc = self.ipc_tx.clone();
+                            let _ = tx.try_send(TuiCommand::fire(move || async move {
+                                match c.podcast().transcript(&feed_id, idx).await {
+                                    Ok(lyrics) => {
+                                        let _ = ipc.send(IpcResult::PodcastTranscript(
+                                            Some(lyrics),
+                                            label,
+                                        ));
+                                    }
+                                    Err(e) => {
+                                        let _ = ipc
+                                            .send(IpcResult::Error(format!("No transcript: {e}")));
+                                    }
+                                }
+                            }));
+                        } else {
+                            self.notify_typed(
+                                "Podcast",
+                                "No transcript published for this episode".to_string(),
+                                NotificationKind::Info,
+                                false,
+                                NotifType::NowPlaying,
+                            );
+                        }
+                    }
+                }
                 KeyCode::Up | KeyCode::Down => {
                     self.move_picker_selection(key.code == KeyCode::Down);
                 }

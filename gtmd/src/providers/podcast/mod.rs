@@ -14,7 +14,10 @@ use quick_xml::Reader;
 use quick_xml::events::Event;
 use tracing::{info, warn};
 
-use gtm::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
+use gtm::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus, PodcastTranscript};
+use gtm::shared::track::LrcData;
+
+pub mod vtt;
 
 const CONFIG_FILE: &str = "podcast.json";
 const CONFIG_PERMS: u32 = 0o600;
@@ -218,6 +221,84 @@ impl PodcastManager {
             error: self.error.clone(),
         }
     }
+
+    /// Fetch and parse an episode's transcript.
+    ///
+    /// Every transcript the feed offers is tried in preference order, because a
+    /// feed that offers several is not obliged to keep them all reachable: the
+    /// first one that yields a non-empty parse wins, and a failure to reach the
+    /// first is a fallthrough rather than the answer. A feed with none is an
+    /// error the caller can say out loud, not an empty pane.
+    pub async fn fetch_transcript(
+        &self,
+        feed_id: &str,
+        episode_index: usize,
+    ) -> Result<LrcData, String> {
+        let episode = self
+            .episode_at(feed_id, episode_index)
+            .ok_or_else(|| "episode missing".to_string())?;
+        if episode.transcripts.is_empty() {
+            return Err(format!(
+                "\u{201c}{}\u{201d} has no transcript",
+                if episode.title.trim().is_empty() {
+                    "this episode"
+                } else {
+                    &episode.title
+                }
+            ));
+        }
+        let mut ranked: Vec<&PodcastTranscript> = episode.transcripts.iter().collect();
+        ranked.sort_by_key(|t| t.rank());
+        let mut last = String::from("no usable transcript");
+        for t in ranked {
+            let body = match (&t.text, &t.url) {
+                // Inline first: no network, and it cannot be a stale copy.
+                (Some(text), _) if !text.trim().is_empty() => text.clone(),
+                (_, Some(url)) if !url.trim().is_empty() => match self.fetch_body(url).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        last = e;
+                        continue;
+                    }
+                },
+                _ => continue,
+            };
+            let parsed = vtt::parse_transcript(&body);
+            if !parsed.lines.is_empty() {
+                return Ok(LrcData {
+                    title: episode.title.clone().into(),
+                    artist: Some(episode.feed_title.clone()),
+                    album: None,
+                    lines: parsed.lines,
+                });
+            }
+            last = "transcript was empty".into();
+        }
+        Err(last)
+    }
+
+    /// GET a transcript body, size-capped like a feed.
+    async fn fetch_body(&self, url: &str) -> Result<String, String> {
+        let resp = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| format!("transcript fetch: {e}"))?;
+        if !resp.status().is_success() {
+            return Err(format!("transcript fetch: HTTP {}", resp.status()));
+        }
+        let mut raw = String::with_capacity(32 * 1024);
+        let mut chunks = resp.bytes_stream();
+        while let Some(chunk) = chunks.next().await {
+            let chunk = chunk.map_err(|e| format!("transcript stream: {e}"))?;
+            raw.push_str(&String::from_utf8_lossy(&chunk));
+            if raw.len() > MAX_FEED_BYTES {
+                return Err("transcript too large".into());
+            }
+        }
+        Ok(raw)
+    }
 }
 
 /// Stable feed id derived from the feed URL.
@@ -296,6 +377,32 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
                 {
                     p.url = url;
                 }
+                // `<media:content url=... type="audio/mpeg">` is how a growing
+                // number of feeds carry the audio, in place of an RSS
+                // `<enclosure>`. It was not read at all, so those episodes came
+                // out with no URL and were then thrown away.
+                if name == "content"
+                    && let Some(url) = attr_str(&e, "url")
+                    && let Some(p) = ep.as_mut()
+                    && p.url.is_empty()
+                    && looks_audio(&attr_str(&e, "type").unwrap_or_default())
+                {
+                    p.url = url;
+                }
+                // `<podcast:transcript>` (Atom) and `<transcript>` (RSS) both
+                // open either self-closing with a `url` or with a CDATA body
+                // holding the transcript itself. Only the self-closing form was
+                // handled, and only for `content`.
+                if name == "transcript"
+                    && let Some(p) = ep.as_mut()
+                {
+                    p.transcripts.push(PodcastTranscript {
+                        url: attr_str(&e, "url").filter(|u| !u.trim().is_empty()),
+                        text: None,
+                        kind: attr_str(&e, "type"),
+                        rel: attr_str(&e, "rel"),
+                    });
+                }
                 if ep.is_some() && name == "link" && is_atom {
                     // Atom enclosure/alternate links carry the URL in href.
                     if let Some(href) = attr_str(&e, "href") {
@@ -353,6 +460,19 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
                 {
                     p.url = url;
                 }
+                // The CDATA form: the element is open, and its text is the
+                // transcript. The `url` attribute is recorded first so a feed
+                // that carries both keeps the hosted copy.
+                if name == "transcript"
+                    && let Some(p) = ep.as_mut()
+                {
+                    p.transcripts.push(PodcastTranscript {
+                        url: attr_str(&e, "url").filter(|u| !u.trim().is_empty()),
+                        text: None,
+                        kind: attr_str(&e, "type"),
+                        rel: attr_str(&e, "rel"),
+                    });
+                }
                 stack.push(name.clone());
                 // Treat self-closing leaf as immediately closed.
                 if let Some(p) = ep.as_mut()
@@ -365,6 +485,19 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
                 stack.pop();
             }
             Ok(Event::Text(t)) => {
+                // A `transcript` element's own text is the transcript. Handled
+                // before the field dispatch, which knows nothing about it.
+                if ep.is_some() && stack.last().is_some_and(|f| f == "transcript") {
+                    if let Some(p) = ep.as_mut()
+                        && let Some(tr) = p.transcripts.last_mut()
+                    {
+                        let text = t.decode().unwrap_or_default().trim().to_string();
+                        if !text.is_empty() {
+                            tr.text = Some(text);
+                        }
+                    }
+                    continue;
+                }
                 // Skip whitespace-only text without an active context.
                 if ep.is_none() && stack.is_empty() {
                     continue;
@@ -392,6 +525,17 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
                 }
             }
             Ok(Event::CData(c)) => {
+                if ep.is_some() && stack.last().is_some_and(|f| f == "transcript") {
+                    if let Some(p) = ep.as_mut()
+                        && let Some(tr) = p.transcripts.last_mut()
+                    {
+                        let text = c.decode().unwrap_or_default().trim().to_string();
+                        if !text.is_empty() {
+                            tr.text = Some(text);
+                        }
+                    }
+                    continue;
+                }
                 if let Some(p) = ep.as_mut()
                     && let Some(field) = stack.last()
                 {
@@ -409,16 +553,19 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
                 if let Some(mut p) = ep.take()
                     && (name == "item" || name == "entry")
                 {
-                    // Skip entries with no playable enclosure.
-                    if p.url.is_empty() {
-                        stack.pop();
-                        continue;
-                    }
+                    // An entry with no audio URL used to be discarded here. That
+                    // is what made the whole feed look broken when a single
+                    // item used an enclosure shape the parser did not read: the
+                    // episode silently vanished from the list, and with it the
+                    // transcript, the title and the date that were all sitting
+                    // right there. The entry is kept, and `play` reports that
+                    // the audio is missing rather than the episode being a lie.
+                    p.transcripts.retain(|t| t.is_present());
                     if p.title.trim().is_empty() {
                         p.title = title.clone();
                     }
                     if p.id.trim().is_empty() {
-                        p.id = sensible_id(&p.url);
+                        p.id = sensible_id(if p.url.is_empty() { &p.title } else { &p.url });
                     }
                     let id = p.id.clone();
                     if episodes.iter().any(|e| e.id == id) {
@@ -456,6 +603,7 @@ fn parse_feed(raw: &str, feed_url: &str) -> Result<ParsedFeed, String> {
             } else {
                 Some(e.description)
             },
+            transcripts: e.transcripts,
         })
         .collect();
     Ok(ParsedFeed {
@@ -473,6 +621,7 @@ struct ParsedEpisode {
     duration_secs: Option<u64>,
     published: Option<String>,
     description: String,
+    transcripts: Vec<PodcastTranscript>,
 }
 
 fn apply_field(ep: &mut ParsedEpisode, field: &str, text: &str) {
@@ -564,4 +713,160 @@ fn looks_audio(mime: &str) -> bool {
         || m.contains("mpeg")
         || m.contains("ogg")
         || m.is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn feed(body: &str) -> ParsedFeed {
+        parse_feed(body, "https://example.com/feed.xml").expect("parse")
+    }
+
+    /// A `<podcast:transcript>` is self-closing in almost every real feed. It
+    /// was not read, so the transcript was invisible and the episode looked
+    /// like a feed that simply did not have one.
+    #[test]
+    fn a_self_closing_transcript_link_is_read() {
+        let f = feed(
+            r#"<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+<channel><title>Show</title>
+<item>
+  <title>Ep 1</title>
+  <enclosure url="https://cdn.example.com/1.mp3" type="audio/mpeg"/>
+  <podcast:transcript url="https://cdn.example.com/1.vtt" type="text/vtt" rel="captions"/>
+</item>
+</channel></rss>"#,
+        );
+        assert_eq!(f.episodes.len(), 1);
+        let t = &f.episodes[0].transcripts;
+        assert_eq!(t.len(), 1, "{t:?}");
+        assert_eq!(t[0].url.as_deref(), Some("https://cdn.example.com/1.vtt"));
+        assert_eq!(t[0].kind.as_deref(), Some("text/vtt"));
+        assert_eq!(t[0].rel.as_deref(), Some("captions"));
+        assert!(t[0].text.is_none());
+    }
+
+    /// The other shape: the element is open and its CDATA *is* the transcript.
+    /// Reading only the attribute would have produced a transcript with no
+    /// body and no url, which `is_present` then discards.
+    #[test]
+    fn an_inline_transcript_body_is_read() {
+        let f = feed(
+            r#"<rss version="2.0" xmlns:podcast="https://podcastindex.org/namespace/1.0">
+<channel><title>Show</title>
+<item>
+  <title>Ep 1</title>
+  <enclosure url="https://cdn.example.com/1.mp3" type="audio/mpeg"/>
+  <podcast:transcript type="text/vtt"><![CDATA[WEBVTT
+
+00:00:01.000 --> 00:00:03.000
+Hello]]></podcast:transcript>
+</item>
+</channel></rss>"#,
+        );
+        let t = &f.episodes[0].transcripts;
+        assert_eq!(t.len(), 1, "{t:?}");
+        let body = t[0].text.as_deref().expect("inline body");
+        assert!(body.starts_with("WEBVTT"), "{body:?}");
+        assert!(t[0].is_present());
+    }
+
+    /// An RSS feed that uses a bare `<transcript>` instead of the namespaced
+    /// element. The parser matches on local name, so both work.
+    #[test]
+    fn an_unprefixed_transcript_element_is_read() {
+        let f = feed(
+            r#"<rss version="2.0"><channel><title>Show</title>
+<item>
+  <title>Ep 1</title>
+  <enclosure url="https://cdn.example.com/1.mp3" type="audio/mpeg"/>
+  <transcript url="https://cdn.example.com/1.srt" type="text/srt"/>
+</item></channel></rss>"#,
+        );
+        assert_eq!(
+            f.episodes[0].transcripts.len(),
+            1,
+            "{:?}",
+            f.episodes[0].transcripts
+        );
+    }
+
+    /// `<media:content>` is how a growing number of feeds carry the audio in
+    /// place of an `<enclosure>`. It was not read, so those entries came out
+    /// with no URL — and were then thrown away by the enclosure check.
+    #[test]
+    fn media_content_is_read_as_the_enclosure() {
+        let f = feed(
+            r#"<rss version="2.0" xmlns:media="http://search.yahoo.com/mrss/">
+<channel><title>Show</title>
+<item>
+  <title>Ep 1</title>
+  <media:content url="https://cdn.example.com/1.mp3" type="audio/mpeg"/>
+</item></channel></rss>"#,
+        );
+        assert_eq!(f.episodes.len(), 1, "the entry must not be discarded");
+        assert_eq!(f.episodes[0].url, "https://cdn.example.com/1.mp3");
+    }
+
+    /// An entry with genuinely no audio anywhere used to be discarded, taking
+    /// its transcript, title and date with it. It is kept, and the queue route
+    /// is the thing that refuses it — with the episode's name.
+    #[test]
+    fn an_entry_with_no_audio_is_kept_not_discarded() {
+        let f = feed(
+            r#"<rss version="2.0"><channel><title>Show</title>
+<item>
+  <title>Ep 1</title>
+  <guid>ep-1</guid>
+  <description>words, but no audio</description>
+</item></channel></rss>"#,
+        );
+        assert_eq!(f.episodes.len(), 1, "the entry must not vanish");
+        let ep = &f.episodes[0];
+        assert!(ep.url.is_empty());
+        assert_eq!(ep.title, "Ep 1");
+        assert_eq!(ep.id, "ep-1");
+    }
+
+    /// A transcript with neither a url nor a body is not a transcript, and
+    /// keeping it would make the picker offer a key that always fails.
+    #[test]
+    fn an_empty_transcript_element_is_dropped() {
+        let f = feed(
+            r#"<rss version="2.0"><channel><title>Show</title>
+<item>
+  <title>Ep 1</title>
+  <enclosure url="https://cdn.example.com/1.mp3" type="audio/mpeg"/>
+  <transcript/>
+</item></channel></rss>"#,
+        );
+        assert!(
+            f.episodes[0].transcripts.is_empty(),
+            "{:?}",
+            f.episodes[0].transcripts
+        );
+    }
+
+    /// Two transcripts, and the `captions` one is the one for the listener.
+    #[test]
+    fn transcripts_are_ranked_captions_first() {
+        let mut a = PodcastTranscript {
+            url: Some("a".into()),
+            text: None,
+            kind: None,
+            rel: None,
+        };
+        let mut b = PodcastTranscript {
+            url: Some("b".into()),
+            text: None,
+            kind: None,
+            rel: Some("captions".into()),
+        };
+        assert!(b.rank() < a.rank());
+        a.text = Some(String::new());
+        assert!(!a.is_present(), "an empty body is not a transcript");
+        b.text = Some("WEBVTT".into());
+        assert!(b.is_present());
+    }
 }

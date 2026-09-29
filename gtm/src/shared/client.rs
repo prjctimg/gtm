@@ -1449,6 +1449,26 @@ impl<'a> Podcast<'a> {
         }
     }
 
+    /// Fetch and parse an episode's transcript.
+    ///
+    /// Comes back as `LrcData` because a transcript *is* a timed text track:
+    /// handing the lyrics pane this gives scrolling, the timestamp gutter and
+    /// karaoke highlighting with nothing added.
+    pub async fn transcript(&self, feed_id: &str, episode_index: usize) -> Result<track::LrcData> {
+        let res = self
+            .client
+            .send_raw(DaemonReq::PodcastTranscript {
+                feed_id: feed_id.into(),
+                episode_index,
+            })
+            .await?;
+        match res {
+            DaemonRes::PodcastTranscriptRes { lyrics, .. } => Ok(*lyrics),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
     pub async fn refresh(&self, feed_id: Option<&str>) -> Result<usize> {
         let res = self
             .client

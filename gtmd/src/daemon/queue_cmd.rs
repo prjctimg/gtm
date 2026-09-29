@@ -146,9 +146,10 @@ impl Queue {
     /// A `spotify:` uri goes through the Spotify resolver, which either queues
     /// it for native streaming or falls back to a YouTube download, and writes
     /// the entry with its title, artist, album, duration and cover already
-    /// filled in. Anything the resolver cannot handle is queued unresolved:
-    /// a row the user can see, reorder and remove beats a row that silently
-    /// refuses to play.
+    /// filled in. A `podcast://feed/index` goes through the podcast resolver,
+    /// which is the only place that knows what that feed's episode is called.
+    /// Anything the resolver cannot handle is queued unresolved: a row the user
+    /// can see, reorder and remove beats a row that silently refuses to play.
     async fn add_remote(
         inner: &DaemonInner,
         paths: &[String],
@@ -159,6 +160,26 @@ impl Queue {
             if path.starts_with("spotify:") && Self::add_spotify(inner, path, position).await {
                 queued += 1;
                 continue;
+            }
+            if path.starts_with("podcast://") {
+                match Self::split_podcast_uri(path) {
+                    Some((feed, index)) => {
+                        match Podcast::queue_episode(inner, &feed, index, position).await {
+                            Ok(DaemonRes::Ok) => queued += 1,
+                            Ok(DaemonRes::Error { message }) => {
+                                return Ok(DaemonRes::Error { message });
+                            }
+                            Ok(_) => {}
+                            Err(e) => return Err(e),
+                        }
+                        continue;
+                    }
+                    None => {
+                        return Ok(DaemonRes::Error {
+                            message: format!("not a podcast uri: {path}"),
+                        });
+                    }
+                }
             }
             let mut state = inner.state.write().await;
             state.fallback_disabled = false;
@@ -173,6 +194,19 @@ impl Queue {
         Daemon::push_queue_state(inner).await;
         Daemon::save_state(inner);
         Ok(DaemonRes::Ok)
+    }
+
+    /// Split `podcast://<feed-id>/<episode-index>`.
+    ///
+    /// The feed id is an md5 hex digest, so the separator cannot collide with
+    /// anything inside it, and the index is the only part that can be malformed.
+    fn split_podcast_uri(path: &str) -> Option<(String, usize)> {
+        let rest = path.strip_prefix("podcast://")?;
+        let (feed, index) = rest.rsplit_once('/')?;
+        if feed.is_empty() {
+            return None;
+        }
+        Some((feed.to_string(), index.parse().ok()?))
     }
 
     /// Resolve one `spotify:` uri and enqueue the resolved row.

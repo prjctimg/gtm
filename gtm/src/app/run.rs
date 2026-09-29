@@ -1343,6 +1343,22 @@ impl App {
                         self.list_cover_sync();
                         self.metadata_cover_sync();
                     }
+                    IpcResult::PodcastTranscript(lyrics, title) => {
+                        self.lyrics.pending_gen = None;
+                        self.lyrics.current = lyrics.or(Some(LrcData {
+                            title: Some(title.clone()),
+                            artist: None,
+                            album: None,
+                            lines: vec![LrcLine {
+                                timestamp: 0.0,
+                                text: "Transcript was empty".to_string(),
+                                words: Vec::new(),
+                            }],
+                        }));
+                        self.lyrics.fetching = false;
+                        self.lyrics.scroll = self.current_lyric_index();
+                        self.lyrics.show = true;
+                    }
                     IpcResult::Lyrics(lyrics, lyrics_gen) => {
                         if Some(lyrics_gen) != self.lyrics.pending_gen {
                             // Stale: the track changed while this fetch was in

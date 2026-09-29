@@ -3170,6 +3170,10 @@ impl Daemon {
                 feed_id,
                 episode_index,
             } => Podcast::play(inner, feed_id, *episode_index).await,
+            DaemonReq::PodcastTranscript {
+                feed_id,
+                episode_index,
+            } => Podcast::transcript(inner, feed_id, *episode_index).await,
             DaemonReq::RadioSearch { query, limit } => Radio::search(inner, query, *limit).await,
             DaemonReq::RadioTop { limit } => Radio::top(inner, *limit).await,
             DaemonReq::RadioPlay {
@@ -4232,8 +4236,17 @@ impl Daemon {
     // ─── Spotify ───
 
     #[cfg(feature = "youtube")]
+    /// Download `url` into the cache under `prefix`, into the `subdir`
+    /// subdirectory.
+    ///
+    /// The subdirectory is a parameter because the cache is shared by more than
+    /// one provider: a podcast episode resolved through the Spotify→YouTube
+    /// fallback landed in `cache/spotify/`, so clearing the Spotify cache to
+    /// reclaim space also deleted the podcast episodes, and nothing in
+    /// `cache/spotify/` was ever anything but an episode.
     pub(crate) async fn download_to_cache(
         cache_dir: &Path,
+        subdir: &str,
         prefix: &str,
         url: &str,
         auth: Vec<std::ffi::OsString>,
@@ -4245,6 +4258,7 @@ impl Daemon {
         for attempt in 1..=max_retries {
             match Self::try_cache_download(
                 cache_dir,
+                subdir,
                 prefix,
                 url,
                 auth.clone(),
@@ -4268,16 +4282,17 @@ impl Daemon {
     #[cfg(feature = "youtube")]
     async fn try_cache_download(
         cache_dir: &Path,
+        subdir: &str,
         prefix: &str,
         url: &str,
         auth: Vec<std::ffi::OsString>,
         sem: std::sync::Arc<tokio::sync::Semaphore>,
         gate: std::sync::Arc<tokio::sync::Mutex<std::time::Instant>>,
     ) -> Result<String, String> {
-        let dir = cache_dir.join("spotify");
+        let dir = cache_dir.join(subdir);
         tokio::fs::create_dir_all(&dir)
             .await
-            .map_err(|e| format!("create spotify cache: {e}"))?;
+            .map_err(|e| format!("create {subdir} cache: {e}"))?;
         if let Ok(mut entries) = tokio::fs::read_dir(&dir).await {
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let name = entry.file_name().to_string_lossy().into_owned();

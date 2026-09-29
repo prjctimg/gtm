@@ -525,6 +525,11 @@ pub enum DaemonReq {
         feed_id: String,
         episode_index: usize,
     },
+    /// Fetch and parse the transcript an episode's feed publishes.
+    PodcastTranscript {
+        feed_id: String,
+        episode_index: usize,
+    },
     RadioSearch {
         query: String,
         limit: u16,
@@ -680,6 +685,7 @@ impl DaemonReq {
             DaemonReq::PodcastRefresh { .. } => "podcast_refresh",
             DaemonReq::PodcastStatus => "podcast_status",
             DaemonReq::PodcastPlay { .. } => "podcast_play",
+            DaemonReq::PodcastTranscript { .. } => "podcast_transcript",
             DaemonReq::RadioSearch { .. } => "radio_search",
             DaemonReq::RadioTop { .. } => "radio_top",
             DaemonReq::RadioPlay { .. } => "radio_play",
@@ -1418,6 +1424,18 @@ impl DaemonReq {
                     episode_index: x.episode_index,
                 }
             }
+            "podcast_transcript" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    feed_id: String,
+                    episode_index: usize,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::PodcastTranscript {
+                    feed_id: x.feed_id,
+                    episode_index: x.episode_index,
+                }
+            }
             "radio_search" => {
                 #[derive(Deserialize)]
                 struct Params {
@@ -1777,6 +1795,13 @@ pub enum DaemonRes {
     PodcastStatusRes {
         status: PodcastStatus,
     },
+    /// An episode's transcript, parsed into the same timed-line shape as
+    /// lyrics so the lyrics pane can render it unchanged.
+    PodcastTranscriptRes {
+        feed_id: String,
+        episode_index: usize,
+        lyrics: Box<LrcData>,
+    },
     RadioStationsRes {
         stations: Vec<RadioStation>,
     },
@@ -1902,6 +1927,15 @@ impl DaemonRes {
                 "episodes": episodes,
             })),
             DaemonRes::PodcastStatusRes { status } => Some(serde_json::json!({ "status": status })),
+            DaemonRes::PodcastTranscriptRes {
+                feed_id,
+                episode_index,
+                lyrics,
+            } => Some(serde_json::json!({
+                "feed_id": feed_id,
+                "episode_index": episode_index,
+                "lyrics": lyrics,
+            })),
             DaemonRes::RadioStationsRes { stations } => {
                 Some(serde_json::json!({ "stations": stations }))
             }
@@ -2071,6 +2105,15 @@ impl DaemonRes {
                 field!("episodes", &episodes);
             }
             DaemonRes::PodcastStatusRes { status } => field!("status", &status),
+            DaemonRes::PodcastTranscriptRes {
+                feed_id,
+                episode_index,
+                lyrics,
+            } => {
+                field!("feed_id", &feed_id);
+                field!("episode_index", &episode_index);
+                field!("lyrics", &lyrics);
+            }
             DaemonRes::RadioStationsRes { stations } => field!("stations", &stations),
             DaemonRes::RadioTagsRes { tags } => field!("tags", &tags),
             DaemonRes::RadioCountriesRes { countries } => field!("countries", &countries),
