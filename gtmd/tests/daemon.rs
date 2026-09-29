@@ -584,7 +584,7 @@ async fn lastfm_setup() {
 /// A default install authorizes once, not twice.
 ///
 /// With no id file both legs run on librespot's app, so the Web API token is
-/// already a valid Connect credential. Running the playback flow on top of it
+/// already a valid stream credential. Running the playback flow on top of it
 /// would be actively harmful — Spotify rotates the refresh token on every new
 /// grant for the same app, invalidating the token just stored — so
 /// `needs_play_link` must be false here.
@@ -615,10 +615,12 @@ async fn a_shared_app_needs_no_second_flow() {
 /// The playback credential must be minted by librespot's app even when the
 /// Web API runs on the user's own.
 ///
-/// This pairing is exactly what login5 refuses, and it is silent from the
-/// user's side: playlists sync, search works, and only audio is missing. So the
-/// authorize URL the second flow produces has to carry librespot's id, never
-/// the configured Web API one.
+/// The stream session is created with librespot's client id and `connect` is
+/// handed a token; Spotify presents that token to the app that issued it, so a
+/// token minted by a self-registered app is refused there. The failure is
+/// silent from the user's side: playlists sync, search works, and only audio is
+/// missing. So the authorize URL the second flow produces has to carry
+/// librespot's id, never the configured Web API one.
 #[test]
 fn play_link_authorizes_with_librespot() {
     let dir = std::env::temp_dir().join(format!("gtmd_play_link_{}", std::process::id()));
@@ -668,9 +670,9 @@ async fn oauth_start_url() {
         DaemonRes::SpotifyOauthStarted { url } => {
             // The app is fixed, so this asserts the one id that can both
             // authorize and stream. It used to assert a caller-supplied id,
-            // which is precisely the pairing login5 refuses: a self-registered
-            // app authorizes fine and then plays nothing. See
-            // `SpotifyManager::client_id`.
+            // which a self-registered app authorizes fine and then plays
+            // nothing with, because the session presents the token to the app
+            // that issued it. See `SpotifyManager::client_id`.
             assert!(
                 url.contains("client_id=65b708073fc0480ea92a077233ca87bd"),
                 "unexpected authorize url {url}"

@@ -384,11 +384,6 @@ impl Cmd {
             state.current_track = Some(prev_track);
         }
 
-        // Read the mixer's level before taking the stream lock: Connect
-        // announces it as the device's initial volume, and locking the two in
-        // the other order is the inversion that wedged playback and cover art
-        // together once already.
-        let volume = inner.mixer.lock().await.volume();
         let source = {
             let mut stream = inner.stream.lock().await;
             match stream
@@ -399,7 +394,6 @@ impl Cmd {
                     &SessionSpec {
                         token: &token,
                         config_dir: &config_dir,
-                        volume,
                     },
                 )
                 .await
@@ -930,7 +924,6 @@ impl Cmd {
             Err(res) => return Ok(*res),
         };
         let config_dir = inner.config.config_dir.clone();
-        let volume = inner.mixer.lock().await.volume();
         let source = {
             let mut stream = inner.stream.lock().await;
             match stream
@@ -941,7 +934,6 @@ impl Cmd {
                     &SessionSpec {
                         token: &token,
                         config_dir: &config_dir,
-                        volume,
                     },
                 )
                 .await

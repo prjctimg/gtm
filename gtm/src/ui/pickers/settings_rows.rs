@@ -100,8 +100,9 @@ pub(crate) fn rows_for(category: usize) -> SettingsRows {
 ///
 /// Empty where the row is self-explanatory. The Spotify transport rows
 /// deliberately get nothing: they duplicate `n`/`p` and the on-screen controls,
-/// and their real distinction — that they act on the Connect device rather than
-/// the local queue — is exactly what a one-line hint would have to explain.
+/// and their real distinction — that they act through Spotify's own device
+/// control rather than the local queue — is exactly what a one-line hint would
+/// have to explain.
 pub(crate) fn row_help(category: usize, option: usize) -> &'static str {
     match (category, option) {
         (0, 0) => " Press Enter to cycle repeat (off / one / all).",

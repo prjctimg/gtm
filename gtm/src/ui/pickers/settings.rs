@@ -201,8 +201,10 @@ impl Pickers {
             "Relink required".to_string()
         } else if st.needs_play_link {
             // Everything but audio works. Re-linking cannot fix this one: the
-            // Web API token belongs to a different app than the one Connect
-            // accepts, so the account needs its own playback authorization.
+            // Web API token belongs to a different app than the one the stream
+            // session authenticates as, and a token can only be presented to
+            // the app that issued it, so the account needs its own playback
+            // authorization.
             "Playback not linked".to_string()
         } else if let Some(err) = st.error.as_deref() {
             let mut e: String = err.chars().take(20).collect();

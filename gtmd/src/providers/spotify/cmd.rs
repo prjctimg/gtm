@@ -224,10 +224,10 @@ impl Spotify {
                     // picker closes and playlist loading commences.
                     let _ = inner2.event_tx.send(DaemonEvent::SpotifyStatusChanged);
                     // The playback credential is a second authorization,
-                    // because one token can only be minted by one app and
-                    // Connect accepts only librespot's. Skipped when the Web
-                    // API already runs on that app — there the first token
-                    // *is* the Connect credential, and authorizing twice would
+                    // because one token can only be minted by one app and the
+                    // stream session only accepts librespot's. Skipped when the
+                    // Web API already runs on that app — there the first token
+                    // *is* the stream credential, and authorizing twice would
                     // revoke the first (Spotify rotates the refresh token on
                     // every new grant for the same app).
                     //

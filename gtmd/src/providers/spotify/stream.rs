@@ -4,27 +4,24 @@
 
 use std::collections::VecDeque;
 use std::path::Path;
-use std::sync::atomic::{AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use librespot_connect::{ConnectConfig, Spirc};
 use librespot_core::SessionConfig;
 use librespot_core::authentication::Credentials;
 use librespot_core::cache::Cache;
-use librespot_core::config::DeviceType;
 use librespot_core::session::Session;
 use librespot_core::spotify_uri::SpotifyUri;
 use librespot_playback::audio_backend::{Sink as LibrespotSink, SinkError, SinkResult};
 use librespot_playback::config::PlayerConfig;
 use librespot_playback::convert::Converter;
 use librespot_playback::decoder::AudioPacket;
-use librespot_playback::mixer::{Mixer, VolumeGetter};
+use librespot_playback::mixer::VolumeGetter;
 use librespot_playback::player::{Player, PlayerEvent};
 use librespot_playback::{NUM_CHANNELS, SAMPLE_RATE};
 use tracing::{info, warn};
 
-use gtm::shared::global::MAX_VOLUME;
 use gtm::shared::ipc::DaemonEvent;
 
 use super::LIBRESPOT_CLIENT_ID;
@@ -43,6 +40,15 @@ use super::LIBRESPOT_CLIENT_ID;
 // this source to rodio directly would park the callback inside `recv_timeout`
 // for as long as the network takes, underrun the device, and then be evicted
 // from the mix for good the first time it yielded `None`.
+//
+// The session connects to Spotify's access point and authenticates, and that
+// is all. It deliberately does not register as a Spotify Connect device: that
+// needed `Spirc`, whose constructor performs a `login5` transfer-token request
+// this credential cannot satisfy (see [`StreamManager::ensure_session`]). The
+// cost of dropping it is that gtm is not visible as a Connect target, so a
+// phone cannot see or control it. Nothing on the audio path needs it — the
+// player resolves each track through the Web API and pulls the audio from
+// Spotify's CDN with the session's own `spclient`.
 
 /// Bounded channel capacity: each packet is ~23 ms of stereo audio, so this
 /// buffers roughly 1.5 s — enough to ride out network jitter without
@@ -57,7 +63,7 @@ const POLL: Duration = Duration::from_millis(100);
 
 /// How long a freshly loaded stream may stay silent before it is reported.
 /// A cold librespot connect plus the first packets can take a while, so this is
-/// generous; exceeding it means the session registered but never delivers
+/// generous; exceeding it means the session connected but never delivers
 /// audio. Reported, not fatal — see [`PcmStreamSource::stalled_for`].
 const STARTUP_GRACE: Duration = Duration::from_secs(25);
 
@@ -330,35 +336,6 @@ impl rodio::Source for PcmStreamSource {
 pub struct SessionSpec<'a> {
     pub token: &'a str,
     pub config_dir: &'a Path,
-    /// The mixer's current level, announced to Connect as the device's.
-    pub volume: u8,
-}
-
-/// The volume Connect announces for this device.
-///
-/// Connect keeps its own level and mirrors it back, so it is wired to the
-/// daemon's real volume rather than a private one: a second volume state would
-/// drift from the mixer's and the first Connect-issued change would silently
-/// take the device to a level the UI never showed.
-struct ConnectVolume(AtomicU16);
-
-impl ConnectVolume {
-    fn new(volume: u8) -> Self {
-        Self(AtomicU16::new(volume.min(MAX_VOLUME) as u16))
-    }
-}
-
-impl Mixer for ConnectVolume {
-    fn open(_: librespot_playback::mixer::MixerConfig) -> Result<Self, librespot_core::Error> {
-        Ok(Self::new(MAX_VOLUME))
-    }
-    fn volume(&self) -> u16 {
-        self.0.load(Ordering::Relaxed)
-    }
-    fn set_volume(&self, volume: u16) {
-        self.0
-            .store(volume.min(MAX_VOLUME as u16), Ordering::Relaxed);
-    }
 }
 
 /// Always reports unity attenuation; volume control lives in the rodio chain.
@@ -437,9 +414,6 @@ pub struct StreamManager {
     /// Where provider-level failures are reported. Held as a sender rather than
     /// the daemon itself so the event pump can never reach into daemon state.
     notify: tokio::sync::broadcast::Sender<DaemonEvent>,
-    /// Handle to the registered Connect device. Dropped without `shutdown` it
-    /// stays registered with Spotify, so teardown has to close it explicitly.
-    spirc: Option<Spirc>,
 }
 
 impl Default for StreamManager {
@@ -457,7 +431,6 @@ impl StreamManager {
             current_uri: None,
             session_token: None,
             notify,
-            spirc: None,
         }
     }
 
@@ -486,12 +459,29 @@ impl StreamManager {
     /// one the current session was established with. This keeps playback
     /// working past a token expiry instead of leaving a stale session that
     /// silently stops producing audio.
+    ///
+    /// The session connects to Spotify's access point and authenticates; it
+    /// does **not** register as a Connect device. Registration is what required
+    /// `Spirc`, and `Spirc::new` unconditionally calls `login5.auth_token()`
+    /// (`librespot-connect-0.8.0/src/spirc.rs:220`) to pre-acquire a transfer
+    /// token. That call posts an OAuth access token as
+    /// `Login_method::StoredCredential` under the keymaster client id, the
+    /// pairing `librespot-core` itself documents as unsupported — on
+    /// `auth_token`: "This request will only work when the store credentials
+    /// match the client-id". Spotify answers it `503 Service Unavailable`,
+    /// which is the failure being fixed here. It is also the *only* call that
+    /// failed: `client_token()` and the access-point handshake both succeed on
+    /// the same token, which is why the log shows `Authenticated as '...' !`
+    /// immediately before the 503.
+    ///
+    /// Registration is not on the audio path. `Player::load` goes
+    /// `AudioItem::get_file` (the Web API) → `CdnUrl::resolve_audio` →
+    /// `spclient().stream_from_cdn()`, and every one of those is session state
+    /// that was already established. So the bytes still arrive, and what is
+    /// given up is only visibility: gtm no longer appears as a Connect target,
+    /// so a phone cannot see or control it.
     async fn ensure_session(&mut self, spec: &SessionSpec<'_>) -> Result<(), String> {
-        let SessionSpec {
-            token,
-            config_dir,
-            volume,
-        } = *spec;
+        let SessionSpec { token, config_dir } = *spec;
         if self.player.is_some() && self.session_token.as_deref() == Some(token) {
             return Ok(());
         }
@@ -506,9 +496,9 @@ impl StreamManager {
         .map_err(|e| format!("spotify cache: {e}"))?;
 
         // The device id is left to librespot so it is a fresh UUID per session.
-        // A fixed one is shared by every gtm install, which Connect registration
-        // has to disambiguate and which makes a reconnect look like a
-        // re-registration.
+        // A fixed one is shared by every gtm install, and the device id is part
+        // of the `client_token` request, so a shared one would have every
+        // install contending for one token.
         let session_config = SessionConfig {
             client_id: LIBRESPOT_CLIENT_ID.to_string(),
             ..Default::default()
@@ -532,35 +522,23 @@ impl StreamManager {
             },
         );
 
-        // Connect and register in one step, because `Spirc::new` connects the
-        // session itself. Connecting first and then registering connected
-        // twice, and the second attempt failed with "Session is not connected"
-        // because it did not own the connection it was handed.
+        // Connect to the access point and authenticate. This is the whole of
+        // what streaming needs: the session owns the AP connection, the
+        // `client_token` and the authenticated identity that
+        // `spclient().stream_from_cdn()` presents when it pulls the audio.
         //
-        // Registration is what makes playback possible at all: Connect serves
-        // the audio item and refuses a device it has never seen with
-        // `FaultyRequest(BAD_REQUEST)`. The session still authenticates and the
-        // player still loads the track, so the only symptom is silence —
-        // librespot emits `Unavailable`, the source is released, the queue moves
-        // on. The handle is kept so teardown can unregister rather than leave a
-        // ghost device behind for the next session to collide with.
-        let mixer = Arc::new(ConnectVolume::new(volume));
-        let registered = tokio::time::timeout(
+        // There is no `Spirc` registration step any more. The old comment here
+        // claimed "Connect serves the audio item and refuses a device it has
+        // never seen with `FaultyRequest(BAD_REQUEST)`", and on that reasoning
+        // registration was treated as a precondition for playback. Reading
+        // librespot's own load path does not support it: `load_remote_track`
+        // resolves the item through the Web API and the CDN through
+        // `spclient`, and `Spirc` appears in neither. Registration bought
+        // visibility (a phone could see and control gtm) and, in exchange, a
+        // `login5` call this credential cannot satisfy.
+        tokio::time::timeout(
             STREAM_CONNECT_TIMEOUT,
-            Spirc::new(
-                ConnectConfig {
-                    name: "gtm".to_string(),
-                    device_type: DeviceType::Computer,
-                    initial_volume: mixer.volume(),
-                    is_group: false,
-                    disable_volume: false,
-                    volume_steps: 64,
-                },
-                session.clone(),
-                Credentials::with_access_token(token),
-                player.clone(),
-                mixer,
-            ),
+            session.connect(Credentials::with_access_token(token), true),
         )
         .await
         .map_err(|_| {
@@ -568,10 +546,9 @@ impl StreamManager {
                 "spotify connect timed out after {}s — check network / access-point reachability",
                 STREAM_CONNECT_TIMEOUT.as_secs()
             )
-        })?;
-        let (spirc, spirc_task) = registered.map_err(|e| Self::connect_error(&e.to_string()))?;
-        tokio::spawn(spirc_task);
-        info!("librespot session connected and registered as a connect device");
+        })?
+        .map_err(|e| Self::connect_error(&e.to_string()))?;
+        info!("librespot session connected and authenticated");
 
         // Event pump: end-of-track / unavailable mark the channel as
         // finished so the rodio source drains out and the mixer advances the
@@ -593,22 +570,23 @@ impl StreamManager {
                         drop_target(&target, &track_id);
                         if streak.refused() {
                             warn!(
-                                "spotify refused {} consecutive track loads — is the \
-                                 connect device registered?",
+                                "spotify refused {} consecutive track loads",
                                 LOAD_REFUSALS_REPORTED
                             );
-                            // The token is not the usual culprit and saying so
-                            // sends people re-linking for nothing: the common
-                            // cause is a device Spotify never registered, which
-                            // is a Connect registration failure, not a
-                            // credential one.
+                            // This message used to blame Connect registration,
+                            // which is now gone as a cause — the session never
+                            // registers, so a device that failed to register
+                            // cannot be what happened. What is left on this path
+                            // is the account: `Unavailable` is what the CDN and
+                            // Web API answer for a track the account may not
+                            // play (no Premium, market restriction, region).
                             let _ = notify.send(DaemonEvent::ProviderError {
                                 provider: "spotify".to_string(),
                                 message: format!(
                                     "Spotify refused {LOAD_REFUSALS_REPORTED} track loads in a row. \
-                                     This is usually a device that failed to register with \
-                                     Spotify Connect rather than a bad login — check the \
-                                     daemon log for the connect registration line."
+                                     The session connected, so this is the account rather than the \
+                                     login — check that the account is Premium and available in \
+                                     its market."
                                 ),
                             });
                         }
@@ -620,18 +598,21 @@ impl StreamManager {
             }
         });
 
-        self.spirc = Some(spirc);
         self.session = Some(session);
         self.player = Some(player);
         self.session_token = Some(token.to_string());
         Ok(())
     }
 
-    /// Turn a librespot connect/registration failure into something actionable.
+    /// Turn a librespot connect failure into something actionable.
     ///
     /// A rejected access token is the common case and the raw error says only
     /// "invalid request", so it is named explicitly rather than leaving the user
-    /// to guess which of the two things went wrong.
+    /// to guess which of the two things went wrong. Now that only
+    /// `Session::connect` reports here, the two causes are a token Spotify will
+    /// not accept and an access point we cannot reach, and a bare 503 means the
+    /// latter — it was the *registration* call that answered 503 before, and
+    /// that no longer happens here.
     fn connect_error(msg: &str) -> String {
         let low = msg.to_ascii_lowercase();
         if ["login", "token", "auth", "credential", "unauthor"]
@@ -639,6 +620,11 @@ impl StreamManager {
             .any(|k| low.contains(k))
         {
             format!("spotify connect rejected — re-link your Spotify account: {msg}")
+        } else if low.contains("503") || low.contains("service unavailable") {
+            format!(
+                "spotify connect: {msg} — Spotify's access point is refusing this client; \
+                 try again, or set a Web API client id if you have not already"
+            )
         } else {
             format!("spotify connect: {msg}")
         }
@@ -648,13 +634,6 @@ impl StreamManager {
     /// established (e.g. with a renewed access token).
     fn teardown_session(&mut self) {
         self.clear_target();
-        // Before the player, so Connect sees the device go quiet rather than
-        // losing a player it is still holding.
-        if let Some(spirc) = self.spirc.take()
-            && let Err(e) = spirc.shutdown()
-        {
-            warn!("spotify connect shutdown: {e}");
-        }
         if let Some(player) = &self.player {
             player.stop();
         }
@@ -669,12 +648,12 @@ impl StreamManager {
     /// Start streaming `uri` and return the rodio source to hand to the
     /// mixer. Any previous stream is torn down first.
     ///
-    /// `token` must have been minted by [`LIBRESPOT_CLIENT_ID`], the same app the
-    /// session registers as. Connect refuses any other pairing: a
-    /// self-registered app is answered `BAD_REQUEST` for not being a recognised
-    /// playback client, and someone else's id is answered
-    /// `INVALID_CREDENTIALS` because login5 requires the id to match the app
-    /// that issued the credential. See [`super::SpotifyManager::client_id`].
+    /// `token` must be minted by [`LIBRESPOT_CLIENT_ID`], the app the session
+    /// authenticates as. That constraint is unchanged by dropping registration
+    /// — it was never about Connect accepting the id, it is that
+    /// `Session::connect` presents the token to the app that issued it, and a
+    /// token minted by a different app is rejected there. See
+    /// [`super::SpotifyManager::client_id`].
     pub async fn load(
         &mut self,
         uri: &str,
@@ -769,6 +748,25 @@ mod tests {
 
     fn test_uri() -> String {
         "spotify:track:4cOdK2wGLETKBW3PvgPWqT".to_string()
+    }
+
+    /// A connect failure has to say which of the two things went wrong, because
+    /// the raw librespot error does not: a token Spotify rejects and an access
+    /// point that is not answering need opposite responses.
+    #[test]
+    fn connect_failures_are_classified() {
+        let rejected = StreamManager::connect_error("invalid request");
+        assert!(rejected.contains("re-link"), "{rejected}");
+
+        let unreachable =
+            StreamManager::connect_error("Service unavailable { Response status code: 503 }");
+        assert!(unreachable.contains("access point"), "{unreachable}");
+        // A 503 is not a credential problem, and telling a user to re-link
+        // sends them to do something that cannot help.
+        assert!(!unreachable.contains("re-link"), "{unreachable}");
+
+        let other = StreamManager::connect_error("some other failure");
+        assert!(other.starts_with("spotify connect:"), "{other}");
     }
 
     /// The source must not report end-of-stream while its sender is still
