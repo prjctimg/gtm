@@ -1,16 +1,16 @@
 {
   "schema": 1,
-  "generated_at": "2026-09-29T16:42:49Z",
+  "generated_at": "2026-09-29T19:00:09Z",
   "run": {
-    "tag": "0.2.83+03c6b16+nightly",
-    "date": "2026-09-29T16:42:47Z",
-    "commit": "03c6b16701c727fa8324f94ffaf45d3960239131",
+    "tag": "0.2.83+9808fe0+nightly",
+    "date": "2026-09-29T19:00:07Z",
+    "commit": "9808fe0cce24f796113af96a9549114df6f78c35",
     "seconds": "152"
   },
   "previous": {
-    "tag": "0.2.83+ec5062e+nightly",
-    "date": "2026-09-29T10:58:13Z",
-    "commit": "ec5062e2e482db23a418ccbf320833a1b2edd008"
+    "tag": "0.2.83+03c6b16+nightly",
+    "date": "2026-09-29T16:42:47Z",
+    "commit": "03c6b16701c727fa8324f94ffaf45d3960239131"
   },
   "series": {
     "peak_rss_kb": [
@@ -328,6 +328,11 @@
         "tag": "0.2.83+03c6b16+nightly",
         "date": "2026-09-29T16:42:47Z",
         "value": 16644
+      },
+      {
+        "tag": "0.2.83+9808fe0+nightly",
+        "date": "2026-09-29T19:00:07Z",
+        "value": 16596
       }
     ],
     "mean_rss_kb": [
@@ -645,6 +650,11 @@
         "tag": "0.2.83+03c6b16+nightly",
         "date": "2026-09-29T16:42:47Z",
         "value": 16603
+      },
+      {
+        "tag": "0.2.83+9808fe0+nightly",
+        "date": "2026-09-29T19:00:07Z",
+        "value": 16521
       }
     ],
     "rss_5s_kb": [
@@ -962,6 +972,11 @@
         "tag": "0.2.83+03c6b16+nightly",
         "date": "2026-09-29T16:42:47Z",
         "value": 16524
+      },
+      {
+        "tag": "0.2.83+9808fe0+nightly",
+        "date": "2026-09-29T19:00:07Z",
+        "value": 16408
       }
     ],
     "cpu_ms": [
@@ -1279,6 +1294,11 @@
         "tag": "0.2.83+03c6b16+nightly",
         "date": "2026-09-29T16:42:47Z",
         "value": 100
+      },
+      {
+        "tag": "0.2.83+9808fe0+nightly",
+        "date": "2026-09-29T19:00:07Z",
+        "value": 120
       }
     ],
     "t_ready_ms": [
@@ -1596,6 +1616,11 @@
         "tag": "0.2.83+03c6b16+nightly",
         "date": "2026-09-29T16:42:47Z",
         "value": 6
+      },
+      {
+        "tag": "0.2.83+9808fe0+nightly",
+        "date": "2026-09-29T19:00:07Z",
+        "value": 6
       }
     ]
   },
@@ -1605,10 +1630,10 @@
       "player": "gtm",
       "metric": "peak_rss_kb",
       "label": "peak RSS (kB)",
-      "previous": 17288,
-      "current": 16644,
-      "delta": -644,
-      "delta_pct": -3.73,
+      "previous": 16644,
+      "current": 16596,
+      "delta": -48,
+      "delta_pct": -0.29,
       "regression": false
     },
     {
@@ -1616,10 +1641,10 @@
       "player": "gtm",
       "metric": "mean_rss_kb",
       "label": "mean RSS (kB)",
-      "previous": 17247,
-      "current": 16603,
-      "delta": -644,
-      "delta_pct": -3.73,
+      "previous": 16603,
+      "current": 16521,
+      "delta": -82,
+      "delta_pct": -0.49,
       "regression": false
     },
     {
@@ -1627,10 +1652,10 @@
       "player": "gtm",
       "metric": "cpu_ms",
       "label": "CPU (ms)",
-      "previous": 60,
-      "current": 100,
-      "delta": 40,
-      "delta_pct": 66.67,
+      "previous": 100,
+      "current": 120,
+      "delta": 20,
+      "delta_pct": 20.00,
       "regression": true
     },
     {
@@ -1638,33 +1663,33 @@
       "player": "gtm",
       "metric": "rss_5s_kb",
       "label": "RSS @5s (kB)",
-      "previous": 17168,
-      "current": 16524,
-      "delta": -644,
-      "delta_pct": -3.75,
+      "previous": 16524,
+      "current": 16408,
+      "delta": -116,
+      "delta_pct": -0.70,
       "regression": false
     }
   ],
   "runs": {
     "gtm/bench.flac": {
       "file_sha256": "c5e5c960cf59e5fdf3f3b68ea94a24d5f3d4b1122697e4e19d5ec5c1c3e175de",
-      "peak_rss_kb": 16644,
-      "mean_rss_kb": 16603,
-      "rss_5s_kb": 16524,
-      "cpu_ms": 100,
+      "peak_rss_kb": 16596,
+      "mean_rss_kb": 16521,
+      "rss_5s_kb": 16408,
+      "cpu_ms": 120,
       "t_ready_ms": 6,
-      "rss_p50_kb": 16644,
-      "rss_p95_kb": 16644
+      "rss_p50_kb": 16528,
+      "rss_p95_kb": 16596
     },
     "gtm/bench.mp3": {
       "file_sha256": "6bd083a60ca94245ffd8d1be73e4b83eaab0fb6eeb6648e214ca528563a0bbfd",
-      "peak_rss_kb": 16880,
-      "mean_rss_kb": 16845,
-      "rss_5s_kb": 16708,
-      "cpu_ms": 240,
+      "peak_rss_kb": 16332,
+      "mean_rss_kb": 16312,
+      "rss_5s_kb": 16220,
+      "cpu_ms": 220,
       "t_ready_ms": 6,
-      "rss_p50_kb": 16880,
-      "rss_p95_kb": 16880
+      "rss_p50_kb": 16332,
+      "rss_p95_kb": 16332
     }
   }
 }
