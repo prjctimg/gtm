@@ -22,8 +22,7 @@
 use crate::shared::MAX_VOLUME;
 use crate::shared::Result;
 use crate::shared::global::{
-    CoreError, CrossfadeConfig, DaemonState, LoudnessMode, MAX_SPEED, MIN_SPEED, PlaybackStatus,
-    RepeatMode, ReverbConfig,
+    CoreError, CrossfadeConfig, DaemonState, LoudnessMode, PlaybackStatus, RepeatMode, ReverbConfig,
 };
 use crate::shared::ipc::DaemonEvent;
 use crate::shared::track::TrackInfo;
@@ -92,19 +91,6 @@ impl DaemonState {
         tripwire::check(FailPoint::VolumeChange)?;
         self.volume = vol.min(MAX_VOLUME);
         self.mute = false;
-        self.commit();
-        Ok(())
-    }
-
-    /// Set playback rate, clamped to [0.25, 2.0]; non-finite resets to 1.0.
-    pub fn set_speed(&mut self, rate: f32) -> Result<()> {
-        tripwire::check(FailPoint::StateTransition)?;
-        let clamped = if rate.is_finite() {
-            rate.clamp(MIN_SPEED, MAX_SPEED)
-        } else {
-            1.0
-        };
-        self.audio.speed = clamped;
         self.commit();
         Ok(())
     }
@@ -324,14 +310,6 @@ impl DaemonState {
                     enabled: *enabled,
                     room_size: *room_size,
                 };
-            }
-            DaemonEvent::SpeedChanged { rate } => {
-                let clamped = if rate.is_finite() {
-                    rate.clamp(MIN_SPEED, MAX_SPEED)
-                } else {
-                    1.0
-                };
-                self.audio.speed = clamped;
             }
             DaemonEvent::MonoChanged { enabled } => self.mono = *enabled,
             DaemonEvent::LowPowerChanged { enabled } => self.low_power = *enabled,

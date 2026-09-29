@@ -476,19 +476,6 @@ impl App {
                         self.send_high(TuiCommand::SetVolume(new_vol));
                         self.notify_volume(new_vol);
                     }
-                    Some(KeyboardAction::SpeedUp) => {
-                        // Round to nearest 0.25 so the step stays predictable.
-                        let new_speed = ((self.state.audio.speed + 0.25) * 4.0).ceil() / 4.0;
-                        let new_speed = new_speed.min(MAX_SPEED);
-                        self.set_last_action(&format!("Speed {:.2}x", new_speed), &key);
-                        self.send_high(TuiCommand::SetSpeed(new_speed));
-                    }
-                    Some(KeyboardAction::SpeedDown) => {
-                        self.set_last_action("Speed Down", &key);
-                        let new_speed = ((self.state.audio.speed - 0.25) * 4.0).ceil() / 4.0;
-                        let new_speed = new_speed.max(MIN_SPEED);
-                        self.send_high(TuiCommand::SetSpeed(new_speed));
-                    }
                     Some(KeyboardAction::ToggleLowPower) => {
                         self.set_last_action("Toggle Low-Power", &key);
                         self.send_high(TuiCommand::SetLowPower(!self.state.low_power));

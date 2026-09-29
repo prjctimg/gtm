@@ -204,10 +204,6 @@ impl Cmd {
         {
             let mut mixer = inner.mixer.lock().await;
             mixer.stop()?;
-            // Ensure the mixer's speed matches the persisted state before loading
-            // the next track. This guards against any drift between state and mixer.
-            let speed = inner.state.read().await.audio.speed;
-            mixer.set_speed(speed);
         }
         *inner.crossfade_loaded_for.lock().await = None;
         {
@@ -466,7 +462,7 @@ impl Cmd {
     /// Play a synthetic remote path (`podcast://`, `radio://`, `stream://`)
     /// by streaming the underlying HTTP URL through the native decoder. Reuses
     /// the same `load_active_decoded` pipeline as local files and Spotify, so
-    /// EQ, speed, crossfade-standby and gapless handling all agree on the
+    /// EQ, crossfade-standby and gapless handling all agree on the
     /// decoded sample stream.
     async fn play_remote(
         inner: &DaemonInner,
@@ -1219,26 +1215,6 @@ impl Cmd {
         Ok(DaemonRes::Ok)
     }
 
-    pub async fn set_speed(inner: &DaemonInner, rate: f32) -> Result<DaemonRes, CoreError> {
-        let mut state = inner.state.write().await;
-        state.set_speed(rate)?;
-        let applied = state.audio.speed;
-        drop(state);
-        inner.mixer.lock().await.set_speed(applied);
-        Daemon::push_event(inner, DaemonEvent::SpeedChanged { rate: applied });
-        Daemon::save_state(inner);
-        Ok(DaemonRes::Ok)
-    }
-
-    pub async fn get_speed(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
-        let state = inner.state.read().await;
-        let speed = state.audio.speed;
-        drop(state);
-        Ok(DaemonRes::Value {
-            value: serde_json::json!({ "speed": speed }),
-        })
-    }
-
     pub async fn list_audio_devices(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {
         let devices = inner.mixer.lock().await.list_devices();
         Ok(DaemonRes::Value {
@@ -1256,8 +1232,6 @@ impl Cmd {
         {
             let mut mixer = inner.mixer.lock().await;
             mixer.stop()?;
-            let speed = inner.state.read().await.audio.speed;
-            mixer.set_speed(speed);
         }
         {
             let mut state = inner.state.write().await;
@@ -1778,7 +1752,6 @@ fn is_read_only(req: &DaemonReq) -> bool {
             | DaemonReq::Ping
             | DaemonReq::ListEqPresets
             | DaemonReq::GetVolume
-            | DaemonReq::GetSpeed
             | DaemonReq::GetLowPower
             | DaemonReq::ListAudioDevices
             | DaemonReq::GetFavourites
@@ -1835,7 +1808,6 @@ fn request_is_playback(req: &DaemonReq) -> bool {
             | DaemonReq::SetVolume { .. }
             | DaemonReq::ToggleMute
             | DaemonReq::SetMono { .. }
-            | DaemonReq::SetSpeed { .. }
             | DaemonReq::SetEqPreset { .. }
             | DaemonReq::SetEqEnabled { .. }
             | DaemonReq::SetReverb { .. }
@@ -1904,8 +1876,8 @@ impl Daemon {
         // The real mixer build (PulseAudio connect, device enumeration, and on
         // Termux possibly spawning the PulseAudio server) is deferred to the
         // first actual mixer call via `DeferredMixer`, so the IPC socket binds
-        // before any audio-device or network I/O happens. Persisted device /
-        // speed / mono are replayed inside the factory on first init.
+        // before any audio-device or network I/O happens. The persisted device
+        // and mono setting are replayed inside the factory on first init.
         // NOTE: unlike the old eager path, a saved device that disappeared is
         // no longer cleared from `initial_state` here; the factory warns and
         // keeps the system default, and the stale name is retried (and
@@ -1915,7 +1887,6 @@ impl Daemon {
         } else {
             let cfg = config.clone();
             let device = initial_state.audio.audio_device.clone();
-            let speed = initial_state.audio.speed;
             let mono = initial_state.mono;
             Box::new(DeferredMixer::new(move || {
                 let mut m =
@@ -1924,9 +1895,6 @@ impl Daemon {
                     && let Err(e) = m.set_device(Some(dev.clone()))
                 {
                     warn!("saved audio device '{dev}' unavailable ({e}); using default");
-                }
-                if (speed - 1.0).abs() > f32::EPSILON {
-                    m.set_speed(speed);
                 }
                 if mono {
                     m.set_mono(true);
@@ -3208,8 +3176,6 @@ impl Daemon {
                 Cmd::set_reverb(inner, *enabled, *room_size).await
             }
             DaemonReq::ListEqPresets => Cmd::list_eq_presets(inner).await,
-            DaemonReq::SetSpeed { rate } => Cmd::set_speed(inner, *rate).await,
-            DaemonReq::GetSpeed => Cmd::get_speed(inner).await,
             DaemonReq::Quit => {
                 info!("quit requested");
                 // Capture the full state (including the live current track and
@@ -3654,8 +3620,6 @@ impl Daemon {
         {
             let mut mixer = inner.mixer.lock().await;
             let _ = mixer.stop();
-            let speed = inner.state.read().await.audio.speed;
-            mixer.set_speed(speed);
         }
         inner.stream.lock().await.reset();
         *inner.crossfade_loaded_for.lock().await = None;

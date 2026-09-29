@@ -129,8 +129,6 @@ Every command is a control call on the current session and returns as soon as th
 | `toggle_shuffle` | — | — | `shuffle_changed` |
 | `cycle_repeat` | `mode` : RepeatMode | — | `repeat_mode_changed` |
 | `toggle_mute` | — | — | `volume_changed` |
-| `set_speed` | `rate` : float | — | — |
-| `get_speed` | — | `speed` | — |
 | `set_mono` | `enabled` : bool | — | — |
 | `quit` | — | — | — |
 | `ping` | — | — | — |
@@ -441,7 +439,6 @@ the rest are state transitions.
 | `eq_preset_changed` | `preset` |
 | `eq_enabled_changed` | `enabled` |
 | `reverb_changed` | `enabled`, `room_size` |
-| `speed_changed` | `rate` |
 | `custom` | `name` : string, plus the sub-type's own fields |
 | `spotify_status_changed` | Spotify link state changed (e.g. an OAuth link flow completed). |
 | `lastfm_status_changed` | — |

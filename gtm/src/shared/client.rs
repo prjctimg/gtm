@@ -341,21 +341,6 @@ impl DaemonClient {
             .await
     }
 
-    /// Set pitch-preserving playback rate (clamped to 0.25..=2.0 by the daemon).
-    pub async fn set_speed(&self, rate: f32) -> Result<()> {
-        self.send_ok(DaemonReq::SetSpeed { rate }).await
-    }
-
-    /// Current pitch-preserving playback rate.
-    pub async fn speed(&self) -> Result<f32> {
-        match self.send_raw(DaemonReq::GetSpeed).await? {
-            DaemonRes::Value { value } => {
-                Ok(value.get("speed").and_then(|v| v.as_f64()).unwrap_or(1.0) as f32)
-            }
-            _ => Err(CoreError::Daemon("unexpected response to get_speed".into())),
-        }
-    }
-
     /// Current low-power mode flag.
     pub async fn low_power(&self) -> Result<bool> {
         match self.send_raw(DaemonReq::GetLowPower).await? {

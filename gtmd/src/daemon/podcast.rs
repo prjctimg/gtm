@@ -180,6 +180,6 @@ impl Podcast {
             )));
         }
         // A direct stream is already playable; nothing to resolve.
-        return Ok(base);
+        Ok(base)
     }
 }

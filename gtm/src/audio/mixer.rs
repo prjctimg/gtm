@@ -21,7 +21,6 @@ use crate::audio::buffer::{
 use crate::audio::decoder::DecodeThread;
 use crate::audio::eq::{EqGains, EqSource, ReverbSource};
 use crate::audio::mono::MonoSource;
-use crate::audio::stretch::{SpeedControl, TimeStretchSource};
 use crate::audio::symphonia::{StreamingReopen, SymphoniaSource};
 use crate::audio::wave::{WAVEFORM_FRESHNESS, WaveformShared};
 use crate::shared::global::{EqPreset, ReverbConfig};
@@ -96,12 +95,6 @@ pub trait Mixer: Send + Sync {
     fn set_eq_enabled(&self, enabled: bool);
     fn set_reverb(&self, config: &ReverbConfig);
 
-    // ─── Playback speed (pitch-preserving) ───
-    /// Set the playback rate (0.25..=2.0, 1.0 is unity). Clamped on store.
-    fn set_speed(&self, rate: f32);
-    /// Current playback rate.
-    fn speed(&self) -> f32;
-
     // ─── Audio device switching ───
     /// List available output device names. Empty when the backend can't
     /// enumerate devices (e.g. the PulseAudio network backend).
@@ -152,7 +145,6 @@ pub struct AudioMixer {
     eq_enabled: Arc<AtomicBool>,
     reverb_enabled: Arc<AtomicBool>,
     reverb_room_size: Arc<Mutex<f32>>,
-    speed: SpeedControl,
     // ─── Decode thread / Ring buffer ───
     active_control: Option<Arc<DecodeControl>>,
     active_decode_handle: Option<std::thread::JoinHandle<()>>,
@@ -278,14 +270,6 @@ impl Mixer for AudioMixer {
         *self.reverb_room_size.lock().unwrap() = config.room_size;
     }
 
-    fn set_speed(&self, rate: f32) {
-        self.speed.store(rate);
-    }
-
-    fn speed(&self) -> f32 {
-        self.speed.load()
-    }
-
     fn list_devices(&self) -> Vec<String> {
         rodio::cpal::default_host()
             .output_devices()
@@ -302,7 +286,6 @@ impl Mixer for AudioMixer {
         let eq_gains = self.eq_gains.clone();
         let reverb_enabled = self.reverb_enabled.load(Ordering::Relaxed);
         let reverb_room = *self.reverb_room_size.lock().unwrap();
-        let speed = self.speed.load();
         let mono = self.mono.load(Ordering::Relaxed);
 
         Self::stop_decode_thread(&self.active_control, &mut self.active_decode_handle);
@@ -318,7 +301,6 @@ impl Mixer for AudioMixer {
             .reverb_enabled
             .store(reverb_enabled, Ordering::Relaxed);
         *fresh.reverb_room_size.lock().unwrap() = reverb_room;
-        fresh.speed.store(speed);
         fresh.mono.store(mono, Ordering::Relaxed);
         *self = fresh;
         Ok(())
@@ -397,7 +379,6 @@ impl AudioMixer {
             eq_enabled: Arc::new(AtomicBool::new(true)),
             reverb_enabled: Arc::new(AtomicBool::new(false)),
             reverb_room_size: Arc::new(Mutex::new(0.3)),
-            speed: SpeedControl::new(),
             active_control: None,
             active_decode_handle: None,
             standby_control: None,
@@ -482,8 +463,6 @@ impl AudioMixer {
         &self,
         source: Box<dyn Source<Item = f32> + Send>,
     ) -> Box<dyn Source<Item = f32> + Send> {
-        let source: Box<dyn Source<Item = f32> + Send> =
-            Box::new(TimeStretchSource::new(source, self.speed.clone()));
         let boxed: Box<dyn Source<Item = f32> + Send> = if self.eq_enabled.load(Ordering::Relaxed) {
             Box::new(EqSource::new(source, self.eq_gains.clone()))
         } else {
@@ -518,7 +497,6 @@ impl AudioMixer {
         eq_enabled: &Arc<AtomicBool>,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
-        speed: &SpeedControl,
         spectrum: &Arc<Mutex<Vec<f32>>>,
         wave: &WaveformShared,
         prebuffer_samples: usize,
@@ -538,7 +516,6 @@ impl AudioMixer {
             eq_enabled.clone(),
             reverb_enabled.clone(),
             reverb_room_size.clone(),
-            speed.clone(),
             spectrum.clone(),
             wave.clone(),
             prebuffer_samples,
@@ -590,7 +567,6 @@ impl AudioMixer {
             &self.eq_enabled,
             &self.reverb_enabled,
             &self.reverb_room_size,
-            &self.speed,
             &self.spectrum,
             &self.wave,
             prebuffer,
@@ -650,7 +626,6 @@ impl AudioMixer {
         eq_enabled: &Arc<AtomicBool>,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
-        speed: &SpeedControl,
         spectrum: &Arc<Mutex<Vec<f32>>>,
         wave: &WaveformShared,
     ) -> AudioResult<(
@@ -669,7 +644,6 @@ impl AudioMixer {
             eq_enabled.clone(),
             reverb_enabled.clone(),
             reverb_room_size.clone(),
-            speed.clone(),
             spectrum.clone(),
             wave.clone(),
             PREBUFFER_SAMPLES_REDUCED,
@@ -727,7 +701,6 @@ impl AudioMixer {
             &self.eq_enabled,
             &self.reverb_enabled,
             &self.reverb_room_size,
-            &self.speed,
             &self.spectrum,
             &self.wave,
         )?;
@@ -778,7 +751,6 @@ impl AudioMixer {
             &self.eq_enabled,
             &self.reverb_enabled,
             &self.reverb_room_size,
-            &self.speed,
             &self.spectrum,
             &self.wave,
         )?;
@@ -789,8 +761,8 @@ impl AudioMixer {
             *self.duration.lock().unwrap() = 0.0;
         }
 
-        // No `wrap_source` here: EQ, reverb and time-stretch all run inside
-        // the decode thread now, so wrapping again would apply them twice.
+        // No `wrap_source` here: EQ and reverb both run inside the decode
+        // thread now, so wrapping again would apply them twice.
         self.active().append(self.apply_mono(Box::new(ring)));
 
         self.active_control = Some(control);
@@ -821,7 +793,6 @@ impl AudioMixer {
         eq_enabled: &Arc<AtomicBool>,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
-        speed: &SpeedControl,
         spectrum: &Arc<Mutex<Vec<f32>>>,
         wave: &WaveformShared,
     ) -> AudioResult<(
@@ -840,7 +811,6 @@ impl AudioMixer {
             eq_enabled.clone(),
             reverb_enabled.clone(),
             reverb_room_size.clone(),
-            speed.clone(),
             spectrum.clone(),
             wave.clone(),
             PREBUFFER_SAMPLES_REDUCED,
@@ -887,7 +857,6 @@ impl AudioMixer {
             &self.eq_enabled,
             &self.reverb_enabled,
             &self.reverb_room_size,
-            &self.speed,
             &self.spectrum,
             &self.wave,
             PREBUFFER_SAMPLES,

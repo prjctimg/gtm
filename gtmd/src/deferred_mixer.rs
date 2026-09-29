@@ -24,7 +24,7 @@ use gtm::shared::global::{EqPreset, ReverbConfig};
 /// A `Mixer` that builds the real backend mixer on first use.
 ///
 /// The factory typically performs the PulseAudio connect / rodio device open
-/// plus replaying persisted device, speed, and mono settings. Cheap to
+/// plus replaying persisted device and mono settings. Cheap to
 /// construct; all ~30 call sites keep working unchanged because they already
 /// go through the `Mixer` trait behind the daemon's tokio mutex.
 pub struct DeferredMixer {
@@ -224,16 +224,6 @@ impl Mixer for DeferredMixer {
         if let Ok(m) = self.ensure_ref() {
             m.set_reverb(config);
         }
-    }
-
-    fn set_speed(&self, rate: f32) {
-        if let Ok(m) = self.ensure_ref() {
-            m.set_speed(rate);
-        }
-    }
-
-    fn speed(&self) -> f32 {
-        self.ensure_ref().map(|m| m.speed()).unwrap_or(1.0)
     }
 
     fn list_devices(&self) -> Vec<String> {

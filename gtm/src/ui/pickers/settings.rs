@@ -10,11 +10,7 @@ use crate::ui::*;
 
 impl Pickers {
     pub(crate) fn render_settings(f: &mut ratatui::Frame, area: Rect, app: &App) {
-        let block = Self::picker_panel(
-            app,
-            " Settings ",
-            Some("Tab: switch pane   Enter: act"),
-        );
+        let block = Self::picker_panel(app, " Settings ", Some("Tab: switch pane   Enter: act"));
         let inner = block.inner(area);
         f.render_widget(block, area);
 
@@ -99,14 +95,16 @@ impl Pickers {
             } else {
                 Style::default().fg(app.theme.fg)
             };
-            let mut row = format!("{:<16}{}", label, values.get(i).cloned().unwrap_or_default());
+            let mut row = format!(
+                "{:<16}{}",
+                label,
+                values.get(i).cloned().unwrap_or_default()
+            );
             // `▶` marks a row that has more than one value to move through, so
             // the cue is on the row's own kind rather than on each hand-written
             // label — it used to be missing from several rows that had one.
-            if matches!(
-                kind,
-                RowKind::Cycle | RowKind::Chooser | RowKind::Action
-            ) && *kind != RowKind::Action
+            if matches!(kind, RowKind::Cycle | RowKind::Chooser | RowKind::Action)
+                && *kind != RowKind::Action
                 && !row.contains("▶")
             {
                 row.push_str("  ▶");
@@ -239,5 +237,9 @@ impl Pickers {
 }
 
 fn on_off(v: bool) -> String {
-    if v { "On".to_string() } else { "Off".to_string() }
+    if v {
+        "On".to_string()
+    } else {
+        "Off".to_string()
+    }
 }

@@ -92,13 +92,6 @@ impl ScrobbleConfig {
 /// Maximum volume, in percent (0..=MAX_VOLUME).
 pub const MAX_VOLUME: u8 = 100;
 
-/// Minimum supported playback rate (0.25×) for pitch-preserving speed.
-pub const MIN_SPEED: f32 = 0.25;
-/// Maximum supported playback rate (2.0×) for pitch-preserving speed.
-pub const MAX_SPEED: f32 = 2.0;
-/// Unity playback rate.
-pub const DEFAULT_SPEED: f32 = 1.0;
-
 /// Scale a 0..=MAX_VOLUME volume to a 0..1 ratio.
 pub fn volume_ratio(vol: u8) -> f32 {
     vol as f32 / MAX_VOLUME as f32
@@ -139,17 +132,10 @@ pub struct AudioSettings {
     pub reverb: ReverbConfig,
     pub loudness_mode: LoudnessMode,
     pub pre_gain_db: f32,
-    /// Playback rate (0.25..=2.0, 1.0 is unity), pitch-preserving.
-    #[serde(default = "default_speed")]
-    pub speed: f32,
     /// Active output device name (`None` = system default). Applied (and
     /// reset on failure) by the daemon; device switching restarts output.
     #[serde(default)]
     pub audio_device: Option<String>,
-}
-
-fn default_speed() -> f32 {
-    1.0
 }
 
 impl Default for AudioSettings {
@@ -160,7 +146,6 @@ impl Default for AudioSettings {
             reverb: ReverbConfig::default(),
             loudness_mode: LoudnessMode::Off,
             pre_gain_db: 0.0,
-            speed: 1.0,
             audio_device: None,
         }
     }

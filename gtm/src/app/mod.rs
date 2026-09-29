@@ -25,7 +25,7 @@ pub(crate) use crate::shared::spotify::{
 };
 pub(crate) use crate::shared::state::{ThemeMode, TrackSort, path_is_remote};
 pub(crate) use crate::shared::track::{LrcData, LrcLine, Playlist, TrackInfo, YTSearchResult};
-pub(crate) use crate::shared::{CoreError, MAX_SPEED, MAX_VOLUME, MIN_SPEED, MetadataPatch};
+pub(crate) use crate::shared::{CoreError, MAX_VOLUME, MetadataPatch};
 pub(crate) use crossterm::event::{
     self, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind,
 };
@@ -584,7 +584,6 @@ pub enum TuiCommand {
     Prev,
     Seek(f64),
     SetVolume(u8),
-    SetSpeed(f32),
     SetLowPower(bool),
     ToggleShuffle,
     CycleRepeat(RepeatMode),

@@ -32,8 +32,8 @@ pub use crate::providers::yt;
 pub use crate::shared::custom::CustomRadioStation;
 pub use chart::{ChartError, ChartPlaylist, ChartSource, ChartTrack};
 pub use global::{
-    CoreError, CrossfadeConfig, DEFAULT_SPEED, DaemonState, EQ_FREQUENCIES, EqBand, MAX_SPEED,
-    MAX_VOLUME, MIN_SPEED, ReverbConfig, volume_from_ratio, volume_ratio,
+    CoreError, CrossfadeConfig, DaemonState, EQ_FREQUENCIES, EqBand, MAX_VOLUME, ReverbConfig,
+    volume_from_ratio, volume_ratio,
 };
 pub use ipc::MetadataPatch;
 pub use paths::{

@@ -18,7 +18,6 @@ use crate::shared::global::{EQ_DEFAULT_Q, EQ_FREQUENCIES};
 
 use crate::audio::buffer::{DecodeControl, SharedRingBuffer};
 use crate::audio::eq::EqGains;
-use crate::audio::stretch::{SpeedControl, TimeStretchSource};
 use crate::audio::symphonia::SymphoniaSource;
 use crate::audio::wave::{WAVEFORM_DECIM, WaveformShared};
 
@@ -219,7 +218,6 @@ pub struct DecodeThread {
     eq_enabled: Arc<AtomicBool>,
     reverb_enabled: Arc<AtomicBool>,
     reverb_room_size: Arc<Mutex<f32>>,
-    speed: SpeedControl,
     spectrum: Arc<Mutex<Vec<f32>>>,
     wave: WaveformShared,
     prebuffer_samples: usize,
@@ -252,7 +250,6 @@ impl DecodeThread {
         eq_enabled: Arc<AtomicBool>,
         reverb_enabled: Arc<AtomicBool>,
         reverb_room_size: Arc<Mutex<f32>>,
-        speed: SpeedControl,
         spectrum: Arc<Mutex<Vec<f32>>>,
         wave: WaveformShared,
         prebuffer_samples: usize,
@@ -265,7 +262,6 @@ impl DecodeThread {
             eq_enabled,
             reverb_enabled,
             reverb_room_size,
-            speed,
             spectrum,
             wave,
             prebuffer_samples,
@@ -285,7 +281,6 @@ impl DecodeThread {
         eq_enabled: Arc<AtomicBool>,
         reverb_enabled: Arc<AtomicBool>,
         reverb_room_size: Arc<Mutex<f32>>,
-        speed: SpeedControl,
         spectrum: Arc<Mutex<Vec<f32>>>,
         wave: WaveformShared,
         prebuffer_samples: usize,
@@ -298,7 +293,6 @@ impl DecodeThread {
             eq_enabled,
             reverb_enabled,
             reverb_room_size,
-            speed,
             spectrum,
             wave,
             prebuffer_samples,
@@ -320,7 +314,6 @@ impl DecodeThread {
         eq_enabled: Arc<AtomicBool>,
         reverb_enabled: Arc<AtomicBool>,
         reverb_room_size: Arc<Mutex<f32>>,
-        speed: SpeedControl,
         spectrum: Arc<Mutex<Vec<f32>>>,
         wave: WaveformShared,
         prebuffer_samples: usize,
@@ -333,7 +326,6 @@ impl DecodeThread {
             eq_enabled,
             reverb_enabled,
             reverb_room_size,
-            speed,
             spectrum,
             wave,
             prebuffer_samples,
@@ -453,7 +445,7 @@ impl DecodeThread {
 
             // Decode loop: read from SymphoniaSource, process, write to ring buffer
             // Use an explicit loop over the iterator so we can check seek/running flags.
-            let mut source_iter = TimeStretchSource::new(raw, self.speed.clone());
+            let mut source_iter = raw;
 
             loop {
                 // Check for stop

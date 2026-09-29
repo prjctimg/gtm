@@ -200,8 +200,6 @@ fn req_cmd_name() {
         },
         DaemonReq::SetVolume { volume: 80 },
         DaemonReq::GetVolume,
-        DaemonReq::SetSpeed { rate: 1.5 },
-        DaemonReq::GetSpeed,
         DaemonReq::SetLowPower { enabled: true },
         DaemonReq::GetLowPower,
         DaemonReq::ListAudioDevices,
@@ -1954,7 +1952,11 @@ fn spot_album_kind_survives_wire() {
 fn settings_declared_rows() -> Vec<(u8, Vec<String>)> {
     let src = include_str!("../src/ui/pickers/settings_rows.rs");
     let mut out = Vec::new();
-    for (cat, const_name) in [(0u8, "PLAYBACK_ROWS"), (1, "SYSTEM_ROWS"), (2, "SPOTIFY_ROWS")] {
+    for (cat, const_name) in [
+        (0u8, "PLAYBACK_ROWS"),
+        (1, "SYSTEM_ROWS"),
+        (2, "SPOTIFY_ROWS"),
+    ] {
         let needle = format!("pub(crate) const {const_name}: SettingsRows = &[");
         let start = src.find(&needle).expect(const_name);
         let body = &src[start + needle.len()..];
@@ -1965,8 +1967,7 @@ fn settings_declared_rows() -> Vec<(u8, Vec<String>)> {
             .lines()
             .filter_map(|l| l.trim().strip_prefix('('))
             .filter_map(|l| l.split_once('"'))
-            .map(|(_, rest)| rest.rsplit_once('"').map(|(s, _)| s.to_string()))
-            .flatten()
+            .filter_map(|(_, rest)| rest.rsplit_once('"').map(|(s, _)| s.to_string()))
             .collect();
         assert!(
             !labels.is_empty(),
@@ -1982,9 +1983,7 @@ fn settings_declared_rows() -> Vec<(u8, Vec<String>)> {
 /// its `vec![...]` literals.
 fn settings_value_counts() -> Vec<(u8, usize)> {
     let src = include_str!("../src/ui/pickers/settings.rs");
-    let start = src
-        .find("fn settings_values")
-        .expect("settings_values");
+    let start = src.find("fn settings_values").expect("settings_values");
     let body = &src[start..];
     let mut out = Vec::new();
     for cat in 0u8..3 {

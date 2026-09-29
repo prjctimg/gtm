@@ -22,7 +22,6 @@ use crate::audio::buffer::{
 use crate::audio::decoder::DecodeThread;
 use crate::audio::eq::{EqGains, EqSource, ReverbSource};
 use crate::audio::mixer::{Mixer, STREAM_PREBUFFER_TIMEOUT};
-use crate::audio::stretch::{SpeedControl, TimeStretchSource};
 use crate::audio::symphonia::SymphoniaSource;
 use crate::audio::wave::WaveformShared;
 use crate::shared::global::{EqPreset, ReverbConfig};
@@ -170,9 +169,9 @@ impl PaStreamState {
 
     /// Re-opens the playback stream when the source rate or channel count
     /// differs from what is currently configured. PulseAudio mixes formats on
-    /// the server, so a close-to-native rate avoids extra resampling and,
-    /// crucially, fixes playback speed drift when a track's rate is not 44.1k
-    /// (previously every stream was hard-coded to 44100 Hz).
+    /// the server, so a close-to-native rate avoids extra resampling and fixes
+    /// pitch drift when a track's rate is not 44.1k (previously every stream
+    /// was hard-coded to 44100 Hz).
     fn reconfigure(&mut self, client: &Client, sample_rate: u32, channels: u16) -> AudioResult<()> {
         let sample_rate = sample_rate.clamp(22050, 192000);
         let channels = if channels == 1 { 1 } else { 2 };
@@ -252,7 +251,6 @@ pub struct PulseAudioMixer {
     eq_enabled: Arc<AtomicBool>,
     reverb_enabled: Arc<AtomicBool>,
     reverb_room_size: Arc<Mutex<f32>>,
-    speed: SpeedControl,
     spectrum: Arc<Mutex<Vec<f32>>>,
 }
 
@@ -287,7 +285,6 @@ impl PulseAudioMixer {
             eq_enabled: Arc::new(AtomicBool::new(true)),
             reverb_enabled: Arc::new(AtomicBool::new(false)),
             reverb_room_size: Arc::new(Mutex::new(0.3)),
-            speed: SpeedControl::new(),
             spectrum: Arc::new(Mutex::new(Vec::new())),
         })
     }
@@ -345,8 +342,6 @@ impl PulseAudioMixer {
         &self,
         source: Box<dyn Source<Item = f32> + Send>,
     ) -> Box<dyn Source<Item = f32> + Send> {
-        let source: Box<dyn Source<Item = f32> + Send> =
-            Box::new(TimeStretchSource::new(source, self.speed.clone()));
         let source = if self.eq_enabled.load(Ordering::Relaxed) {
             Box::new(EqSource::new(source, self.eq_gains.clone()))
                 as Box<dyn Source<Item = f32> + Send>
@@ -373,7 +368,6 @@ impl PulseAudioMixer {
         eq_enabled: &Arc<AtomicBool>,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
-        speed: &SpeedControl,
         spectrum: &Arc<Mutex<Vec<f32>>>,
         prebuffer_samples: usize,
     ) -> AudioResult<(Arc<DecodeControl>, std::thread::JoinHandle<()>)> {
@@ -386,7 +380,6 @@ impl PulseAudioMixer {
             eq_enabled.clone(),
             reverb_enabled.clone(),
             reverb_room_size.clone(),
-            speed.clone(),
             spectrum.clone(),
             WaveformShared::default(),
             prebuffer_samples,
@@ -418,7 +411,6 @@ impl PulseAudioMixer {
         eq_enabled: &Arc<AtomicBool>,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
-        speed: &SpeedControl,
         spectrum: &Arc<Mutex<Vec<f32>>>,
     ) -> AudioResult<(Arc<DecodeControl>, std::thread::JoinHandle<()>)> {
         let control = Arc::new(DecodeControl::new());
@@ -430,7 +422,6 @@ impl PulseAudioMixer {
             eq_enabled.clone(),
             reverb_enabled.clone(),
             reverb_room_size.clone(),
-            speed.clone(),
             spectrum.clone(),
             WaveformShared::default(),
             PREBUFFER_SAMPLES_REDUCED,
@@ -476,7 +467,6 @@ impl PulseAudioMixer {
         eq_enabled: &Arc<AtomicBool>,
         reverb_enabled: &Arc<AtomicBool>,
         reverb_room_size: &Arc<Mutex<f32>>,
-        speed: &SpeedControl,
         spectrum: &Arc<Mutex<Vec<f32>>>,
     ) -> AudioResult<(Arc<DecodeControl>, std::thread::JoinHandle<()>)> {
         let control = Arc::new(DecodeControl::new());
@@ -488,7 +478,6 @@ impl PulseAudioMixer {
             eq_enabled.clone(),
             reverb_enabled.clone(),
             reverb_room_size.clone(),
-            speed.clone(),
             spectrum.clone(),
             WaveformShared::default(),
             PREBUFFER_SAMPLES_REDUCED,
@@ -570,7 +559,6 @@ impl Mixer for PulseAudioMixer {
             &self.eq_enabled,
             &self.reverb_enabled,
             &self.reverb_room_size,
-            &self.speed,
             &self.spectrum,
             PREBUFFER_SAMPLES,
         )?;
@@ -663,7 +651,6 @@ impl Mixer for PulseAudioMixer {
             &self.eq_enabled,
             &self.reverb_enabled,
             &self.reverb_room_size,
-            &self.speed,
             &self.spectrum,
         )?;
 
@@ -710,7 +697,6 @@ impl Mixer for PulseAudioMixer {
             &self.eq_enabled,
             &self.reverb_enabled,
             &self.reverb_room_size,
-            &self.speed,
             &self.spectrum,
         )?;
 
@@ -755,7 +741,6 @@ impl Mixer for PulseAudioMixer {
             &self.eq_enabled,
             &self.reverb_enabled,
             &self.reverb_room_size,
-            &self.speed,
             &self.spectrum,
             PREBUFFER_SAMPLES,
         )?;
@@ -1061,14 +1046,6 @@ impl Mixer for PulseAudioMixer {
     fn set_reverb(&self, config: &ReverbConfig) {
         self.reverb_enabled.store(config.enabled, Ordering::Relaxed);
         *self.reverb_room_size.lock().unwrap() = config.room_size;
-    }
-
-    fn set_speed(&self, rate: f32) {
-        self.speed.store(rate);
-    }
-
-    fn speed(&self) -> f32 {
-        self.speed.load()
     }
 
     fn current_peak_level(&self) -> f32 {

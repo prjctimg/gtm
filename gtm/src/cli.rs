@@ -106,11 +106,6 @@ pub enum CliCommand {
     Unlove,
     /// Toggle Last.fm scrobbling for this session
     Scrobble,
-    /// Set pitch-preserving playback speed (0.25-2.0, empty/omitted shows the current rate)
-    Speed {
-        #[arg(value_name = "RATE", value_parser = clap::value_parser!(f32))]
-        rate: Option<f32>,
-    },
     /// Enable/disable crossfade with optional duration
     Crossfade {
         #[arg(
@@ -598,17 +593,6 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     .map(|()| format!("ok (scrobbling {})", if !st.enabled { "on" } else { "off" }))
                     .map_err(|e| e.to_string())
             }
-            CliCommand::Speed { rate } => match rate {
-                Some(r) => client
-                    .set_speed(*r)
-                    .await
-                    .map(|()| format!("ok ({r:?}x)"))
-                    .map_err(|e| e.to_string()),
-                None => {
-                    let speed = client.speed().await.map_err(|e| e.to_string())?;
-                    Ok(format!("speed: {speed:?}x"))
-                }
-            },
             CliCommand::Crossfade {
                 enabled,
                 duration_secs,

@@ -268,10 +268,6 @@ pub enum DaemonReq {
         enabled: bool,
         room_size: f32,
     },
-    SetSpeed {
-        rate: f32,
-    },
-    GetSpeed,
     ListEqPresets,
     Queue {
         #[serde(flatten)]
@@ -611,8 +607,6 @@ impl DaemonReq {
             DaemonReq::SetEqPreset { .. } => "set_eq_preset",
             DaemonReq::SetEqEnabled { .. } => "set_eq_enabled",
             DaemonReq::SetReverb { .. } => "set_reverb",
-            DaemonReq::SetSpeed { .. } => "set_speed",
-            DaemonReq::GetSpeed => "get_speed",
             DaemonReq::ListEqPresets => "list_eq_presets",
             DaemonReq::Queue { .. } => "queue",
             DaemonReq::Library { .. } => "library",
@@ -726,7 +720,6 @@ impl DaemonReq {
             "get_volume" => DaemonReq::GetVolume,
             "toggle_shuffle" => DaemonReq::ToggleShuffle,
             "toggle_mute" => DaemonReq::ToggleMute,
-            "get_speed" => DaemonReq::GetSpeed,
             "list_eq_presets" => DaemonReq::ListEqPresets,
             "get_favourites" => DaemonReq::GetFavourites,
             "yt_search_poll" => DaemonReq::YtSearchPoll,
@@ -921,14 +914,6 @@ impl DaemonReq {
                     enabled: x.enabled,
                     room_size: x.room_size,
                 }
-            }
-            "set_speed" => {
-                #[derive(Deserialize)]
-                struct Params {
-                    rate: f32,
-                }
-                let x: Params = p(params)?;
-                DaemonReq::SetSpeed { rate: x.rate }
             }
             "queue" => {
                 #[derive(Deserialize)]
@@ -1684,8 +1669,6 @@ pub enum DaemonEvent {
     EqEnabledChanged { enabled: bool },
     #[serde(rename = "reverb_changed")]
     ReverbChanged { enabled: bool, room_size: f32 },
-    #[serde(rename = "speed_changed")]
-    SpeedChanged { rate: f32 },
     #[serde(rename = "custom")]
     Custom {
         name: String,

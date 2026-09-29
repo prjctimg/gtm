@@ -81,7 +81,6 @@ pub enum FooterModule {
     Playback,
     Title,
     Volume,
-    Speed,
     Repeat,
     Shuffle,
     Progress,
@@ -109,7 +108,6 @@ impl FooterModule {
             FooterModule::Playback => "Playback",
             FooterModule::Title => "Title",
             FooterModule::Volume => "Volume",
-            FooterModule::Speed => "Speed",
             FooterModule::Repeat => "Repeat",
             FooterModule::Shuffle => "Shuffle",
             FooterModule::Progress => "Progress",
@@ -138,7 +136,6 @@ impl FooterModule {
             "Playback" => FooterModule::Playback,
             "Title" => FooterModule::Title,
             "Volume" => FooterModule::Volume,
-            "Speed" => FooterModule::Speed,
             "Repeat" => FooterModule::Repeat,
             "Shuffle" => FooterModule::Shuffle,
             "Progress" => FooterModule::Progress,
@@ -184,7 +181,6 @@ pub fn presets() -> Vec<FooterPreset> {
                 FooterModule::Repeat,
                 FooterModule::Shuffle,
                 FooterModule::Volume,
-                FooterModule::Speed,
                 FooterModule::LowPower,
                 FooterModule::Mono,
                 FooterModule::EqPreset,
@@ -608,15 +604,6 @@ impl Footer {
         }
     }
 
-    fn speed(app: &App) -> Option<String> {
-        let s = app.state.audio.speed;
-        if (s - 1.0).abs() < f32::EPSILON {
-            None
-        } else {
-            Some(format!("{s:.2}x"))
-        }
-    }
-
     fn low_power(app: &App) -> Option<String> {
         if app.state.low_power {
             Some("LowPower".into())
@@ -809,7 +796,6 @@ fn module_color(m: FooterModule, theme: &AppTheme) -> Color {
         FooterModule::Playback => theme.accent,
         FooterModule::Title => theme.secondary_accent,
         FooterModule::Volume => theme.tertiary_accent,
-        FooterModule::Speed => theme.secondary_accent,
         FooterModule::Repeat => theme.accent,
         FooterModule::Shuffle => theme.tertiary_accent,
         FooterModule::Progress => theme.secondary_accent,
@@ -836,7 +822,6 @@ fn module_text(m: FooterModule, app: &App) -> Option<String> {
         FooterModule::Playback => Some(Footer::playback(app)),
         FooterModule::Title => Footer::title(app),
         FooterModule::Volume => Some(Footer::volume(app)),
-        FooterModule::Speed => Footer::speed(app),
         FooterModule::Repeat => Footer::repeat(app),
         FooterModule::Shuffle => Footer::shuffle(app),
         FooterModule::Progress => Footer::progress(app),

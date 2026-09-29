@@ -149,10 +149,6 @@ daemon and prints the result. Use **\--json** for machine-readable output.
 **scrobble**
 :   Toggle Last.fm scrobbling for this session and report the new state.
 
-**speed** [*rate*]
-:   Set the playback speed (1.0 = normal). Without an argument, prints the
-    current speed.
-
 **shuffle**
 :   Toggle shuffle mode for the queue.
 

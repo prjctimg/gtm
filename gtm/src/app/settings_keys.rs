@@ -41,8 +41,10 @@ impl App {
             // the same 45 lines twice. The pane header used to advertise
             // "←/→: cycle values"; it now says nothing, because a toggle has
             // no direction.
-            event::KeyCode::Left | event::KeyCode::Right
-            | event::KeyCode::Char('h') | event::KeyCode::Char('l')
+            event::KeyCode::Left
+            | event::KeyCode::Right
+            | event::KeyCode::Char('h')
+            | event::KeyCode::Char('l')
                 if !focus =>
             {
                 self.settings_adjust(opt, tx);
@@ -57,8 +59,7 @@ impl App {
             }
             event::KeyCode::Down | event::KeyCode::Char('j') => {
                 if focus {
-                    self.settings_category =
-                        (category + 1).min(NUM_SETTINGS_CATEGORIES - 1);
+                    self.settings_category = (category + 1).min(NUM_SETTINGS_CATEGORIES - 1);
                     self.settings_option = 0;
                 } else {
                     let max = self.category_options().saturating_sub(1);
@@ -210,8 +211,8 @@ impl App {
                                 ));
                             }
                             Err(e) => {
-                                let _ = ipc
-                                    .send(IpcResult::Error(format!("Clear {label} cache: {e}")));
+                                let _ =
+                                    ipc.send(IpcResult::Error(format!("Clear {label} cache: {e}")));
                             }
                         }
                     });
@@ -272,8 +273,7 @@ impl App {
                 let ipc = self.ipc_tx.clone();
                 spawn(tx, move || async move {
                     if let Ok(Some(b64)) = client.art().cover(tid).await
-                        && let Ok(bytes) =
-                            base64::engine::general_purpose::STANDARD.decode(&b64)
+                        && let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64)
                     {
                         let _ = ipc.send(IpcResult::CoverArt(Some(bytes), Some(tid), fetch_gen));
                     }

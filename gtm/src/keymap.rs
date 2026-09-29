@@ -45,8 +45,6 @@ pub enum KeyboardAction {
     Stop,
     VolumeUp,
     VolumeDown,
-    SpeedUp,
-    SpeedDown,
     ToggleLowPower,
     /// Fullscreen "Zen mode" showing one of the enlarged-cover + progress,
     /// lyrics, or visualizer surfaces at a time (`z`).
@@ -271,8 +269,6 @@ pub fn default_keybindings() -> Keybindings {
             b!(KeyCode::Char('+'), KeyboardAction::VolumeUp, NORMAL),
             b!(KeyCode::Char('='), KeyboardAction::VolumeUp, NORMAL),
             b!(KeyCode::Char('-'), KeyboardAction::VolumeDown, NORMAL),
-            b!(KeyCode::Char('>'), KeyboardAction::SpeedUp, NORMAL),
-            b!(KeyCode::Char('<'), KeyboardAction::SpeedDown, NORMAL),
             b!(KeyCode::Char('z'), KeyboardAction::ToggleZen, NORMAL),
             b!(KeyCode::Char('m'), KeyboardAction::ToggleMute, NORMAL),
             b!(
@@ -578,8 +574,6 @@ impl KeyboardAction {
             "stop" => KeyboardAction::Stop,
             "volume_up" | "vol_up" => KeyboardAction::VolumeUp,
             "volume_down" | "vol_down" => KeyboardAction::VolumeDown,
-            "speed_up" => KeyboardAction::SpeedUp,
-            "speed_down" => KeyboardAction::SpeedDown,
             "toggle_low_power" | "low_power" => KeyboardAction::ToggleLowPower,
             "toggle_zen" | "zen" => KeyboardAction::ToggleZen,
             "seek_forward" | "seek_fwd" => KeyboardAction::SeekForward,

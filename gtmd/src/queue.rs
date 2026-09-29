@@ -468,8 +468,10 @@ mod tests {
     /// view is one list to the user.
     #[test]
     fn a_default_list_entry_is_not_duplicated_into_the_queue() {
-        let mut state = DaemonState::default();
-        state.default_list = vec![track("/music/song.mp3", "Song")];
+        let mut state = DaemonState {
+            default_list: vec![track("/music/song.mp3", "Song")],
+            ..Default::default()
+        };
         add_resolved(&mut state, track("/music/song.mp3", "Song"), None);
         assert!(state.queue.is_empty(), "must not shadow the library entry");
     }
@@ -497,14 +499,16 @@ mod tests {
     /// `B C D A E F` instead of `B C D E F A`.
     #[test]
     fn a_move_into_the_default_region_lands_where_asked() {
-        let mut state = DaemonState::default();
-        state.queue = vec![track("a", "A"), track("b", "B")];
-        state.default_list = vec![
-            track("c", "C"),
-            track("d", "D"),
-            track("e", "E"),
-            track("f", "F"),
-        ];
+        let mut state = DaemonState {
+            queue: vec![track("a", "A"), track("b", "B")],
+            default_list: vec![
+                track("c", "C"),
+                track("d", "D"),
+                track("e", "E"),
+                track("f", "F"),
+            ],
+            ..Default::default()
+        };
         assert!(move_track(&mut state, 0, 5), "move should succeed");
         let (merged, _) = visible(&state);
         let paths: Vec<&str> = merged.iter().map(|t| t.path.as_str()).collect();
@@ -514,8 +518,10 @@ mod tests {
     /// A move within the user queue is unaffected.
     #[test]
     fn a_move_inside_the_queue_lands_where_asked() {
-        let mut state = DaemonState::default();
-        state.queue = vec![track("a", "A"), track("b", "B"), track("c", "C")];
+        let mut state = DaemonState {
+            queue: vec![track("a", "A"), track("b", "B"), track("c", "C")],
+            ..Default::default()
+        };
         assert!(move_track(&mut state, 2, 0));
         let paths: Vec<&str> = state.queue.iter().map(|t| t.path.as_str()).collect();
         assert_eq!(paths, ["c", "a", "b"]);

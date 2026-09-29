@@ -40,10 +40,10 @@ pub fn parse_transcript(body: &str) -> LrcData {
             lines: Vec::new(),
         };
     }
-    if trimmed.starts_with('{') || trimmed.starts_with('[') {
-        if let Some(lines) = parse_json(trimmed) {
-            return finish(lines);
-        }
+    if (trimmed.starts_with('{') || trimmed.starts_with('['))
+        && let Some(lines) = parse_json(trimmed)
+    {
+        return finish(lines);
     }
     if trimmed.starts_with("WEBVTT") {
         return finish(parse_cues(trimmed, ",", "."));
@@ -58,7 +58,7 @@ pub fn parse_transcript(body: &str) -> LrcData {
     }
     let lines = trimmed
         .lines()
-        .map(|l| clean_text(l))
+        .map(clean_text)
         .filter(|l| !l.is_empty())
         .map(|text| LrcLine {
             timestamp: -1.0,
@@ -172,7 +172,7 @@ fn parse_timing(line: &str, comma: &str, period: &str) -> Option<(f64, f64)> {
     let (left, right) = line.split_once("-->")?;
     let start = parse_timestamp(left.trim(), comma, period)?;
     // Cue settings trail the end timestamp (`align:`, `line:`, `position:`).
-    let end_field = right.trim().split_whitespace().next()?;
+    let end_field = right.split_whitespace().next()?;
     let end = parse_timestamp(end_field, comma, period)?;
     Some((start, end))
 }
