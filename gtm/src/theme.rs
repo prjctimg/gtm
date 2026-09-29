@@ -102,23 +102,63 @@ pub fn parse_color(s: &str) -> Result<Color, String> {
 /// requested `fg` already has sufficient contrast it is preserved: this
 /// lets per-module colour mapping (footer, progress bars) survive instead of
 /// being replaced by a monochrome fallback.
+///
+/// Every highlighted row in every picker goes through here, so this is the one
+/// place that decides whether a selection is legible. It used to compare a raw
+/// 0-255 luminance delta against a flat `90.0`, which is not a contrast ratio:
+/// two colours can differ by 90 and still be a 1.2:1 pair (a mid grey and a
+/// slightly darker mid grey), and two colours 80 apart can be a comfortable
+/// 6:1. The threshold therefore let themes through whose selected rows were
+/// unreadable, and the fix is the standard measure rather than a tuned number.
 pub fn readable_fg(fg: Color, bg: Color) -> Color {
-    fn luminance(c: &Color) -> f64 {
-        match c {
-            Color::Rgb(r, g, b) => 0.299 * *r as f64 + 0.587 * *g as f64 + 0.114 * *b as f64,
-            _ => 128.0,
+    /// WCAG AA for normal text.
+    const MIN_RATIO: f64 = 4.5;
+    if contrast(fg, bg) >= MIN_RATIO {
+        return fg;
+    }
+    // Walk from the background towards the other end of the axis. Black and
+    // white are the two colours guaranteed to bracket it, so one of the two
+    // always clears the bar, and the nearer one is the least visually jarring.
+    let (black, white) = (contrast(Color::Black, bg), contrast(Color::White, bg));
+    if black >= MIN_RATIO && black <= white {
+        Color::Black
+    } else if white >= MIN_RATIO {
+        Color::White
+    } else {
+        // Neither clears it: the background itself is mid-grey. Go to whichever
+        // end is further away rather than picking one and losing the text.
+        if black >= white {
+            Color::Black
+        } else {
+            Color::White
         }
     }
-    let fg_l = luminance(&fg);
-    let bg_l = luminance(&bg);
-    const CONTRAST_THRESHOLD: f64 = 90.0;
-    if (fg_l - bg_l).abs() >= CONTRAST_THRESHOLD {
-        fg
-    } else if bg_l > 128.0 {
-        Color::Black
-    } else {
-        Color::White
+}
+
+/// WCAG 2.1 relative-luminance contrast ratio between two colours.
+///
+/// Exported so the theme tests can assert the same number the renderer decides
+/// on, rather than a second implementation that drifts from it.
+pub fn contrast(a: Color, b: Color) -> f64 {
+    fn rel(c: &Color) -> f64 {
+        let chan = |v: u8| {
+            let v = v as f64 / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        match c {
+            Color::Rgb(r, g, b) => 0.2126 * chan(*r) + 0.7152 * chan(*g) + 0.0722 * chan(*b),
+            _ => 0.5,
+        }
     }
+    let (hi, lo) = {
+        let (x, y) = (rel(&a), rel(&b));
+        if x > y { (x, y) } else { (y, x) }
+    };
+    (hi + 0.05) / (lo + 0.05)
 }
 
 /// Linearly interpolate two RGB colors; `t = 0.0` yields `a`, `t = 1.0`
@@ -1022,28 +1062,6 @@ mod tests {
     }
 
     /// WCAG relative luminance for an sRGB color.
-    fn rel_luminance(c: &Color) -> f64 {
-        let linear = |v: u8| {
-            let s = f64::from(v) / 255.0;
-            if s <= 0.03928 {
-                s / 12.92
-            } else {
-                ((s + 0.055) / 1.055).powf(2.4)
-            }
-        };
-        match c {
-            Color::Rgb(r, g, b) => 0.2126 * linear(*r) + 0.7152 * linear(*g) + 0.0722 * linear(*b),
-            _ => 0.5,
-        }
-    }
-
-    fn contrast_ratio(a: &Color, b: &Color) -> f64 {
-        let (hi, lo) = {
-            let (x, y) = (rel_luminance(a), rel_luminance(b));
-            if x > y { (x, y) } else { (y, x) }
-        };
-        (hi + 0.05) / (lo + 0.05)
-    }
 
     #[test]
     fn light_themes_text_contrast() {
@@ -1063,7 +1081,7 @@ mod tests {
                 ("success", t.theme.success),
             ];
             for (role, color) in text_roles {
-                let ratio = contrast_ratio(&color, &t.theme.pane_bg);
+                let ratio = contrast(color, t.theme.pane_bg);
                 assert!(
                     ratio >= 4.5,
                     "light theme {} role {role} contrast {ratio:.2}:1 < 4.5:1",
@@ -1071,6 +1089,64 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Every highlighted row in every picker is drawn as
+    /// `selection_fg_readable()` on `selection_bg`. If that pair is not
+    /// readable, the row the user is looking at is the one row they cannot
+    /// read — so this is asserted for every built-in theme, not just the light
+    /// ones, and against the real `readable_fg` rather than a reimplementation.
+    #[test]
+    fn selection_rows_are_readable_in_every_theme() {
+        const MIN_RATIO: f64 = 4.5;
+        for t in builtin_themes() {
+            let th = &t.theme;
+            let fg = th.selection_fg_readable();
+            let ratio = contrast(fg, th.selection_bg);
+            assert!(
+                ratio >= MIN_RATIO,
+                "theme {} selection text {fg:?} on {:?} is {ratio:.2}:1",
+                t.name,
+                th.selection_bg,
+            );
+            // The unselected rows sit on the pane background, and they are the
+            // field the highlight is cut out of. If they are unreadable there,
+            // highlighting a row makes the rest of the list worse, not better.
+            for (role, color) in [
+                ("fg", th.fg),
+                ("fg_dim", th.fg_dim),
+                ("fg_bright", th.fg_bright),
+                ("accent", th.accent),
+            ] {
+                let ratio = contrast(color, th.pane_bg);
+                assert!(
+                    ratio >= MIN_RATIO,
+                    "theme {} list role {role} on pane_bg is {ratio:.2}:1",
+                    t.name,
+                );
+            }
+        }
+    }
+
+    /// The function is a fallback, not a filter: a foreground that already
+    /// clears the bar must survive unchanged, or every themed list row would
+    /// come out monochrome.
+    #[test]
+    fn readable_fg_preserves_a_contrasting_foreground() {
+        let bg = Color::Rgb(0x1f, 0x23, 0x35);
+        let fg = Color::Rgb(0xcd, 0xd6, 0xf4);
+        assert_eq!(readable_fg(fg, bg), fg);
+    }
+
+    /// And it must actually correct a foreground that does not, in both
+    /// directions — a light selection background needs dark text, not the
+    /// white that was hard-coded for the "dark theme" case.
+    #[test]
+    fn readable_fg_corrects_both_directions() {
+        let light = Color::Rgb(0xe6, 0xe6, 0xe6);
+        let dark = Color::Rgb(0x1a, 0x1e, 0x2e);
+        assert!(contrast(readable_fg(light, light), light) >= 4.5);
+        assert!(contrast(readable_fg(dark, dark), dark) >= 4.5);
     }
 
     #[test]

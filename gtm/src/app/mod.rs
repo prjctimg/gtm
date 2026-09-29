@@ -386,7 +386,17 @@ pub(crate) enum IpcResult {
     /// its image URL (guarded via `spotify_popup_slot`).
     SpotifyPopupCover(Option<Vec<u8>>, String, u64),
     CoverPicker(Option<Picker>),
-    Lyrics(Option<LrcData>, u64),
+    /// A lyrics reply: the lines, the generation that asked for them, and the
+    /// path of the track it was asked for.
+    ///
+    /// The generation alone is not enough. It orders a reply against a *later
+    /// fetch*, so it catches two requests racing each other — but not the case
+    /// that actually shows up: the track changes, no new fetch has started yet
+    /// (the change arrives through the same drain that would have delivered the
+    /// reply), and the reply for the previous track still matches the live
+    /// generation and gets written. The path says which track the lines belong
+    /// to, which no generation can.
+    Lyrics(Option<LrcData>, u64, Option<String>),
     /// A podcast episode's transcript, shown in the lyrics pane.
     ///
     /// Deliberately not `Lyrics`: that variant is gated on a per-track
@@ -652,6 +662,20 @@ impl App {
         } else {
             self.theme.elevated_bg
         }
+    }
+
+    /// Background for a floating notification.
+    ///
+    /// Never transparent, unlike every other floating surface. A notification
+    /// is the one thing that appears over whatever the user happens to be
+    /// looking at — often for less than two seconds, often with an error in it,
+    /// and always while the thing that caused it is still on screen. Blending it
+    /// 50% into the background put the library or the cover art straight through
+    /// the message, and the part of the text that lost the contrast was the part
+    /// that mattered. The card is opaque; the *theme* it is opaque in is still
+    /// reactive, because the theme is what supplies the colour.
+    pub fn notification_bg(&self) -> ratatui::style::Color {
+        self.theme.elevated_bg
     }
 
     pub fn chrome_bg(&self) -> ratatui::style::Color {
@@ -1028,6 +1052,7 @@ impl App {
                 manual_scroll: false,
                 offset_secs: 0.0,
                 row: None,
+                kind: LyricsKind::None,
             },
             zen: false,
             zen_surface: ZenSurface::NowPlaying,

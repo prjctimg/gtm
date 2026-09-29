@@ -525,4 +525,27 @@ pub struct LyricsView {
     /// only when it lands on a different track, so holding an arrow key does
     /// not re-request the same row once per frame.
     pub row: Option<usize>,
+    /// What `current` is holding.
+    ///
+    /// A lyrics reply that finds nothing used to be written into `current` as a
+    /// "No lyrics found" line, which is indistinguishable from a real result.
+    /// A podcast transcript is fetched by episode name, not by the playing
+    /// track, and is still on screen when the track changes — so the next
+    /// track's lyrics fetch either replaced it or, coming back empty, replaced
+    /// it with "No lyrics found". The kind makes the two tellable apart.
+    pub kind: LyricsKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LyricsKind {
+    /// Nothing on screen.
+    #[default]
+    None,
+    /// A track's lyrics from the lyrics manager.
+    Track,
+    /// A "No lyrics found" placeholder: a real answer, and an empty one.
+    Missing,
+    /// A podcast episode's transcript, requested by name and unrelated to
+    /// whatever is playing.
+    Transcript,
 }

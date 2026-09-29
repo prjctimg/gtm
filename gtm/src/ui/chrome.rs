@@ -7,6 +7,17 @@
 
 use crate::ui::*;
 
+/// Whether an album line is worth a row next to a track's title and artist.
+///
+/// A release with no artist is a single, and on a single the album field is
+/// either empty or a compilation the track does not belong to — "Greatest
+/// Hits", a VA compilation, the label's own imprint. Neither tells the listener
+/// anything about the track they are looking at, and the row was spent on it
+/// anyway, pushing the progress bar down.
+pub(crate) fn wants_album_line(artist: &str, album: &str) -> bool {
+    !album.trim().is_empty() && !artist.trim().is_empty()
+}
+
 impl Render {
     pub(crate) fn upnext_card(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let (display_title, artist, album, has_album, has_cover, source_label) = {
@@ -21,7 +32,7 @@ impl Render {
                 u.track.artist.clone()
             };
             let album = u.track.album.clone();
-            let has_album = !album.is_empty();
+            let has_album = wants_album_line(&artist, &album);
             let has_cover = u.cover.is_some();
             // Provider comes from the shared classifier so the card, the footer
             // source module and the daemon agree on what a path is.
@@ -48,7 +59,9 @@ impl Render {
             )
         };
 
-        let bg = Block::default().style(Style::default().bg(app.float_bg()));
+        // Opaque like every other floating surface, for the same reason: it
+        // lands on top of the library and the now-playing pane.
+        let bg = Block::default().style(Style::default().bg(app.notification_bg()));
         f.render_widget(bg, area);
 
         let border_color = app.theme.notification_border;
@@ -209,27 +222,37 @@ impl Render {
             }
 
             let final_y = card_y;
-            let start_y = area.y.saturating_sub(card_h + gap);
+            let final_x = center_x(max_notif_width);
             let leaving = now.saturating_duration_since(n.expires_at);
-            let y = if leaving > std::time::Duration::ZERO {
-                let exit_progress = cubic_ease_in(
+            // The card enters from off the right edge and leaves the same way.
+            // It used to drop in from above the top of the screen, which read as
+            // a glitch: the card was cut in half by the terminal edge, appeared
+            // without its background for the frames it spent partly off-screen,
+            // and arrived on top of whatever was at the top-centre — the Up Next
+            // card. Coming from the side keeps the whole card visible for the
+            // whole animation and leaves the top edge alone.
+            let travel = (area.right().saturating_sub(final_x)) as f32;
+            let (y, x) = if leaving > std::time::Duration::ZERO {
+                let p = cubic_ease_in(
                     (leaving.as_millis() as f32 / NOTIFICATION_EXIT_DURATION.as_millis() as f32)
                         .min(1.0),
                 );
-                (final_y as f32 + (start_y as f32 - final_y as f32) * exit_progress) as u16
+                (final_y, final_x as f32 + travel * p)
             } else {
-                let progress = cubic_ease_out(n.animation_progress);
-                (start_y as f32 + (final_y as f32 - start_y as f32) * progress) as u16
+                let p = cubic_ease_out(n.animation_progress);
+                (final_y, final_x as f32 + travel * (1.0 - p))
             };
 
             let card_area = Rect {
-                x: center_x(max_notif_width),
+                x: (x.round() as u16).min(area.right().saturating_sub(max_notif_width)),
                 y,
                 width: max_notif_width,
                 height: card_h,
             };
 
-            let bg = Block::default().style(Style::default().bg(app.float_bg()));
+            // Opaque, and filled before the accent bar so no row of the card is
+            // ever left showing the surface underneath.
+            let bg = Block::default().style(Style::default().bg(app.notification_bg()));
             f.render_widget(bg, card_area);
 
             let border_color = app.theme.notification_border;
@@ -866,7 +889,11 @@ impl Render {
         let left_focus = app.library_pane_focus;
 
         {
-            let np_inner = Render::pane_header(f, np_area, app, "", false, true, false);
+            // No rule under the label. The now-playing label is empty, so the
+            // only thing the rule ever separated was the cover art from the
+            // pane's own edge — a line across the top of the artwork, which is
+            // the one place a border reads as damage.
+            let np_inner = Render::pane_header(f, np_area, app, "", false, false, false);
             fill_pane(f, np_inner, app);
 
             if let Some(track) = app.state.current_track.clone() {
@@ -898,7 +925,7 @@ impl Render {
                 };
                 // A live track has no album: the daemon stamps the literal
                 // "Radio" there, which is noise next to the artist.
-                let has_album = !track.album.is_empty() && !is_live;
+                let has_album = !is_live && wants_album_line(&display_artist, &track.album);
 
                 // Progress: 1 row (available when dur > 0 AND not a live stream)
                 let dur = if app.state.duration > 0.0 {

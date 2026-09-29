@@ -339,7 +339,7 @@ impl App {
             return;
         }
         self.lyrics.row = Some(track.index);
-        self.row_lyrics(&track);
+        self.prefetch_row_lyrics(&track);
     }
 
     /// Preload the album-cover URLs of Spotify drill-down rows a short scroll

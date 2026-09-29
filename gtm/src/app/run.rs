@@ -1355,25 +1355,44 @@ impl App {
                                 words: Vec::new(),
                             }],
                         }));
+                        self.lyrics.kind = LyricsKind::Transcript;
                         self.lyrics.fetching = false;
                         self.lyrics.scroll = self.current_lyric_index();
                         self.lyrics.show = true;
                     }
-                    IpcResult::Lyrics(lyrics, lyrics_gen) => {
-                        if Some(lyrics_gen) != self.lyrics.pending_gen {
+                    IpcResult::Lyrics(lyrics, lyrics_gen, for_path) => {
+                        let now_playing =
+                            self.state.current_track.as_ref().map(|t| t.path.as_str());
+                        let wrong_track = match (for_path.as_deref(), now_playing) {
+                            (Some(want), Some(have)) => !want.is_empty() && want != have,
+                            (Some(want), None) => !want.is_empty(),
+                            // A reply with no path came from a fetch that
+                            // predates this check; the generation is all there
+                            // is to go on.
+                            _ => false,
+                        };
+                        if Some(lyrics_gen) != self.lyrics.pending_gen || wrong_track {
                             // Stale: the track changed while this fetch was in
                             // flight, so the lines belong to the previous song.
                             // Drop rather than flash the wrong lyrics.
                         } else {
                             self.lyrics.pending_gen = None;
-                            self.lyrics.current = lyrics;
                             self.lyrics.fetching = false;
                             // Snap to the lyric line matching the current
                             // playback position so opening lyrics mid-track
                             // doesn't start with the first line highlighted.
                             self.lyrics.scroll = self.current_lyric_index();
-                            // Show "No lyrics found" if lyrics fetch returned None
-                            if self.lyrics.current.is_none() {
+                            // "No lyrics found" is written into `lyrics.current`
+                            // so the pane has something to render. It is
+                            // therefore a real value, and assigning over it
+                            // unconditionally was wrong in both directions: a
+                            // *new* track's reply overwrote the lines the user
+                            // was reading, and an *old* track's late failure
+                            // replaced them with "No lyrics found".
+                            if let Some(lyrics) = lyrics {
+                                self.lyrics.current = Some(lyrics);
+                                self.lyrics.kind = LyricsKind::Track;
+                            } else if self.lyrics.kind == LyricsKind::None {
                                 self.lyrics.current = Some(LrcData {
                                     title: None,
                                     artist: None,
@@ -1384,6 +1403,7 @@ impl App {
                                         words: Vec::new(),
                                     }],
                                 });
+                                self.lyrics.kind = LyricsKind::Missing;
                             }
                         }
                     }

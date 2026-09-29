@@ -79,13 +79,14 @@ fn report(
     out: Result<Option<LrcData>, CoreError>,
     ipc_tx: &mpsc::UnboundedSender<IpcResult>,
     fetch_gen: u64,
+    path: String,
 ) {
     match out {
         Ok(lyrics) => {
-            let _ = ipc_tx.send(IpcResult::Lyrics(lyrics, fetch_gen));
+            let _ = ipc_tx.send(IpcResult::Lyrics(lyrics, fetch_gen, Some(path)));
         }
         Err(e) => {
-            let _ = ipc_tx.send(IpcResult::Lyrics(None, fetch_gen));
+            let _ = ipc_tx.send(IpcResult::Lyrics(None, fetch_gen, Some(path)));
             let _ = ipc_tx.send(IpcResult::Error(format!("Lyrics: {e}")));
         }
     }
@@ -121,21 +122,43 @@ impl App {
         }
     }
 
-    /// Fetch lyrics for a synced playlist row by its own `artist` and `name`.
+    /// Warm the daemon's on-disk lyrics cache for a synced playlist row,
+    /// without touching the lyrics pane.
     ///
     /// The lazy half of playlist lyrics: the track need not be playing or even
-    /// queued, so browsing a playlist warms the lyrics manager's on-disk cache
-    /// one row at a time instead of scanning the whole list.
-    pub(crate) fn row_lyrics(&mut self, track: &SpotifyTrack) {
+    /// queued, so browsing a playlist warms the cache one row at a time instead
+    /// of scanning the whole list.
+    ///
+    /// It used to go through the same path as a real fetch, and that is the
+    /// whole bug this now avoids. `begin_lyrics` claims the generation guard,
+    /// clears `lyrics.current` and resets the scroll and the manual sync offset
+    /// — all of which belong to the *playing* track. So moving the cursor in a
+    /// playlist replaced the now-playing lyrics with the browsed row's, reset
+    /// the user's offset, and made the playing track's own in-flight reply
+    /// stale, so it was dropped and the pane stayed blank. Two more: the
+    /// prefetch's reply could land between a track change and that track's
+    /// fetch, satisfying the guard with the wrong track's lines; and every
+    /// cursor move claimed a generation, so a fetch that was genuinely in
+    /// flight lost its slot to a row the user merely glanced at.
+    ///
+    /// The daemon writes the cache on the request side, so the reply is only
+    /// ever needed to populate the pane. Discarding it costs nothing.
+    pub(crate) fn prefetch_row_lyrics(&mut self, track: &SpotifyTrack) {
         if track.artists.trim().is_empty() || track.name.trim().is_empty() {
             return;
         }
-        self.search_lyrics(
-            track.artists.trim(),
-            track.name.trim(),
-            track.album.as_deref(),
-            track.duration_ms.map(|ms| ms as f64 / 1000.0),
-        );
+        let client = self.client.clone();
+        let artist = track.artists.trim().to_string();
+        let title = track.name.trim().to_string();
+        let album = track.album.clone();
+        let duration = track.duration_ms.map(|ms| ms as f64 / 1000.0);
+        tokio::spawn(async move {
+            // The result is the cache write, not the reply.
+            let _ = client
+                .lyrics()
+                .search(&artist, &title, album.as_deref(), duration)
+                .await;
+        });
     }
 
     fn search_lyrics(
@@ -150,6 +173,7 @@ impl App {
         let fetch_gen = self.begin_lyrics();
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
+        let path = self.path_display.clone().unwrap_or_default();
         tokio::spawn(async move {
             report(
                 client
@@ -158,12 +182,14 @@ impl App {
                     .await,
                 &ipc_tx,
                 fetch_gen,
+                path,
             );
         });
     }
 
     fn library_lyrics(&mut self, track_id: i64, path: Option<String>) {
         let fetch_gen = self.begin_lyrics();
+        let for_path = path.clone().unwrap_or_default();
         let client = self.client.clone();
         let ipc_tx = self.ipc_tx.clone();
         tokio::spawn(async move {
@@ -176,7 +202,7 @@ impl App {
                 Ok(res) => res,
                 Err(_) => Err(CoreError::Daemon("lyrics fetch timed out".into())),
             };
-            report(out, &ipc_tx, fetch_gen);
+            report(out, &ipc_tx, fetch_gen, for_path);
         });
     }
 
@@ -184,6 +210,7 @@ impl App {
     fn begin_lyrics(&mut self) -> u64 {
         let fetch_gen = self.next_lyrics_gen();
         self.lyrics.current = None;
+        self.lyrics.kind = LyricsKind::None;
         self.lyrics.pending_gen = Some(fetch_gen);
         self.lyrics.fetching = true;
         self.lyrics.scroll = 0;
