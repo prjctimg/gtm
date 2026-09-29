@@ -654,13 +654,21 @@ impl CoverCache {
             .join(format!("{key}.jpg"))
     }
 
+    /// Deezer's field query for an artist/album pair.
+    ///
+    /// Deliberately unencoded. This is handed to `reqwest`'s `.query()`, which
+    /// percent-encodes the value; encoding here as well meant Deezer received
+    /// `artist%3A%22JACKBOYS%252C%2520Travis%22` and searched for a literal
+    /// `%20` inside the quoted field, so it matched nothing at all. The log said
+    /// exactly that — `no results for artist:"JACKBOYS%2C%20Travis"` — and it is
+    /// why no cover ever resolved for a track whose art had to come from
+    /// Deezer.
+    fn deezer_query(artist: &str, album: &str) -> String {
+        format!("artist:\"{artist}\" album:\"{album}\"")
+    }
+
     async fn fetch_from_deezer(&self, artist: &str, album: &str, key: &str) -> Option<CoverData> {
-        let query = format!(
-            "artist:\"{}\" album:\"{}\"",
-            urlencoding(artist),
-            urlencoding(album)
-        );
-        let cover = self.deezer_cover(&query).await;
+        let cover = self.deezer_cover(&Self::deezer_query(artist, album)).await;
         if let Some(cd) = &cover {
             let disk = self.disk_path(key);
             if let Some(parent) = disk.parent() {
@@ -748,12 +756,29 @@ impl CoverCache {
     }
 }
 
-fn urlencoding(s: &str) -> String {
-    s.chars()
-        .map(|c| match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => c.to_string(),
-            ' ' => "%20".to_string(),
-            other => format!("%{:02X}", other as u8),
-        })
-        .collect()
+#[cfg(test)]
+mod tests {
+    use super::CoverCache;
+
+    /// The Deezer query must reach Deezer unencoded.
+    ///
+    /// It is handed to `reqwest`'s `.query()`, which encodes the value itself.
+    /// Encoding here as well produced a double-encoded field, so Deezer
+    /// searched for a literal `%20` between the quote characters and matched
+    /// nothing — which is the whole reason a track's art failed to resolve.
+    #[test]
+    fn deezer_query_is_not_pre_encoded() {
+        let q = CoverCache::deezer_query("MK, Dom Dolla", "Rhyme Dust (Remix)");
+        assert!(!q.contains('%'), "must not pre-encode: {q}");
+        assert!(!q.contains('+'), "must not use form encoding: {q}");
+        assert_eq!(q, "artist:\"MK, Dom Dolla\" album:\"Rhyme Dust (Remix)\"");
+    }
+
+    /// The field syntax Deezer is being asked for, intact.
+    #[test]
+    fn deezer_query_keeps_field_syntax() {
+        let q = CoverCache::deezer_query("A", "B");
+        assert!(q.starts_with("artist:\"A\""), "{q}");
+        assert!(q.contains(" album:\"B\""), "{q}");
+    }
 }
