@@ -68,23 +68,12 @@ pub(crate) const SYSTEM_ROWS: SettingsRows = &[
     ("Notification Settings", RowKind::Action),
 ];
 
-/// Spotify. Connection and transport, and nothing that duplicates a key
-/// already on the main screen.
+/// Spotify. Connection state and the two things that can change it.
 pub(crate) const SPOTIFY_ROWS: SettingsRows = &[
     ("Status", RowKind::Status),
     ("Link Account", RowKind::Action),
     ("Unlink", RowKind::Action),
-    ("Next", RowKind::Action),
-    ("Previous", RowKind::Action),
 ];
-
-/// The Spotify transport rows, as a semantic index for [`App::spot_ctrl`].
-///
-/// They are passed an offset rather than a row number so that inserting a
-/// setting above them cannot silently remap an action onto the wrong one —
-/// which is exactly what happened: the handler computed `opt - 4` and the
-/// callee matched `8 | 9 | 10 | _`, so all three ran the last arm.
-pub(crate) const SPOTIFY_CTRL_INDEX: (usize, usize) = (3, 4);
 
 /// The rows of one settings category.
 pub(crate) fn rows_for(category: usize) -> SettingsRows {
@@ -161,15 +150,12 @@ mod tests {
         }
     }
 
-    /// The Spotify transport range has to name the two rows that follow the
-    /// three connection rows.
+    /// The Spotify category is Status, Link and Unlink. It used to also carry
+    /// Next and Previous, which act on the *Connect device* rather than the
+    /// local queue — and were the rows the semantic-index bug lived on.
     #[test]
-    fn spotify_ctrl_range_covers_next_and_previous_only() {
-        let (lo, hi) = SPOTIFY_CTRL_INDEX;
-        assert_eq!(lo, 3);
-        assert_eq!(hi, 4);
-        assert_eq!(rows_for(2)[lo].0, "Next");
-        assert_eq!(rows_for(2)[hi].0, "Previous");
-        assert!(hi < rows_for(2).len());
+    fn spotify_is_status_link_and_unlink() {
+        let names: Vec<&str> = rows_for(2).iter().map(|(n, _)| *n).collect();
+        assert_eq!(names, ["Status", "Link Account", "Unlink"]);
     }
 }

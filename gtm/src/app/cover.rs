@@ -53,6 +53,11 @@ impl App {
             3 => TrackInfoKind::Artist,
             4 => TrackInfoKind::Playlist,
             5 => TrackInfoKind::SpotifyPlaylist,
+            // Charts have their own row type. Falling through to `Track` is
+            // what made the left card describe a random local library track:
+            // `filtered_tracks` has no chart case, so it returned the whole
+            // library and the card rendered `tracks_cache[list_pos()]`.
+            12 => TrackInfoKind::ChartTrack,
             _ => TrackInfoKind::Track,
         }
     }
@@ -103,17 +108,25 @@ impl App {
                         .map(|t| (t.id, t.path.clone()))
                 })
             }
-            // Playlist and Spotify rows never resolve a cover; the block still
-            // describes the selected row (playlist name / spotify track).
+            // Playlist and Spotify rows never resolve a local cover; the block
+            // still describes the selected row. A chart row resolves its own
+            // from `cover_url` below.
             TrackInfoKind::Playlist
             | TrackInfoKind::SpotifyPlaylist
-            | TrackInfoKind::SpotifyTrack => None,
+            | TrackInfoKind::SpotifyTrack
+            | TrackInfoKind::ChartTrack => None,
         };
 
         let valid = match kind {
             TrackInfoKind::Playlist => self.list_pos() < self.playlist_cache.len(),
             TrackInfoKind::SpotifyPlaylist => self.list_pos() < self.spotify.playlists.len(),
             TrackInfoKind::SpotifyTrack => self.selected_spotify_track().is_some(),
+            // No chart open yet: levels 0 and 1 list sources and charts, which
+            // are not tracks and have nothing to describe.
+            TrackInfoKind::ChartTrack => {
+                self.charts.selected_chart.is_some()
+                    && self.list_pos() < self.charts.chart_tracks.len()
+            }
             _ => maybe_track.is_some(),
         };
 
@@ -129,6 +142,16 @@ impl App {
             // move so scrolling the list loads cover art.
             self.popup_track_id = None;
             self.fetch_spotify_popup_cover();
+            return;
+        }
+
+        if kind == TrackInfoKind::ChartTrack {
+            // A chart row's artwork is a plain CDN URL from whichever provider
+            // published the chart, so it goes through the provider-neutral
+            // image request rather than Spotify's — an Apple chart row has to
+            // work with no provider linked at all.
+            self.popup_track_id = None;
+            self.fetch_chart_cover();
             return;
         }
 

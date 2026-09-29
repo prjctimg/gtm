@@ -1757,6 +1757,7 @@ fn is_read_only(req: &DaemonReq) -> bool {
             | DaemonReq::SpotifyAlbumTracks { .. }
             | DaemonReq::SpotifyArtistTopTracks { .. }
             | DaemonReq::SpotifyTrackImage { .. }
+            | DaemonReq::GetImageCover { .. }
             | DaemonReq::SpotifyMatch { .. }
             | DaemonReq::LastfmStatus
             | DaemonReq::PodcastFeeds
@@ -3110,6 +3111,7 @@ impl Daemon {
                 )
                 .await
             }
+            DaemonReq::GetImageCover { url } => Cover::image(inner, url).await,
             DaemonReq::LastfmOauthStart => Lastfm::oauth_start(inner).await,
             DaemonReq::LastfmAuthenticate { token } => Lastfm::authenticate(inner, token).await,
             DaemonReq::LastfmStatus => Lastfm::status(inner).await,

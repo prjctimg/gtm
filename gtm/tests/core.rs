@@ -2191,3 +2191,39 @@ fn display_title_prefers_the_metadata() {
     };
     assert_eq!(file.display_title(), "some song");
 }
+
+/// The library categories that are not backed by `filtered_tracks`.
+///
+/// A category with no arm there falls through to the whole local library, and
+/// the left info card then renders `tracks_cache[list_pos()]` — so browsing
+/// Top Charts described an unrelated local track. Charts are the case that
+/// actually shipped broken; the rest are here so a future category is added to
+/// the list rather than rediscovering the same failure.
+#[test]
+fn chart_rows_are_not_answered_from_the_local_library() {
+    let src = include_str!("../src/app/cover.rs");
+    let start = src
+        .find("pub fn track_info_kind(&self) -> TrackInfoKind {")
+        .expect("track_info_kind");
+    let body = &src[start..];
+    let end = body.find("\n    }").unwrap_or(body.len());
+    let body = &body[..end];
+
+    assert!(
+        body.contains("12 => TrackInfoKind::ChartTrack"),
+        "category 12 (Top Charts) must not fall through to TrackInfoKind::Track:\n{body}"
+    );
+
+    // And the other list-shaped categories, for the same reason.
+    for (cat, kind) in [
+        (2, "Album"),
+        (3, "Artist"),
+        (4, "Playlist"),
+        (5, "SpotifyPlaylist"),
+    ] {
+        assert!(
+            body.contains(&format!("{cat} => TrackInfoKind::{kind}")),
+            "category {cat} must map to {kind}"
+        );
+    }
+}

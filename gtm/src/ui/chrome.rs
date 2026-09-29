@@ -1203,6 +1203,8 @@ impl Render {
         // The Spotify drill-down shows its own highlighted track here rather
         // than inline with the list rows, so the list panes stay pure text.
         let want_spot_track_card = app.in_spotify_playlist() && app.spotify.row_cover.is_some();
+        // A chart row renders through the same track card, so it is governed by
+        // `want_track_card` and needs no condition of its own.
         let has_card =
             (want_track_card || want_playlist_card || want_spot_track_card) && !is_small_height;
         // Rows the category list may use: everything, less the card and the
@@ -2160,10 +2162,12 @@ impl Render {
         let lyrics_results_pane = app.lyrics.show && lyrics_area.is_none();
         if !lyrics_results_pane {
             let right_para = Paragraph::new(right_lines);
-            let header_label = if let Some(detail) = app.browse_detail.as_deref() {
-                format!("▶ {detail}")
-            } else {
-                category_label.to_string()
+            // The detail is the title for every category except Spotify, where
+            // it is a playlist id.
+            let header_label = match (app.browse_detail.as_deref(), app.browse_title.as_deref()) {
+                (Some(_), Some(title)) => format!("▶ {title}"),
+                (Some(detail), None) => format!("▶ {detail}"),
+                (None, _) => category_label.to_string(),
             };
             let right_inner =
                 Render::pane_header(f, panes[1], app, &header_label, !left_focus, false, true);

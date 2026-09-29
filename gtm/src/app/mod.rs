@@ -169,7 +169,17 @@ pub struct App {
     pub(crate) cached_genres: CachedCategories,
     pub(crate) cached_folders: CachedCategories,
     pub queue: QueueView,
+    /// Identity of the row the library is drilled into.
+    ///
+    /// For every local category this *is* the display name. Spotify is the
+    /// exception: it stores the bare playlist id, because that is what
+    /// `play_all` and `resolve` look the playlist up by, and the header used to
+    /// render it directly — so drilling into a playlist showed
+    /// `▶ 37i9dQZF1DXcBWIGoYBM5M`, and `liked-songs` showed literally.
     pub browse_detail: Option<String>,
+    /// Display name for [`Self::browse_detail`], where the key is not a name.
+    /// `None` means the detail is its own title.
+    pub browse_title: Option<String>,
     pub yt_results_cache: Vec<YTSearchResult>,
     pub playlist_cache: Vec<Playlist>,
     pub most_played_cache: Vec<TrackInfo>,
@@ -859,6 +869,7 @@ impl App {
                 preview_fail_until: None,
             },
             browse_detail: None,
+            browse_title: None,
             yt_results_cache: Vec::new(),
             downloads: std::collections::HashMap::new(),
             downloading_urls: std::collections::HashSet::new(),

@@ -257,7 +257,43 @@ pub(crate) fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
                 has_cover: false,
             })
         }
+        TrackInfoKind::ChartTrack => {
+            let ct = app.charts.chart_tracks.get(app.list_pos())?;
+            let dur = ct
+                .duration_ms
+                .map(|ms| format!(" [{}]", format_duration(ms / 1000)))
+                .unwrap_or_default();
+            Some(TrackInfoFields {
+                title: ct.title.clone(),
+                artist: if ct.artists.is_empty() {
+                    "Unknown".to_string()
+                } else {
+                    ct.artists.clone()
+                },
+                album: ct.album.clone(),
+                // A chart row has no path to classify, so the source is the
+                // chart provider the row came from.
+                meta: format!(
+                    "{} | {}",
+                    dur,
+                    source_label(use_nerd, chart_source_label(app)).trim_start()
+                ),
+                has_cover: app.track_popup_cover.is_some(),
+            })
+        }
     }
+}
+
+/// Which chart provider the loaded chart came from, for the info card.
+fn chart_source_label(app: &App) -> &'static str {
+    app.charts
+        .selected_source
+        .and_then(|i| app.charts.sources.get(i))
+        .map_or("Chart", |s| match s.id.as_str() {
+            "spotify" => "Spotify",
+            "apple" => "Apple Music",
+            _ => "Chart",
+        })
 }
 
 pub(crate) fn format_duration_short(secs: u64) -> String {

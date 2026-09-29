@@ -60,44 +60,6 @@ pub(crate) fn preview_pick(
 }
 
 impl App {
-    /// Run one Spotify Connect control from the Settings panel and feed the
-    /// refreshed status back into the view, so the row text updates in place.
-    pub(crate) fn spot_ctrl(&mut self, opt: usize) {
-        let c = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        let st = self.spotify.status.clone().unwrap_or_default();
-        let (label, res) = match opt {
-            8 => ("next", 0),
-            9 => ("previous", 1),
-            10 => ("shuffle", 2),
-            _ => ("repeat", 3),
-        };
-        tokio::spawn(async move {
-            let out = match res {
-                0 => c.spotify().next().await,
-                1 => c.spotify().previous().await,
-                2 => c.spotify().set_shuffle(!st.shuffle).await,
-                _ => {
-                    // off → context → track → off
-                    let next = match st.repeat.as_str() {
-                        "off" => "context",
-                        "context" => "track",
-                        _ => "off",
-                    };
-                    c.spotify().set_repeat(next).await
-                }
-            };
-            match out {
-                Ok(status) => {
-                    let _ = ipc_tx.send(IpcResult::SpotifyStatus(status));
-                }
-                Err(e) => {
-                    let _ = ipc_tx.send(IpcResult::Error(format!("Spotify {label}: {e}")));
-                }
-            }
-        });
-    }
-
     /// Search picker matching the focused list. The library search covers the
     /// local library; provider categories open their own provider's search so
     /// `/` always searches what the user is looking at.
@@ -186,6 +148,45 @@ impl App {
                     let _ = ipc_tx.send(IpcResult::SpotifyPopupCover(None, url, fetch_gen));
                 }
             }
+        });
+    }
+
+    /// Fetch the highlighted chart row's artwork, through the same popup-cover
+    /// slot Spotify drill-down rows use.
+    ///
+    /// The slot is keyed on the URL, which is what makes the latch work: two
+    /// rows on the same album share an image URL, so scrolling between them
+    /// costs nothing, and a different row misses and refetches.
+    pub(crate) fn fetch_chart_cover(&mut self) {
+        let Some(url) = self
+            .charts
+            .chart_tracks
+            .get(self.list_pos())
+            .and_then(|t| t.cover_url.clone())
+        else {
+            self.clear_popup_cover();
+            return;
+        };
+        if self.spotify_popup_slot.id.as_deref() == Some(&url)
+            && self.spotify_popup_slot.version.is_some()
+        {
+            return;
+        }
+        if no_image_protocol() {
+            return;
+        }
+        let fetch_gen = self.next_cover_gen();
+        self.spotify_popup_slot.claim(url.clone(), fetch_gen);
+        self.track_popup_cover = None;
+        self.popup_cover_stateful = None;
+        let client = self.client.clone();
+        let ipc_tx = self.ipc_tx.clone();
+        tokio::spawn(async move {
+            // A miss answers with `None` rather than staying silent: an
+            // unanswered fetch leaves the slot claimed and every later cover
+            // for this track dropped.
+            let bytes = client.image_cover(&url).await.ok().flatten();
+            let _ = ipc_tx.send(IpcResult::SpotifyPopupCover(bytes, url, fetch_gen));
         });
     }
 

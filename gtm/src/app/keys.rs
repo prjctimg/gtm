@@ -340,6 +340,7 @@ impl App {
                     Some(KeyboardAction::Quit) => {
                         if self.browse_detail.is_some() {
                             self.browse_detail = None;
+                            self.browse_title = None;
                             self.set_list_pos(0);
                             if self.library_category == 5 {
                                 self.spotify.playlist_tracks_cache.clear();
@@ -832,6 +833,7 @@ impl App {
                                 self.lyrics.show = false;
                             } else if self.browse_detail.is_some() {
                                 self.browse_detail = None;
+                                self.browse_title = None;
                                 self.set_list_pos(0);
                                 if self.library_category == 5 {
                                     self.spotify.playlist_tracks_cache.clear();
@@ -1064,6 +1066,9 @@ impl App {
                                 let pos = self.list_pos();
                                 if pos < albums.len() {
                                     self.browse_detail = Some(albums[pos].0.clone());
+                                    // The detail is the name for these categories, so any title
+                                    // left over from a Spotify drill-down must not survive the switch.
+                                    self.browse_title = None;
                                     self.set_list_pos(0);
                                 }
                             } else if self.library_category == 3 {
@@ -1072,6 +1077,9 @@ impl App {
                                 let pos = self.list_pos();
                                 if pos < artists.len() {
                                     self.browse_detail = Some(artists[pos].0.clone());
+                                    // The detail is the name for these categories, so any title
+                                    // left over from a Spotify drill-down must not survive the switch.
+                                    self.browse_title = None;
                                     self.set_list_pos(0);
                                 }
                             } else if self.library_category == 4 {
@@ -1079,6 +1087,9 @@ impl App {
                                 if self.list_pos() < self.playlist_cache.len() {
                                     let playlist = self.playlist_cache[self.list_pos()].clone();
                                     self.browse_detail = Some(playlist.name.clone());
+                                    // The detail is the name for these categories, so any title
+                                    // left over from a Spotify drill-down must not survive the switch.
+                                    self.browse_title = None;
                                     self.set_list_pos(0);
                                     self.playlist_tracks_cache.clear();
                                     let c = self.client.clone();
@@ -1098,6 +1109,7 @@ impl App {
                                 if self.list_pos() < self.spotify.playlists.len() {
                                     let playlist = self.spotify.playlists[self.list_pos()].clone();
                                     self.browse_detail = Some(playlist.id.clone());
+                                    self.browse_title = Some(playlist.name.clone());
                                     self.set_list_pos(0);
                                     self.spotify.playlist_tracks_cache.clear();
                                     let c = self.client.clone();
@@ -1136,6 +1148,9 @@ impl App {
                                 let pos = self.list_pos();
                                 if pos < genres.len() {
                                     self.browse_detail = Some(genres[pos].0.clone());
+                                    // The detail is the name for these categories, so any title
+                                    // left over from a Spotify drill-down must not survive the switch.
+                                    self.browse_title = None;
                                     self.set_list_pos(0);
                                 }
                             } else if self.library_category == 11 {
@@ -1144,6 +1159,9 @@ impl App {
                                 let pos = self.list_pos();
                                 if pos < folders.len() {
                                     self.browse_detail = Some(folders[pos].0.clone());
+                                    // The detail is the name for these categories, so any title
+                                    // left over from a Spotify drill-down must not survive the switch.
+                                    self.browse_title = None;
                                     self.set_list_pos(0);
                                 }
                             } else if self.library_category == 13 {
@@ -1796,6 +1814,7 @@ impl App {
                             KeyCode::Char('q') => {
                                 if self.browse_detail.is_some() {
                                     self.browse_detail = None;
+                                    self.browse_title = None;
                                     self.set_list_pos(0);
                                 } else {
                                     return false;
@@ -1804,6 +1823,7 @@ impl App {
                             KeyCode::Esc => {
                                 if self.browse_detail.is_some() {
                                     self.browse_detail = None;
+                                    self.browse_title = None;
                                     self.set_list_pos(0);
                                 } else if self.library_category == 13
                                     && self.podcast.episodes_feed_id.is_some()

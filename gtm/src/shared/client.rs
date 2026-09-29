@@ -4,6 +4,8 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use base64::Engine;
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -561,6 +563,28 @@ impl DaemonClient {
         let res = self.send_raw(DaemonReq::GetStatusLite).await?;
         match res {
             DaemonRes::Status { state, .. } => Ok(*state),
+            DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
+            _ => Err(unexpected(&res)),
+        }
+    }
+
+    /// Fetch an image URL as base64 cover bytes.
+    ///
+    /// Takes any URL, not just a Spotify one: a chart row's artwork is a plain
+    /// CDN URL belonging to no account, so it must not require a linked
+    /// provider.
+    pub async fn image_cover(&self, url: &str) -> Result<Option<Vec<u8>>> {
+        let res = self
+            .send_raw(DaemonReq::GetImageCover { url: url.into() })
+            .await?;
+        match res {
+            DaemonRes::CoverArt { data } => match data {
+                Some(b64) => base64::engine::general_purpose::STANDARD
+                    .decode(&b64)
+                    .map(Some)
+                    .map_err(|e| CoreError::Daemon(format!("decode cover art: {e}"))),
+                None => Ok(None),
+            },
             DaemonRes::Error { message, .. } => Err(CoreError::Daemon(message)),
             _ => Err(unexpected(&res)),
         }

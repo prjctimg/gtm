@@ -339,6 +339,23 @@ impl Cover {
         Some(hit.data)
     }
 
+    /// Fetch an arbitrary image URL as base64, through the same disk cache
+    /// every other cover uses.
+    ///
+    /// Exists because a provider can hand out a plain CDN URL that is not tied
+    /// to a linked account: an Apple Music chart row carries an iTunes artwork
+    /// URL, and routing that through Spotify's image request would answer
+    /// "spotify not linked" for every row in the most common configuration — no
+    /// provider linked at all.
+    pub async fn image(inner: &DaemonInner, url: &str) -> Result<DaemonRes, CoreError> {
+        match Self::url_cover(inner, url).await {
+            Some(bytes) => Ok(DaemonRes::CoverArt {
+                data: Some(base64::engine::general_purpose::STANDARD.encode(&bytes)),
+            }),
+            None => Ok(DaemonRes::CoverArt { data: None }),
+        }
+    }
+
     /// The `og:image` a station's homepage advertises, which is the closest
     /// thing it publishes to cover art. Tolerates either attribute order by
     /// locating `og:image` first and reading the `content` that follows.

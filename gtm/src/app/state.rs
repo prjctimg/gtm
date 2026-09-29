@@ -13,6 +13,11 @@ pub enum TrackInfoKind {
     SpotifyPlaylist,
     /// Drill-down row in a Spotify playlist (no local cover available).
     SpotifyTrack,
+    /// Row in a loaded chart. A chart is not the local library, so the `Track`
+    /// arm used to index `tracks_cache` by the row position — showing an
+    /// unrelated local track's title and cover beside the chart, and at chart
+    /// level 0/1 indexing the *sources* list into it.
+    ChartTrack,
 }
 
 pub enum InputMode {

@@ -968,6 +968,11 @@ impl App {
                     }
                     IpcResult::ChartTracksLoaded(tracks) => {
                         self.charts.chart_tracks = tracks;
+                        // Warm the left card for the row that is now
+                        // highlighted. Without this the card waits for the next
+                        // cursor move, and at the row the user actually landed
+                        // on after opening the chart it showed nothing at all.
+                        self.update_track_popup();
                     }
                     IpcResult::ChartsSources(sources) => {
                         if let Some(src) = self.charts.selected_source

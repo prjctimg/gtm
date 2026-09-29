@@ -217,8 +217,24 @@ impl App {
     /// Fully reset the library-left-pane view to a target category + drill-down.
     /// Clears the list position, multiselect selection and drill-down caches so
     /// a stale Enter/toggle can never act on a row from a previous view.
+    /// Enter a library category, optionally drilled into `detail`.
+    ///
+    /// `title` is the display name when the detail is not one — see
+    /// [`App::browse_title`]. Passing `None` for it is correct for every
+    /// category except Spotify.
     pub(crate) fn reset_library_view(&mut self, category: usize, detail: Option<String>) {
+        self.reset_library_view_titled(category, detail, None);
+    }
+
+    /// [`Self::reset_library_view`], with an explicit display name.
+    pub(crate) fn reset_library_view_titled(
+        &mut self,
+        category: usize,
+        detail: Option<String>,
+        title: Option<String>,
+    ) {
         self.browse_detail = detail;
+        self.browse_title = title;
         self.library_category = category.min(LIBRARY_CATEGORIES.len() - 1);
         self.clear_selection();
         self.playlist_tracks_cache.clear();

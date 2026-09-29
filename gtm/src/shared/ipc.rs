@@ -465,6 +465,13 @@ pub enum DaemonReq {
     /// so the port was never reachable — the listener it opened could not
     /// receive anything.
     LastfmOauthStart,
+    /// Fetch an image URL as base64 cover bytes, through the cover cache.
+    ///
+    /// Provider-neutral on purpose: a chart row's artwork is a plain CDN URL
+    /// that belongs to no account, so it must not require a linked provider.
+    GetImageCover {
+        url: String,
+    },
     LastfmAuthenticate {
         token: String,
     },
@@ -656,6 +663,7 @@ impl DaemonReq {
             DaemonReq::SpotifyPlaylistAdd { .. } => "spotify_playlist_add",
             DaemonReq::LastfmSetConfig { .. } => "lastfm_set_config",
             DaemonReq::LastfmOauthStart => "lastfm_oauth_start",
+            DaemonReq::GetImageCover { .. } => "get_image_cover",
             DaemonReq::LastfmAuthenticate { .. } => "lastfm_authenticate",
             DaemonReq::LastfmStatus => "lastfm_status",
             DaemonReq::LastfmClear => "lastfm_clear",
@@ -1305,6 +1313,14 @@ impl DaemonReq {
                     min_play_secs: x.min_play_secs,
                     min_play_pct: x.min_play_pct,
                 }
+            }
+            "get_image_cover" => {
+                #[derive(Deserialize)]
+                struct Params {
+                    url: String,
+                }
+                let x: Params = p(params)?;
+                DaemonReq::GetImageCover { url: x.url }
             }
             "lastfm_oauth_start" => {
                 // A `port` used to be required here and is still accepted, then

@@ -18,7 +18,6 @@
 //! a test against those arrays.
 
 use crate::app::*;
-use crate::ui::pickers::settings_rows::SPOTIFY_CTRL_INDEX;
 
 impl App {
     pub(crate) fn settings_key(
@@ -220,20 +219,12 @@ impl App {
                 15 => self.open_settings_overlay(),
                 _ => {}
             },
-            2 => {
-                let (lo, hi) = SPOTIFY_CTRL_INDEX;
-                match opt {
-                    0 => {} // Status is display-only.
-                    1 => self.open_spotify_link(),
-                    2 => self.unlink_spotify(tx.clone()),
-                    // Transport. The rows are a contiguous range declared in
-                    // `settings_rows`, so the semantic index the callee wants is
-                    // derived from that declaration rather than being a second
-                    // number to keep in step with the first.
-                    _ if opt >= lo && opt <= hi => self.spot_ctrl(opt - lo),
-                    _ => {}
-                }
-            }
+            2 => match opt {
+                0 => {} // Status is display-only.
+                1 => self.open_spotify_link(),
+                2 => self.unlink_spotify(tx.clone()),
+                _ => {}
+            },
             _ => {}
         }
     }
