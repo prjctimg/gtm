@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use crate::shared::client::{DaemonClient, LastfmStatus};
 use crate::shared::daemon::ensure_daemon_running;
-use crate::shared::global::{PlaybackStatus, RepeatMode};
+use crate::shared::global::{DaemonState, PlaybackStatus, RepeatMode};
 use crate::shared::ipc::DaemonRes;
 use crate::shared::ipc::HealthStatus;
 use crate::shared::ipc::MetadataPatch;
@@ -20,6 +20,7 @@ use crate::shared::secret::{
 };
 use crate::shared::spotify::SpotifyStatus;
 use crate::shared::track::LrcData;
+use base64::Engine as _;
 use clap::{Parser, Subcommand};
 use tokio::io::AsyncBufReadExt;
 
@@ -931,17 +932,19 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
             CliCommand::Status { stream } => {
                 if *stream {
                     let mut last_track: Option<String> = None;
+                    let mut last_art: Option<String> = None;
+                    let mut last_frame_art = String::new();
                     let mut lyrics: Option<LrcData> = None;
-                    let mut first = true;
                     loop {
                         let state = client.get_status().await.map_err(|e| e.to_string())?;
                         let elapsed = state.time_pos as u64;
                         let dur = state.duration as u64;
                         let track = state.current_track.as_ref().map_or("No track".into(), |t| {
+                            let title = t.display_title();
                             if t.artist.is_empty() {
-                                t.title.clone()
+                                title
                             } else {
-                                format!("{} - {}", t.artist, t.title)
+                                format!("{} - {}", t.artist, title)
                             }
                         });
                         let vol = state.volume;
@@ -973,18 +976,31 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                                 .or_else(|| l.lines.iter().find(|ln| ln.timestamp < 0.0))
                                 .map(|ln| ln.text.trim().to_string())
                         });
-                        if !first {
-                            print!("\x1b[1A");
+                        // Refetch the art only on a track change — it is its
+                        // own request, and re-asking twice a second would be
+                        // a second round trip per tick for a constant image.
+                        if state.current_track.as_ref().map(|t| t.path.as_str())
+                            != last_art.as_deref()
+                        {
+                            last_art = state.current_track.as_ref().map(|t| t.path.clone());
+                            let art = cover_str(&state, &client).await;
+                            last_frame_art = match art.as_str() {
+                                "no track" | "none" => String::new(),
+                                _ => art,
+                            };
                         }
-                        first = false;
-                        print!(
-                            "\r\x1b[KStream: {} | {}s / {}s | {}%",
-                            track, elapsed, dur, vol
-                        );
+                        // Full-frame redraw rather than the `\r` + cursor-up
+                        // this used. Once the frame is a variable number of
+                        // rows tall, partial overwrites leave the tail of a
+                        // taller previous frame on screen; home-and-clear is
+                        // the only correct one.
+                        print!("\x1b[H\x1b[J");
+                        if !last_frame_art.is_empty() {
+                            print!("{last_frame_art}\n");
+                        }
+                        print!("Stream: {} | {}s / {}s | {}%", track, elapsed, dur, vol);
                         if let Some(line) = active {
-                            print!("\n\x1b[K  ♪ {}", line);
-                        } else {
-                            print!("\n\x1b[K");
+                            print!("\n  ♪ {}", line);
                         }
                         std::io::stdout().flush().ok();
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -1003,13 +1019,9 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                             .current_track
                             .as_ref()
                             .map(|t| {
-                                let title = if t.title.is_empty() {
-                                    std::path::Path::new(&t.path)
-                                        .file_stem()
-                                        .map(|s| s.to_string_lossy().to_string())
-                                        .unwrap_or_else(|| "Unknown".into())
-                                } else {
-                                    t.title.clone()
+                                let title = match t.display_title() {
+                                    s if s.is_empty() => "Unknown".to_string(),
+                                    s => s,
                                 };
                                 if t.artist.is_empty() {
                                     title
@@ -1039,12 +1051,14 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         Ok(format!(
                             "\x1b[1mPlayback:\x1b[0m  {}\n\
                          \x1b[1mTrack:\x1b[0m    {}\n\
+                         \x1b[1mCover:\x1b[0m    {}\n\
                          \x1b[1mVolume:\x1b[0m   {} ({})\n\
                          \x1b[1mRepeat:\x1b[0m   {}\n\
                          \x1b[1mShuffle:\x1b[0m  {}\n\
                          \x1b[1mQueue:\x1b[0m    {}",
                             status_str,
                             track_str,
+                            cover_str(&state, &client).await,
                             vol_str,
                             mute_str,
                             repeat_str,
@@ -1453,6 +1467,79 @@ fn command_exists(name: &str) -> bool {
     std::env::var_os("PATH")
         .map(|paths| std::env::split_paths(&paths).any(|dir| dir.join(name).is_file()))
         .unwrap_or(false)
+}
+
+/// Cover art for the current track, rendered as half-block ANSI colour.
+///
+/// Art is not in `DaemonState` — it travels as its own request — so this is a
+/// second round trip. Bounded and best-effort: a track with no art, a daemon
+/// that cannot answer, or a terminal that renders nothing readable all land on
+/// the same "no cover" line rather than failing the status command.
+async fn cover_str(state: &DaemonState, client: &DaemonClient) -> String {
+    let Some(track) = state.current_track.as_ref() else {
+        return "no track".to_string();
+    };
+    let Ok(Some(b64)) = client
+        .art()
+        .cover_for(track.id, Some(track.path.clone()))
+        .await
+    else {
+        return "none".to_string();
+    };
+    let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(&b64) else {
+        return "none".to_string();
+    };
+    cover_text(&bytes, 16, 8)
+}
+
+/// Cover bytes as a half-block grid: each cell is one upper-pixel/lower-pixel
+/// pair, foreground over background, which is the same trick the TUI's
+/// non-image-protocol path uses so both renderings look alike.
+fn cover_text(bytes: &[u8], w: u32, h: u32) -> String {
+    use std::fmt::Write as _;
+    let Ok(img) = image::load_from_memory(bytes) else {
+        return "none".to_string();
+    };
+    let src = img.into_rgba8();
+    // Centre-crop to the target aspect so the art is not squashed.
+    let (sw, sh) = (src.width() as f64, src.height() as f64);
+    let want = w as f64 / (h * 2) as f64;
+    let have = sw / sh;
+    let cropped = if (have - want).abs() < 0.01 {
+        src
+    } else {
+        let dims = if have > want {
+            ((sh * want) as u32, src.height())
+        } else {
+            (src.width(), (sw / want) as u32)
+        };
+        let (cw, ch) = (dims.0.clamp(1, src.width()), dims.1.clamp(1, src.height()));
+        let (ox, oy) = ((src.width() - cw) / 2, (src.height() - ch) / 2);
+        image::imageops::crop_imm(&src, ox, oy, cw, ch).to_image()
+    };
+    let thumb =
+        image::imageops::resize(&cropped, w, h * 2, image::imageops::FilterType::CatmullRom);
+    let mut out = String::new();
+    for y in 0..h {
+        if y > 0 {
+            out.push('\n');
+        }
+        for x in 0..w {
+            let top = thumb.get_pixel(x, y * 2);
+            let bot = if y * 2 + 1 < h * 2 {
+                *thumb.get_pixel(x, y * 2 + 1)
+            } else {
+                image::Rgba([0, 0, 0, 255])
+            };
+            let _ = write!(
+                out,
+                "\x1b[38;2;{};{};{}m\x1b[48;2;{};{};{}m\u{2580}",
+                top[0], top[1], top[2], bot[0], bot[1], bot[2]
+            );
+        }
+    }
+    out.push_str("\x1b[0m");
+    out
 }
 
 fn format_spotify_status(st: &SpotifyStatus) -> String {

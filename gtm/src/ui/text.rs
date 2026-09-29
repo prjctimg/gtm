@@ -37,11 +37,7 @@ pub(crate) fn library_stats_line(app: &App) -> String {
     if app.browse_detail.is_some() {
         if app.library_category == 5 {
             let n = app.spotify.playlist_tracks_cache.len();
-            return format!(
-                " {} {} (+ play all / shuffle) ",
-                n,
-                plural(n, "track", "tracks")
-            );
+            return format!(" {} {} ", n, plural(n, "track", "tracks"));
         }
         let f = app.filtered_tracks();
         let total_dur: u64 = f.iter().map(|t| t.duration as u64).sum();
@@ -117,14 +113,7 @@ pub(crate) fn track_info_fields(app: &App) -> Option<TrackInfoFields> {
             let track = app
                 .popup_track_id
                 .and_then(|id| app.tracks_cache.iter().find(|t| t.id == id))?;
-            let title = if track.title.is_empty() {
-                std::path::Path::new(&track.path)
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default()
-            } else {
-                track.title.clone()
-            };
+            let title = track.display_title();
             let artist = if track.artist.is_empty() {
                 "Unknown".to_string()
             } else {

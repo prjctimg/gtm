@@ -2128,3 +2128,52 @@ fn settings_rows_and_enter_arms_line_up() {
         }
     }
 }
+
+/// An untitled entry must never render as a raw provider URI.
+///
+/// The fallback was `Path::file_stem`, which on `spotify:track:4cOdK2w…`
+/// returns the whole string, and on `spotify:track:abc.def` stops at the dot
+/// and returns `spotify:track:abc`. It was written independently at eight
+/// call sites and only one of them checked for a provider path, so a raw id
+/// reached the queue rows, the now-playing widget, the search and library
+/// pickers and the info card.
+#[test]
+fn display_title_never_leaks_a_uri() {
+    let uri = TrackInfo {
+        path: "spotify:track:4cOdK2wGLETKBW3PvgPWqT".into(),
+        ..Default::default()
+    };
+    let title = uri.display_title();
+    assert!(!title.contains("spotify:"), "{title}");
+    assert!(!title.contains(':'), "{title}");
+
+    // The truncating case is the one a naive guard misses: the id itself
+    // contains a dot, so a stem-based fallback silently returns a *valid
+    // looking* but wrong id.
+    let dotted = TrackInfo {
+        path: "spotify:track:abc.def".into(),
+        ..Default::default()
+    };
+    assert!(
+        !dotted.display_title().contains("spotify:"),
+        "{}",
+        dotted.display_title()
+    );
+}
+
+/// A real title always wins, and a real file still falls back to its stem.
+#[test]
+fn display_title_prefers_the_metadata() {
+    let tagged = TrackInfo {
+        path: "spotify:track:4cOdK2wGLETKBW3PvgPWqT".into(),
+        title: "Rhyme Dust".into(),
+        ..Default::default()
+    };
+    assert_eq!(tagged.display_title(), "Rhyme Dust");
+
+    let file = TrackInfo {
+        path: "/music/some song.mp3".into(),
+        ..Default::default()
+    };
+    assert_eq!(file.display_title(), "some song");
+}

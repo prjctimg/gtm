@@ -14,14 +14,7 @@ impl Render {
                 Some(u) => u,
                 None => return,
             };
-            let display_title = if u.track.title.is_empty() {
-                std::path::Path::new(&u.track.path)
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default()
-            } else {
-                u.track.title.clone()
-            };
+            let display_title = u.track.display_title();
             let artist = if u.track.artist.is_empty() {
                 "Unknown".to_string()
             } else {
@@ -372,14 +365,7 @@ impl Render {
         track: &TrackInfo,
         area: Rect,
     ) {
-        let title = if track.title.is_empty() {
-            std::path::Path::new(&track.path)
-                .file_stem()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default()
-        } else {
-            track.title.clone()
-        };
+        let title = track.display_title();
         let artist = if track.artist.is_empty() {
             String::new()
         } else {
@@ -892,20 +878,7 @@ impl Render {
                 let (display_title, display_artist, is_live) = match app.live_track() {
                     Some((title, artist)) => (title, artist, true),
                     None => {
-                        let title = if track.title.is_empty() {
-                            // Never surface a raw provider URI (e.g. a queued
-                            // `spotify:track:` entry) as the title.
-                            if track.path.starts_with("spotify:") {
-                                pretty_id(&track.path)
-                            } else {
-                                std::path::Path::new(&track.path)
-                                    .file_stem()
-                                    .map(|s| s.to_string_lossy().to_string())
-                                    .unwrap_or_default()
-                            }
-                        } else {
-                            track.title.clone()
-                        };
+                        let title = track.display_title();
                         let artist = if track.artist.is_empty() {
                             " ".to_string()
                         } else {
@@ -1302,11 +1275,7 @@ impl Render {
         {
             let tracks = &app.spotify.playlist_tracks_cache;
             let total_len = app.spotify_playlist_rows();
-            let st_line = format!(
-                " {} {} (+ play all / shuffle) ",
-                tracks.len(),
-                plural(tracks.len(), "track", "tracks")
-            );
+            let st_line = library_stats_line(app);
             let reserve = 3usize;
             let available = panes[1].height.saturating_sub(reserve as u16) as usize;
             app.viewport_items = available;
@@ -2558,14 +2527,7 @@ impl Render {
                 let is_sel = real_i == sel;
                 let is_multiselected = app.multiselect_mode && app.row_is_selected(&track.path);
                 let prefix = if is_sel { " > " } else { "   " };
-                let label = if track.title.is_empty() {
-                    std::path::Path::new(&track.path)
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default()
-                } else {
-                    track.title.clone()
-                };
+                let label = track.display_title();
                 let display = scroll_text(&label, avail_disp, app.footer_title_scroll, is_sel);
                 let checkbox = if is_multiselected { "☑ " } else { "" };
                 let row = format!(

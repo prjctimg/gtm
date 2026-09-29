@@ -177,14 +177,7 @@ impl Pickers {
             let is_sel = i == sel;
             let is_picked = app.selected_track_ids.contains(&track.id);
             let mark = if is_picked { " \u{2713} " } else { "   " };
-            let label = if track.title.is_empty() {
-                std::path::Path::new(&track.path)
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_default()
-            } else {
-                track.title.clone()
-            };
+            let label = track.display_title();
             let artist = if track.artist.is_empty() {
                 String::new()
             } else {

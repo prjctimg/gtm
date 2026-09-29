@@ -321,14 +321,7 @@ impl Pickers {
         match picks.get(sel) {
             Some(LibraryPick::Track(i)) => {
                 let t = &app.tracks_cache[*i];
-                let display_title = if t.title.is_empty() {
-                    std::path::Path::new(&t.path)
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default()
-                } else {
-                    t.title.clone()
-                };
+                let display_title = t.display_title();
                 push("Title", &display_title);
                 push(
                     "Artist",

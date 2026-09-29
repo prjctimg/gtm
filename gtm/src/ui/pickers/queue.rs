@@ -73,14 +73,7 @@ impl Pickers {
             let is_sel = i == sel;
             let prefix = if is_sel { " > " } else { "   " };
             let icon = if is_current { "\u{25b6} " } else { "\u{266b} " };
-            let label = if track.title.is_empty() {
-                std::path::Path::new(&track.path)
-                    .file_stem()
-                    .map(|s| s.to_string_lossy().to_string())
-                    .unwrap_or_else(|| track.path.clone())
-            } else {
-                track.title.clone()
-            };
+            let label = track.display_title();
             let artist = if track.artist.is_empty() {
                 String::new()
             } else {
@@ -247,14 +240,7 @@ impl Pickers {
         };
         match app.queue.cache.get(next_idx) {
             Some(track) => {
-                let label = if track.title.is_empty() {
-                    std::path::Path::new(&track.path)
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_else(|| track.path.clone())
-                } else {
-                    track.title.clone()
-                };
+                let label = track.display_title();
                 let artist = if track.artist.is_empty() {
                     "Unknown artist".to_string()
                 } else {

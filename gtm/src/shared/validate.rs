@@ -9,6 +9,7 @@ use crate::shared::global::{
     ScrobbleConfig,
 };
 use crate::shared::radio::RadioTracklist;
+use crate::shared::spotify::pretty_id;
 use crate::shared::track::TrackInfo;
 
 impl CrossfadeConfig {
@@ -72,6 +73,28 @@ impl TrackInfo {
     /// Returns true if the track has valid required fields.
     pub fn is_valid(&self) -> bool {
         !self.path.is_empty() && !self.hash.is_empty() && self.duration >= 0.0
+    }
+
+    /// The title to show for this track, never a raw provider URI.
+    ///
+    /// An untitled entry falls back to its path, and a provider path is not a
+    /// filename: `Path::file_stem` on `spotify:track:4cOdK2wGLETKBW3PvgPWqT`
+    /// yields the whole URI, and on `spotify:track:abc.def` it stops at the
+    /// dot and yields `spotify:track:abc`. That fallback was written
+    /// independently at eight call sites, so it leaked a raw id into the queue
+    /// rows, the now-playing widget, the search and library pickers and the
+    /// info card.
+    pub fn display_title(&self) -> String {
+        if !self.title.is_empty() {
+            return self.title.clone();
+        }
+        if self.path.starts_with("spotify:") {
+            return pretty_id(&self.path);
+        }
+        std::path::Path::new(&self.path)
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default()
     }
 
     /// Create a minimal TrackInfo from a file path and duration.
