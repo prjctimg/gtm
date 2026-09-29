@@ -25,8 +25,21 @@ on:
         type: string
 
 concurrency:
-  group: release-${{ github.ref }}
-  cancel-in-progress: false
+  # Keyed on the event name as well as the ref, so a manual run is never
+  # cancelled by a push that lands while it is in flight — and cannot cancel
+  # one, which `cancel-in-progress` would otherwise allow in both directions.
+  group: release-${{ github.event_name }}-${{ github.ref }}
+  # Only the newest commit on a branch is worth building. Pushing a series of
+  # commits queued one run each and every one of them built and published a
+  # nightly; the earlier ones were superseded before they even started. The
+  # concurrency group keeps a single run in flight, so a push supersedes its
+  # predecessor rather than queueing behind it. This is also what makes the
+  # moving `nightly` tag monotonic: a cancelled run cannot finish late and drag
+  # the tag back to a commit the newest run has already passed.
+  #
+  # A tag push and a manual run each have their own group, so publishing a
+  # release is never interrupted by unrelated work on `dev`.
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
