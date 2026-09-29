@@ -5,11 +5,13 @@
 // This is free software released under the GPL-3.0 license.
 
 use gtm::shared::Result;
+use gtm::shared::chart::{ChartPlaylist, ChartSource, ChartTrack};
 use gtm::shared::global::{
     CrossfadeConfig, DaemonState, Image, PlaybackStatus, RepeatMode, ThemeMode, UIMode, YTFilter,
 };
 use gtm::shared::ipc::{DaemonEvent, DaemonReq, DaemonRes, LibraryAction, QueueAction};
 use gtm::shared::playlist::PlaylistFormatKind;
+use gtm::shared::podcast::PodcastFeed;
 use gtm::shared::spotify::{SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 use gtm::shared::track::{LrcData, LrcLine, Playlist, StreamInfo, TrackInfo, YTSearchResult};
 use gtm::shared::wire::{decode, encode};
@@ -424,6 +426,7 @@ fn res_spotify_wire() {
         playlists: 2,
         tracks: 5,
         needs_relink: false,
+        needs_play_link: false,
         error: None,
     };
     let playlist = SpotifyPlaylist {
@@ -534,6 +537,140 @@ fn res_oauth_wire() {
         let wire = res.to_wire(1);
         let back = DaemonRes::from_wire("spotify_oauth_start", &wire);
         assert_eq!(expected, format!("{:?}", back));
+    }
+}
+
+/// Every response variant the client matches on a named `cmd` must be
+/// reconstructible by `from_wire` for that same `cmd`. A missing arm decodes to
+/// a bare `DaemonRes::Value`, which the client then rejects as "unexpected
+/// response" while the daemon had answered correctly — lyrics for any provider
+/// track, Top Charts, podcast add-feed and Last.fm linking all failed this way.
+///
+/// Driven off the client side rather than a hand-written list, so a new typed
+/// expectation cannot be added without the decode arm that serves it.
+#[test]
+fn every_client_expectation_round_trips() {
+    let cases: Vec<(&str, DaemonRes)> = vec![
+        (
+            "get_lyrics",
+            DaemonRes::Lyrics {
+                lyrics: Some(sample_lrc()),
+            },
+        ),
+        // The provider-track route: no library row, so searched by name. This is
+        // the one that reported "unexpected response" for every Spotify row.
+        (
+            "lyrics_search",
+            DaemonRes::Lyrics {
+                lyrics: Some(sample_lrc()),
+            },
+        ),
+        // A miss is `None`, not an absent key, and must survive as `None`.
+        ("lyrics_search", DaemonRes::Lyrics { lyrics: None }),
+        (
+            "charts_sources",
+            DaemonRes::ChartsSourcesRes {
+                sources: vec![ChartSource {
+                    id: "spotify".into(),
+                    display: "Spotify Charts".into(),
+                    configured: true,
+                }],
+            },
+        ),
+        (
+            "charts_list",
+            DaemonRes::ChartsListRes {
+                charts: vec![ChartPlaylist {
+                    source_id: "spotify".into(),
+                    id: "37i9dQ".into(),
+                    title: "Today's Top Hits".into(),
+                    description: None,
+                    cover_url: None,
+                    owner: None,
+                    track_count: Some(50),
+                }],
+            },
+        ),
+        (
+            "charts_tracks",
+            DaemonRes::ChartsTracksRes {
+                tracks: vec![ChartTrack {
+                    index: 0,
+                    title: "Rhyme Dust".into(),
+                    artists: "MK, Dom Dolla".into(),
+                    album: Some("Rhyme Dust".into()),
+                    duration_ms: Some(200_000),
+                    uri: "spotify:track:4cOdK2wGLETKBW3PvgPWqT".into(),
+                    cover_url: None,
+                }],
+            },
+        ),
+        (
+            "podcast_add_feed",
+            DaemonRes::PodcastFeedsRes {
+                feeds: vec![sample_feed()],
+            },
+        ),
+        // With a `feed_id` the daemon answers feeds; with none it answers
+        // `Value { refreshed }`, which the client's own `Value` arm reads. Both
+        // shapes have to survive the same `cmd`.
+        (
+            "podcast_refresh",
+            DaemonRes::PodcastFeedsRes {
+                feeds: vec![sample_feed()],
+            },
+        ),
+        (
+            "podcast_refresh",
+            DaemonRes::Value {
+                value: serde_json::json!({ "refreshed": 3 }),
+            },
+        ),
+        (
+            "lastfm_oauth_start",
+            DaemonRes::LastfmAuthUrlRes {
+                url: "https://www.last.fm/api/auth/?api_key=k1".into(),
+            },
+        ),
+    ];
+    for (cmd, res) in cases {
+        let expected = format!("{res:?}");
+        let back = DaemonRes::from_wire(cmd, &res.to_wire(1));
+        assert_eq!(
+            expected,
+            format!("{back:?}"),
+            "{cmd} did not round-trip into the variant the client matches on"
+        );
+    }
+}
+
+fn sample_feed() -> PodcastFeed {
+    PodcastFeed {
+        id: "feed-1".into(),
+        title: "A Feed".into(),
+        url: "https://example.com/feed.xml".into(),
+        description: String::new(),
+        episodes: 12,
+    }
+}
+
+fn sample_lrc() -> LrcData {
+    LrcData {
+        title: Some("Rhyme Dust".into()),
+        artist: Some("MK, Dom Dolla".into()),
+        album: Some("Rhyme Dust".into()),
+        lines: vec![
+            LrcLine {
+                timestamp: 0.06,
+                text: "Right here".into(),
+                words: Vec::new(),
+            },
+            LrcLine {
+                timestamp: 14.57,
+                text: "Rhyme dust".into(),
+                words: Vec::new(),
+            },
+        ],
     }
 }
 

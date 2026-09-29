@@ -4,6 +4,7 @@
 //
 // This is free software released under the GPL-3.0 license.
 
+use crate::shared::chart::{ChartPlaylist, ChartSource, ChartTrack};
 use crate::shared::global::{DaemonState, EqPreset, LoudnessMode, RepeatMode, YTFilter};
 use crate::shared::playlist::PlaylistFormatKind;
 use crate::shared::podcast::{PodcastEpisode, PodcastFeed, PodcastStatus};
@@ -1789,19 +1790,19 @@ pub enum DaemonRes {
         list: Box<RadioTracklist>,
     },
     ChartsSourcesRes {
-        sources: Vec<crate::shared::chart::ChartSource>,
+        sources: Vec<ChartSource>,
     },
     ChartsListRes {
-        charts: Vec<crate::shared::chart::ChartPlaylist>,
+        charts: Vec<ChartPlaylist>,
     },
     ChartsTracksRes {
-        tracks: Vec<crate::shared::chart::ChartTrack>,
+        tracks: Vec<ChartTrack>,
     },
     ChartsLoaded {
-        charts: Vec<crate::shared::chart::ChartPlaylist>,
+        charts: Vec<ChartPlaylist>,
     },
     ChartTracksLoaded {
-        tracks: Vec<crate::shared::chart::ChartTrack>,
+        tracks: Vec<ChartTrack>,
     },
     CoverArt {
         data: Option<String>,
@@ -2290,7 +2291,12 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "get_lyrics" => {
+            // Both lyrics commands answer with the same shape. `lyrics_search`
+            // used to be absent here, so a provider track — which has no library
+            // row and can only be searched by artist and title — decoded to a
+            // bare `Value` and every such lookup reported "unexpected response"
+            // while the daemon had in fact found the lyrics.
+            "get_lyrics" | "lyrics_search" => {
                 match serde_json::from_value::<Option<LrcData>>(field(&data, "lyrics")) {
                     Ok(lyrics) => DaemonRes::Lyrics { lyrics },
                     Err(_) => DaemonRes::Value { value: data },
@@ -2332,9 +2338,30 @@ impl DaemonRes {
             "spotify_oauth_start" => DaemonRes::SpotifyOauthStarted {
                 url: field_str(&data, "url").to_string(),
             },
-            "podcast_feeds" => {
+            // A refresh with no `feed_id` answers `Value { refreshed }` rather
+            // than feeds, so the fallback below is load-bearing here: the absent
+            // `feeds` key fails the parse and the count survives.
+            "podcast_feeds" | "podcast_add_feed" | "podcast_refresh" => {
                 match serde_json::from_value::<Vec<PodcastFeed>>(field(&data, "feeds")) {
                     Ok(feeds) => DaemonRes::PodcastFeedsRes { feeds },
+                    Err(_) => DaemonRes::Value { value: data },
+                }
+            }
+            "charts_sources" => {
+                match serde_json::from_value::<Vec<ChartSource>>(field(&data, "sources")) {
+                    Ok(sources) => DaemonRes::ChartsSourcesRes { sources },
+                    Err(_) => DaemonRes::Value { value: data },
+                }
+            }
+            "charts_list" | "charts_loaded" => {
+                match serde_json::from_value::<Vec<ChartPlaylist>>(field(&data, "charts")) {
+                    Ok(charts) => DaemonRes::ChartsListRes { charts },
+                    Err(_) => DaemonRes::Value { value: data },
+                }
+            }
+            "charts_tracks" | "chart_tracks" => {
+                match serde_json::from_value::<Vec<ChartTrack>>(field(&data, "tracks")) {
+                    Ok(tracks) => DaemonRes::ChartsTracksRes { tracks },
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
@@ -2384,7 +2411,7 @@ impl DaemonRes {
                     Err(_) => DaemonRes::Value { value: data },
                 }
             }
-            "lastfm_auth_url" => DaemonRes::LastfmAuthUrlRes {
+            "lastfm_auth_url" | "lastfm_oauth_start" => DaemonRes::LastfmAuthUrlRes {
                 url: field_str(&data, "url").to_string(),
             },
             "lastfm_status" => DaemonRes::LastfmStatusRes {
