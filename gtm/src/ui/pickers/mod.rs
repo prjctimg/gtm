@@ -302,12 +302,11 @@ impl Pickers {
                     // view names it if no browser opens, and repeating it here
                     // put a URL on screen on every visit to a form nobody had
                     // failed at yet.
-                    match app.spotify.oauth_port.trim().parse::<u16>() {
-                        Err(_) => lines.push(Line::from(Span::styled(
+                    if app.spotify.oauth_port.trim().parse::<u16>().is_err() {
+                        lines.push(Line::from(Span::styled(
                             "  That is not a port — Tab back and fix it.",
                             Style::default().fg(app.theme.fg_dim),
-                        ))),
-                        _ => {}
+                        )))
                     }
                     if let Some(err) = app.spotify.oauth_form_error.as_deref() {
                         lines.push(Line::from(Span::styled(

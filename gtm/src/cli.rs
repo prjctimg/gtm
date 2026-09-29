@@ -996,7 +996,7 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         // the only correct one.
                         print!("\x1b[H\x1b[J");
                         if !last_frame_art.is_empty() {
-                            print!("{last_frame_art}\n");
+                            println!("{last_frame_art}");
                         }
                         print!("Stream: {} | {}s / {}s | {}%", track, elapsed, dur, vol);
                         if let Some(line) = active {
