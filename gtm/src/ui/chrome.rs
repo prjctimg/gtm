@@ -2425,31 +2425,13 @@ impl Render {
                         .add_modifier(Modifier::DIM)
                 }
             };
-            // Right-aligned timestamp range gutter on synced lines so the
-            // actively playing verse is clearly time-bounded.
-            let ts_prefix = if synced && line.timestamp >= 0.0 {
-                let ts = format_duration((line.timestamp + offset).max(0.0) as u64);
-                let range = match lyrics.lines.get(i + 1) {
-                    Some(next) if next.timestamp >= 0.0 => {
-                        format!(
-                            "{ts}-{}",
-                            format_duration((next.timestamp + offset).max(0.0) as u64)
-                        )
-                    }
-                    _ => ts,
-                };
-                format!("  [{range}]")
-            } else {
-                String::new()
-            };
-            let row_text = format!("{}{}", line.text, ts_prefix);
+            // No timestamp gutter. Every synced line carried a `[0:19-0:24]`
+            // range, which cost two to nine columns on *every* row and told the
+            // reader nothing they had not just watched the highlight move
+            // through. The line being sung is already marked; the timing is in
+            // the source, and the manual offset still nudges the matching.
             row_offsets.push(cumulative);
-            cumulative += row_text.chars().count().max(1).div_ceil(width);
-            let ts_style = if i == anchor && synced {
-                Style::default().fg(app.theme.accent)
-            } else {
-                Style::default().fg(app.theme.fg_dim)
-            };
+            cumulative += line.text.chars().count().max(1).div_ceil(width);
             // Karaoke: the active line lights up word-by-word when the source
             // carries per-word timings (enhanced LRC). Future words stay dim.
             if i == anchor && synced && !line.words.is_empty() {
@@ -2468,13 +2450,9 @@ impl Render {
                         },
                     ));
                 }
-                spans.push(Span::styled(ts_prefix, ts_style));
                 text.push(Line::from(spans));
             } else {
-                text.push(Line::from(vec![
-                    Span::styled(line.text.clone(), text_style),
-                    Span::styled(ts_prefix, ts_style),
-                ]));
+                text.push(Line::from(Span::styled(line.text.clone(), text_style)));
             }
         }
         let total_rows = cumulative;

@@ -502,6 +502,8 @@ impl YoutubeManager {
         // Captures the tail of yt-dlp's stderr so the failure toast can tell
         // rate-limit (429) and cookie (403) failures apart from other errors.
         let stderr_capture = Arc::new(std::sync::Mutex::new(String::new()));
+        // Where yt-dlp says it is writing, once it has said so.
+        let destination = Arc::new(std::sync::Mutex::new(None));
 
         let url_for_spawn = url.clone();
         let title_for_spawn = title.clone();
@@ -559,6 +561,9 @@ impl YoutubeManager {
                 "bestaudio[ext=m4a]/bestaudio".into(),
                 "--no-playlist".into(),
                 "--newline".into(),
+                // See `download_into`: without it yt-dlp treats an existing
+                // file as a finished download and exits 0.
+                "--force-overwrites".into(),
                 "-o".into(),
                 output_template.into(),
             ];
@@ -601,6 +606,7 @@ impl YoutubeManager {
                         url_for_spawn.clone(),
                         name.clone(),
                         None,
+                        Some(destination.clone()),
                     ))
                 })
                 .unwrap_or_else(|| tokio::spawn(async {}));
@@ -615,6 +621,7 @@ impl YoutubeManager {
                         url_for_spawn.clone(),
                         name.clone(),
                         Some(stderr_capture.clone()),
+                        None,
                     ))
                 })
                 .unwrap_or_else(|| tokio::spawn(async {}));
@@ -629,19 +636,27 @@ impl YoutubeManager {
                     let _ = stderr_task.await;
                     match result {
                         Ok(status) if status.success() => {
-                            let file = std::fs::read_dir(&download_dir)
-                                .ok()
-                                .into_iter()
-                                .flatten()
-                                .filter_map(|e| e.ok())
-                                .map(|e| e.path())
-                                .filter(|p| {
-                                    let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("").to_lowercase();
-                                    let file_name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                                    matches!(ext.as_str(), "m4a" | "webm" | "opus" | "mp3" | "ogg" | "aac" | "flac" | "wav")
-                                        && !file_name.ends_with(".part")
-                                })
-                                .max_by_key(|p| p.metadata().ok().and_then(|m| m.modified().ok()));
+                            // yt-dlp named the file it wrote; prefer that over
+                            // scanning the directory. The scan is kept as a
+                            // fallback for the runs where the line is absent
+                            // (an older yt-dlp, or output captured on a stream
+                            // that did not carry it).
+                            let reported = destination.lock().ok().and_then(|g| g.clone());
+                            let file = reported.filter(|p| p.exists()).or_else(|| {
+                                std::fs::read_dir(&download_dir)
+                                    .ok()
+                                    .into_iter()
+                                    .flatten()
+                                    .filter_map(|e| e.ok())
+                                    .map(|e| e.path())
+                                    .filter(|p| {
+                                        let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("").to_lowercase();
+                                        let file_name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                                        matches!(ext.as_str(), "m4a" | "webm" | "opus" | "mp3" | "ogg" | "aac" | "flac" | "wav")
+                                            && !file_name.ends_with(".part")
+                                    })
+                                    .max_by_key(|p| p.metadata().ok().and_then(|m| m.modified().ok()))
+                            });
                             (file, String::new())
                         }
                         Ok(status) => (
@@ -955,6 +970,11 @@ pub(crate) async fn download_into(
         "-f".into(),
         "bestaudio[ext=m4a]/bestaudio".into(),
         "--no-playlist".into(),
+        // yt-dlp skips a file that already exists and exits 0, so without this
+        // a re-download silently hands back the old bytes. yt-dlp re-extracts
+        // fresh CDN URLs every run precisely because the previous ones go
+        // stale and answer 403 — returning a cached file defeats that.
+        "--force-overwrites".into(),
         "-o".into(),
         template.into(),
     ];
@@ -1031,6 +1051,19 @@ pub(crate) async fn download_into(
 /// `--newline` and publish them on the download progress channel. When
 /// `capture` is set (stderr pipe), the raw text is also retained (bounded to
 /// the last few dozen lines) so a failed run can report the real reason.
+/// The file yt-dlp says it is writing, from its `[download] Destination:` line.
+///
+/// Without this the produced file was found by taking the newest audio file in
+/// the download directory. With a `%(title)s` output template and no cleanup
+/// between runs, that is a guess: a leftover file from an earlier download of a
+/// *different* video can be newer, and the daemon then queues the wrong track
+/// under the right title. yt-dlp states the answer; this reads it.
+fn parse_destination(line: &str) -> Option<&str> {
+    let rest = line.trim().strip_prefix("[download] Destination:")?;
+    let rest = rest.trim();
+    if rest.is_empty() { None } else { Some(rest) }
+}
+
 async fn spawn_progress_reader<R>(
     reader: R,
     progress_tx: mpsc::UnboundedSender<DownloadProgress>,
@@ -1038,11 +1071,19 @@ async fn spawn_progress_reader<R>(
     url: String,
     title: String,
     capture: Option<Arc<std::sync::Mutex<String>>>,
+    destination: Option<Arc<std::sync::Mutex<Option<std::path::PathBuf>>>>,
 ) where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     let mut lines = BufReader::new(reader).lines();
     while let Ok(Some(line)) = lines.next_line().await {
+        if let Some(slot) = &destination
+            && let Some(path) = parse_destination(&line)
+            && let Ok(mut guard) = slot.lock()
+            && guard.is_none()
+        {
+            *guard = Some(std::path::PathBuf::from(path));
+        }
         if let Some(fields) = parse_dl_progress(&line) {
             let _ = progress_tx.send(DownloadProgress {
                 id: download_id,
@@ -1544,6 +1585,38 @@ fn parse_view_count(s: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The produced file used to be found by taking the newest audio file in
+    /// the download directory. With a `%(title)s` template and nothing clearing
+    /// the directory between runs, a leftover from a different video can be
+    /// newer, and the daemon queues the wrong track under the right title.
+    #[test]
+    fn destination_line_names_the_produced_file() {
+        assert_eq!(
+            parse_destination("[download] Destination: /dl/Song.m4a"),
+            Some("/dl/Song.m4a")
+        );
+        // Real yt-dlp output carries a fragment suffix, and older builds
+        // prefix the path differently. Whitespace is all that may vary.
+        assert_eq!(
+            parse_destination("[download]  Destination:   /dl/Song.webm.f137 "),
+            Some("/dl/Song.webm.f137")
+        );
+    }
+
+    #[test]
+    fn a_progress_line_is_not_a_destination() {
+        // The two share the `[download] ` prefix, so the distinguishing part
+        // is the label. Reading a progress line as a path would hand the
+        // daemon "42.3% of 3.86MiB" as a filename.
+        assert_eq!(
+            parse_destination("[download]  42.3% of 3.86MiB at 1.10MiB/s ETA 00:07"),
+            None
+        );
+        assert_eq!(parse_destination(""), None);
+        assert_eq!(parse_destination("[download] Destination:"), None);
+        assert_eq!(parse_destination("Destination: /dl/Song.m4a"), None);
+    }
 
     #[test]
     fn prog_fields() {

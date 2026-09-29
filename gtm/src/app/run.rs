@@ -530,6 +530,31 @@ impl App {
             // local position estimate stays in sync with the daemon.
             if had_track_change {
                 self.client.seed_clock(&self.state).await;
+                // The now-playing section is only re-seeded when the *path*
+                // changes, so a `PlaybackStarted` for a track already
+                // displayed — a crossfade landing back on it, or the same song
+                // restarting — left the previous elapsed position and cover on
+                // screen. The event means a track (re)started whatever its
+                // path, so the position follows it either way.
+                if self.path_display.as_deref()
+                    == self.state.current_track.as_ref().map(|t| t.path.as_str())
+                {
+                    let raw = self.client.estimated_position().await;
+                    self.display_position = raw;
+                    self.last_display_position = raw;
+                    self.raw_position = raw;
+                    let d = if self.state.duration > 0.0 {
+                        self.state.duration
+                    } else {
+                        self.state
+                            .current_track
+                            .as_ref()
+                            .map(|t| t.duration)
+                            .unwrap_or(0.0)
+                    };
+                    self.progress_smoother
+                        .reset(if d > 0.0 { raw / d } else { 0.0 });
+                }
             }
             if had_sync_done
                 && let Ok(DaemonRes::Tracks { tracks, .. }) =
@@ -704,7 +729,7 @@ impl App {
 
             // Clear stale cover immediately so we don't show old art on the
             // new track, then trigger a cover fetch + lyrics auto-fetch.
-            if track_changed || (had_track_change && live_advanced) {
+            if track_changed || had_track_change || live_advanced {
                 self.np_cover.image = None;
                 self.np_cover.stateful = None;
                 // Invalidate pending fetch so stale responses cannot overwrite
@@ -750,7 +775,14 @@ impl App {
                 }
                 // Auto-fetch lyrics on track change if enabled and (pane
                 // visible or auto-fetch enabled).
-                if (self.auto_fetch_lyrics || self.lyrics.show)
+                //
+                // Keyed on a *different* track, not on every `PlaybackStarted`.
+                // A `PlaybackStarted` fires for a crossfade and for the same
+                // track restarting, where the lyrics already in the pane are
+                // the right ones and re-fetching them resets the user's manual
+                // sync offset for nothing.
+                if track_changed
+                    && (self.auto_fetch_lyrics || self.lyrics.show)
                     && let Some(track) = self.state.current_track.clone()
                 {
                     self.fetch_lyrics(&track);

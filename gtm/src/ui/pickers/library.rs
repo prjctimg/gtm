@@ -48,8 +48,17 @@ impl Pickers {
                 } else {
                     format!(" {}  {}", icons.get(i).unwrap_or(&" "), cat)
                 };
+                // The selected category gets a real highlight, like every other
+                // list in the app. It was accent-coloured text on the pane
+                // background, which is not a highlighter: it reads as emphasis
+                // rather than selection, it disappears entirely in a theme whose
+                // accent is close to the pane background, and here there is no
+                // cursor and no second pane to disambiguate — this list *is* the
+                // picker.
                 let style = if i == app.library_category {
-                    Style::default().fg(app.theme.accent)
+                    Style::default()
+                        .fg(app.theme.selection_fg_readable())
+                        .bg(app.theme.selection_bg)
                 } else {
                     Style::default().fg(app.theme.fg)
                 };

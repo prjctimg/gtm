@@ -212,8 +212,19 @@ pub enum CliCommand {
     },
     /// Show daemon status
     Status {
+        /// Redraw the status line continuously
         #[arg(long)]
         stream: bool,
+        /// Render the current track's cover art
+        ///
+        /// With `--stream`, fetched once per track rather than per tick.
+        #[arg(long)]
+        cover: bool,
+        /// Show the current time-synced lyric line
+        ///
+        /// With `--stream`, fetched once per track rather than per tick.
+        #[arg(long)]
+        lyrics: bool,
     },
     /// Check daemon health
     CheckHealth,
@@ -913,7 +924,11 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                     }
                 }
             }
-            CliCommand::Status { stream } => {
+            CliCommand::Status {
+                stream,
+                cover,
+                lyrics: want_lyrics,
+            } => {
                 if *stream {
                     let mut last_track: Option<String> = None;
                     let mut last_art: Option<String> = None;
@@ -936,19 +951,26 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         let track_key = state.current_track.as_ref().map(|t| t.path.clone());
                         if track_key != last_track {
                             last_track = track_key;
-                            lyrics = match &state.current_track {
-                                Some(t) => client
-                                    .lyrics()
-                                    .search(
-                                        &t.artist,
-                                        &t.title,
-                                        Some(t.album.as_str()).filter(|a| !a.trim().is_empty()),
-                                        (t.duration > 0.0).then_some(t.duration),
-                                    )
-                                    .await
-                                    .ok()
-                                    .flatten(),
-                                None => None,
+                            // Gated on the flag. A stream is a long-lived
+                            // process asking the daemon twice per second for
+                            // two things it did not ask to be told about.
+                            lyrics = if *want_lyrics {
+                                match &state.current_track {
+                                    Some(t) => client
+                                        .lyrics()
+                                        .search(
+                                            &t.artist,
+                                            &t.title,
+                                            Some(t.album.as_str()).filter(|a| !a.trim().is_empty()),
+                                            (t.duration > 0.0).then_some(t.duration),
+                                        )
+                                        .await
+                                        .ok()
+                                        .flatten(),
+                                    None => None,
+                                }
+                            } else {
+                                None
                             };
                         }
                         // Pick the active lyric line for the current position.
@@ -963,8 +985,9 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         // Refetch the art only on a track change — it is its
                         // own request, and re-asking twice a second would be
                         // a second round trip per tick for a constant image.
-                        if state.current_track.as_ref().map(|t| t.path.as_str())
-                            != last_art.as_deref()
+                        if *cover
+                            && state.current_track.as_ref().map(|t| t.path.as_str())
+                                != last_art.as_deref()
                         {
                             last_art = state.current_track.as_ref().map(|t| t.path.clone());
                             let art = cover_str(&state, &client).await;
@@ -1032,17 +1055,61 @@ pub fn run(socket: Option<String>, json: bool, verbose: bool, cmd: &CliCommand) 
                         } else {
                             "Unmuted"
                         };
+                        // `--cover` replaces the `Cover:` line with the art
+                        // itself: the half-block grid the TUI uses when the
+                        // terminal has no image protocol, so a plain pipe gets a
+                        // picture rather than "none".
+                        let cover_line = if *cover {
+                            cover_str(&state, &client).await
+                        } else {
+                            match state.current_track.as_ref() {
+                                Some(t) => t.cover_path.clone().unwrap_or_else(|| "none".into()),
+                                None => "no track".into(),
+                            }
+                        };
+                        // `--lyrics` appends the line being sung at the current
+                        // position, fetched once.
+                        let lyric_line = if *want_lyrics {
+                            let active = match state.current_track.as_ref() {
+                                Some(t) => client
+                                    .lyrics()
+                                    .search(
+                                        &t.artist,
+                                        &t.title,
+                                        Some(t.album.as_str()).filter(|a| !a.trim().is_empty()),
+                                        (t.duration > 0.0).then_some(t.duration),
+                                    )
+                                    .await
+                                    .ok()
+                                    .flatten()
+                                    .and_then(|l| {
+                                        let pos = state.time_pos;
+                                        l.lines
+                                            .iter()
+                                            .rfind(|ln| ln.timestamp >= 0.0 && ln.timestamp <= pos)
+                                            .or_else(|| {
+                                                l.lines.iter().find(|ln| ln.timestamp < 0.0)
+                                            })
+                                            .map(|ln| ln.text.trim().to_string())
+                                    }),
+                                None => None,
+                            };
+                            active
+                                .map(|line| format!("\n\x1b[1mLyric:\x1b[0m    ♪ {line}"))
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        };
                         Ok(format!(
                             "\x1b[1mPlayback:\x1b[0m  {}\n\
                          \x1b[1mTrack:\x1b[0m    {}\n\
-                         \x1b[1mCover:\x1b[0m    {}\n\
+                         \x1b[1mCover:\x1b[0m    {cover_line}\n\
                          \x1b[1mVolume:\x1b[0m   {} ({})\n\
                          \x1b[1mRepeat:\x1b[0m   {}\n\
                          \x1b[1mShuffle:\x1b[0m  {}\n\
-                         \x1b[1mQueue:\x1b[0m    {}",
+                         \x1b[1mQueue:\x1b[0m    {}{lyric_line}",
                             status_str,
                             track_str,
-                            cover_str(&state, &client).await,
                             vol_str,
                             mute_str,
                             repeat_str,
