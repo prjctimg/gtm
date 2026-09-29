@@ -477,28 +477,26 @@ pub struct QueueView {
 /// Which Zen-mode surface is shown. Only one is visible at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ZenSurface {
-    /// Enlarged cover art with the track progress centered underneath.
-    Cover,
+    /// Now playing: enlarged cover art, the track title and artist on their
+    /// own lines, the current lyric line under the art, and the progress bar
+    /// below all of it.
+    NowPlaying,
     /// Full-screen audio visualizer.
     Visualizer,
-    /// Full-screen lyrics for the active track.
-    Lyrics,
 }
 
 impl ZenSurface {
     pub(crate) fn next(self) -> ZenSurface {
         match self {
-            ZenSurface::Cover => ZenSurface::Visualizer,
-            ZenSurface::Visualizer => ZenSurface::Lyrics,
-            ZenSurface::Lyrics => ZenSurface::Cover,
+            ZenSurface::NowPlaying => ZenSurface::Visualizer,
+            ZenSurface::Visualizer => ZenSurface::NowPlaying,
         }
     }
 
     pub(crate) fn prev(self) -> ZenSurface {
         match self {
-            ZenSurface::Cover => ZenSurface::Lyrics,
-            ZenSurface::Visualizer => ZenSurface::Cover,
-            ZenSurface::Lyrics => ZenSurface::Visualizer,
+            ZenSurface::NowPlaying => ZenSurface::Visualizer,
+            ZenSurface::Visualizer => ZenSurface::NowPlaying,
         }
     }
 }

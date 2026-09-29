@@ -350,7 +350,7 @@ pub struct App {
     // stale responses and `id == 0` reuse across different tracks.
     pub(crate) next_cover_gen: u64,
     pub lyrics: LyricsView,
-    /// Zen-mode flag: fullscreen cover/lyrics/visualizer surfaces.
+    /// Zen-mode flag: fullscreen now-playing / visualizer surfaces.
     pub zen: bool,
     /// The active Zen-mode surface (only one is rendered at a time).
     pub zen_surface: ZenSurface,
@@ -1023,7 +1023,7 @@ impl App {
                 row: None,
             },
             zen: false,
-            zen_surface: ZenSurface::Cover,
+            zen_surface: ZenSurface::NowPlaying,
             show_health_panel: false,
             report_health: false,
             health_report: None,
@@ -1051,11 +1051,29 @@ impl App {
         let _ = self.pri_cmd_tx.send(cmd);
     }
 
+    /// Whether Zen should stand aside and let the normal dispatch handle `key`.
+    ///
+    /// Zen swallows every key it does not claim, which included the ones that
+    /// open a picker — so the command palette, search, the queue and help were
+    /// unreachable from Zen, and the only escape was z/Esc/q. Zen is a surface,
+    /// not a modal: whatever it hides should still be reachable.
+    pub(crate) fn zen_defers_to(&self, key: event::KeyEvent) -> bool {
+        matches!(
+            self.keybindings
+                .dispatch(key, crate::keymap::KeyContext::Normal),
+            Some(
+                crate::keymap::KeyboardAction::OpenOverlay(_)
+                    | crate::keymap::KeyboardAction::Search
+                    | crate::keymap::KeyboardAction::ToggleHelp
+            )
+        )
+    }
+
     /// Keys handled while Zen mode is active. Tab / Shift-Tab cycle the
-    /// fullscreen surface (cover → visualizer → lyrics), `l` toggles the
-    /// lyrics surface (fetching them first when needed), Space toggles
-    /// playback, and z/Esc/q leave Zen mode. Every other key is swallowed
-    /// so browsing/quit motions can't disturb the view.
+    /// fullscreen surface (now playing → visualizer), `l` toggles the lyric
+    /// line under the art (fetching it first when needed), Space toggles
+    /// playback, and z/Esc/q leave Zen mode. Every other key is swallowed so
+    /// browsing/quit motions can't disturb the view.
     fn zen_key(&mut self, key: event::KeyEvent) {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('z') => {
@@ -1071,15 +1089,13 @@ impl App {
                 self.set_last_action("Zen: Prev Surface", &key);
             }
             KeyCode::Char('l') => {
-                if self.zen_surface == ZenSurface::Lyrics {
-                    self.zen_surface = ZenSurface::Cover;
-                } else {
-                    self.zen_surface = ZenSurface::Lyrics;
-                    if self.lyrics.current.is_none() && !self.lyrics.fetching {
-                        self.lyrics.fetching = true;
-                        self.send_high(TuiCommand::FetchLyrics);
-                    }
+                // The lyric line under the art, not a surface of its own.
+                self.lyrics.show = !self.lyrics.show;
+                if self.lyrics.show && self.lyrics.current.is_none() && !self.lyrics.fetching {
+                    self.lyrics.fetching = true;
+                    self.send_high(TuiCommand::FetchLyrics);
                 }
+                self.set_last_action("Toggle Lyrics", &key);
             }
             KeyCode::Char(' ') => match self.state.status {
                 PlaybackStatus::Playing => self.send_high(TuiCommand::Pause),

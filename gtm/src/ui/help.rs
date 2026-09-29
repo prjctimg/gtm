@@ -17,7 +17,7 @@ pub const HELP_LINES: &[(&str, &str)] = &[
     ("", "   ,           Seek Backward"),
     ("", "   + / -       Volume Up / Down"),
     ("", "   > / <       Speed Up / Down (pitch-preserving)"),
-    ("", "   z           Zen Mode (cover / lyrics / visualizer)"),
+    ("", "   z           Zen Mode (now playing / visualizer)"),
     ("", "   m           Mute Toggle"),
     ("", "   Alt+1       Mono Toggle"),
     ("", "   *           Love / Un-love on Last.fm"),

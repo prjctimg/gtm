@@ -348,51 +348,68 @@ impl Render {
     }
 
     /// Zen mode: render exactly one fullscreen surface at a time — the
-    /// enlarged cover + centered progress, the visualizer, or the lyrics.
+    /// now-playing surface or the visualizer.
     pub(crate) fn zen(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         match app.zen_surface {
-            ZenSurface::Cover => Render::zen_cover(f, area, app),
+            ZenSurface::NowPlaying => Render::zen_now_playing(f, area, app),
             ZenSurface::Visualizer => Render::zen_visualizer(f, area, app),
-            ZenSurface::Lyrics => Render::zen_lyrics(f, area, app),
         }
     }
 
-    /// Centered "title — artist" header used by the Zen cover and lyrics
-    /// surfaces.
+    /// Centered title on the first row, artist on the second.
+    ///
+    /// They were one line joined by an em dash, which is fine until a title or
+    /// an artist is long: the pair then truncates at the right edge and the
+    /// half that got cut is the part that identifies the track.
     pub(crate) fn zen_track_header(
         f: &mut ratatui::Frame,
         app: &App,
         track: &TrackInfo,
         area: Rect,
     ) {
-        let title = track.display_title();
-        let artist = if track.artist.is_empty() {
-            String::new()
-        } else {
-            format!("  \u{2014}  {}", track.artist)
-        };
-        let header = Line::from(vec![
-            Span::styled(
-                title,
-                Style::default()
-                    .fg(app.theme.secondary_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(artist, Style::default().fg(app.theme.fg)),
-        ]);
-        f.render_widget(Paragraph::new(header).alignment(Alignment::Center), area);
+        let title = Paragraph::new(Line::from(Span::styled(
+            track.display_title(),
+            Style::default()
+                .fg(app.theme.secondary_accent)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(Alignment::Center);
+        f.render_widget(title, area);
+        if area.height < 2 {
+            return;
+        }
+        if track.artist.is_empty() {
+            return;
+        }
+        let artist = Paragraph::new(Line::from(Span::styled(
+            track.artist.clone(),
+            Style::default().fg(app.theme.fg),
+        )))
+        .alignment(Alignment::Center);
+        f.render_widget(
+            artist,
+            Rect {
+                x: area.x,
+                y: area.y + 1,
+                width: area.width,
+                height: 1,
+            },
+        );
     }
 
-    /// Zen surface 1: enlarged cover art centered on screen with the track
-    /// title above and the progress bar / elapsed time centered underneath.
-    pub(crate) fn zen_cover(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
+    /// Zen surface 1: enlarged cover art centered on screen, the title and
+    /// artist above it on their own lines, the current lyric line directly
+    /// under the art, and the progress bar / elapsed time below that.
+    pub(crate) fn zen_now_playing(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         let track = app.state.current_track.clone();
+        // One row is always reserved for the lyric line, whether or not there
+        // is a lyric to show, so toggling `l` does not resize the artwork.
         let vchunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Length(2),
                 Constraint::Min(0),
-                Constraint::Length(5),
+                Constraint::Length(3),
             ])
             .split(area);
 
@@ -403,8 +420,18 @@ impl Render {
         // Enlarged cover centered in the middle band. Half-block art keeps
         // the image square at a 1:2 cell aspect, so width = height * 2.
         let mid = vchunks[1];
-        let max_w = mid.width.saturating_sub(4);
-        let max_h = mid.height.saturating_sub(2);
+        let art_band = Rect {
+            height: mid.height.saturating_sub(1),
+            ..mid
+        };
+        let lyric_rect = Rect {
+            x: mid.x,
+            y: mid.y + art_band.height,
+            width: mid.width,
+            height: 1,
+        };
+        let max_w = art_band.width.saturating_sub(4);
+        let max_h = art_band.height.saturating_sub(2);
         let mut w = max_w.min(max_h.saturating_mul(2));
         let mut h = w / 2;
         if h > max_h {
@@ -414,8 +441,8 @@ impl Render {
         h = h.max(1);
         w = w.max(2);
         let cover_area = Rect {
-            x: mid.x + mid.width.saturating_sub(w) / 2,
-            y: mid.y + mid.height.saturating_sub(h) / 2,
+            x: art_band.x + art_band.width.saturating_sub(w) / 2,
+            y: art_band.y + art_band.height.saturating_sub(h) / 2,
             width: w,
             height: h,
         };
@@ -427,6 +454,7 @@ impl Render {
             app.theme.fg_dim,
             Some(" \u{266b} "),
         );
+        Render::zen_lyric_line(f, lyric_rect, app);
 
         // Centered progress bar with elapsed / total underneath; hidden for
         // live streams (mirrors the now-playing pane).
@@ -467,6 +495,44 @@ impl Render {
         }
     }
 
+    /// The one lyric line that belongs under the Zen artwork.
+    ///
+    /// Only the line being sung: a full-screen lyrics view is what Zen already
+    /// was, and the complaint was that it was a separate surface to Tab into
+    /// rather than something you could see while looking at the cover.
+    fn zen_lyric_line(f: &mut ratatui::Frame, area: Rect, app: &App) {
+        if area.height == 0 {
+            return;
+        }
+        let line = if app.lyrics.show {
+            match app.lyrics.current.as_ref() {
+                Some(lyrics) if !lyrics.lines.is_empty() => {
+                    let idx = app.current_lyric_index();
+                    Some(lyrics.lines.get(idx).map(|l| l.text.as_str())).flatten()
+                }
+                Some(_) => Some("No lyrics found"),
+                None => Some(if app.lyrics.fetching {
+                    "Fetching lyrics..."
+                } else {
+                    "No lyrics"
+                }),
+            }
+        } else {
+            None
+        };
+        let Some(text) = line.filter(|t| !t.trim().is_empty()) else {
+            return;
+        };
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                text.to_string(),
+                Style::default().fg(app.theme.fg),
+            )))
+            .alignment(Alignment::Center),
+            area,
+        );
+    }
+
     /// Zen surface 2: the audio visualizer stretched across the full screen.
     pub(crate) fn zen_visualizer(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
         if !app.visualizer.is_enabled() {
@@ -495,63 +561,6 @@ impl Render {
         if let Some(lines) = app.visualizer.render(inner, &app.theme) {
             f.render_widget(lines, inner);
         }
-    }
-
-    /// Zen surface 3: full-screen lyrics for the active track, sharing the
-    /// exact same body rendering as the normal lyrics pane.
-    pub(crate) fn zen_lyrics(f: &mut ratatui::Frame, area: Rect, app: &mut App) {
-        if let Some(t) = app.state.current_track.clone() {
-            Render::zen_track_header(
-                f,
-                app,
-                &t,
-                Rect {
-                    x: area.x,
-                    y: area.y,
-                    width: area.width,
-                    height: 1,
-                },
-            );
-        }
-
-        let Some(ref lyrics) = app.lyrics.current else {
-            let msg = if app.lyrics.fetching {
-                Line::from(vec![
-                    Span::styled("Fetching lyrics ", Style::default().fg(app.theme.accent)),
-                    Span::styled(
-                        opencode_spinner(app.frame_count as usize),
-                        Style::default()
-                            .fg(app.theme.accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ])
-            } else {
-                Line::from(Span::styled(
-                    "Press [l] to search",
-                    Style::default().fg(app.theme.fg_dim),
-                ))
-            };
-            f.render_widget(Paragraph::new(msg).alignment(Alignment::Center), area);
-            return;
-        };
-
-        if lyrics.lines.is_empty() {
-            f.render_widget(
-                Paragraph::new("No lyrics found")
-                    .alignment(Alignment::Center)
-                    .style(Style::default().fg(app.theme.fg_dim)),
-                area,
-            );
-            return;
-        }
-
-        let body = Rect {
-            x: area.x.saturating_add(2),
-            y: area.y.saturating_add(3),
-            width: area.width.saturating_sub(4),
-            height: area.height.saturating_sub(4),
-        };
-        Render::lyrics_body(f, body, app, lyrics);
     }
 
     pub(crate) fn footer_help(f: &mut ratatui::Frame, area: Rect, app: &App) {
@@ -2959,9 +2968,11 @@ pub fn render(f: &mut ratatui::Frame, app: &mut App) {
         f.render_widget(msg, area);
         return;
     }
-    // Zen mode: exactly one fullscreen surface at a time — no chrome,
-    // no footer, no pickers.
-    if app.zen {
+    // Zen mode: exactly one fullscreen surface at a time — no chrome, no
+    // footer. A picker still draws over it: zen is a surface, not a modal, and
+    // a picker opened by an event (a link flow finishing, a track landing) was
+    // otherwise invisible while still swallowing every keystroke.
+    if app.zen && !app.pickers.is_open() {
         Render::zen(f, area, app);
         app.track_anim_trigger = false;
         return;

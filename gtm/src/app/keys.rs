@@ -306,8 +306,10 @@ impl App {
                 // Zen mode: only a small set of keys acts — Tab/Shift-Tab
                 // cycle the surface, l toggles lyrics, Space toggles
                 // playback, and z/Esc/q leave. Everything else is swallowed
-                // so the fullscreen surfaces are never disturbed.
-                if self.zen {
+                // so the fullscreen surfaces are never disturbed, except the
+                // keys that open a picker: Zen hid every way into the queue,
+                // the command palette, search and help.
+                if self.zen && !self.zen_defers_to(key) {
                     self.zen_key(key);
                     return true;
                 }
@@ -518,14 +520,10 @@ impl App {
                         );
                         self.zen = !self.zen;
                         if self.zen {
-                            // One surface at a time: start on the lyrics
-                            // surface when lyrics were already open,
-                            // otherwise the enlarged cover + progress.
-                            self.zen_surface = if self.lyrics.show {
-                                ZenSurface::Lyrics
-                            } else {
-                                ZenSurface::Cover
-                            };
+                            // Zen now has two surfaces, not three: the lyrics
+                            // line lives under the art on the now-playing one,
+                            // so there is nothing to choose.
+                            self.zen_surface = ZenSurface::NowPlaying;
                             self.dismiss_track_popup();
                         }
                     }
