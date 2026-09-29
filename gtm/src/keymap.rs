@@ -725,13 +725,7 @@ pub fn default_clash_candidates() -> Vec<(KeyEvent, String, Vec<KeyContext>)> {
     default_keybindings()
         .bindings
         .iter()
-        .map(|(key, cmd)| {
-            (
-                key.clone(),
-                format!("{:?}", cmd.action),
-                cmd.contexts.clone(),
-            )
-        })
+        .map(|(key, cmd)| (*key, format!("{:?}", cmd.action), cmd.contexts.clone()))
         .collect()
 }
 
