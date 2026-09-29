@@ -738,7 +738,17 @@ impl App {
                         // mirror, so it must not be dropped forever.
                         let restarted = state.version < self.state.version
                             && self.state.version.saturating_sub(state.version) > 1000;
-                        if state.version >= self.state.version || restarted {
+                        // A snapshot naming a different track is the one thing
+                        // this guard must never throw away: it is how a
+                        // reattaching client learns what is playing, and a
+                        // lower version is the daemon being *behind* an event
+                        // we already applied, not the snapshot being stale. The
+                        // version heuristic was standing in for this, and it
+                        // could not tell the two apart — the mirror counts
+                        // events this counter never sees.
+                        let track_differs = state.current_track.as_ref().map(|t| &t.path)
+                            != self.state.current_track.as_ref().map(|t| &t.path);
+                        if state.version >= self.state.version || restarted || track_differs {
                             self.state = *state;
                             self.client.seed_clock(&self.state).await;
                             // Re-render so the initial state (or any daemon-side

@@ -3987,6 +3987,14 @@ impl Daemon {
                 }
                 let mut state = inner.state.write().await;
                 state.time_pos = pos;
+                // The TUI's version gate compares this counter against its own
+                // mirror, which bumps on every event it receives — including the
+                // `PositionChanged` broadcast below, once a second, plus a
+                // heartbeat every 15. Without a matching bump here the mirror
+                // outruns this counter permanently and the client discards
+                // every status snapshot it is sent, losing the now-playing
+                // track it was trying to restore.
+                state.version += 1;
                 let dur = state.duration;
                 let crossfade = state.crossfade.clone();
                 let next = Self::next_track(&state);
