@@ -788,7 +788,14 @@ impl SpotifyManager {
             self.error = Some("playlist sync returned nothing".into());
             return;
         }
-        if self.playlists.len() > playlists.len() / 2 {
+        // A truncation, not a regression, is what this guards: `run_sync`
+        // tolerates a page error by stopping the walk, so a short pass is
+        // incomplete rather than smaller. The test is therefore "the new pass
+        // has less than half what we already hold", never a comparison against
+        // a *fraction* of the new count — that form rejected an equal-size
+        // sync, which is the ordinary outcome of an account that has not
+        // changed, and left the TUI showing a snapshot that could never update.
+        if playlists.len() * 2 < self.playlists.len() {
             warn!(
                 "spotify sync returned {} playlists against {} cached — keeping the cached list",
                 playlists.len(),
@@ -1379,6 +1386,40 @@ mod tests {
         mgr.commit_sync(None, vec![playlist("a"), playlist("b"), playlist("c")]);
         mgr.commit_sync(None, vec![playlist("a")]);
         assert_eq!(mgr.playlists.len(), 3);
+    }
+
+    /// An unchanged library must replace the cache, not be rejected as a
+    /// regression.
+    ///
+    /// The guard compared the cached count against a *fraction of the new
+    /// count*, so 22 cached against 22 fresh read as `22 > 11` and threw the
+    /// sync away. Since an account that has not changed always re-syncs to the
+    /// same size, that meant the playlist list could never update again after
+    /// the first snapshot — and the log said so plainly: "returned 22
+    /// playlists against 22 cached — keeping the cached list".
+    #[test]
+    fn an_unchanged_library_commits() {
+        let mut mgr = super::SpotifyManager::new(std::path::PathBuf::from("/nonexistent"));
+        let same = vec![playlist("a"), playlist("b"), playlist("c")];
+        mgr.commit_sync(None, same.clone());
+        assert_eq!(mgr.playlists.len(), 3);
+        mgr.commit_sync(None, same);
+        assert_eq!(mgr.playlists.len(), 3, "an equal-size sync must commit");
+        assert!(mgr.error.is_none(), "and must not be reported as a failure");
+    }
+
+    /// A drop of less than half is a real change, not a truncated pass, and
+    /// must be taken — the guard is there for the walk stopping early, not to
+    /// veto the account losing a playlist.
+    #[test]
+    fn a_modest_shrink_commits() {
+        let mut mgr = super::SpotifyManager::new(std::path::PathBuf::from("/nonexistent"));
+        mgr.commit_sync(
+            None,
+            vec![playlist("a"), playlist("b"), playlist("c"), playlist("d")],
+        );
+        mgr.commit_sync(None, vec![playlist("a"), playlist("b")]);
+        assert_eq!(mgr.playlists.len(), 2, "losing playlists is a real change");
     }
 
     /// The rate-limit mark is what stops the startup ladder from re-issuing a
