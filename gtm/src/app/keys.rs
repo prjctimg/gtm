@@ -213,14 +213,7 @@ impl App {
                                 // pane so a shifted list can't queue the
                                 // wrong tracks (or none).
                                 let targets = self.selected_play_targets();
-                                let mut added = 0;
-                                for target in targets {
-                                    let c = self.client.clone();
-                                    let _ = tx.try_send(TuiCommand::fire(move || async move {
-                                        let _ = c.queue().add(&target, None).await;
-                                    }));
-                                    added += 1;
-                                }
+                                let added = self.add_to_queue_rows(targets);
                                 self.clear_selection();
                                 self.multiselect_mode = false;
                                 self.fetch_queue().await;
@@ -1247,35 +1240,12 @@ impl App {
                                     if let Some(track) = self.charts.chart_tracks.get(pos).cloned()
                                     {
                                         let c = self.client.clone();
-                                        let uri = track.uri.clone();
-                                        // A `spotify:track:` URI is not a
-                                        // filesystem path: `queue().add()`
-                                        // would push it through the library
-                                        // route (a directory expansion, no
-                                        // Premium streaming, no cover
-                                        // pre-warm). Send it to the spotify
-                                        // resolver instead, which is the same
-                                        // path the search picker uses.
-                                        let is_spotify = uri.starts_with("spotify:");
-                                        let title = track.title.clone();
-                                        let artists = track.artists.clone();
-                                        let album = track.album.clone();
-                                        let image_url = track.cover_url.clone();
+                                        let ipc = self.ipc_tx.clone();
                                         let _ = tx.try_send(TuiCommand::fire(move || async move {
-                                            if is_spotify {
-                                                let _ = c
-                                                    .spotify()
-                                                    .resolve_track(
-                                                        &title,
-                                                        &artists,
-                                                        album.as_deref().unwrap_or(""),
-                                                        Some(uri),
-                                                        image_url,
-                                                        true,
-                                                    )
-                                                    .await;
-                                            } else {
-                                                let _ = c.queue().add(&uri, None).await;
+                                            if let Err(e) = Self::play_chart(&c, track).await {
+                                                let _ = ipc.send(IpcResult::Error(format!(
+                                                    "Could not play chart track: {e}"
+                                                )));
                                             }
                                         }));
                                     }
@@ -1510,14 +1480,11 @@ impl App {
                                     });
                                 } else {
                                     // Single row: its play target — the library
-                                    // path or the streamed chart URI.
+                                    // path, or a chart row resolved through its
+                                    // own provider.
                                     let mut added = 0;
                                     if let Some(target) = self.play_target_at(self.list_pos()) {
-                                        let c = self.client.clone();
-                                        let _ = tx.try_send(TuiCommand::fire(move || async move {
-                                            let _ = c.queue().add(&target, None).await;
-                                        }));
-                                        added += 1;
+                                        added += self.add_to_queue_rows(vec![target]);
                                     }
                                     self.fetch_queue().await;
                                     self.footer_notification = Some((
@@ -3960,15 +3927,7 @@ impl App {
                                                     .into_iter()
                                                     .collect()
                                             };
-                                        let mut added = 0;
-                                        for target in targets {
-                                            let c = self.client.clone();
-                                            let _ =
-                                                tx.try_send(TuiCommand::fire(move || async move {
-                                                    let _ = c.queue().add(&target, None).await;
-                                                }));
-                                            added += 1;
-                                        }
+                                        let added = self.add_to_queue_rows(targets);
                                         self.fetch_queue().await;
                                         self.notify_typed(
                                             "System",

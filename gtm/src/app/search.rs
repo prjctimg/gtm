@@ -1,4 +1,5 @@
 use crate::app::*;
+use crate::providers::charts::ChartTrack;
 
 impl App {
     /// Virtual action rows (Play All / Shuffle) prepended to a Spotify playlist
@@ -460,6 +461,84 @@ impl App {
         });
     }
 
+    /// Play one chart row. Returns why it could not be played, if it could not.
+    pub(crate) async fn play_chart(c: &DaemonClient, track: ChartTrack) -> Result<(), String> {
+        Self::resolve_chart(c, track, true).await
+    }
+
+    /// Queue one chart row, without starting it. Same routing as
+    /// [`App::play_chart`].
+    pub(crate) async fn queue_chart(c: &DaemonClient, track: ChartTrack) -> Result<(), String> {
+        Self::resolve_chart(c, track, false).await
+    }
+
+    /// Resolve a chart row to a playable Spotify track and play or queue it.
+    ///
+    /// A chart row's `uri` is whatever its provider happens to publish, so the
+    /// two cases are genuinely different and were both wrong:
+    ///
+    /// * `spotify:track:<id>` — a provider resource, not a path. `queue().add()`
+    ///   treats its argument as a filesystem path, so it went to the library
+    ///   route: a directory expansion, no Premium streaming, and a row titled
+    ///   "Spotify Track". The resolver takes the same metadata the chart already
+    ///   has and streams it, or falls back to a download.
+    /// * anything else — an Apple chart row carries a `preview_url`, which is
+    ///   neither a track identifier nor playable, and many carry none at all.
+    ///   The row does know the title and the artist, so the track is matched on
+    ///   those and then resolved the same way, which lands on the same Spotify
+    ///   track the other rows would.
+    ///
+    /// A row with neither a uri nor a usable title cannot be played, and says
+    /// so instead of queueing a row that silently refuses to start.
+    async fn resolve_chart(c: &DaemonClient, track: ChartTrack, play: bool) -> Result<(), String> {
+        let ChartTrack {
+            title,
+            artists,
+            album,
+            cover_url,
+            uri,
+            ..
+        } = track;
+        if uri.starts_with("spotify:") {
+            return c
+                .spotify()
+                .resolve_track(
+                    &title,
+                    &artists,
+                    album.as_deref().unwrap_or(""),
+                    Some(uri),
+                    cover_url,
+                    play,
+                )
+                .await
+                .map_err(|e| e.to_string());
+        }
+        if title.trim().is_empty() {
+            return Err("this row carries neither a provider URI nor a title".into());
+        }
+        let query = if artists.trim().is_empty() {
+            title.clone()
+        } else {
+            format!("{artists} - {title}")
+        };
+        let uri = c
+            .spotify()
+            .match_track(&query)
+            .await
+            .map_err(|e| format!("no Spotify match for {query:?}: {e}"))?;
+        c.spotify()
+            .resolve_track(
+                &title,
+                &artists,
+                album.as_deref().unwrap_or(""),
+                Some(uri),
+                cover_url,
+                play,
+            )
+            .await
+            .map_err(|e| e.to_string())
+    }
+
     /// Unique album names with track counts, sorted by album.
     pub fn unique_albums(&self) -> Vec<(String, usize)> {
         if let Ok(guard) = self.cached_albums.lock()
@@ -528,7 +607,8 @@ impl App {
                     .charts
                     .chart_tracks
                     .iter()
-                    .map(|t| (t.uri.clone(), t.uri.clone(), None))
+                    .enumerate()
+                    .map(|(i, t)| (App::chart_row_key(i, t), t.uri.clone(), None))
                     .collect();
             }
             return Vec::new();
@@ -555,6 +635,66 @@ impl App {
     /// Play target (path/URI) of the row at `index` in the active pane.
     pub(crate) fn play_target_at(&self, index: usize) -> Option<String> {
         self.selectable_rows().get(index).map(|r| r.1.clone())
+    }
+
+    /// Stable selection key of one chart row.
+    ///
+    /// The uri is the natural identity, but an Apple Music row without a
+    /// `preview_url` has an empty one — and every such row therefore shared the
+    /// key `""`, so `toggle_row` could only ever select the first of them and
+    /// multiselect on an Apple chart silently dropped the rest. The position
+    /// disambiguates.
+    fn chart_row_key(index: usize, t: &ChartTrack) -> String {
+        if t.uri.is_empty() {
+            format!("chart-row:{index}")
+        } else {
+            t.uri.clone()
+        }
+    }
+
+    /// Queue a set of rows through whichever route each one needs, and report
+    /// how many landed.
+    ///
+    /// Every "add to queue" entry point funnels through here: the `a` key, the
+    /// multiselect prompt, and the command palette. They all used to hand their
+    /// targets straight to `queue().add()`, which reads a filesystem path — so
+    /// a chart row carrying a `spotify:` uri went to the library route, and one
+    /// carrying no uri at all went to the empty path. Neither is a queue entry.
+    pub(crate) fn add_to_queue_rows(&self, keys: Vec<String>) -> usize {
+        if self.library_category == 12 && self.charts.selected_chart.is_some() {
+            let rows = self.selectable_rows();
+            let picked: Vec<ChartTrack> = keys
+                .iter()
+                .filter_map(|k| {
+                    let pos = rows.iter().position(|(key, ..)| key == k)?;
+                    self.charts.chart_tracks.get(pos).cloned()
+                })
+                .collect();
+            if picked.is_empty() {
+                return 0;
+            }
+            let c = self.client.clone();
+            let ipc = self.ipc_tx.clone();
+            let n = picked.len();
+            tokio::spawn(async move {
+                for t in picked {
+                    if let Err(e) = App::queue_chart(&c, t).await {
+                        let _ = ipc.send(IpcResult::Error(format!("Could not queue: {e}")));
+                    }
+                }
+            });
+            return n;
+        }
+        let c = self.client.clone();
+        let n = keys.len();
+        tokio::spawn(async move {
+            for target in keys {
+                if !target.is_empty() {
+                    let _ = c.queue().add(&target, None).await;
+                }
+            }
+        });
+        n
     }
 
     /// True when the row identified by `key` is part of the Select-mode
