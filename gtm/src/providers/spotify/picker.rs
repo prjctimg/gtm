@@ -19,6 +19,16 @@ pub(crate) fn spotify_waiting_lines(app: &App) -> Vec<Line<'static>> {
             "A browser window should have opened to authorize gtm.",
             Style::default().fg(app.theme.fg_dim),
         )));
+        // With your own client id set, this is a two-step link and the second
+        // step is not obvious: the browser opens a second tab, against gtm's
+        // own app, because Spotify will not let one app's token stand in for
+        // another. Without a line here the extra tab reads as an intruder.
+        if app.spotify.oauth_sent_client_id.is_some() {
+            lines.push(Line::from(Span::styled(
+                "A second tab then opens for playback — approve it too.",
+                Style::default().fg(app.theme.fg_dim),
+            )));
+        }
         lines.push(Line::from(Span::styled(
             "Once you approve, playlists sync automatically.",
             Style::default().fg(app.theme.fg_dim),

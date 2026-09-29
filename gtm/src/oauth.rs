@@ -73,30 +73,24 @@ pub fn query_param(line: &str, name: &str) -> Option<String> {
     None
 }
 
-/// Keep a credential short for display: first and last two characters only.
+/// Render a credential for display without echoing any of it.
 ///
-/// Char-indexed, not byte-indexed. This used to only ever see hex session keys,
-/// where byte and char offsets coincide, so `&s[..2]` was safe by accident. It
-/// is now also fed whatever a user pastes into the Spotify client-id field, and
-/// a smart quote or an em-dash puts byte offset 2 in the middle of a character —
-/// which panics on a char boundary. Pasted text is arbitrary, so the slicing
-/// has to be.
+/// A head/tail reveal was the previous shape, and it was wrong on its own
+/// terms: four characters of a value that has exactly one correct value is
+/// still four characters of it, and a shoulder reader gets the prefix and the
+/// suffix — enough to recognise the credential they just saw elsewhere. It is
+/// also why the short/long split existed at all, and the only thing that split
+/// bought was a length oracle.
+///
+/// Nothing here indexes, so there is no byte-boundary hazard either: an earlier
+/// version sliced with `&s[..2]` and panicked on a pasted smart quote, and
+/// removing the slicing removes that class of bug rather than fixing one case
+/// of it.
 pub fn mask_credential(s: &str) -> String {
     if s.chars().count() <= 6 {
         return "****".to_string();
     }
-    let head: String = s.chars().take(2).collect();
-    // Two from the end, without indexing backwards: there is no stable way to
-    // take a tail slice without first knowing the char count.
-    let tail: String = s
-        .chars()
-        .rev()
-        .take(2)
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    format!("{head}…{tail}")
+    "••••••••".to_string()
 }
 
 /// Bind the Last.fm callback port and wait (up to five minutes) for the
@@ -214,24 +208,42 @@ mod tests {
             "aVeryLongSecretValue"
         );
         assert_eq!(mask_credential("abc"), "****");
-        assert_eq!(mask_credential("0123456789abcdef"), "01…ef");
+        // No part of the value survives: not the head, not the tail. A
+        // head/tail reveal is what this used to return, and four echoed
+        // characters of a single-valued credential is still a leak.
+        let masked = mask_credential("0123456789abcdef");
+        assert!(!masked.contains("01"), "{masked}");
+        assert!(!masked.contains("ef"), "{masked}");
+        assert!(!masked.contains('0') && !masked.contains('f'), "{masked}");
     }
 
-    /// Pasted text is arbitrary, and the Spotify client-id field runs it
-    /// through this on every frame. A byte-indexed mask panics on the first
-    /// multi-byte character past offset 2, which a pasted smart quote or em
-    /// dash reaches immediately — so these must not panic.
+    /// Two different credentials must not be told apart by the mask. The
+    /// previous form was a length oracle plus four characters, which is enough
+    /// to recognise a value seen on another screen.
+    #[test]
+    fn mask_does_not_distinguish_values() {
+        assert_eq!(
+            mask_credential("0123456789abcdef"),
+            mask_credential("fedcba9876543210")
+        );
+        assert_eq!(
+            mask_credential("65b708073fc0480ea92a077233ca87bd"),
+            "••••••••"
+        );
+    }
+
+    /// Pasted text is arbitrary and the Spotify client-id field runs it through
+    /// this on every frame, so an unusual value must be total rather than
+    /// partial — and must not panic, which an earlier byte-slicing version did
+    /// on the first multi-byte character past offset 2.
     #[test]
     fn mask_survives_multibyte_input() {
-        // `a€…` — byte 2 lands inside the 3-byte euro sign.
-        assert_eq!(mask_credential("a€bcd€fgh"), "a€…gh");
-        // Leading multi-byte, where the first two bytes are not even one char.
-        assert_eq!(mask_credential("€uroclientid"), "€u…id");
-        // Longer than 6 chars but few bytes of overlap between head and tail.
-        assert_eq!(mask_credential("€€€€€€€"), "€€…€€");
-        // Short multi-byte strings still take the **** path, by char count.
+        assert_eq!(mask_credential("a€bcd€fgh"), "••••••••");
+        assert_eq!(mask_credential("€uroclientid"), "••••••••");
+        assert_eq!(mask_credential("€€€€€€€"), "••••••••");
+        // The short path is decided by char count, not byte count.
         assert_eq!(mask_credential("€€€"), "****");
-        // Empty and whitespace are total, not partial.
         assert_eq!(mask_credential(""), "****");
+        assert_eq!(mask_credential("   "), "****");
     }
 }

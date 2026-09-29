@@ -222,7 +222,13 @@ impl Pickers {
             PickerId::LastfmAuth => Self::render_lastfm_setup(f, picker_area, app),
             PickerId::YoutubeSetup => Self::render_youtube_setup(f, picker_area, app),
             PickerId::SpotifyLink => {
-                let block = Self::picker_panel(app, " Spotify Link ", None);
+                let icon = if use_nerd_fonts() {
+                    provider_icon("Spotify").unwrap_or("♫")
+                } else {
+                    "♫"
+                };
+                let title = format!(" {icon} Connect Spotify ");
+                let block = Self::picker_panel(app, title.as_str(), None);
                 let inner = block.inner(picker_area);
                 f.render_widget(block, picker_area);
 
@@ -267,11 +273,7 @@ impl Pickers {
                         Style::default().fg(app.theme.fg_dim),
                     )));
                     lines.push(Line::from(Span::styled(
-                        "  playlist sync their own rate limit. Playback always",
-                        Style::default().fg(app.theme.fg_dim),
-                    )));
-                    lines.push(Line::from(Span::styled(
-                        "  uses gtm's app and is unaffected. Blank = shared.",
+                        "  playlist sync their own rate limit. Blank = shared.",
                         Style::default().fg(app.theme.fg_dim),
                     )));
                     lines.push(Line::from(""));
@@ -295,47 +297,17 @@ impl Pickers {
                     lines.push(Line::from(port_spans));
                     lines.push(Line::from(""));
 
-                    // What Enter will actually send, decided before the user
-                    // commits to it. A paste that missed its field used to be
-                    // indistinguishable from a rejected id, because nothing
-                    // between the form and the authorize URL reported which app
-                    // was in play.
-                    let client_id = app.spotify.oauth_client_id.trim();
-                    let (as_text, as_style) = if client_id.is_empty() {
-                        (
-                            "Authorizing as: the shared app (every install shares its rate limit)"
-                                .to_string(),
-                            Style::default().fg(app.theme.warning),
-                        )
-                    } else {
-                        // Masked: this is the one line that names the app, and it
-                        // must not be the line that prints it in full.
-                        (
-                            format!(
-                                "Authorizing as your own app ({})",
-                                mask_credential(client_id)
-                            ),
-                            Style::default().fg(app.theme.success),
-                        )
-                    };
-                    lines.push(Line::from(Span::styled(format!("  {as_text}"), as_style)));
-                    lines.push(Line::from(""));
-
                     // A port that does not parse has nowhere to send the
-                    // browser, so say that instead of printing a redirect for
-                    // the fallback port as though it were the user's.
+                    // browser. The redirect itself is not printed: the waiting
+                    // view names it if no browser opens, and repeating it here
+                    // put a URL on screen on every visit to a form nobody had
+                    // failed at yet.
                     match app.spotify.oauth_port.trim().parse::<u16>() {
-                        Ok(port) => lines.push(Line::from(Span::styled(
-                            format!("  Redirect: http://127.0.0.1:{port}/login"),
-                            Style::default().fg(app.theme.fg_bright),
+                        Err(_) => lines.push(Line::from(Span::styled(
+                            "  That is not a port — Tab back and fix it.",
+                            Style::default().fg(app.theme.fg_dim),
                         ))),
-                        Err(_) if app.spotify.oauth_port.trim().is_empty() => {
-                            lines.push(Line::from(Span::styled(
-                                "  Redirect: http://127.0.0.1:8990/login (default)",
-                                Style::default().fg(app.theme.fg_bright),
-                            )));
-                        }
-                        Err(_) => {}
+                        _ => {}
                     }
                     if let Some(err) = app.spotify.oauth_form_error.as_deref() {
                         lines.push(Line::from(Span::styled(
