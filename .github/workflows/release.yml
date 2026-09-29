@@ -57,6 +57,7 @@ jobs:
       nightly: ${{ steps.set-tag.outputs.nightly }}
       skip: ${{ steps.set-tag.outputs.skip }}
       prev_nightly: ${{ steps.prev-nightly.outputs.sha }}
+      matrix: ${{ steps.build-matrix.outputs.matrix }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -117,6 +118,55 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "nightly=${nightly}" >> "$GITHUB_OUTPUT"
 
+      - name: Build target matrix
+        id: build-matrix
+        # The matrix cannot be filtered in the workflow file itself: GitHub
+        # evaluates `strategy.matrix` before any step has run, so there is no
+        # `nightly` flag to branch on there. It is computed here instead, where
+        # the flag is already known, and the `build` job reads it back with
+        # `fromJSON`.
+        #
+        # A nightly builds only the two targets the maintainer actually tests
+        # on — Debian 12 arm64 and Termux. The other six are kept in the list
+        # below and are still built for a stable release, so re-enabling one is
+        # a one-word edit to `nightly_keep` and nothing else.
+        env:
+          NIGHTLY: ${{ steps.set-tag.outputs.nightly }}
+        run: |
+          set -euo pipefail
+          # jq ships in the GitHub runner image, but this step is the only
+          # thing between a successful checkout and a failed release, so the
+          # dependency is made explicit rather than assumed.
+          if ! command -v jq >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y jq
+          fi
+          all='[
+            {"os":"ubuntu-22.04","platform":"x86_64-linux","container":"debian:12","family":"debian","link_override":"-C linker=gcc","mold_arg":"-C link-arg=-fuse-ld=mold"},
+            {"os":"ubuntu-24.04-arm","platform":"aarch64-linux","container":"debian:12","family":"debian","link_override":"-C linker=gcc","mold_arg":"-C link-arg=-fuse-ld=mold"},
+            {"os":"macos-latest","platform":"aarch64-darwin","container":null,"family":"macos","link_override":null,"mold_arg":null},
+            {"os":"ubuntu-latest","platform":"aarch64-android","container":null,"family":"android","link_override":null,"mold_arg":null},
+            {"os":"ubuntu-22.04","platform":"x86_64-linux-arch","container":"archlinux:latest","family":"arch","link_override":"-C linker=gcc","mold_arg":"-C link-arg=-fuse-ld=mold"},
+            {"os":"ubuntu-24.04-arm","platform":"aarch64-linux-arch","container":null,"family":"arch-arm","link_override":"-C linker=gcc","mold_arg":"-C link-arg=-fuse-ld=mold"},
+            {"os":"ubuntu-22.04","platform":"x86_64-linux-musl","container":null,"family":"musl","link_override":"-C linker=gcc","mold_arg":"-C link-arg=-fuse-ld=mold"},
+            {"os":"ubuntu-24.04-arm","platform":"aarch64-linux-musl","container":null,"family":"musl","link_override":"-C linker=gcc","mold_arg":"-C link-arg=-fuse-ld=mold"}
+          ]'
+          # Nightly targets. Debian 12 arm64 is the maintainer's test machine and
+          # Termux is the phone. Add a platform here to build it on nightlies.
+          nightly_keep='["aarch64-linux","aarch64-android"]'
+          if [[ "$NIGHTLY" == "true" ]]; then
+            matrix="$(jq -c --argjson keep "$nightly_keep" \
+              '[.[] | select(.platform as $p | $keep | index($p))]' <<<"$all")"
+          else
+            matrix="$(jq -c '.' <<<"$all")"
+          fi
+          count="$(jq 'length' <<<"$matrix")"
+          if [[ "$count" -eq 0 ]]; then
+            echo "::error::nightly_keep matched no platform" >&2
+            exit 1
+          fi
+          echo "building $count target(s): $(jq -r '[.[].platform]|join(", ")' <<<"$matrix")"
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+
       - name: Validate release version
         if: steps.set-tag.outputs.skip != 'true'
         run: |
@@ -156,55 +206,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: ubuntu-22.04
-            platform: x86_64-linux
-            container: debian:12
-            family: debian
-            link_override: -C linker=gcc
-            mold_arg: -C link-arg=-fuse-ld=mold
-          - os: ubuntu-24.04-arm
-            platform: aarch64-linux
-            container: debian:12
-            family: debian
-            link_override: -C linker=gcc
-            mold_arg: -C link-arg=-fuse-ld=mold
-          - os: macos-latest
-            platform: aarch64-darwin
-            container: null
-            family: macos
-            link_override:
-            mold_arg:
-          - os: ubuntu-latest
-            platform: aarch64-android
-            container: null
-            family: android
-            link_override:
-            mold_arg:
-          - os: ubuntu-22.04
-            platform: x86_64-linux-arch
-            container: archlinux:latest
-            family: arch
-            link_override: -C linker=gcc
-            mold_arg: -C link-arg=-fuse-ld=mold
-          - os: ubuntu-24.04-arm
-            platform: aarch64-linux-arch
-            container: null
-            family: arch-arm
-            link_override: -C linker=gcc
-            mold_arg: -C link-arg=-fuse-ld=mold
-          - os: ubuntu-22.04
-            platform: x86_64-linux-musl
-            container: null
-            family: musl
-            link_override: -C linker=gcc
-            mold_arg: -C link-arg=-fuse-ld=mold
-          - os: ubuntu-24.04-arm
-            platform: aarch64-linux-musl
-            container: null
-            family: musl
-            link_override: -C linker=gcc
-            mold_arg: -C link-arg=-fuse-ld=mold
+        # Computed in the `tag` job: a nightly builds only Debian 12 arm64 and
+        # Termux, a stable release builds every target. See `Build target matrix`.
+        include: ${{ fromJSON(needs.tag.outputs.matrix) }}
     steps:
       - name: Bootstrap tooling (Debian 12 container)
         if: matrix.container == 'debian:12'
@@ -643,7 +647,19 @@ jobs:
 
   bench:
     needs: [tag, release]
-    if: needs.tag.outputs.skip != 'true' && (github.ref == 'refs/heads/dev' || github.event_name == 'workflow_dispatch')
+    # Stable releases only, which is a tag push or a manual stable dispatch.
+    #
+    # Bench pulls `gtm-debian-12-x86_64.tar.gz` out of the build artifacts, and
+    # a nightly no longer builds x86_64 — it builds the two targets the
+    # maintainer tests on. Left gated on the dev ref it would have failed on
+    # every push for a missing archive; left ungated it would have looked fine
+    # and measured an x86_64 GitHub runner rather than the hardware a nightly
+    # is for, at the cost of a Go build of cliamp per push.
+    #
+    # The old `github.ref == 'refs/heads/dev' ||` clause is deliberately gone:
+    # every dev push *is* a nightly, so keeping it would have made this job
+    # unreachable now that nightlies are excluded.
+    if: needs.tag.outputs.skip != 'true' && needs.tag.outputs.nightly == 'false'
     runs-on: ubuntu-latest
     permissions:
       contents: write
