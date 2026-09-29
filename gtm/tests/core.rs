@@ -1942,110 +1942,105 @@ fn spot_album_kind_survives_wire() {
 // Settings rows
 // ---------------------------------------------------------------------------
 
-/// The number of rows the Settings picker renders for each category, counted
-/// from the `vec![...]` literal that builds them.
-fn settings_row_counts() -> Vec<(u8, usize)> {
-    let src = include_str!("../src/ui/pickers/settings.rs");
-    let start = src
-        .find("let items: Vec<String> = match app.settings_category")
-        .expect("settings items");
-    // Brace- and bracket-match each `N => ...` arm and split its `vec!` on
-    // top-level commas.
-    let mut marks: Vec<(u8, usize)> = Vec::new();
-    let mut off = 0usize;
-    for line in src[start..].lines() {
-        let trimmed = line.trim_start();
-        let indent = line.len() - trimmed.len();
-        if indent == 12
-            && let Some(num) = trimmed
-                .split_once(" =>")
-                .and_then(|(n, _)| n.parse::<u8>().ok())
-        {
-            marks.push((num, start + off));
-        }
-        off += line.len() + 1;
-    }
+/// `(category, row labels)` read out of the one declaration the Settings pane is
+/// built from, `ui/pickers/settings_rows.rs`.
+///
+/// The row list, the rendered labels, the Enter handler and the navigation
+/// bound used to be four independent `match`es over row numbers, and they
+/// drifted: the Spotify transport rows were addressed by an index the handler
+/// computed one way and the callee matched another, so Next, Previous and
+/// Shuffle all ran `set_repeat`. Reading the declaration is what lets the tests
+/// below check the other three against it instead of against each other.
+fn settings_declared_rows() -> Vec<(u8, Vec<String>)> {
+    let src = include_str!("../src/ui/pickers/settings_rows.rs");
     let mut out = Vec::new();
-    for (i, (cat, pos)) in marks.iter().enumerate() {
-        let end = marks.get(i + 1).map_or(src.len(), |(_, n)| *n);
-        let seg = &src[*pos..end];
-        let Some(open) = seg.find("vec![").map(|i| i + "vec![".len() - 1) else {
-            continue;
+    for (cat, const_name) in [(0u8, "PLAYBACK_ROWS"), (1, "SYSTEM_ROWS"), (2, "SPOTIFY_ROWS")] {
+        let needle = format!("pub(crate) const {const_name}: SettingsRows = &[");
+        let start = src.find(&needle).expect(const_name);
+        let body = &src[start + needle.len()..];
+        let Some(close) = body.find("];") else {
+            panic!("{const_name} has no closing bracket");
         };
-        let mut nesting = 0usize;
-        let mut close = None;
-        for (i, c) in seg[open..].char_indices() {
-            match c {
-                '[' | '{' | '(' => nesting += 1,
-                ']' | '}' | ')' => {
-                    nesting -= 1;
-                    if nesting == 0 {
-                        close = Some(open + i);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        let Some(close) = close else { continue };
-        let inner = &seg[open + 1..close];
-        let mut nesting = 0usize;
-        let mut rows = 0usize;
-        let mut saw_content = false;
-        for c in inner.chars() {
-            match c {
-                '[' | '{' | '(' => nesting += 1,
-                ']' | '}' | ')' => nesting -= 1,
-                ',' if nesting == 0 => {
-                    if saw_content {
-                        rows += 1;
-                    }
-                    saw_content = false;
-                }
-                c if !c.is_whitespace() => saw_content = true,
-                _ => {}
-            }
-        }
-        if saw_content {
-            rows += 1;
-        }
-        out.push((*cat, rows));
+        let labels: Vec<String> = body[..close]
+            .lines()
+            .filter_map(|l| l.trim().strip_prefix('('))
+            .filter_map(|l| l.split_once('"'))
+            .map(|(_, rest)| rest.rsplit_once('"').map(|(s, _)| s.to_string()))
+            .flatten()
+            .collect();
+        assert!(
+            !labels.is_empty(),
+            "{const_name} parsed as zero rows:\n{}",
+            &body[..close]
+        );
+        out.push((cat, labels));
     }
     out
 }
 
-#[test]
-fn settings_row_counts_match_the_navigation_bound() {
-    // `category_options` is what clamps keyboard navigation in the Settings
-    // pane, so a count lower than the rendered rows makes the tail of a
-    // category unreachable, and a count higher lets the cursor land on nothing.
-    let declared = [4usize, 6, 17, 8];
-    let rendered = settings_row_counts();
-    assert_eq!(rendered.len(), declared.len(), "categories drifted");
-    for ((cat, rows), want) in rendered.iter().zip(declared) {
-        assert_eq!(
-            *rows, want,
-            "category {cat} renders {rows} rows but the navigation bound is {want}"
-        );
+/// The number of values `settings_values` produces per category, counted from
+/// its `vec![...]` literals.
+fn settings_value_counts() -> Vec<(u8, usize)> {
+    let src = include_str!("../src/ui/pickers/settings.rs");
+    let start = src
+        .find("fn settings_values")
+        .expect("settings_values");
+    let body = &src[start..];
+    let mut out = Vec::new();
+    for cat in 0u8..3 {
+        let needle = format!("\n            {cat} => ");
+        let Some(rel) = body.find(&needle) else {
+            panic!("settings_values has no arm {cat}");
+        };
+        let arm = &body[rel..];
+        let end = arm[1..]
+            .find("\n            _ =>")
+            .map(|i| i + 1)
+            .unwrap_or(arm.len());
+        let arm = &arm[..end];
+        let Some(open) = arm.find("vec![") else {
+            panic!("settings_values arm {cat} has no vec!");
+        };
+        let inner = &arm[open + "vec![".len()..];
+        let Some(close) = inner.find("]") else {
+            panic!("settings_values arm {cat} vec! is unterminated");
+        };
+        let mut nesting = 0usize;
+        let mut rows = 0usize;
+        let mut saw = false;
+        for c in inner[..close].chars() {
+            match c {
+                '[' | '{' | '(' => nesting += 1,
+                ']' | '}' | ')' => nesting -= 1,
+                ',' if nesting == 0 => {
+                    if saw {
+                        rows += 1;
+                    }
+                    saw = false;
+                }
+                c if !c.is_whitespace() => saw = true,
+                _ => {}
+            }
+        }
+        if saw {
+            rows += 1;
+        }
+        out.push((cat, rows));
     }
+    out
 }
 
-/// Match arms inside a Settings handler sit this far in; anything deeper is a
-/// nested match, not a row.
-const INDENT_32: &str = "                                ";
-
-/// The row indices each Settings category's Enter handler covers, scraped from
-/// the `N => match opt` blocks in `keys.rs`.
+/// `(category, covered row indices)` from the `N => match opt {` blocks in the
+/// Settings Enter handler.
 fn settings_arm_coverage() -> Vec<(u8, Vec<usize>)> {
-    let src = include_str!("../src/app/keys.rs");
+    let src = include_str!("../src/app/settings_keys.rs");
     let mut out = Vec::new();
-    for cat in 0u8..4 {
-        let needle = format!("\n                            {cat} => match opt {{");
+    for cat in 0u8..3 {
+        let needle = format!("{cat} => match opt {{");
         let Some(start) = src.find(&needle) else {
             continue;
         };
-        // Brace-match the block, then take the top-level match arms.
-        let body = &src[start + 1..];
+        let body = &src[start..];
         let Some(open) = body.find('{') else { continue };
         let mut nesting = 0usize;
         let mut close = None;
@@ -2066,22 +2061,21 @@ fn settings_arm_coverage() -> Vec<(u8, Vec<usize>)> {
         let block = &body[open..close];
         let mut covered: Vec<usize> = Vec::new();
         for line in block.lines() {
-            // Arms sit 32 spaces in; anything deeper is a nested match.
-            let Some(rest) = line.strip_prefix(INDENT_32) else {
-                continue;
-            };
-            let Some((pat, tail)) = rest.split_once(" =>") else {
-                continue;
-            };
-            if !tail.starts_with(' ') && !tail.starts_with('{') {
+            let trimmed = line.trim();
+            // Only top-level arms: a nested match indents further than the
+            // block's own opening line.
+            let indent = line.len() - trimmed.len();
+            if indent == 0 {
                 continue;
             }
+            let Some((pat, _)) = trimmed.split_once(" =>") else {
+                continue;
+            };
             if let Some((a, b)) = pat.split_once("..=") {
                 if let (Ok(a), Ok(b)) = (a.trim().parse::<usize>(), b.trim().parse::<usize>()) {
                     covered.extend(a..=b);
                 }
             } else {
-                // Combined arms (`4 | 5 =>`) list each index separately.
                 for part in pat.split('|') {
                     if let Ok(n) = part.trim().parse::<usize>() {
                         covered.push(n);
@@ -2097,36 +2091,65 @@ fn settings_arm_coverage() -> Vec<(u8, Vec<usize>)> {
 }
 
 #[test]
-fn settings_rows_and_enter_arms_line_up() {
-    // A Settings row whose Enter arm belongs to a different row is worse than a
-    // dead row: it silently runs the wrong action. Both the System and Spotify
-    // categories drifted this way — Spotify's handler was written against a
-    // shorter row list, so "Next" opened the OAuth form and Repeat toggled
-    // shuffle. Assert the two lists are the same shape.
-    let rendered = settings_row_counts();
+fn settings_value_column_is_aligned_with_the_declared_rows() {
+    // The label column comes from the declaration and the value column from a
+    // `vec![...]` in the renderer, one entry per row, positionally. A missing
+    // or extra entry does not fail to compile: it shifts every value below it
+    // onto the wrong row, so the EQ toggle reads "On" while the reverb toggle
+    // reads the cover provider.
+    let declared: std::collections::BTreeMap<u8, usize> = settings_declared_rows()
+        .into_iter()
+        .map(|(c, l)| (c, l.len()))
+        .collect();
+    for (cat, values) in settings_value_counts() {
+        let want = declared
+            .get(&cat)
+            .copied()
+            .unwrap_or_else(|| panic!("category {cat} has no declaration"));
+        assert_eq!(
+            values, want,
+            "category {cat} produces {values} values for {want} declared rows"
+        );
+    }
+}
+
+#[test]
+fn settings_enter_arms_stay_inside_the_declared_rows() {
+    // An arm past the end of the row list is unreachable at best, and a row
+    // whose arm belongs to a different row is worse: it silently runs the wrong
+    // action. Both happened when Spotify's handler was written against a
+    // shorter row list than the pane rendered.
+    let declared: std::collections::BTreeMap<u8, usize> = settings_declared_rows()
+        .into_iter()
+        .map(|(c, l)| (c, l.len()))
+        .collect();
     for (cat, arms) in settings_arm_coverage() {
-        let rows = rendered
-            .iter()
-            .find(|(c, _)| *c == cat)
-            .map(|(_, n)| *n)
-            .unwrap_or_else(|| panic!("category {cat} has no rendered rows"));
+        let rows = declared
+            .get(&cat)
+            .copied()
+            .unwrap_or_else(|| panic!("category {cat} has no declaration"));
         let beyond: Vec<usize> = arms.iter().copied().filter(|a| *a >= rows).collect();
         assert!(
             beyond.is_empty(),
-            "category {cat} renders {rows} rows but has arms {beyond:?} past the end"
+            "category {cat} declares {rows} rows but has arms {beyond:?} past the end"
         );
-        // Display-only rows are legitimate (a status line does nothing on
-        // Enter), so only assert the reverse: no arm may be missing for a row
-        // that is not display-only. The Spotify and System categories arm every
-        // row, so track those explicitly.
-        if cat == 2 || cat == 3 {
-            let missing: Vec<usize> = (0..rows).filter(|r| !arms.contains(r)).collect();
-            assert!(
-                missing.is_empty(),
-                "category {cat} rows {missing:?} have no Enter arm"
-            );
-        }
     }
+}
+
+#[test]
+fn settings_navigation_bound_comes_from_the_declaration() {
+    // `category_options` is what clamps keyboard navigation. It used to be a
+    // hand-written `match` of literals, a third thing to keep in step; it now
+    // reads the declaration's own `len()`.
+    let src = include_str!("../src/app/theme.rs");
+    let fn_start = src.find("fn category_options").expect("category_options");
+    let body = &src[fn_start..];
+    let end = body.find("\n    }").unwrap_or(body.len());
+    let body = &body[..end];
+    assert!(
+        body.contains("rows_for(") && body.contains(".len()"),
+        "category_options must derive its count from rows_for(), not from literals:\n{body}"
+    );
 }
 
 /// An untitled entry must never render as a raw provider URI.

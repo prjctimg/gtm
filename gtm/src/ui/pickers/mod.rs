@@ -15,6 +15,7 @@ pub mod presets;
 pub mod queue;
 pub mod search;
 pub mod settings;
+pub mod settings_rows;
 pub mod system;
 
 // Per-provider picker rendering lives under `providers`; re-exported here so

@@ -66,11 +66,14 @@ pub(crate) fn theme_mode_label(v: &str) -> String {
     }
 }
 
-pub(crate) const SETTINGS_ICONS_NERD: &[&str] = &["\u{f16a}", "\u{f04b}", "\u{f013}", "\u{f04c7}"];
+pub(crate) const SETTINGS_ICONS_NERD: &[&str] = &["\u{f04b}", "\u{f013}", "\u{f04c7}"];
 
-pub(crate) const SETTINGS_ICONS_ASCII: &[&str] = &["YT", "▶", "⚙", "★"];
+pub(crate) const SETTINGS_ICONS_ASCII: &[&str] = &["▶", "⚙", "★"];
 
-pub(crate) const SETTINGS_CATEGORIES: &[&str] = &["YouTube", "Playback", "System", "Spotify"];
+// No YouTube category: it held two read-only rows (cookie source, JS runtime),
+// one row that toggled between two hard-coded paths, and one that said
+// "read-only" and did nothing. Everything real lives on the command palette.
+pub(crate) const SETTINGS_CATEGORIES: &[&str] = &["Playback", "System", "Spotify"];
 
 pub(crate) fn service_icon_glyph(icon_style: &str, service: &str) -> &'static str {
     if icon_style == "mdi" {

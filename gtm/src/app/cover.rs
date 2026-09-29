@@ -534,27 +534,6 @@ impl App {
         });
     }
 
-    /// Step the on-disk cover cache budget to the next preset and push it to
-    /// the daemon, which prunes immediately if it is already over budget.
-    pub fn cycle_cover_cache(&mut self) {
-        let next = COVER_CACHE_STEPS
-            .iter()
-            .copied()
-            .find(|mb| *mb > self.cover_cache_mb)
-            .unwrap_or(COVER_CACHE_STEPS[0]);
-        self.cover_cache_mb = next;
-        let bytes = next * 1024 * 1024;
-        let c = self.client.clone();
-        let ipc_tx = self.ipc_tx.clone();
-        tokio::spawn(async move {
-            let _ = c.set_cover_cache(bytes).await;
-            if let Ok((disk, _, _)) = c.cover_cache_stat().await {
-                let _ = ipc_tx.send(IpcResult::CoverCacheStat(disk));
-            }
-        });
-        save_prefs(&self.current_prefs());
-    }
-
     /// Ask the daemon for current cover cache usage so Settings can show it.
     pub fn refresh_cover_stat(&mut self) {
         let c = self.client.clone();

@@ -61,7 +61,7 @@ pub(crate) use crate::ui::{
     theme_mode_label, use_nerd_fonts,
 };
 pub(crate) use crate::visualizer::{AudioVisualizer, VisualizerPreset};
-pub const NUM_SETTINGS_CATEGORIES: usize = 4;
+pub const NUM_SETTINGS_CATEGORIES: usize = 3;
 pub const LIBRARY_CATEGORIES: &[&str] = &[
     "All Tracks",
     "Liked",
@@ -1488,6 +1488,7 @@ pub mod notify;
 pub mod prefs;
 pub mod run;
 pub mod search;
+pub mod settings_keys;
 pub mod state;
 pub mod theme;
 

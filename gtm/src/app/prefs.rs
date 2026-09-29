@@ -126,9 +126,6 @@ pub(crate) fn default_cover_cache_mb() -> u64 {
     512
 }
 
-/// On-disk cover cache budget in MiB, shared with the daemon.
-pub(crate) const COVER_CACHE_STEPS: [u64; 5] = [128, 256, 512, 1024, 2048];
-
 /// Keystroke settle time before a provider search fires. Short enough to feel
 /// live while still collapsing a fast typist's burst into one request.
 pub(crate) const SEARCH_DEBOUNCE_MS: u64 = 250;

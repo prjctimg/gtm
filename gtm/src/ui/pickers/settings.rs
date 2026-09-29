@@ -2,9 +2,10 @@
 // Author: prjctimg <prjctimg@outlook.com>
 // Settings pane
 //
-//
 // This is free software released under the GPL-3.0 license.
 
+use crate::providers::spotify::SpotifyStatus;
+use crate::ui::pickers::settings_rows::{RowKind, row_help, rows_for};
 use crate::ui::*;
 
 impl Pickers {
@@ -12,7 +13,7 @@ impl Pickers {
         let block = Self::picker_panel(
             app,
             " Settings ",
-            Some("Tab: switch pane   Enter: act   ←/→: cycle values"),
+            Some("Tab: switch pane   Enter: act"),
         );
         let inner = block.inner(area);
         f.render_widget(block, area);
@@ -64,176 +65,10 @@ impl Pickers {
             }
         }
 
-        let items: Vec<String> = match app.settings_category {
-            0 => vec![
-                "Cookie Source  chromium".to_string(),
-                format!(
-                    "Cookie File    {}",
-                    app.cookie_file.as_deref().unwrap_or("(none)")
-                ),
-                "JS Runtime     deno".to_string(),
-                "Auto Download  read-only".to_string(),
-            ],
-            1 => {
-                let crossfade_on = app
-                    .state
-                    .crossfade
-                    .as_ref()
-                    .map(|c| c.enabled)
-                    .unwrap_or(false);
-                let crossfade_dur = app
-                    .state
-                    .crossfade
-                    .as_ref()
-                    .map(|c| c.duration_secs)
-                    .unwrap_or(0);
-                let reverb_on = app.state.audio.reverb.enabled;
-                vec![
-                    format!("Repeat         {:?}  ▶", app.state.repeat),
-                    format!(
-                        "Shuffle        {}",
-                        if app.state.shuffle { "On" } else { "Off" }
-                    ),
-                    if crossfade_on {
-                        format!("Crossfade      On  {}s  ▶", crossfade_dur)
-                    } else {
-                        "Crossfade      Off  ▶".to_string()
-                    },
-                    format!(
-                        "EQ Enabled     {}",
-                        if app.state.audio.eq_enabled {
-                            "On"
-                        } else {
-                            "Off"
-                        }
-                    ),
-                    format!("Reverb         {}", if reverb_on { "On" } else { "Off" }),
-                    format!(
-                        "Cover Source   {}  ▶",
-                        cover_provider_label(&app.cover_provider)
-                    ),
-                ]
-            }
-            2 => {
-                let theme_name = app
-                    .themes
-                    .get(app.theme_index)
-                    .map(|t| t.name.as_ref())
-                    .unwrap_or("Chadrula");
-                vec![
-                    format!("Theme          {}  ▶", theme_name),
-                    format!(
-                        "Transparent BG {}",
-                        if app.transparent_bg { "On" } else { "Off" }
-                    ),
-                    format!(
-                        "Transparent Pickers {}",
-                        if app.transparent_pickers { "On" } else { "Off" }
-                    ),
-                    "Sync Covers    Enter  ▶".to_string(),
-                    "Sync Lyrics    Enter  ▶".to_string(),
-                    "Sync Metadata  Enter  ▶".to_string(),
-                    format!(
-                        "Footer Preset  {}  ▶",
-                        app.footer_presets
-                            .get(app.footer_preset)
-                            .map(|p| p.name.as_ref())
-                            .unwrap_or("Default")
-                    ),
-                    format!("Visualizer     {}  ▶", app.visualizer.preset.name()),
-                    format!(
-                        "Reactive Theme {}",
-                        if app.reactive_theme { "On" } else { "Off" }
-                    ),
-                    format!(
-                        "Reactive Intensity {:.0}%  ▶",
-                        app.reactive_theme_intensity * 100.0
-                    ),
-                    format!(
-                        "Hide Footer    {}",
-                        if app.hide_footer { "On" } else { "Off" }
-                    ),
-                    "Clear Lyrics Cache  Enter".to_string(),
-                    "Clear Cover Cache    Enter  ▶".to_string(),
-                    format!("Cover Cache     {} MB  ▶", app.cover_cache_mb),
-                    "Notification Settings  Enter  ▶".to_string(),
-                    format!("Theme Mode     {}  ▶", theme_mode_label(&app.theme_mode)),
-                    format!(
-                        "Audio Output   {}  ▶",
-                        app.state
-                            .audio
-                            .audio_device
-                            .clone()
-                            .unwrap_or_else(|| "System default".into())
-                    ),
-                ]
-            }
-            3 => {
-                let st = app.spotify.status.clone().unwrap_or_default();
-                let connected = if st.linked {
-                    "Connected"
-                } else {
-                    "Disconnected"
-                };
-                let user = st.user.as_deref().unwrap_or("(none)");
-                let status_label = if !st.linked {
-                    connected.to_string()
-                } else if st.needs_relink {
-                    "Relink required".to_string()
-                } else if st.needs_play_link {
-                    // Everything but audio works. Re-linking cannot fix this one:
-                    // the Web API token belongs to a different app than the one
-                    // Connect accepts, so the account needs its own playback
-                    // authorization.
-                    "Playback not linked".to_string()
-                } else if let Some(err) = st.error.as_deref() {
-                    let mut e = err.chars().take(28).collect::<String>();
-                    if err.chars().count() > 28 {
-                        e.push('…');
-                    }
-                    format!("{connected}: {e}")
-                } else if st.premium {
-                    if st.playing {
-                        "Playing ▶".to_string()
-                    } else {
-                        "Paused  ❚❚".to_string()
-                    }
-                } else {
-                    "Unavailable (Premium)".to_string()
-                };
-                // One merged status row: connection, account, playlist count
-                // and the Spotify Connect device, so the rows below can all be
-                // actions. The handler mirrors this list exactly.
-                let mut status = status_label;
-                if st.linked {
-                    if !user.is_empty() {
-                        status.push_str(&format!(" · {user}"));
-                    }
-                    status.push_str(&format!(" · {} playlists", st.playlists));
-                    if let Some(device) = st.device.clone().filter(|d| !d.is_empty()) {
-                        status.push_str(&format!(" · {device}"));
-                    }
-                }
-                let status = {
-                    let mut c = status.chars().take(46).collect::<String>();
-                    if status.chars().count() > 46 {
-                        c.push('…');
-                    }
-                    c
-                };
-                vec![
-                    format!("Status         {status}"),
-                    "Link Account   Enter".to_string(),
-                    "Unlink         Enter".to_string(),
-                    "Sync Now       Enter".to_string(),
-                    "Next           Enter".to_string(),
-                    "Previous       Enter".to_string(),
-                    format!("Shuffle     {}  ▶", if st.shuffle { "On" } else { "Off" }),
-                    format!("Repeat     {}  ▶", st.repeat),
-                ]
-            }
-            _ => vec![],
-        };
+        // The row list is declared once, in `settings_rows`; only the values are
+        // computed here.
+        let decl = rows_for(app.settings_category);
+        let values = Self::settings_values(app);
 
         let category_label = SETTINGS_CATEGORIES
             .get(app.settings_category)
@@ -255,7 +90,7 @@ impl Pickers {
 
         let mut lines = Vec::new();
         let sel = app.settings_option;
-        for (i, item) in items.iter().enumerate() {
+        for (i, (label, kind)) in decl.iter().enumerate() {
             let is_sel = i == sel && !settings_focus;
             let style = if is_sel {
                 Style::default()
@@ -264,116 +99,145 @@ impl Pickers {
             } else {
                 Style::default().fg(app.theme.fg)
             };
-            lines.push(Line::from(Span::styled(item, style)));
+            let mut row = format!("{:<16}{}", label, values.get(i).cloned().unwrap_or_default());
+            // `▶` marks a row that has more than one value to move through, so
+            // the cue is on the row's own kind rather than on each hand-written
+            // label — it used to be missing from several rows that had one.
+            if matches!(
+                kind,
+                RowKind::Cycle | RowKind::Chooser | RowKind::Action
+            ) && *kind != RowKind::Action
+                && !row.contains("▶")
+            {
+                row.push_str("  ▶");
+            }
+            if *kind == RowKind::Action && !row.contains("Enter") {
+                row.push_str("  Enter");
+            }
+            lines.push(Line::from(Span::styled(row, style)));
         }
         lines.push(Line::from(""));
-        match (app.settings_category, sel) {
-            (0, 1) => lines.push(Line::from(Span::styled(
-                " Press Enter to toggle cookie path.",
+        let help = row_help(app.settings_category, sel);
+        if !help.is_empty() {
+            lines.push(Line::from(Span::styled(
+                help,
                 Style::default().fg(app.theme.fg_dim),
-            ))),
-            (1, 0) => lines.push(Line::from(Span::styled(
-                format!(" Press Enter to cycle (current: {:?}).", app.state.repeat),
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (1, 1) => lines.push(Line::from(Span::styled(
-                " Press Enter to toggle shuffle.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (1, 2) => lines.push(Line::from(Span::styled(
-                " Press Enter to open crossfade picker.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (1, 3) => {
-                let eq_on = app.state.audio.eq_enabled;
-                lines.push(Line::from(Span::styled(
-                    if eq_on {
-                        " Press Enter to disable EQ."
-                    } else {
-                        " Press Enter to enable EQ."
-                    },
-                    Style::default().fg(app.theme.fg_dim),
-                )));
-            }
-            (1, 4) => {
-                let rev_on = app.state.audio.reverb.enabled;
-                lines.push(Line::from(Span::styled(
-                    if rev_on {
-                        " Press Enter to disable reverb."
-                    } else {
-                        " Press Enter to enable reverb."
-                    },
-                    Style::default().fg(app.theme.fg_dim),
-                )));
-            }
-            (1, 5) => lines.push(Line::from(Span::styled(
-                " Press Enter to cycle the cover art source.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (2, 0) => lines.push(Line::from(Span::styled(
-                " Press Enter to open Theme Picker.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (2, 1) => lines.push(Line::from(Span::styled(
-                " Press Enter to toggle transparent background.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (2, 2) => lines.push(Line::from(Span::styled(
-                " Press Enter to toggle transparent pickers.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (2, 3) => lines.push(Line::from(Span::styled(
-                " Download missing cover art from Deezer.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (2, 4) => lines.push(Line::from(Span::styled(
-                " Fetch and save lyrics for all tracks.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (2, 5) => lines.push(Line::from(Span::styled(
-                " Resolve and embed clean tags into files.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (2, 6) => lines.push(Line::from(Span::styled(
-                " Press Enter to open Footer Preset picker.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (2, 7) => lines.push(Line::from(Span::styled(
-                " Press Enter to open visualizer picker.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (2, 8) => lines.push(Line::from(Span::styled(
-                " Press Enter to toggle reactive theme.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (2, 9) => lines.push(Line::from(Span::styled(
-                " Clear cached lyrics for all tracks.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (2, 10) => lines.push(Line::from(Span::styled(
-                " Clear downloaded cover art cache.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (2, 12) => lines.push(Line::from(Span::styled(
-                " Press Enter to cycle theme mode (auto/dark/light).",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (3, 1) => lines.push(Line::from(Span::styled(
-                " Authorize gtm with your Spotify account.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (3, 2) => lines.push(Line::from(Span::styled(
-                " Remove the token and disconnect.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            (3, 3) => lines.push(Line::from(Span::styled(
-                " Re-fetch playlists from Spotify.",
-                Style::default().fg(app.theme.fg_dim),
-            ))),
-            _ => {}
+            )));
         }
 
         let right_para = Paragraph::new(lines);
         f.render_widget(right_para, right_inner);
     }
+
+    /// The value column of every settings row, index-aligned with
+    /// [`rows_for`]. Returned as strings so the renderer stays a single `match`
+    /// over values instead of one over labels and kinds.
+    fn settings_values(app: &App) -> Vec<String> {
+        match app.settings_category {
+            0 => {
+                let crossfade = app.state.crossfade.as_ref();
+                vec![
+                    format!("{:?}", app.state.repeat),
+                    on_off(app.state.shuffle),
+                    match crossfade {
+                        Some(c) if c.enabled => format!("On  {}s", c.duration_secs),
+                        _ => "Off".to_string(),
+                    },
+                    on_off(app.state.audio.eq_enabled),
+                    on_off(app.state.audio.reverb.enabled),
+                    cover_provider_label(&app.cover_provider).to_string(),
+                ]
+            }
+            1 => {
+                let st = app.state.audio.audio_device.clone();
+                vec![
+                    app.themes
+                        .get(app.theme_index)
+                        .map(|t| t.name.as_ref())
+                        .unwrap_or("Chadrula")
+                        .to_string(),
+                    theme_mode_label(&app.theme_mode).to_string(),
+                    st.unwrap_or_else(|| "System default".into()),
+                    on_off(app.transparent_bg),
+                    on_off(app.transparent_pickers),
+                    on_off(app.hide_footer),
+                    on_off(app.reactive_theme),
+                    format!("{:.0}%", app.reactive_theme_intensity * 100.0),
+                    app.visualizer.preset.name().to_string(),
+                    app.footer_presets
+                        .get(app.footer_preset)
+                        .map(|p| p.name.as_ref())
+                        .unwrap_or("Default")
+                        .to_string(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                ]
+            }
+            2 => {
+                let st = app.spotify.status.clone().unwrap_or_default();
+                vec![
+                    Self::spotify_status_line(&st),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                    String::new(),
+                ]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// One merged line: connection, account, playlists and the Connect device.
+    ///
+    /// It is a single row because it is a single fact — whether the account can
+    /// play audio. Split across four rows, a user had to read all four to find
+    /// out the one thing they came for.
+    fn spotify_status_line(st: &SpotifyStatus) -> String {
+        let mut status = if !st.linked {
+            "Disconnected".to_string()
+        } else if st.needs_relink {
+            "Relink required".to_string()
+        } else if st.needs_play_link {
+            // Everything but audio works. Re-linking cannot fix this one: the
+            // Web API token belongs to a different app than the one Connect
+            // accepts, so the account needs its own playback authorization.
+            "Playback not linked".to_string()
+        } else if let Some(err) = st.error.as_deref() {
+            let mut e: String = err.chars().take(20).collect();
+            if err.chars().count() > 20 {
+                e.push('…');
+            }
+            format!("Connected: {e}")
+        } else if st.premium {
+            if st.playing {
+                "Playing ▶".to_string()
+            } else {
+                "Paused  ❚❚".to_string()
+            }
+        } else {
+            "Unavailable (Premium)".to_string()
+        };
+        if st.linked {
+            if let Some(user) = st.user.as_deref().filter(|u| !u.is_empty()) {
+                status.push_str(&format!(" · {user}"));
+            }
+            status.push_str(&format!(" · {} playlists", st.playlists));
+            if let Some(device) = st.device.as_deref().filter(|d| !d.is_empty()) {
+                status.push_str(&format!(" · {device}"));
+            }
+        }
+        let mut c: String = status.chars().take(52).collect();
+        if status.chars().count() > 52 {
+            c.push('…');
+        }
+        c
+    }
+}
+
+fn on_off(v: bool) -> String {
+    if v { "On".to_string() } else { "Off".to_string() }
 }

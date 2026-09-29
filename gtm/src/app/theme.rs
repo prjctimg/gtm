@@ -234,13 +234,7 @@ impl App {
     }
 
     pub(crate) fn category_options(&self) -> usize {
-        match self.settings_category {
-            0 => 4,  // YouTube: Cookie Source, Cookie File, JS Runtime, Auto Download
-            1 => 6,  // Playback: Repeat, Shuffle, Crossfade, EQ Enabled, Reverb, Cover Source
-            2 => 17, // System: Theme, Transparent BG, Transparent Pickers, Sync Covers, Sync Lyrics, Sync Metadata, Footer Preset, Visualizer, Reactive Theme, Reactive Intensity, Hide Footer, Clear Lyrics Cache, Clear Cover Cache, Cover Cache Size, Notification Settings, Theme Mode, Audio Output
-            3 => 8, // Spotify: Status (merged), Link Account, Unlink, Sync Now, Next, Previous, Shuffle, Repeat
-            _ => 0,
-        }
+        crate::ui::pickers::settings_rows::rows_for(self.settings_category).len()
     }
 
     /// Cycle the visibility mode of the notification category selected in the
