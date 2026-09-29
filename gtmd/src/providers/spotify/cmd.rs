@@ -80,17 +80,38 @@ pub(crate) async fn linked(inner: &DaemonInner) -> Result<AuthCodePkceSpotify, B
 }
 
 /// Whether a `spotify:track:` URI can stream natively right now: a linked
-/// Premium account with a usable access token. The manager lock is released
-/// before the token check, so this never pins it across a refresh.
+/// Premium account with a usable Connect credential. The manager lock is
+/// released before the token check, so this never pins it across a refresh.
 pub(crate) async fn can_stream(inner: &DaemonInner) -> bool {
     let (premium, client) = {
         let spotify = inner.spotify.lock().await;
-        (spotify.is_premium(), spotify.client())
+        (spotify.is_premium(), spotify.stream_client())
     };
     match client {
         Some(client) => premium && access_token(&client).await.is_ok(),
         None => false,
     }
+}
+
+/// The Connect credential, or the error the play path should report. Always the
+/// stream client, never the Web API one: presenting a Web API token to a
+/// session registering as librespot's is what login5 answers
+/// `INVALID_CREDENTIALS`, so a `None` here means the account needs its
+/// playback link rather than a re-link.
+pub(crate) async fn play_token(inner: &DaemonInner) -> Result<String, Box<DaemonRes>> {
+    let client = match inner.spotify.lock().await.stream_client() {
+        Some(client) => client,
+        None => {
+            return Err(Box::new(DaemonRes::Error {
+                message: "spotify playback is not authorized — re-link the account".into(),
+            }));
+        }
+    };
+    access_token(&client).await.map_err(|e| {
+        Box::new(DaemonRes::Error {
+            message: format!("{e}; re-link the account"),
+        })
+    })
 }
 
 /// One Spotify Connect transport command, dispatched by
@@ -131,6 +152,9 @@ impl Spotify {
     /// caller supplies it so a fresh id takes effect on the next link without
     /// waiting for a daemon restart; it is persisted with the token so a later
     /// refresh is presented to the app that issued it.
+    ///
+    /// When the Web API runs on the user's own app, a second authorization
+    /// against librespot's follows automatically — see [`Self::play_link`].
     pub async fn oauth_start(
         inner: &Arc<DaemonInner>,
         port: u16,
@@ -199,6 +223,20 @@ impl Spotify {
                     // Immediately tell the TUI the account is linked so the
                     // picker closes and playlist loading commences.
                     let _ = inner2.event_tx.send(DaemonEvent::SpotifyStatusChanged);
+                    // The playback credential is a second authorization,
+                    // because one token can only be minted by one app and
+                    // Connect accepts only librespot's. Skipped when the Web
+                    // API already runs on that app — there the first token
+                    // *is* the Connect credential, and authorizing twice would
+                    // revoke the first (Spotify rotates the refresh token on
+                    // every new grant for the same app).
+                    //
+                    // Awaited here rather than spawned, so the one tracked
+                    // handle still covers it and `oauth_cancel` aborts the
+                    // browser round-trip too.
+                    if inner2.spotify.lock().await.needs_play_link() {
+                        Self::play_link(&inner2, port).await;
+                    }
                     // The charts registry is built before any token exists, so
                     // register the Spotify provider now that a client is ready
                     // (idempotent: a no-op when already registered).
@@ -280,6 +318,63 @@ impl Spotify {
         *inner.oauth_task.lock().await = Some(handle);
 
         Ok(DaemonRes::SpotifyOauthStarted { url })
+    }
+
+    /// Run the playback-only authorization against librespot's app.
+    ///
+    /// Runs on the same `port` as the Web API flow, which is the point: the
+    /// redirect URI the user already registered in their dashboard is the only
+    /// one known to be accepted, and asking for a second port would mean
+    /// asking them to register another. The first listener has been consumed and
+    /// dropped by the time this runs, so the port is free.
+    ///
+    /// Opens the browser itself rather than routing the URL through the TUI:
+    /// this flow has no form behind it and no picker waiting on it, and the
+    /// alternative is a new IPC round-trip for a second URL the user is not
+    /// going to read differently from the first. Failures are reported, never
+    /// fatal — the Web API link is already committed and works.
+    async fn play_link(inner: &Arc<DaemonInner>, port: u16) {
+        let flow = OauthFlow::new(LIBRESPOT_CLIENT_ID, port);
+        let listener = match flow.listen().await {
+            Ok(listener) => listener,
+            Err(e) => {
+                warn!("spotify playback link: {e}");
+                return;
+            }
+        };
+        let url = flow.authorize_url();
+        info!(
+            "spotify playback link: authorizing with gtm's app (the web api uses {}), port {port}",
+            if inner.spotify.lock().await.has_own_web_quota() {
+                "your own app"
+            } else {
+                "the same app"
+            }
+        );
+        if !gtm::oauth::open_browser(&url).await {
+            warn!("spotify playback link: could not open a browser — authorize at {url}");
+        }
+        match flow.wait_token(listener).await {
+            Ok(token) => {
+                let mut spotify = inner.spotify.lock().await;
+                match spotify.link_play(&token) {
+                    Ok(()) => info!("spotify playback link complete"),
+                    Err(e) => {
+                        warn!("spotify playback link failed: {e}");
+                        spotify.set_error(format!("playback link failed: {e}"));
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("spotify playback link failed: {e}");
+                inner
+                    .spotify
+                    .lock()
+                    .await
+                    .set_error(format!("playback link failed: {e}"));
+            }
+        }
+        let _ = inner.event_tx.send(DaemonEvent::SpotifyStatusChanged);
     }
 
     pub async fn oauth_cancel(inner: &DaemonInner) -> Result<DaemonRes, CoreError> {

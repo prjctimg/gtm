@@ -64,7 +64,6 @@ use crate::queue;
 use crate::radio::RadioBrowserManager;
 use crate::remote;
 use crate::spotify::SpotifyManager;
-use crate::spotify::api::access_token;
 use crate::tags::{MetadataToWrite, write_tags};
 #[cfg(feature = "youtube")]
 use crate::youtube::{YoutubeManager, download_into};
@@ -332,36 +331,26 @@ impl Cmd {
         // Read every gate and the client under one lock, then refresh the token
         // off-lock so a stalled Spotify request cannot block every other
         // transport command.
-        let (client, premium, relink) = {
+        let (linked, premium) = {
             let spotify = inner.spotify.lock().await;
-            (
-                spotify.client(),
-                spotify.is_premium(),
-                spotify.needs_relink(),
-            )
+            (spotify.linked(), spotify.is_premium())
         };
-        let Some(client) = client else {
+        if !linked {
             return Ok(DaemonRes::Error {
                 message: "spotify not linked".into(),
             });
-        };
+        }
         if !premium {
             return Ok(DaemonRes::Error {
                 message: "spotify streaming requires a Premium account".into(),
             });
         }
-        if relink {
-            return Ok(DaemonRes::Error {
-                message: "spotify token lacks the streaming scope; re-link the account".into(),
-            });
-        }
-        let token = match access_token(&client).await {
+        // The Connect credential, never the Web API one — that pairing is what
+        // login5 answers `INVALID_CREDENTIALS`, which the previous code did on
+        // every play whenever the account used its own app id.
+        let token = match play_token(inner).await {
             Ok(t) => t,
-            Err(e) => {
-                return Ok(DaemonRes::Error {
-                    message: format!("{e}; re-link the account"),
-                });
-            }
+            Err(res) => return Ok(*res),
         };
         let duration_hint = {
             let state = inner.state.read().await;
@@ -940,17 +929,9 @@ impl Cmd {
             }
         }
 
-        let client = match linked(inner).await {
-            Ok(client) => client,
-            Err(res) => return Ok(*res),
-        };
-        let token = match access_token(&client).await {
+        let token = match play_token(inner).await {
             Ok(t) => t,
-            Err(e) => {
-                return Ok(DaemonRes::Error {
-                    message: format!("{e}; re-link the account"),
-                });
-            }
+            Err(res) => return Ok(*res),
         };
         let config_dir = inner.config.config_dir.clone();
         let volume = inner.mixer.lock().await.volume();

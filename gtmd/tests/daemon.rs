@@ -8,8 +8,11 @@ use tokio::net::UnixStream;
 use gtm::shared::global::PlaybackStatus;
 use gtm::shared::ipc::{DaemonReq, DaemonRes, LibraryAction, QueueAction, WireReq, WireRes};
 
+use gtm::shared::spotify::LIBRESPOT_CLIENT_ID;
 use gtmd::config::{DaemonArgs, DaemonConfig};
 use gtmd::daemon::Daemon;
+use gtmd::providers::spotify::SpotifyManager;
+use gtmd::providers::spotify::oauth::{DEFAULT_OAUTH_PORT, OauthFlow};
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -576,6 +579,75 @@ async fn lastfm_setup() {
 
     handle.abort();
     cleanup(&config);
+}
+
+/// A default install authorizes once, not twice.
+///
+/// With no id file both legs run on librespot's app, so the Web API token is
+/// already a valid Connect credential. Running the playback flow on top of it
+/// would be actively harmful — Spotify rotates the refresh token on every new
+/// grant for the same app, invalidating the token just stored — so
+/// `needs_play_link` must be false here.
+#[tokio::test]
+async fn a_shared_app_needs_no_second_flow() {
+    let (handle, config) = daemon_handle().await;
+    let (mut reader, mut writer) = connect(&config.socket_path).await;
+    let web = r#"{"access_token":"shared","expires_in":3600,"scope":"streaming"}"#;
+    let res = send_req(
+        &mut reader,
+        &mut writer,
+        &DaemonReq::SpotifySetToken { token: web.into() },
+    )
+    .await;
+    let DaemonRes::SpotifyStatusRes { status } = res else {
+        panic!("expected SpotifyStatusRes, got {res:?}");
+    };
+    assert!(status.linked);
+    assert!(
+        !status.needs_play_link,
+        "a shared app needs no second authorization: {status:?}"
+    );
+
+    handle.abort();
+    cleanup(&config);
+}
+
+/// The playback credential must be minted by librespot's app even when the
+/// Web API runs on the user's own.
+///
+/// This pairing is exactly what login5 refuses, and it is silent from the
+/// user's side: playlists sync, search works, and only audio is missing. So the
+/// authorize URL the second flow produces has to carry librespot's id, never
+/// the configured Web API one.
+#[test]
+fn play_link_authorizes_with_librespot() {
+    let dir = std::env::temp_dir().join(format!("gtmd_play_link_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mgr = SpotifyManager::new(dir.clone());
+    mgr.set_web_client_id("0123456789abcdef0123456789abcdef");
+    assert!(
+        mgr.has_own_web_quota(),
+        "the web api must be on its own app for this to be the interesting case"
+    );
+    assert!(mgr.needs_play_link(), "no playback credential exists yet");
+
+    // The flow the daemon runs after a web-only link, built the same way.
+    let url = OauthFlow::new(LIBRESPOT_CLIENT_ID, DEFAULT_OAUTH_PORT).authorize_url();
+    assert!(
+        url.contains("client_id=65b708073fc0480ea92a077233ca87bd"),
+        "playback must authorize with librespot's id, got {url}"
+    );
+    assert!(
+        !url.contains("client_id=0123456789abcdef0123456789abcdef"),
+        "the web api's id cannot mint a connect credential, got {url}"
+    );
+    // Same port as the web flow: the redirect the user already registered is
+    // the only one known to be accepted, and Spotify only checks it at token
+    // exchange.
+    assert!(url.contains("127.0.0.1%3A8990"), "unexpected port in {url}");
+
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[tokio::test]

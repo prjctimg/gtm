@@ -19,6 +19,12 @@ const SPOTIFY_AUTHORIZE_URL: &str = "https://accounts.spotify.com/authorize";
 const SPOTIFY_TOKEN_URL: &str = "https://accounts.spotify.com/api/token";
 
 /// Default local redirect port served by [`OauthFlow::listen`].
+///
+/// The same value the TUI link form pre-fills, and the one reused for the
+/// playback-only authorization: Spotify validates `redirect_uri` against the
+/// app's registered URIs at token exchange, not at `/authorize` (which answers
+/// `303` for every port), so a port already known to work is the only safe
+/// choice for a second app the user never registered.
 pub const DEFAULT_OAUTH_PORT: u16 = 8990;
 
 /// How long an OAuth link flow waits for the browser redirect before giving

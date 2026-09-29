@@ -18,7 +18,7 @@ pub mod stream;
 pub mod ytfb;
 
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use chrono::{Duration, Utc};
@@ -30,7 +30,7 @@ use rspotify::{CallbackError, Config, Credentials, OAuth, TokenCallback};
 use tracing::{debug, info, warn};
 
 use gtm::shared::secret::{
-    SPOTIFY_CLIENT_ID, SPOTIFY_TOKEN_KEY, delete_secret, get_secret, set_secret,
+    SPOTIFY_CLIENT_ID, SPOTIFY_STREAM_KEY, SPOTIFY_TOKEN_KEY, delete_secret, get_secret, set_secret,
 };
 use gtm::shared::spotify::{LIBRESPOT_CLIENT_ID, SpotifyPlaylist, SpotifyStatus, SpotifyTrack};
 
@@ -77,6 +77,16 @@ pub struct PlaylistSnapshot {
 /// configure a preference — which is why an install that predates it defaults
 /// to librespot's id, the only id that ever issued these tokens.
 const CLIENT_ID_FILE: &str = "spotify_client_id";
+/// The Connect credential, kept apart from the Web API one.
+///
+/// login5 sends the session's client id next to the stored credential and
+/// refuses any pairing that does not match ("this request will only work when
+/// the store credentials match the client-id"), so a token minted by the user's
+/// own app cannot be presented to a session registering as librespot's — it is
+/// answered `INVALID_CREDENTIALS`, while every Web API call still succeeds
+/// because `api.spotify.com` accepts any valid app's token. One token can only
+/// be minted by one app, so the two legs need one each.
+const STREAM_FILE: &str = "spotify_stream.json";
 const TOKEN_ACCESS_PERMS: u32 = 0o600;
 /// OAuth scope required for librespot native playback. Tokens issued before it
 /// was requested keep working for the Web API but cannot stream audio.
@@ -92,6 +102,14 @@ const SCOPE_STREAMING: &str = "streaming";
 pub struct SpotifyManager {
     config_dir: PathBuf,
     client: Option<AuthCodePkceSpotify>,
+    /// The Connect half: a second client, always built with
+    /// [`LIBRESPOT_CLIENT_ID`](gtm::shared::spotify::LIBRESPOT_CLIENT_ID)
+    /// whatever the Web API leg is configured with. `None` until the playback
+    /// link has run, which is what [`Self::needs_play_link`] reports.
+    stream: Option<AuthCodePkceSpotify>,
+    /// Scopes of the stream token, snapshotted like [`Self::scopes`]. The
+    /// `streaming` scope is what the Connect half is gated on.
+    stream_scopes: std::collections::HashSet<String>,
     user: Option<String>,
     /// Whether the linked account has a Premium subscription.
     premium: bool,
@@ -124,6 +142,8 @@ impl SpotifyManager {
         Self {
             config_dir,
             client: None,
+            stream: None,
+            stream_scopes: std::collections::HashSet::new(),
             user: None,
             premium: false,
             playing: false,
@@ -371,7 +391,19 @@ impl SpotifyManager {
             }
         };
         let token = parse_token(&raw)?;
-        self.set_client(token).await
+        self.set_client(token).await?;
+        // The Connect half is independent: an install linked before the split,
+        // or one whose playback link has not run yet, must still surface its
+        // Web API work rather than being reported unlinked.
+        if self.needs_play_link()
+            && let Ok(raw) = tokio::fs::read_to_string(self.stream_path()).await
+        {
+            match self.link_play(&raw) {
+                Ok(()) => info!("spotify playback token loaded"),
+                Err(e) => warn!("spotify playback token unusable ({e}) — re-link for playback"),
+            }
+        }
+        Ok(())
     }
 
     /// Accept a token (plain access token or full Token JSON), persist it with
@@ -392,6 +424,8 @@ impl SpotifyManager {
     /// Remove the token file and reset all in-memory state.
     pub fn clear(&mut self) {
         self.client = None;
+        self.stream = None;
+        self.stream_scopes.clear();
         self.user = None;
         self.premium = false;
         self.playing = false;
@@ -403,15 +437,19 @@ impl SpotifyManager {
         // would make every unlink/re-link cycle cost the user a retyped id for
         // no benefit, and there is no mismatch to guard against — the token it
         // named is gone, so the next link simply mints a new one against it.
-        let path = self.token_path();
-        match std::fs::remove_file(&path) {
-            Ok(()) => info!("removed spotify {}", path.display()),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => warn!("failed to remove {}: {e}", path.display()),
+        // Both credentials go: keeping the Connect one would let a re-link
+        // silently resume the previous account's playback session.
+        for path in [self.token_path(), self.stream_path()] {
+            match std::fs::remove_file(&path) {
+                Ok(()) => info!("removed spotify {}", path.display()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => warn!("failed to remove {}: {e}", path.display()),
+            }
         }
         // Drop any keychain-stored credentials too, including the client id an
         // older build kept there.
         delete_secret(SPOTIFY_TOKEN_KEY);
+        delete_secret(SPOTIFY_STREAM_KEY);
         delete_secret(SPOTIFY_CLIENT_ID);
     }
 
@@ -430,6 +468,7 @@ impl SpotifyManager {
             playlists: self.playlists.len(),
             tracks,
             needs_relink: self.needs_relink(),
+            needs_play_link: self.needs_play_link(),
             error: self.error.clone(),
         }
     }
@@ -446,8 +485,10 @@ impl SpotifyManager {
         self.scopes.contains(scope)
     }
 
-    /// Whether the linked token predates the `streaming` scope and therefore
-    /// needs a fresh link before native playback can work.
+    /// Whether the Web API token predates the `streaming` scope, which is what
+    /// a re-link would fix. Playback no longer depends on this token — it has
+    /// its own — so this is a statement about the Web API grant alone, and the
+    /// play path must not gate on it.
     pub fn needs_relink(&self) -> bool {
         self.linked() && !self.has_scope(SCOPE_STREAMING)
     }
@@ -864,10 +905,6 @@ impl SpotifyManager {
     /// touch the playlist cache or call the network; `linked()` becomes true
     /// once this returns.
     async fn set_client(&mut self, token: Token) -> Result<(), String> {
-        let refreshable = token.refresh_token.is_some();
-        // Scopes are fixed at authorization time and cannot be widened by a
-        // refresh, so snapshot them here: the token itself lives behind an
-        // async mutex that cannot be inspected synchronously.
         self.scopes = token.scopes.clone();
         // The refresh has to be presented as the app that ran the
         // authorization, or the renewed token is rejected and every later Web
@@ -876,44 +913,111 @@ impl SpotifyManager {
         // link time rather than from the current preference. Reading the
         // preference instead would 401 every existing install the moment
         // someone set an id, since their token belongs to the old app.
-        let creds = Credentials::new_pkce(&self.token_client_id());
-        // Persist a refreshed token back to disk with 0600 permissions so a
-        // renewed access token survives a daemon restart instead of reverting
-        // to the stale one. rspotify invokes this callback after every
-        // successful refresh. The keychain copy is refreshed too, otherwise it
-        // keeps holding the token from the original link and goes stale
-        // exactly when it is needed as the fallback.
-        let token_path = self.token_path();
+        let id = self.token_client_id();
+        let client = self.build(token, &id, self.token_path(), SPOTIFY_TOKEN_KEY);
+        self.client = Some(client.clone());
+        self.adopt_stream(id, client);
+        self.error = None;
+        Ok(())
+    }
+
+    /// Point the Connect leg at the Web API token when librespot's app issued
+    /// it, so a default install needs one authorization rather than two.
+    ///
+    /// This is not a shortcut, it is the only correct answer for that pairing:
+    /// when both legs run on the same app, a second grant is not a second
+    /// credential — Spotify rotates the refresh token on every new grant for
+    /// the same app, so authorizing again would invalidate the token just
+    /// stored and leave the Web API 401ing.
+    fn adopt_stream(&mut self, id: String, client: AuthCodePkceSpotify) {
+        if id != LIBRESPOT_CLIENT_ID {
+            return;
+        }
+        self.stream_scopes = self.scopes.clone();
+        self.stream = Some(client);
+    }
+
+    /// An rspotify client that persists every refresh back to `path` under
+    /// `key`. Shared by both legs: they differ only in the app id presented and
+    /// where the token is written, and duplicating the callback would let the
+    /// two drift apart on the one thing that must not drift — a refreshed
+    /// token that is never written is a session that silently stops working
+    /// after its first expiry.
+    fn build(
+        &self,
+        token: Token,
+        id: &str,
+        path: PathBuf,
+        key: &'static str,
+    ) -> AuthCodePkceSpotify {
+        let refreshable = token.refresh_token.is_some();
         let token_callback = TokenCallback(Box::new(move |refreshed: Token| {
-            let dir = token_path.parent().ok_or_else(|| {
+            let dir = path.parent().ok_or_else(|| {
                 CallbackError::CustomizedError("token path has no parent".to_string())
             })?;
             std::fs::create_dir_all(dir)
                 .map_err(|e| CallbackError::CustomizedError(format!("create dir: {e}")))?;
             let json = serde_json::to_string(&refreshed)
                 .map_err(|e| CallbackError::CustomizedError(format!("serialize: {e}")))?;
-            std::fs::write(&token_path, &json)
+            std::fs::write(&path, &json)
                 .map_err(|e| CallbackError::CustomizedError(format!("write: {e}")))?;
-            std::fs::set_permissions(
-                &token_path,
-                std::fs::Permissions::from_mode(TOKEN_ACCESS_PERMS),
-            )
-            .map_err(|e| CallbackError::CustomizedError(format!("chmod: {e}")))?;
-            set_secret(SPOTIFY_TOKEN_KEY, &json);
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(TOKEN_ACCESS_PERMS))
+                .map_err(|e| CallbackError::CustomizedError(format!("chmod: {e}")))?;
+            set_secret(key, &json);
             Ok::<(), CallbackError>(())
         }));
-        let config = Config {
-            token_cached: false,
-            token_refreshing: refreshable,
-            token_callback_fn: Arc::new(Some(token_callback)),
-            ..Default::default()
-        };
-        let oauth = OAuth::default();
-        self.client = Some(AuthCodePkceSpotify::from_token_with_config(
-            token, creds, oauth, config,
+        AuthCodePkceSpotify::from_token_with_config(
+            token,
+            Credentials::new_pkce(id),
+            OAuth::default(),
+            Config {
+                token_cached: false,
+                token_refreshing: refreshable,
+                token_callback_fn: Arc::new(Some(token_callback)),
+                ..Default::default()
+            },
+        )
+    }
+
+    /// The Connect client, or `None` before the playback link has run. Only
+    /// ever built with librespot's id — see [`STREAM_FILE`].
+    pub fn stream_client(&self) -> Option<AuthCodePkceSpotify> {
+        self.stream.clone()
+    }
+
+    /// Whether the Connect half has a usable credential.
+    pub fn play_linked(&self) -> bool {
+        self.stream.is_some() && self.stream_scopes.contains(SCOPE_STREAMING)
+    }
+
+    /// Whether a linked account still needs its playback authorization: the Web
+    /// API works but the Connect session would be refused, which the user sees
+    /// as every track silently producing no audio.
+    pub fn needs_play_link(&self) -> bool {
+        self.linked() && !self.play_linked()
+    }
+
+    /// Accept the playback credential, persist it, and build the Connect
+    /// client. Separate from [`Self::link`] because the two tokens have
+    /// different issuers and are stored in different files.
+    pub fn link_play(&mut self, raw: &str) -> Result<(), String> {
+        let token = parse_token(raw)?;
+        let json = serde_json::to_string(&token).map_err(|e| format!("serialize token: {e}"))?;
+        self.save(&self.stream_path(), &json)?;
+        set_secret(SPOTIFY_STREAM_KEY, &json);
+        self.stream_scopes = token.scopes.clone();
+        self.stream = Some(self.build(
+            token,
+            LIBRESPOT_CLIENT_ID,
+            self.stream_path(),
+            SPOTIFY_STREAM_KEY,
         ));
-        self.error = None;
         Ok(())
+    }
+
+    /// Absolute path of the Connect credential.
+    fn stream_path(&self) -> PathBuf {
+        self.config_dir.join(STREAM_FILE)
     }
 
     async fn init_client(&mut self, token: Token) -> Result<(), String> {
@@ -948,12 +1052,18 @@ impl SpotifyManager {
     }
 
     fn save_token(&self, token: &Token) -> Result<(), String> {
-        let dir = &self.config_dir;
-        std::fs::create_dir_all(dir).map_err(|e| format!("create config dir: {e}"))?;
-        let path = self.token_path();
         let json = serde_json::to_string(token).map_err(|e| format!("serialize token: {e}"))?;
-        std::fs::write(&path, json).map_err(|e| format!("write token file: {e}"))?;
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(TOKEN_ACCESS_PERMS))
+        self.save(&self.token_path(), &json)
+    }
+
+    /// Write a token to `path` with 0600 permissions. Both credentials go
+    /// through here, so neither can end up world-readable by omission.
+    fn save(&self, path: &Path, json: &str) -> Result<(), String> {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("create config dir: {e}"))?;
+        }
+        std::fs::write(path, json).map_err(|e| format!("write token file: {e}"))?;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(TOKEN_ACCESS_PERMS))
             .map_err(|e| format!("set token permissions: {e}"))?;
         Ok(())
     }
@@ -1031,13 +1141,195 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A Web API link with no playback credential is the state that used to
+    /// play nothing while reporting itself as fully linked.
+    ///
+    /// One token can only be minted by one app, so a Web API token from the
+    /// user's own app is refused by a session registering as librespot's while
+    /// every Web API call it makes still succeeds. `needs_play_link` is what
+    /// turns that silence into something the Settings panel can state.
+    #[tokio::test]
+    async fn playback_needs_its_own_token() {
+        let dir = std::env::temp_dir().join(format!("gtm-play-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut mgr = super::SpotifyManager::new(dir.clone());
+        mgr.set_web_client_id("0123456789abcdef0123456789abcdef");
+
+        // The web leg linked, streaming scope and all. `needs_relink` is
+        // therefore false, so the pre-split signal says everything is fine.
+        let web =
+            r#"{"access_token":"web","expires_in":3600,"scope":"streaming playlist-read-private"}"#;
+        mgr.set_token(web).await.expect("web link");
+        assert!(mgr.linked());
+        assert!(!mgr.needs_relink(), "the web token has the scope");
+        assert!(
+            mgr.needs_play_link(),
+            "a web-only link cannot play, and must say so"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bare access token carries no scope list, which is the real shape of a
+    /// token the API did not echo scopes back for. It must not be mistaken for a
+    /// playable one.
+    #[test]
+    fn a_scopeless_token_does_not_enable_playback() {
+        let dir = std::env::temp_dir().join(format!("gtm-no-scope-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut mgr = super::SpotifyManager::new(dir.clone());
+        let bare = "BQC8xYt0aBcDeFgHiJkLmNoPqRsTuVwXyZ";
+        let token = parse_token(bare).expect("bare token parses");
+        assert!(token.scopes.is_empty(), "a bare token has no scopes");
+        mgr.stream_scopes = token.scopes.clone();
+        assert!(!mgr.play_linked(), "no scopes means no playback");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The playback file is distinct from the Web API one, so a refresh of
+    /// either cannot clobber the other and silently unlink playback.
+    #[test]
+    fn the_two_tokens_do_not_share_a_file() {
+        let dir = std::env::temp_dir().join(format!("gtm-two-tokens-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mgr = super::SpotifyManager::new(dir.clone());
+        assert_ne!(mgr.token_path(), mgr.stream_path());
+        assert!(mgr.token_path().starts_with(&dir));
+        assert!(mgr.stream_path().starts_with(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Unlinking must take the Connect credential with it. Keeping it would let
+    /// the next link inherit the previous account's playback session, which is
+    /// a credential surviving an explicit unlink.
+    #[test]
+    fn clear_takes_both_credentials() {
+        let dir = std::env::temp_dir().join(format!("gtm-clear-both-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut mgr = super::SpotifyManager::new(dir.clone());
+        std::fs::write(mgr.token_path(), b"{}").unwrap();
+        std::fs::write(mgr.stream_path(), b"{}").unwrap();
+        mgr.clear();
+        assert!(!mgr.token_path().exists(), "web token must be gone");
+        assert!(!mgr.stream_path().exists(), "playback token must be gone");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A default install authorizes once, not twice.
+    ///
+    /// With no id file the Web API token is minted by librespot's app, so it is
+    /// already a valid Connect credential. Running the playback flow anyway
+    /// would be actively harmful: Spotify rotates the refresh token on every
+    /// new grant for the same app, so the second authorization would
+    /// invalidate the token just stored and leave every Web API call 401ing.
+    #[tokio::test]
+    async fn a_shared_app_needs_only_one_authorization() {
+        let dir = std::env::temp_dir().join(format!("gtm-shared-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let web = r#"{"access_token":"shared","expires_in":3600,"scope":"streaming"}"#;
+        let mut mgr = super::SpotifyManager::new(dir.clone());
+        // No id file: both legs fall back to librespot's app.
+        assert!(!mgr.has_own_web_quota());
+        mgr.set_token(web).await.expect("link");
+        assert!(mgr.linked());
+        assert!(
+            mgr.play_linked(),
+            "the web token is already a valid connect credential"
+        );
+        assert!(
+            !mgr.needs_play_link(),
+            "a shared app must not trigger a second authorization"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With the user's own app the Web API token cannot be reused for Connect,
+    /// so that is the one case that does need a second authorization.
+    #[tokio::test]
+    async fn an_own_app_does_need_a_second_authorization() {
+        let dir = std::env::temp_dir().join(format!("gtm-own-app-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let web = r#"{"access_token":"mine","expires_in":3600,"scope":"streaming"}"#;
+        let mut mgr = super::SpotifyManager::new(dir.clone());
+        mgr.set_web_client_id("0123456789abcdef0123456789abcdef");
+        mgr.set_token(web).await.expect("link");
+        assert!(mgr.has_own_web_quota());
+        assert!(
+            mgr.needs_play_link(),
+            "login5 refuses a token the session's app did not mint"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A linked account whose playback token is on disk comes back linked for
+    /// playback too, so a daemon restart does not put every track back into the
+    /// silent state. The credential is read independently of the Web API one:
+    /// a missing playback token must not stop the Web API from linking.
+    #[tokio::test]
+    async fn a_stored_playback_token_survives_a_restart() {
+        let dir = std::env::temp_dir().join(format!("gtm-play-restart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let web = r#"{"access_token":"web","expires_in":3600,"scope":"streaming"}"#;
+        let play = r#"{"access_token":"play","expires_in":3600,"scope":"streaming"}"#;
+        {
+            let mut mgr = super::SpotifyManager::new(dir.clone());
+            // The user's own app, so the web token is not a Connect credential
+            // and a second one is genuinely required.
+            mgr.set_web_client_id("0123456789abcdef0123456789abcdef");
+            mgr.set_token(web).await.expect("web link");
+            assert!(mgr.needs_play_link());
+            mgr.link_play(play).expect("playback link");
+            assert!(mgr.play_linked(), "both legs linked");
+        }
+        // A brand-new manager, as after a daemon restart.
+        let mut fresh = super::SpotifyManager::new(dir.clone());
+        fresh.load().await.expect("load");
+        assert!(fresh.linked(), "the web leg comes back");
+        assert!(
+            fresh.play_linked(),
+            "the playback leg must come back too, or every track is silent"
+        );
+        assert!(!fresh.needs_play_link());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An account with no playback token on disk still links for the Web API.
+    /// The pre-split code reported such an install as needing a re-link, which
+    /// cannot help: re-linking mints the same unusable pairing.
+    #[tokio::test]
+    async fn a_web_only_link_still_works_for_the_web_api() {
+        let dir = std::env::temp_dir().join(format!("gtm-web-only-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let web = r#"{"access_token":"web","expires_in":3600,"scope":"streaming"}"#;
+        let mut mgr = super::SpotifyManager::new(dir.clone());
+        mgr.set_token(web).await.expect("web link");
+        assert!(
+            mgr.linked(),
+            "a missing playback token must not unlink the web api"
+        );
+        assert!(mgr.needs_play_link());
+        assert!(
+            mgr.stream_client().is_none(),
+            "no playback client exists yet"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A token cannot be renewed by a different app than the one that issued
     /// it, so the persisted id — not the current preference — is what a
     /// refresh presents. Reading the preference instead would 401 every
     /// existing install the moment someone set an id.
-    #[test]
-    fn a_missing_id_file_means_the_token_came_from_librespot() {
-        let dir = std::env::temp_dir().join("gtm-spotify-issuer-test");
+    #[tokio::test]
+    async fn a_missing_id_file_means_the_token_came_from_librespot() {
+        let dir = std::env::temp_dir().join(format!("gtm-issuer-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mgr = super::SpotifyManager::new(dir.clone());

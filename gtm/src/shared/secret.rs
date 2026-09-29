@@ -17,6 +17,10 @@ pub const SERVICE: &str = "gtm";
 pub const SPOTIFY_CLIENT_ID: &str = "spotify_client_id";
 /// Keychain/username for the Spotify OAuth token.
 pub const SPOTIFY_TOKEN_KEY: &str = "spotify_token";
+/// Keychain/username for the Spotify Connect token, which is a separate
+/// credential from the Web API one: login5 refuses any pairing whose client id
+/// did not mint the credential.
+pub const SPOTIFY_STREAM_KEY: &str = "spotify_stream_token";
 /// Keychain/username for the Last.fm API key.
 pub const LASTFM_API_KEY: &str = "lastfm_api_key";
 /// Keychain/username for the Last.fm API secret.

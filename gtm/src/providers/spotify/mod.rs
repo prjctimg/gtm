@@ -45,6 +45,12 @@ pub struct SpotifyStatus {
     /// re-linked before native playback works. Scopes cannot be widened by
     /// refreshing, so this only clears after a fresh authorization.
     pub needs_relink: bool,
+    /// Whether the account is linked for the Web API but has no playback
+    /// credential of its own. Distinct from `needs_relink`: everything except
+    /// audio works, and the Connect session would refuse the Web API token
+    /// outright, so the two need different fixes and reporting only the former
+    /// told the user to re-link when re-linking could not help.
+    pub needs_play_link: bool,
     /// Most recent error message, if the link or sync failed.
     pub error: Option<String>,
 }
