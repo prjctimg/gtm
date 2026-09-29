@@ -267,6 +267,13 @@ pub struct App {
     /// genuine auto-advances only.
     pub auto_track_advance: bool,
     pub(crate) path_display: Option<String>,
+    /// Whether the idle library reset has already run for the current spell of
+    /// "queue empty and nothing playing". Latched so it fires on the
+    /// transition, not on every poll that observes the same idle state.
+    pub(crate) idle_reset: bool,
+    /// Whether the IPC link is currently up, so a reconnect is handled on its
+    /// rising edge rather than continuously.
+    pub(crate) link_up: bool,
     pub(crate) prev_track_id: Option<i64>,
     pub(crate) prev_status: PlaybackStatus,
     pub(crate) prev_volume: u8,
@@ -945,6 +952,8 @@ impl App {
             manual_track_advance: false,
             auto_track_advance: false,
             path_display: None,
+            idle_reset: false,
+            link_up: true,
             prev_track_id: None,
             prev_status: PlaybackStatus::Stopped,
             prev_volume: 100,

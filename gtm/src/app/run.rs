@@ -456,13 +456,37 @@ impl App {
             if events_received {
                 self.data_dirty = true;
             }
-            // After track change, check if new track has cover art.
-            // If not, clear reactive palette so theme reverts to base.
-            // Judged on the cover actually held rather than on `cover_path`:
-            // a live radio track never has a library row to hang a path on, so
-            // the path test would wipe the palette on every track change even
-            // though the daemon had just delivered artwork.
-            if had_track_change && self.reactive_theme && self.np_cover.image.is_none() {
+            // A reattached client knows nothing about what the daemon has been
+            // doing. The event stream is a forward-only broadcast, so anything
+            // emitted during the outage — the `PlaybackStarted` that named the
+            // current track — is gone, and the mirror's now-playing is null
+            // until something replaces it. Pull a fresh snapshot and re-arm the
+            // cover fetch on the rising edge, rather than waiting for a poll
+            // that only reaches the UI if some other request happens to land.
+            let linked = self.client.is_connected();
+            if linked && !self.link_up {
+                self.link_up = true;
+                self.path_display = None;
+                let client = self.client.clone();
+                let ipc_tx = self.ipc_tx.clone();
+                tokio::spawn(async move {
+                    if let Ok(state) = client.get_status().await {
+                        let _ = ipc_tx.send(IpcResult::RefreshDone(Box::new(state), None, None));
+                    }
+                });
+            } else if !linked {
+                self.link_up = false;
+            }
+            // A new track must take the theme back to the base palette until
+            // its own art arrives, or it keeps the outgoing track's colours
+            // for the whole time the new one plays.
+            //
+            // Keyed on the palette being held, not on the cover: this runs
+            // before the track-change block below clears `np_cover.image`, so
+            // a test on the cover reads the *outgoing* track's bytes and fires
+            // only when the previous track had no art — exactly inverting the
+            // intent. The new art, if any, arrives later and re-tints.
+            if had_track_change && self.reactive_theme && self.reactive_palette.is_some() {
                 self.reactive_palette = None;
                 self.apply_reactive();
             }
@@ -1022,8 +1046,22 @@ impl App {
                             self.queue.preview_cover = None;
                             self.queue.preview_cover_stateful = None;
                         }
-                        if self.queue.cache.is_empty() && self.state.current_track.is_none() {
+                        // Fire once per spell of "idle", not on every poll.
+                        // The queue is re-polled at 1 Hz and an empty answer is
+                        // assigned straight back, so an ungated check never
+                        // stops being true — which reset the library cursor to
+                        // the top row, dropped any open drill-down and cleared
+                        // the cover, once a second, for as long as the player
+                        // sat idle. It read as a sync bug because a Spotify
+                        // link is exactly when the list is growing and nothing
+                        // is playing, but it fired in every category.
+                        let idle =
+                            self.queue.cache.is_empty() && self.state.current_track.is_none();
+                        if idle && !self.idle_reset {
+                            self.idle_reset = true;
                             self.reset_library_view(self.library_category, None);
+                        } else if !idle {
+                            self.idle_reset = false;
                         }
                     }
                     IpcResult::YtResults(query, results) => {
